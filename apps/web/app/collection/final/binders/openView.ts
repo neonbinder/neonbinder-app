@@ -28,6 +28,11 @@ export interface Tally {
   have: number | null;
   need: number | null;
   cards: number | null;
+  /**
+   * NEO-528 — a smart binder that includes cameos counts them on their own:
+   * `have`/`need` are then the cards it takes in on their own players only.
+   */
+  cameos?: { have: number; need: number };
 }
 
 export interface OpenView {

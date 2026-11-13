@@ -55,6 +55,12 @@ export function PocketTitle({ binder, headingRef }: PocketTitleProps) {
             <strong className="text-ink">{binder.checklist.percent}%</strong> of the checklist.
           </span>
         )}
+        {binder.cameos && (
+          <span className="text-ink-2">
+            {" "}
+            Cameos: <strong className="text-ink">{binder.cameos.have}</strong> of {binder.cameos.total}.
+          </span>
+        )}
       </p>
     </div>
   );

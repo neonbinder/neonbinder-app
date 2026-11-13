@@ -650,6 +650,7 @@ export default function CardDetail({
                 <dd className="text-ink-2">{card.players.map((p) => p.name).join(", ")}</dd>
               </>
             )}
+            <AlsoPicturedRow players={card.secondaryPlayers} />
             {run && (
               <>
                 <dt className="text-ink-3">Print run</dt>
@@ -889,6 +890,23 @@ function locationNamesAHome(location: string | undefined, homes: readonly NamedB
  * before, else the "Your copies" heading. A move that folds the whole line
  * into a twin lands the keyboard on the twin's Move (or Sell) button.
  */
+/**
+ * NEO-528 — who else is pictured on the card besides its own players (a
+ * teammate on a team leaders card): read-only, "Also pictured: Dan Marino".
+ * Nothing at all when the card pictures no one else. An admin sets it in the
+ * set builder; a smart binder with "Include cameos" takes the card in for
+ * them.
+ */
+export function AlsoPicturedRow({ players }: { players?: readonly { name: string }[] }) {
+  if (!players?.length) return null;
+  return (
+    <>
+      <dt className="text-ink-3">Also pictured</dt>
+      <dd className="min-w-0 text-ink-2 [overflow-wrap:anywhere]">{players.map((p) => p.name).join(", ")}</dd>
+    </>
+  );
+}
+
 /**
  * NEO-367 — NB's own note about the card, as one term of the detail list.
  * Nothing at all when the card has none. The admin's line breaks are part of

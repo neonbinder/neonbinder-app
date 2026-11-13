@@ -2,6 +2,8 @@ import { useId, useMemo, useState } from "react";
 import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import Modal from "../../prototypes/p2/Modal";
+import { cameoNames } from "../cameo";
+import { CameoTag } from "../CameoTag";
 import { cardLabel } from "../data/labels";
 import { useCards, useDeclined, useFindCards } from "../data/store";
 import type { Card, CardId, Container, Copy } from "../data/types";
@@ -18,6 +20,9 @@ import { describeSmartRule } from "./RuleBuilder";
  *   sale, and the row says so first.
  * - **Not for this binder** declines the card: it stops showing up here,
  *   and the Declined list brings it back for another look.
+ *
+ * NEO-528 — a card that fits only as a cameo (the binder's "Include cameos")
+ * wears the Cameo tag beside its name, saying who is pictured.
  */
 
 type Tab = "review" | "declined";
@@ -101,6 +106,11 @@ export default function FindCardsDialog({
                   key={copy.id}
                   copy={copy}
                   card={cards.get(copy.cardId)}
+                  cameo={
+                    found.secondary.has(copy.cardId)
+                      ? cameoNames(cards.get(copy.cardId) ?? {}, rule)
+                      : undefined
+                  }
                   onAdd={(n) => onAdd(cards.get(copy.cardId), copy, n)}
                   onDecline={() => onDecline(copy.cardId, cards.get(copy.cardId))}
                 />
@@ -152,11 +162,14 @@ export default function FindCardsDialog({
 function FoundRow({
   copy,
   card,
+  cameo,
   onAdd,
   onDecline,
 }: {
   copy: Copy;
   card: Card | undefined;
+  /** NEO-528 — fits only as a cameo: who is pictured. */
+  cameo?: readonly string[];
   onAdd: (quantity: number) => Promise<void>;
   onDecline: () => Promise<void>;
 }) {
@@ -182,7 +195,10 @@ function FoundRow({
     <li className="py-3">
       <div className="flex flex-wrap items-center gap-3">
         <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium text-ink">{card ? cardLabel(card) : "Loading the card…"}</p>
+          <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-ink">
+            <span className="min-w-0">{card ? cardLabel(card) : "Loading the card…"}</span>
+            {cameo && <CameoTag names={cameo} />}
+          </p>
           <p className="text-sm text-ink-3">
             {forSale ? `For sale in ${where}` : `In ${where}`}
             {copy.quantity > 1 ? `, ${copy.quantity} copies` : ""}

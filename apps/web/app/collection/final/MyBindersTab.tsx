@@ -39,6 +39,7 @@ import LabelEditorDialog from "./binders/LabelEditorDialog";
 import {
   binderLayout,
   binderPages,
+  type CameoOf,
   cardPages,
   cardsOnPages,
   firstPocketVariant,
@@ -89,6 +90,7 @@ import PackTray, {
 import Shelf, { InventoryShelf } from "./binders/Shelf";
 import SmartFitsStatus from "./binders/SmartFitsStatus";
 import { keepClearOfTray, trackInputModality } from "./binders/trayClear";
+import { cameoNames, cameosOn } from "./cameo";
 import { useSearchText } from "./catalog/search";
 import { shortCardName } from "./data/labels";
 import {
@@ -423,7 +425,17 @@ export default function MyBindersTab({
     binderSettings && homeOpen?.smartRule ? homeOpen.id : null,
     homeOpen?.smartRule ? listCardIds : null,
   );
-  const fits = matches ? (id: CardId) => matches.has(id) : undefined;
+  const fits = matches ? (id: CardId) => matches.fits.has(id) : undefined;
+  // NEO-528 — a card the rule takes in only as a cameo: one it holds
+  // (`matches`), or an empty slot's (`needs`). Who is pictured, else undefined.
+  const smartRule = homeOpen?.smartRule;
+  const cameoOf: CameoOf | undefined =
+    smartRule && cameosOn(smartRule)
+      ? (card) =>
+          matches?.secondary.has(card.id) || needs?.secondary.has(card.id)
+            ? cameoNames(card, smartRule)
+            : undefined
+      : undefined;
 
   // NEO-410 — a smart binder's empty-slot status line (`SmartFitsStatus`).
   const fitsWatched = !!(homeOpen?.smartRule && layout?.sort && layout.emptySlots);
@@ -476,6 +488,7 @@ export default function MyBindersTab({
           needs: needs?.cards,
           heldElsewhere: needs?.held,
           fits,
+          cameo: cameoOf,
         });
       else
         pages = markOutside(
@@ -489,6 +502,7 @@ export default function MyBindersTab({
               layout && !layout.emptySlots ? () => true : ownedAnywhere,
           }),
           fits,
+          cameoOf,
         );
     }
     loading =
@@ -551,8 +565,19 @@ export default function MyBindersTab({
     if (layout?.sort && layout.emptySlots && needs && listCopies) {
       // Sorted with empty slots: the sleeves still to fill.
       if (!needs.truncated && !listPage?.truncated) {
-        tally.have = new Set(listCopies.map((c) => c.cardId)).size;
-        tally.need = needs.cards.length;
+        const held = new Set(listCopies.map((c) => c.cardId));
+        if (!cameoOf) {
+          tally.have = held.size;
+          tally.need = needs.cards.length;
+        } else if (matches) {
+          // NEO-528 — two counts: the cards it takes in on their own players,
+          // and the cameos, each "have, need" on its own.
+          const cameoHave = [...held].filter((id) => matches.secondary.has(id)).length;
+          const cameoNeed = needs.cards.filter((c) => needs.secondary.has(c.id)).length;
+          tally.have = held.size - cameoHave;
+          tally.need = needs.cards.length - cameoNeed;
+          tally.cameos = { have: cameoHave, need: cameoNeed };
+        }
       }
     } else if (followed && listCopies && followedCopies) {
       const t = followedTally(listCopies, followed, ownedAnywhere);

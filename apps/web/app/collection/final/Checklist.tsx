@@ -3,6 +3,7 @@ import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { CHIP, CHIP_OFF, CHIP_ON, FOCUS } from "../prototypes/p1/ui";
 import BinderPicker from "./BinderPicker";
+import { cameoNames } from "./cameo";
 import CardRowGroup, { type RowActions } from "./CardRows";
 import ChipGroup from "./ChipGroup";
 import { checklistCount, haveLine, isComplete, totalKnown } from "./catalog/format";
@@ -96,6 +97,7 @@ const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(funct
   const [show, setShow] = useState<Show>("all");
   // NEO-362: looking through a smart binder, the checklist can narrow to the
   // cards its rule takes in. A Have here files into that binder as always.
+  // NEO-528: a card it takes in only as a cameo wears the Cameo tag.
   const scope = useScope();
   const containers = useContainers();
   const smart = scope !== "all" ? containers?.find((c) => c.id === scope && !!c.smartRule) : undefined;
@@ -114,7 +116,7 @@ const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(funct
     const have = ownedIds.has(c.id);
     if (show === "have" && !have) return false;
     if (show === "need" && have) return false;
-    if (show === "fits" && smart && !fits?.has(c.id)) return false;
+    if (show === "fits" && smart && !fits?.fits.has(c.id)) return false;
     if (!needle) return true;
     const hay = fold(`${c.cardNumber} ${playerNames(c)} ${teamNames(c)} ${c.cardVariation ?? ""} ${c.features.join(" ")}`);
     return needle.split(" ").every((t) => hay.includes(t));
@@ -391,6 +393,7 @@ const CollectionChecklist = forwardRef<HTMLHeadingElement, ChecklistProps>(funct
                   actions={{ ...actions, open: (c, copyId, _list, edit) => actions.open(c, copyId, visible, edit) }}
                   isSelected={card.id === selectedCardId}
                   highlighted={card.id === ringed}
+                  cameo={smart && fits?.secondary.has(card.id) ? cameoNames(card, smart.smartRule) : undefined}
                   groupRef={(el) => {
                     if (el) rowEls.current.set(card.id, el);
                     else rowEls.current.delete(card.id);

@@ -1,4 +1,5 @@
 import { spineLabelPrintHref } from "@/lib/print/spine-label-params";
+import { CameoGlyph } from "../CameoTag";
 import type { ContainerLabel } from "../data/types";
 import type { PileFilters, SortKey } from "./model";
 import type { OpenView, Tally } from "./openView";
@@ -62,8 +63,14 @@ export function PileTools({
 // The cover and its summary (what they show comes from `OpenView`)
 // ---------------------------------------------------------------------------
 
+/**
+ * The cover's count. NEO-528: a smart binder that includes cameos shows two,
+ * kept apart (Jason, 2026-11-12): the cards it takes in on their own players
+ * ("12 have, 30 need", the green bar), then the cameos on a line of their own
+ * ("Cameos: 2 have, 5 need", a thinner teal bar under the brooch mark).
+ */
 function TallyLine({ tally, want }: { tally: Tally; want: boolean }) {
-  const { have, need, cards } = tally;
+  const { have, need, cards, cameos } = tally;
   if (have !== null && need !== null) {
     const total = have + need;
     return (
@@ -77,6 +84,22 @@ function TallyLine({ tally, want }: { tally: Tally; want: boolean }) {
             style={{ width: `${total ? (have / total) * 100 : 0}%` }}
           />
         </div>
+        {cameos && !want && (
+          <>
+            <p className="mt-2 flex items-center gap-1.5 text-sm font-semibold text-ink-2 tabular-nums">
+              <CameoGlyph className="h-3.5 w-3 shrink-0 text-neon-teal-text" />
+              {`Cameos: ${cameos.have} have, ${cameos.need} need`}
+            </p>
+            <div aria-hidden="true" className="mt-1 h-1 overflow-hidden rounded-full bg-rule">
+              <div
+                className="h-full rounded-full bg-neon-teal"
+                style={{
+                  width: `${cameos.have + cameos.need ? (cameos.have / (cameos.have + cameos.need)) * 100 : 0}%`,
+                }}
+              />
+            </div>
+          </>
+        )}
       </div>
     );
   }

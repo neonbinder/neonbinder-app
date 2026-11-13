@@ -893,6 +893,8 @@ export const DEMO_DATA: CollectionData = {
       return {
         cards: kept,
         held: new Set(kept.filter((c) => elsewhere.has(c.id)).map((c) => c.id)),
+        // The demo has no smart rules, so nothing fits as a cameo.
+        secondary: NO_IDS,
         supported: true,
         truncated: cards.length > kept.length || variants.size > MAX_NEED_CHECKLISTS,
       };
@@ -902,12 +904,16 @@ export const DEMO_DATA: CollectionData = {
   // The demo has no smart rules (capability `binderRules` is off): nothing
   // matches, there is nothing to find, nothing was declined.
   useRuleMatches(containerId, cardIds) {
-    return useMemo(() => (containerId && cardIds ? new Set<string>() : undefined), [containerId, cardIds]);
+    return useMemo(
+      () => (containerId && cardIds ? { fits: new Set<string>(), secondary: NO_IDS } : undefined),
+      [containerId, cardIds],
+    );
   },
 
   useFindCards(containerId) {
     return useMemo(
-      (): FoundCards | undefined => (containerId ? { copies: [], done: true, more: () => {} } : undefined),
+      (): FoundCards | undefined =>
+        containerId ? { copies: [], secondary: NO_IDS, done: true, more: () => {} } : undefined,
       [containerId],
     );
   },
@@ -936,6 +942,8 @@ export const DEMO_DATA: CollectionData = {
 };
 
 const NO_BRANDS: RuleBrand[] = [];
+/** NEO-528 — the demo has no smart rules: nothing fits as a cameo. */
+const NO_IDS: ReadonlySet<string> = new Set<string>();
 
 /** As the server's (`convex/binderRules.ts`). */
 const MAX_NEEDS = 900;

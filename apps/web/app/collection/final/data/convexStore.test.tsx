@@ -7,6 +7,7 @@ import {
   collectionCopiesIn,
   collectionCopiesOfCards,
   ScopeProvider,
+  useBinderNeeds,
   useCapabilities,
   useCopyPhotos,
   useCollectionActions,
@@ -19,6 +20,7 @@ import {
   useInventoryCards,
   useSetCompletion,
   useOwnedCards,
+  useRuleMatches,
   useSearch,
   useSetCards,
   useSuggestions,
@@ -284,6 +286,43 @@ describe("NEO-367 a card's notes", () => {
 
   it("leaves the key off a card with no note", () => {
     expect("notes" in toCard(raw({}), null as never, variant)).toBe(false);
+  });
+});
+
+describe("NEO-528 cameos: who else is pictured, and the cards a binder takes in only as a cameo", () => {
+  const variant = toVariantRef({ _id: "vt", level: "variantType", name: "Base", kind: "base", variantType: node("vt", "Base"), insert: null } as never);
+  const raw = (extra: object) =>
+    ({ _id: "c1", cardNumber: "7", cardName: "Clayton", sortOrder: 0, variantId: "vt", features: [], listingTitle: "#7", players: [], teams: [], ...extra }) as never;
+  const { toCard } = __test;
+
+  it("carries the card's pictured players, and leaves the key off a card that pictures no one else", () => {
+    expect(toCard(raw({ secondaryPlayers: [{ _id: "p9", name: "Dan Marino" }] }), null as never, variant).secondaryPlayers).toEqual([
+      { id: "p9", name: "Dan Marino" },
+    ]);
+    expect("secondaryPlayers" in toCard(raw({}), null as never, variant)).toBe(false);
+    expect("secondaryPlayers" in toCard(raw({ secondaryPlayers: [] }), null as never, variant)).toBe(false);
+  });
+
+  it("rule matches read ruleFits: every fit, and the cameo fits apart", () => {
+    loaded.set("binderRules:ruleFits", (args: { cardIds: string[] }) =>
+      args.cardIds.flatMap((id) => (id === "own" ? [{ cardId: id }] : id === "cameo" ? [{ cardId: id, secondary: true }] : [])),
+    );
+    const { result } = renderHook(() => useRuleMatches("b1", ["own", "cameo", "neither"]), { wrapper });
+    expect([...(result.current?.fits ?? [])]).toEqual(["own", "cameo"]);
+    expect([...(result.current?.secondary ?? [])]).toEqual(["cameo"]);
+    expect(queried.some((q) => q.name === "binderRules:matchingCards")).toBe(false);
+  });
+
+  it("a binder's needs mark the cameo ones", () => {
+    const need = (id: string, secondary?: true) => ({
+      card: { ...(raw({ _id: id }) as object), set: { _id: "s", name: "Score", year: "1990" }, variant: { _id: "vt", level: "variantType", name: "Base", kind: "base", variantType: node("vt", "Base"), insert: null } },
+      held: false,
+      ...(secondary ? { secondary } : {}),
+    });
+    loaded.set("binderRules:needs", { needs: [need("n1"), need("n2", true)], supported: true, truncated: false });
+    const { result } = renderHook(() => useBinderNeeds("b1"), { wrapper });
+    expect(result.current?.cards.map((c) => c.id)).toEqual(["n1", "n2"]);
+    expect([...(result.current?.secondary ?? [])]).toEqual(["n2"]);
   });
 });
 
