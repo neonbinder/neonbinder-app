@@ -10,6 +10,7 @@ import { describe, expect, test } from "vitest";
 import {
   MAX_LISTING_SHORT_NAME_LENGTH,
   normalizeListingShortName,
+  roughlySays,
   titleChainFacts,
   type TitleChainRow,
 } from "./listingShortName";
@@ -225,5 +226,47 @@ describe("titleChainFacts", () => {
     expect(
       titleChainFacts([row("insert", "Hologram"), null, row("variantType", "Inserts")]),
     ).toEqual({});
+  });
+});
+
+describe("NEO-535: a name the box already says, in another spelling, is not appended again", () => {
+  test("roughlySays folds case, edge punctuation, a plural s and the autograph spellings", () => {
+    expect(roughlySays("Metal 1991 Gold Prospect Auto", "1991 Gold Prospects Autographs")).toBe(true);
+    expect(roughlySays("Leaf Metal AU", "Autographed")).toBe(true);
+    expect(roughlySays("Chrome Refractors,", "refractor")).toBe(true);
+    // "ss" and short words keep their s; a missing word is not said.
+    expect(roughlySays("Chrome Glass", "Glas")).toBe(false);
+    expect(roughlySays("Chrome Bu", "Bus")).toBe(false);
+    expect(roughlySays("Metal 1991 Gold Prospect", "1991 Gold Prospects Autographs")).toBe(false);
+    expect(roughlySays("anything", "  ")).toBe(false);
+  });
+
+  test("an insert the box says in a shortened spelling is not appended", () => {
+    const chain = (box: string) => [
+      row("insert", "1991 Gold Prospects Autographs"),
+      row("variantType", "Insert"),
+      row("setName", "Leaf Metal", { listingShortName: box }),
+    ];
+    expect(titleChainFacts(chain("2026 Leaf Metal 1991 Gold Prospect Auto")).listingShortName).toBe(
+      "2026 Leaf Metal 1991 Gold Prospect Auto",
+    );
+    expect(titleChainFacts(chain("2026 Leaf Metal")).listingShortName).toBe(
+      "2026 Leaf Metal 1991 Gold Prospects Autographs",
+    );
+  });
+
+  test("a parallel the box says in a plural is not appended", () => {
+    const chain = (box: string) => [
+      row("parallel", "Prismatic"),
+      row("insert", "Gold Prospects"),
+      row("variantType", "Insert"),
+      row("setName", "Leaf Metal"),
+    ].map((r, i) => (i === 1 ? { ...r, metadata: { listingShortName: box } } : r));
+    expect(titleChainFacts(chain("2026 Leaf Metal Gold Prospects Prismatics")).listingShortName).toBe(
+      "2026 Leaf Metal Gold Prospects Prismatics",
+    );
+    expect(titleChainFacts(chain("2026 Leaf Metal Gold Prospects")).listingShortName).toBe(
+      "2026 Leaf Metal Gold Prospects Prismatic",
+    );
   });
 });

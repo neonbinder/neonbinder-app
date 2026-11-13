@@ -26,23 +26,20 @@
  *     builder put in front of the players. On a parallel leaf the parallel's
  *     name is appended too (the old builder's tail token; the new box is the
  *     whole description, and nothing appends a leaf's own parallel), unless
- *     the text already says it.
+ *     the text already says it or the leaf is named for the Base kind
+ *     (`variantRole.variantTypeKindFromTitle`).
  *
  * ## Insert and parallel appending: no doubled words
  *
  * A value stored above an insert row or a parallel leaf gets that name
- * appended at read time. When the stored text already says the name in a
- * DIFFERENT spelling ("Gold Prospect Auto" for the insert "Gold Prospects
- * Autographs"), the read-time word check does not see it and the title would
- * say it twice. So the walk below the rewritten row computes each governed
- * row's read-time box, and where it would double a name the text roughly
- * says (`roughlySays`: case, a plural "s" and the autograph spellings
- * folded), it writes the box without that name onto THAT row as its own
- * value. The nearest value wins (`titleChainFacts`), so the row's cards read
- * it verbatim and nothing is appended. Only rows with no value of their own
- * are written; a name the text does not say at all is left to be appended,
- * which is the NEO-535 rule (a value covers its own row and everything above
- * it, and the cards below still need their insert's name).
+ * appended at read time, unless it already says it. The old short names
+ * often said the insert in a shortened spelling ("Gold Prospect Auto" for
+ * "Gold Prospects Autographs"); `titleChainFacts` reads that as already said
+ * (`listingShortName.roughlySays` folds case, a plural "s" and the autograph
+ * spellings), so the rewrite here writes only the row's own value and never
+ * a row below it. A name the text does not say at all is appended, which is
+ * the NEO-535 rule (a value covers its own row and everything above it, and
+ * the cards below still need their insert's name).
  *
  * ## What it never touches
  *
@@ -63,6 +60,7 @@
  * ## Operator commands
  *
  *   # 1. dry run — reports what the approved rewrite would do, writes nothing
+ *   #    (on a transaction read-limit failure, add "numItems":50 as below)
  *   npx convex run backfillListingShortNames:run '{"rewriteExisting":true}'
  *
  *   # 2. arm the deployment, run the approved rewrite once, disarm
@@ -70,6 +68,10 @@
  *   npx convex run backfillListingShortNames:run '{"confirm":"BACKFILL","rewriteExisting":true}'
  *   #    a run that stops early returns `continueCursor`; resume with
  *   npx convex run backfillListingShortNames:run '{"confirm":"BACKFILL","rewriteExisting":true,"cursor":"<continueCursor>"}'
+ *   #    a page that fails on the transaction read limit wrote nothing (a page
+ *   #    is one transaction): re-run from the last cursor with fewer rows a
+ *   #    page, e.g. 50
+ *   npx convex run backfillListingShortNames:run '{"confirm":"BACKFILL","rewriteExisting":true,"cursor":"<continueCursor>","numItems":50}'
  *   npx convex env remove ALLOW_SHORT_NAME_BACKFILL
  *
  *   # 3. verify: a dry run reports rewritten 0 and keptExisting 0
@@ -97,11 +99,12 @@ import {
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
-  LISTING_SHORT_NAME_LEVELS,
   MAX_LISTING_SHORT_NAME_LENGTH,
+  roughlySays,
   titleChainFacts,
   type TitleChainRow,
 } from "./listingShortName";
+import { variantTypeKindFromTitle } from "./variantRole";
 
 /** The string an armed run must carry. */
 export const CONFIRM_TOKEN = "BACKFILL";
@@ -111,9 +114,6 @@ export const ENV_FLAG = "ALLOW_SHORT_NAME_BACKFILL";
 
 /** Rows of one level read per page mutation. */
 export const ROWS_PER_PAGE = 200;
-
-/** Children read under one row in the walk; past this the row is left for a person. */
-export const MAX_CHILDREN = 500;
 
 /** The action stops starting new pages after this long. */
 export const RUN_BUDGET_MS = 150_000;
@@ -153,39 +153,6 @@ function startsWithWord(value: string, prefix: string): boolean {
   return boundary === undefined || /\s/.test(boundary);
 }
 
-function words(text: string): string[] {
-  return text.toLowerCase().split(/\s+/).filter(Boolean);
-}
-
-/** `titleChainFacts`' own rule: every word of `name` is a word of `text`. */
-function says(text: string, name: string): boolean {
-  const present = new Set(words(text));
-  const wanted = words(name);
-  return wanted.length > 0 && wanted.every((w) => present.has(w));
-}
-
-/** The autograph spellings a short name used for an insert's word. */
-const AUTO_WORDS = new Set(["au", "auto", "autos", "autograph", "autographs", "autographed"]);
-
-/** A word folded for the rough check: case, edge punctuation, a plural "s", autograph spellings. */
-function fold(word: string): string {
-  const bare = word.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
-  if (AUTO_WORDS.has(bare)) return "auto";
-  if (bare.length > 3 && bare.endsWith("s") && !bare.endsWith("ss")) return bare.slice(0, -1);
-  return bare;
-}
-
-/**
- * Does `text` already say every word of `name`, allowing a different
- * spelling ("Prospect" for "Prospects", "Auto" for "Autographs")? A superset
- * of `says`.
- */
-export function roughlySays(text: string, name: string): boolean {
-  const present = new Set(words(text).map(fold).filter(Boolean));
-  const wanted = words(name).map(fold).filter(Boolean);
-  return wanted.length > 0 && wanted.every((w) => present.has(w));
-}
-
 /** `text` then `name` unless `text` roughly says it already. */
 function appendUnlessRoughlySaid(text: string, name: string | undefined): string {
   const trimmed = name?.trim();
@@ -218,47 +185,22 @@ export function rewriteShortName(
   tokens.push(text);
   let out = tokens.join(" ");
   const parallel = ownParallel?.trim();
-  if (parallel && parallel.toLowerCase() !== "base") out = appendUnlessRoughlySaid(out, parallel);
+  // A leaf named for the Base kind ("Base") is no parallel to name: the role
+  // helper reads the word, never a literal here.
+  if (parallel && variantTypeKindFromTitle(parallel) !== "base") {
+    out = appendUnlessRoughlySaid(out, parallel);
+  }
   return out;
 }
 
-/** A chain row as `titleChainFacts` reads it, with the value replaced. */
-function chainRow(row: Doc<"selectorOptions">, value?: string): TitleChainRow {
-  return {
-    level: row.level,
-    value: row.value,
-    ...(value !== undefined ? { metadata: { listingShortName: value } } : {}),
-  };
-}
-
-/**
- * The box a governed row's cards get once the holder carries `holderValue`,
- * appending only names the value does not roughly say. `titleChainFacts`
- * gives the roles; the appending is its rule with the rough check.
- */
-function boxWithoutDoubles(leafFirst: TitleChainRow[]): string | undefined {
-  const facts = titleChainFacts(leafFirst);
-  const shortIndex = leafFirst.findIndex((r) => !!r.metadata?.listingShortName?.trim());
-  if (shortIndex < 0) return undefined;
-  let box = leafFirst[shortIndex].metadata!.listingShortName!.trim();
-  const insertIndex = leafFirst.findIndex((r) => r.level === "insert");
-  if (facts.insertIsRole && insertIndex >= 0 && shortIndex > insertIndex) {
-    box = appendUnlessRoughlySaid(box, facts.insertNameValue);
-  }
-  if (facts.parallelLeafValue !== undefined && shortIndex > 0) {
-    box = appendUnlessRoughlySaid(box, facts.parallelLeafValue);
-  }
-  return box;
+/** A chain row as `titleChainFacts` reads it, for the row's roles only. */
+function chainRow(row: Doc<"selectorOptions">): TitleChainRow {
+  return { level: row.level, value: row.value };
 }
 
 export type ShortNamePlan =
   | { action: "unchanged" }
-  | {
-      action: "rewritten" | "overLimit" | "tooManyChildren";
-      next: string;
-      /** Rows below that get the box as their own value, so no name is said twice. */
-      copies: Array<{ id: Id<"selectorOptions">; value: string }>;
-    };
+  | { action: "rewritten" | "overLimit"; next: string };
 
 /** The row's chain up to the setName row (leaf first), and the set's year and maker. */
 async function chainOf(
@@ -298,7 +240,7 @@ async function chainOf(
 
 /**
  * ONE planner for the dry run and the armed run. Reads only; the caller
- * applies `next` and `copies` on an armed run.
+ * writes `next` onto this row alone on an armed run.
  */
 export async function planShortName(
   ctx: { db: QueryCtx["db"] },
@@ -313,42 +255,8 @@ export async function planShortName(
     : undefined;
   const next = rewriteShortName(stored, head, ownParallel);
   if (next === stored) return { action: "unchanged" };
-
-  // The walk below: rows governed by this one (no value of their own), with
-  // the new value in place. `path` is the chain from the current node up,
-  // leaf first, the holder carrying its value.
-  const copies: Array<{ id: Id<"selectorOptions">; value: string }> = [];
-  let tooMany = false;
-  let over = next.length > MAX_LISTING_SHORT_NAME_LENGTH;
-  const walk = async (nodeId: Id<"selectorOptions">, path: TitleChainRow[]): Promise<void> => {
-    const children = await ctx.db
-      .query("selectorOptions")
-      .withIndex("by_parent", (q) => q.eq("parentId", nodeId))
-      .take(MAX_CHILDREN + 1);
-    if (children.length > MAX_CHILDREN) {
-      tooMany = true;
-      return;
-    }
-    for (const child of children) {
-      if (!LISTING_SHORT_NAME_LEVELS.has(child.level)) continue;
-      if (child.metadata?.listingShortName?.trim()) continue;
-      const childChain = [chainRow(child), ...path];
-      const atRead = titleChainFacts(childChain).listingShortName;
-      const fixed = boxWithoutDoubles(childChain);
-      if (fixed !== undefined && fixed !== atRead) {
-        if (fixed.length > MAX_LISTING_SHORT_NAME_LENGTH) over = true;
-        copies.push({ id: child._id, value: fixed });
-        await walk(child._id, [chainRow(child, fixed), ...path]);
-      } else {
-        await walk(child._id, childChain);
-      }
-    }
-  };
-  await walk(row._id, [chainRow(row, next), ...chain.slice(1).map((r) => chainRow(r))]);
-
-  if (tooMany) return { action: "tooManyChildren", next, copies };
-  if (over) return { action: "overLimit", next, copies };
-  return { action: "rewritten", next, copies };
+  if (next.length > MAX_LISTING_SHORT_NAME_LENGTH) return { action: "overLimit", next };
+  return { action: "rewritten", next };
 }
 
 // ── Functions ───────────────────────────────────────────────────────────────
@@ -359,8 +267,6 @@ const countsValidator = v.object({
   rewritten: v.number(),
   unchanged: v.number(),
   overLimit: v.number(),
-  tooManyChildren: v.number(),
-  copiedDown: v.number(),
   keptExisting: v.number(),
 });
 type Counts = {
@@ -369,8 +275,6 @@ type Counts = {
   rewritten: number;
   unchanged: number;
   overLimit: number;
-  tooManyChildren: number;
-  copiedDown: number;
   keptExisting: number;
 };
 function emptyCounts(): Counts {
@@ -380,8 +284,6 @@ function emptyCounts(): Counts {
     rewritten: 0,
     unchanged: 0,
     overLimit: 0,
-    tooManyChildren: 0,
-    copiedDown: 0,
     keptExisting: 0,
   };
 }
@@ -394,19 +296,17 @@ const sampleValidator = v.object({
   action: v.union(
     v.literal("rewritten"),
     v.literal("overLimit"),
-    v.literal("tooManyChildren"),
-    v.literal("copiedDown"),
     v.literal("keptExisting"),
   ),
-  before: v.optional(v.string()),
+  before: v.string(),
   after: v.string(),
 });
 type Sample = {
   rowId: Id<"selectorOptions">;
   level: string;
   name: string;
-  action: "rewritten" | "overLimit" | "tooManyChildren" | "copiedDown" | "keptExisting";
-  before?: string;
+  action: "rewritten" | "overLimit" | "keptExisting";
+  before: string;
   after: string;
 };
 
@@ -465,22 +365,7 @@ export const backfillListingShortNamesPage = internalMutation({
       const action = plan.action === "rewritten" && args.rewriteExisting !== true ? "keptExisting" : plan.action;
       counts[action] += 1;
       sample({ rowId: row._id, level: row.level, name: row.value, action, before: stored, after: plan.next });
-      if (action !== "rewritten") continue;
-      counts.copiedDown += plan.copies.length;
-      for (const copy of plan.copies) {
-        const target = await ctx.db.get(copy.id);
-        sample({
-          rowId: copy.id,
-          level: target?.level ?? "",
-          name: target?.value ?? "",
-          action: "copiedDown",
-          after: copy.value,
-        });
-      }
-      if (armed) {
-        await writeShortName(ctx, row._id, plan.next);
-        for (const copy of plan.copies) await writeShortName(ctx, copy.id, copy.value);
-      }
+      if (action === "rewritten" && armed) await writeShortName(ctx, row._id, plan.next);
     }
     return { armed, counts, samples, isDone: page.isDone, continueCursor: page.continueCursor };
   },

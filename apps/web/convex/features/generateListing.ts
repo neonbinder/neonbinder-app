@@ -51,6 +51,7 @@
  */
 
 import { LISTING_TITLE_MAX } from "./listingLimits";
+import { variantTypeKindFromTitle } from "../variantRole";
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
 
 export type ListingCardInputs = {
@@ -247,9 +248,14 @@ export function rookieAsRc(name: string): string {
   return name.replace("Rookie", "RC");
 }
 
+/**
+ * A parallel name that names a parallel: not blank, and not the Base kind's
+ * word ("Base", "Bases"), read through the role helper (NEO-334), never a
+ * literal here.
+ */
 function isRealParallel(inputs: ListingCardInputs): boolean {
   const name = inputs.parallelName?.trim();
-  return !!name && name.toLowerCase() !== "base";
+  return !!name && variantTypeKindFromTitle(name) !== "base";
 }
 
 /** Lowercased whitespace-delimited words of a string. */

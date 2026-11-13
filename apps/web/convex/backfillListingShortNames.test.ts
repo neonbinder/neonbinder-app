@@ -8,7 +8,8 @@
  * Pinned: dry run by default; an armed call on an unarmed deployment is
  * refused; rewriting needs `rewriteExisting: true`; the two worked examples;
  * a second run writes nothing; a name the text already says in another
- * spelling is not appended again at read time (insert and parallel); a value
+ * spelling is not appended again at read time (insert and parallel), and only
+ * the row carrying the value is ever written; a value
  * over 80 is reported and not written; only `metadata.listingShortName`
  * changes (other keys, `lastUpdated` and every card kept).
  */
@@ -18,8 +19,8 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
-import { titleChainFacts } from "./listingShortName";
-import { CONFIRM_TOKEN, ENV_FLAG, rewriteShortName, roughlySays } from "./backfillListingShortNames";
+import { roughlySays, titleChainFacts } from "./listingShortName";
+import { CONFIRM_TOKEN, ENV_FLAG, rewriteShortName } from "./backfillListingShortNames";
 import { insertTestCard } from "../lib/testing/card-row";
 
 const modules = (import.meta as unknown as {
@@ -137,6 +138,8 @@ describe("pure rules", () => {
     );
     expect(rewriteShortName("Metal Prismatics", head, "Prismatic")).toBe("2026 Leaf Metal Prismatics");
     expect(rewriteShortName("Metal", head, "Base")).toBe("2026 Leaf Metal");
+    expect(rewriteShortName("Metal", head, " bases ")).toBe("2026 Leaf Metal");
+    expect(rewriteShortName("Metal", head, "Base Refractor")).toBe("2026 Leaf Metal Base Refractor");
   });
 
   test("roughlySays folds case, a plural s and the autograph spellings", () => {
@@ -212,7 +215,7 @@ describe("the approved rewrite", () => {
 
     const result = await t.action(internal.backfillListingShortNames.run, APPROVED);
     expect(result.armed).toBe(true);
-    expect(result.counts).toMatchObject({ withShortName: 2, rewritten: 1, unchanged: 1, copiedDown: 0 });
+    expect(result.counts).toMatchObject({ withShortName: 2, rewritten: 1, unchanged: 1 });
     expect(await valueOf(t, ids.prismatic)).toBe("2026 Leaf Metal 1991 Gold Prospect Auto Prismatic");
     // Silver is a parallel leaf whose text does not say "Silver": its own name follows.
     expect(await valueOf(t, ids.silver)).toBe("2026 Leaf Metal 1991 Gold Prospect Autograph Prismatic Silver");
@@ -238,7 +241,7 @@ describe("the approved rewrite", () => {
     await t.action(internal.backfillListingShortNames.run, APPROVED);
     const after = await allRows(t);
     const second = await t.action(internal.backfillListingShortNames.run, APPROVED);
-    expect(second.counts).toMatchObject({ rewritten: 0, copiedDown: 0, keptExisting: 0 });
+    expect(second.counts).toMatchObject({ rewritten: 0, keptExisting: 0 });
     expect(await allRows(t)).toEqual(after);
   });
 
@@ -271,17 +274,21 @@ describe("no name said twice at read time", () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t);
     vi.stubEnv(ENV_FLAG, "1");
-    // Stored on the Insert TYPE, above the insert row: at read time
-    // `titleChainFacts` would append "1991 Gold Prospects Autographs", since
-    // "Prospect" and "Auto" are not those words.
+    // Stored on the Insert TYPE, above the insert row: `titleChainFacts`
+    // reads "Prospect Auto" as already saying "Prospects Autographs".
     await setValue(t, ids.insertType, "Metal 1991 Gold Prospect Auto");
+    const before = await allRows(t);
     const result = await t.action(internal.backfillListingShortNames.run, APPROVED);
-    expect(result.counts).toMatchObject({ rewritten: 1, copiedDown: 1 });
+    expect(result.counts).toMatchObject({ rewritten: 1 });
 
     expect(await valueOf(t, ids.insertType)).toBe("2026 Leaf Metal 1991 Gold Prospect Auto");
-    // The insert row carries the box as its own value, so nothing is appended.
-    expect(await valueOf(t, ids.insert)).toBe("2026 Leaf Metal 1991 Gold Prospect Auto");
     expect(await boxFor(t, ids.insert)).toBe("2026 Leaf Metal 1991 Gold Prospect Auto");
+    // Only the row carrying the value was written: no row below it.
+    const after = await allRows(t);
+    for (const row of after.rows) {
+      if (row._id === ids.insertType) continue;
+      expect(row, row.value).toEqual(before.rows.find((r) => r._id === row._id));
+    }
     // Its sub-variant still gets its parallel's name: the text never said it.
     expect(await valueOf(t, ids.prismatic)).toBeNull();
     expect(await boxFor(t, ids.prismatic)).toBe("2026 Leaf Metal 1991 Gold Prospect Auto Prismatic");
@@ -294,10 +301,10 @@ describe("no name said twice at read time", () => {
     // On the insert row, above the Prismatic sub-variant.
     await setValue(t, ids.insert, "Metal Gold Prospects Autographs Prismatics");
     const result = await t.action(internal.backfillListingShortNames.run, APPROVED);
-    expect(result.counts).toMatchObject({ rewritten: 1, copiedDown: 1 });
+    expect(result.counts).toMatchObject({ rewritten: 1 });
     const value = "2026 Leaf Metal Gold Prospects Autographs Prismatics";
     expect(await valueOf(t, ids.insert)).toBe(value);
-    expect(await valueOf(t, ids.prismatic)).toBe(value);
+    expect(await valueOf(t, ids.prismatic)).toBeNull();
     expect(await boxFor(t, ids.prismatic)).toBe(value);
   });
 
@@ -307,14 +314,14 @@ describe("no name said twice at read time", () => {
     vi.stubEnv(ENV_FLAG, "1");
     await setValue(t, ids.set, "Metal");
     const result = await t.action(internal.backfillListingShortNames.run, APPROVED);
-    expect(result.counts).toMatchObject({ rewritten: 1, copiedDown: 0 });
+    expect(result.counts).toMatchObject({ rewritten: 1 });
     expect(await boxFor(t, ids.baseType)).toBe("2026 Leaf Metal");
     expect(await boxFor(t, ids.insert)).toBe("2026 Leaf Metal 1991 Gold Prospects Autographs");
     expect(await boxFor(t, ids.prismatic)).toBe("2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic");
     expect(await boxFor(t, ids.silver)).toBe("2026 Leaf Metal Silver");
   });
 
-  test("a row with its own value is never written by the walk above it", async () => {
+  test("a row already holding a full value is kept when a row above it is rewritten", async () => {
     const t = convexTest(schema, modules);
     const ids = await seed(t);
     vi.stubEnv(ENV_FLAG, "1");

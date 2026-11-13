@@ -167,7 +167,7 @@ export function titleChainFacts(
     // above the insert row, the cards still need their insert's name; stored
     // above a parallel leaf, the parallel's. Appended verbatim (the box is the
     // operator's text, and nothing is prepended to it), and skipped when the
-    // value already says every word of it.
+    // value already says it, in any spelling `roughlySays` folds together.
     if (facts.insertIsRole && insertIndex !== undefined && shortIndex > insertIndex) {
       short = appendUnsaid(short, facts.insertNameValue);
     }
@@ -179,11 +179,50 @@ export function titleChainFacts(
   return facts;
 }
 
-/** `text` then `name`, unless `text` already says every word of `name`. */
+/** The autograph spellings a set description uses for one word. */
+const AUTO_WORDS: ReadonlySet<string> = new Set([
+  "au",
+  "auto",
+  "autos",
+  "autograph",
+  "autographs",
+  "autographed",
+]);
+
+/**
+ * A word folded for `roughlySays`: lower-cased, edge punctuation dropped, the
+ * autograph spellings made one word, and a plural "s" dropped (not from "ss",
+ * nor from a word of three letters or fewer).
+ */
+function foldWord(word: string): string {
+  const bare = word.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  if (AUTO_WORDS.has(bare)) return "auto";
+  if (bare.length > 3 && bare.endsWith("s") && !bare.endsWith("ss")) return bare.slice(0, -1);
+  return bare;
+}
+
+function foldedWords(text: string): string[] {
+  return text.split(/\s+/).map(foldWord).filter(Boolean);
+}
+
+/**
+ * NEO-535 — does `text` already say every word of `name`, allowing another
+ * spelling of a word? Case, a plural "s" and the autograph spellings are
+ * folded, so a box reading "Gold Prospect Auto" already says the insert
+ * "Gold Prospects Autographs". The old short names (before NEO-535) named an
+ * insert in exactly these shortened forms, so the read-time append below
+ * would otherwise say the insert twice.
+ */
+export function roughlySays(text: string, name: string): boolean {
+  const wanted = foldedWords(name);
+  if (wanted.length === 0) return false;
+  const present = new Set(foldedWords(text));
+  return wanted.every((w) => present.has(w));
+}
+
+/** `text` then `name`, unless `text` already says it (`roughlySays`). */
 function appendUnsaid(text: string, name: string | undefined): string {
-  const words = (name ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return text;
-  const present = new Set(text.toLowerCase().split(/\s+/).filter(Boolean));
-  if (words.every((w) => present.has(w))) return text;
-  return `${text} ${name!.trim()}`;
+  const trimmed = name?.trim();
+  if (!trimmed || roughlySays(text, trimmed)) return text;
+  return `${text} ${trimmed}`;
 }

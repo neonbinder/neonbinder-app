@@ -30,6 +30,10 @@
  *   npx convex run backfillListingDescriptions:run '{"confirm":"BACKFILL","rewriteExisting":true}'
  *   #    a run stops after ~150 s with `continueCursor`; resume with
  *   npx convex run backfillListingDescriptions:run '{"confirm":"BACKFILL","rewriteExisting":true,"cursor":"<continueCursor>"}'
+ *   #    a page that fails on the transaction read limit wrote nothing (a page
+ *   #    is one transaction): re-run from the last cursor with fewer cards a
+ *   #    page, e.g. 50
+ *   npx convex run backfillListingDescriptions:run '{"confirm":"BACKFILL","rewriteExisting":true,"cursor":"<continueCursor>","numItems":50}'
  *   npx convex env remove ALLOW_CARD_DESCRIPTION_BACKFILL
  *
  *   # 3. verify the steady state: this dry run reports filled 0, rewritten 0
