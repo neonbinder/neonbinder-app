@@ -19,6 +19,7 @@ test(
     });
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
     const generated = new RegExp(`^2024 Topps .*#${num} ${team} Baseball$`);
+    const variationText = "Gold Refractor Image Variation Wearing Sunglasses Holding Bat In Dugout";
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -80,7 +81,7 @@ test(
 
     // ── An over-long variation is saved, but flagged ──
     const variation = page.getByRole("textbox", { name: "Card variation", exact: true });
-    await variation.fill("Gold Refractor Image Variation Wearing Sunglasses Holding Bat In Dugout");
+    await variation.fill(variationText);
     await expect(page.getByText(/a marketplace that caps this field will reject the value/)).toBeVisible();
     await expectAccessible(page, { within: drawer, label: "Card detail drawer, over-long variation warned" });
     await variation.press("Enter");
@@ -110,6 +111,28 @@ test(
     await expect(fixer.getByText("variation text is over the 65-character limit")).toBeVisible();
     await expect(fixer.getByRole("textbox", { name: `Card title for #${num}` })).toHaveValue(generated);
     await expectAccessible(page, { within: fixer, label: "Attention walker, over-long variation" });
+
+    // NEO-535: the fixer's "Left out to fit" note, read from the field's text.
+    // Regenerate builds the title with the saved variation in hand: it cannot
+    // fit (71 characters) and is the one token left out, so the rebuilt title
+    // equals the stored one and the note names the variation. Typing it back
+    // takes the note off at once (the stale-note fix); Regenerate restores both.
+    const fixerTitle = fixer.getByRole("textbox", { name: `Card title for #${num}` });
+    const fixerRegenerate = fixer.getByRole("button", { name: "Regenerate card title" });
+    const fixerLeftOut = fixer.getByText(/^Left out to fit: /);
+    await fixerRegenerate.click();
+    await expect(fixer.getByRole("list", { name: "Title built from" })).toBeVisible();
+    await expect(fixerTitle).toHaveValue(generated);
+    await expect(fixerLeftOut).toHaveText(`Left out to fit: ${variationText}`);
+    await expectAccessible(page, { within: fixer, label: "Attention walker, variation left out of the title" });
+    const rebuilt = await fixerTitle.inputValue();
+    await fixerTitle.fill(`${rebuilt} ${variationText}`);
+    await expect(fixerLeftOut).toHaveCount(0);
+    await fixerRegenerate.click();
+    await expect(fixer.getByText("Regenerate again to replace the title you have typed.")).toBeVisible();
+    await fixerRegenerate.click();
+    await expect(fixerTitle).toHaveValue(rebuilt);
+    await expect(fixerLeftOut).toHaveText(`Left out to fit: ${variationText}`);
 
     await expect(fixer.getByRole("button", { name: /Save \(Enter\)/ })).toBeVisible();
     await fixer.getByRole("textbox", { name: `Card variation for #${num}` }).clear();

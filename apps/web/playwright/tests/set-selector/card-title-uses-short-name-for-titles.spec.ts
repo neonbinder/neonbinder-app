@@ -30,6 +30,12 @@
 //   * The search asserts the one hit by its accessible name, which ends in the
 //     card's number: a title-only search finds nothing for that word.
 //
+// Desktop and mobile - CardDetailPanel and the Attributes panel render the
+// same controls with the same names at phone width; only widths change (the
+// drawer is 95vw on a phone and a 45rem side panel on a desktop, the panel's
+// grid one column instead of two). STEP 3 asserts that one difference with
+// `isMobile`; nothing else branches.
+//
 // R3 - `checklist-title-length-limits-and-fixer` owns the 80-character refusal
 // of a TYPED title and the variation cap; `inserts-1996-score-one-nb-set-two-
 // bsc-sources` drives the wizard's "Set name in titles" box on a real fetch.
@@ -160,6 +166,21 @@ test(
     // Exactly the number: no first name, no sport, no label is reported.
     await expect(leftOut).toHaveText(`Left out to fit: #${numB}`);
     await expectAccessible(page, { within: drawer, label: "Card drawer, number left out to fit" });
+    // Phone vs desktop (the one layout difference in this flow): the drawer is
+    // `w-full max-w-[95vw]` below the sm breakpoint and 45rem above it; the
+    // Attributes panel only goes from one column to two. Same controls, same
+    // names on both, so only the drawer's width is asserted per project, and
+    // the note must sit inside the viewport either way.
+    const viewport = page.viewportSize();
+    const drawerBox = await drawer.boundingBox();
+    if (!viewport || !drawerBox) throw new Error("the drawer and the viewport must be measurable");
+    if (isMobile) {
+      expect(drawerBox.width, "on a phone the drawer takes the width (95vw)").toBeGreaterThan(viewport.width * 0.9);
+    } else {
+      expect(drawerBox.width, "on a desktop the drawer is a side panel").toBeLessThan(viewport.width * 0.8);
+    }
+    await leftOut.scrollIntoViewIfNeeded();
+    await expect(leftOut).toBeInViewport();
 
     // The note follows the field: typing the number back takes it off at once
     // (the title is then over the cap, which the drawer says, and is not saved).

@@ -704,6 +704,63 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
     expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, listingDescription: atCap });
   });
 
+  it("NEO-535: typing the stored description back after an over-cap refusal clears the alert and aria-invalid", async () => {
+    // E2E found it: nothing needs saving once the field is back at the stored
+    // text, so the hook returned at its no-op guard and the refusal stayed up
+    // beside a valid description.
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+    const refusal =
+      "Not saved — that description runs 4,001 characters, past the 4,000 limit. Trim it down and save again.";
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "x".repeat(LISTING_DESCRIPTION_MAX + 1));
+      blurField(description);
+    });
+    expect(await screen.findByText(refusal)).toBeTruthy();
+    expect(description.getAttribute("aria-invalid")).toBe("true");
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "Stored copy");
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(screen.queryByText(refusal)).toBeNull();
+    expect(description.hasAttribute("aria-invalid")).toBe(false);
+  });
+
+  it("NEO-535: the blank-description reason survives the blur after a Cmd+Enter refusal", async () => {
+    // The refusal puts the stored description back, so the blur that follows
+    // commits an unchanged field. That must not wipe the reason it came back.
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+    const reason =
+      "A card needs a description. It's what collectors search, so type one in.";
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "");
+      fireEvent.keyDown(description, { key: "Enter", metaKey: true });
+    });
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(description.value).toBe("Stored copy");
+
+    await act(async () => {
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(screen.getByText(reason)).toBeTruthy();
+    expect(description.getAttribute("aria-invalid")).toBe("true");
+  });
+
   it("NEO-367: notes commit only `notes`, keep line breaks, and clearing sends \"\"", async () => {
     renderPanel({ card: makeCard({ notes: "Short print" }) });
     const notes = screen.getByLabelText("Card notes") as HTMLTextAreaElement;
