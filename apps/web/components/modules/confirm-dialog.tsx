@@ -1,13 +1,21 @@
 import { useEffect, useRef, type ReactNode } from "react";
-import NeonButton from "./NeonButton";
+import NeonButton, { type NeonButtonVariant } from "./NeonButton";
 
 interface ConfirmDialogProps {
   /** Question form, e.g. "Abort run 3f2a1b8c?" — becomes the dialog's name. */
   title: string;
   /** What confirming actually does, in one or two sentences. */
   description: string;
-  /** Label on the destructive button, e.g. "Yes, Abort". */
+  /** Label on the confirm button, e.g. "Yes, Abort". */
   confirmLabel: string;
+  /**
+   * The confirm button's colour. Default `negative` (Show-Sign Pink): the
+   * confirm takes something away, and Cancel beside it is cyan (`secondary`)
+   * so the two read apart. A confirm that adds or applies rather than takes
+   * away passes `primary` (green); Cancel is then the pink every cancel
+   * wears (DESIGN.md, NeonButton).
+   */
+  confirmVariant?: NeonButtonVariant;
   /** Same button while `busy`, e.g. "Aborting...". */
   busyLabel: string;
   /** True while the confirmed action is in flight. Drives BOTH `disabled` and the label. */
@@ -79,6 +87,7 @@ export function ConfirmDialog({
   title,
   description,
   confirmLabel,
+  confirmVariant = "negative",
   busyLabel,
   busy,
   error,
@@ -206,8 +215,11 @@ export function ConfirmDialog({
             {children}
           </div>
         )}
-        <div className="flex gap-3">
-          <NeonButton variant="negative" type="button" onClick={onConfirm} disabled={busy}>
+        {/* Side by side from Tailwind's `sm` (640px) up; below it the two stack,
+            full width, so a long label never pushes a button past the
+            dialog's edge on a phone. */}
+        <div className="flex flex-col gap-3 sm:flex-row">
+          <NeonButton variant={confirmVariant} type="button" onClick={onConfirm} disabled={busy}>
             {/* Label keyed off the SAME condition as `disabled` (NEO-128): the
                 E2E driver cannot read `enabled` on web, so the label is the only
                 evidence that the control is inert. */}
@@ -215,7 +227,8 @@ export function ConfirmDialog({
           </NeonButton>
           <NeonButton
             ref={cancelRef}
-            variant="secondary"
+            // Pink is cancel too, unless the confirm already wears it.
+            variant={confirmVariant === "negative" ? "secondary" : "negative"}
             type="button"
             onClick={onCancel}
             disabled={busy}

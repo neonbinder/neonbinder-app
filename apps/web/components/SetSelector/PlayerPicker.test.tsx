@@ -100,6 +100,7 @@ import {
   PLAYER_ON_EVERY_CARD_HEADING,
   ALSO_ON_THIS_CARD_HEADING,
   DEFAULT_PLAYER_PICKER_LABELS,
+  REMOVE_UNNAMED_PLAYER,
   type ResolvedPlayerPickerLabels,
 } from "./player-picker-labels";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -187,6 +188,30 @@ describe("PlayerPicker", () => {
     renderPicker({ value: [pid("p1")] });
 
     expect(screen.getByLabelText("Player: Loading…")).toBeTruthy();
+  });
+
+  it("names a not-yet-loaded chip's × plainly, never by its raw id (NEO-528)", () => {
+    currentSelectedRows = undefined;
+    for (const labels of [undefined, EVERY_CARD_PLAYER_PICKER_LABELS]) {
+      const { unmount } = renderPicker({ value: [pid("k17abc")], labels });
+      const x = screen.getByRole("button", { name: REMOVE_UNNAMED_PLAYER });
+      expect(x.getAttribute("aria-label")).not.toContain("k17abc");
+      expect(document.body.textContent).not.toContain("k17abc");
+      unmount();
+    }
+    expect(REMOVE_UNNAMED_PLAYER).toBe("Remove this player");
+  });
+
+  it("draws a chip filled by default, and outlined (no chip fill) when asked (NEO-528)", () => {
+    currentSelectedRows = [makePlayer("p1", "Mike Trout")];
+    const { unmount } = renderPicker({ value: [pid("p1")] });
+    const filled = screen.getByLabelText("Player: Mike Trout").parentElement!;
+    expect(filled.className.split(/\s+/)).toContain("bg-chip");
+    unmount();
+    renderPicker({ value: [pid("p1")], chipLook: "outline" });
+    const outlined = screen.getByLabelText("Player: Mike Trout").parentElement!;
+    expect(outlined.className.split(/\s+/)).not.toContain("bg-chip");
+    expect(outlined.className.split(/\s+/)).toEqual(expect.arrayContaining(["border", "border-control"]));
   });
 
   it("clicking a chip's × button removes it via onChange", () => {

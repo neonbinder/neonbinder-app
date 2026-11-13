@@ -20,6 +20,7 @@ import { TOKENS, tokenHex } from "../../src/theme/tokens";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
 import SportSwitch from "./SportSwitch";
 import {
+  REMOVE_UNNAMED_PLAYER,
   resolvePlayerPickerLabels,
   type PlayerPickerLabels,
 } from "./player-picker-labels";
@@ -245,6 +246,7 @@ export default function PlayerPicker({
   labels: labelsProp,
   ariaDescribedBy,
   roomyTriggerOnPhones = false,
+  chipLook = "filled",
 }: {
   value: Array<Id<"players">>;
   onChange: (next: Array<Id<"players">>) => void;
@@ -276,6 +278,13 @@ export default function PlayerPicker({
    * the compact 24px box everywhere.
    */
   roomyTriggerOnPhones?: boolean;
+  /**
+   * NEO-528 — how a chip is drawn. `filled` (the chip grey) for a value that
+   * is saved as it is picked; `outline` (a clear chip with a solid edge) for a
+   * pick that is only a choice until an action stores it, so it never reads
+   * as a stored chip beside it (the "Player on every card" pick).
+   */
+  chipLook?: "filled" | "outline";
 }) {
   const labels = resolvePlayerPickerLabels(labelsProp);
   const { mode } = useTheme();
@@ -657,7 +666,9 @@ export default function PlayerPicker({
       {value.map((id) => (
         <span
           key={id}
-          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-chip text-xs"
+          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs ${
+            chipLook === "outline" ? "border border-control text-ink" : "bg-chip"
+          }`}
         >
           <span
             className="truncate max-w-[140px]"
@@ -676,7 +687,11 @@ export default function PlayerPicker({
             type="button"
             disabled={disabled}
             onClick={() => removeChip(id)}
-            aria-label={labels.remove(labelById.get(id as unknown as string) ?? id)}
+            // While the name loads, a plain name rather than the raw id.
+            aria-label={(() => {
+              const name = labelById.get(id as unknown as string);
+              return name === undefined ? REMOVE_UNNAMED_PLAYER : labels.remove(name);
+            })()}
             // NEO-356: on the chip's grey, pink TEXT is 3:1 in dark and ink-3 is
             // 3.9:1 (tokens.ts TEXT_NEVER_ON). Quiet ink-2 at rest; under the
             // pointer or focus the × takes a pink FILL with black ink (6:1 in

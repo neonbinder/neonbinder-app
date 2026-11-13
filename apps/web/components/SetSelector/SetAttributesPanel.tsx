@@ -926,7 +926,9 @@ export default function SetAttributesPanel({
           `expanded` branch so a run's ledger stays on screen when the panel
           is collapsed, until it is dismissed; the control draws its section
           only while expanded. Keyed on the row so a confirm or a finished run
-          never carries over to the next one. */}
+          never carries over to the next one. Its "Saved…" / "Cleared…"
+          notes are its own status line, beside its actions, not this panel's
+          toast (pinned to the top of the viewport, a screen away on a phone). */}
       <EveryCardPlayerControl
         key={`every-card-player-${selectorOptionId}`}
         variantId={selectorOptionId}
@@ -934,7 +936,6 @@ export default function SetAttributesPanel({
         rowName={row.value}
         sportId={ancestorSportId}
         expanded={expanded}
-        onToast={showToast}
         onDismissedCollapsed={() => expandToggleRef.current?.focus({ preventScroll: true })}
       />
 
@@ -2115,7 +2116,7 @@ function SetTeamRow({
           whose save reaches beyond the row, and that has to be readable
           before the pick, not discoverable after it. gray-400 on this
           ground clears 4.5:1 (the pair every sub-line in this panel uses). */}
-      <p id={hintId} className="text-[10px] text-ink-3">
+      <p id={hintId} className="text-xs text-ink-3">
         {teamHintCopy(level)}
       </p>
       {confirm && (

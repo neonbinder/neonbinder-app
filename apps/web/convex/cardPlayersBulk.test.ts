@@ -501,6 +501,7 @@ describe("paging, cursors and refusals", () => {
       const p2 = await admin.mutation(fn, { ...args, cursor: p1.cursor });
       expect(p2.targetId).toBe(fx.goldId);
       expect(p2.cursor).not.toBeNull();
+      // Blue holds a card, so the run would walk it (an empty row is not walked).
       const blue = await t.run(async (ctx) =>
         ctx.db.insert("selectorOptions", {
           level: "insert",
@@ -508,6 +509,7 @@ describe("paging, cursors and refusals", () => {
           platformData: {},
           children: [],
           parentId: fx.parallelsTypeId,
+          cardCount: 1,
           lastUpdated: NOW,
         }),
       );

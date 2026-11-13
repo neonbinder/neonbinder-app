@@ -5,7 +5,7 @@
  * is a change here. The names come from
  * `components/SetSelector/player-picker-labels.ts` (`ALSO_PICTURED_PICKER_LABELS`,
  * `EVERY_CARD_PLAYER_PICKER_LABELS`, `EVERY_CARD_PLAYER_ACTION_LABELS`) and
- * `EveryCardPlayerControl.tsx` (toasts, confirms, the run ledger).
+ * `EveryCardPlayerControl.tsx` (its status line, confirms, the run ledger).
  *
  * The collector's words for the same thing (the binder's "Include cameos",
  * the Cameo tag, "<name> is a cameo on this card", "Cameos: N have, N
@@ -35,7 +35,8 @@ export const ALSO_PICTURED = {
  * The Attributes panel's "Player on every card" section (round 3: a stored
  * player and cameos on the row, at any level, that every new card beneath is
  * born with), as its words read. Its hint and its cameo confirm quote the
- * drawer's heading "Also on this card", so locate by role, never by that text.
+ * drawer's heading ("Also on this card", in quotes), so locate by role, never
+ * by that text.
  */
 export const EVERY_CARD_PLAYER = {
   /** The section's heading, and its region's name. */
@@ -43,10 +44,13 @@ export const EVERY_CARD_PLAYER = {
   /** The stored lines' labels (plain text, beside the chips). */
   playerLine: "Player:",
   cameoLine: "Cameos:",
-  /** The picker: trigger (visible "+ Choose who"), its search and an option. */
+  /** A chosen pick not stored yet: this label, then the picker's outlined chip. */
+  pickedLine: "Picked:",
+  /** The picker: trigger (visible "+ Choose who"), its search, an option, and its chip's ×. */
   trigger: "Choose who goes on every card",
   search: "Find who goes on every card",
   option: (name: string) => `Choose ${name}`,
+  clearPick: (name: string) => `Clear ${name} as the choice`,
   /** Green: store the pick as the row's player. Blue outline: as a cameo. */
   addPlayer: "Add to every card",
   addCameo: "Add as cameo",
@@ -55,12 +59,17 @@ export const EVERY_CARD_PLAYER = {
   stopCameo: (name: string) => `Stop adding ${name} as a cameo on new cards`,
   /** A value stored on a row above, muted, with no × ("Ken Griffey Jr. (from 2024 Topps)"); one text node. */
   inherited: (fromRow: string, names: string) => `${names} (from ${fromRow})`,
-  /** Confirm titles (cards beneath) and their yes buttons; one yes is a prefix of the other, so `exact: true`. */
+  /**
+   * Confirm titles (cards beneath; the title names the player) and their yes
+   * buttons (green, beside a pink Cancel). Worded apart from the two actions.
+   */
   askPlayer: (name: string, scope: string) => `Add ${name} to every card in ${scope}?`,
   askCameo: (name: string, scope: string) => `Add ${name} as a cameo on every card in ${scope}?`,
-  yesPlayer: (name: string) => `Yes, add ${name}`,
-  yesCameo: (name: string) => `Yes, add ${name} as a cameo`,
-  /** The panel's toasts (its polite status line). */
+  yesPlayer: "Yes, add them to every card",
+  yesCameo: "Yes, add them as a cameo",
+  /** The section's status line while its stored values load; both actions wait. */
+  checking: "Checking…",
+  /** The section's notes, on its status line beside the actions. */
   saved: (name: string) => `Saved, every new card gets ${name}`,
   savedCameo: (name: string) => `Saved, every new card gets ${name} as a cameo`,
   cleared: (name: string) => `Cleared, new cards won't get ${name}; cards that have them keep them`,

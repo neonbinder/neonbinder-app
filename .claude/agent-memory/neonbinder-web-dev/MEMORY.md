@@ -221,3 +221,4 @@
 - [Segmented switch is a radiogroup](reference_segmented_switch_is_a_radiogroup.md) — one-of-two pill = roving radiogroup; reserve the check slot; padded track keeps focus ring off the cyan fill
 - [t.run returns undefined as null](reference_convex_test_run_returns_undefined_as_null.md) — a bare optional field returned from t.run comes back null; `?? null` + toBeNull
 - [useConvex mock must be stable](reference_useconvex_mock_must_be_stable.md) — fresh client per render loops an effect listing `convex`; bare 5s timeout; hoist the mock client
+- [Split text into spans: RTL vs Playwright](reference_split_text_into_spans_breaks_rtl_gettext_not_playwright.md) — styled child spans keep Playwright getByText(exact) green, break RTL getByText; use a whole-text matcher

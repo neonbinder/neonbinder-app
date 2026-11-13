@@ -289,15 +289,14 @@ vi.mock("./EveryCardPlayerControl", () => ({
     rowName,
     sportId,
     expanded,
-    onToast,
     onDismissedCollapsed,
+    ...rest
   }: {
     variantId: string;
     level: string;
     rowName: string;
     sportId?: string;
     expanded: boolean;
-    onToast?: (message: string) => void;
     onDismissedCollapsed?: () => void;
   }) => (
     <div
@@ -307,12 +306,10 @@ vi.mock("./EveryCardPlayerControl", () => ({
       data-row-name={rowName}
       data-sport-id={sportId ?? ""}
       data-expanded={String(expanded)}
+      data-other-props={Object.keys(rest).sort().join(",")}
     >
       <button type="button" onClick={() => onDismissedCollapsed?.()}>
         Stub dismiss collapsed
-      </button>
-      <button type="button" onClick={() => onToast?.("Saved · every new card gets Stub Player")}>
-        Stub toast
       </button>
     </div>
   ),
@@ -3944,11 +3941,11 @@ describe("SetAttributesPanel — Player on every card (NEO-528)", () => {
     expect(stub.compareDocumentPosition(prefix) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it("its toasts go to the panel's status region", () => {
+  it("keeps its notes to itself: the panel hands it no toast (its status line sits beside its actions)", () => {
     currentRow = makeRow({ level: "sport", value: "Baseball" });
     renderPanel();
-    fireEvent.click(screen.getByRole("button", { name: "Stub toast" }));
-    expect(screen.getByRole("status").textContent).toBe("Saved · every new card gets Stub Player");
+    const stub = screen.getByLabelText(STUB);
+    expect(stub.getAttribute("data-other-props")).toBe("");
   });
 
   it("stays mounted while the panel is collapsed, told so (a running ledger must not vanish)", () => {

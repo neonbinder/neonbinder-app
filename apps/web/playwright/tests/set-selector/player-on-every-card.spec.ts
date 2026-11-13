@@ -7,14 +7,16 @@
 // a value stored on a row above shows on the rows beneath as inherited.
 //
 // The flow, on a hand-made set `pev<token>` > Insert > Base with no cards:
-// - Q, "Add to every card": no confirm, the "Saved" toast, the section reads
-//   "Player:" with Q's chip.
+// - The section says "Checking…" while its stored values load, and both
+//   actions wait for it. Q chosen reads "Picked:" until stored.
+// - Q, "Add to every card": no confirm, the "Saved" note beside the actions,
+//   the section reads "Player:" with Q's chip and no "Picked:" any more.
 // - Two cards quick-added with no player are born with Q (drawer); one
 //   quick-added naming R keeps R and gets no Q.
 // - Q2, "Add as cameo" with three cards present: confirm, ledger "Added Q2 as
 //   a cameo on 3 cards"; a card's drawer lists Q2 under "Also on this card" and
 //   its description carries "Cameo: Q2".
-// - × on Q's chip: the "Cleared" toast, focus back on the picker;
+// - × on Q's chip: the "Cleared" note, focus back on the picker;
 //   the next quick-added card has no player (and is born with the stored
 //   cameo Q2), the first card still has Q.
 // - Q stored on the SET row (the cards beneath are brought along: only the
@@ -159,23 +161,33 @@ test(
     const trigger = section.getByRole("button", { name: E.trigger, exact: true });
     const addPlayer = section.getByRole("button", { name: E.addPlayer, exact: true });
     const addCameo = section.getByRole("button", { name: E.addCameo, exact: true });
-    const toast = (text: string) => page.getByRole("status").filter({ hasText: text });
+    // The section's own status line: "Checking…" while it loads, then a
+    // save's or a clear's note, beside the actions (not the panel's toast).
+    const note = (text: string) => section.getByRole("status").filter({ hasText: text });
+    const picked = section.getByText(E.pickedLine, { exact: true });
     const choose = async (name: string) => {
       await trigger.click();
       await page.getByRole("textbox", { name: E.search, exact: true }).fill(name);
       await page.getByRole("option", { name: E.option(name), exact: true }).click();
+      // The pick shows as a pick, not as a stored value, until an action stores it.
+      await expect(section.getByRole("button", { name: E.clearPick(name), exact: true })).toBeVisible();
+      await expect(picked).toBeVisible();
+      // Enabled once the stored values have loaded ("Checking…" is gone).
       await expect(addPlayer).toBeEnabled();
+      await expect(section.getByText(E.checking, { exact: true })).toHaveCount(0);
     };
 
     // Nothing chosen yet: both actions are refused (aria-disabled).
     await expect(addPlayer).toBeDisabled();
     await expect(addCameo).toBeDisabled();
+    await expect(picked).toHaveCount(0);
 
     // --- Q as the player, no cards: saved with no question ------------------
     await choose(Q);
     await addPlayer.click();
-    await expect(toast(E.saved(Q))).toBeVisible();
+    await expect(note(E.saved(Q))).toBeVisible();
     await expect(page.getByRole("dialog", { name: E.askPlayer(Q, "Base"), exact: true })).toHaveCount(0);
+    await expect(picked).toHaveCount(0);
     await expect(section.getByText(E.playerLine, { exact: true })).toBeVisible();
     await expect(section.getByRole("button", { name: E.stopPlayer(Q), exact: true })).toBeVisible();
     await expectAccessible(page, { within: section, label: "Player on every card, a player stored" });
@@ -213,7 +225,7 @@ test(
     await choose(Q2);
     await addCameo.click();
     const askCameo = page.getByRole("dialog", { name: E.askCameo(Q2, "Base"), exact: true });
-    const yesCameo = askCameo.getByRole("button", { name: E.yesCameo(Q2), exact: true });
+    const yesCameo = askCameo.getByRole("button", { name: E.yesCameo, exact: true });
     await expect(yesCameo).toBeVisible();
     await expectAccessible(page, { within: askCameo, label: "Player on every card, the cameo confirm" });
     await yesCameo.click();
@@ -239,7 +251,7 @@ test(
 
     // --- × on Q's chip: future cards only -----------------------------------
     await section.getByRole("button", { name: E.stopPlayer(Q), exact: true }).click();
-    await expect(toast(E.cleared(Q))).toBeVisible();
+    await expect(note(E.cleared(Q))).toBeVisible();
     await expect(section.getByRole("button", { name: E.stopPlayer(Q), exact: true })).toHaveCount(0);
     await expect(section.getByRole("button", { name: E.stopCameo(Q2), exact: true })).toBeVisible();
     await expect(trigger).toBeFocused();
@@ -266,7 +278,7 @@ test(
     // The scope names the set; it may go on to count its checklists ("pev… (2
     // checklists)"), which is the server's walk, not this spec's claim.
     const askPlayer = page.getByRole("dialog", { name: new RegExp(`^Add ${escapeRe(Q)} to every card in ${escapeRe(SET)}`) });
-    await askPlayer.getByRole("button", { name: E.yesPlayer(Q), exact: true }).click();
+    await askPlayer.getByRole("button", { name: E.yesPlayer, exact: true }).click();
     await expect(askPlayer).toBeHidden();
     const playerLedger = page.getByRole("region", { name: E.added(Q, "1 card"), exact: true });
     await expect(playerLedger.getByRole("heading", { name: E.added(Q, "1 card"), exact: true })).toBeVisible();

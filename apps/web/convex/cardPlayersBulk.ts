@@ -95,9 +95,9 @@ const kindValidator = v.union(v.literal("player"), v.literal("cameo"));
  * The budget is the transaction's ~4,000 database calls (each `get` and each
  * query range is one). A page re-reads its targets first (`bulkTargets`: the
  * walk down, at most `MAX_EVERY_CARD_WALK` rows, one range per row that can
- * have rows beneath it, plus the ancestor chain and each set's Base lookup;
- * under 1,000 calls at the caps; `cardPlayersBulk.defaults.test.ts` counts
- * it). Then,
+ * have rows beneath it, plus the ancestor chain, each set's Base lookup and
+ * at most `MAX_UNCOUNTED_PROBES` empty-row probes; under 1,000 calls at the
+ * caps; `cardPlayersBulk.defaults.test.ts` counts it). Then,
  * per card, the worst case:
  *
  *   - the title and description before and after: the card's own players
@@ -119,6 +119,12 @@ export const BULK_PAGE = 50;
 export const MAX_EVERY_CARD_TARGETS = 500;
 /** Rows the walk down reads at most (card-holding or not). */
 export const MAX_EVERY_CARD_WALK = 500;
+/**
+ * Never-counted rows (`cardCount` absent: a hand-made row nobody has added a
+ * card to yet) the walk probes for a first card, one indexed `.first()` each.
+ * Past it such a row stays unknown and is walked as before.
+ */
+export const MAX_UNCOUNTED_PROBES = 100;
 /** Variant types read under one set when finding its Base or its Parallel types. */
 const MAX_VARIANT_TYPES = 100;
 /** Depth cutoff of the walk up; the hierarchy is seven levels. */
@@ -328,7 +334,7 @@ const targetValidator = v.object({
   name: v.string(),
   /** The row asked about or a row beneath it, or one of their parallels. */
   role: v.union(v.literal("home"), v.literal("parallel")),
-  /** Home cards on this row (`selectorOptions.cardCount`); absent = never counted. */
+  /** Home cards on this row (`selectorOptions.cardCount`); absent = unknown (never counted, holds cards). */
   cardCount: v.optional(v.number()),
 });
 
@@ -339,6 +345,12 @@ type Candidate = {
   role: "home" | "parallel";
   /** A row between this one and the root stores its own value of that kind. */
   overridden: Record<CardPlayerDefaultKind, boolean>;
+  /**
+   * Home cards on the row: its `cardCount`, or 0 when it was never counted
+   * and a probe found no card on it. Absent = unknown (never counted, and
+   * either a probe found a card or the probes ran out).
+   */
+  cards?: number;
 };
 
 /**
@@ -424,11 +436,24 @@ async function everyCardWalk(
   }
 
   const candidates: Candidate[] = [];
+  let probes = 0;
   for (const { row, role } of found) {
     const chain = await cardPlayerDefaultsChain(ctx, row._id, cache);
     const at = chain.findIndex((r) => r._id === root._id);
     if (at === -1) continue; // not reached through the root after all
     const nearer = chain.slice(0, at);
+    // A row never counted is most often a hand-made one with no cards yet:
+    // one indexed read tells "empty" from "unknown", so an empty checklist
+    // is not walked (or confirmed) as if it might hold cards.
+    let cards = row.cardCount;
+    if (cards === undefined && probes < MAX_UNCOUNTED_PROBES) {
+      probes++;
+      const first = await ctx.db
+        .query("cardChecklist")
+        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", row._id))
+        .first();
+      if (first === null) cards = 0;
+    }
     candidates.push({
       row,
       role,
@@ -436,6 +461,7 @@ async function everyCardWalk(
         player: nearer.some((r) => ownCardPlayerDefault(r, "player") !== undefined),
         cameo: nearer.some((r) => ownCardPlayerDefault(r, "cameo") !== undefined),
       },
+      ...(cards !== undefined ? { cards } : {}),
     });
   }
   return { root, candidates, truncated };
@@ -444,7 +470,10 @@ async function everyCardWalk(
 /**
  * The card-holding rows a run of `kind` from `rootId` walks, in order, and
  * how many rows it leaves out because a nearer row stores its own value of
- * that kind (`overridden`). `truncated` when the walk hit a cap.
+ * that kind (`overridden`). `truncated` when the walk hit a cap. A row known
+ * to hold no cards (`cardCount` 0, or never counted and probed empty) is not
+ * walked: an empty checklist has nothing to bring along, so a run over only
+ * such rows has no targets and the panel just saves.
  */
 export async function bulkTargets(
   ctx: ReadCtx,
@@ -459,11 +488,12 @@ export async function bulkTargets(
       overridden++;
       continue;
     }
+    if (c.cards === 0) continue;
     targets.push({
       _id: c.row._id,
       name: c.row.value,
       role: c.role,
-      ...(c.row.cardCount !== undefined ? { cardCount: c.row.cardCount } : {}),
+      ...(c.cards !== undefined ? { cardCount: c.cards } : {}),
     });
   }
   return { targets, truncated, overridden };
@@ -622,8 +652,9 @@ const namedPlayerValidator = v.object({ _id: v.id("players"), name: v.string() }
  *     row's id and name. What a new card here gets when `own` is empty.
  *   - `cardCount`: home cards on every card-holding row a run from here could
  *     reach; `cardsToWalk`: of those, the cards a run of each kind would walk
- *     (a nearer row's own value leaves its cards out). Both absent when the
- *     walk hit a cap or a row was never counted (unknown, not zero).
+ *     (a nearer row's own value leaves its cards out). A row never counted
+ *     is probed for a first card (none: 0). Both absent when the walk hit a
+ *     cap or a never-counted row holds cards (unknown, not zero).
  *
  * Null when the row is gone. Reads at most `MAX_EVERY_CARD_WALK` rows below.
  */
@@ -701,7 +732,7 @@ export const cardPlayerDefaults = query({
     const toWalk = { player: 0, cameo: 0 };
     let known = !truncated;
     for (const c of candidates) {
-      const n = c.row.cardCount;
+      const n = c.cards;
       if (n === undefined) {
         known = false;
         break;

@@ -55,6 +55,7 @@ vi.mock("./PlayerPicker", () => ({
     disabled,
     ariaDescribedBy,
     roomyTriggerOnPhones,
+    chipLook,
   }: {
     value: string[];
     onChange: (next: string[]) => void;
@@ -62,13 +63,15 @@ vi.mock("./PlayerPicker", () => ({
     disabled?: boolean;
     ariaDescribedBy?: string;
     roomyTriggerOnPhones?: boolean;
+    chipLook?: string;
   }) => (
     <div
       aria-label={labels?.root}
       data-described-by={ariaDescribedBy ?? ""}
       data-roomy={roomyTriggerOnPhones ? "yes" : "no"}
+      data-chip-look={chipLook ?? "filled"}
     >
-      <span>Picked: {value.join(",")}</span>
+      <span>Stub value: {value.join(",")}</span>
       <button type="button" disabled={disabled} aria-label={labels?.trigger}>
         + Choose who
       </button>
@@ -85,11 +88,13 @@ vi.mock("./PlayerPicker", () => ({
 import EveryCardPlayerControl, {
   BULK_ADD_CAMEO_LABEL,
   BULK_ADD_PLAYER_LABEL,
+  BULK_CHECKING_TEXT,
   BULK_CHECKLIST_CHANGED_TEXT,
   BULK_CHOOSE_FIRST_TEXT,
   BULK_COUNTING_TEXT,
   BULK_TRUNCATED_TEXT,
   BULK_DISMISS_LABEL,
+  BULK_PICKED_LABEL,
   BULK_PLAYER_GONE_TEXT,
   BULK_STOP_LABEL,
   applyPage,
@@ -209,10 +214,10 @@ describe("Player on every card — the words", () => {
       "added to 1 card, 1 card title updated",
     );
     expect(lineResultText("player", counts({ scanned: 3, changed: 1, skippedSport: 2 }), "X")).toBe(
-      "added to 1 card, skipped 2 that play another sport",
+      "added to 1 card, skipped 2 from a sport X doesn't play",
     );
     expect(lineResultText("player", counts({ scanned: 1, skippedSport: 1 }), "X")).toBe(
-      "nothing new, skipped 1 that plays another sport",
+      "nothing new, skipped 1 from a sport X doesn't play",
     );
   });
 
@@ -222,7 +227,7 @@ describe("Player on every card — the words", () => {
     ).toBe("added to 45 cards, 2 already listed, skipped 2 of Dan Marino's own, skipped 1 that is full (20 players)");
     expect(
       lineResultText("cameo", counts({ scanned: 9, changed: 4, skippedFull: 2, skippedSport: 3 }), "Dan Marino"),
-    ).toBe("added to 4 cards, skipped 2 that are full (20 players), skipped 3 that play another sport");
+    ).toBe("added to 4 cards, skipped 2 that are full (20 players), skipped 3 from a sport Dan Marino doesn't play");
     expect(lineResultText("cameo", counts({ scanned: 1, skippedPrimary: 1 }), "Chris")).toBe(
       "nothing new, skipped 1 of Chris' own",
     );
@@ -235,7 +240,7 @@ describe("Player on every card — the words", () => {
 
   it("the hint names both actions, and says 'in this parallel' on a parallel", () => {
     expect(bulkHintText("insert")).toBe(
-      'Same face on every card? Pick them once. "Add to every card" makes them the player wherever nobody\'s there yet; "Add as cameo" tucks them under Also on this card. New cards get them too.',
+      'Same face on every card? Pick them once. "Add to every card" makes them the player wherever nobody\'s there yet; "Add as cameo" tucks them under "Also on this card". New cards get them too.',
     );
     expect(bulkHintText("sport")).toBe(bulkHintText("insert"));
     expect(bulkHintText("parallel")).toMatch(/^Same face on every card in this parallel\? Pick them once\./);
@@ -246,7 +251,7 @@ describe("Player on every card — the words", () => {
       title: "Add Ken Griffey Jr. to every card in Base and its 2 parallels?",
       description:
         "Ken Griffey Jr. becomes the player on every card that doesn't have one yet. Cards with a player stay put; titles you haven't edited pick up Ken Griffey Jr.'s name. New cards get Ken Griffey Jr. too.",
-      confirmLabel: "Yes, add Ken Griffey Jr.",
+      confirmLabel: "Yes, add them to every card",
     });
     const replacing = confirmCopy({
       kind: "player",
@@ -264,8 +269,8 @@ describe("Player on every card — the words", () => {
     expect(confirmCopy({ kind: "cameo", playerName: "Dan Marino", scope: "Base", overridden: 1 })).toEqual({
       title: "Add Dan Marino as a cameo on every card in Base?",
       description:
-        "Each card gets Dan Marino under Also on this card. Cards that are Dan Marino's own, or already have them, are left as they are. New cards get Dan Marino too. 1 checklist here has its own cameos and is left alone.",
-      confirmLabel: "Yes, add Dan Marino as a cameo",
+        `Each card gets Dan Marino under "Also on this card". Cards that are Dan Marino's own, or already have them, are left as they are. New cards get Dan Marino too. 1 checklist here has its own cameos and is left alone.`,
+      confirmLabel: "Yes, add them as a cameo",
     });
   });
 
@@ -394,7 +399,13 @@ describe("Player on every card — the ledger steps", () => {
 // The control
 // ---------------------------------------------------------------------------
 
-const onToast = vi.fn();
+/** The section's status line: busy words, then a save's or a clear's note. */
+const sectionStatus = () =>
+  within(screen.getByRole("region", { name: PLAYER_ON_EVERY_CARD_HEADING })).getByRole("status");
+
+/** An element whose whole text (across its child spans) is `text`, and none of whose children is. */
+const byWholeText = (text: string) =>
+  screen.getByText((_, el) => el?.textContent === text && ![...(el?.children ?? [])].some((c) => c.textContent === text));
 
 function props(over: Partial<Parameters<typeof EveryCardPlayerControl>[0]> = {}) {
   return {
@@ -403,7 +414,6 @@ function props(over: Partial<Parameters<typeof EveryCardPlayerControl>[0]> = {})
     rowName: "Base",
     sportId: SPORT,
     expanded: true,
-    onToast,
     ...over,
   };
 }
@@ -443,7 +453,10 @@ async function pickAndPress(button: () => HTMLElement, pick = "Stub pick p1") {
   });
 }
 
-async function confirmRun(label = "Yes, add Dan Marino") {
+const YES_PLAYER = "Yes, add them to every card";
+const YES_CAMEO = "Yes, add them as a cameo";
+
+async function confirmRun(label = YES_PLAYER) {
   const dialog = await screen.findByRole("dialog");
   await act(async () => {
     fireEvent.click(within(dialog).getByRole("button", { name: label }));
@@ -537,10 +550,52 @@ describe("EveryCardPlayerControl", () => {
   it("keeps one player at a time: a second pick replaces the first", () => {
     renderControl();
     fireEvent.click(screen.getByText("Stub pick p1"));
-    expect(screen.getByText("Picked: p1")).toBeTruthy();
+    expect(screen.getByText("Stub value: p1")).toBeTruthy();
     fireEvent.click(screen.getByText("Stub pick p2"));
-    expect(screen.getByText("Picked: p2")).toBeTruthy();
+    expect(screen.getByText("Stub value: p2")).toBeTruthy();
     expect(playerButton().getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("a pick not stored yet is labelled \"Picked:\" and drawn outlined, apart from the stored chips", () => {
+    subscribedDefaults = defaultsWith({ own: { player: { _id: pid("k"), name: "Ken Griffey Jr." }, cameos: [] } });
+    renderControl();
+    // The picker always draws its pick outlined; the label shows only with a pick.
+    expect(screen.getByLabelText(EVERY_CARD_PLAYER_PICKER_LABELS.root).getAttribute("data-chip-look")).toBe("outline");
+    expect(screen.queryByText(BULK_PICKED_LABEL)).toBeNull();
+    fireEvent.click(screen.getByText("Stub pick p1"));
+    expect(screen.getByText(BULK_PICKED_LABEL)).toBeTruthy();
+    expect(BULK_PICKED_LABEL).toBe("Picked:");
+  });
+
+  it("while the stored values load it says \"Checking…\" and holds both actions, names unchanged", () => {
+    subscribedDefaults = undefined;
+    renderControl();
+    expect(sectionStatus().textContent).toBe(BULK_CHECKING_TEXT);
+    expect(BULK_CHECKING_TEXT).toBe("Checking…");
+    fireEvent.click(screen.getByText("Stub pick p1"));
+    for (const button of [playerButton(), cameoButton()]) {
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+      expect(button.getAttribute("aria-busy")).toBe("true");
+      expect((button as HTMLButtonElement).disabled).toBe(false);
+    }
+    // A press asks nothing and stores nothing: the path (save, or confirm) is not known yet.
+    fireEvent.click(playerButton());
+    fireEvent.click(cameoButton());
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("once loaded, the actions are free and the line is quiet", () => {
+    subscribedDefaults = undefined;
+    const { rerender } = renderControl();
+    fireEvent.click(screen.getByText("Stub pick p1"));
+    subscribedDefaults = defaultsWith();
+    rerender(<EveryCardPlayerControl {...props()} />);
+    expect(sectionStatus().textContent).toBe("");
+    expect(playerButton().getAttribute("aria-disabled")).toBeNull();
+    expect(playerButton().getAttribute("aria-busy")).toBeNull();
   });
 
   // --- what is stored, and where the read comes from ----------------------------
@@ -600,8 +655,11 @@ describe("EveryCardPlayerControl", () => {
       },
     });
     renderControl();
-    expect(screen.getByText("Ken Griffey Jr. (from 1989 Upper Deck)")).toBeTruthy();
-    expect(screen.getByText("Jay Buhner, Edgar Martinez (from 1989)")).toBeTruthy();
+    const player = byWholeText("Ken Griffey Jr. (from 1989 Upper Deck)");
+    expect(byWholeText("Jay Buhner, Edgar Martinez (from 1989)")).toBeTruthy();
+    // The value in the panel's quiet ink, where it came from quieter still.
+    expect(within(player).getByText("Ken Griffey Jr.").className).toContain("text-ink-2");
+    expect(within(player).getByText("(from 1989 Upper Deck)").className).toContain("text-ink-3");
     expect(screen.queryByRole("button", { name: /^Stop / })).toBeNull();
   });
 
@@ -615,7 +673,7 @@ describe("EveryCardPlayerControl", () => {
     });
     renderControl();
     expect(screen.queryByText(/Someone Else/)).toBeNull();
-    expect(screen.getByText("Jay Buhner (from 1989 Upper Deck)")).toBeTruthy();
+    expect(byWholeText("Jay Buhner (from 1989 Upper Deck)")).toBeTruthy();
   });
 
   it("with nothing stored here or above, it draws no stored lines", () => {
@@ -638,8 +696,10 @@ describe("EveryCardPlayerControl", () => {
     });
     expect(mockQuery).not.toHaveBeenCalled();
     expect(mutationCalls("cardPlayersBulk.addPlayerToVariant")).toHaveLength(0);
-    expect(onToast).toHaveBeenCalledWith("Saved, every new card gets Dan Marino");
-    expect(screen.getByText("Picked:")).toBeTruthy();
+    expect(sectionStatus().textContent).toBe("Saved, every new card gets Dan Marino");
+    // The pick is stored: the picker is empty again, and nothing reads "Picked:".
+    expect(screen.getByText("Stub value:")).toBeTruthy();
+    expect(screen.queryByText(BULK_PICKED_LABEL)).toBeNull();
   });
 
   it("no cards beneath for a cameo: the cameo toast", async () => {
@@ -651,7 +711,7 @@ describe("EveryCardPlayerControl", () => {
       kind: "cameo",
       playerId: "p2",
     });
-    expect(onToast).toHaveBeenCalledWith("Saved, every new card gets Don Shula as a cameo");
+    expect(sectionStatus().textContent).toBe("Saved, every new card gets Don Shula as a cameo");
   });
 
   it("a cameo of this row's own player is refused beside the buttons before anything is asked", async () => {
@@ -694,6 +754,31 @@ describe("EveryCardPlayerControl", () => {
     expect(mutationCalls("cardPlayersBulk.clearCardPlayerDefault")).toHaveLength(0);
   });
 
+  it("the confirm's yes is the green of adding, beside a pink Cancel", async () => {
+    renderControl();
+    await pickAndPress(playerButton);
+    const dialog = await screen.findByRole("dialog");
+    const fill = (el: HTMLElement) => el.style.getPropertyValue("--nb-fill");
+    expect(fill(within(dialog).getByRole("button", { name: YES_PLAYER }))).toBe("var(--neon-green)");
+    expect(fill(within(dialog).getByRole("button", { name: "Cancel" }))).toBe("var(--neon-pink)");
+  });
+
+  it("the note after a save goes quiet after a few seconds", async () => {
+    vi.useFakeTimers();
+    try {
+      subscribedDefaults = defaultsWith({ cardCount: 0, cardsToWalk: { player: 0, cameo: 0 } });
+      renderControl();
+      await pickAndPress(playerButton);
+      expect(sectionStatus().textContent).toBe("Saved, every new card gets Dan Marino");
+      act(() => {
+        vi.advanceTimersByTime(6000);
+      });
+      expect(sectionStatus().textContent).toBe("");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("an unknown card count asks too", async () => {
     subscribedDefaults = defaultsWith({ cardCount: undefined, cardsToWalk: undefined });
     renderControl();
@@ -711,7 +796,7 @@ describe("EveryCardPlayerControl", () => {
     await pickAndPress(playerButton);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(mutationCalls("cardPlayersBulk.setCardPlayerDefault")).toHaveLength(1);
-    expect(onToast).toHaveBeenCalledWith("Saved, every new card gets Dan Marino");
+    expect(sectionStatus().textContent).toBe("Saved, every new card gets Dan Marino");
   });
 
   it("says who it replaces for new cards", async () => {
@@ -745,14 +830,15 @@ describe("EveryCardPlayerControl", () => {
     // Done: the actions are free again, nothing to stop, and the pick went to the stored chip.
     expect(screen.queryByRole("button", { name: BULK_STOP_LABEL })).toBeNull();
     expect(within(ledger).getByRole("button", { name: BULK_DISMISS_LABEL }).textContent).toBe("Dismiss");
-    expect(screen.getByText("Picked:")).toBeTruthy();
+    expect(screen.getByText("Stub value:")).toBeTruthy();
+    expect(screen.queryByText(BULK_PICKED_LABEL)).toBeNull();
   });
 
   it("a cameo run stores a cameo and walks the cameo pages", async () => {
     pageAnswer = async () => page({ targetIndex: 2, cursor: null, scanned: 3, changed: 3 });
     renderControl();
     await pickAndPress(cameoButton, "Stub pick p2");
-    await confirmRun("Yes, add Don Shula as a cameo");
+    await confirmRun(YES_CAMEO);
     await screen.findByRole("heading", { name: "Added Don Shula as a cameo on 3 cards" });
     expect(mockMutation.mock.calls[0]).toEqual([
       "cardPlayersBulk.setCardPlayerDefault",
@@ -771,7 +857,7 @@ describe("EveryCardPlayerControl", () => {
     };
     renderControl();
     await pickAndPress(cameoButton);
-    await confirmRun("Yes, add Dan Marino as a cameo");
+    await confirmRun(YES_CAMEO);
     await screen.findByRole("heading", { name: /^Stopped before any card changed\./ });
     expect(screen.getByText("Base — Every card can carry at most 20 cameos.")).toBeTruthy();
     expect(mutationCalls("cardPlayersBulk.addCameoToVariant")).toHaveLength(0);
@@ -823,7 +909,7 @@ describe("EveryCardPlayerControl", () => {
     fireEvent.click(screen.getByRole("button", { name: A.stopPlayer("Ken Griffey Jr.") }));
     expect(mutationCalls("cardPlayersBulk.clearCardPlayerDefault")).toHaveLength(1);
     await act(async () => done({ playerId: "k", cameoIds: [] }));
-    expect(onToast).toHaveBeenCalledWith("Cleared, new cards won't get Jay Buhner; cards that have them keep them");
+    expect(sectionStatus().textContent).toBe("Cleared, new cards won't get Jay Buhner; cards that have them keep them");
   });
 
   it("a refused clear says why beside the buttons", async () => {
@@ -836,7 +922,7 @@ describe("EveryCardPlayerControl", () => {
       fireEvent.click(screen.getByRole("button", { name: A.stopPlayer("Ken Griffey Jr.") }));
     });
     expect((await screen.findByRole("alert")).textContent).toBe("That part of the set isn't in NB anymore.");
-    expect(onToast).not.toHaveBeenCalled();
+    expect(sectionStatus().textContent).toBe("");
   });
 
   // --- the run --------------------------------------------------------------------
@@ -862,8 +948,9 @@ describe("EveryCardPlayerControl", () => {
       name: "Stopped, like you asked. So far: added Dan Marino to 50 cards. Run it again to finish; cards already done are skipped.",
     });
     expect(mutationCalls("cardPlayersBulk.addPlayerToVariant")).toHaveLength(1);
-    // The pick stays, so one press finishes the run.
-    expect(screen.getByText("Picked: p1")).toBeTruthy();
+    // The pick stays, so one press finishes the run; still drawn as a pick.
+    expect(screen.getByText("Stub value: p1")).toBeTruthy();
+    expect(screen.getByText(BULK_PICKED_LABEL)).toBeTruthy();
   });
 
   it("a refused page stops the run with the reason in the operator's words", async () => {
@@ -930,12 +1017,14 @@ describe("EveryCardPlayerControl", () => {
   it("mounts its live line before any run, so the start is announced", async () => {
     pageAnswer = () => new Promise(() => {});
     renderControl();
-    const status = screen.getByRole("status");
+    // The run's own line, outside the section (its status line is the other).
+    const liveLine = () => screen.getAllByRole("status").find((el) => !el.closest("section"))!;
+    const status = liveLine();
     expect(status.textContent).toBe("");
     await pickAndPress(playerButton);
     await confirmRun();
     // The same node, now speaking: it was in the page before the run began.
-    expect(screen.getByRole("status")).toBe(status);
+    expect(liveLine()).toBe(status);
     expect(status.textContent).toBe("Adding Dan Marino to every card in Base and its 2 parallels.");
   });
 

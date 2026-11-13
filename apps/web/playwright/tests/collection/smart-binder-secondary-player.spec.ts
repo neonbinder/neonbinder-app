@@ -51,8 +51,8 @@
 // R3: the collector cascade goes through `support/collection.ts`, the set
 // builder drill through `support/set-builder.ts` / `support/cards.ts`, and the
 // set builder's "Also on this card" names through `support/also-pictured.ts`
-// (one place, for the copy). The set builder's whole-checklist control is
-// `set-selector/also-pictured-bulk-every-card`.
+// (one place, for the copy). The set builder's "Player on every card" control
+// is `set-selector/player-on-every-card`.
 import type { Locator, Page } from "@playwright/test";
 import { ALSO_PICTURED, addAlsoPictured } from "../../support/also-pictured";
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton, escapeRe } from "../../support/cards";

@@ -34,6 +34,7 @@ import {
   DEFAULT_ROW_MISSING,
   MAX_EVERY_CARD_TARGETS,
   MAX_EVERY_CARD_WALK,
+  MAX_UNCOUNTED_PROBES,
   alreadyThePlayerMessage,
   bulkTargets,
   wrongSportMessage,
@@ -123,6 +124,12 @@ const rowOf = (t: T, id: RowId) => t.run(async (ctx) => (await ctx.db.get(id))!)
 
 /** Every row a card can sit on, in the fixture. */
 const cardRows = (fx: Tree) => [fx.base, fx.insertsType, fx.ins, fx.gold, fx.parallelsType, fx.silver, fx.base2];
+/**
+ * Of those, the rows that hold cards: a run walks only these (the Inserts
+ * and Parallels types are counted at 0, so there is nothing on them to bring
+ * along).
+ */
+const heldRows = (fx: Tree) => [fx.base, fx.ins, fx.gold, fx.silver, fx.base2];
 const everyRow = (fx: Tree) => [fx.sport, fx.year, fx.brand, fx.set, fx.set2, ...cardRows(fx)];
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -281,7 +288,7 @@ describe("effectiveCardPlayerDefaults: what a new card is born with", () => {
 // ───────────────────────────────────────────────────────────────────────────
 
 describe("everyCardTargets from any level", () => {
-  test("a set walks every card row beneath it, depth first, with roles and counts", async () => {
+  test("a set walks every card row beneath it that holds cards, depth first, with roles and counts", async () => {
     const t = convexTest(schema, modules);
     const fx = await seedTree(t);
     const got = await t
@@ -290,10 +297,8 @@ describe("everyCardTargets from any level", () => {
     expect(got).toEqual({
       targets: [
         { _id: fx.base, name: "Base", role: "home", cardCount: 2 },
-        { _id: fx.insertsType, name: "Inserts", role: "home", cardCount: 0 },
         { _id: fx.ins, name: "Profiles Ink", role: "home", cardCount: 1 },
         { _id: fx.gold, name: "Gold", role: "parallel", cardCount: 1 },
-        { _id: fx.parallelsType, name: "Parallels", role: "home", cardCount: 0 },
         { _id: fx.silver, name: "Silver", role: "parallel", cardCount: 1 },
       ],
       truncated: false,
@@ -305,7 +310,7 @@ describe("everyCardTargets from any level", () => {
     const t = convexTest(schema, modules);
     const fx = await seedTree(t);
     const got = await t.run(async (ctx) => bulkTargets(ctx, fx.sport, "cameo"));
-    expect(got.targets.map((x) => x._id)).toEqual([...cardRows(fx)]);
+    expect(got.targets.map((x) => x._id)).toEqual([...heldRows(fx)]);
   });
 
   test("a Base brings the inserts under the set's Parallel types; an insert brings its parallels", async () => {
@@ -329,11 +334,11 @@ describe("everyCardTargets from any level", () => {
     await store(t, fx.ins, { defaultPlayerIds: [fx.allen] });
     await store(t, fx.base, { defaultCameoIds: [fx.kelce] });
     const player = await t.run(async (ctx) => bulkTargets(ctx, fx.set, "player"));
-    expect(player.targets.map((x) => x._id)).toEqual([fx.base, fx.insertsType, fx.parallelsType, fx.silver]);
+    expect(player.targets.map((x) => x._id)).toEqual([fx.base, fx.silver]);
     expect(player.overridden).toBe(2); // INS and its Gold
     const cameo = await t.run(async (ctx) => bulkTargets(ctx, fx.set, "cameo"));
     // The Base's cameos speak for the Base and for Silver (its parallel).
-    expect(cameo.targets.map((x) => x._id)).toEqual([fx.insertsType, fx.ins, fx.gold, fx.parallelsType]);
+    expect(cameo.targets.map((x) => x._id)).toEqual([fx.ins, fx.gold]);
     expect(cameo.overridden).toBe(2);
   });
 
@@ -372,8 +377,10 @@ describe("everyCardTargets from any level", () => {
 describe("the walk down and the lookup agree", () => {
   /**
    * For every row R and each kind: the rows a run from R walks are exactly
-   * the card rows whose lookup passes through R with no nearer value; and
-   * when R stores a value, exactly the card rows whose lookup picks R.
+   * the card rows holding cards whose lookup passes through R with no nearer
+   * value; and when R stores a value, exactly the card rows holding cards
+   * whose lookup picks R. (An empty row has no card to bring along; its new
+   * cards still look the value up.)
    */
   async function assertAgreement(t: T, fx: Tree) {
     const kinds: CardPlayerDefaultKind[] = ["player", "cameo"];
@@ -388,7 +395,7 @@ describe("the walk down and the lookup agree", () => {
       const row = await rowOf(t, root);
       for (const kind of kinds) {
         const walked = (await t.run(async (ctx) => bulkTargets(ctx, root, kind))).targets.map((x) => x._id as string);
-        const expected = cardRows(fx).filter((leaf) => {
+        const expected = heldRows(fx).filter((leaf) => {
           const chain = chains.get(leaf)!;
           const at = chain.indexOf(root);
           if (at === -1) return false;
@@ -400,7 +407,7 @@ describe("the walk down and the lookup agree", () => {
         expect([...walked].sort(), `${row.value} (${row.level}) ${kind}`).toEqual([...expected].sort());
         const stored = kind === "player" ? row.defaultPlayerIds : row.defaultCameoIds;
         if (stored && stored.length > 0) {
-          const picksRoot = cardRows(fx).filter((leaf) => source.get(leaf)![kind] === root);
+          const picksRoot = heldRows(fx).filter((leaf) => source.get(leaf)![kind] === root);
           expect([...walked].sort(), `${row.value} picks`).toEqual([...picksRoot].sort());
         }
       }
@@ -672,6 +679,48 @@ describe("cardPlayerDefaults (the panel's read)", () => {
     expect((await read(t, fx.base))!.cardCount).toBe(3); // Base + Silver
   });
 
+  test("a never-counted row with no cards is probed: 0 cards, nothing to walk (a hand-made checklist just saves)", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seedTree(t);
+    // A hand-made set: its Base was never counted (no `cardCount`) and has no cards.
+    const { handSet, handBase } = await t.run(async (ctx) => {
+      const handSet = await ctx.db.insert("selectorOptions", {
+        level: "setName", value: "Hand Made", parentId: fx.brand, platformData: {}, children: [], lastUpdated: NOW,
+      });
+      const handBase = await ctx.db.insert("selectorOptions", {
+        level: "variantType", value: "Base", parentId: handSet, platformData: {}, children: [], lastUpdated: NOW,
+      });
+      return { handSet, handBase };
+    });
+    for (const id of [handSet, handBase]) {
+      expect(await read(t, id)).toMatchObject({ cardCount: 0, cardsToWalk: { player: 0, cameo: 0 }, truncated: false });
+      for (const kind of ["player", "cameo"] as const) {
+        const got = await t.withIdentity(ADMIN).query(api.cardPlayersBulk.everyCardTargets, { variantId: id, kind });
+        expect(got).toEqual({ targets: [], truncated: false, overridden: 0 });
+      }
+    }
+    // Its first card makes it unknown again (still uncounted) and walked, with no count.
+    await t.run(async (ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: handBase, cardNumber: "1", cardName: "Card 1", platformData: {}, sortOrder: 0, lastUpdated: NOW,
+      }),
+    );
+    await t.run(async (ctx) => ctx.db.patch(handBase, { cardCount: undefined }));
+    const after = await read(t, handSet);
+    expect(after).not.toHaveProperty("cardCount");
+    expect(after).not.toHaveProperty("cardsToWalk");
+    const walked = await t.withIdentity(ADMIN).query(api.cardPlayersBulk.everyCardTargets, { variantId: handSet, kind: "player" });
+    expect(walked.targets).toEqual([{ _id: handBase, name: "Base", role: "home" }]);
+  });
+
+  test("a row counted at 0 is not walked, and counts as known", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seedTree(t);
+    expect(await read(t, fx.insertsType)).toMatchObject({ cardCount: 2, cardsToWalk: { player: 2, cameo: 2 } });
+    const got = await t.withIdentity(ADMIN).query(api.cardPlayersBulk.everyCardTargets, { variantId: fx.parallelsType, kind: "cameo" });
+    expect(got.targets.map((x) => x._id)).toEqual([fx.silver]);
+  });
+
   test("a deleted player is left out of the names", async () => {
     const t = convexTest(schema, modules);
     const fx = await seedTree(t);
@@ -717,7 +766,7 @@ function countingDb(db: QueryCtx["db"]) {
 }
 
 describe("the walk down stays bounded", () => {
-  test("past MAX_EVERY_CARD_WALK rows it stops, says truncated, and stays under ~1,000 calls", async () => {
+  test("past MAX_EVERY_CARD_WALK rows it stops, says truncated, and stays under ~1,000 calls (probes included)", async () => {
     const t = convexTest(schema, modules);
     const fx = await seedTree(t);
     await t.run(async (ctx: MutationCtx) => {
@@ -739,8 +788,14 @@ describe("the walk down stays bounded", () => {
     });
     expect(got.truncated).toBe(true);
     expect(got.targets.length).toBeLessThanOrEqual(MAX_EVERY_CARD_TARGETS);
+    // Every added insert is uncounted and empty: the first MAX_UNCOUNTED_PROBES
+    // (in walk order) are probed and left out; the rest stay unknown and are walked.
+    const names = new Set(got.targets.map((x) => x.name));
+    expect(names.has("Insert 0")).toBe(false);
+    expect(names.has(`Insert ${MAX_UNCOUNTED_PROBES - 1}`)).toBe(false);
+    expect(names.has(`Insert ${MAX_UNCOUNTED_PROBES}`)).toBe(true);
     // A page spends at most ~2,410 calls on its cards (cardPlayersBulk.test.ts);
-    // the walk must leave room under the 4,096 limit.
+    // the walk, its probes included, must leave room under the 4,096 limit.
     expect(calls).toBeLessThan(1_000);
   }, 60_000);
 });

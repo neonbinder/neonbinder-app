@@ -15,6 +15,7 @@ import {
 } from "../modules/RunLedger";
 import PlayerPicker from "./PlayerPicker";
 import {
+  ALSO_ON_THIS_CARD_HEADING,
   EVERY_CARD_PLAYER_ACTION_LABELS,
   EVERY_CARD_PLAYER_PICKER_LABELS,
   PLAYER_ON_EVERY_CARD_HEADING,
@@ -35,8 +36,10 @@ import {
  * ("Player: Ken Griffey Jr. (from 2024 Topps)"), until this row stores its own.
  *
  * One picker, two actions: green "Add to every card" stores the pick as the
- * player, blue-outline "Add as cameo" as a cameo. With no cards beneath, that
- * is the whole job: saved, toast, done. With cards beneath, a confirm first,
+ * player, blue-outline "Add as cameo" as a cameo. The pick shows as an
+ * outlined "Picked:" chip until it is stored (a stored one is filled). With
+ * no cards beneath, that is the whole job: saved, a note beside the actions,
+ * done. With cards beneath, a confirm first,
  * then the store, then the whole-checklist run that brings the cards already
  * there along (`addPlayerToVariant` / `addCameoToVariant`), shown as the
  * NEO-312 run ledger (`modules/RunLedger`, Jason's spinner → check pattern):
@@ -44,7 +47,12 @@ import {
  * idempotent, so a stopped or failed run is finished by pressing again.
  *
  * A chip's × clears the stored value, asks nothing (cards keep what they
- * have), says so in a toast, and hands focus to the picker's trigger.
+ * have), says so in the note beside the actions, and hands focus to the
+ * picker's trigger.
+ *
+ * The note is the section's own status line, right where the action was
+ * pressed: the panel's toast is pinned to the top of the viewport, which on
+ * a phone covers the heading and sits a screen away from this control.
  *
  * Reads. `cardPlayerDefaults` walks every row beneath the one asked about (up
  * to ~500 at a sport or year), so it is SUBSCRIBED only from the set down; at
@@ -171,9 +179,13 @@ export function scopeText(rowName: string, targets: readonly BulkTarget[]): stri
 
 const cardTitles = (n: number) => `${count(n)} card title${n === 1 ? "" : "s"}`;
 
-/** "skipped 2 that play another sport": the player's sport isn't the card's. */
-function skippedSportText(n: number): string {
-  return `skipped ${count(n)} that ${n === 1 ? "plays" : "play"} another sport`;
+/**
+ * "skipped 2 from a sport Ken Griffey Jr. doesn't play": the card's sport is
+ * not one the player plays (a cross-sport set, or a set moved under another
+ * sport), so the card is left alone.
+ */
+function skippedSportText(n: number, playerName: string): string {
+  return `skipped ${count(n)} from a sport ${playerName} doesn't play`;
 }
 
 /** What a finished line says after its name. */
@@ -189,7 +201,7 @@ export function lineResultText(kind: BulkKind, c: BulkCounts, playerName: string
     if (c.skippedPending > 0) {
       parts.push(`skipped ${count(c.skippedPending)} still waiting on a new name`);
     }
-    if (c.skippedSport > 0) parts.push(skippedSportText(c.skippedSport));
+    if (c.skippedSport > 0) parts.push(skippedSportText(c.skippedSport, playerName));
     if (c.titlesRefreshed > 0) parts.push(`${cardTitles(c.titlesRefreshed)} updated`);
     if (c.titlesKept > 0) {
       parts.push(
@@ -208,7 +220,7 @@ export function lineResultText(kind: BulkKind, c: BulkCounts, playerName: string
         `skipped ${count(c.skippedFull)} that ${c.skippedFull === 1 ? "is" : "are"} full (${MAX_CARD_PLAYERS} players)`,
       );
     }
-    if (c.skippedSport > 0) parts.push(skippedSportText(c.skippedSport));
+    if (c.skippedSport > 0) parts.push(skippedSportText(c.skippedSport, playerName));
   }
   return parts.join(", ");
 }
@@ -308,14 +320,14 @@ export function bulkErrorText(error: unknown): string {
   return message;
 }
 
-/** The toast after a store with no cards to walk. */
+/** The note after a store with no cards to walk. */
 export function savedToastText(kind: BulkKind, playerName: string): string {
   return kind === "player"
     ? `Saved, every new card gets ${playerName}`
     : `Saved, every new card gets ${playerName} as a cameo`;
 }
 
-/** The toast after a chip's ×. */
+/** The note after a chip's ×. */
 export function clearedToastText(playerName: string): string {
   return `Cleared, new cards won't get ${playerName}; cards that have them keep them`;
 }
@@ -331,7 +343,7 @@ export function bulkHintText(level: PanelLevel): string {
     level === "parallel"
       ? "Same face on every card in this parallel? Pick them once."
       : "Same face on every card? Pick them once.";
-  return `${lead} "${L.addPlayer}" makes them the player wherever nobody's there yet; "${L.addCameo}" tucks them under Also on this card. New cards get them too.`;
+  return `${lead} "${L.addPlayer}" makes them the player wherever nobody's there yet; "${L.addCameo}" tucks them under "${ALSO_ON_THIS_CARD_HEADING}". New cards get them too.`;
 }
 
 export type ConfirmCopy = { title: string; description: string; confirmLabel: string };
@@ -367,15 +379,18 @@ export function confirmCopy({
         `${q} becomes the player on every card that doesn't have one yet. Cards with a player stay put; titles you haven't edited pick up ${possessive(q)} name. ` +
         (replacing ? `${q} replaces ${replacing} for new cards.` : `New cards get ${q} too.`) +
         own("has its own player", "have their own player"),
-      confirmLabel: `Yes, add ${q}`,
+      // The title names the player; the label stays short enough for a
+      // phone. Worded apart from the "Add to every card" action it answers
+      // (never a substring of it, nor it of this).
+      confirmLabel: "Yes, add them to every card",
     };
   }
   return {
     title: `Add ${q} as a cameo on every card in ${scope}?`,
     description:
-      `Each card gets ${q} under Also on this card. Cards that are ${possessive(q)} own, or already have them, are left as they are. New cards get ${q} too.` +
+      `Each card gets ${q} under "${ALSO_ON_THIS_CARD_HEADING}". Cards that are ${possessive(q)} own, or already have them, are left as they are. New cards get ${q} too.` +
       own("has its own cameos", "have their own cameos"),
-    confirmLabel: `Yes, add ${q} as a cameo`,
+    confirmLabel: "Yes, add them as a cameo",
   };
 }
 
@@ -530,6 +545,12 @@ export const BULK_TRUNCATED_TEXT =
 /** The busy line under the actions (their names stay put while it shows). */
 export const BULK_COUNTING_TEXT = "Counting cards…";
 export const BULK_SAVING_TEXT = "Saving…";
+/** While the stored values (and the card count) are still loading: the actions wait. */
+export const BULK_CHECKING_TEXT = "Checking…";
+/** The visible label before a chosen, not yet stored, pick. */
+export const BULK_PICKED_LABEL = "Picked:";
+/** How long a "Saved…" / "Cleared…" note stays beside the actions. */
+const NOTE_MS = 6000;
 /**
  * Full size (32px) on a phone, the panel's compact 24px from Radix's `sm`
  * (768px) up: a thumb needs the bigger target, the desktop panel the
@@ -555,7 +576,6 @@ export default function EveryCardPlayerControl({
   rowName,
   sportId,
   expanded,
-  onToast,
   onDismissedCollapsed,
 }: {
   /** The row the Attributes panel is on, at any level. */
@@ -568,8 +588,6 @@ export default function EveryCardPlayerControl({
   sportId?: Id<"selectorOptions">;
   /** The panel's own open state: the section shows only when it is open, a run's ledger always. */
   expanded: boolean;
-  /** The panel's transient confirmation toast ("Saved · …", "Cleared · …"). */
-  onToast?: (message: string) => void;
   /**
    * Dismiss pressed with the panel shut: the ledger was everything this
    * control drew, so the panel puts focus somewhere of its own (its expand
@@ -610,6 +628,12 @@ export default function EveryCardPlayerControl({
     };
   }, [convex, subscribe, expanded, variantId, fetchTick]);
   const defaults = subscribe ? subscribed : fetched;
+  /**
+   * The first read is still in flight: who is stored here and how many cards
+   * sit beneath are unknown, so neither action can pick its path (save, or
+   * confirm then walk) yet. A failed one-shot read is null, not this.
+   */
+  const checking = expanded && defaults === undefined;
   /** After a store or clear: a subscription follows by itself; a one-shot read is asked again. */
   const refresh = () => {
     if (!subscribe) setFetchTick((n) => n + 1);
@@ -624,6 +648,26 @@ export default function EveryCardPlayerControl({
   const [saving, setSaving] = useState<BulkKind | null>(null);
   const [clearing, setClearing] = useState(false);
   const [prepError, setPrepErrorText] = useState<string | null>(null);
+  /** "Saved, …" / "Cleared, …": shown on the busy line for a while, then gone. */
+  const [note, setNoteText] = useState<string | null>(null);
+  const noteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const setNote = (message: string | null) => {
+    if (noteTimer.current) clearTimeout(noteTimer.current);
+    noteTimer.current = null;
+    setNoteText(message);
+    if (message !== null) {
+      noteTimer.current = setTimeout(() => {
+        noteTimer.current = null;
+        setNoteText(null);
+      }, NOTE_MS);
+    }
+  };
+  useEffect(
+    () => () => {
+      if (noteTimer.current) clearTimeout(noteTimer.current);
+    },
+    [],
+  );
   /**
    * a11y — bumped with every failure and keyed onto the alert, so the same
    * sentence raised twice is a new alert node and is read again.
@@ -712,8 +756,9 @@ export default function EveryCardPlayerControl({
   };
 
   const ask = async (kind: BulkKind) => {
-    if (!picked || !pickedName || busy || clearing) return;
+    if (!picked || !pickedName || busy || clearing || checking) return;
     setPrepError(null);
+    setNote(null);
     const playerId = picked;
     const playerName = pickedName;
     // The server refuses it with the same sentence; said before any count.
@@ -728,7 +773,7 @@ export default function EveryCardPlayerControl({
       setSaving(kind);
       try {
         await store(kind, playerId);
-        onToast?.(savedToastText(kind, playerName));
+        setNote(savedToastText(kind, playerName));
         setPicked(null);
       } catch (e) {
         setPrepError(bulkErrorText(e));
@@ -747,7 +792,7 @@ export default function EveryCardPlayerControl({
       );
       if (targets.length === 0) {
         await store(kind, playerId);
-        onToast?.(savedToastText(kind, playerName));
+        setNote(savedToastText(kind, playerName));
         setPicked(null);
         return;
       }
@@ -822,6 +867,7 @@ export default function EveryCardPlayerControl({
   const clear = async (kind: BulkKind, player: NamedPlayer) => {
     if (busy || clearing) return;
     setPrepError(null);
+    setNote(null);
     // Before the write: the × goes away with the stored value, and focus
     // must not go with it.
     focusTrigger();
@@ -833,7 +879,7 @@ export default function EveryCardPlayerControl({
         playerId: player._id,
       });
       refresh();
-      onToast?.(clearedToastText(player.name));
+      setNote(clearedToastText(player.name));
     } catch (e) {
       setPrepError(bulkErrorText(e));
     } finally {
@@ -943,10 +989,12 @@ export default function EveryCardPlayerControl({
   // focus on the button (native disabled would drop it to <body>), and the
   // pre-pick state stays reachable: pressing it then says why in the alert
   // and hands focus to the picker's trigger, where the fix is.
-  const blocked = picked === null || pickedName === null || busy || clearing;
+  const blocked = picked === null || pickedName === null || busy || clearing || checking;
   // The confirm makes the chips inert too, so they count as locked with it.
   const chipLocked = busy || clearing || asking !== null;
   const press = (kind: BulkKind) => {
+    // Still reading what is stored: the "Checking…" line says so.
+    if (checking) return;
     if (picked === null) {
       setPrepError(BULK_CHOOSE_FIRST_TEXT);
       focusTrigger();
@@ -954,9 +1002,19 @@ export default function EveryCardPlayerControl({
     }
     if (!blocked) void ask(kind);
   };
-  /** The busy line: the actions keep their names, this says what they're doing. */
+  /**
+   * The busy line: the actions keep their names, this says what they're
+   * doing, then (as the section's status) what a save or clear did.
+   */
   const busyText =
-    counting !== null ? BULK_COUNTING_TEXT : saving !== null ? BULK_SAVING_TEXT : "";
+    counting !== null
+      ? BULK_COUNTING_TEXT
+      : saving !== null
+        ? BULK_SAVING_TEXT
+        : checking
+          ? BULK_CHECKING_TEXT
+          : "";
+  const statusText = busyText || note || "";
 
   const ownPlayer = defaults?.own.player;
   const ownCameos = defaults?.own.cameos ?? [];
@@ -990,10 +1048,13 @@ export default function EveryCardPlayerControl({
   );
 
   const label = (text: string) => <span className="shrink-0 text-ink-3">{text}</span>;
-  // "Ken Griffey Jr. (from 2024 Topps)": the value first, where it came
-  // from second. One text node, so it reads (and is found) as one line.
+  // "Ken Griffey Jr. (from 2024 Topps)": the value first, in the quiet ink
+  // the panel's values wear, where it came from second, quieter still. One
+  // element, so it reads (and is found) as one line.
   const inheritedLine = (fromName: string, names: string) => (
-    <span className="min-w-0 wrap-anywhere text-ink-3">{`${names} (from ${fromName})`}</span>
+    <span className="min-w-0 wrap-anywhere">
+      <span className="text-ink-2">{names}</span> <span className="text-ink-3">{`(from ${fromName})`}</span>
+    </span>
   );
 
   return (
@@ -1030,6 +1091,9 @@ export default function EveryCardPlayerControl({
               </p>
             )}
             <div ref={formRef} className="flex flex-wrap items-center gap-2">
+              {/* Not stored yet: labelled, and its chip outlined rather than
+                  filled, so it never reads as one of the stored chips above. */}
+              {picked !== null && label(BULK_PICKED_LABEL)}
               <PlayerPicker
                 value={picked ? [picked] : []}
                 // One player at a time: a new pick replaces the last.
@@ -1042,6 +1106,7 @@ export default function EveryCardPlayerControl({
                 labels={EVERY_CARD_PLAYER_PICKER_LABELS}
                 ariaDescribedBy={hintId}
                 roomyTriggerOnPhones
+                chipLook="outline"
               />
               {/* a11y — the names never change while counting or saving
                   (a spec, and a screen reader, keeps finding the button it
@@ -1052,7 +1117,7 @@ export default function EveryCardPlayerControl({
                 size={BULK_BUTTON_SIZE}
                 data-bulk-op="player"
                 aria-disabled={blocked || undefined}
-                aria-busy={counting === "player" || saving === "player" || undefined}
+                aria-busy={checking || counting === "player" || saving === "player" || undefined}
                 aria-describedby={hintId}
                 onClick={() => press("player")}
               >
@@ -1065,16 +1130,23 @@ export default function EveryCardPlayerControl({
                 outline
                 data-bulk-op="cameo"
                 aria-disabled={blocked || undefined}
-                aria-busy={counting === "cameo" || saving === "cameo" || undefined}
+                aria-busy={checking || counting === "cameo" || saving === "cameo" || undefined}
                 aria-describedby={hintId}
                 onClick={() => press("cameo")}
               >
                 {L.addCameo}
               </NeonButton>
-              {/* Always mounted (empty at rest, so it takes no room), so the
-                  first "Counting cards…" is read. */}
-              <span aria-live="polite" className="text-[11px] text-ink-2">
-                {busyText}
+              {/* The section's status line. Always mounted (empty at rest, so
+                  it takes no room), so the first "Checking…" or "Counting
+                  cards…" is read; a save's or a clear's note follows in the
+                  same place, in the green every confirmation wears. */}
+              <span
+                role="status"
+                aria-live="polite"
+                aria-atomic="true"
+                className={`min-w-0 wrap-anywhere text-xs ${busyText ? "text-ink-2" : "text-neon-green-text"}`}
+              >
+                {statusText}
               </span>
             </div>
           </div>
@@ -1091,6 +1163,8 @@ export default function EveryCardPlayerControl({
               title={asking.copy.title}
               description={asking.copy.description}
               confirmLabel={asking.copy.confirmLabel}
+              // Adding, not taking away: the green yes, beside a pink Cancel.
+              confirmVariant="primary"
               busyLabel="Starting…"
               busy={false}
               onConfirm={() => {

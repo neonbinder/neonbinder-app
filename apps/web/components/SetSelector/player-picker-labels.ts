@@ -65,6 +65,13 @@ export const DEFAULT_PLAYER_PICKER_LABELS: ResolvedPlayerPickerLabels = {
   sportSwitch: "Sport to search for players",
 };
 
+/**
+ * NEO-528 — a chip's × while its player's name is still loading, in every
+ * picker: a plain name, never the raw id (the label sets above all build on
+ * the name). Contains no set's whole `remove` wording, nor sits inside one.
+ */
+export const REMOVE_UNNAMED_PLAYER = "Remove this player";
+
 /** A partial set, with every field it leaves out taken from the defaults. */
 export function resolvePlayerPickerLabels(
   labels: PlayerPickerLabels | undefined,
