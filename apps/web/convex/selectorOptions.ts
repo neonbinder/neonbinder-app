@@ -42,7 +42,7 @@ import {
   generateListingDescription,
   type ListingCardInputs,
 } from "./features/generateListing";
-import { LISTING_TITLE_MAX } from "./features/listingLimits";
+import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./features/listingLimits";
 import {
   checkTitleAnswer,
   listingInputsForCard,
@@ -6602,11 +6602,18 @@ export const updateCard = mutation({
     // NEO-535 — the description is what a collector's card search reads
     // (`search_listing_description`), so, like the title, it is never stored
     // blank. Refused, never regenerated; the panel shows this and puts the
-    // stored description back. Trimmed, as the panel already sends it.
+    // stored description back. Trimmed, as the panel already sends it. Held
+    // to `LISTING_DESCRIPTION_MAX` (eBay's description cap) like the title:
+    // the message carries the length and the cap, never the text.
     if (typeof filtered.listingDescription === "string") {
       const trimmedDescription = filtered.listingDescription.trim();
       if (trimmedDescription.length === 0) {
         throw new ConvexError(BLANK_LISTING_DESCRIPTION_REFUSAL);
+      }
+      if (trimmedDescription.length > LISTING_DESCRIPTION_MAX) {
+        throw new ConvexError(
+          `Listing description is ${trimmedDescription.length} characters; the limit is ${LISTING_DESCRIPTION_MAX}.`,
+        );
       }
       filtered.listingDescription = trimmedDescription;
     }

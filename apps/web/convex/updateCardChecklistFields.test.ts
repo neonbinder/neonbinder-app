@@ -16,6 +16,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
+import { LISTING_DESCRIPTION_MAX } from "./features/listingLimits";
 import {
   BLANK_LISTING_DESCRIPTION_REFUSAL,
   BLANK_LISTING_TITLE_REFUSAL,
@@ -198,6 +199,37 @@ describe("updateCard structured fields (NEO-25)", () => {
     const card = cards.find((c) => c._id === cardId)!;
     // Stored trimmed, as the panel sends it.
     expect(card.listingDescription).toBe("A real description");
+    expect(card.cardVariation).toBe("Before");
+  });
+
+  test("NEO-535: a description over the cap is refused with its length and the cap, never its text", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingDescription: "A real description",
+      cardVariation: "Before",
+    });
+    // Exactly the cap (padding trimmed first) is fine.
+    const atCap = "d".repeat(LISTING_DESCRIPTION_MAX);
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingDescription: `  ${atCap}  `,
+    });
+    const over = "Secret" + "x".repeat(LISTING_DESCRIPTION_MAX - 5);
+    const refusal = asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingDescription: over,
+      cardVariation: "After",
+    });
+    await expect(refusal).rejects.toThrow(
+      `Listing description is ${LISTING_DESCRIPTION_MAX + 1} characters; the limit is ${LISTING_DESCRIPTION_MAX}.`,
+    );
+    await expect(refusal).rejects.not.toThrow(/Secret/);
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards.find((c) => c._id === cardId)!;
+    expect(card.listingDescription).toBe(atCap);
     expect(card.cardVariation).toBe("Before");
   });
 

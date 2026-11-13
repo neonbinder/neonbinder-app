@@ -145,7 +145,7 @@ vi.mock("./PlayerPicker", () => ({
 import CardDetailPanel from "./CardDetailPanel";
 // NEO-272: the drawer-geometry block below reads the character budget from the
 // server's own constant rather than restating 80.
-import { LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
+import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import type { Id } from "../../convex/_generated/dataModel";
 
 // ---------------------------------------------------------------------------
@@ -670,6 +670,38 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
         "A card needs a description. It's what collectors search, so type one in.",
       ),
     ).toBeTruthy();
+  });
+
+  it("NEO-535: a description over the cap is not saved; the text stays with the reason, and one at the cap saves", async () => {
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+    const over = "x".repeat(LISTING_DESCRIPTION_MAX + 1);
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, over);
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(description.value).toBe(over);
+    expect(
+      await screen.findByText(
+        "Not saved — that description runs 4,001 characters, past the 4,000 limit. Trim it down and save again.",
+      ),
+    ).toBeTruthy();
+    expect(description.getAttribute("aria-invalid")).toBe("true");
+
+    const atCap = "y".repeat(LISTING_DESCRIPTION_MAX);
+    await act(async () => {
+      focusField(description);
+      typeInto(description, atCap);
+      blurField(description);
+    });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, listingDescription: atCap });
   });
 
   it("NEO-367: notes commit only `notes`, keep line breaks, and clearing sends \"\"", async () => {

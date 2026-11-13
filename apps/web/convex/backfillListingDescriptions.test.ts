@@ -4,8 +4,9 @@
  * `listingInputsForStoredCard` (Regenerate's own reading of a stored card).
  *
  * Pinned: the dry run is the default and writes nothing; an armed invocation
- * on an unarmed deployment is refused (reported, not thrown); an armed run
- * writes exactly the generator's description and touches nothing else on the
+ * on an unarmed deployment is refused (reported, not thrown); fill-only is the
+ * default, so replacing a stored description needs `rewriteExisting: true`;
+ * the approved rewrite writes exactly the generator's description and touches nothing else on the
  * row (`listingTitle`, `listingTitleTruncated`, `lastUpdated` byte-identical);
  * a second run writes nothing; pages sum and resume from the cursor; a missing
  * description is filled; a card with a dangling player or a missing row keeps
@@ -65,6 +66,9 @@ async function expectedDescriptions(t: T): Promise<Map<Id<"cardChecklist">, stri
   return new Map(pairs);
 }
 
+/** The approved one-time rewrite (Jason, 2026-11-13). */
+const REWRITE = { confirm: CONFIRM_TOKEN, rewriteExisting: true };
+
 const untouched = (c: Card) => ({
   listingTitle: c.listingTitle,
   listingTitleTruncated: c.listingTitleTruncated,
@@ -81,15 +85,21 @@ describe("arming", () => {
     expect(result.isDone).toBe(true);
     expect(result.counts.scanned).toBe(before.length);
     expect(result.counts.filled).toBe(1);
-    expect(result.counts.rewritten).toBe(before.length - 1);
+    expect(result.counts.rewritten).toBe(0);
+    expect(result.counts.keptExisting).toBe(before.length - 1);
     expect(result.samples.length).toBeLessThanOrEqual(5);
+    expect(await allCards(t)).toEqual(before);
+
+    const rewrite = await t.action(internal.backfillListingDescriptions.run, { rewriteExisting: true });
+    expect(rewrite.armed).toBe(false);
+    expect(rewrite.counts).toMatchObject({ filled: 1, rewritten: before.length - 1, keptExisting: 0 });
     expect(await allCards(t)).toEqual(before);
   });
 
   test("confirm on an unarmed deployment is refused, reported, and writes nothing", async () => {
     const { t } = await setup();
     const before = await allCards(t);
-    const result = await t.action(internal.backfillListingDescriptions.run, { confirm: CONFIRM_TOKEN });
+    const result = await t.action(internal.backfillListingDescriptions.run, REWRITE);
     expect(result.armed).toBe(false);
     expect(result.message).toContain(`Refused`);
     expect(result.message).toContain(ENV_FLAG);
@@ -112,6 +122,7 @@ describe("arming", () => {
     const page = await t.mutation(internal.backfillListingDescriptions.backfillListingDescriptionsPage, {
       cursor: null,
       confirm: CONFIRM_TOKEN,
+      rewriteExisting: true,
     });
     expect(page.armed).toBe(false);
     expect(await allCards(t)).toEqual(before);
@@ -134,7 +145,7 @@ describe("an armed run", () => {
     const expected = await expectedDescriptions(t);
     const before = await allCards(t);
 
-    const first = await t.action(internal.backfillListingDescriptions.run, { confirm: CONFIRM_TOKEN });
+    const first = await t.action(internal.backfillListingDescriptions.run, REWRITE);
     expect(first.armed).toBe(true);
     expect(first.message).toMatch(/^Applied/);
     expect(first.counts.filled).toBe(1);
@@ -152,7 +163,7 @@ describe("an armed run", () => {
     expect(gold.listingDescription).toContain("/50");
     expect(gold.listingTitleTruncated).toBe(true);
 
-    const second = await t.action(internal.backfillListingDescriptions.run, { confirm: CONFIRM_TOKEN });
+    const second = await t.action(internal.backfillListingDescriptions.run, REWRITE);
     expect(second.counts).toMatchObject({ filled: 0, rewritten: 0, unchanged: after.length });
     expect(second.samples).toEqual([]);
     expect(await allCards(t)).toEqual(after);
@@ -165,7 +176,7 @@ describe("an armed run", () => {
     const expected = await expectedDescriptions(t);
 
     const first = await t.action(internal.backfillListingDescriptions.run, {
-      confirm: CONFIRM_TOKEN,
+      ...REWRITE,
       numItems: 2,
       maxPages: 1,
     });
@@ -175,7 +186,7 @@ describe("an armed run", () => {
     expect(first.message).toContain("continueCursor");
 
     const rest = await t.action(internal.backfillListingDescriptions.run, {
-      confirm: CONFIRM_TOKEN,
+      ...REWRITE,
       numItems: 2,
       cursor: first.continueCursor,
     });
@@ -205,14 +216,12 @@ describe("an armed run", () => {
     expect(small.counts.scanned).toBe(1);
   });
 
-  test("onlyMissing fills the card with none and keeps every stored description", async () => {
+  test("by default an armed run only fills the card with none and keeps every stored description", async () => {
     const { t, fx } = await setup();
     vi.stubEnv(ENV_FLAG, "1");
     const before = await allCards(t);
-    const result = await t.action(internal.backfillListingDescriptions.run, {
-      confirm: CONFIRM_TOKEN,
-      onlyMissing: true,
-    });
+    const result = await t.action(internal.backfillListingDescriptions.run, { confirm: CONFIRM_TOKEN });
+    expect(result.armed).toBe(true);
     expect(result.counts).toMatchObject({ filled: 1, rewritten: 0, keptExisting: before.length - 1 });
     for (const card of await allCards(t)) {
       const was = before.find((b) => b._id === card._id)!;
@@ -264,7 +273,7 @@ describe("unresolved cards", () => {
       return { orphan };
     });
 
-    const result = await t.action(internal.backfillListingDescriptions.run, { confirm: CONFIRM_TOKEN });
+    const result = await t.action(internal.backfillListingDescriptions.run, REWRITE);
     expect(result.counts.skippedUnresolved).toBe(2);
     const cards = await allCards(t);
     expect(cards.find((c) => c._id === fx.gooden1)!.listingDescription).toBe("Kept as it is.");

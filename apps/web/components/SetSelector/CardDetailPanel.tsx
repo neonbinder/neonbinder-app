@@ -22,6 +22,7 @@ import {
   titleLengthState,
 } from "./TitleLengthMeter";
 import { useTitlePreview } from "./useTitlePreview";
+import { LISTING_DESCRIPTION_MAX } from "../../convex/features/listingLimits";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "@/components/modules/NeonButton";
 
@@ -154,6 +155,18 @@ const BLANK_TITLE_MESSAGE =
  */
 const BLANK_DESCRIPTION_MESSAGE =
   "A card needs a description. It's what collectors search, so type one in.";
+
+/**
+ * NEO-535 — the refusal for a Card description over `LISTING_DESCRIPTION_MAX`
+ * (eBay's description cap). `updateCard` refuses the same length; refusing
+ * here keeps the operator's text in the field with the reason beside it.
+ */
+function overLongDescriptionMessage(length: number): string {
+  return (
+    `Not saved — that description runs ${length.toLocaleString("en-US")} characters, ` +
+    `past the ${LISTING_DESCRIPTION_MAX.toLocaleString("en-US")} limit. Trim it down and save again.`
+  );
+}
 
 type CardDetailCard = {
   _id: Id<"cardChecklist">;
@@ -506,8 +519,12 @@ export default function CardDetailPanel({
     value: card.listingDescription ?? "",
     // A bare Enter here is a paragraph break the operator typed, not a save.
     enterCommit: "modEnter",
-    onSave: (trimmed) =>
-      commitField({ listingDescription: trimmed }, "Saved Card description"),
+    onSave: async (trimmed) => {
+      if (trimmed.length > LISTING_DESCRIPTION_MAX) {
+        throw new Error(overLongDescriptionMessage(trimmed.length));
+      }
+      await commitField({ listingDescription: trimmed }, "Saved Card description");
+    },
     // NEO-535 — the description is what a collector searches, so it is never
     // stored blank (`updateCard` refuses one with the same sentence). A
     // cleared field puts the stored description back and says why.

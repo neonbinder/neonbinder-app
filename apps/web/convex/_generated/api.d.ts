@@ -39,6 +39,7 @@ import type * as backfillCopyCondition from "../backfillCopyCondition.js";
 import type * as backfillFitsState from "../backfillFitsState.js";
 import type * as backfillKnownBrands from "../backfillKnownBrands.js";
 import type * as backfillListingDescriptions from "../backfillListingDescriptions.js";
+import type * as backfillListingShortNames from "../backfillListingShortNames.js";
 import type * as backfillPromotedParallelFacet from "../backfillPromotedParallelFacet.js";
 import type * as backfillVariantFacetAndBaseRole from "../backfillVariantFacetAndBaseRole.js";
 import type * as backfillVariantTypeRole from "../backfillVariantTypeRole.js";
@@ -249,6 +250,7 @@ declare const fullApi: ApiFromModules<{
   backfillFitsState: typeof backfillFitsState;
   backfillKnownBrands: typeof backfillKnownBrands;
   backfillListingDescriptions: typeof backfillListingDescriptions;
+  backfillListingShortNames: typeof backfillListingShortNames;
   backfillPromotedParallelFacet: typeof backfillPromotedParallelFacet;
   backfillVariantFacetAndBaseRole: typeof backfillVariantFacetAndBaseRole;
   backfillVariantTypeRole: typeof backfillVariantTypeRole;

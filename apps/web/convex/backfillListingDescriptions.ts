@@ -10,23 +10,33 @@
  * before the new generator carries an older description (or none), which the
  * search may not match; a card with none is not in the index at all.
  *
+ * ## Rewriting a stored description is opt-in, and approved once
+ *
+ * By default a run only FILLS: a card with no description gets one, and every
+ * card that already carries a description keeps it (`keptExisting`), since a
+ * stored description may be an operator's own words. Replacing stored text
+ * needs `rewriteExisting: true` on the call.
+ *
+ * Jason, 2026-11-13 (NEO-535): no production description was hand-edited, so
+ * the full rewrite is approved — run with rewriteExisting:true once.
+ *
  * ## Operator commands
  *
- *   # 1. dry run — reports what an armed run would do, writes nothing
- *   npx convex run backfillListingDescriptions:run '{}'
+ *   # 1. dry run of the approved rewrite — reports what it would do, writes nothing
+ *   npx convex run backfillListingDescriptions:run '{"rewriteExisting":true}'
  *
- *   # 2. arm the deployment, run for real, disarm
+ *   # 2. arm the deployment, run the approved rewrite once, disarm
  *   npx convex env set ALLOW_CARD_DESCRIPTION_BACKFILL 1
- *   npx convex run backfillListingDescriptions:run '{"confirm":"BACKFILL"}'
+ *   npx convex run backfillListingDescriptions:run '{"confirm":"BACKFILL","rewriteExisting":true}'
  *   #    a run stops after ~150 s with `continueCursor`; resume with
- *   npx convex run backfillListingDescriptions:run '{"confirm":"BACKFILL","cursor":"<continueCursor>"}'
+ *   npx convex run backfillListingDescriptions:run '{"confirm":"BACKFILL","rewriteExisting":true,"cursor":"<continueCursor>"}'
  *   npx convex env remove ALLOW_CARD_DESCRIPTION_BACKFILL
  *
- *   # 3. confirm the steady state: a dry run reports filled 0, rewritten 0
- *   npx convex run backfillListingDescriptions:run '{}'
+ *   # 3. verify the steady state: this dry run reports filled 0, rewritten 0
+ *   npx convex run backfillListingDescriptions:run '{"rewriteExisting":true}'
  *
- *   # only fill cards with no description, leave every existing one as it is
- *   npx convex run backfillListingDescriptions:run '{"confirm":"BACKFILL","onlyMissing":true}'
+ *   # any later run: fill-only, the default — every stored description is kept
+ *   npx convex run backfillListingDescriptions:run '{"confirm":"BACKFILL"}'
  *
  *   # production: the same commands with --prod
  *
@@ -58,12 +68,14 @@
  *   - `filled`: none stored (absent or blank); written. A card with a dangling
  *     player or team id, or a missing row, is still filled from what does
  *     resolve: a card with no description cannot be found at all.
- *   - `rewritten`: a different description is stored; replaced.
- *   - `skippedUnresolved`: a description is stored and the card has a
+ *   - `rewritten` (`rewriteExisting` runs only): a different description is
+ *     stored; replaced.
+ *   - `skippedUnresolved` (`rewriteExisting` runs only): a description is
+ *     stored and the card has a
  *     dangling player or team id or its row is gone. Kept: rewriting from
  *     partial data would drop facts the stored text may still carry.
- *   - `keptExisting` (`onlyMissing` runs only): a different description is
- *     stored and the run was asked to fill missing ones only. Kept.
+ *   - `keptExisting` (the default): a different description is stored and
+ *     the run was not asked to rewrite it. Kept.
  *
  * Idempotent: the generator is pure and deterministic, so a second run reports
  * every card `unchanged` (or `skippedUnresolved`) and writes nothing.
@@ -110,7 +122,8 @@ const APPLIED_MESSAGE = "Applied. Re-run as a dry run to confirm the steady stat
 
 const DRY_RUN_MESSAGE =
   `Dry run — nothing written. Arm with ${ENV_FLAG}=1 on the deployment and ` +
-  `re-run with {"confirm":"${CONFIRM_TOKEN}"} to apply.`;
+  `re-run with {"confirm":"${CONFIRM_TOKEN}"} to fill missing descriptions; ` +
+  `add "rewriteExisting":true to replace stored ones too.`;
 
 const UNFINISHED_NOTE =
   " Stopped before the end of the table (time budget or maxPages): resume with the returned continueCursor.";
@@ -131,7 +144,7 @@ export async function planDescription(
   ctx: { db: QueryCtx["db"] },
   card: Doc<"cardChecklist">,
   cache: StoredCardLookupCache,
-  options: { onlyMissing?: boolean } = {},
+  options: { rewriteExisting?: boolean } = {},
 ): Promise<DescriptionPlan> {
   const { inputs, unresolved } = await listingInputsForStoredCard(ctx, card, cache);
   const next = generateListingDescription(inputs);
@@ -139,7 +152,7 @@ export async function planDescription(
   const hasStored = stored !== undefined && stored.trim().length > 0;
   if (stored === next) return { action: "unchanged", next };
   if (!hasStored) return { action: "filled", next };
-  if (options.onlyMissing) return { action: "keptExisting", next };
+  if (!options.rewriteExisting) return { action: "keptExisting", next };
   const isUnresolved = unresolved.players > 0 || unresolved.teams > 0 || unresolved.parent;
   if (isUnresolved) return { action: "skippedUnresolved", next };
   return { action: "rewritten", next };
@@ -189,7 +202,8 @@ export const backfillListingDescriptionsPage = internalMutation({
     confirm: v.optional(v.string()),
     /** Cards to read, 1..`CARDS_PER_PAGE` (default the max). */
     numItems: v.optional(v.number()),
-    onlyMissing: v.optional(v.boolean()),
+    /** Replace a stored description that differs; absent = fill missing ones only. */
+    rewriteExisting: v.optional(v.boolean()),
   },
   returns: v.object({
     armed: v.boolean(),
@@ -212,7 +226,7 @@ export const backfillListingDescriptionsPage = internalMutation({
     const samples: Sample[] = [];
     for (const card of page.page) {
       counts.scanned += 1;
-      const plan = await planDescription(ctx, card, cache, { onlyMissing: args.onlyMissing });
+      const plan = await planDescription(ctx, card, cache, { rewriteExisting: args.rewriteExisting === true });
       counts[plan.action] += 1;
       if (plan.action === "unchanged" || plan.action === "keptExisting") continue;
       if (samples.length < MAX_SAMPLES) {
@@ -242,8 +256,11 @@ export const run = internalAction({
     cursor: v.optional(v.string()),
     /** Cards per page, 1..`CARDS_PER_PAGE`. */
     numItems: v.optional(v.number()),
-    /** Fill cards with no description only; every stored one is left as it is. */
-    onlyMissing: v.optional(v.boolean()),
+    /**
+     * Replace a stored description that differs from the generator's. Absent
+     * (the default) fills cards with none and keeps every stored one.
+     */
+    rewriteExisting: v.optional(v.boolean()),
     /** Stop after this many pages (and hand back the cursor); default no cap but the time budget. */
     maxPages: v.optional(v.number()),
   },
@@ -283,7 +300,7 @@ export const run = internalAction({
         // A refused run never hands the token on: the page is a dry run.
         ...(intendsToWrite && !refusedForFlag ? { confirm: CONFIRM_TOKEN } : {}),
         ...(args.numItems !== undefined ? { numItems: args.numItems } : {}),
-        ...(args.onlyMissing ? { onlyMissing: true } : {}),
+        ...(args.rewriteExisting ? { rewriteExisting: true } : {}),
       });
       pages += 1;
       armed = armed || page.armed;
@@ -303,7 +320,7 @@ export const run = internalAction({
         msg: "backfill_listing_descriptions",
         armed,
         refusedForFlag,
-        onlyMissing: args.onlyMissing === true,
+        rewriteExisting: args.rewriteExisting === true,
         resumed: args.cursor !== undefined,
         pages,
         isDone,
