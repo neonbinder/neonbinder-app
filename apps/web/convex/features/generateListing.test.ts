@@ -354,10 +354,17 @@ describe("assessListingTitle (NEO-101)", () => {
   test("degenerate player names made only of '&' terminate and keep the never-blank title", () => {
     // Not a real card; pins that the loop terminates on input with nothing
     // to cut but the number.
+    // NEO-535: a name repeated on one card is said once (`distinctNames`),
+    // so five "&" players are one, and a 70-digit number still fits beside it.
     const cardNumber = "9".repeat(70);
     const a = assessListingTitle({ cardNumber, playerNames: ["&", "&", "&", "&", "&"] });
-    expect(a.title).toBe("& & & & & & & & &");
-    expect(a.dropped).toEqual([`#${cardNumber}`]);
+    expect(a.title).toBe(`& #${cardNumber}`);
+    expect(a.dropped).toEqual([]);
+    const long = "9".repeat(80);
+    const b = assessListingTitle({ cardNumber: long, playerNames: ["&", "&"] });
+    // Over the cap with it: the number is the cut (row 10), never the title.
+    expect(b.title).toBe("&");
+    expect(b.dropped).toEqual([`#${long}`]);
   });
 
   test("team names are appended verbatim, in stored order, and never abbreviated", () => {
@@ -595,30 +602,8 @@ describe("generateListingTitle invariants — fuzz (NEO-101)", () => {
       ).toBe(true);
       // A token left out of a title that fits really would not have fitted
       // back in: the refill only ever adds characters.
-      // KNOWN GAP (reported to the coordinator, NEO-535): a team or variation
-      // whose every word the title already says when the tail is built
-      // (`alreadySaid`) never enters the tail. When a word it leaned on is
-      // cut later (another team, the variation, a first name), the token is
-      // reported left out but was never offered to the refill. The 15-word
-      // fuzz vocabulary collides constantly, so such a token is exempt here;
-      // the number, first names, SP/SSP, RC, RELIC and AUTO never are, and the
-      // deterministic "the cut list, not token length" test above holds a
-      // non-colliding team/variation to the rule.
-      const lower = (t: string) => t.toLowerCase().split(/\s+/).filter(Boolean);
-      const shadowed = (token: string) => {
-        const others = [
-          titleDescription(inputs),
-          inputs.setShortName ?? "",
-          ...(inputs.playerNames ?? []),
-          ...(inputs.teamNames ?? []).filter((t) => t.trim() !== token),
-          ...(inputs.cardVariation?.trim() !== token ? [inputs.cardVariation ?? ""] : []),
-        ];
-        const said = new Set(others.flatMap(lower));
-        return lower(token).every((w) => said.has(w));
-      };
       if (a.fits) {
         for (const token of dropped) {
-          if (shadowed(token)) continue;
           const cost = token === `#${cardNumber}` ? cardNumber.length : token.length;
           expect(title.length + 1 + cost, `${context} :: dropped ${token}`).toBeGreaterThan(
             LISTING_TITLE_MAX,

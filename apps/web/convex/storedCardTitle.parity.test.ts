@@ -164,7 +164,7 @@ describe("previewListingTitle and titleForStoredCard", () => {
     expect(titles).toMatchInlineSnapshot(`
       {
         "dangling": "Topps Chrome #18 Baseball",
-        "longCore": "Topps Chrome Maximilian Fitzgerald-Worthington & Maximilian Fitzgerald-Worthington",
+        "longCore": "Topps Chrome Bartholomew Maximilian Fitzgerald-Worthington #19 Baseball",
         "pending": "Topps Chrome Doc Gooden #17 New York Mets Baseball",
         "resolved": "2024 Topps Chrome Dwight Gooden & Darryl Strawberry #16 /99 RC New York Mets",
         "underInsert": "2024 Topps Chrome Future Stars Insert Dwight Gooden #FS-1 AUTO Baseball",

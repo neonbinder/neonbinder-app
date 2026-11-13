@@ -288,6 +288,27 @@ function hasPhrase(words: readonly string[], phrase: readonly string[]): boolean
   return false;
 }
 
+/**
+ * Player names as the title and description say them: whitespace collapsed,
+ * blanks dropped, and a name already listed (case-insensitively) listed once.
+ * Two players with one display name on one card is all but unheard of, and
+ * printing the same name twice tells a buyer nothing; the commit path dedupes
+ * typed names the same way (`normalizePendingNames`), but a stored row written
+ * before that, or a fixture, can still carry a repeat.
+ */
+function distinctNames(names: ReadonlyArray<string> | undefined): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of names ?? []) {
+    const name = raw.trim().split(/\s+/).filter(Boolean).join(" ");
+    const key = name.toLowerCase();
+    if (!name || seen.has(key)) continue;
+    seen.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
 /** The words that make AUTO, RC and RELIC repeats (cut rows 1-3). */
 const AUTO_WORDS: ReadonlySet<string> = new Set([
   "auto",
@@ -437,7 +458,13 @@ type TailKind =
   | "rookie"
   | "sport";
 
-type TailToken = { kind: TailKind; text: string; in: boolean };
+/**
+ * One tail token. `latent`: left out when the full title was built because
+ * the title already said every word of it (a team inside the variation, the
+ * sport inside a team). It is never cut, but the refill offers it back once
+ * whatever said it has been cut and it is no longer said.
+ */
+type TailToken = { kind: TailKind; text: string; in: boolean; latent?: true };
 
 /** One title under construction: what is in, what is cut. */
 type TitleState = {
@@ -473,10 +500,11 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   state: TitleState;
   repeats: { auto: boolean; rc: boolean; relic: boolean };
 } {
-  const players = (inputs.playerNames ?? [])
-    .map((name) => name.trim().split(/\s+/).filter(Boolean).join(" "))
-    .filter(Boolean)
-    .map((full) => ({ full, short: withoutFirstName(full), firstOut: false }));
+  const players = distinctNames(inputs.playerNames).map((full) => ({
+    full,
+    short: withoutFirstName(full),
+    firstOut: false,
+  }));
   const cardNumber = inputs.cardNumber?.trim();
   const state: TitleState = {
     parts,
@@ -502,27 +530,40 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   const push = (kind: TailKind, text: string) => {
     state.tail.push({ kind, text, in: true });
   };
-  const said = () => renderTitle(state);
+  // A token the title already says sits out, latent, in its own place.
+  const pushUnlessSaid = (kind: TailKind, text: string) => {
+    if (alreadySaid(renderTitle(state), text)) {
+      state.tail.push({ kind, text, in: false, latent: true });
+    } else {
+      push(kind, text);
+    }
+  };
   if (inputs.autographed && inputs.autographed !== "None") push("auto", "AUTO");
   if (inputs.isRelic) push("relic", "RELIC");
   if (inputs.printRun) push("printRun", `/${inputs.printRun}`);
-  if (variation && !alreadySaid(said(), variation)) push("variation", variation);
+  if (variation) pushUnlessSaid("variation", variation);
   if (inputs.isRookie) push("rc", "RC");
   if (inputs.shortPrint && inputs.shortPrint !== "None") push("sp", inputs.shortPrint);
   for (const team of inputs.teamNames ?? []) {
     const trimmed = team.trim();
-    if (trimmed && !alreadySaid(said(), trimmed)) push("team", trimmed);
+    if (trimmed) pushUnlessSaid("team", trimmed);
   }
   // The second spelling of rookie, only beside an RC that is not a repeat.
-  if (inputs.isRookie && !repeats.rc && !alreadySaid(said(), "Rookie")) push("rookie", "Rookie");
+  if (inputs.isRookie && !repeats.rc && !alreadySaid(renderTitle(state), "Rookie")) {
+    push("rookie", "Rookie");
+  }
   const sport = inputs.sport?.trim();
-  if (sport && !alreadySaid(said(), sport)) push("sport", sport);
+  if (sport) pushUnlessSaid("sport", sport);
   return { state, repeats };
 }
 
 /** One cut, and how to undo it. `restores` are tried in order on refill. */
 type Cut = {
   row: number;
+  /** Cut order within the whole list (row, then position within the row). */
+  rank: number;
+  /** A latent token's text: offered back only while the title does not say it. */
+  latentText?: string;
   /** Rows 9+: a token an operator is shown as left out. */
   real: boolean;
   /** Rows 1-3: AUTO, RC or RELIC the title already says. */
@@ -559,12 +600,24 @@ function planCuts(
   repeats: { auto: boolean; rc: boolean; relic: boolean },
 ): Cut[] {
   const cuts: Cut[] = [];
-  const add = (row: number, cut: () => void, restores: Array<() => void>, repeat = false) => {
-    cuts.push({ row, real: row >= 9, repeat, out: false, cut, restores });
+  const add = (
+    row: number,
+    cut: () => void,
+    restores: Array<() => void>,
+    repeat = false,
+    rank = cutRank(row),
+  ) => {
+    cuts.push({ row, rank, real: row >= 9, repeat, out: false, cut, restores });
   };
-  const tokens = (kind: TailKind) => state.tail.filter((t) => t.kind === kind);
+  const tokens = (kind: TailKind) => state.tail.filter((t) => t.kind === kind && t.in);
   const toggle = (row: number, token: TailToken, repeat = false) =>
-    add(row, () => { token.in = false; }, [() => { token.in = true; }], repeat);
+    add(
+      row,
+      () => { token.in = false; },
+      [() => { token.in = true; }],
+      repeat,
+      cutRank(row, token.kind === "team" ? teamPlace(state, token) : 0),
+    );
 
   if (repeats.auto) for (const t of tokens("auto")) toggle(1, t, true);
   if (repeats.rc) for (const t of tokens("rc")) toggle(2, t, true);
@@ -588,9 +641,15 @@ function planCuts(
       () => { number.mode = "bare"; },
     ]);
   }
-  for (const player of [...state.players].reverse()) {
+  for (const [index, player] of [...state.players.entries()].reverse()) {
     if (player.short === undefined) continue;
-    add(11, () => { player.firstOut = true; }, [() => { player.firstOut = false; }]);
+    add(
+      11,
+      () => { player.firstOut = true; },
+      [() => { player.firstOut = false; }],
+      false,
+      cutRank(11, LAST_FIRST - index),
+    );
   }
   for (const t of tokens("sp")) toggle(12, t);
   if (!repeats.rc) for (const t of tokens("rc")) toggle(13, t);
@@ -598,6 +657,46 @@ function planCuts(
   for (const t of tokens("variation")) toggle(15, t);
   if (!repeats.auto) for (const t of tokens("auto")) toggle(16, t);
   return cuts;
+}
+
+/**
+ * A cut's place in the cut order: its row, then its place within the row.
+ * Teams and first names go last first, so a later team or player ranks lower
+ * (is cut sooner, and refilled later).
+ */
+const LAST_FIRST = 999;
+function cutRank(row: number, within = 0): number {
+  return row * 1000 + within;
+}
+
+/** A team token's place within row 9: last first. */
+function teamPlace(state: TitleState, token: TailToken): number {
+  return LAST_FIRST - state.tail.filter((t) => t.kind === "team").indexOf(token);
+}
+
+/**
+ * The latent tokens as cuts already made, ranked where the cut list would
+ * have cut them: the sport at row 6, a team at row 9 in its last-first place,
+ * the variation at row 15.
+ */
+function latentCuts(state: TitleState): Cut[] {
+  const rowOf: Partial<Record<TailKind, number>> = { sport: 6, team: 9, variation: 15 };
+  const out: Cut[] = [];
+  for (const token of state.tail) {
+    const row = token.latent ? rowOf[token.kind] : undefined;
+    if (row === undefined) continue;
+    out.push({
+      row,
+      rank: cutRank(row, token.kind === "team" ? teamPlace(state, token) : 0),
+      latentText: token.text,
+      real: row >= 9,
+      repeat: false,
+      out: true,
+      cut: () => { token.in = false; },
+      restores: [() => { token.in = true; }],
+    });
+  }
+  return out;
 }
 
 /** Steps 1-4 of the loop over one description. */
@@ -616,8 +715,9 @@ function cutToFit(
     return false;
   };
 
+  const planned = planCuts(state, repeats);
   const done: Cut[] = [];
-  for (const cut of planCuts(state, repeats)) {
+  for (const cut of planned) {
     if (length() <= LISTING_TITLE_MAX) break;
     if (hashRule()) break;
     cut.cut();
@@ -627,9 +727,14 @@ function cutToFit(
   if (length() > LISTING_TITLE_MAX) hashRule();
 
   // Step 4 — the refill, most valuable first (the reverse of the cut order).
-  for (const cut of [...done].reverse()) {
-    if (!cut.out) continue;
-    if (cut.repeat && done.some((d) => d.real && d.out)) continue;
+  // Latent tokens join it in their own places: a team that sat out because
+  // the variation said it comes back once the variation is cut.
+  const refill = [...done, ...latentCuts(state)].sort((a, b) => a.rank - b.rank);
+  const stillOut = (c: Cut) =>
+    c.out && !(c.latentText !== undefined && alreadySaid(renderTitle(state), c.latentText));
+  for (const cut of [...refill].reverse()) {
+    if (!stillOut(cut)) continue;
+    if (cut.repeat && refill.some((d) => d.real && stillOut(d))) continue;
     for (const restore of cut.restores) {
       restore();
       if (length() <= LISTING_TITLE_MAX) {
@@ -756,9 +861,7 @@ export function leftOutOfTitle(inputs: ListingCardInputs, text: string): string[
     if (!hasPhrase(words, numberWords) && !hasPhrase(words, withHash)) add(`#${cardNumber}`);
   }
 
-  const players = (inputs.playerNames ?? [])
-    .map((name) => name.trim().split(/\s+/).filter(Boolean).join(" "))
-    .filter(Boolean);
+  const players = distinctNames(inputs.playerNames);
   for (const name of [...players].reverse()) {
     if (phraseIn(name)) continue;
     const short = withoutFirstName(name);
@@ -816,7 +919,7 @@ export function generateListingDescription(inputs: ListingCardInputs): string {
   const setLabel = descriptionSetLabel(inputs) || null;
   const cardNumber = inputs.cardNumber?.trim();
   const number = cardNumber ? `#${cardNumber}` : "";
-  const players = (inputs.playerNames ?? []).map((p) => p.trim()).filter(Boolean);
+  const players = distinctNames(inputs.playerNames);
   const isParallel = isRealParallel(inputs);
   const parallel = isParallel ? inputs.parallelName!.trim() : undefined;
   const variation = inputs.cardVariation?.trim();

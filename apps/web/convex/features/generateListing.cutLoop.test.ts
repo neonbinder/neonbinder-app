@@ -811,3 +811,94 @@ describe("NEO-535 checkTitleAnswer", () => {
     expect(() => checkTitleAnswer({ listingTitle: over }, "Card #1")).toThrow(/limit is 80/);
   });
 });
+
+describe("NEO-535 a token the title already said comes back when what said it is cut", () => {
+  test("a team said by the variation returns once the variation is cut", () => {
+    const a = assessListingTitle({
+      cardNumber: "T-12",
+      year: "1999",
+      manufacturer: "Topps",
+      setName: "Topps Stadium Club Chrome",
+      playerNames: ["Ken Griffey Jr."],
+      cardVariation: "Seattle Mariners Turn Ahead The Clock Jersey Variation",
+      teamNames: ["Seattle Mariners"],
+      sport: "Baseball",
+    });
+    expect(a.title).toBe("1999 Topps Stadium Club Chrome Ken Griffey Jr. #T-12 Seattle Mariners Baseball");
+    expect(a.title.length).toBe(78);
+    expect(a.dropped).toEqual(["Seattle Mariners Turn Ahead The Clock Jersey Variation"]);
+  });
+
+  test("while the variation stays in, the team stays latent (said once, not twice)", () => {
+    const a = assessListingTitle({
+      cardNumber: "T-12",
+      year: "1999",
+      manufacturer: "Topps",
+      setName: "Topps",
+      playerNames: ["Ken Griffey Jr."],
+      cardVariation: "Seattle Mariners Turn Ahead",
+      teamNames: ["Seattle Mariners"],
+      sport: "Baseball",
+    });
+    expect(a.title).toBe("1999 Topps Ken Griffey Jr. #T-12 Seattle Mariners Turn Ahead Baseball");
+    expect(a.dropped).toEqual([]);
+  });
+
+  test("a sport said by a team returns once the team is cut", () => {
+    const a = assessListingTitle(
+      atFullLength(
+        { ...ichiro, teamNames: ["Oregon Ducks Baseball Club Of Eugene"], sport: "Baseball" },
+        95,
+      ),
+    );
+    expect(a.title).toMatch(/ Ichiro #7 Baseball$/);
+    expect(a.dropped).toEqual(["Oregon Ducks Baseball Club Of Eugene"]);
+  });
+
+  test("a latent team keeps its last-first place: the first team is refilled before a later one", () => {
+    // "Mariners" is said by the variation, so it starts latent. 114 → Orix
+    // (100) → the number (97) → the variation (60). Refill: the number (63),
+    // then the FIRST team, Mariners (72); Orix would need 86. Ranked wrongly,
+    // Orix would refill first (77) and Mariners would not fit.
+    const a = assessListingTitle(
+      atFullLength(
+        {
+          ...ichiro,
+          cardVariation: "Mariners Turn Ahead The Clock Jersey",
+          teamNames: ["Mariners", "Orix BlueWave"],
+        },
+        114,
+      ),
+    );
+    expect(a.title).toMatch(/ Ichiro #7 Mariners$/);
+  });
+});
+
+describe("NEO-535 the same player named twice", () => {
+  test("listed once in the title, the left-out list and the description", () => {
+    const inputs: ListingCardInputs = {
+      cardNumber: "19",
+      setName: "Topps Chrome",
+      playerNames: ["Mike Trout", " Mike  Trout ", "mike trout"],
+      sport: "Baseball",
+    };
+    const a = assessListingTitle(inputs);
+    expect(a.title).toBe("Topps Chrome Mike Trout #19 Baseball");
+    expect(leftOutOfTitle(inputs, "Topps Chrome #19")).toEqual(["Mike Trout"]);
+    expect(generateListingDescription(inputs)).toContain("card of Mike Trout, #19.");
+  });
+
+  test("a three-word name loses only its first word (the stored-card parity case)", () => {
+    const a = assessListingTitle({
+      cardNumber: "19",
+      setName: "Topps Chrome",
+      playerNames: [
+        "Bartholomew Maximilian Fitzgerald-Worthington",
+        "Bartholomew Maximilian Fitzgerald-Worthington",
+      ],
+      sport: "Baseball",
+    });
+    expect(a.title).toBe("Topps Chrome Bartholomew Maximilian Fitzgerald-Worthington #19 Baseball");
+    expect(a.fits).toBe(true);
+  });
+});
