@@ -902,3 +902,36 @@ describe("NEO-535 the same player named twice", () => {
     expect(a.fits).toBe(true);
   });
 });
+
+describe("NEO-535 an insert's name enters the title on its ROLE, never on its name", () => {
+  const set = "ttlw8-abcdefxxxxxxxxx"; // the E2E fixture's 21-character set name
+  const card = {
+    cardNumber: "91A-AA1234567",
+    playerNames: ["George Brett"],
+    year: "2024",
+    manufacturer: "Topps",
+    setName: set,
+    sport: "Baseball",
+  } satisfies ListingCardInputs;
+  const setRow: TitleChainRow = { level: "setName", value: set };
+  const row = (value: string): TitleChainRow => ({ level: "insert", value });
+  const type = (title: string): TitleChainRow => ({ level: "variantType", value: title });
+
+  test("a row named Base under an Insert type is an insert called Base: name and label", () => {
+    const facts = titleChainFacts([row("Base"), type("Insert"), setRow]);
+    expect(facts).toMatchObject({ insertNameValue: "Base", insertIsRole: true });
+    const a = assessListingTitle({ ...card, insertName: facts.insertNameValue });
+    // 81 in full, so only the "#" goes (step 2 comes before the label's cut).
+    expect(a.title).toBe(`2024 Topps ${set} Base Insert George Brett 91A-AA1234567 Baseball`);
+    expect(a.title.length).toBe(80);
+  });
+
+  test("the same row under the Base type confers no insert role: no name, no label", () => {
+    const facts = titleChainFacts([row("Base"), type("Base"), setRow]);
+    expect(facts.insertNameValue).toBeUndefined();
+    expect(facts.insertIsRole).toBeUndefined();
+    expect(assessListingTitle({ ...card, insertName: facts.insertNameValue }).title).toBe(
+      `2024 Topps ${set} George Brett #91A-AA1234567 Baseball`,
+    );
+  });
+});
