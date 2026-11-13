@@ -6803,6 +6803,15 @@ export const previewListingTitle = query({
   args: { cardId: v.id("cardChecklist") },
   returns: v.object({
     title: v.string(),
+    // NEO-535 — the title is at most 80 characters; false is the STOP (the
+    // description is never cut, so the operator fixes it by hand).
+    fits: v.boolean(),
+    // NEO-535 — the title lost a player's first name to fit.
+    firstNameLost: v.boolean(),
+    // NEO-535 — built from the set's box text ("Set name in titles").
+    shortNameUsed: v.optional(v.boolean()),
+    // NEO-535 — false: the card belongs in the Card titles dialog for a first
+    // name or the box (`ListingTitleAssessment.coreFits`).
     coreFits: v.boolean(),
     dropped: v.array(v.string()),
     inputs: v.object({
@@ -6842,8 +6851,17 @@ export const previewListingTitle = query({
     if (!card) throw new ConvexError("previewListingTitle: no such card");
     // NEO-358 — the body moved, unchanged, to `storedCardTitle.ts` (for the
     // NEO-358 title backfill, retired in NEO-363).
-    const { title, coreFits, dropped, inputs } = await titleForStoredCard(ctx, card);
-    return { title, coreFits, dropped, inputs };
+    const { title, fits, firstNameLost, shortNameUsed, coreFits, dropped, inputs } =
+      await titleForStoredCard(ctx, card);
+    return {
+      title,
+      fits,
+      firstNameLost,
+      ...(shortNameUsed ? { shortNameUsed: true } : {}),
+      coreFits,
+      dropped,
+      inputs,
+    };
   },
 });
 

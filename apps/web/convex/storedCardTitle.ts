@@ -118,11 +118,8 @@ export async function titleForStoredCard(
     features,
   );
 
-  const { title, coreFits, dropped } = assessListingTitle(inputs);
   return {
-    title,
-    coreFits,
-    dropped,
+    ...assessListingTitle(inputs),
     inputs: { ...inputs, playerNames, teamNames },
   };
 }

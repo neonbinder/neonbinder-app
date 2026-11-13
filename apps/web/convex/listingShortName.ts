@@ -24,10 +24,11 @@ import { ConvexError, v } from "convex/values";
 import { derivedVariantFlags } from "./variantRole";
 
 /**
- * Ceiling on a short name. A title is 80 characters and the short name stands
- * in for the set and insert words of its core; anything near 60 is not short.
+ * Ceiling on the "Set name in titles" box (NEO-535: raised from 60). The box
+ * holds the WHOLE set description a title opens with, and a title is 80
+ * characters, so 80 is the most it could ever usefully say.
  */
-export const MAX_LISTING_SHORT_NAME_LENGTH = 60;
+export const MAX_LISTING_SHORT_NAME_LENGTH = 80;
 
 /** The levels a short name may live on: the set and everything under it. */
 export const LISTING_SHORT_NAME_LEVELS: ReadonlySet<string> = new Set([
@@ -57,13 +58,13 @@ export function normalizeListingShortName(raw: string): string | undefined {
   if (forbidden) {
     throw new ConvexError(
       /\p{Cf}/u.test(forbidden[0])
-        ? "A short name cannot contain zero-width or invisible characters."
-        : "A short name cannot contain line breaks or control characters.",
+        ? "Set name in titles can't hold zero-width or invisible characters."
+        : "Set name in titles can't hold line breaks or control characters.",
     );
   }
   if (trimmed.length > MAX_LISTING_SHORT_NAME_LENGTH) {
     throw new ConvexError(
-      `A short name is at most ${MAX_LISTING_SHORT_NAME_LENGTH} characters.`,
+      `Set name in titles tops out at ${MAX_LISTING_SHORT_NAME_LENGTH} characters.`,
     );
   }
   return trimmed;
@@ -91,7 +92,12 @@ export type TitleChainFacts = {
   insertIsRole?: boolean;
   /** The LEAF's own value — only when the leaf is a parallel (see below). */
   parallelLeafValue?: string;
-  /** The nearest self-or-ancestor short name, up to the setName row. */
+  /**
+   * NEO-535 — the box text ("Set name in titles") the leaf's cards get: the
+   * nearest self-or-ancestor value, up to the setName row, with the insert's
+   * name appended when the value sits above the insert row and the parallel
+   * leaf's name appended when it sits above the leaf (see `titleChainFacts`).
+   */
   listingShortName?: string;
 };
 
@@ -136,22 +142,48 @@ export function titleChainFacts(
   const variantType = chain.find((row) => row.level === "variantType");
 
   const facts: TitleChainFacts = {};
-  let insertSeen = false;
+  let insertIndex: number | undefined;
+  let shortIndex: number | undefined;
+  let short: string | undefined;
   for (const [index, row] of chain.entries()) {
     if (index === 0 && derivedVariantFlags(row.level, variantType)?.isParallel === true) {
       facts.parallelLeafValue = row.value;
     }
-    if (row.level === "insert" && !insertSeen) {
-      insertSeen = true;
+    if (row.level === "insert" && insertIndex === undefined) {
+      insertIndex = index;
       if (derivedVariantFlags(row.level, variantType)?.isInsert === true) {
         facts.insertNameValue = row.value;
         facts.insertIsRole = true;
       }
     }
-    const short = row.metadata?.listingShortName?.trim();
-    if (short && facts.listingShortName === undefined) {
-      facts.listingShortName = short;
+    const value = row.metadata?.listingShortName?.trim();
+    if (value && short === undefined) {
+      short = value;
+      shortIndex = index;
     }
   }
+  if (short !== undefined && shortIndex !== undefined) {
+    // NEO-535 — a value covers its own row and everything above it. Stored
+    // above the insert row, the cards still need their insert's name; stored
+    // above a parallel leaf, the parallel's. Appended verbatim (the box is the
+    // operator's text, and nothing is prepended to it), and skipped when the
+    // value already says every word of it.
+    if (facts.insertIsRole && insertIndex !== undefined && shortIndex > insertIndex) {
+      short = appendUnsaid(short, facts.insertNameValue);
+    }
+    if (facts.parallelLeafValue !== undefined && shortIndex > 0) {
+      short = appendUnsaid(short, facts.parallelLeafValue);
+    }
+    facts.listingShortName = short;
+  }
   return facts;
+}
+
+/** `text` then `name`, unless `text` already says every word of `name`. */
+function appendUnsaid(text: string, name: string | undefined): string {
+  const words = (name ?? "").trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return text;
+  const present = new Set(text.toLowerCase().split(/\s+/).filter(Boolean));
+  if (words.every((w) => present.has(w))) return text;
+  return `${text} ${name!.trim()}`;
 }
