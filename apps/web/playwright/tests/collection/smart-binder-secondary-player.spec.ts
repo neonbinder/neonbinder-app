@@ -56,7 +56,7 @@
 import type { Locator, Page } from "@playwright/test";
 import { ALSO_PICTURED, addAlsoPictured } from "../../support/also-pictured";
 import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton, escapeRe } from "../../support/cards";
-import { collectorCascade, drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { collectorCascade, confirmRemoved, drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustom, type CustomTarget } from "../../support/set-builder";
 
@@ -97,7 +97,9 @@ async function removeCopy(page: Page, checklist: Locator, short: string): Promis
   await expect(none.or(remove)).toBeVisible();
   if (await remove.isVisible()) {
     await remove.click();
+    // This card's own notice first, then the shared wait-and-dismiss (R3).
     await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw, Excellent` })).toBeVisible();
+    await confirmRemoved(drawer);
     await expect(none).toBeVisible();
   }
   await drawer.getByRole("button", { name: "Close card detail" }).click();
