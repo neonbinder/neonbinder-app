@@ -2434,7 +2434,7 @@ would put the wrong question on screen.
 | `ccrud-` | `tests/set-selector/custom-card-crud.spec.ts` |
 | `cd-` | `tests/set-selector/card-detail-panel.spec.ts` |
 | `cmo` | `tests/collection/smart-binder-secondary-player.spec.ts` (NEO-528, per-attempt, single token `cmo<token>`) — under the REAL `Baseball` › 2024 › `Topps` (the drawer's "Also on this card" search starts on the set's sport, and the player is a Baseball row); `Insert` › `Base`, ONE hand-added card `528-<attempt>` (card name `Cameo<token>`, no player of its own) whose "Also on this card" lists the player of the FIRST ordinary row of the seed's 2024 Topps Chrome Base (that player's row is only read, never written). The worker's own account holds it and that player's own Base card in a smart binder whose rule names that player and the sets 2024 Topps Chrome and `cmo<token>` (the copy of `528-<attempt>` is removed once mid-run and filed again from its empty slot); then the binder, both copies and the card are removed (a failure hook finishes each step), which takes that link with the card. The set and its rows stand. **No other spec may put that first-row player under "Also on this card" on any card**: the spec counts his cameos exactly (`Cameos: 1 have, 0 need`, the dashboard's `Cameos: 1 of 1`). |
-| `apb` | `tests/set-selector/also-pictured-bulk-every-card.spec.ts` (NEO-528, per-attempt, single token `apb<token>`) — under the REAL `Baseball` › 2024 › `Topps`; `Insert` › `Base`, two hand-added cards `5281-<attempt>` / `5282-<attempt>`. The Attributes panel's "Also on every card" adds the player of the SECOND ordinary row of the seed's 2024 Topps Chrome Base to both cards and takes him off again (read only on that player's row; the spec asserts he is not the first row's player, see `cmo`). Both cards are DELETED at the end; the set and its rows stand. |
+| `pev` | `tests/set-selector/player-on-every-card.spec.ts` (NEO-528, per-attempt, single token `pev<token>`) — under the REAL `Baseball` › 2024 › `Topps` (the pickers search the set's sport, Baseball, the players' sport); `Insert` › `Base`, four hand-added cards `5281-<attempt>` .. `5284-<attempt>` (card names `Every1<token>` ..). "Player on every card" is STORED on rows of this set (Base: a player, then cleared, and a cameo; the set row: a player), so it uses the players of the 2nd, 3rd and 4th ordinary rows of the seed's 2024 Topps Chrome Base (read only; the spec asserts none is the FIRST row's player, see `cmo`): two cards are born with the 2nd row's player, one names the 3rd row's player, all get the 4th row's player as a cameo. All four cards are DELETED at the end, and by a failure hook on a red run, so no catalogue card is left naming them; the set, its rows and their stored values stand (per attempt, read by no other spec). The commit-path copy at birth (a stored player reaching cards a FETCH creates) is NOT covered here: a hand-made row has no marketplace ids, and a fetch there stops at "No marketplace ids on this path" before it reads a publisher's checklist, so that proof needs a real set (proposed below, under "Player on every card before the fetch"). |
 | `cdr-` | `tests/collection/card-collectors-own-cannot-be-deleted.spec.ts` (NEO-358, per-attempt: `cdr-<worker>-<attempt>`) — under the REAL `Baseball` › 2024 › `Topps`; `Insert` › `Base`, ONE hand-added card `361-<attempt>` (card name `Held<token>`, no player, no marketplace id anywhere beneath it). The worker's own account marks it Have through `/collection`, the set builder's Del → Confirm is REFUSED (the collector guard), then the copy is removed and the same delete goes through: the card is DELETED at the end, the set and its rows stand. The same set also proves the collector's catalog hides a known-empty level: absent from `/collection` > Checklists > Sets before the card, offered with it, absent again after the delete. **Never aim a collector's copy at a card of a shared set** with this check: were the guard to break, the delete would take the card. Per-attempt so the card and its copy are this run's alone. |
 | `crqa-` | `tests/collection/card-request-approve-moves-copy.spec.ts` (NEO-361, per-attempt: `crqa-<worker>-<attempt>`) — under the REAL `Baseball` › 2024 › `Topps`; `Insert` › `Base`, one hand-added card `1<token>` (so the collector's catalog offers the set) and the card the admin's "Add and approve" adds, `9<token>` (title `Asked<token>`, no player, no marketplace id anywhere beneath it). The worker's own account requests `9<token>` (NEO-431: with a front and a back photo, stored as the request's own Convex files, the account's rows only) and files a copy; the approval moves that copy onto the new card; the copy is removed at the end. The set and both cards stand. |
 | `crqd-` | `tests/collection/card-request-decline-stays-private.spec.ts` (NEO-361, per-attempt: `crqd-<worker>-<attempt>`) — under the REAL `Baseball` › 2024 › `Topps`; `Insert` › `Base`, one hand-added card `1<token>` so the collector's catalog offers the set. The requested card (`8<token>` in a typed checklist `Foil<token>`) is DECLINED, so nothing is ever added to the set; the request, its private card and copy are removed by the spec. |
@@ -3324,6 +3324,26 @@ spare from the list cannot stand in for it unless it is numbered and its
 numbers are unique: Dayton Bombers ECHL (32 cards, numbered) is the fallback,
 Dunkin Donuts Portland Pirates AHL and Louisiana Ice Gators ECHL are all `NNO`
 and cannot be used.
+
+### Player on every card before the fetch (NEO-528): PROPOSED, needs Jason's approval
+
+The proof Jason asked for: "Player on every card" stored on a checklist BEFORE
+its cards exist, then the cards built by a real fetch and commit
+(`commitCardChecklistChunk`), and the committed cards carry the player and
+their titles name him. It cannot run on a hand-made row: a fetch on a path
+with no marketplace ids returns "No marketplace ids on this path" before it
+reads a publisher's checklist, and no other path commits cards there
+(`player-on-every-card` covers the quick-add birth instead). So it needs a
+real, BSC-only, sole-writer, fresh-only set, which is an owner decision.
+
+| proposed spec | set | why |
+|---|---|---|
+| `checklist-player-on-every-card-before-fetch` | Hockey > 1995 > Unknown (All Brands) > **Dayton Bombers ECHL** > Base (the last numbered spare above) | 32 numbered cards and a roster the catalogue does not know. If "Skip remaining names" leaves a card with no player and no name waiting (the probe must confirm it), the stored player (a catalogue Hockey player, e.g. Wayne Gretzky, verified above) fills every such card at the commit; a stored cameo lands on every card either way |
+
+Before it can be written: a probe like the NEO-330 one (cards, unknown names,
+teams), and a captured publisher's checklist with `No Team` set by hand where
+BSC gives none (NEO-489: no spec fetches card by card), registered in the
+checklist table above. No spec writes this set until then.
 
 ## Adding a set
 

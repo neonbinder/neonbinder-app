@@ -1,10 +1,11 @@
 /**
  * NEO-528: the set builder's "Also on this card" handles (players on a card
- * besides its main player), one place for every accessible name the
- * card drawer's second player picker and the Attributes panel's bulk control
- * give them, so a copy change is a change here. The names come from
+ * besides its main player) and the Attributes panel's "Player on every card"
+ * section, one place for every accessible name they carry, so a copy change
+ * is a change here. The names come from
  * `components/SetSelector/player-picker-labels.ts` (`ALSO_PICTURED_PICKER_LABELS`,
- * `BULK_ALSO_PICTURED_PICKER_LABELS`) and `AlsoPicturedBulkControl.tsx`.
+ * `EVERY_CARD_PLAYER_PICKER_LABELS`, `EVERY_CARD_PLAYER_ACTION_LABELS`) and
+ * `EveryCardPlayerControl.tsx` (toasts, confirms, the run ledger).
  *
  * The collector's words for the same thing (the binder's "Include cameos",
  * the Cameo tag, "<name> is a cameo on this card", "Cameos: N have, N
@@ -12,10 +13,9 @@
  * card detail's term is the drawer's heading (`ALSO_PICTURED.heading`).
  *
  * Used by `collection/smart-binder-secondary-player` and
- * `set-selector/also-pictured-bulk-every-card`.
+ * `set-selector/player-on-every-card`.
  */
 import { expect, type Locator, type Page } from "@playwright/test";
-import { escapeRe } from "./set-builder";
 
 /** The card drawer's field, as its words read (heading "Also on this card"). */
 export const ALSO_PICTURED = {
@@ -31,21 +31,42 @@ export const ALSO_PICTURED = {
   saved: "Saved Also on this card",
 } as const;
 
-/** The Attributes panel's bulk control, as its words read. */
-export const ALSO_PICTURED_BULK = {
-  region: "Also on every card",
-  trigger: "Choose who to change on every card",
-  search: "Find who to change on every card",
+/**
+ * The Attributes panel's "Player on every card" section (round 3: a stored
+ * player and cameos on the row, at any level, that every new card beneath is
+ * born with), as its words read. Its hint and its cameo confirm quote the
+ * drawer's heading "Also on this card", so locate by role, never by that text.
+ */
+export const EVERY_CARD_PLAYER = {
+  /** The section's heading, and its region's name. */
+  region: "Player on every card",
+  /** The stored lines' labels (plain text, beside the chips). */
+  playerLine: "Player:",
+  cameoLine: "Cameos:",
+  /** The picker: trigger (visible "+ Choose who"), its search and an option. */
+  trigger: "Choose who goes on every card",
+  search: "Find who goes on every card",
   option: (name: string) => `Choose ${name}`,
-  add: "Add to every card",
-  remove: "Take off every card",
-  /** The confirm dialog's title begins so; it goes on to name the checklists. */
-  askAdd: (name: string) => new RegExp(`^Add ${escapeRe(name)} to every card in `),
-  askRemove: (name: string) => new RegExp(`^Take ${escapeRe(name)} off every card in `),
-  yesAdd: (name: string) => `Yes, add ${name}`,
-  yesRemove: (name: string) => `Yes, take ${name} off`,
+  /** Green: store the pick as the row's player. Blue outline: as a cameo. */
+  addPlayer: "Add to every card",
+  addCameo: "Add as cameo",
+  /** The × on a stored chip. Absent on an inherited line. */
+  stopPlayer: (name: string) => `Stop putting ${name} on new cards`,
+  stopCameo: (name: string) => `Stop adding ${name} as a cameo on new cards`,
+  /** A value stored on a row above, muted, with no × ("Ken Griffey Jr. (from 2024 Topps)"); one text node. */
+  inherited: (fromRow: string, names: string) => `${names} (from ${fromRow})`,
+  /** Confirm titles (cards beneath) and their yes buttons; one yes is a prefix of the other, so `exact: true`. */
+  askPlayer: (name: string, scope: string) => `Add ${name} to every card in ${scope}?`,
+  askCameo: (name: string, scope: string) => `Add ${name} as a cameo on every card in ${scope}?`,
+  yesPlayer: (name: string) => `Yes, add ${name}`,
+  yesCameo: (name: string) => `Yes, add ${name} as a cameo`,
+  /** The panel's toasts (its polite status line). */
+  saved: (name: string) => `Saved, every new card gets ${name}`,
+  savedCameo: (name: string) => `Saved, every new card gets ${name} as a cameo`,
+  cleared: (name: string) => `Cleared, new cards won't get ${name}; cards that have them keep them`,
+  /** A finished run's ledger: a region named by its heading. */
   added: (name: string, cards: string) => `Added ${name} to ${cards}`,
-  tookOff: (name: string, cards: string) => `Took ${name} off ${cards}`,
+  addedCameo: (name: string, cards: string) => `Added ${name} as a cameo on ${cards}`,
   /** The finished run's ledger button (it reads "Dismiss"; this is its name). */
   dismiss: "Dismiss this run",
 } as const;

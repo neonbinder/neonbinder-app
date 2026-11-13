@@ -5,9 +5,9 @@ metadata:
   type: feedback
 ---
 
-Learned writing `collection/smart-binder-secondary-player` and `set-selector/also-pictured-bulk-every-card` (NEO-528).
+Learned writing `collection/smart-binder-secondary-player` and `set-selector/player-on-every-card` (was `also-pictured-bulk-every-card`; NEO-528).
 
-- **Cameo counts are catalogue-wide.** A smart binder's "Cameos: N have, N need" counts every card in the catalogue that lists the rule's player as also on the card. Any other spec (or a failed run of this one) that puts the SAME player on a card changes the need count. So each cameo spec uses its own seed player (first vs second ordinary Base row, asserted different), and the spec needs a failure hook that deletes its hand-made card. Recorded in SET-REGISTRY under `cmo`/`apb`.
+- **Cameo counts are catalogue-wide.** A smart binder's "Cameos: N have, N need" counts every card in the catalogue that lists the rule's player as also on the card. Any other spec (or a failed run of this one) that puts the SAME player on a card changes the need count. So each cameo spec uses its own seed player (first vs second ordinary Base row, asserted different), and the spec needs a failure hook that deletes its hand-made card. Recorded in SET-REGISTRY under `cmo`/`pev`.
 - **Sorted binder pages:** group names are `Page N, 2024 <set>` for a Base checklist (Base left out) and `Page N, 2024 <set> Base` for a hand-made Insert > Base. A hand-made set sorts before `Topps Chrome`, so the seed card is on a later page. Turn with `/^Next pages?$/` ("Next pages" desktop spread, "Next page" phone).
 - **Count lines (`1 have, 0 need`, `Cameos: ...`)** sit inside the region `<binder>, open` on desktop but above it on a phone: locate on the page.
 - **Set-builder card drawer toast** ("Saved ...") is a `role=status` rendered OUTSIDE the drawer dialog and lives 6 s: `page.getByRole("status").filter({ hasText })`, right after the action.
