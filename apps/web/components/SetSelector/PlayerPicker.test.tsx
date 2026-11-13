@@ -1315,13 +1315,13 @@ describe("PlayerPicker — label sets (NEO-528)", () => {
     const P = EVERY_CARD_PLAYER_PICKER_LABELS;
     const A = EVERY_CARD_PLAYER_ACTION_LABELS;
     expect([P.root, P.trigger, P.triggerText, P.search, P.results, P.placeholder, P.sportSwitch]).toEqual([
-      "Whole-checklist pick",
+      "Every-card pick",
       "Choose who goes on every card",
       "Choose who",
       "Find who goes on every card",
-      "Whole-checklist choices",
+      "Every-card matches",
       "Who's on every card?",
-      "Sport for the whole-checklist search",
+      "Sport for the every-card search",
     ]);
     expect([P.chip("Al"), P.remove("Al"), P.option("Al"), P.create("Al")]).toEqual([
       "Chosen for every card: Al",

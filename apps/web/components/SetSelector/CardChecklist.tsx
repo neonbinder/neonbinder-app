@@ -2193,27 +2193,20 @@ export default function CardChecklist({
     // NEO-528 — the same, for who is on the card: under a node with a
     // "Player on every card", a NEW row with nobody on it is born with that
     // player (the commit's insert branch). The title context names them
-    // (`setPlayerNames`); the teams step needs their id, so it is asked once,
-    // here, and used only when it is the player the title context named (the
-    // server drops one of another sport; so does this). Existing rows are
-    // never filled, so they never join.
-    const setPlayerCoversNewRows = (titleContext?.setPlayerNames?.length ?? 0) > 0;
+    // (`setPlayerNames`) and carries their id beside the name (`setPlayerId`),
+    // both resolved by the server the way the commit resolves them (a player
+    // of another sport is dropped there, so never arrives here). Existing
+    // rows are never filled, so they never join. An older server sends no
+    // id: the teams step then files these cards as it always has.
+    const setPlayerName = titleContext?.setPlayerNames?.[0];
+    const setPlayerId = titleContext?.setPlayerId;
     let defaultPlayer: DefaultPlayerWire | undefined;
-    if (setPlayerCoversNewRows && diff) {
-      try {
-        const stored = await convex.query(api.cardPlayersBulk.cardPlayerDefaults, {
-          selectorOptionId: variantId,
-        });
-        const player = stored?.own.player ?? stored?.inherited?.player;
-        const positions = kept.flatMap(({ index }, position) =>
-          existingIdByIndex.has(index) ? [] : [position],
-        );
-        if (player && titleContext?.setPlayerNames?.includes(player.name) && positions.length > 0) {
-          defaultPlayer = { playerId: player._id, name: player.name, positions };
-        }
-      } catch {
-        // The title still names them; the teams step just files these cards
-        // as it always has.
+    if (setPlayerName && setPlayerId && diff) {
+      const positions = kept.flatMap(({ index }, position) =>
+        existingIdByIndex.has(index) ? [] : [position],
+      );
+      if (positions.length > 0) {
+        defaultPlayer = { playerId: setPlayerId, name: setPlayerName, positions };
       }
     }
     const preview: FetchPreview = {

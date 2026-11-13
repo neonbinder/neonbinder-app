@@ -86,6 +86,9 @@ import EveryCardPlayerControl, {
   BULK_ADD_CAMEO_LABEL,
   BULK_ADD_PLAYER_LABEL,
   BULK_CHECKLIST_CHANGED_TEXT,
+  BULK_CHOOSE_FIRST_TEXT,
+  BULK_COUNTING_TEXT,
+  BULK_TRUNCATED_TEXT,
   BULK_DISMISS_LABEL,
   BULK_PLAYER_GONE_TEXT,
   BULK_STOP_LABEL,
@@ -132,6 +135,7 @@ const ZERO: BulkCounts = {
   skippedFull: 0,
   skippedOther: 0,
   skippedPending: 0,
+  skippedSport: 0,
   titlesRefreshed: 0,
   titlesKept: 0,
 };
@@ -193,23 +197,32 @@ describe("Player on every card — the words", () => {
         "Ken Griffey Jr.",
       ),
     ).toBe(
-      "added to 40 cards, 3 moved up from cameo, 5 already Ken Griffey Jr.'s, skipped 2 that have a player, skipped 1 with a name to review, 38 titles refreshed, 2 left as typed",
+      "added to 40 cards, 3 moved up from cameo, 5 already Ken Griffey Jr.'s, skipped 2 that have a player, skipped 1 still waiting on a new name, 38 card titles updated, 2 kept as you typed them",
     );
     expect(lineResultText("player", counts({ scanned: 1, skippedOther: 1 }), "X")).toBe(
       "nothing new, skipped 1 that has a player",
     );
     expect(lineResultText("player", counts({ scanned: 2, changed: 2, titlesKept: 2 }), "X")).toBe(
-      "added to 2 cards, 2 titles left as typed",
+      "added to 2 cards, 2 card titles kept as you typed them",
     );
     expect(lineResultText("player", counts({ scanned: 1, changed: 1, titlesRefreshed: 1 }), "Chris")).toBe(
-      "added to 1 card, 1 title refreshed",
+      "added to 1 card, 1 card title updated",
+    );
+    expect(lineResultText("player", counts({ scanned: 3, changed: 1, skippedSport: 2 }), "X")).toBe(
+      "added to 1 card, skipped 2 that play another sport",
+    );
+    expect(lineResultText("player", counts({ scanned: 1, skippedSport: 1 }), "X")).toBe(
+      "nothing new, skipped 1 that plays another sport",
     );
   });
 
   it("a cameo line says what changed and every reason a card was left alone", () => {
     expect(
       lineResultText("cameo", counts({ scanned: 50, changed: 45, unchanged: 2, skippedPrimary: 2, skippedFull: 1 }), "Dan Marino"),
-    ).toBe("added to 45 cards, 2 already listed, skipped 2 of Dan Marino's own, skipped 1 already listing 20");
+    ).toBe("added to 45 cards, 2 already listed, skipped 2 of Dan Marino's own, skipped 1 that is full (20 players)");
+    expect(
+      lineResultText("cameo", counts({ scanned: 9, changed: 4, skippedFull: 2, skippedSport: 3 }), "Dan Marino"),
+    ).toBe("added to 4 cards, skipped 2 that are full (20 players), skipped 3 that play another sport");
     expect(lineResultText("cameo", counts({ scanned: 1, skippedPrimary: 1 }), "Chris")).toBe(
       "nothing new, skipped 1 of Chris' own",
     );
@@ -222,7 +235,7 @@ describe("Player on every card — the words", () => {
 
   it("the hint names both actions, and says 'in this parallel' on a parallel", () => {
     expect(bulkHintText("insert")).toBe(
-      "Same face on every card? Pick them once. Add to every card makes them the card's player; Add as cameo puts them under Also on this card. Cards that already have a player stay as they are, and new cards get them too.",
+      'Same face on every card? Pick them once. "Add to every card" makes them the player wherever nobody\'s there yet; "Add as cameo" tucks them under Also on this card. New cards get them too.',
     );
     expect(bulkHintText("sport")).toBe(bulkHintText("insert"));
     expect(bulkHintText("parallel")).toMatch(/^Same face on every card in this parallel\? Pick them once\./);
@@ -232,7 +245,7 @@ describe("Player on every card — the words", () => {
     expect(confirmCopy({ kind: "player", playerName: "Ken Griffey Jr.", scope: "Base and its 2 parallels", overridden: 0 })).toEqual({
       title: "Add Ken Griffey Jr. to every card in Base and its 2 parallels?",
       description:
-        "Ken Griffey Jr. becomes the player on every card that doesn't have one yet. Cards with a player stay put; untouched titles pick up Ken Griffey Jr.'s name. New cards get Ken Griffey Jr. too.",
+        "Ken Griffey Jr. becomes the player on every card that doesn't have one yet. Cards with a player stay put; titles you haven't edited pick up Ken Griffey Jr.'s name. New cards get Ken Griffey Jr. too.",
       confirmLabel: "Yes, add Ken Griffey Jr.",
     });
     const replacing = confirmCopy({
@@ -243,7 +256,7 @@ describe("Player on every card — the words", () => {
       overridden: 2,
     });
     expect(replacing.description).toBe(
-      "Q becomes the player on every card that doesn't have one yet. Cards with a player stay put; untouched titles pick up Q's name. Q replaces A for new cards. 2 checklists here have their own player and are left alone.",
+      "Q becomes the player on every card that doesn't have one yet. Cards with a player stay put; titles you haven't edited pick up Q's name. Q replaces A for new cards. 2 checklists here have their own player and are left alone.",
     );
   });
 
@@ -267,7 +280,7 @@ describe("Player on every card — the words", () => {
     expect(bulkErrorText(new ConvexError("One of the selected players no longer exists."))).toBe(
       BULK_PLAYER_GONE_TEXT,
     );
-    expect(bulkErrorText(new Error("Server Error"))).toBe("The connection dropped before these cards saved.");
+    expect(bulkErrorText(new Error("Server Error"))).toBe("Something went sideways. Give it another go.");
     expect(bulkErrorText(new ConvexError("Every card can carry at most 20 cameos."))).toBe(
       "Every card can carry at most 20 cameos.",
     );
@@ -353,7 +366,7 @@ describe("Player on every card — the ledger steps", () => {
     expect(bulkLineText(run.lines[1], run)).toBe("Gold — stopped partway, 50 cards checked");
     expect(bulkLineText(run.lines[2], run)).toBe("Black — not reached");
     expect(bulkHeading(run)).toBe(
-      "Stopped after you asked. So far: added Dan Marino to 50 cards. Run it again to finish; cards already done are skipped.",
+      "Stopped, like you asked. So far: added Dan Marino to 50 cards. Run it again to finish; cards already done are skipped.",
     );
   });
 
@@ -471,14 +484,36 @@ describe("EveryCardPlayerControl", () => {
     expect(
       screen.getByLabelText(EVERY_CARD_PLAYER_PICKER_LABELS.root).getAttribute("data-described-by"),
     ).toBe(hint.id);
-    // Held with aria-disabled, never native disabled: still reachable, so its title can say why.
+    // Held with aria-disabled, never native disabled: still reachable, and
+    // described by the hint (never a title only a mouse sees).
     for (const button of [playerButton(), cameoButton()]) {
       expect((button as HTMLButtonElement).disabled).toBe(false);
       expect(button.getAttribute("aria-disabled")).toBe("true");
-      expect(button.getAttribute("title")).toBe("Choose who first");
+      expect(button.getAttribute("title")).toBeNull();
+      expect(button.getAttribute("aria-describedby")).toBe(hint.id);
     }
     expect(A.addPlayer).toBe(BULK_ADD_PLAYER_LABEL);
     expect(A.addCameo).toBe(BULK_ADD_CAMEO_LABEL);
+  });
+
+  it("pressing an action before anyone is chosen says so and hands focus to the picker", () => {
+    renderControl();
+    act(() => cameoButton().focus());
+    fireEvent.click(cameoButton());
+    expect(screen.getByRole("alert").textContent).toBe(BULK_CHOOSE_FIRST_TEXT);
+    expect(document.activeElement).toBe(trigger());
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(mockMutation).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    // A second press is a new alert node, so it is read again.
+    const first = screen.getByRole("alert");
+    fireEvent.click(playerButton());
+    const second = screen.getByRole("alert");
+    expect(second.textContent).toBe(BULK_CHOOSE_FIRST_TEXT);
+    expect(second).not.toBe(first);
+    // Choosing someone clears it.
+    fireEvent.click(screen.getByText("Stub pick p1"));
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("the green action is the player, the blue outline the cameo", () => {
@@ -497,17 +532,6 @@ describe("EveryCardPlayerControl", () => {
       expect(classes).toContain("rt-r-size-2");
       expect(classes).toContain("sm:rt-r-size-1");
     }
-  });
-
-  it("a press before anyone is chosen does nothing and keeps focus on the button", () => {
-    renderControl();
-    act(() => playerButton().focus());
-    fireEvent.click(playerButton());
-    fireEvent.click(cameoButton());
-    expect(mockQuery).not.toHaveBeenCalled();
-    expect(mockMutation).not.toHaveBeenCalled();
-    expect(screen.queryByRole("dialog")).toBeNull();
-    expect(document.activeElement).toBe(playerButton());
   });
 
   it("keeps one player at a time: a second pick replaces the first", () => {
@@ -576,8 +600,8 @@ describe("EveryCardPlayerControl", () => {
       },
     });
     renderControl();
-    expect(screen.getByText("From 1989 Upper Deck: Ken Griffey Jr.")).toBeTruthy();
-    expect(screen.getByText("From 1989: Jay Buhner, Edgar Martinez")).toBeTruthy();
+    expect(screen.getByText("Ken Griffey Jr. (from 1989 Upper Deck)")).toBeTruthy();
+    expect(screen.getByText("Jay Buhner, Edgar Martinez (from 1989)")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /^Stop / })).toBeNull();
   });
 
@@ -591,7 +615,7 @@ describe("EveryCardPlayerControl", () => {
     });
     renderControl();
     expect(screen.queryByText(/Someone Else/)).toBeNull();
-    expect(screen.getByText("From 1989 Upper Deck: Jay Buhner")).toBeTruthy();
+    expect(screen.getByText("Jay Buhner (from 1989 Upper Deck)")).toBeTruthy();
   });
 
   it("with nothing stored here or above, it draws no stored lines", () => {
@@ -614,7 +638,7 @@ describe("EveryCardPlayerControl", () => {
     });
     expect(mockQuery).not.toHaveBeenCalled();
     expect(mutationCalls("cardPlayersBulk.addPlayerToVariant")).toHaveLength(0);
-    expect(onToast).toHaveBeenCalledWith("Saved · every new card gets Dan Marino");
+    expect(onToast).toHaveBeenCalledWith("Saved, every new card gets Dan Marino");
     expect(screen.getByText("Picked:")).toBeTruthy();
   });
 
@@ -627,7 +651,7 @@ describe("EveryCardPlayerControl", () => {
       kind: "cameo",
       playerId: "p2",
     });
-    expect(onToast).toHaveBeenCalledWith("Saved · every new card gets Don Shula as a cameo");
+    expect(onToast).toHaveBeenCalledWith("Saved, every new card gets Don Shula as a cameo");
   });
 
   it("a cameo of this row's own player is refused beside the buttons before anything is asked", async () => {
@@ -658,6 +682,18 @@ describe("EveryCardPlayerControl", () => {
     await waitFor(() => expect(document.activeElement).toBe(playerButton()));
   });
 
+  it("while the confirm is up the stored chips are inert and locked too", async () => {
+    subscribedDefaults = defaultsWith({ own: { player: undefined, cameos: [{ _id: pid("a"), name: "Jay Buhner" }] } });
+    renderControl();
+    await pickAndPress(playerButton);
+    await screen.findByRole("dialog");
+    const x = screen.getByRole("button", { name: A.stopCameo("Jay Buhner"), hidden: true });
+    expect(x.closest("[inert]")).not.toBeNull();
+    expect(x.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.click(x);
+    expect(mutationCalls("cardPlayersBulk.clearCardPlayerDefault")).toHaveLength(0);
+  });
+
   it("an unknown card count asks too", async () => {
     subscribedDefaults = defaultsWith({ cardCount: undefined, cardsToWalk: undefined });
     renderControl();
@@ -675,7 +711,7 @@ describe("EveryCardPlayerControl", () => {
     await pickAndPress(playerButton);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(mutationCalls("cardPlayersBulk.setCardPlayerDefault")).toHaveLength(1);
-    expect(onToast).toHaveBeenCalledWith("Saved · every new card gets Dan Marino");
+    expect(onToast).toHaveBeenCalledWith("Saved, every new card gets Dan Marino");
   });
 
   it("says who it replaces for new cards", async () => {
@@ -701,10 +737,10 @@ describe("EveryCardPlayerControl", () => {
     for (const call of pages) expect(call[1]).toMatchObject({ variantId: VARIANT, playerId: "p1" });
     const ledger = screen.getByRole("region", { name: "Added Dan Marino to 127 cards" });
     expect(
-      within(ledger).getByText("Base — added to 69 cards, skipped 1 that has a player, 69 titles refreshed"),
+      within(ledger).getByText("Base — added to 69 cards, skipped 1 that has a player, 69 card titles updated"),
     ).toBeTruthy();
     expect(
-      within(ledger).getByText("Black — added to 28 cards, 2 already Dan Marino's, 27 titles refreshed, 1 left as typed"),
+      within(ledger).getByText("Black — added to 28 cards, 2 already Dan Marino's, 27 card titles updated, 1 kept as you typed them"),
     ).toBeTruthy();
     // Done: the actions are free again, nothing to stop, and the pick went to the stored chip.
     expect(screen.queryByRole("button", { name: BULK_STOP_LABEL })).toBeNull();
@@ -748,7 +784,11 @@ describe("EveryCardPlayerControl", () => {
     fireEvent.click(screen.getByText("Stub pick p1"));
     act(() => playerButton().focus());
     fireEvent.click(playerButton());
-    const counting = screen.getByRole("button", { name: "Counting cards…" });
+    // Its name stays put; aria-busy and the polite line say what it is doing.
+    const counting = playerButton();
+    expect(counting.getAttribute("aria-busy")).toBe("true");
+    expect(cameoButton().getAttribute("aria-busy")).toBeNull();
+    expect(screen.getByText(BULK_COUNTING_TEXT).getAttribute("aria-live")).toBe("polite");
     expect(counting.getAttribute("aria-disabled")).toBe("true");
     expect((counting as HTMLButtonElement).disabled).toBe(false);
     expect(document.activeElement).toBe(counting);
@@ -783,7 +823,7 @@ describe("EveryCardPlayerControl", () => {
     fireEvent.click(screen.getByRole("button", { name: A.stopPlayer("Ken Griffey Jr.") }));
     expect(mutationCalls("cardPlayersBulk.clearCardPlayerDefault")).toHaveLength(1);
     await act(async () => done({ playerId: "k", cameoIds: [] }));
-    expect(onToast).toHaveBeenCalledWith("Cleared · cards keep Jay Buhner");
+    expect(onToast).toHaveBeenCalledWith("Cleared, new cards won't get Jay Buhner; cards that have them keep them");
   });
 
   it("a refused clear says why beside the buttons", async () => {
@@ -819,7 +859,7 @@ describe("EveryCardPlayerControl", () => {
       release(page({ targetIndex: 0, cursor: "more", scanned: 50, changed: 50 }));
     });
     await screen.findByRole("heading", {
-      name: "Stopped after you asked. So far: added Dan Marino to 50 cards. Run it again to finish; cards already done are skipped.",
+      name: "Stopped, like you asked. So far: added Dan Marino to 50 cards. Run it again to finish; cards already done are skipped.",
     });
     expect(mutationCalls("cardPlayersBulk.addPlayerToVariant")).toHaveLength(1);
     // The pick stays, so one press finishes the run.
@@ -881,7 +921,10 @@ describe("EveryCardPlayerControl", () => {
     renderControl();
     await pickAndPress(playerButton);
     await confirmRun();
-    expect(await screen.findByText(/more checklists here than one run reaches/)).toBeTruthy();
+    expect(await screen.findByText(BULK_TRUNCATED_TEXT)).toBeTruthy();
+    expect(BULK_TRUNCATED_TEXT).toBe(
+      "Over 500 checklists here. This run covers the first 500; run the rest from their own set or insert.",
+    );
   });
 
   it("mounts its live line before any run, so the start is announced", async () => {
@@ -917,7 +960,7 @@ describe("EveryCardPlayerControl", () => {
     await act(async () => {
       release(page({ targetIndex: 0, cursor: "more", scanned: 50, changed: 50 }));
     });
-    const ledger = await screen.findByRole("region", { name: /^Stopped after you asked\./ });
+    const ledger = await screen.findByRole("region", { name: /^Stopped, like you asked\./ });
     await waitFor(() => expect(document.activeElement).toBe(ledger));
   });
 

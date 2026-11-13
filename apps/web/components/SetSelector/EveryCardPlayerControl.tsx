@@ -31,8 +31,8 @@ import {
  *     born with them ("Player: Ken Griffey Jr. ×");
  *   - the cameos: every new card beneath is born with them ("Cameos: A × B ×").
  *
- * Nearest row wins, so a value stored above shows here muted, with no × ("From
- * 2024 Topps: Ken Griffey Jr."), until this row stores its own.
+ * Nearest row wins, so a value stored above shows here muted, with no ×
+ * ("Player: Ken Griffey Jr. (from 2024 Topps)"), until this row stores its own.
  *
  * One picker, two actions: green "Add to every card" stores the pick as the
  * player, blue-outline "Add as cameo" as a cameo. With no cards beneath, that
@@ -75,12 +75,17 @@ export type BulkCounts = {
   skippedFull: number;
   skippedOther: number;
   skippedPending: number;
+  /** Cards of another sport than the player's: never given them. */
+  skippedSport: number;
   titlesRefreshed: number;
   titlesKept: number;
 };
 
+/** Counts as a page carries them: `skippedSport` is absent from an older server. */
+type PageCounts = Omit<BulkCounts, "skippedSport"> & { skippedSport?: number };
+
 /** One page as the server returns it. */
-export type BulkPage = BulkCounts & {
+export type BulkPage = PageCounts & {
   targetId: Id<"selectorOptions">;
   targetIndex: number;
   targetCount: number;
@@ -130,6 +135,7 @@ const ZERO: BulkCounts = {
   skippedFull: 0,
   skippedOther: 0,
   skippedPending: 0,
+  skippedSport: 0,
   titlesRefreshed: 0,
   titlesKept: 0,
 };
@@ -163,6 +169,13 @@ export function scopeText(rowName: string, targets: readonly BulkTarget[]): stri
   return `${rowName} (${checklists(targets.length)})`;
 }
 
+const cardTitles = (n: number) => `${count(n)} card title${n === 1 ? "" : "s"}`;
+
+/** "skipped 2 that play another sport": the player's sport isn't the card's. */
+function skippedSportText(n: number): string {
+  return `skipped ${count(n)} that ${n === 1 ? "plays" : "play"} another sport`;
+}
+
 /** What a finished line says after its name. */
 export function lineResultText(kind: BulkKind, c: BulkCounts, playerName: string): string {
   if (c.scanned === 0) return "no cards yet";
@@ -173,15 +186,16 @@ export function lineResultText(kind: BulkKind, c: BulkCounts, playerName: string
     if (c.skippedOther > 0) {
       parts.push(`skipped ${count(c.skippedOther)} that ${c.skippedOther === 1 ? "has" : "have"} a player`);
     }
-    if (c.skippedPending > 0) parts.push(`skipped ${count(c.skippedPending)} with a name to review`);
-    if (c.titlesRefreshed > 0) {
-      parts.push(`${count(c.titlesRefreshed)} title${c.titlesRefreshed === 1 ? "" : "s"} refreshed`);
+    if (c.skippedPending > 0) {
+      parts.push(`skipped ${count(c.skippedPending)} still waiting on a new name`);
     }
+    if (c.skippedSport > 0) parts.push(skippedSportText(c.skippedSport));
+    if (c.titlesRefreshed > 0) parts.push(`${cardTitles(c.titlesRefreshed)} updated`);
     if (c.titlesKept > 0) {
       parts.push(
         c.titlesRefreshed > 0
-          ? `${count(c.titlesKept)} left as typed`
-          : `${count(c.titlesKept)} title${c.titlesKept === 1 ? "" : "s"} left as typed`,
+          ? `${count(c.titlesKept)} kept as you typed them`
+          : `${cardTitles(c.titlesKept)} kept as you typed them`,
       );
     }
   } else {
@@ -190,8 +204,11 @@ export function lineResultText(kind: BulkKind, c: BulkCounts, playerName: string
       parts.push(`skipped ${count(c.skippedPrimary)} of ${possessive(playerName)} own`);
     }
     if (c.skippedFull > 0) {
-      parts.push(`skipped ${count(c.skippedFull)} already listing ${MAX_CARD_PLAYERS}`);
+      parts.push(
+        `skipped ${count(c.skippedFull)} that ${c.skippedFull === 1 ? "is" : "are"} full (${MAX_CARD_PLAYERS} players)`,
+      );
     }
+    if (c.skippedSport > 0) parts.push(skippedSportText(c.skippedSport));
   }
   return parts.join(", ");
 }
@@ -261,7 +278,7 @@ export function bulkHeading(run: BulkRun): string {
     ? `added ${who} to ${cards(changed)}`
     : `added ${who} as a cameo on ${cards(changed)}`;
   const again = "Run it again to finish; cards already done are skipped.";
-  if (run.phase === "stopped") return `Stopped after you asked. So far: ${soFar}. ${again}`;
+  if (run.phase === "stopped") return `Stopped, like you asked. So far: ${soFar}. ${again}`;
   const where = run.lines.find((l) => l.kind === "failed");
   if (scanned === 0 && where) return `Stopped before any card changed. ${again}`;
   return `Stopped at ${where?.name ?? "a checklist"}. So far: ${soFar}. ${again}`;
@@ -269,16 +286,19 @@ export function bulkHeading(run: BulkRun): string {
 
 export const BULK_CHECKLIST_CHANGED_TEXT = "This checklist changed mid-way. Give it another go.";
 export const BULK_PLAYER_GONE_TEXT = "Can't find that player anymore. Pick them again.";
+/** Anything the server didn't word for a person (a dropped connection, a crash). */
+export const BULK_SIDEWAYS_TEXT = "Something went sideways. Give it another go.";
 
 /**
- * A refusal in the operator's words. The server's own sentences are shown as
- * they are (`cardPlayersBulk.BULK_CHECKLIST_CHANGED` and `BULK_MISSING_PLAYER`
- * already are these two), and any older wording about the run's bookkeeping,
- * or a player gone, is mapped onto them.
+ * A refusal in the operator's words. The server's own sentences (a
+ * ConvexError's string) are shown as they are (`cardPlayersBulk.
+ * BULK_CHECKLIST_CHANGED` and `BULK_MISSING_PLAYER` already are these two),
+ * and any older wording about the run's bookkeeping, or a player gone, is
+ * mapped onto them. Anything else is `BULK_SIDEWAYS_TEXT`, never its raw text.
  */
 export function bulkErrorText(error: unknown): string {
   const message = userFacingMessage(error, "");
-  if (!message) return "The connection dropped before these cards saved.";
+  if (!message) return BULK_SIDEWAYS_TEXT;
   if (/progress marker|cursor|changed mid-way/i.test(message)) {
     return BULK_CHECKLIST_CHANGED_TEXT;
   }
@@ -291,13 +311,13 @@ export function bulkErrorText(error: unknown): string {
 /** The toast after a store with no cards to walk. */
 export function savedToastText(kind: BulkKind, playerName: string): string {
   return kind === "player"
-    ? `Saved · every new card gets ${playerName}`
-    : `Saved · every new card gets ${playerName} as a cameo`;
+    ? `Saved, every new card gets ${playerName}`
+    : `Saved, every new card gets ${playerName} as a cameo`;
 }
 
 /** The toast after a chip's ×. */
 export function clearedToastText(playerName: string): string {
-  return `Cleared · cards keep ${playerName}`;
+  return `Cleared, new cards won't get ${playerName}; cards that have them keep them`;
 }
 
 /** The sentence the server refuses a cameo of the row's own player with. */
@@ -311,7 +331,7 @@ export function bulkHintText(level: PanelLevel): string {
     level === "parallel"
       ? "Same face on every card in this parallel? Pick them once."
       : "Same face on every card? Pick them once.";
-  return `${lead} Add to every card makes them the card's player; Add as cameo puts them under Also on this card. Cards that already have a player stay as they are, and new cards get them too.`;
+  return `${lead} "${L.addPlayer}" makes them the player wherever nobody's there yet; "${L.addCameo}" tucks them under Also on this card. New cards get them too.`;
 }
 
 export type ConfirmCopy = { title: string; description: string; confirmLabel: string };
@@ -344,7 +364,7 @@ export function confirmCopy({
     return {
       title: `Add ${q} to every card in ${scope}?`,
       description:
-        `${q} becomes the player on every card that doesn't have one yet. Cards with a player stay put; untouched titles pick up ${possessive(q)} name. ` +
+        `${q} becomes the player on every card that doesn't have one yet. Cards with a player stay put; titles you haven't edited pick up ${possessive(q)} name. ` +
         (replacing ? `${q} replaces ${replacing} for new cards.` : `New cards get ${q} too.`) +
         own("has its own player", "have their own player"),
       confirmLabel: `Yes, add ${q}`,
@@ -391,7 +411,7 @@ export function startRun(
 
 const finished = (c: BulkCounts): RunLineKind => (c.scanned === 0 ? "skipped" : "built");
 
-const add = (a: BulkCounts, b: BulkCounts): BulkCounts => ({
+const add = (a: BulkCounts, b: PageCounts): BulkCounts => ({
   scanned: a.scanned + b.scanned,
   changed: a.changed + b.changed,
   unchanged: a.unchanged + b.unchanged,
@@ -400,6 +420,7 @@ const add = (a: BulkCounts, b: BulkCounts): BulkCounts => ({
   skippedFull: a.skippedFull + b.skippedFull,
   skippedOther: a.skippedOther + b.skippedOther,
   skippedPending: a.skippedPending + b.skippedPending,
+  skippedSport: a.skippedSport + (b.skippedSport ?? 0),
   titlesRefreshed: a.titlesRefreshed + b.titlesRefreshed,
   titlesKept: a.titlesKept + b.titlesKept,
 });
@@ -501,7 +522,14 @@ export const BULK_ADD_PLAYER_LABEL = L.addPlayer;
 export const BULK_ADD_CAMEO_LABEL = L.addCameo;
 /** The finished ledger's close: visible "Dismiss", named apart from every notice's Dismiss. */
 export const BULK_DISMISS_LABEL = "Dismiss this run";
-const CHOOSE_FIRST = "Choose who first";
+/** The alert an Add pressed before anyone is picked raises. */
+export const BULK_CHOOSE_FIRST_TEXT = "Choose who first";
+/** The ledger's note when the server capped the checklists one run walks. */
+export const BULK_TRUNCATED_TEXT =
+  "Over 500 checklists here. This run covers the first 500; run the rest from their own set or insert.";
+/** The busy line under the actions (their names stay put while it shows). */
+export const BULK_COUNTING_TEXT = "Counting cards…";
+export const BULK_SAVING_TEXT = "Saving…";
 /**
  * Full size (32px) on a phone, the panel's compact 24px from Radix's `sm`
  * (768px) up: a thumb needs the bigger target, the desktop panel the
@@ -595,7 +623,16 @@ export default function EveryCardPlayerControl({
   const [counting, setCounting] = useState<BulkKind | null>(null);
   const [saving, setSaving] = useState<BulkKind | null>(null);
   const [clearing, setClearing] = useState(false);
-  const [prepError, setPrepError] = useState<string | null>(null);
+  const [prepError, setPrepErrorText] = useState<string | null>(null);
+  /**
+   * a11y — bumped with every failure and keyed onto the alert, so the same
+   * sentence raised twice is a new alert node and is read again.
+   */
+  const [prepErrorSeq, setPrepErrorSeq] = useState(0);
+  const setPrepError = (message: string | null) => {
+    setPrepErrorText(message);
+    if (message !== null) setPrepErrorSeq((n) => n + 1);
+  };
   const [asking, setAsking] = useState<Asking | null>(null);
   const [run, setRun] = useState<BulkRun | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -890,10 +927,7 @@ export default function EveryCardPlayerControl({
         )}
       </div>
       {run.truncated && (
-        <p className="mt-2 text-xs">
-          There are more checklists here than one run reaches; the ones past
-          the first 500 need a run from their own row.
-        </p>
+        <p className="mt-2 text-xs">{BULK_TRUNCATED_TEXT}</p>
       )}
     </section>
   );
@@ -907,10 +941,22 @@ export default function EveryCardPlayerControl({
 
   // aria-disabled, never native `disabled`: a press while counting keeps
   // focus on the button (native disabled would drop it to <body>), and the
-  // pre-pick state stays reachable so its title can say why.
+  // pre-pick state stays reachable: pressing it then says why in the alert
+  // and hands focus to the picker's trigger, where the fix is.
   const blocked = picked === null || pickedName === null || busy || clearing;
-  const blockedTitle = picked ? undefined : CHOOSE_FIRST;
-  const chipLocked = busy || clearing;
+  // The confirm makes the chips inert too, so they count as locked with it.
+  const chipLocked = busy || clearing || asking !== null;
+  const press = (kind: BulkKind) => {
+    if (picked === null) {
+      setPrepError(BULK_CHOOSE_FIRST_TEXT);
+      focusTrigger();
+      return;
+    }
+    if (!blocked) void ask(kind);
+  };
+  /** The busy line: the actions keep their names, this says what they're doing. */
+  const busyText =
+    counting !== null ? BULK_COUNTING_TEXT : saving !== null ? BULK_SAVING_TEXT : "";
 
   const ownPlayer = defaults?.own.player;
   const ownCameos = defaults?.own.cameos ?? [];
@@ -934,7 +980,9 @@ export default function EveryCardPlayerControl({
         }}
         // PlayerPicker's ×, exactly: quiet ink-2 at rest, a pink fill with
         // black ink under the pointer or focus (6:1 both modes, NEO-356).
-        className="hit-area-24 -mx-1 rounded-full px-1 text-ink-2 hover:bg-neon-pink hover:text-on-neon-pink focus:bg-neon-pink focus:text-on-neon-pink focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
+        // 24px box from the desktop panel up; a thumb gets 32px (WCAG 2.5.8
+        // is the floor, a phone wants more). `!`: `.hit-area-24` is unlayered.
+        className="hit-area-24 max-md:before:size-8! -mx-1 rounded-full px-1 text-ink-2 hover:bg-neon-pink hover:text-on-neon-pink focus:bg-neon-pink focus:text-on-neon-pink focus-outline aria-disabled:cursor-not-allowed aria-disabled:opacity-60"
       >
         ×
       </button>
@@ -942,10 +990,10 @@ export default function EveryCardPlayerControl({
   );
 
   const label = (text: string) => <span className="shrink-0 text-ink-3">{text}</span>;
+  // "Ken Griffey Jr. (from 2024 Topps)": the value first, where it came
+  // from second. One text node, so it reads (and is found) as one line.
   const inheritedLine = (fromName: string, names: string) => (
-    <span className="min-w-0 wrap-anywhere text-ink-3">
-      From {fromName}: {names}
-    </span>
+    <span className="min-w-0 wrap-anywhere text-ink-3">{`${names} (from ${fromName})`}</span>
   );
 
   return (
@@ -957,81 +1005,85 @@ export default function EveryCardPlayerControl({
           aria-labelledby={headingId}
           className="flex flex-col gap-1.5 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
         >
-          <h4 id={headingId} className="text-[10px] uppercase tracking-wide text-ink-3 font-normal">
+          <h4 id={headingId} className="text-[11px] uppercase tracking-wide text-ink-3 font-normal">
             {PLAYER_ON_EVERY_CARD_HEADING}
           </h4>
-          {showPlayerLine && (
-            <p className="flex flex-wrap items-center gap-1.5">
-              {label("Player:")}
-              {ownPlayer
-                ? chip("player", ownPlayer)
-                : inheritedPlayer && inheritedLine(inheritedPlayer.fromName, inheritedPlayer.name)}
-            </p>
-          )}
-          {showCameoLine && (
-            <p className="flex flex-wrap items-center gap-1.5">
-              {label("Cameos:")}
-              {ownCameos.length > 0
-                ? ownCameos.map((c) => chip("cameo", c))
-                : inheritedCameos &&
-                  inheritedLine(inheritedCameos.fromName, inheritedCameos.list.map((c) => c.name).join(", "))}
-            </p>
-          )}
-          <div ref={formRef} inert={asking !== null} className="flex flex-wrap items-center gap-2">
-            <PlayerPicker
-              value={picked ? [picked] : []}
-              // One player at a time: a new pick replaces the last.
-              onChange={(next) => {
-                setPrepError(null);
-                setPicked(next.length > 0 ? next[next.length - 1] : null);
-              }}
-              sportId={sportId}
-              disabled={busy}
-              labels={EVERY_CARD_PLAYER_PICKER_LABELS}
-              ariaDescribedBy={hintId}
-              roomyTriggerOnPhones
-            />
-            <NeonButton
-              type="button"
-              size={BULK_BUTTON_SIZE}
-              data-bulk-op="player"
-              aria-disabled={blocked || undefined}
-              title={blockedTitle}
-              onClick={() => {
-                if (!blocked) void ask("player");
-              }}
-            >
-              {counting === "player"
-                ? "Counting cards…"
-                : saving === "player"
-                  ? "Saving…"
-                  : L.addPlayer}
-            </NeonButton>
-            <NeonButton
-              type="button"
-              size={BULK_BUTTON_SIZE}
-              variant="secondary"
-              outline
-              data-bulk-op="cameo"
-              aria-disabled={blocked || undefined}
-              title={blockedTitle}
-              onClick={() => {
-                if (!blocked) void ask("cameo");
-              }}
-            >
-              {counting === "cameo"
-                ? "Counting cards…"
-                : saving === "cameo"
-                  ? "Saving…"
-                  : L.addCameo}
-            </NeonButton>
+          {/* a11y — one inert wrapper over the stored chips and the form while
+              the confirm is up: nothing behind it (a chip's × included) can be
+              reached or pressed until it is answered. */}
+          <div inert={asking !== null} className="flex flex-col gap-1.5">
+            {showPlayerLine && (
+              <p className="flex flex-wrap items-center gap-1.5">
+                {label("Player:")}
+                {ownPlayer
+                  ? chip("player", ownPlayer)
+                  : inheritedPlayer && inheritedLine(inheritedPlayer.fromName, inheritedPlayer.name)}
+              </p>
+            )}
+            {showCameoLine && (
+              <p className="flex flex-wrap items-center gap-1.5">
+                {label("Cameos:")}
+                {ownCameos.length > 0
+                  ? ownCameos.map((c) => chip("cameo", c))
+                  : inheritedCameos &&
+                    inheritedLine(inheritedCameos.fromName, inheritedCameos.list.map((c) => c.name).join(", "))}
+              </p>
+            )}
+            <div ref={formRef} className="flex flex-wrap items-center gap-2">
+              <PlayerPicker
+                value={picked ? [picked] : []}
+                // One player at a time: a new pick replaces the last.
+                onChange={(next) => {
+                  setPrepError(null);
+                  setPicked(next.length > 0 ? next[next.length - 1] : null);
+                }}
+                sportId={sportId}
+                disabled={busy}
+                labels={EVERY_CARD_PLAYER_PICKER_LABELS}
+                ariaDescribedBy={hintId}
+                roomyTriggerOnPhones
+              />
+              {/* a11y — the names never change while counting or saving
+                  (a spec, and a screen reader, keeps finding the button it
+                  pressed); `aria-busy` and the line below say what is going
+                  on. The hint describes both: it says what each one does. */}
+              <NeonButton
+                type="button"
+                size={BULK_BUTTON_SIZE}
+                data-bulk-op="player"
+                aria-disabled={blocked || undefined}
+                aria-busy={counting === "player" || saving === "player" || undefined}
+                aria-describedby={hintId}
+                onClick={() => press("player")}
+              >
+                {L.addPlayer}
+              </NeonButton>
+              <NeonButton
+                type="button"
+                size={BULK_BUTTON_SIZE}
+                variant="secondary"
+                outline
+                data-bulk-op="cameo"
+                aria-disabled={blocked || undefined}
+                aria-busy={counting === "cameo" || saving === "cameo" || undefined}
+                aria-describedby={hintId}
+                onClick={() => press("cameo")}
+              >
+                {L.addCameo}
+              </NeonButton>
+              {/* Always mounted (empty at rest, so it takes no room), so the
+                  first "Counting cards…" is read. */}
+              <span aria-live="polite" className="text-[11px] text-ink-2">
+                {busyText}
+              </span>
+            </div>
           </div>
           {prepError && (
-            <p role="alert" className="text-[11px] text-notice-danger-ink">
+            <p key={prepErrorSeq} role="alert" className="text-[11px] text-notice-danger-ink">
               {prepError}
             </p>
           )}
-          <p id={hintId} className="text-[10px] text-ink-3">
+          <p id={hintId} className="text-xs text-ink-3">
             {bulkHintText(level)}
           </p>
           {asking && (

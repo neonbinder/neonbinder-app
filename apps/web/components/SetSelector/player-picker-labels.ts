@@ -113,10 +113,10 @@ export const PLAYER_ON_EVERY_CARD_HEADING = "Player on every card";
  * alike.
  */
 export const EVERY_CARD_PLAYER_PICKER_LABELS: ResolvedPlayerPickerLabels = {
-  root: "Whole-checklist pick",
+  root: "Every-card pick",
   trigger: "Choose who goes on every card",
   search: "Find who goes on every card",
-  results: "Whole-checklist choices",
+  results: "Every-card matches",
   triggerText: "Choose who",
   placeholder: "Who's on every card?",
   emptyHint: "Type a name…",
@@ -124,7 +124,7 @@ export const EVERY_CARD_PLAYER_PICKER_LABELS: ResolvedPlayerPickerLabels = {
   remove: (name) => `Clear ${name} as the choice`,
   option: (name) => `Choose ${name}`,
   create: (typed) => `Create and choose ${typed}`,
-  sportSwitch: "Sport for the whole-checklist search",
+  sportSwitch: "Sport for the every-card search",
 };
 
 /**

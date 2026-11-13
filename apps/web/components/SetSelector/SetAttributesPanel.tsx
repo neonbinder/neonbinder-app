@@ -274,6 +274,10 @@ export default function SetAttributesPanel({
   // (`failure`, the alert region). Raising either clears the other.
   const [toast, setToast] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  // NEO-528 — bumped on every raise and keyed onto the toast's box, so the
+  // same sentence raised twice (a second "Saved, every new card gets X") is
+  // a new node in the live region and is read again, not a no-op.
+  const [toastSeq, setToastSeq] = useState(0);
   // The one pending dismissal. Every toast replaces the one before it, so it
   // also cancels that toast's timer: otherwise "Saving…"'s timer (or an older
   // save's) wipes the "Saved" that followed it.
@@ -408,6 +412,7 @@ export default function SetAttributesPanel({
     toastTimer.current = null;
     setToast(kind === "status" ? message : null);
     setFailure(kind === "failure" ? message : null);
+    setToastSeq((n) => n + 1);
     if (dismissAfterMs !== undefined) {
       toastTimer.current = setTimeout(() => {
         toastTimer.current = null;
@@ -866,14 +871,18 @@ export default function SetAttributesPanel({
       <div className="pointer-events-none fixed inset-x-4 top-20 z-50 flex flex-col items-center">
         <div role="status" aria-live="polite" aria-atomic="true" className="max-w-full">
           {toast && (
-            <div className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg">
+            <div
+              key={toastSeq}
+              className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg">
               {toast}
             </div>
           )}
         </div>
         <div role="alert" aria-atomic="true" className="max-w-full">
           {failure && (
-            <div className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-pink-text/60 rounded text-xs text-neon-pink-text shadow-lg">
+            <div
+              key={toastSeq}
+              className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-pink-text/60 rounded text-xs text-neon-pink-text shadow-lg">
               {failure}
             </div>
           )}
