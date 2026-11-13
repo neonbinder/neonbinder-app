@@ -68,6 +68,9 @@ function setup(props: {
   return { ...utils, onShortNameChange, onWizardKey };
 }
 
+/** The box's own status region: the first in the step (each title row has one too). */
+const boxStatus = () => screen.getAllByRole("status")[0];
+
 const titleFields = () =>
   screen
     .queryAllByRole("textbox")
@@ -114,35 +117,64 @@ describe("CardTitlesStep — typing rewrites the listed titles live", () => {
   test("the titles follow the box; the list holds still", () => {
     setup({ cards: [card("1"), card("2")] });
     expect(titleFields()).toHaveLength(2);
-    fireEvent.change(screen.getByRole("textbox", { name: LABEL }), { target: { value: BOX } });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.change(box, { target: { value: BOX } });
     expect(titleFields().map((f) => f.value)).toEqual([
       `${BOX} Shohei Ohtani #1 Baseball`,
       `${BOX} Shohei Ohtani #2 Baseball`,
     ]);
     expect(screen.getByRole("heading", { name: TITLES_LEAD })).toBeTruthy();
     expect(screen.queryByText(/Left out to fit/)).toBeNull();
-    expect(screen.getByText("Every title fits now.")).toBeTruthy();
+    fireEvent.blur(box);
+    expect(boxStatus().textContent).toBe("Every title fits now.");
   });
 
   test("an edit that still runs long counts the titles over the cap", () => {
     setup({ cards: [card("1"), card("2", { players: ["Shohei Ohtani", "Shohei Ohtani"] })], titleContext: OVER });
     const long = `${OVER.setNameValue} Box`;
-    fireEvent.change(screen.getByRole("textbox", { name: LABEL }), { target: { value: long } });
+    const box = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.change(box, { target: { value: long } });
+    fireEvent.blur(box);
     const fields = titleFields();
     expect(fields).toHaveLength(2);
     for (const f of fields) expect(f.value.startsWith(long)).toBe(true);
     expect(screen.getByText("2 titles still run long.")).toBeTruthy();
   });
 
-  test("a refused value shows the server's sentence and changes no title", () => {
+  test("a refused value is an alert of its own, describes the box, and changes no title", () => {
     setup({ cards: [card("1")] });
     const before = titleFields()[0].value;
     const field = screen.getByRole("textbox", { name: LABEL });
-    fireEvent.change(field, { target: { value: "Topps​Sapphire" } });
-    expect(screen.getByText("Set name in titles can't hold zero-width or invisible characters."))
-      .toBeTruthy();
+    fireEvent.change(field, { target: { value: "Topps\u200bSapphire" } });
     expect(field.getAttribute("aria-invalid")).toBe("true");
+    fireEvent.blur(field);
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe(
+      "Set name in titles can't hold zero-width or invisible characters.",
+    );
+    expect(alert.className).toContain("text-notice-danger-ink");
+    expect((field.getAttribute("aria-describedby") ?? "").split(" ")).toContain(alert.id);
+    // Progress stays in the status region; the refusal is not repeated there.
+    expect(boxStatus().textContent).toBe("");
     expect(titleFields()[0].value).toBe(before);
+    // Fixed: the alert goes, and the box is no longer described by it.
+    fireEvent.change(field, { target: { value: BOX } });
+    fireEvent.blur(field);
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(field.getAttribute("aria-describedby")).not.toContain(alert.id);
+  });
+
+  test("the status is read at a settle, never per keystroke", () => {
+    vi.useFakeTimers();
+    setup({ cards: [card("1")] });
+    const field = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.change(field, { target: { value: "2026 Topps" } });
+    fireEvent.change(field, { target: { value: BOX } });
+    expect(boxStatus().textContent).toBe("");
+    act(() => {
+      vi.advanceTimersByTime(400);
+    });
+    expect(boxStatus().textContent).toBe("Every title fits now.");
   });
 
   test("past 80: the meter says so and the server's sentence explains; nothing is cut off", () => {
@@ -152,7 +184,10 @@ describe("CardTitlesStep — typing rewrites the listed titles live", () => {
     fireEvent.change(field, { target: { value: "x".repeat(84) } });
     expect(field.value).toHaveLength(84);
     expect(screen.getByText("84/80")).toBeTruthy();
-    expect(screen.getByText("Set name in titles tops out at 80 characters.")).toBeTruthy();
+    fireEvent.blur(field);
+    expect(screen.getByRole("alert").textContent).toBe(
+      "Set name in titles tops out at 80 characters.",
+    );
   });
 
   test("an untouched prefill over 80 is no fault: it is never sent", () => {
@@ -162,6 +197,11 @@ describe("CardTitlesStep — typing rewrites the listed titles live", () => {
     expect(field.value.length).toBeGreaterThan(80);
     expect(field.getAttribute("aria-invalid")).toBeNull();
     expect(screen.queryByText(/tops out at/)).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+    // Said once, as status: the "N over" on the meter is no fault.
+    expect(boxStatus().textContent).toBe(
+      "Over 80, so it's sitting out. Trim it and your titles pick it up.",
+    );
     fireEvent.blur(field);
     expect(onShortNameChange).not.toHaveBeenCalled();
   });
@@ -227,6 +267,7 @@ describe("CardTitlesStep — the box's keys stay local; it reports only an edit"
     expect(described()).toContain(`${PREFILL.length}/80`);
     expect(document.getElementById("titles-lead")?.textContent).toBe(TITLES_LEAD);
     fireEvent.change(field, { target: { value: BOX } });
+    fireEvent.blur(field);
     expect(described()).toContain("Every title fits now.");
     expect(document.getElementById("titles-lead")?.textContent).toBe(TITLES_LEAD);
   });

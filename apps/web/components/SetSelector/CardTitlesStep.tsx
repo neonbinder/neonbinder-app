@@ -99,6 +99,8 @@ const SHORT_LEAD = "Set name hogging the title? Trim it here and every title bel
 const SHORT_LABEL = "Set name in titles";
 const stillOverLine = (n: number) =>
   n === 0 ? "Every title fits now." : n === 1 ? "1 title still runs long." : `${n} titles still run long.`;
+/** NEO-535 — an untouched prefill past the cap: not a fault, just not in use yet. */
+const PREFILL_OVER = "Over 80, so it's sitting out. Trim it and your titles pick it up.";
 const moreRowsLine = (n: number) => `And ${n} more, saved as generated.`;
 const USE_GENERATED = "Use generated title";
 
@@ -259,7 +261,12 @@ export default function CardTitlesStep({
   useEffect(() => {
     shortLatest.current = shortDraft;
   }, [shortDraft]);
+  // a11y — the box's text as of its last settle (blur, Enter, a beat after
+  // typing, unmount). Its status and refusal are read from this, never from
+  // each keystroke, so a screen reader hears the count once per pause.
+  const [shortSettledText, setShortSettledText] = useState<string>(() => shortName ?? prefill);
   const flushShort = useCallback(() => {
+    setShortSettledText(shortLatest.current);
     const next = shortValue(shortLatest.current);
     if (shortSettled.current === next) return;
     shortSettled.current = next;
@@ -293,6 +300,35 @@ export default function CardTitlesStep({
         listingShortName: liveShortName,
       }),
     [cards, titleContext, teamAnswers, names, existing, drafts, liveShortName],
+  );
+  // The same reading at the last settle, for the box's status and refusal.
+  const settledEdited = shortValue(shortSettledText) !== undefined;
+  const settledCheck = useMemo(
+    () => (settledEdited ? checkShortNameAnswer(shortSettledText) : {}),
+    [settledEdited, shortSettledText],
+  );
+  const settledShortName = onShortNameChange && settledEdited ? settledCheck.value : undefined;
+  const settledTitleGroups = useMemo(
+    () =>
+      settledShortName === liveShortName
+        ? titleGroups
+        : buildTitleGroups(cards, titleContext, teamAnswers, {
+            names,
+            existingIndexes: existing,
+            answers: drafts,
+            listingShortName: settledShortName,
+          }).titleGroups,
+    [
+      settledShortName,
+      liveShortName,
+      titleGroups,
+      cards,
+      titleContext,
+      teamAnswers,
+      names,
+      existing,
+      drafts,
+    ],
   );
 
   const setField = (indexes: readonly number[], field: keyof TitleAnswer, value: string) => {
@@ -363,15 +399,18 @@ export default function CardTitlesStep({
   const titlesId = headingId ?? `${uid}-titles`;
   const shortLeadId = `${uid}-short`;
   const shortStatusId = `${uid}-short-status`;
+  const shortErrorId = `${uid}-short-error`;
   const shortMeterId = `${uid}-short-meter`;
-  const stillOver = titleGroups.reduce(
+  const stillOver = settledTitleGroups.reduce(
     (n, g) => n + g.cards.filter((c) => c.text.trim().length > LISTING_TITLE_MAX).length,
     0,
   );
-  const shortStatus = shortCheck.error
-    ? shortCheck.error
-    : liveShortName
-      ? stillOverLine(stillOver)
+  // Progress only; a refusal is the alert below. Read at the last settle.
+  const shortError = settledCheck.error;
+  const shortStatus = settledShortName
+    ? stillOverLine(stillOver)
+    : !settledEdited && shortSettledText.trim().length > MAX_LISTING_SHORT_NAME_LENGTH
+      ? PREFILL_OVER
       : "";
 
   return (
@@ -405,7 +444,9 @@ export default function CardTitlesStep({
               autoComplete="off"
               spellCheck={false}
               aria-label={SHORT_LABEL}
-              aria-describedby={`${shortLeadId} ${shortMeterId} ${shortStatusId}`}
+              aria-describedby={[shortLeadId, shortMeterId, shortStatusId, shortError ? shortErrorId : null]
+                .filter(Boolean)
+                .join(" ")}
               aria-invalid={shortCheck.error ? true : undefined}
               aria-disabled={disabled || undefined}
               readOnly={disabled}
@@ -419,17 +460,19 @@ export default function CardTitlesStep({
               surface="dark"
             />
           </div>
-          {/* Always mounted, so a change is announced. Polite: it is
-              progress, not a fault — unless the name would be refused. */}
-          <p
-            id={shortStatusId}
-            role="status"
-            className={`mt-1 text-[11px] empty:hidden ${
-              shortCheck.error ? "text-neon-pink-text" : "text-ink-2"
-            }`}
-          >
+          {/* Always mounted, so a change is announced. Polite progress, read
+              from the box as it last settled, never per keystroke. */}
+          <p id={shortStatusId} role="status" className="mt-1 text-[11px] text-ink-2 empty:hidden">
             {shortStatus}
           </p>
+          {shortError && (
+            // a11y: a refusal is its own alert. The danger notice ink, not the
+            // neon pink as text: it clears 4.5:1 on this dialog in both modes
+            // (10:1+ dark, 8.2:1 light), where pink is 4.56:1 on a raised row.
+            <p id={shortErrorId} role="alert" className="mt-1 text-[11px] text-notice-danger-ink">
+              {shortError}
+            </p>
+          )}
         </section>
       )}
 
