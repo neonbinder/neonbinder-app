@@ -557,6 +557,37 @@ export const selectorOptionFields = {
    */
   teamCascadeStartedAt: v.optional(v.number()),
   /**
+   * NEO-528 round 3 — "Player on every card": the player every NEW card
+   * beneath this row is born with, when it arrives with no player of its own
+   * (no resolved player and no name waiting for review).
+   *
+   * Settable at ANY level (sport, year, manufacturer, set, variant type,
+   * insert, parallel) and LOOKED UP at card creation, never copied down: the
+   * card's checklist row and its ancestors are walked nearest first and the
+   * nearest row carrying this field wins, as a whole
+   * (`cardPlayersBulk.effectiveCardPlayerDefaults`). A parallel's walk also
+   * passes through the row it is a parallel of (an insert's parallels its
+   * insert; the inserts under a Parallel variant type the set's Base).
+   *
+   * An array for the shape cards use, capped at ONE by the only writer
+   * (`cardPlayersBulk.setCardPlayerDefault`): a new pick replaces it. ABSENT
+   * when empty; nothing to backfill. Clearing it edits no card, and a new pick
+   * never moves cards already carrying the old player.
+   *
+   * NB data only: no adapter or sync reads or writes it. Not named like a
+   * card's `playerIds`, which the player-link pin tests grep for.
+   */
+  defaultPlayerIds: v.optional(v.array(v.id("players"))),
+  /**
+   * NEO-528 round 3 — the cameos ("Also on this card") every NEW card beneath
+   * this row is born with. Same level rules, lookup and nearest-wins as
+   * `defaultPlayerIds`, resolved independently of it (a nearer row's cameos
+   * replace a farther row's; lists are never merged). Capped at
+   * `MAX_CARD_PLAYERS`; never holds this row's own `defaultPlayerIds` player.
+   * ABSENT when empty. NB data only.
+   */
+  defaultCameoIds: v.optional(v.array(v.id("players"))),
+  /**
    * NEO-358 — how many `cardChecklist` rows point at THIS row
    * (`by_selector_option`), stored so a collector's "1 of N" never reads a
    * whole checklist. Meaningful on the card-bearing levels (`variantType`,

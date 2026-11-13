@@ -3421,7 +3421,8 @@ describe("NEO-500: the pick-order seed is locked like the other testing seeds", 
  * NEO-528 — "Also pictured" players on a card. Editing them is operator
  * tooling (`requireAdmin`): one card's list, the "Player on every card" adds
  * over a checklist and its parallels (as the card's player or as a cameo),
- * and that run's target list. A collector
+ * that run's target list, and (round 3) the stored per-row defaults with the
+ * panel's read of them. A collector
  * only ever READS them, through the signed-in smart binder read `ruleFits`
  * (which answers only for the caller's own binder).
  */
@@ -3458,7 +3459,13 @@ describe("NEO-528: the also-pictured surface is admin-gated; ruleFits is signed-
   const cardWrites = (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) =>
     t.run(async (ctx) => {
       const card = await ctx.db.get(ids.cardId);
-      return { secondaryPlayerIds: card?.secondaryPlayerIds ?? null, playerIds: card?.playerIds ?? null };
+      const row = await ctx.db.get(ids.variantId);
+      return {
+        secondaryPlayerIds: card?.secondaryPlayerIds ?? null,
+        playerIds: card?.playerIds ?? null,
+        // NEO-528 round 3: the stored "Player on every card" values.
+        defaults: [row?.defaultPlayerIds ?? null, row?.defaultCameoIds ?? null],
+      };
     });
   const ADMIN_GATED: Array<
     [string, (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) => Promise<unknown>]
@@ -3487,7 +3494,29 @@ describe("NEO-528: the also-pictured surface is admin-gated; ruleFits is signed-
     ],
     [
       "cardPlayersBulk.everyCardTargets",
-      (t, ids) => t.query(api.cardPlayersBulk.everyCardTargets, { variantId: ids.variantId }),
+      (t, ids) => t.query(api.cardPlayersBulk.everyCardTargets, { variantId: ids.variantId, kind: "player" }),
+    ],
+    [
+      "cardPlayersBulk.setCardPlayerDefault",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.setCardPlayerDefault, {
+          selectorOptionId: ids.variantId,
+          kind: "player",
+          playerId: ids.playerId,
+        }),
+    ],
+    [
+      "cardPlayersBulk.clearCardPlayerDefault",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.clearCardPlayerDefault, {
+          selectorOptionId: ids.variantId,
+          kind: "cameo",
+          playerId: ids.playerId,
+        }),
+    ],
+    [
+      "cardPlayersBulk.cardPlayerDefaults",
+      (t, ids) => t.query(api.cardPlayersBulk.cardPlayerDefaults, { selectorOptionId: ids.variantId }),
     ],
   ];
 
@@ -3495,7 +3524,7 @@ describe("NEO-528: the also-pictured surface is admin-gated; ruleFits is signed-
     const t = convexTest(schema, modules);
     const ids = await seedIds(t);
     await expect(call(t, ids)).rejects.toThrow(/not authenticated/i);
-    expect(await cardWrites(t, ids)).toEqual({ secondaryPlayerIds: null, playerIds: null });
+    expect(await cardWrites(t, ids)).toEqual({ secondaryPlayerIds: null, playerIds: null, defaults: [null, null] });
   });
 
   test.each(ADMIN_GATED)("%s rejects a signed-in non-admin and writes nothing", async (_name, call) => {
@@ -3504,7 +3533,7 @@ describe("NEO-528: the also-pictured surface is admin-gated; ruleFits is signed-
     await expect(call(t.withIdentity({ subject: "member", role: "member" }) as never, ids)).rejects.toThrow(
       /admin access required/i,
     );
-    expect(await cardWrites(t, ids)).toEqual({ secondaryPlayerIds: null, playerIds: null });
+    expect(await cardWrites(t, ids)).toEqual({ secondaryPlayerIds: null, playerIds: null, defaults: [null, null] });
   });
 
   test.each(ADMIN_GATED)("%s answers an admin", async (_name, call) => {

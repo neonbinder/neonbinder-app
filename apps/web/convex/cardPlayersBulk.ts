@@ -1,10 +1,26 @@
 /**
- * NEO-528 — "Player on every card": one player put on every card of a
- * checklist and its parallels, from the Set Builder's attributes panel.
+ * NEO-528 — "Player on every card", from the Set Builder's attributes panel.
  *
- * Its main use is filling a checklist before the set exists anywhere else: a
- * single-player set (every card is Mahomes), or a run of cards that all
- * picture the same face. Two ways in, both additive, both admin-only:
+ * Round 3 (Jason, 2026-11-13) made it a STORED attribute of any row, at any
+ * level (sport, year, manufacturer, set, variant type, insert, parallel):
+ *
+ *   - `selectorOptions.defaultPlayerIds` — the ONE player every new card
+ *     beneath the row is born with when it has no player of its own;
+ *   - `selectorOptions.defaultCameoIds` — the cameos every new card beneath
+ *     it is born with.
+ *
+ * Nothing is copied down. A card being created LOOKS UP its defaults
+ * (`effectiveCardPlayerDefaults`): its checklist row and the rows above it,
+ * nearest first, and the nearest row carrying a value wins, as a whole, per
+ * field (a nearer row's cameo list replaces a farther row's; lists are never
+ * merged). A parallel's walk passes through the row it is a parallel of
+ * (`cardPlayerDefaultsChain`). The per-card decision is the pure planners in
+ * `lib/cardPlayerDefaults.ts`.
+ *
+ * Storing a value (`setCardPlayerDefault`) or clearing it
+ * (`clearCardPlayerDefault`) edits no card. Cards that already exist change
+ * only through the whole-checklist run, which the panel starts after a store
+ * when there are cards beneath:
  *
  *   - `addPlayerToVariant` makes them the CARD'S player on every card that
  *     has none yet (`playerIds` + `playerLinks`, the card → player index,
@@ -18,12 +34,19 @@
  *
  * Neither takes anything away; there is no remove.
  *
+ * The run walks every card-holding row beneath the one asked about
+ * (`everyCardTargets`), EXCEPT rows whose cards a nearer row's own value of
+ * that kind speaks for: those cards' new siblings would be born with the
+ * nearer value, so the run leaves the existing ones alone too. The walk and
+ * the lookup are one rule read in two directions, and
+ * `cardPlayersBulk.test.ts` pins that they agree.
+ *
  * Listing text follows the card only where nobody has edited it: before a
  * write, a stored title (or description) that still equals what the generator
  * builds for the card is regenerated after it; one a person typed is kept.
  * The title never names a cameo, so only the player add refreshes titles.
  *
- * The walk is client-paged: `everyCardTargets` lists the rows for the
+ * The run is client-paged: `everyCardTargets` lists the rows for the
  * progress ledger, and each call does one page of one row, handing back a
  * cursor until it is null.
  */
@@ -37,29 +60,41 @@ import { MAX_CARD_PLAYERS } from "./features/cardAttention";
 import { generateListingDescription } from "./features/generateListing";
 import { variantTypeKind } from "./variantRole";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
+import { playerBelongsToSport } from "./players";
 import {
   cameoNamesFor,
   descriptionIsGenerated,
-  primaryPlayerIdsOf,
   setCardSecondaryPlayers,
 } from "./cardSecondaryPlayers";
 import {
   newStoredCardReadCache,
-  playerNameFor,
   titleForStoredCard,
   type StoredCardReadCache,
 } from "./storedCardTitle";
+import {
+  planDefaultCameos,
+  planDefaultPlayers,
+  type CardPlayerDefaultIds,
+} from "./lib/cardPlayerDefaults";
 
 type ReadCtx = Pick<QueryCtx, "db">;
 type CardRow = Doc<"cardChecklist">;
+type SelectorRow = Doc<"selectorOptions">;
+
+/** Which stored default: the card's player, or a cameo. */
+export type CardPlayerDefaultKind = "player" | "cameo";
+const kindValidator = v.union(v.literal("player"), v.literal("cameo"));
 
 /**
  * Cards one page reads and writes.
  *
  * The budget is the transaction's ~4,000 database calls (each `get` and each
  * query range is one). A page re-reads its targets first (`bulkTargets`: the
- * variant, up to `MAX_VARIANT_TYPES` variant types and the parallel ranges
- * under them, ~100 calls). Then, per card, the worst case:
+ * walk down, at most `MAX_EVERY_CARD_WALK` rows, one range per row that can
+ * have rows beneath it, plus the ancestor chain and each set's Base lookup;
+ * under 1,000 calls at the caps; `cardPlayersBulk.defaults.test.ts` counts
+ * it). Then,
+ * per card, the worst case:
  *
  *   - the title and description before and after: the card's own players
  *     (none on a card the player add writes; up to `MAX_CARD_PLAYERS` on a
@@ -76,95 +111,594 @@ type CardRow = Doc<"cardChecklist">;
  * would be near 4,800, past the limit, hence 50.
  */
 export const BULK_PAGE = 50;
-/** Parallels a run walks under one checklist (the parallel build's cap). */
-export const MAX_BULK_PARALLELS = 500;
-/** Variant types read under one set when finding a Base's parallels. */
+/** Card-holding rows one run walks at most; past it the list is `truncated`. */
+export const MAX_EVERY_CARD_TARGETS = 500;
+/** Rows the walk down reads at most (card-holding or not). */
+export const MAX_EVERY_CARD_WALK = 500;
+/** Variant types read under one set when finding its Base or its Parallel types. */
 const MAX_VARIANT_TYPES = 100;
+/** Depth cutoff of the walk up; the hierarchy is seven levels. */
+const MAX_CHAIN_DEPTH = 16;
 
 /** The run's player was deleted mid-way (or before the first page). */
 export const BULK_MISSING_PLAYER = "Can't find that player anymore. Pick them again.";
 /**
  * A cursor this run's checklist no longer matches: its targets changed (a
- * parallel added or removed) or the cursor is not one a page handed out.
+ * parallel added or removed, a nearer row given its own value) or the cursor
+ * is not one a page handed out.
  */
 export const BULK_CHECKLIST_CHANGED = "This checklist changed mid-way. Give it another go.";
+/** The row asked about is gone. */
+export const DEFAULT_ROW_MISSING = "That part of the set isn't in NB anymore.";
+/** A cameo store past the cap. */
+export const DEFAULT_CAMEOS_FULL = `Every card can carry at most ${MAX_CARD_PLAYERS} cameos.`;
+/** A cameo store of the row's own stored player. */
+export function alreadyThePlayerMessage(name: string): string {
+  return `${name} is already the player on every card.`;
+}
 
 // ───────────────────────────────────────────────────────────────────────────
-// The rows a run walks
+// The walk up: where a card's defaults come from
 // ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * Reads a walk shares, by id. `null` is "read, and gone". `bases` is a set's
+ * Base variant type by the set's id.
+ */
+export type SelectorRowCache = {
+  rows: Map<string, SelectorRow | null>;
+  bases: Map<string, SelectorRow | null>;
+};
+
+export function newSelectorRowCache(): SelectorRowCache {
+  return { rows: new Map(), bases: new Map() };
+}
+
+async function rowFor(ctx: ReadCtx, id: Id<"selectorOptions">, cache: SelectorRowCache): Promise<SelectorRow | null> {
+  const key = id as string;
+  if (cache.rows.has(key)) return cache.rows.get(key) ?? null;
+  const row = await ctx.db.get(id);
+  cache.rows.set(key, row);
+  return row;
+}
+
+/** A set's Base variant type, by its kind (never a name match beyond the kind word). */
+async function baseVariantTypeOf(
+  ctx: ReadCtx,
+  setId: Id<"selectorOptions">,
+  cache: SelectorRowCache,
+): Promise<SelectorRow | null> {
+  const key = setId as string;
+  if (cache.bases.has(key)) return cache.bases.get(key) ?? null;
+  const types = await ctx.db
+    .query("selectorOptions")
+    .withIndex("by_level_and_parent", (q) => q.eq("level", "variantType").eq("parentId", setId))
+    .take(MAX_VARIANT_TYPES);
+  const base = types.find((type) => variantTypeKind(type) === "base") ?? null;
+  cache.bases.set(key, base);
+  return base;
+}
+
+/**
+ * The rows whose defaults a card on `startId` reads, nearest first: the row
+ * itself, then up the `parentId` chain to the sport. A row that is a
+ * PARALLEL of another row passes through that row first:
+ *
+ *   - a `parallel` row's parent IS its insert, so the plain chain covers it;
+ *   - an `insert` under a Parallel variant type (the base set's parallels,
+ *     NEO-321) is followed by the set's Base variant type, then by its own
+ *     variant type and the rest of the chain.
+ *
+ * Kinds come from the variant type's title through `variantTypeKind`, the
+ * NEO-334 exception; nothing else is read from a name. A missing row ends the
+ * chain; a cycle is cut at `MAX_CHAIN_DEPTH`.
+ */
+export async function cardPlayerDefaultsChain(
+  ctx: ReadCtx,
+  startId: Id<"selectorOptions">,
+  cache: SelectorRowCache = newSelectorRowCache(),
+): Promise<SelectorRow[]> {
+  const chain: SelectorRow[] = [];
+  const seen = new Set<string>();
+  const push = (row: SelectorRow) => {
+    if (seen.has(row._id as string)) return false;
+    seen.add(row._id as string);
+    chain.push(row);
+    return true;
+  };
+  let row = await rowFor(ctx, startId, cache);
+  for (let depth = 0; row && depth < MAX_CHAIN_DEPTH; depth++) {
+    if (!push(row)) break;
+    const parent = row.parentId ? await rowFor(ctx, row.parentId, cache) : null;
+    if (
+      row.level === "insert" &&
+      parent?.level === "variantType" &&
+      variantTypeKind(parent) === "parallel" &&
+      parent.parentId
+    ) {
+      const base = await baseVariantTypeOf(ctx, parent.parentId, cache);
+      if (base) push(base);
+    }
+    row = parent;
+  }
+  return chain;
+}
+
+/** The row's own stored value of `kind`, or undefined when it stores none. */
+export function ownCardPlayerDefault(
+  row: Pick<SelectorRow, "defaultPlayerIds" | "defaultCameoIds">,
+  kind: CardPlayerDefaultKind,
+): ReadonlyArray<Id<"players">> | undefined {
+  const list = kind === "player" ? row.defaultPlayerIds : row.defaultCameoIds;
+  return list && list.length > 0 ? list : undefined;
+}
+
+/** A player as the panel and the card writers show them. */
+export type NamedPlayer = { _id: Id<"players">; name: string };
+
+/**
+ * What a NEW card on `leafId` is born with. The planners take it as it is
+ * (`playerId` / `cameoIds`); the names ride along for the writers that need
+ * them (`nameOnCard`, Signed By, the listing text).
+ *
+ *   - `playerFromId` / `cameosFromId`: the row whose value won, or null when
+ *     no row in the chain stores one. A winning value whose player is gone
+ *     (or plays another sport than the card) is dropped, not replaced by a
+ *     farther row's: nearest wins as a whole.
+ *   - `player` / `playerId`: the default player, after that drop.
+ *   - `cameos` / `cameoIds`: the default cameos, in stored order, after that
+ *     drop, without the default player.
+ *
+ * `sportId` is the card's sport; omitted, the sport row at the top of the
+ * chain is used, and with no sport row nothing is dropped for sport. Never
+ * refuses: a default that no longer fits is left off the card.
+ */
+export type EffectiveCardPlayerDefaults = CardPlayerDefaultIds & {
+  player: NamedPlayer | null;
+  cameos: NamedPlayer[];
+  playerFromId: Id<"selectorOptions"> | null;
+  cameosFromId: Id<"selectorOptions"> | null;
+};
+
+export async function effectiveCardPlayerDefaults(
+  ctx: ReadCtx,
+  leafId: Id<"selectorOptions">,
+  opts: { sportId?: Id<"selectorOptions">; cache?: SelectorRowCache } = {},
+): Promise<EffectiveCardPlayerDefaults> {
+  const chain = await cardPlayerDefaultsChain(ctx, leafId, opts.cache);
+  const playerFrom = chain.find((row) => ownCardPlayerDefault(row, "player"));
+  const cameosFrom = chain.find((row) => ownCardPlayerDefault(row, "cameo"));
+  const sportId = opts.sportId ?? chain.find((row) => row.level === "sport")?._id;
+  const fits = new Map<string, NamedPlayer | null>();
+  const resolve = async (id: Id<"players">): Promise<NamedPlayer | null> => {
+    const key = id as string;
+    if (fits.has(key)) return fits.get(key) ?? null;
+    const player = await ctx.db.get(id);
+    const ok =
+      player !== null &&
+      (sportId === undefined || (await playerBelongsToSport(ctx as QueryCtx, player, sportId)));
+    const named = ok && player ? { _id: player._id, name: player.name } : null;
+    fits.set(key, named);
+    return named;
+  };
+  const playerId = playerFrom ? ownCardPlayerDefault(playerFrom, "player")![0] : undefined;
+  const player = playerId ? await resolve(playerId) : null;
+  const cameos: NamedPlayer[] = [];
+  const seen = new Set<string>(player ? [player._id as string] : []);
+  for (const id of (cameosFrom ? ownCardPlayerDefault(cameosFrom, "cameo") : undefined) ?? []) {
+    if (seen.has(id as string)) continue;
+    seen.add(id as string);
+    const named = await resolve(id);
+    if (named) cameos.push(named);
+  }
+  return {
+    playerId: player?._id ?? null,
+    cameoIds: cameos.map((c) => c._id),
+    player,
+    cameos,
+    playerFromId: playerFrom?._id ?? null,
+    cameosFromId: cameosFrom?._id ?? null,
+  };
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// The walk down: the rows a run walks
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Levels a card can sit on (`cardChecklist.selectorOptionId`). */
+const CARD_LEVELS: ReadonlySet<string> = new Set(["variantType", "insert", "parallel"]);
 
 const targetValidator = v.object({
   _id: v.id("selectorOptions"),
   /** The row's own NB name. */
   name: v.string(),
-  /** The checklist asked about, or one of its parallels. */
+  /** The row asked about or a row beneath it, or one of their parallels. */
   role: v.union(v.literal("home"), v.literal("parallel")),
+  /** Home cards on this row (`selectorOptions.cardCount`); absent = never counted. */
+  cardCount: v.optional(v.number()),
 });
 
 type Target = typeof targetValidator.type;
 
+type Candidate = {
+  row: SelectorRow;
+  role: "home" | "parallel";
+  /** A row between this one and the root stores its own value of that kind. */
+  overridden: Record<CardPlayerDefaultKind, boolean>;
+};
+
 /**
- * The card-bearing rows a run walks, in order: the checklist itself, then its
- * parallels, by shape and the variant type's kind (never a name):
+ * Every card-holding row a run from `rootId` could reach, in walk order, with
+ * whether each is overridden per kind. The order:
  *
- *   - an `insert` row → its `parallel` children (sub-variants);
- *   - a Base variant type → every insert under the set's Parallel variant
- *     types (the base set's parallels, NEO-321);
- *   - anything else card-bearing → itself alone.
+ *   1. the root and every row beneath it, depth first, children in index
+ *      order (`by_parent`);
+ *   2. when the root is a Base variant type, the inserts under the set's
+ *      Parallel variant types and their rows (the base set's parallels).
  *
- * Only HOME cards are touched (`by_selector_option`): a card cross-listed
- * into a checklist belongs to the set it was printed in.
+ * That is exactly the set of rows whose `cardPlayerDefaultsChain` passes
+ * through the root; each candidate's chain is read (from the cache the walk
+ * filled) and a candidate whose chain reaches a row with its own value
+ * BEFORE the root is overridden for that kind. Only HOME cards are touched
+ * later (`by_selector_option`): a card cross-listed into a checklist belongs
+ * to the set it was printed in.
  */
-export async function bulkTargets(
+async function everyCardWalk(
   ctx: ReadCtx,
-  variantId: Id<"selectorOptions">,
-): Promise<{ targets: Target[]; truncated: boolean }> {
-  const variant = await ctx.db.get(variantId);
-  if (!variant || (variant.level !== "variantType" && variant.level !== "insert" && variant.level !== "parallel")) {
-    throw new ConvexError("Pick a checklist (a variant type, insert or parallel) to change its cards.");
-  }
-  const targets: Target[] = [{ _id: variant._id, name: variant.value, role: "home" }];
+  rootId: Id<"selectorOptions">,
+): Promise<{ root: SelectorRow; candidates: Candidate[]; truncated: boolean }> {
+  const cache = newSelectorRowCache();
+  const root = await rowFor(ctx, rootId, cache);
+  if (!root) throw new ConvexError(DEFAULT_ROW_MISSING);
+  const found: Array<{ row: SelectorRow; role: "home" | "parallel" }> = [];
+  const seen = new Set<string>();
+  let read = 0;
   let truncated = false;
-  const addChildren = async (parentId: Id<"selectorOptions">, level: "parallel" | "insert") => {
-    const room = MAX_BULK_PARALLELS - (targets.length - 1);
+
+  const children = async (parentId: Id<"selectorOptions">): Promise<SelectorRow[]> => {
+    const room = MAX_EVERY_CARD_WALK - read;
     if (room <= 0) {
       truncated = true;
-      return;
+      return [];
     }
     const rows = await ctx.db
       .query("selectorOptions")
-      .withIndex("by_level_and_parent", (q) => q.eq("level", level).eq("parentId", parentId))
+      .withIndex("by_parent", (q) => q.eq("parentId", parentId))
       .take(room + 1);
     if (rows.length > room) truncated = true;
-    for (const row of rows.slice(0, room)) targets.push({ _id: row._id, name: row.value, role: "parallel" });
+    const kept = rows.slice(0, room);
+    read += kept.length;
+    for (const row of kept) cache.rows.set(row._id as string, row);
+    return kept;
   };
-  if (variant.level === "insert") {
-    await addChildren(variant._id, "parallel");
-  } else if (variant.level === "variantType" && variantTypeKind(variant) === "base" && variant.parentId) {
-    const setId = variant.parentId;
+
+  const walk = async (starts: SelectorRow[], parallel: boolean) => {
+    const stack = [...starts].reverse().map((row) => ({ row, parallel }));
+    while (stack.length > 0) {
+      const { row, parallel: isParallel } = stack.pop()!;
+      if (seen.has(row._id as string)) continue;
+      seen.add(row._id as string);
+      if (CARD_LEVELS.has(row.level)) {
+        if (found.length >= MAX_EVERY_CARD_TARGETS) {
+          truncated = true;
+          return;
+        }
+        found.push({ row, role: isParallel || row.level === "parallel" ? "parallel" : "home" });
+      }
+      if (row.level === "parallel") continue; // nothing sits below a parallel
+      const kids = await children(row._id);
+      const kidsParallel =
+        isParallel || (row.level === "variantType" && variantTypeKind(row) === "parallel");
+      for (let i = kids.length - 1; i >= 0; i--) stack.push({ row: kids[i], parallel: kidsParallel });
+    }
+  };
+
+  await walk([root], false);
+  if (root.level === "variantType" && variantTypeKind(root) === "base" && root.parentId) {
+    const setId = root.parentId;
     const types = await ctx.db
       .query("selectorOptions")
       .withIndex("by_level_and_parent", (q) => q.eq("level", "variantType").eq("parentId", setId))
       .take(MAX_VARIANT_TYPES);
+    cache.bases.set(setId as string, root);
     for (const type of types) {
-      if (type._id !== variant._id && variantTypeKind(type) === "parallel") await addChildren(type._id, "insert");
+      if (type._id === root._id || variantTypeKind(type) !== "parallel") continue;
+      cache.rows.set(type._id as string, type);
+      const inserts = (await children(type._id)).filter((row) => row.level === "insert");
+      await walk(inserts, true);
     }
   }
-  return { targets, truncated };
+
+  const candidates: Candidate[] = [];
+  for (const { row, role } of found) {
+    const chain = await cardPlayerDefaultsChain(ctx, row._id, cache);
+    const at = chain.findIndex((r) => r._id === root._id);
+    if (at === -1) continue; // not reached through the root after all
+    const nearer = chain.slice(0, at);
+    candidates.push({
+      row,
+      role,
+      overridden: {
+        player: nearer.some((r) => ownCardPlayerDefault(r, "player") !== undefined),
+        cameo: nearer.some((r) => ownCardPlayerDefault(r, "cameo") !== undefined),
+      },
+    });
+  }
+  return { root, candidates, truncated };
 }
 
-/** The rows a run will walk, for the progress ledger. */
+/**
+ * The card-holding rows a run of `kind` from `rootId` walks, in order, and
+ * how many rows it leaves out because a nearer row stores its own value of
+ * that kind (`overridden`). `truncated` when the walk hit a cap.
+ */
+export async function bulkTargets(
+  ctx: ReadCtx,
+  rootId: Id<"selectorOptions">,
+  kind: CardPlayerDefaultKind,
+): Promise<{ targets: Target[]; truncated: boolean; overridden: number }> {
+  const { candidates, truncated } = await everyCardWalk(ctx, rootId);
+  const targets: Target[] = [];
+  let overridden = 0;
+  for (const c of candidates) {
+    if (c.overridden[kind]) {
+      overridden++;
+      continue;
+    }
+    targets.push({
+      _id: c.row._id,
+      name: c.row.value,
+      role: c.role,
+      ...(c.row.cardCount !== undefined ? { cardCount: c.row.cardCount } : {}),
+    });
+  }
+  return { targets, truncated, overridden };
+}
+
+/**
+ * The rows a run will walk, for the progress ledger. `kind` must be the kind
+ * of the run the ledger follows (`addPlayerToVariant` walks "player",
+ * `addCameoToVariant` "cameo"): the pages refuse a cursor whose row list
+ * differs. `variantId` may be a row at any level.
+ */
 export const everyCardTargets = query({
-  args: { variantId: v.id("selectorOptions") },
-  returns: v.object({ targets: v.array(targetValidator), truncated: v.boolean() }),
+  args: { variantId: v.id("selectorOptions"), kind: kindValidator },
+  returns: v.object({
+    targets: v.array(targetValidator),
+    truncated: v.boolean(),
+    overridden: v.number(),
+  }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
-    return await bulkTargets(ctx, args.variantId);
+    return await bulkTargets(ctx, args.variantId, args.kind);
   },
 });
 
 // ───────────────────────────────────────────────────────────────────────────
-// One page
+// The stored values
+// ───────────────────────────────────────────────────────────────────────────
+
+const ownDefaultsValidator = v.object({
+  playerId: v.union(v.id("players"), v.null()),
+  cameoIds: v.array(v.id("players")),
+});
+
+const defaultArgs = {
+  /** The row the value is stored on: any level. */
+  selectorOptionId: v.id("selectorOptions"),
+  kind: kindValidator,
+  playerId: v.id("players"),
+};
+
+function ownDefaults(row: Pick<SelectorRow, "defaultPlayerIds" | "defaultCameoIds">) {
+  return {
+    playerId: row.defaultPlayerIds?.[0] ?? null,
+    cameoIds: [...(row.defaultCameoIds ?? [])],
+  };
+}
+
+async function writeDefaults(
+  ctx: MutationCtx,
+  row: SelectorRow,
+  next: { players: Array<Id<"players">>; cameos: Array<Id<"players">> },
+  log: { op: "set" | "clear"; kind: CardPlayerDefaultKind; playerId: Id<"players">; userId: string },
+) {
+  const same = (a: ReadonlyArray<Id<"players">> | undefined, b: ReadonlyArray<Id<"players">>) =>
+    (a ?? []).length === b.length && (a ?? []).every((id, i) => id === b[i]);
+  const changed = !same(row.defaultPlayerIds, next.players) || !same(row.defaultCameoIds, next.cameos);
+  if (changed) {
+    // Absent when empty; no lastUpdated bump (that stamp is the sync's).
+    await ctx.db.patch(row._id, {
+      defaultPlayerIds: next.players.length > 0 ? next.players : undefined,
+      defaultCameoIds: next.cameos.length > 0 ? next.cameos : undefined,
+    });
+  }
+  // Ids only.
+  console.log(
+    JSON.stringify({
+      msg: "card_player_default",
+      ...log,
+      selectorOptionId: row._id,
+      level: row.level,
+      changed,
+    }),
+  );
+  return { playerId: next.players[0] ?? null, cameoIds: next.cameos };
+}
+
+/**
+ * Store a default on one row. `player`: they become the row's player,
+ * replacing any other, and leave the row's cameos if they were one. `cameo`:
+ * added to the row's cameos (refused when they are the row's player, or past
+ * `MAX_CARD_PLAYERS`). Edits no card: the panel runs `addPlayerToVariant` /
+ * `addCameoToVariant` afterwards for the cards already there. Returns the
+ * row's own values after the write.
+ */
+export const setCardPlayerDefault = mutation({
+  args: defaultArgs,
+  returns: ownDefaultsValidator,
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+    const row = await ctx.db.get(args.selectorOptionId);
+    if (!row) throw new ConvexError(DEFAULT_ROW_MISSING);
+    const player = await ctx.db.get(args.playerId);
+    if (!player) throw new ConvexError(BULK_MISSING_PLAYER);
+    const own = ownDefaults(row);
+    const players = own.playerId ? [own.playerId] : [];
+    let cameos = own.cameoIds;
+    let nextPlayers = players;
+    if (args.kind === "player") {
+      nextPlayers = [args.playerId];
+      cameos = cameos.filter((id) => id !== args.playerId);
+    } else if (!cameos.includes(args.playerId)) {
+      if (players.includes(args.playerId)) throw new ConvexError(alreadyThePlayerMessage(player.name));
+      if (cameos.length >= MAX_CARD_PLAYERS) throw new ConvexError(DEFAULT_CAMEOS_FULL);
+      cameos = [...cameos, args.playerId];
+    }
+    return await writeDefaults(ctx, row, { players: nextPlayers, cameos }, {
+      op: "set",
+      kind: args.kind,
+      playerId: args.playerId,
+      userId,
+    });
+  },
+});
+
+/**
+ * Take a stored default off one row: the player (when it is `playerId`) or
+ * one cameo. Edits no card: cards that already carry them keep them. A value
+ * that is not stored is a no-op. Returns the row's own values after.
+ */
+export const clearCardPlayerDefault = mutation({
+  args: defaultArgs,
+  returns: ownDefaultsValidator,
+  handler: async (ctx, args) => {
+    const userId = await requireAdmin(ctx);
+    const row = await ctx.db.get(args.selectorOptionId);
+    if (!row) throw new ConvexError(DEFAULT_ROW_MISSING);
+    const own = ownDefaults(row);
+    const players = own.playerId && !(args.kind === "player" && own.playerId === args.playerId) ? [own.playerId] : [];
+    const cameos = args.kind === "cameo" ? own.cameoIds.filter((id) => id !== args.playerId) : own.cameoIds;
+    return await writeDefaults(ctx, row, { players, cameos }, {
+      op: "clear",
+      kind: args.kind,
+      playerId: args.playerId,
+      userId,
+    });
+  },
+});
+
+const namedPlayerValidator = v.object({ _id: v.id("players"), name: v.string() });
+
+/**
+ * What the attributes panel shows for one row:
+ *
+ *   - `own`: the row's stored player and cameos (players no longer in NB are
+ *     left out);
+ *   - `inherited`: per field, the nearest row ABOVE it (its
+ *     `cardPlayerDefaultsChain` past itself) that stores a value, with that
+ *     row's id and name. What a new card here gets when `own` is empty.
+ *   - `cardCount`: home cards on every card-holding row a run from here could
+ *     reach; `cardsToWalk`: of those, the cards a run of each kind would walk
+ *     (a nearer row's own value leaves its cards out). Both absent when the
+ *     walk hit a cap or a row was never counted (unknown, not zero).
+ *
+ * Null when the row is gone. Reads at most `MAX_EVERY_CARD_WALK` rows below.
+ */
+export const cardPlayerDefaults = query({
+  args: { selectorOptionId: v.id("selectorOptions") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      own: v.object({ player: v.optional(namedPlayerValidator), cameos: v.array(namedPlayerValidator) }),
+      inherited: v.optional(
+        v.object({
+          player: v.optional(
+            v.object({
+              fromId: v.id("selectorOptions"),
+              fromName: v.string(),
+              _id: v.id("players"),
+              name: v.string(),
+            }),
+          ),
+          cameos: v.optional(
+            v.object({
+              fromId: v.id("selectorOptions"),
+              fromName: v.string(),
+              list: v.array(namedPlayerValidator),
+            }),
+          ),
+        }),
+      ),
+      cardCount: v.optional(v.number()),
+      cardsToWalk: v.optional(v.object({ player: v.number(), cameo: v.number() })),
+      truncated: v.boolean(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    const row = await ctx.db.get(args.selectorOptionId);
+    if (!row) return null;
+    const names = new Map<string, NamedPlayer | null>();
+    const named = async (id: Id<"players">) => {
+      const key = id as string;
+      if (!names.has(key)) {
+        const player = await ctx.db.get(id);
+        names.set(key, player ? { _id: player._id, name: player.name } : null);
+      }
+      return names.get(key) ?? null;
+    };
+    const namedList = async (ids: ReadonlyArray<Id<"players">> | undefined) => {
+      const out: NamedPlayer[] = [];
+      for (const id of ids ?? []) {
+        const p = await named(id);
+        if (p) out.push(p);
+      }
+      return out;
+    };
+
+    const ownPlayer = row.defaultPlayerIds?.[0] ? await named(row.defaultPlayerIds[0]) : null;
+    const own = { ...(ownPlayer ? { player: ownPlayer } : {}), cameos: await namedList(row.defaultCameoIds) };
+
+    const above = (await cardPlayerDefaultsChain(ctx, row._id)).slice(1);
+    const playerFrom = above.find((r) => ownCardPlayerDefault(r, "player"));
+    const cameosFrom = above.find((r) => ownCardPlayerDefault(r, "cameo"));
+    const inheritedPlayer = playerFrom ? await named(playerFrom.defaultPlayerIds![0]) : null;
+    const inheritedCameos = cameosFrom ? await namedList(cameosFrom.defaultCameoIds) : [];
+    const inherited = {
+      ...(playerFrom && inheritedPlayer
+        ? { player: { fromId: playerFrom._id, fromName: playerFrom.value, ...inheritedPlayer } }
+        : {}),
+      ...(cameosFrom && inheritedCameos.length > 0
+        ? { cameos: { fromId: cameosFrom._id, fromName: cameosFrom.value, list: inheritedCameos } }
+        : {}),
+    };
+
+    const { candidates, truncated } = await everyCardWalk(ctx, row._id);
+    let cardCount = 0;
+    const toWalk = { player: 0, cameo: 0 };
+    let known = !truncated;
+    for (const c of candidates) {
+      const n = c.row.cardCount;
+      if (n === undefined) {
+        known = false;
+        break;
+      }
+      cardCount += n;
+      if (!c.overridden.player) toWalk.player += n;
+      if (!c.overridden.cameo) toWalk.cameo += n;
+    }
+    return {
+      own,
+      ...(Object.keys(inherited).length > 0 ? { inherited } : {}),
+      ...(known ? { cardCount, cardsToWalk: toWalk } : {}),
+      truncated,
+    };
+  },
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// One page of a run
 // ───────────────────────────────────────────────────────────────────────────
 
 const bulkPageValidator = v.object({
@@ -201,14 +735,14 @@ const bulkPageValidator = v.object({
 });
 
 export type BulkPage = typeof bulkPageValidator.type;
-export type BulkOp = "player" | "cameo";
+export type BulkOp = CardPlayerDefaultKind;
 type Counts = Omit<BulkPage, "targetId" | "targetIndex" | "targetCount" | "cursor">;
 
 /**
  * Where a run is: `i` the target's index in `bulkTargets` order, `t` that
- * target's id (so a parallel added or removed between pages, which shifts
- * every index after it, is refused rather than walked as the wrong row), and
- * `c` the page cursor inside it. Null for the first page.
+ * target's id (so a row added or removed between pages, which shifts every
+ * index after it, is refused rather than walked as the wrong row), and `c`
+ * the page cursor inside it. Null for the first page.
  */
 type BulkCursor = { i: number; t: string | null; c: string | null };
 
@@ -239,12 +773,15 @@ async function putPlayerOnCard(
   ctx: MutationCtx,
   card: CardRow,
   player: { _id: Id<"players">; name: string },
+  promote: boolean,
   cache: StoredCardReadCache,
   counts: Counts,
 ): Promise<void> {
   const cameos = card.secondaryPlayerIds ?? [];
-  const promote = cameos.some((id) => id === player._id);
-  const nextCameos = promote ? cameos.filter((id) => id !== player._id) : cameos;
+  // The cameos as the planner leaves them once they are the card's player.
+  const nextCameos = promote
+    ? planDefaultCameos({ ...card, playerIds: [player._id], playerLinks: [] }, { cameoIds: [] }).ids
+    : cameos;
 
   // What the generator builds for the card as it stands, to tell generated
   // text from typed text.
@@ -310,9 +847,9 @@ export async function runBulkPage(
   if (!player) throw new ConvexError(BULK_MISSING_PLAYER);
   cache.players.set(player._id as string, player.name);
   const at = parseCursor(args.cursor);
-  const { targets } = await bulkTargets(ctx, args.variantId);
+  const { targets } = await bulkTargets(ctx, args.variantId, op);
   // The cursor names the row it was handed out for; a checklist whose
-  // parallels moved under the run would otherwise send this page into a
+  // rows moved under the run would otherwise send this page into a
   // different row's cards with another row's page cursor.
   if (at.i >= targets.length || (at.t !== null && (targets[at.i]._id as string) !== at.t)) {
     throw new ConvexError(BULK_CHECKLIST_CHANGED);
@@ -334,44 +871,31 @@ export async function runBulkPage(
     titlesRefreshed: 0,
     titlesKept: 0,
   };
-  const playerKey = args.playerId as string;
   for (const card of page.page) {
     counts.scanned++;
-    const primary = primaryPlayerIdsOf(card);
     if (op === "player") {
       // "Do not alter any cards that already have a player set" (Jason).
-      if (primary.has(playerKey)) {
-        counts.unchanged++;
-        continue;
-      }
-      if (primary.size > 0) {
-        counts.skippedOther++;
-        continue;
-      }
-      if ((card.pendingPlayerNames ?? []).length > 0) {
-        counts.skippedPending++;
-        continue;
-      }
-      await putPlayerOnCard(ctx, card, player, cache, counts);
+      const plan = planDefaultPlayers(card, { playerId: args.playerId });
+      if (plan.kind === "fill") await putPlayerOnCard(ctx, card, player, plan.promote, cache, counts);
+      else if (plan.kind === "unchanged") counts.unchanged++;
+      else if (plan.kind === "skip" && plan.reason === "other") counts.skippedOther++;
+      else if (plan.kind === "skip") counts.skippedPending++;
       continue;
     }
-    const current = (card.secondaryPlayerIds ?? []) as string[];
-    if (primary.has(playerKey)) {
+    const plan = planDefaultCameos(card, { cameoIds: [args.playerId] });
+    if (plan.skippedPrimary.length > 0) {
       counts.skippedPrimary++;
       continue;
     }
-    if (current.includes(playerKey)) {
+    if (plan.already.length > 0) {
       counts.unchanged++;
       continue;
     }
-    if (current.length >= MAX_CARD_PLAYERS) {
+    if (plan.skippedFull.length > 0) {
       counts.skippedFull++;
       continue;
     }
-    const result = await setCardSecondaryPlayers(ctx, card, [...(card.secondaryPlayerIds ?? []), args.playerId], {
-      dropMissing: true,
-      cache,
-    });
+    const result = await setCardSecondaryPlayers(ctx, card, plan.ids, { dropMissing: true, cache });
     if (result.changed) counts.changed++;
     else counts.unchanged++;
   }
@@ -407,7 +931,11 @@ async function bulkMutation(
 }
 
 const bulkArgs = {
-  /** The checklist the operator is on (its parallels come with it). */
+  /**
+   * The row the operator is on, at any level; every card-holding row beneath
+   * it (and its parallels) comes with it, less rows a nearer value of this
+   * kind speaks for (`everyCardTargets` with the same kind lists them).
+   */
   variantId: v.id("selectorOptions"),
   playerId: v.id("players"),
   /** Null for the first page; then the `cursor` the last page returned. */
@@ -415,8 +943,8 @@ const bulkArgs = {
 };
 
 /**
- * Make one player the card's player on every home card of a checklist and its
- * parallels that has no player yet, `BULK_PAGE` cards per call. Call again
+ * Make one player the card's player on every home card beneath a row (see
+ * `bulkArgs.variantId`) that has no player yet, `BULK_PAGE` cards per call. Call again
  * with the returned `cursor` until it is null.
  */
 export const addPlayerToVariant = mutation({
@@ -426,8 +954,8 @@ export const addPlayerToVariant = mutation({
 });
 
 /**
- * Add one player as a cameo on every home card of a checklist and its
- * parallels, `BULK_PAGE` cards per call. A card where they are already one
+ * Add one player as a cameo on every home card beneath a row (see
+ * `bulkArgs.variantId`), `BULK_PAGE` cards per call. A card where they are already one
  * of the card's own players is skipped and counted (`skippedPrimary`).
  */
 export const addCameoToVariant = mutation({

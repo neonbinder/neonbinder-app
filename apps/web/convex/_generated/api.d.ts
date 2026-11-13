@@ -106,6 +106,7 @@ import type * as lib_bscHttp from "../lib/bscHttp.js";
 import type * as lib_bscMoney from "../lib/bscMoney.js";
 import type * as lib_bscOrders from "../lib/bscOrders.js";
 import type * as lib_bscSheetPlan from "../lib/bscSheetPlan.js";
+import type * as lib_cardPlayerDefaults from "../lib/cardPlayerDefaults.js";
 import type * as lib_catalogView from "../lib/catalogView.js";
 import type * as lib_cloudRunAuth from "../lib/cloudRunAuth.js";
 import type * as lib_convexIdCodec from "../lib/convexIdCodec.js";
@@ -316,6 +317,7 @@ declare const fullApi: ApiFromModules<{
   "lib/bscMoney": typeof lib_bscMoney;
   "lib/bscOrders": typeof lib_bscOrders;
   "lib/bscSheetPlan": typeof lib_bscSheetPlan;
+  "lib/cardPlayerDefaults": typeof lib_cardPlayerDefaults;
   "lib/catalogView": typeof lib_catalogView;
   "lib/cloudRunAuth": typeof lib_cloudRunAuth;
   "lib/convexIdCodec": typeof lib_convexIdCodec;

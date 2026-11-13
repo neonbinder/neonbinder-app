@@ -21,6 +21,7 @@ import {
   BULK_CHECKLIST_CHANGED,
   BULK_MISSING_PLAYER,
   BULK_PAGE,
+  DEFAULT_ROW_MISSING,
   runBulkPage,
   type BulkOp,
   type BulkPage,
@@ -182,21 +183,24 @@ describe("everyCardTargets", () => {
   test("a Base's targets are itself and the inserts under the set's Parallel types", async () => {
     const t = convexTest(schema, modules);
     const fx = await seedCollectionCatalog(t);
-    const { targets, truncated } = await t
-      .withIdentity(ADMIN)
-      .query(api.cardPlayersBulk.everyCardTargets, { variantId: fx.baseId });
-    expect(truncated).toBe(false);
-    expect(targets).toEqual([
-      { _id: fx.baseId, name: "Base", role: "home" },
-      { _id: fx.goldId, name: "Gold Refractor", role: "parallel" },
-    ]);
+    for (const kind of ["player", "cameo"] as const) {
+      const { targets, truncated, overridden } = await t
+        .withIdentity(ADMIN)
+        .query(api.cardPlayersBulk.everyCardTargets, { variantId: fx.baseId, kind });
+      expect(truncated).toBe(false);
+      expect(overridden).toBe(0);
+      expect(targets).toEqual([
+        { _id: fx.baseId, name: "Base", role: "home", cardCount: 3 },
+        { _id: fx.goldId, name: "Gold Refractor", role: "parallel", cardCount: 1 },
+      ]);
+    }
   });
 
   test("is admin-only", async () => {
     const t = convexTest(schema, modules);
     const fx = await seedCollectionCatalog(t);
     await expect(
-      t.withIdentity(MEMBER).query(api.cardPlayersBulk.everyCardTargets, { variantId: fx.baseId }),
+      t.withIdentity(MEMBER).query(api.cardPlayersBulk.everyCardTargets, { variantId: fx.baseId, kind: "player" }),
     ).rejects.toThrow(/admin/i);
   });
 });
@@ -519,7 +523,7 @@ describe("paging, cursors and refusals", () => {
     }
   });
 
-  test("refuses a cursor it did not hand out, a non-card row, and a non-admin", async () => {
+  test("refuses a cursor it did not hand out, a row that is gone, and a non-admin", async () => {
     const t = convexTest(schema, modules);
     const fx = await seedCollectionCatalog(t);
     const admin = t.withIdentity(ADMIN);
@@ -533,8 +537,20 @@ describe("paging, cursors and refusals", () => {
       await expect(admin.mutation(fn, { ...args, cursor: JSON.stringify({ i: 1, c: null }) })).rejects.toThrow(
         BULK_CHECKLIST_CHANGED,
       );
-      await expect(admin.mutation(fn, { variantId: fx.setId, playerId: fx.goodenId, cursor: null })).rejects.toThrow(
-        /Pick a checklist/,
+      const gone = await t.run(async (ctx) => {
+        const id = await ctx.db.insert("selectorOptions", {
+          level: "insert",
+          value: "Gone",
+          parentId: fx.parallelsTypeId,
+          platformData: {},
+          children: [],
+          lastUpdated: NOW,
+        });
+        await ctx.db.delete(id);
+        return id;
+      });
+      await expect(admin.mutation(fn, { variantId: gone, playerId: fx.goodenId, cursor: null })).rejects.toThrow(
+        DEFAULT_ROW_MISSING,
       );
       await expect(t.withIdentity(MEMBER).mutation(fn, { ...args, cursor: null })).rejects.toThrow(/admin/i);
     }

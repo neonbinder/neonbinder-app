@@ -152,6 +152,9 @@ describe("NEO-528: the cameo list stays out of everything that reads a card's ow
         // cameos to promote one; its cameo writes go through the writer.
         "cardPlayersBulk.ts",
         "cardSecondaryPlayers.ts",
+        // NEO-528 round 3: the pure per-card planners read a card's cameos to
+        // add the set-level defaults to them; they write nothing.
+        "lib/cardPlayerDefaults.ts",
         "lib/catalogView.ts",
         "parallelChecklistBuild.ts",
         "schema.ts",

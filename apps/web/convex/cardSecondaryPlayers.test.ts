@@ -17,6 +17,8 @@ import { insertTestCard } from "../lib/testing/card-row";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import {
   TOO_MANY_SECONDARY_PLAYERS,
+  bornSecondaryPlayerFields,
+  bornSecondaryPlayers,
   planSecondaryPlayerIds,
   planSecondaryPlayerLinks,
   setCardSecondaryPlayers,
@@ -465,5 +467,72 @@ describe("a re-sync never touches the cameo list", () => {
     } finally {
       vi.unstubAllGlobals();
     }
+  });
+});
+
+describe("NEO-528 round 3: a card born with cameos", () => {
+  const P = (s: string) => s as Id<"players">;
+
+  test("bornSecondaryPlayerFields: the field to spread, repeats and own players out, cut at the cap, {} when empty", () => {
+    const card = { playerIds: [P("a")], playerLinks: [{ playerId: P("b"), nameOnCard: "B" }] };
+    expect(bornSecondaryPlayerFields(card, [P("c"), P("a"), P("c"), P("b"), P("d")])).toEqual({
+      secondaryPlayerIds: ["c", "d"],
+    });
+    expect(bornSecondaryPlayerFields(card, [P("a")])).toEqual({});
+    expect(bornSecondaryPlayerFields({}, undefined)).toEqual({});
+    const many = Array.from({ length: MAX_CARD_PLAYERS + 3 }, (_, i) => P(`p${i}`));
+    // Never refused: a new card takes the first MAX_CARD_PLAYERS.
+    expect(bornSecondaryPlayerFields({}, many).secondaryPlayerIds).toEqual(many.slice(0, MAX_CARD_PLAYERS));
+  });
+
+  test("bornSecondaryPlayers writes the index rows for the list the card was inserted with, and nothing else", async () => {
+    const s = await setup();
+    const maris = await newPlayer(s, "Roger Maris");
+    const { cardId, before } = await s.t.run(async (ctx) => {
+      const row = {
+        selectorOptionId: s.fx.goldId,
+        cardNumber: "99",
+        cardName: "Born",
+        platformData: {},
+        sortOrder: 9,
+        lastUpdated: NOW,
+        listingDescription: "As generated.",
+        sportId: s.fx.sportId,
+        ...bornSecondaryPlayerFields({ playerIds: [s.fx.goodenId] }, [s.fx.goodenId, maris, s.fx.strawberryId]),
+        playerIds: [s.fx.goodenId],
+        playerLinks: [{ playerId: s.fx.goodenId, nameOnCard: "Dwight Gooden" }],
+      };
+      const id = await insertTestCard(ctx, row);
+      const inserted = (await ctx.db.get(id))!;
+      await bornSecondaryPlayers(ctx, id, row);
+      return { cardId: id, before: inserted };
+    });
+    const after = await cardOf(s, cardId);
+    expect(after).toEqual(before); // the card itself is not patched
+    expect(after.secondaryPlayerIds).toEqual([maris, s.fx.strawberryId]);
+    expect((await linksOf(s, cardId)).map((l) => [l.playerId, l.sportId])).toEqual([
+      [maris, s.fx.sportId],
+      [s.fx.strawberryId, s.fx.sportId],
+    ]);
+  });
+
+  test("bornSecondaryPlayers on a card with no cameos reads and writes nothing", async () => {
+    const s = await setup();
+    await s.t.run(async (ctx) => {
+      const calls: string[] = [];
+      const db = new Proxy(ctx.db, {
+        get(target, prop) {
+          const value = Reflect.get(target, prop) as unknown;
+          if (typeof value !== "function") return value;
+          return (...a: unknown[]) => {
+            calls.push(String(prop));
+            return (value as (...x: unknown[]) => unknown).apply(target, a);
+          };
+        },
+      });
+      await bornSecondaryPlayers({ db } as never, s.fx.gold1, { sportId: s.fx.sportId });
+      expect(calls).toEqual([]);
+    });
+    expect(await linksOf(s, s.fx.gold1)).toEqual([]);
   });
 });

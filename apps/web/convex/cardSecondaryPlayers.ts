@@ -252,6 +252,65 @@ export async function setCardSecondaryPlayers(
   return { secondaryPlayerIds: ids, strippedPrimary: plan.strippedPrimary, changed, descriptionRefreshed };
 }
 
+// ───────────────────────────────────────────────────────────────────────────
+// A card BORN with cameos (NEO-528 round 3)
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * The cameo field a NEW card is inserted with, for spreading into the insert
+ * literal (`...bornSecondaryPlayerFields(card, ids)`), so no other module
+ * names the field in a write. `ids` is the planned list
+ * (`lib/cardPlayerDefaults.planDefaultCameos`, already resolved to players
+ * that exist): repeats and the card's own players are taken out again here
+ * and the list is cut at `MAX_CARD_PLAYERS` (a new card is never refused for
+ * its defaults). Empty → `{}`, so the field stays absent.
+ *
+ * After the insert, call `bornSecondaryPlayers` with the inserted row to
+ * write its index rows. The caller builds the description with the cameo
+ * names (`generateListingDescription(inputs, { cameoNames })`); this writes
+ * no text.
+ */
+export function bornSecondaryPlayerFields(
+  card: Pick<CardRow, "playerIds" | "playerLinks">,
+  ids: ReadonlyArray<Id<"players">> | undefined,
+): { secondaryPlayerIds?: Array<Id<"players">> } {
+  const primary = primaryPlayerIdsOf(card);
+  const seen = new Set<string>();
+  const out: Array<Id<"players">> = [];
+  for (const id of ids ?? []) {
+    const key = id as string;
+    if (seen.has(key) || primary.has(key)) continue;
+    seen.add(key);
+    out.push(id);
+    if (out.length === MAX_CARD_PLAYERS) break;
+  }
+  return out.length > 0 ? { secondaryPlayerIds: out } : {};
+}
+
+/**
+ * The index rows for a card inserted in this transaction with
+ * `bornSecondaryPlayerFields`. `card` is the inserted row (the insert literal
+ * plus its new `_id` is enough). Nothing to do when it has no cameos; never
+ * patches the card (its list already reads as stored).
+ */
+export async function bornSecondaryPlayers(
+  ctx: WriteCtx,
+  cardId: Id<"cardChecklist">,
+  card: Pick<CardRow, "secondaryPlayerIds" | "playerIds" | "playerLinks" | "sportId">,
+  cache?: StoredCardReadCache,
+): Promise<void> {
+  const ids = card.secondaryPlayerIds ?? [];
+  if (ids.length === 0) return;
+  // The writer with `fresh`: no index read, and the list it would store is
+  // the one the card already holds, so it writes only the rows.
+  await setCardSecondaryPlayers(ctx, { ...card, _id: cardId } as CardRow, ids, {
+    fresh: true,
+    dropMissing: true,
+    cache,
+    description: "leave",
+  });
+}
+
 /**
  * Every index row for one card, removed. Called by `removeCardRow`, beside
  * the card delete, in the same transaction. Returns the ids for a caller
