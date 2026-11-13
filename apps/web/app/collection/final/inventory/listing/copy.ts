@@ -91,7 +91,7 @@ export function problemCopy(platform: ListingPlatform): Record<ListingProblemRea
     noPhoto: `${name} listings need a photo. Add one to a copy of this card and it goes up.`,
     setupIncomplete: `Finish your ${name} setup in ${credentialsWords(platform)} and this one goes up.`,
     // NEO-535: NB's own hold, never said as the platform turning it down.
-    titleTooLong: `Its title runs past ${titleCapWords(platform)}, and we won't chop it. Once it's shortened in the set builder, press Sync.`,
+    titleTooLong: `Its title runs past ${titleCapWords(platform)}, and we won't chop it. Once it's shortened in the set builder, it goes up on the next sync.`,
   };
 }
 

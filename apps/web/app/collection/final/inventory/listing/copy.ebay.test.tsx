@@ -41,7 +41,8 @@ describe("listing copy, per platform (NEO-415)", () => {
   });
 
   it("NEO-535: titleTooLong is NB's hold, said with eBay's 80 and the set builder, never as eBay turning it down", () => {
-    const line = "Its title runs past eBay's 80 characters, and we won't chop it. Once it's shortened in the set builder, press Sync.";
+    const line =
+      "Its title runs past eBay's 80 characters, and we won't chop it. Once it's shortened in the set builder, it goes up on the next sync.";
     expect(problemCopy("ebay").titleTooLong).toBe(line);
     expect(problemSentence({ reason: "titleTooLong" }, false, "ebay")).toBe(line);
     // A stray detail never changes it.
@@ -51,6 +52,8 @@ describe("listing copy, per platform (NEO-415)", () => {
     );
     for (const sentence of [problemCopy("ebay").titleTooLong, problemCopyReadOnly("ebay").titleTooLong]) {
       expect(sentence).not.toMatch(/turned this one down/);
+      // A title edit re-queues the card itself (listingTitleRequeue), so nobody is told to press Sync.
+      expect(sentence).not.toMatch(/press Sync/i);
     }
     // eBay's 80 is never claimed for another platform.
     expect(problemCopy("bsc").titleTooLong).not.toMatch(/80/);
