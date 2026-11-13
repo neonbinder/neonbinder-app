@@ -148,6 +148,9 @@ describe("NEO-528: the cameo list stays out of everything that reads a card's ow
     expect(readers).toEqual(
       [
         "binderRules.ts",
+        // NEO-528 round 2: the "Player on every card" add reads a card's
+        // cameos to promote one; its cameo writes go through the writer.
+        "cardPlayersBulk.ts",
         "cardSecondaryPlayers.ts",
         "lib/catalogView.ts",
         "parallelChecklistBuild.ts",
@@ -155,6 +158,44 @@ describe("NEO-528: the cameo list stays out of everything that reads a card's ow
         "selectorOptions.ts",
       ].sort(),
     );
+  });
+
+  test("the listing TITLE never sees a cameo; only the description names them, from names it is handed", () => {
+    // The title helpers never mention the field, so no title can be built
+    // from it (the allowlist above already keeps them out; this says why).
+    for (const name of ["storedCardTitle.ts", "features/generateListing.ts", "features/listingInputs.ts"]) {
+      expect(read(name), name).not.toMatch(/secondaryPlayerIds/);
+    }
+    // The generator takes cameos as a separate argument of the DESCRIPTION
+    // only; the title's inputs have no cameo field.
+    const gen = read("features/generateListing.ts");
+    const inputsType = gen.slice(gen.indexOf("export type ListingCardInputs"), gen.indexOf("\n};", gen.indexOf("export type ListingCardInputs")));
+    expect(inputsType).not.toMatch(/cameo/i);
+    const titleFn = gen.slice(gen.indexOf("export function assessListingTitle"), gen.indexOf("export function generateListingTitle"));
+    expect(titleFn).not.toMatch(/cameo/i);
+    expect(gen).toMatch(/export function generateListingDescription\(\s*inputs: ListingCardInputs,\s*extras: \{ cameoNames\?/);
+  });
+
+  test("every cameo write path refreshes the description through the writer (it is never written elsewhere from cameos)", () => {
+    // The writer refreshes by default. Only the bulk player add opts out,
+    // because it writes the description itself beside the player.
+    const callers = sourceFiles(CONVEX_DIR)
+      .filter((file) => !isFile(file, "cardSecondaryPlayers.ts"))
+      .filter((file) => /description: "leave"/.test(readFileSync(file, "utf8")))
+      .map(relative);
+    expect(callers).toEqual(["cardPlayersBulk.ts"]);
+    const bulk = read("cardPlayersBulk.ts");
+    const fn = bulk.slice(bulk.indexOf("async function putPlayerOnCard"), bulk.indexOf("export async function runBulkPage"));
+    expect(fn).toMatch(/listingDescription = generateListingDescription\(after\.inputs, \{\s*cameoNames:/);
+  });
+
+  test("the round-1 remove-from-checklist mutation and its target query are gone", () => {
+    for (const file of sourceFiles(CONVEX_DIR)) {
+      const src = readFileSync(file, "utf8");
+      expect(src, relative(file)).not.toMatch(
+        /removeSecondaryPlayerFromVariant|addSecondaryPlayerToVariant|secondaryPlayerBulkTargets/,
+      );
+    }
   });
 
   test("selectorOptions.ts names it once, in getCardChecklist's returns, for the Set Builder drawer", () => {

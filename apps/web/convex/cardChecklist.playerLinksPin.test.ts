@@ -37,6 +37,20 @@ function playerIdWriteLines(src: string): string[] {
 }
 
 describe("NEO-254: no writer sets playerIds without playerLinks", () => {
+  test("NEO-528: the \"Player on every card\" add writes the pair in one literal, same order", () => {
+    const src = readFileSync(join(CONVEX_DIR, "cardPlayersBulk.ts"), "utf8");
+    const writes = playerIdWriteLines(src);
+    // One write: the patch in `putPlayerOnCard`.
+    expect(writes).toHaveLength(1);
+    const lines = src.split("\n");
+    const lineNo = Number(writes[0].split(":")[0]);
+    // The very next line, inside the same patch literal.
+    expect(lines[lineNo - 1].trim()).toBe("playerIds: [player._id],");
+    expect(lines[lineNo].trim()).toBe("playerLinks,");
+    // And `playerLinks` is the one-element list naming the same player.
+    expect(src).toContain("const playerLinks = [{ playerId: player._id, nameOnCard: player.name }];");
+  });
+
   test("every cardChecklist playerIds write has a playerLinks write beside it", () => {
     const writes = playerIdWriteLines(SRC);
     // The three real writers: the commit chunk's built object, the chunk's

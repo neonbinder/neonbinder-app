@@ -25,50 +25,35 @@
  * the re-sync's base version for the card's synced content, which a cameo
  * is not part of.
  *
- * The public surface is admin-only: one card's list (`setSecondaryPlayers`,
- * the Set Builder card drawer) and one player added to or removed from every
- * card of a checklist and its parallels, a page per call, the client driving
- * the pages (`addSecondaryPlayerToVariant`, `removeSecondaryPlayerFromVariant`,
- * `secondaryPlayerBulkTargets` for the progress ledger).
+ * The one place a cameo shows in listing text is the DESCRIPTION
+ * ("Cameo: Ken Griffey Jr."). The writer keeps it current: when the list
+ * changes, a description that still reads exactly as the generator wrote it
+ * is rewritten with the new names; one a person edited is kept.
+ *
+ * The public surface here is one card's list (`setSecondaryPlayers`, the Set
+ * Builder card drawer), admin-only. The whole-checklist control lives in
+ * `cardPlayersBulk.ts` and writes through this module's writer.
  */
 
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { mutation } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
-import { variantTypeKind } from "./variantRole";
+import { generateListingDescription } from "./features/generateListing";
+import {
+  playerNameFor,
+  titleForStoredCard,
+  type StoredCardReadCache,
+} from "./storedCardTitle";
 
 type ReadCtx = Pick<QueryCtx, "db">;
 type WriteCtx = Pick<MutationCtx, "db">;
 type CardRow = Doc<"cardChecklist">;
 
-/**
- * Cards one bulk page reads and writes. A card it changes costs up to ~22
- * database reads: the card itself, one `get` per player its new list names
- * (up to `MAX_CARD_PLAYERS`, so the writer can refuse a deleted one) and one
- * read of its index rows by `by_card`; plus a few writes. A card it skips
- * costs only its own read. On top of the cards, every page re-reads
- * `bulkTargets`: the variant, up to `MAX_VARIANT_TYPES` variant types and up
- * to `MAX_BULK_PARALLELS` parallel rows. So a page reads at most about
- * 100 x 22 + 601 documents.
- */
-export const BULK_PAGE = 100;
-/** Parallels a bulk run walks under one checklist (the parallel build's cap). */
-export const MAX_BULK_PARALLELS = 500;
-/** Variant types read under one set when finding a Base's parallels. */
-const MAX_VARIANT_TYPES = 100;
-
 export const TOO_MANY_SECONDARY_PLAYERS = `A card can have at most ${MAX_CARD_PLAYERS} people under Also on this card.`;
 const MISSING_PLAYER = "One of the selected players no longer exists.";
-/** A bulk run's player was deleted mid-way (or before the first page). */
-export const BULK_MISSING_PLAYER = "Can't find that player anymore. Pick them again.";
-/**
- * A bulk cursor this run's checklist no longer matches: its targets changed
- * (a parallel added or removed) or the cursor is not one a page handed out.
- */
-export const BULK_CHECKLIST_CHANGED = "This checklist changed mid-way. Give it another go.";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Pure pieces
@@ -142,6 +127,51 @@ function sameIds(a: ReadonlyArray<string> | undefined, b: ReadonlyArray<string>)
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
+ * How the writer treats the card's `listingDescription` when the list changes:
+ *
+ *   - `"ifUntouched"` (the default): rewritten with the new names only when it
+ *     still reads exactly as the generator built it before the change
+ *     (`descriptionIsGenerated`); a description a person edited is kept.
+ *   - `"always"`: a card inserted in this transaction, whose description the
+ *     generator wrote a moment ago (the parallel build's copy).
+ *   - `"leave"`: the caller writes the description itself (the bulk player
+ *     add, which changes the card's own player in the same breath).
+ */
+export type CameoDescriptionMode = "ifUntouched" | "always" | "leave";
+
+/** The NB names of `ids`, in order, leaving out any that no longer resolve. */
+export async function cameoNamesFor(
+  ctx: ReadCtx,
+  ids: ReadonlyArray<Id<"players">> | undefined,
+  cache?: StoredCardReadCache,
+): Promise<string[]> {
+  const names: string[] = [];
+  for (const id of ids ?? []) {
+    const name = await playerNameFor(ctx, id, cache);
+    if (name !== null) names.push(name);
+  }
+  return names;
+}
+
+/**
+ * Does `stored` read exactly as the generator built it for this card with
+ * these cameos? Also true for the description the generator built with NO
+ * cameo line: every card described before NEO-528 taught the generator about
+ * cameos, including one whose cameos were set before then.
+ */
+export function descriptionIsGenerated(
+  stored: string | undefined,
+  inputs: Parameters<typeof generateListingDescription>[0],
+  cameoNames: ReadonlyArray<string>,
+): boolean {
+  if (stored === undefined) return false;
+  return (
+    stored === generateListingDescription(inputs, { cameoNames }) ||
+    stored === generateListingDescription(inputs)
+  );
+}
+
+/**
  * Set one card's also-pictured players to `requested` (see
  * `planSecondaryPlayerIds`), and its index rows with it. A player that no
  * longer exists is refused, or with `dropMissing` left out (a copy or a bulk
@@ -150,22 +180,57 @@ function sameIds(a: ReadonlyArray<string> | undefined, b: ReadonlyArray<string>)
  *
  * `fresh: true` is for a card inserted in the same transaction: it has no
  * index rows to diff against, so that read is skipped.
+ *
+ * `cache` shares player, team and ancestor reads across a page of cards;
+ * `description` is the `CameoDescriptionMode`.
  */
 export async function setCardSecondaryPlayers(
   ctx: WriteCtx,
   card: CardRow,
   requested: ReadonlyArray<Id<"players">>,
-  opts: { fresh?: boolean; dropMissing?: boolean } = {},
-): Promise<{ secondaryPlayerIds: Array<Id<"players">>; strippedPrimary: number; changed: boolean }> {
+  opts: {
+    fresh?: boolean;
+    dropMissing?: boolean;
+    cache?: StoredCardReadCache;
+    description?: CameoDescriptionMode;
+  } = {},
+): Promise<{
+  secondaryPlayerIds: Array<Id<"players">>;
+  strippedPrimary: number;
+  changed: boolean;
+  descriptionRefreshed: boolean;
+}> {
   const plan = planSecondaryPlayerIds(card, requested);
   const ids: Array<Id<"players">> = [];
+  const names: string[] = [];
   for (const id of plan.ids) {
-    if (await ctx.db.get(id)) ids.push(id);
-    else if (!opts.dropMissing) throw new ConvexError(MISSING_PLAYER);
+    const name = await playerNameFor(ctx, id, opts.cache);
+    if (name !== null) {
+      ids.push(id);
+      names.push(name);
+    } else if (!opts.dropMissing) throw new ConvexError(MISSING_PLAYER);
   }
   const changed = !sameIds(card.secondaryPlayerIds as string[] | undefined, ids as string[]);
+  let descriptionRefreshed = false;
   if (changed) {
-    await ctx.db.patch(card._id, { secondaryPlayerIds: ids.length > 0 ? ids : undefined });
+    const descriptionPatch: { listingDescription?: string } = {};
+    const mode = opts.description ?? "ifUntouched";
+    if (mode !== "leave") {
+      const { inputs } = await titleForStoredCard(ctx, card, opts.cache);
+      const untouched =
+        mode === "always" ||
+        descriptionIsGenerated(
+          card.listingDescription,
+          inputs,
+          await cameoNamesFor(ctx, card.secondaryPlayerIds, opts.cache),
+        );
+      const next = generateListingDescription(inputs, { cameoNames: names });
+      if (untouched && next !== card.listingDescription) {
+        descriptionPatch.listingDescription = next;
+        descriptionRefreshed = true;
+      }
+    }
+    await ctx.db.patch(card._id, { secondaryPlayerIds: ids.length > 0 ? ids : undefined, ...descriptionPatch });
   }
   if (!(opts.fresh && ids.length === 0)) {
     const existing = opts.fresh
@@ -184,7 +249,7 @@ export async function setCardSecondaryPlayers(
       });
     }
   }
-  return { secondaryPlayerIds: ids, strippedPrimary: plan.strippedPrimary, changed };
+  return { secondaryPlayerIds: ids, strippedPrimary: plan.strippedPrimary, changed, descriptionRefreshed };
 }
 
 /**
@@ -260,240 +325,10 @@ export const setSecondaryPlayers = mutation({
         count: result.secondaryPlayerIds.length,
         strippedPrimary: result.strippedPrimary,
         changed: result.changed,
+        descriptionRefreshed: result.descriptionRefreshed,
         userId,
       }),
     );
     return { secondaryPlayerIds: result.secondaryPlayerIds, strippedPrimary: result.strippedPrimary };
   },
-});
-
-// ───────────────────────────────────────────────────────────────────────────
-// A checklist and its parallels (the Set Builder bulk control)
-// ───────────────────────────────────────────────────────────────────────────
-
-const targetValidator = v.object({
-  _id: v.id("selectorOptions"),
-  /** The row's own NB name. */
-  name: v.string(),
-  /** The checklist asked about, or one of its parallels. */
-  role: v.union(v.literal("home"), v.literal("parallel")),
-});
-
-type Target = typeof targetValidator.type;
-
-/**
- * The card-bearing rows a bulk run walks, in order: the checklist itself,
- * then its parallels, by shape and the variant type's kind (never a name):
- *
- *   - an `insert` row → its `parallel` children (sub-variants);
- *   - a Base variant type → every insert under the set's Parallel variant
- *     types (the base set's parallels, NEO-321);
- *   - anything else card-bearing → itself alone.
- *
- * Only HOME cards are touched (`by_selector_option`): a card cross-listed
- * into a checklist belongs to the set it was printed in.
- */
-export async function bulkTargets(
-  ctx: ReadCtx,
-  variantId: Id<"selectorOptions">,
-): Promise<{ targets: Target[]; truncated: boolean }> {
-  const variant = await ctx.db.get(variantId);
-  if (!variant || (variant.level !== "variantType" && variant.level !== "insert" && variant.level !== "parallel")) {
-    throw new ConvexError("Pick a checklist (a variant type, insert or parallel) to change its cards.");
-  }
-  const targets: Target[] = [{ _id: variant._id, name: variant.value, role: "home" }];
-  let truncated = false;
-  const addChildren = async (parentId: Id<"selectorOptions">, level: "parallel" | "insert") => {
-    const room = MAX_BULK_PARALLELS - (targets.length - 1);
-    if (room <= 0) {
-      truncated = true;
-      return;
-    }
-    const rows = await ctx.db
-      .query("selectorOptions")
-      .withIndex("by_level_and_parent", (q) => q.eq("level", level).eq("parentId", parentId))
-      .take(room + 1);
-    if (rows.length > room) truncated = true;
-    for (const row of rows.slice(0, room)) targets.push({ _id: row._id, name: row.value, role: "parallel" });
-  };
-  if (variant.level === "insert") {
-    await addChildren(variant._id, "parallel");
-  } else if (variant.level === "variantType" && variantTypeKind(variant) === "base" && variant.parentId) {
-    const setId = variant.parentId;
-    const types = await ctx.db
-      .query("selectorOptions")
-      .withIndex("by_level_and_parent", (q) => q.eq("level", "variantType").eq("parentId", setId))
-      .take(MAX_VARIANT_TYPES);
-    for (const type of types) {
-      if (type._id !== variant._id && variantTypeKind(type) === "parallel") await addChildren(type._id, "insert");
-    }
-  }
-  return { targets, truncated };
-}
-
-/** The rows a bulk run will walk, for the progress ledger. */
-export const secondaryPlayerBulkTargets = query({
-  args: { variantId: v.id("selectorOptions") },
-  returns: v.object({ targets: v.array(targetValidator), truncated: v.boolean() }),
-  handler: async (ctx, args) => {
-    await requireAdmin(ctx);
-    return await bulkTargets(ctx, args.variantId);
-  },
-});
-
-const bulkPageValidator = v.object({
-  /** The row this page worked in (`secondaryPlayerBulkTargets` order). */
-  targetId: v.id("selectorOptions"),
-  targetIndex: v.number(),
-  targetCount: v.number(),
-  /** Cards this page read. */
-  scanned: v.number(),
-  /** Cards whose list this page changed. */
-  changed: v.number(),
-  /** Cards already as asked (already listed for an add, not listed for a remove). */
-  unchanged: v.number(),
-  /** Add only: the player is already one of the card's own players. */
-  skippedPrimary: v.number(),
-  /** Add only: the card already lists the most also-pictured players it can. */
-  skippedFull: v.number(),
-  /** Pass back for the next page; null when every row is done. */
-  cursor: v.union(v.string(), v.null()),
-});
-
-type BulkPage = typeof bulkPageValidator.type;
-
-/**
- * Where a run is: `i` the target's index in `bulkTargets` order, `t` that
- * target's id (so a parallel added or removed between pages, which shifts
- * every index after it, is refused rather than walked as the wrong row), and
- * `c` the page cursor inside it. Null for the first page.
- */
-type BulkCursor = { i: number; t: string | null; c: string | null };
-
-export function parseCursor(raw: string | null): BulkCursor {
-  if (raw === null) return { i: 0, t: null, c: null };
-  try {
-    const parsed = JSON.parse(raw) as { i?: unknown; t?: unknown; c?: unknown };
-    if (
-      typeof parsed.i === "number" &&
-      Number.isInteger(parsed.i) &&
-      parsed.i >= 0 &&
-      typeof parsed.t === "string" &&
-      (parsed.c === null || typeof parsed.c === "string")
-    ) {
-      return { i: parsed.i, t: parsed.t, c: parsed.c };
-    }
-  } catch {
-    // fall through
-  }
-  throw new ConvexError(BULK_CHECKLIST_CHANGED);
-}
-
-async function bulkPage(
-  ctx: MutationCtx,
-  args: { variantId: Id<"selectorOptions">; playerId: Id<"players">; cursor: string | null },
-  op: "add" | "remove",
-): Promise<BulkPage> {
-  const userId = await requireAdmin(ctx);
-  if (op === "add" && !(await ctx.db.get(args.playerId))) throw new ConvexError(BULK_MISSING_PLAYER);
-  const at = parseCursor(args.cursor);
-  const { targets } = await bulkTargets(ctx, args.variantId);
-  // The cursor names the row it was handed out for; a checklist whose
-  // parallels moved under the run would otherwise send this page into a
-  // different row's cards with another row's page cursor.
-  if (at.i >= targets.length || (at.t !== null && (targets[at.i]._id as string) !== at.t)) {
-    throw new ConvexError(BULK_CHECKLIST_CHANGED);
-  }
-  const target = targets[at.i];
-  const page = await ctx.db
-    .query("cardChecklist")
-    .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", target._id))
-    .paginate({ cursor: at.c, numItems: BULK_PAGE });
-  const counts = { scanned: 0, changed: 0, unchanged: 0, skippedPrimary: 0, skippedFull: 0 };
-  const playerKey = args.playerId as string;
-  for (const card of page.page) {
-    counts.scanned++;
-    const current = (card.secondaryPlayerIds ?? []) as string[];
-    if (op === "add") {
-      if (primaryPlayerIdsOf(card).has(playerKey)) {
-        counts.skippedPrimary++;
-        continue;
-      }
-      if (current.includes(playerKey)) {
-        counts.unchanged++;
-        continue;
-      }
-      if (current.length >= MAX_CARD_PLAYERS) {
-        counts.skippedFull++;
-        continue;
-      }
-      const result = await setCardSecondaryPlayers(
-        ctx,
-        card,
-        [...(card.secondaryPlayerIds ?? []), args.playerId],
-        { dropMissing: true },
-      );
-      if (result.changed) counts.changed++;
-      else counts.unchanged++;
-    } else {
-      if (!current.includes(playerKey)) {
-        counts.unchanged++;
-        continue;
-      }
-      const result = await setCardSecondaryPlayers(
-        ctx,
-        card,
-        (card.secondaryPlayerIds ?? []).filter((id) => id !== args.playerId),
-        { dropMissing: true },
-      );
-      if (result.changed) counts.changed++;
-      else counts.unchanged++;
-    }
-  }
-  const cursor = !page.isDone
-    ? JSON.stringify({ i: at.i, t: target._id, c: page.continueCursor })
-    : at.i + 1 < targets.length
-      ? JSON.stringify({ i: at.i + 1, t: targets[at.i + 1]._id, c: null })
-      : null;
-  // Ids and counts only.
-  console.log(
-    JSON.stringify({
-      msg: "card_secondary_players_bulk_page",
-      op,
-      variantId: args.variantId,
-      targetId: target._id,
-      playerId: args.playerId,
-      ...counts,
-      done: cursor === null,
-      userId,
-    }),
-  );
-  return { targetId: target._id, targetIndex: at.i, targetCount: targets.length, ...counts, cursor };
-}
-
-const bulkArgs = {
-  /** The checklist the operator is on (its parallels come with it). */
-  variantId: v.id("selectorOptions"),
-  playerId: v.id("players"),
-  /** Null for the first page; then the `cursor` the last page returned. */
-  cursor: v.union(v.string(), v.null()),
-};
-
-/**
- * Add one also-pictured player to every home card of a checklist and of its
- * parallels (`bulkTargets`), `BULK_PAGE` cards per call. Call again with the
- * returned `cursor` until it is null. A card where he is already one of the
- * card's own players is skipped and counted (`skippedPrimary`).
- */
-export const addSecondaryPlayerToVariant = mutation({
-  args: bulkArgs,
-  returns: bulkPageValidator,
-  handler: async (ctx, args) => await bulkPage(ctx, args, "add"),
-});
-
-/** The inverse of `addSecondaryPlayerToVariant`: take one player off, page by page. */
-export const removeSecondaryPlayerFromVariant = mutation({
-  args: bulkArgs,
-  returns: bulkPageValidator,
-  handler: async (ctx, args) => await bulkPage(ctx, args, "remove"),
 });

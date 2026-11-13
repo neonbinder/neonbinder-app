@@ -110,6 +110,7 @@ import {
   type CardRowSetContext,
 } from "./cardRowCreate";
 import { setCardSecondaryPlayers } from "./cardSecondaryPlayers";
+import type { StoredCardReadCache } from "./storedCardTitle";
 import {
   cardKey,
   linkCardsToSide,
@@ -1643,6 +1644,9 @@ export const insertParallelCardsPage = internalMutation({
 
     const playerName = new Map<string, string | null>();
     const teamName = new Map<string, string | null>();
+    // NEO-528 — the same name maps, plus the parallel's ancestor chain, for
+    // the description a copied cameo list rewrites.
+    const readCache: StoredCardReadCache = { chain: new Map(), players: playerName, teams: teamName };
     const namesOf = async <T extends "players" | "teams">(
       ids: Array<Id<T>> | undefined,
       cache: Map<string, string | null>,
@@ -1779,6 +1783,10 @@ export const insertParallelCardsPage = internalMutation({
           await setCardSecondaryPlayers(ctx, copied, source.secondaryPlayerIds ?? [], {
             fresh: true,
             dropMissing: true,
+            cache: readCache,
+            // The copy's description was generated a moment ago, without
+            // the cameos: it gets the cameo line.
+            description: "always",
           });
         }
       }

@@ -16,15 +16,13 @@ import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { insertTestCard } from "../lib/testing/card-row";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import {
-  BULK_CHECKLIST_CHANGED,
-  BULK_MISSING_PLAYER,
-  BULK_PAGE,
   TOO_MANY_SECONDARY_PLAYERS,
   planSecondaryPlayerIds,
   planSecondaryPlayerLinks,
   setCardSecondaryPlayers,
 } from "./cardSecondaryPlayers";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
+import { descriptionForStoredCard } from "./storedCardTitle";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -221,235 +219,67 @@ describe("setSecondaryPlayers (one card)", () => {
   });
 });
 
-describe("the bulk control (a checklist and its parallels)", () => {
-  type Page = Awaited<ReturnType<S["admin"]["mutation"]>> & {
-    cursor: string | null;
-    targetId: Id<"selectorOptions">;
-    changed: number;
-    unchanged: number;
-    skippedPrimary: number;
-    skippedFull: number;
-    scanned: number;
-  };
-
-  async function runAll(s: S, op: "add" | "remove", variantId: Id<"selectorOptions">, playerId: Id<"players">) {
-    const fn =
-      op === "add"
-        ? api.cardSecondaryPlayers.addSecondaryPlayerToVariant
-        : api.cardSecondaryPlayers.removeSecondaryPlayerFromVariant;
-    const pages: Page[] = [];
-    let cursor: string | null = null;
-    do {
-      const page = (await s.admin.mutation(fn, { variantId, playerId, cursor })) as Page;
-      pages.push(page);
-      cursor = page.cursor;
-    } while (cursor !== null && pages.length < 50);
-    const sum = (k: "changed" | "unchanged" | "skippedPrimary" | "skippedFull" | "scanned") =>
-      pages.reduce((n, p) => n + p[k], 0);
-    return {
-      pages,
-      changed: sum("changed"),
-      unchanged: sum("unchanged"),
-      skippedPrimary: sum("skippedPrimary"),
-      skippedFull: sum("skippedFull"),
-      scanned: sum("scanned"),
-    };
-  }
-
-  test("a Base's targets are itself and the inserts under the set's Parallel types, never another insert", async () => {
-    const s = await setup();
-    const { targets } = await s.admin.query(api.cardSecondaryPlayers.secondaryPlayerBulkTargets, {
-      variantId: s.fx.baseId,
+describe("the description names the cameos, unless a person wrote it", () => {
+  /** Store, as the card's description, what the generator builds for it with `cameos`. */
+  const generateInto = (s: S, id: Id<"cardChecklist">, cameos: string[]) =>
+    s.t.run(async (ctx) => {
+      const card = (await ctx.db.get(id))!;
+      const text = await descriptionForStoredCard(ctx, card, cameos);
+      await ctx.db.patch(id, { listingDescription: text });
+      return text;
     });
-    expect(targets).toEqual([
-      { _id: s.fx.baseId, name: "Base", role: "home" },
-      { _id: s.fx.goldId, name: "Gold Refractor", role: "parallel" },
-    ]);
-  });
+  const lines = async (s: S, id: Id<"cardChecklist">) => ((await cardOf(s, id)).listingDescription ?? "").split("\n");
+  const set = (s: S, id: Id<"cardChecklist">, playerIds: Array<Id<"players">>) =>
+    s.admin.mutation(api.cardSecondaryPlayers.setSecondaryPlayers, { cardId: id, playerIds });
 
-  test("adds to every home card of the Base and its parallels, skipping the cards he is the subject of", async () => {
+  test("a generated description gains the line after the team: one, then several, then none", async () => {
     const s = await setup();
-    const result = await runAll(s, "add", s.fx.baseId, s.fx.strawberryId);
-    // Base: Gooden #1, Strawberry #2 (his own card), Gooden Sliding; Gold: Gooden #1.
-    expect(result.scanned).toBe(4);
-    expect(result.changed).toBe(3);
-    expect(result.skippedPrimary).toBe(1);
-    expect(result.pages.map((p) => p.targetId)).toEqual([s.fx.baseId, s.fx.goldId]);
-    for (const id of [s.fx.gooden1, s.fx.gooden1Sliding, s.fx.gold1]) {
-      expect((await cardOf(s, id)).secondaryPlayerIds).toEqual([s.fx.strawberryId]);
-      expect((await linksOf(s, id)).map((l) => l.playerId)).toEqual([s.fx.strawberryId]);
-    }
-    expect((await cardOf(s, s.fx.strawberry2)).secondaryPlayerIds).toBeUndefined();
-    // The Future Stars insert is not a parallel of Base: untouched.
-    expect((await cardOf(s, s.fx.futureStar)).secondaryPlayerIds).toBeUndefined();
+    const ryan = await newPlayer(s, "Ken Griffey Jr.");
+    const plain = await generateInto(s, s.fx.strawberry2, []);
+    expect(plain).not.toMatch(/Cameo/);
 
-    // Run again: nothing to do.
-    const again = await runAll(s, "add", s.fx.baseId, s.fx.strawberryId);
-    expect(again.changed).toBe(0);
-    expect(again.unchanged).toBe(3);
+    await set(s, s.fx.strawberry2, [ryan]);
+    const one = await lines(s, s.fx.strawberry2);
+    expect(one[one.indexOf("Team: New York Mets.") + 1]).toBe("Cameo: Ken Griffey Jr.");
+
+    await set(s, s.fx.strawberry2, [s.fx.goodenId, ryan]);
+    expect(await lines(s, s.fx.strawberry2)).toContain("Cameos: Dwight Gooden, Ken Griffey Jr.");
+
+    await set(s, s.fx.strawberry2, []);
+    expect((await cardOf(s, s.fx.strawberry2)).listingDescription).toBe(plain);
   });
 
-  test("remove is the inverse, and leaves other cameos alone", async () => {
+  test("a description a person edited is kept, whatever the cameos do", async () => {
+    const s = await setup();
+    await s.t.run(async (ctx) => ctx.db.patch(s.fx.strawberry2, { listingDescription: "Straw, in his own words." }));
+    await set(s, s.fx.strawberry2, [s.fx.goodenId]);
+    expect((await cardOf(s, s.fx.strawberry2)).listingDescription).toBe("Straw, in his own words.");
+    await set(s, s.fx.strawberry2, []);
+    expect((await cardOf(s, s.fx.strawberry2)).listingDescription).toBe("Straw, in his own words.");
+  });
+
+  test("a card with no description is left without one", async () => {
+    const s = await setup();
+    await set(s, s.fx.strawberry2, [s.fx.goodenId]);
+    expect("listingDescription" in (await cardOf(s, s.fx.strawberry2))).toBe(false);
+  });
+
+  test("a description generated before cameos were described (no cameo line, cameos already set) still counts as generated", async () => {
     const s = await setup();
     const ryan = await newPlayer(s, "Nolan Ryan");
-    await runAll(s, "add", s.fx.baseId, s.fx.strawberryId);
-    await runAll(s, "add", s.fx.baseId, ryan);
-    const removed = await runAll(s, "remove", s.fx.baseId, s.fx.strawberryId);
-    expect(removed.changed).toBe(3);
-    expect(removed.unchanged).toBe(1);
-    for (const id of [s.fx.gooden1, s.fx.gooden1Sliding, s.fx.gold1]) {
-      expect((await cardOf(s, id)).secondaryPlayerIds).toEqual([ryan]);
-      expect((await linksOf(s, id)).map((l) => l.playerId)).toEqual([ryan]);
-    }
-    expect((await cardOf(s, s.fx.strawberry2)).secondaryPlayerIds).toEqual([ryan]);
-    const cleared = await runAll(s, "remove", s.fx.baseId, ryan);
-    expect(cleared.changed).toBe(4);
-    for (const id of [s.fx.gooden1, s.fx.strawberry2, s.fx.gooden1Sliding, s.fx.gold1]) {
-      expect((await cardOf(s, id)).secondaryPlayerIds).toBeUndefined();
-      expect(await linksOf(s, id)).toEqual([]);
-    }
+    await set(s, s.fx.strawberry2, [s.fx.goodenId]);
+    // The pre-NEO-528 generator's text: no cameo line though Gooden is one.
+    await generateInto(s, s.fx.strawberry2, []);
+    await set(s, s.fx.strawberry2, [s.fx.goodenId, ryan]);
+    expect(await lines(s, s.fx.strawberry2)).toContain("Cameos: Dwight Gooden, Nolan Ryan.");
   });
 
-  test("pages a long checklist BULK_PAGE cards at a time, the cursor carrying the client from page to page", async () => {
+  test("an unchanged list writes nothing, the description included", async () => {
     const s = await setup();
-    await s.t.run(async (ctx) => {
-      for (let i = 0; i < BULK_PAGE + 5; i++) {
-        await insertTestCard(ctx, {
-          selectorOptionId: s.fx.futureStarsId,
-          cardNumber: `X-${i}`,
-          cardName: "Extra",
-          platformData: {},
-          sortOrder: 10 + i,
-          lastUpdated: NOW,
-        });
-      }
-    });
-    const result = await runAll(s, "add", s.fx.futureStarsId, s.fx.strawberryId);
-    expect(result.pages).toHaveLength(2);
-    expect(result.pages[0].scanned).toBe(BULK_PAGE);
-    expect(result.pages[0].cursor).not.toBeNull();
-    expect(result.scanned).toBe(BULK_PAGE + 6);
-    expect(result.changed).toBe(BULK_PAGE + 6);
-  });
-
-  test("a card already holding the most cameos it can is skipped and counted", async () => {
-    const s = await setup();
-    const full: Array<Id<"players">> = [];
-    for (let i = 0; i < MAX_CARD_PLAYERS; i++) full.push(await newPlayer(s, `Full ${i}`));
-    await s.admin.mutation(api.cardSecondaryPlayers.setSecondaryPlayers, { cardId: s.fx.gold1, playerIds: full });
-    const result = await runAll(s, "add", s.fx.goldId, s.fx.strawberryId);
-    expect(result.skippedFull).toBe(1);
-    expect((await cardOf(s, s.fx.gold1)).secondaryPlayerIds).toEqual(full);
-  });
-
-  test("each marker names the row it was handed out for", async () => {
-    const s = await setup();
-    const args = { variantId: s.fx.baseId, playerId: s.fx.strawberryId };
-    const first = await s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, { ...args, cursor: null });
-    expect(JSON.parse(first.cursor!)).toEqual({ i: 1, t: s.fx.goldId, c: null });
-  });
-
-  test("a parallel added between pages shifts the rows, and the next page is refused rather than walked as the wrong row", async () => {
-    const s = await setup();
-    // A second Parallel variant type with its own parallel, so the walk is
-    // Base, Gold Refractor (Parallels), Silver (Parallel).
-    const silverCard = await s.t.run(async (ctx) => {
-      const typeId = await ctx.db.insert("selectorOptions", {
-        level: "variantType",
-        value: "Parallel",
-        platformData: {},
-        isCustom: false,
-        children: [],
-        parentId: s.fx.setId,
-        lastUpdated: NOW,
-      } as never);
-      const silverId = await ctx.db.insert("selectorOptions", {
-        level: "insert",
-        value: "Silver",
-        platformData: {},
-        isCustom: false,
-        children: [],
-        parentId: typeId,
-        lastUpdated: NOW,
-      } as never);
-      return insertTestCard(ctx, {
-        selectorOptionId: silverId,
-        cardNumber: "1",
-        cardName: "Silver",
-        platformData: {},
-        sortOrder: 1,
-        lastUpdated: NOW,
-      });
-    });
-    const args = { variantId: s.fx.baseId, playerId: s.fx.strawberryId };
-    const fn = api.cardSecondaryPlayers.addSecondaryPlayerToVariant;
-    const p1 = await s.admin.mutation(fn, { ...args, cursor: null });
-    const p2 = await s.admin.mutation(fn, { ...args, cursor: p1.cursor });
-    expect(p2.targetId).toBe(s.fx.goldId);
-    expect(p2.cursor).not.toBeNull();
-    // Now a new parallel lands under the first Parallels type: it sorts after
-    // Gold Refractor and BEFORE Silver, so index 2 is no longer Silver.
-    await s.t.run(async (ctx) =>
-      ctx.db.insert("selectorOptions", {
-        level: "insert",
-        value: "Blue",
-        platformData: {},
-        isCustom: false,
-        children: [],
-        parentId: s.fx.parallelsTypeId,
-        lastUpdated: NOW,
-      } as never),
-    );
-    await expect(s.admin.mutation(fn, { ...args, cursor: p2.cursor })).rejects.toThrow(BULK_CHECKLIST_CHANGED);
-    expect((await cardOf(s, silverCard)).secondaryPlayerIds).toBeUndefined();
-  });
-
-  test("a player deleted before a page is refused in the operator's words", async () => {
-    const s = await setup();
-    const gone = await newPlayer(s, "Gone Player");
-    await s.t.run(async (ctx) => ctx.db.delete(gone));
-    await expect(
-      s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, {
-        variantId: s.fx.baseId,
-        playerId: gone,
-        cursor: null,
-      }),
-    ).rejects.toThrow(BULK_MISSING_PLAYER);
-  });
-
-  test("refuses a marker it did not hand out, a non-card row, and a non-admin", async () => {
-    const s = await setup();
-    const args = { variantId: s.fx.baseId, playerId: s.fx.goodenId };
-    await expect(
-      s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, { ...args, cursor: "nope" }),
-    ).rejects.toThrow(BULK_CHECKLIST_CHANGED);
-    await expect(
-      s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, {
-        ...args,
-        cursor: JSON.stringify({ i: 9, t: s.fx.goldId, c: null }),
-      }),
-    ).rejects.toThrow(BULK_CHECKLIST_CHANGED);
-    // A marker without the target it was handed out for (the pre-NEO-528
-    // audit shape) is refused too, rather than trusted by index alone.
-    await expect(
-      s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, {
-        ...args,
-        cursor: JSON.stringify({ i: 1, c: null }),
-      }),
-    ).rejects.toThrow(BULK_CHECKLIST_CHANGED);
-    await expect(
-      s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, {
-        variantId: s.fx.setId,
-        playerId: s.fx.goodenId,
-        cursor: null,
-      }),
-    ).rejects.toThrow(/Pick a checklist/);
-    await expect(
-      s.t.withIdentity(MEMBER).mutation(api.cardSecondaryPlayers.removeSecondaryPlayerFromVariant, { ...args, cursor: null }),
-    ).rejects.toThrow(/admin/i);
-    await expect(
-      s.t.withIdentity(MEMBER).query(api.cardSecondaryPlayers.secondaryPlayerBulkTargets, { variantId: s.fx.baseId }),
-    ).rejects.toThrow(/admin/i);
+    await set(s, s.fx.strawberry2, [s.fx.goodenId]);
+    await s.t.run(async (ctx) => ctx.db.patch(s.fx.strawberry2, { listingDescription: "stale" }));
+    await set(s, s.fx.strawberry2, [s.fx.goodenId]);
+    expect((await cardOf(s, s.fx.strawberry2)).listingDescription).toBe("stale");
   });
 });
 

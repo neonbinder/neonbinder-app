@@ -178,6 +178,30 @@ describe("parallel build — also-pictured players (NEO-528)", () => {
     expect(linksOnParallel[0]).toMatchObject({ cardChecklistId: one._id, playerId: judge, sportId: sport });
   });
 
+  test("a copy's freshly generated description names its cameos; a copy without any has no cameo line", async () => {
+    const t = convexTest(schema, modules);
+    const { insert, parallel, judge } = await seed(t);
+    await t.run(async (ctx) => {
+      const [ohtaniCard] = (
+        await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", insert))
+          .collect()
+      ).filter((c) => c.cardNumber === "1");
+      await setCardSecondaryPlayers(ctx, ohtaniCard, [judge]);
+    });
+    bscState.cards = kanjiCards();
+    await t.withIdentity(ADMIN).action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: parallel });
+
+    const { cards } = await cameoState(t, parallel);
+    const one = cards.find((c) => c.cardNumber === "1")!;
+    const two = cards.find((c) => c.cardNumber === "2")!;
+    const lines = (one.listingDescription ?? "").split("\n");
+    expect(lines[0]).toMatch(/card of Shohei Ohtani, #1\.$/);
+    expect(lines).toContain("Cameo: Aaron Judge.");
+    expect(two.listingDescription ?? "").not.toMatch(/Cameo/);
+  });
+
   test("a rebuild leaves no orphan cameo row and indexes the new copy once", async () => {
     const t = convexTest(schema, modules);
     const { insert, parallel, judge } = await seed(t);

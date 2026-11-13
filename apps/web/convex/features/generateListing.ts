@@ -739,8 +739,17 @@ export function generateListingTitle(inputs: ListingCardInputs): string {
  * longest description this generator has ever produced on real data is 132
  * characters. So unlike the title, nothing is dropped — a `cardVariation` too
  * long to earn a place in the title still states itself in full here.
+ *
+ * NEO-528 — `extras.cameoNames`: the NB names of the people also pictured on
+ * the card (its cameos), in stored order. Stated on their own line right
+ * after the team ("Cameo: Ken Griffey Jr." / "Cameos: A, B."). A separate
+ * argument rather than a `ListingCardInputs` field on purpose: the TITLE never
+ * names a cameo, and keeping them out of its inputs is what guarantees it.
  */
-export function generateListingDescription(inputs: ListingCardInputs): string {
+export function generateListingDescription(
+  inputs: ListingCardInputs,
+  extras: { cameoNames?: ReadonlyArray<string> } = {},
+): string {
   const sentences: string[] = [];
 
   // NEO-335: the insert's name is part of what the card is, so the
@@ -792,6 +801,15 @@ export function generateListingDescription(inputs: ListingCardInputs): string {
     .filter(Boolean);
   if (teamNames.length > 0) {
     sentences.push(`Team: ${teamNames.join(", ")}.`);
+  }
+
+  // NEO-528: who else is pictured, named in full like the teams. A name that
+  // already ends in a full stop ("Ken Griffey Jr.") does not get a second one.
+  const cameoNames = (extras.cameoNames ?? []).map((n) => n.trim()).filter(Boolean);
+  if (cameoNames.length > 0) {
+    const label = cameoNames.length === 1 ? "Cameo" : "Cameos";
+    const list = cameoNames.join(", ");
+    sentences.push(list.endsWith(".") ? `${label}: ${list}` : `${label}: ${list}.`);
   }
 
   if (inputs.isRookie) sentences.push("This is a Rookie Card.");

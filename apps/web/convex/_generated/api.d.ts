@@ -57,6 +57,7 @@ import type * as cardCounts from "../cardCounts.js";
 import type * as cardNotes from "../cardNotes.js";
 import type * as cardNumberPrefix from "../cardNumberPrefix.js";
 import type * as cardPlayerLinks from "../cardPlayerLinks.js";
+import type * as cardPlayersBulk from "../cardPlayersBulk.js";
 import type * as cardRowCreate from "../cardRowCreate.js";
 import type * as cardRowDelete from "../cardRowDelete.js";
 import type * as cardSecondaryPlayers from "../cardSecondaryPlayers.js";
@@ -266,6 +267,7 @@ declare const fullApi: ApiFromModules<{
   cardNotes: typeof cardNotes;
   cardNumberPrefix: typeof cardNumberPrefix;
   cardPlayerLinks: typeof cardPlayerLinks;
+  cardPlayersBulk: typeof cardPlayersBulk;
   cardRowCreate: typeof cardRowCreate;
   cardRowDelete: typeof cardRowDelete;
   cardSecondaryPlayers: typeof cardSecondaryPlayers;

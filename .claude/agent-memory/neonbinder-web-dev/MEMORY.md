@@ -78,6 +78,7 @@
 - [Runtime colour needs a per-theme split](reference_runtime_colour_needs_a_per_theme_split.md) — livery never passes both modes; decide per useTheme().mode against tokens.ts surfaces (hover + /20 tint too)
 - [light-dark() follows data-theme](reference_light_dark_follows_data_theme.md) — oklch light-dark() arbitrary value for a colour with no role; bg-hover == bg-raised in dark; neon borders → -text
 - [Placeholder module cycle TDZ](reference_placeholder_module_cycle_tdz.md) — pipeline ↔ pool/heavyPool import each other; a shared const is TDZ at load; shared validators go in pure lib/
+- [selectorOptions import cycle](reference_selectoroptions_import_cycle.md) — a module players.ts imports must not reach selectorOptions.ts statically; validators load undefined (asOptional TypeError)
 - [Sync Sets held notices not surfaced](project_sync_sets_held_notices_not_surfaced.md) — setName store's held/withheld are dropped at the action boundary on purpose (NEO-312); don't re-propose a channel
 - [Reuse the status-ledger spinner→check pattern](feedback_reuse_the_status_ledger_spinner_to_check_pattern.md) — owner-approved (NEO-312 ParallelBuildPanel): per-item ledger, clock→spin→check glyphs, sleeve strip; reuse for any multi-item run, extract on second use
 - [Result ledgers grow, the page scrolls](feedback-result-ledgers-grow-the-page-scrolls.md) — no max-h-48 inner scroller on a list the operator reads; 70vh cap only past a pathological count (Jason, NEO-321)

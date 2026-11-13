@@ -353,12 +353,13 @@ import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
 // NEO-335 — the one rule for a listing short name and the one reading of a
 // chain's title facts, shared by every walk below and by listingTitleContext.ts.
 import {
+  findAncestorLabels,
   LISTING_SHORT_NAME_LEVELS,
   normalizeListingShortName,
   titleChainFacts,
   titleChainFactsFields,
-  type TitleChainFacts,
 } from "./listingShortName";
+export { findAncestorLabels };
 // Re-exported for callers that reached the ceiling through this module before
 // the rule moved; convex/cardNumberPrefix.ts is its home.
 export { MAX_CARD_NUMBER_PREFIX_LENGTH } from "./cardNumberPrefix";
@@ -5353,86 +5354,9 @@ export const renameSelectorOption = mutation({
  * to typical marketplace card numbers (1-500), which matches user
  * expectations for an appended custom slot.
  */
-/**
- * Walk a selectorOptions node's parent chain ONCE, collecting everything
- * listing generation needs from above the card: the setName display value
- * ("Chrome"), the sport display value ("Baseball"), and — NEO-272 — whether NB
- * has identified the brand of the set at all (a ROLE off
- * `metadata.isBrandUnknown` on the manufacturer in between, never its name).
- *
- * NEO-101 widened this from `findSetNameValue`, which returned early at the
- * setName level. The sport node sits ABOVE setName, so a second helper would
- * have meant a second walk over the same chain for every card previewed or
- * hand-added — the walk is the cost here, not the comparison, so both values
- * come out of one pass.
- *
- * Still deliberately narrow rather than a general ancestor-chain utility:
- * every other consumer of the chain already had its own reason to walk it
- * (commitCardChecklist resolves both in the prelude, once per commit, and
- * hands them to the chunks). Depth-bounded like
- * `findSportForSelectorOption`, so a cyclic or corrupted `parentId` cannot
- * spin a query.
- */
-export async function findAncestorLabels(
-  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
-  node: any,
-): Promise<
-  {
-    setName?: string;
-    sport?: string;
-    manufacturerBrandUnknown?: boolean;
-  } & TitleChainFacts
-> {
-  const labels: {
-    setName?: string;
-    sport?: string;
-    manufacturerBrandUnknown?: boolean;
-  } = {};
-  if (!node) return labels;
-  // NEO-335 — the rows from `node` up to and including the setName row, LEAF
-  // FIRST, for `titleChainFacts` (the insert role, a parallel leaf, the
-  // nearest short name). Collected on the way past: this walk already passes
-  // every one of them before it can stop.
-  const titleChain: any[] = [];
-  let current = node;
-  let depth = 0;
-  while (current && depth < 16) {
-    if (labels.setName === undefined) titleChain.push(current);
-    if (current.level === "setName" && labels.setName === undefined) {
-      labels.setName = current.value;
-    }
-    // NEO-272 — the manufacturer ROLE, not its name. Picked up on the way past
-    // rather than by a walk of its own: the chain is
-    // sport › year › manufacturer › setName › …, so walking UP from a card's
-    // parent reaches the manufacturer AFTER setName and BEFORE sport, and the
-    // break below waits for sport. Every chain that has a manufacturer level
-    // therefore passes through it before this loop can stop.
-    if (
-      current.level === "manufacturer" &&
-      labels.manufacturerBrandUnknown === undefined
-    ) {
-      labels.manufacturerBrandUnknown =
-        current.metadata?.isBrandUnknown === true;
-    }
-    if (current.level === "sport" && labels.sport === undefined) {
-      labels.sport = current.value;
-    }
-    // Deliberately NOT extended with `manufacturerBrandUnknown`. A chain with
-    // no manufacturer level at all — a setName hung straight off a sport, which
-    // is what most fixtures and some hand-built trees look like — would then
-    // never satisfy the condition and would walk to the depth cap, paying extra
-    // reads on every card previewed or hand-added to buy nothing. The value is
-    // already collected above by the time sport is reached, so stopping here
-    // loses nothing; leaving it absent is the same "no manufacturer role" answer
-    // as `false`, which is exactly how the generator reads it.
-    if (labels.setName !== undefined && labels.sport !== undefined) break;
-    const parentId: Id<"selectorOptions"> | undefined = current.parentId;
-    if (!parentId) break;
-    current = await ctx.db.get(parentId);
-    depth += 1;
-  }
-  return { ...labels, ...titleChainFacts(titleChain) };
-}
+// NEO-528 — `findAncestorLabels` moved to listingShortName.ts (beside
+// `titleChainFacts`, which it feeds), so `storedCardTitle.ts` can read it
+// without importing this module; re-exported below for existing callers.
 
 
 /**
@@ -21868,11 +21792,21 @@ export const diffChecklistAgainstExisting = query({
        * Jays → —" row: a proposal to clear NB data on the strength of a lookup
        * that never returned. NB owns the team; only an explicit marketplace
        * team that differs is a suggestion worth an operator's time.
+       *
+       * NEO-528 — the same holds for the roster. A marketplace that lists no
+       * player for a card has made no claim about who is on it, and a card
+       * whose player NB set by hand (the Set Builder's "Player on every card",
+       * filled before the set was ever synced) must not be offered a
+       * "Players: Patrick Mahomes → —" row on every sync. A NON-empty roster
+       * that differs is still offered, as before.
        */
       const fields = comparisons
         .filter(({ name }) => !settledConflictFields.has(name))
         .filter(
           ({ name }) => name !== "teamOnCardIds" || incomingTeams.length > 0,
+        )
+        .filter(
+          ({ name }) => name !== "playerIds" || incomingPlayers.length > 0,
         )
         .filter(
           ({ stored, incoming, compare }) =>
