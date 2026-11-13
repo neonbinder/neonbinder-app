@@ -1111,6 +1111,54 @@ describe("stored people — re-synced playerless rows and the set's skip records
 });
 
 /**
+ * NEO-528 — the row's "Player on every card": a NEW card with nobody on it is
+ * born with that player, so the teams step files it under them (by id), with
+ * their career as the evidence, never on the "Cards with no players" line.
+ */
+describe("stored people — the row's Player on every card", () => {
+  const GRIFFEY = "player_griffey" as Id<"players">;
+  const wire = (positions: number[]) => ({ playerId: GRIFFEY, name: "Ken Griffey Jr.", positions });
+
+  test("a new card printing nobody joins the default player's line and asks for them by id", () => {
+    const cards = [card("1", []), card("2", []), card("3", ["Johnny Bench"])];
+    const people = storedPeople(undefined, undefined, undefined, wire([0, 1, 2]));
+    const groups = build(cards, [], {}, undefined, { people });
+    expect(groups.some((g) => g.key === NO_PLAYERS_GROUP_KEY)).toBe(false);
+    const griffey = groups.find((g) => g.players.includes("Ken Griffey Jr."));
+    expect(griffey?.cards.map((c) => c.index)).toEqual([0, 1]);
+    // A card with its own player keeps them.
+    expect(groups.find((g) => g.players.includes("Johnny Bench"))?.cards.map((c) => c.index)).toEqual([2]);
+    expect(evidenceRequests(cards, [], undefined, people)).toEqual([
+      { key: `id:${GRIFFEY}`, playerId: GRIFFEY },
+      { key: "name:bench johnny", name: "Johnny Bench" },
+    ]);
+  });
+
+  test("a card whose only printed name was ruled out is nobody, so it takes the default too", () => {
+    const people = storedPeople(undefined, ["Team Photo"], undefined, wire([0]));
+    const groups = build([card("1", ["Team Photo"])], [], {}, undefined, { people });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].players).toEqual(["Ken Griffey Jr."]);
+  });
+
+  test("a re-synced stored row (not in positions) stays on the no-players line", () => {
+    const people = storedPeople([0], undefined, undefined, wire([1]));
+    const groups = build([card("1", []), card("2", [])], [], {}, undefined, { people });
+    expect(groups.map((g) => g.cards.map((c) => c.index))).toEqual([[0], [1]]);
+    expect(groups[0].key).toBe(NO_PLAYERS_GROUP_KEY);
+    expect(groups[1].players).toEqual(["Ken Griffey Jr."]);
+  });
+
+  test("no positions, or a blank name, is nothing to say", () => {
+    expect(storedPeople(undefined, undefined, undefined, wire([]))).toBeUndefined();
+    expect(
+      storedPeople(undefined, undefined, undefined, { playerId: GRIFFEY, name: "  ", positions: [0] }),
+    ).toBeUndefined();
+    expect([...(storedPeople(undefined, undefined, undefined, wire([3, 1]))?.defaultPlayer?.positions ?? [])]).toEqual([3, 1]);
+  });
+});
+
+/**
  * NEO-335 — the set's skip records for TEAM names (CI run 38285320710,
  * `checklist-one-marketplace-skips-match-dialog` step 10). The first sitting
  * skipped "Roanoke Express" as "not a team"; a re-sync's gate drops it before

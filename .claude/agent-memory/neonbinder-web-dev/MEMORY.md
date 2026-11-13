@@ -220,3 +220,4 @@
 - [Device preference store](reference_device_preference_store.md) — per-device setting shared by page + layout: one useSyncExternalStore module, storage try/catch, test reset in afterEach
 - [Segmented switch is a radiogroup](reference_segmented_switch_is_a_radiogroup.md) — one-of-two pill = roving radiogroup; reserve the check slot; padded track keeps focus ring off the cyan fill
 - [t.run returns undefined as null](reference_convex_test_run_returns_undefined_as_null.md) — a bare optional field returned from t.run comes back null; `?? null` + toBeNull
+- [useConvex mock must be stable](reference_useconvex_mock_must_be_stable.md) — fresh client per render loops an effect listing `convex`; bare 5s timeout; hoist the mock client

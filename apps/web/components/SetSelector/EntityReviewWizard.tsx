@@ -111,6 +111,7 @@ import {
 } from "./entity-review-steps";
 import {
   storedPeople,
+  type DefaultPlayerWire,
   type GroupChoice,
   type PreviewCardForTeams,
   type TeamAnswer,
@@ -479,6 +480,7 @@ export default function EntityReviewWizard({
   onChecklistChoicesChange,
   cardsWithSettledTeam,
   cardsWithNoPlayers,
+  cardsWithDefaultPlayer,
   skippedPlayerNames,
   skippedTeamNames,
   teamsOnly = false,
@@ -558,6 +560,13 @@ export default function EntityReviewWizard({
    * for `cardsWithSettledTeam`.
    */
   cardsWithNoPlayers?: readonly number[];
+  /**
+   * NEO-528 — the row's "Player on every card" and the positions in
+   * `previewCards` of the NEW cards the commit gives them when nobody else is
+   * on them. The teams step files those cards under that player, never
+   * "Cards with no players". The parent decides, as for `cardsWithSettledTeam`.
+   */
+  cardsWithDefaultPlayer?: DefaultPlayerWire;
   /**
    * NEO-335 — player names this set's skip records rule "not a person", raw.
    * The gate never queues them, so the batch rows cannot say they are
@@ -3187,8 +3196,8 @@ export default function EntityReviewWizard({
    * being decided (see `cardsForTeamsStep`), exact once they all are.
    */
   const storedNames = useMemo(
-    () => storedPeople(cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames),
-    [cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames],
+    () => storedPeople(cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames, cardsWithDefaultPlayer),
+    [cardsWithNoPlayers, skippedPlayerNames, skippedTeamNames, cardsWithDefaultPlayer],
   );
   const teamsStepCards = useMemo(
     () =>
@@ -6045,6 +6054,7 @@ export default function EntityReviewWizard({
                   onAnswersChange={handleTeamAnswers}
                   settledIndexes={cardsWithSettledTeam}
                   playerlessIndexes={cardsWithNoPlayers}
+                  defaultPlayer={cardsWithDefaultPlayer}
                   skippedPlayerNames={skippedPlayerNames}
                   skippedTeamNames={skippedTeamNames}
                   disabled={saving}

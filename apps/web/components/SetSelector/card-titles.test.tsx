@@ -141,6 +141,23 @@ describe("recomputed from the team answers", () => {
     expect(setTeam[0].cards[0].leftOut).toContain("Los Angeles Angels");
   });
 
+  test("NEO-528: a card with nobody on it takes the row's Player on every card; a card with a player keeps its own", () => {
+    const withDefault = context({ setPlayerNames: ["Ken Griffey Jr."] });
+    const titled = (ctx: TitleContext, playerNames: string[]) =>
+      assessNewCardListing({ cardNumber: "1" }, ctx, { playerNames, teamNames: [] }).assessment.title;
+    const nobody = buildTitleGroups([card("1", { players: [] })], withDefault).titleGroups;
+    expect(nobody[0].cards[0].title).toBe(titled(withDefault, ["Ken Griffey Jr."]));
+    // This long set cuts the core, so the player shows up in what was left out.
+    expect(nobody[0].cards[0].leftOut).toContain("Ken Griffey Jr.");
+    // Printed and resolved: their own player, never the default.
+    const own = buildTitleGroups([card("1")], withDefault).titleGroups;
+    expect(own[0].cards[0].title).toBe(titled(withDefault, ["Shohei Ohtani"]));
+    // An older server sends no default: nobody stays nobody.
+    const older = buildTitleGroups([card("1", { players: [] })], context()).titleGroups;
+    expect(older[0].cards[0].title).toBe(titled(context(), []));
+    expect(older[0].cards[0].leftOut).not.toContain("Ken Griffey Jr.");
+  });
+
   test("the team answer's strings REPLACE the printed ones", () => {
     const groups = buildTitleGroups(
       [card("1", { teams: ["LA Dodgers"] })],

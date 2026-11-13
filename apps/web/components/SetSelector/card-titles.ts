@@ -191,11 +191,16 @@ function cardNames(
   index: NameIndex,
   context: TitleContext,
 ): { playerNames: string[]; teamNames: string[] } {
-  const playerNames: string[] = [];
+  let playerNames: string[] = [];
   for (const p of card.players ?? []) {
     const name = index.player(p);
     if (name) playerNames.push(name);
   }
+  // NEO-528 — with nobody on it (nothing printed, or every printed name ruled
+  // out), a new card is born with the row's "Player on every card", and its
+  // title names them, as the commit's will. The same rule as the set team
+  // just below; the name is the server's, never written onto the card here.
+  if (playerNames.length === 0) playerNames = [...(context.setPlayerNames ?? [])];
   const fromIds = (teamAnswer?.teamIds ?? [])
     .map((id) => index.teamById(id))
     .filter((n): n is string => !!n);

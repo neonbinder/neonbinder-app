@@ -40,7 +40,7 @@ import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
 import PromoteToSetControl from "./PromoteToSetControl";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
-import AlsoPicturedBulkControl from "./AlsoPicturedBulkControl";
+import EveryCardPlayerControl from "./EveryCardPlayerControl";
 import {
   ALL_SIDES,
   joinLabels,
@@ -906,7 +906,31 @@ export default function SetAttributesPanel({
               onFailed={showFailedToast}
             />
           )}
+        </>
+      )}
 
+      {/* NEO-528 — "Player on every card": the stored player and cameos every
+          new card beneath this row is born with, and the run that brings the
+          cards already here along. At EVERY level (a whole year of one
+          player's cards is a real thing), directly under Team: it is the
+          other attribute here that reaches every card. Outside the
+          `expanded` branch so a run's ledger stays on screen when the panel
+          is collapsed, until it is dismissed; the control draws its section
+          only while expanded. Keyed on the row so a confirm or a finished run
+          never carries over to the next one. */}
+      <EveryCardPlayerControl
+        key={`every-card-player-${selectorOptionId}`}
+        variantId={selectorOptionId}
+        level={leafLevel}
+        rowName={row.value}
+        sportId={ancestorSportId}
+        expanded={expanded}
+        onToast={showToast}
+        onDismissedCollapsed={() => expandToggleRef.current?.focus({ preventScroll: true })}
+      />
+
+      {expanded && (
+        <>
           {toggleFeatures.length > 0 && (
             <div
               className="flex flex-wrap items-center gap-2"
@@ -987,25 +1011,6 @@ export default function SetAttributesPanel({
             ))}
           </div>
         </>
-      )}
-
-      {/* NEO-528 — one player added to (or taken off) the "Also on this
-          card" list of every card here and in its parallels. At the levels
-          cards hang from (`showsCardPrefix`), after the grid: it acts on
-          cards, not on this row. Outside the `expanded` branch so a run's
-          ledger stays on screen when the panel is collapsed, until it is
-          dismissed; the control shows its form only while expanded. Keyed
-          on the row so a confirm or a finished run never carries over to the
-          next one. */}
-      {showCardPrefixRow && (
-        <AlsoPicturedBulkControl
-          key={`also-pictured-${selectorOptionId}`}
-          variantId={selectorOptionId}
-          level={leafLevel as "variantType" | "insert" | "parallel"}
-          sportId={ancestorSportId}
-          expanded={expanded}
-          onDismissedCollapsed={() => expandToggleRef.current?.focus({ preventScroll: true })}
-        />
       )}
     </div>
   );

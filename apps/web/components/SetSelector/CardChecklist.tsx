@@ -33,6 +33,7 @@ import {
   storedPeople,
   teamlessCardIndexes,
   withTeamAnswer,
+  type DefaultPlayerWire,
   type TeamAnswer,
 } from "./teams-on-cards";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
@@ -292,6 +293,14 @@ type FetchPreview = {
    * they print. See `resolveAndCommit`.
    */
   playerlessIndexes?: number[];
+  /**
+   * NEO-528 — the leaf's "Player on every card" and the positions in `cards`
+   * of the NEW rows the commit gives them when nobody else is on them
+   * (`setPlayerCoversNewRows` in `resolveAndCommit`). The wizard's teams
+   * step files those cards under that player, by id, never "Cards with no
+   * players". Absent when the leaf has no such player.
+   */
+  defaultPlayer?: DefaultPlayerWire;
   /**
    * NEO-335 Phase 2 — the titles step's answers, POSITIONALLY ALIGNED with
    * `cards`, as `titleAnswersForCommit` decided them. Absent unless the step
@@ -2181,12 +2190,39 @@ export default function CardChecklist({
       if (!existingId || !storedPlayerlessCardIds.has(existingId)) return [];
       return review.applyFieldsByIndex[index]?.includes("playerIds") ? [] : [position];
     });
+    // NEO-528 — the same, for who is on the card: under a node with a
+    // "Player on every card", a NEW row with nobody on it is born with that
+    // player (the commit's insert branch). The title context names them
+    // (`setPlayerNames`); the teams step needs their id, so it is asked once,
+    // here, and used only when it is the player the title context named (the
+    // server drops one of another sport; so does this). Existing rows are
+    // never filled, so they never join.
+    const setPlayerCoversNewRows = (titleContext?.setPlayerNames?.length ?? 0) > 0;
+    let defaultPlayer: DefaultPlayerWire | undefined;
+    if (setPlayerCoversNewRows && diff) {
+      try {
+        const stored = await convex.query(api.cardPlayersBulk.cardPlayerDefaults, {
+          selectorOptionId: variantId,
+        });
+        const player = stored?.own.player ?? stored?.inherited?.player;
+        const positions = kept.flatMap(({ index }, position) =>
+          existingIdByIndex.has(index) ? [] : [position],
+        );
+        if (player && titleContext?.setPlayerNames?.includes(player.name) && positions.length > 0) {
+          defaultPlayer = { playerId: player._id, name: player.name, positions };
+        }
+      } catch {
+        // The title still names them; the teams step just files these cards
+        // as it always has.
+      }
+    }
     const preview: FetchPreview = {
       sportId,
       batchId,
       settledTeamIndexes,
       existingIndexes,
       playerlessIndexes,
+      ...(defaultPlayer ? { defaultPlayer } : {}),
       ...(titleContext ? { titleContext } : {}),
       cards: kept.map(({ card }) => card),
       decisions: kept.map(({ index }) => ({
@@ -4252,6 +4288,7 @@ export default function CardChecklist({
           // re-synced rows the save keeps playerless, and the names the set's
           // skip records rule "not a person".
           cardsWithNoPlayers={pendingPreview.playerlessIndexes}
+          cardsWithDefaultPlayer={pendingPreview.defaultPlayer}
           skippedPlayerNames={skippedPlayerNames}
           // NEO-335: and the team names they rule "not a team".
           skippedTeamNames={skippedTeamNames}

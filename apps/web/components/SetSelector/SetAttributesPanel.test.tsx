@@ -278,33 +278,41 @@ vi.mock("./TeamPicker", () => ({
 }));
 
 /**
- * NEO-528 — the bulk "Also on every card" control owns its own
- * Convex calls and has its own test file (AlsoPicturedBulkControl.test.tsx).
- * Here it is a stand-in that reports what the panel handed it.
+ * NEO-528 — the "Player on every card" control owns its own Convex calls and
+ * has its own test file (EveryCardPlayerControl.test.tsx). Here it is a
+ * stand-in that reports what the panel handed it.
  */
-vi.mock("./AlsoPicturedBulkControl", () => ({
+vi.mock("./EveryCardPlayerControl", () => ({
   default: ({
     variantId,
     level,
+    rowName,
     sportId,
     expanded,
+    onToast,
     onDismissedCollapsed,
   }: {
     variantId: string;
     level: string;
+    rowName: string;
     sportId?: string;
     expanded: boolean;
+    onToast?: (message: string) => void;
     onDismissedCollapsed?: () => void;
   }) => (
     <div
-      aria-label="Also pictured bulk control (stub)"
+      aria-label="Player on every card control (stub)"
       data-variant-id={variantId}
       data-level={level}
+      data-row-name={rowName}
       data-sport-id={sportId ?? ""}
       data-expanded={String(expanded)}
     >
       <button type="button" onClick={() => onDismissedCollapsed?.()}>
         Stub dismiss collapsed
+      </button>
+      <button type="button" onClick={() => onToast?.("Saved · every new card gets Stub Player")}>
+        Stub toast
       </button>
     </div>
   ),
@@ -3899,34 +3907,48 @@ describe("SetAttributesPanel — set ⇄ parallel row actions (NEO-305)", () => 
   );
 });
 
-describe("SetAttributesPanel — Also on every card (NEO-528)", () => {
-  const STUB = "Also pictured bulk control (stub)";
-
-  it.each([
-    ["variantType", "Base"],
-    ["insert", "Diamond Kings"],
-    ["parallel", "Gold Refractor"],
-  ])("offers the bulk control where cards hang: %s %s", (level, value) => {
-    currentRow = makeRow({ level, value });
-    renderPanel();
-    const stub = screen.getByLabelText(STUB);
-    expect(stub.getAttribute("data-variant-id")).toBe(SELECTOR_OPTION_ID);
-    expect(stub.getAttribute("data-level")).toBe(level);
-    expect(stub.getAttribute("data-sport-id")).toBe("sport-id");
-    expect(stub.getAttribute("data-expanded")).toBe("true");
-  });
+describe("SetAttributesPanel — Player on every card (NEO-528)", () => {
+  const STUB = "Player on every card control (stub)";
 
   it.each([
     ["sport", "Baseball"],
     ["year", "2024"],
     ["manufacturer", "Topps"],
     ["setName", "2024 Topps Chrome"],
-    // A non-Base variant type holds inserts, not cards.
+    ["variantType", "Base"],
+    // A non-Base variant type holds inserts, not cards: still a row a value can live on.
     ["variantType", "Inserts"],
-  ])("leaves it off a container row: %s %s", (level, value) => {
+    ["insert", "Diamond Kings"],
+    ["parallel", "Gold Refractor"],
+  ])("shows the section at every level: %s %s", (level, value) => {
     currentRow = makeRow({ level, value });
     renderPanel();
-    expect(screen.queryByLabelText(STUB)).toBeNull();
+    const stub = screen.getByLabelText(STUB);
+    expect(stub.getAttribute("data-variant-id")).toBe(SELECTOR_OPTION_ID);
+    expect(stub.getAttribute("data-level")).toBe(level);
+    expect(stub.getAttribute("data-row-name")).toBe(value);
+    expect(stub.getAttribute("data-sport-id")).toBe("sport-id");
+    expect(stub.getAttribute("data-expanded")).toBe("true");
+  });
+
+  it("sits directly under Team, ahead of every other attribute", () => {
+    currentRow = makeRow({ level: "insert", value: "Diamond Kings" });
+    renderPanel();
+    const stub = screen.getByLabelText(STUB);
+    const team = screen.getByRole("group", { name: "Team" });
+    // Team, then the section, with nothing between them.
+    expect(team.compareDocumentPosition(stub) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(team.nextElementSibling).toBe(stub);
+    // Every other attribute comes after it.
+    const prefix = screen.getByLabelText("Value for Card prefix");
+    expect(stub.compareDocumentPosition(prefix) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("its toasts go to the panel's status region", () => {
+    currentRow = makeRow({ level: "sport", value: "Baseball" });
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Stub toast" }));
+    expect(screen.getByRole("status").textContent).toBe("Saved · every new card gets Stub Player");
   });
 
   it("stays mounted while the panel is collapsed, told so (a running ledger must not vanish)", () => {

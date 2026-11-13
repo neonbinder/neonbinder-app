@@ -98,21 +98,25 @@ export const ALSO_PICTURED_PICKER_LABELS: ResolvedPlayerPickerLabels = {
 /** NEO-528 — the card drawer's field heading for `ALSO_PICTURED_PICKER_LABELS`. */
 export const ALSO_ON_THIS_CARD_HEADING = "Also on this card";
 
-/** NEO-528 — the bulk control's region heading (`BULK_ALSO_PICTURED_PICKER_LABELS`). */
-export const ALSO_ON_EVERY_CARD_HEADING = "Also on every card";
+/**
+ * NEO-528 — the Attributes panel's "Player on every card" section heading
+ * (and its region's name). The picker below it is `EVERY_CARD_PLAYER_PICKER_LABELS`.
+ */
+export const PLAYER_ON_EVERY_CARD_HEADING = "Player on every card";
 
 /**
- * NEO-528 — the Attributes panel's bulk control: ONE player to add to (or
- * take off) every card of a checklist and its parallels. On the Set Builder
- * page beside the quick-add form's picker, with the card drawer able to open
- * over both, so it is worded apart from the defaults, the drawer's
- * "Also on this card" picker and the quick-add set alike.
+ * NEO-528 — the Attributes panel's "Player on every card" picker: ONE player
+ * to store on a row (at any level) as the player, or a cameo, of every card
+ * beneath it. On the Set Builder page beside the quick-add form's picker, with
+ * the card drawer able to open over both, so it is worded apart from the
+ * defaults, the drawer's "Also on this card" picker and the quick-add set
+ * alike.
  */
-export const BULK_ALSO_PICTURED_PICKER_LABELS: ResolvedPlayerPickerLabels = {
-  root: "Whole-checklist cameo",
-  trigger: "Choose who to change on every card",
-  search: "Find who to change on every card",
-  results: "Whole-checklist cameo choices",
+export const EVERY_CARD_PLAYER_PICKER_LABELS: ResolvedPlayerPickerLabels = {
+  root: "Whole-checklist pick",
+  trigger: "Choose who goes on every card",
+  search: "Find who goes on every card",
+  results: "Whole-checklist choices",
   triggerText: "Choose who",
   placeholder: "Who's on every card?",
   emptyHint: "Type a name…",
@@ -122,3 +126,20 @@ export const BULK_ALSO_PICTURED_PICKER_LABELS: ResolvedPlayerPickerLabels = {
   create: (typed) => `Create and choose ${typed}`,
   sportSwitch: "Sport for the whole-checklist search",
 };
+
+/**
+ * NEO-528 — the rest of the "Player on every card" section's names: its two
+ * actions and the × on each stored chip. Here rather than in the component
+ * so `PlayerPicker.test.tsx` pins them against every picker's names (the
+ * same substring rule as above), without importing the component.
+ */
+export const EVERY_CARD_PLAYER_ACTION_LABELS = {
+  /** Stores the pick as the row's player, then fills the cards beneath. Green. */
+  addPlayer: "Add to every card",
+  /** Stores the pick as one of the row's cameos, then adds it beneath. Blue outline. */
+  addCameo: "Add as cameo",
+  /** The × on the stored player chip. */
+  stopPlayer: (name: string) => `Stop putting ${name} on new cards`,
+  /** The × on a stored cameo chip. */
+  stopCameo: (name: string) => `Stop adding ${name} as a cameo on new cards`,
+} as const;

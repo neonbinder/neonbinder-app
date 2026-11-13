@@ -95,8 +95,9 @@ vi.mock("convex/react", () => ({
 import PlayerPicker from "./PlayerPicker";
 import {
   ALSO_PICTURED_PICKER_LABELS,
-  BULK_ALSO_PICTURED_PICKER_LABELS,
-  ALSO_ON_EVERY_CARD_HEADING,
+  EVERY_CARD_PLAYER_ACTION_LABELS,
+  EVERY_CARD_PLAYER_PICKER_LABELS,
+  PLAYER_ON_EVERY_CARD_HEADING,
   ALSO_ON_THIS_CARD_HEADING,
   DEFAULT_PLAYER_PICKER_LABELS,
   type ResolvedPlayerPickerLabels,
@@ -1221,7 +1222,25 @@ describe("PlayerPicker — label sets (NEO-528)", () => {
    * drawer's other "Also …" section. A spec finds a heading by its text, so
    * no picker name may contain one (or sit inside one) either.
    */
-  const HEADINGS = [ALSO_ON_THIS_CARD_HEADING, ALSO_ON_EVERY_CARD_HEADING, "Also appears in"];
+  const HEADINGS = [ALSO_ON_THIS_CARD_HEADING, PLAYER_ON_EVERY_CARD_HEADING, "Also appears in"];
+
+  /**
+   * NEO-277 — the Attributes panel's Team picker (`SET_TEAM_PICKER_LABELS` in
+   * SetAttributesPanel.tsx, pinned there), restated: it sits directly above
+   * "Player on every card", so no name here may contain one of its names or
+   * sit inside one. Restated rather than imported, as the quick-add set is:
+   * importing the panel would pull its whole module graph into this file.
+   */
+  const SET_TEAM_PICKER = ["Whole-set team", "Add set team", "Find a team for the set", "Set team matches"];
+
+  /**
+   * NEO-528 — the "Player on every card" section's own names beside its
+   * picker: the two actions and the × on each stored chip.
+   */
+  function everyCardActionNames(name: string): string[] {
+    const A = EVERY_CARD_PLAYER_ACTION_LABELS;
+    return [A.addPlayer, A.addCameo, A.stopPlayer(name), A.stopCameo(name)];
+  }
 
   /** Every accessible name a set produces, for a sample name. */
   function namesOf(labels: ResolvedPlayerPickerLabels, name: string): string[] {
@@ -1242,7 +1261,7 @@ describe("PlayerPicker — label sets (NEO-528)", () => {
   const SETS: Array<[string, ResolvedPlayerPickerLabels]> = [
     ["default", DEFAULT_PLAYER_PICKER_LABELS],
     ["also pictured", ALSO_PICTURED_PICKER_LABELS],
-    ["bulk", BULK_ALSO_PICTURED_PICKER_LABELS],
+    ["every card", EVERY_CARD_PLAYER_PICKER_LABELS],
   ];
 
   // A chip always carries a name, or the "Loading…" stand-in.
@@ -1254,6 +1273,8 @@ describe("PlayerPicker — label sets (NEO-528)", () => {
         for (const n of namesOf(labels, sample)) all.push([set, n.toLowerCase()]);
       }
       for (const n of QUICK_ADD_CONTAINER) all.push(["quick add", n.toLowerCase()]);
+      for (const n of SET_TEAM_PICKER) all.push(["set team", n.toLowerCase()]);
+      for (const n of everyCardActionNames(sample)) all.push(["every card actions", n.toLowerCase()]);
       // Each heading is its own group: they must stay apart from each other too.
       for (const n of HEADINGS) all.push([`heading ${n}`, n.toLowerCase()]);
       for (const [setA, a] of all) {
@@ -1271,7 +1292,7 @@ describe("PlayerPicker — label sets (NEO-528)", () => {
   it("the card drawer's set reads as the E2E specs target it (NEO-528)", () => {
     const L = ALSO_PICTURED_PICKER_LABELS;
     expect(ALSO_ON_THIS_CARD_HEADING).toBe("Also on this card");
-    expect(ALSO_ON_EVERY_CARD_HEADING).toBe("Also on every card");
+    expect(PLAYER_ON_EVERY_CARD_HEADING).toBe("Player on every card");
     expect([L.root, L.trigger, L.triggerText, L.search, L.results, L.placeholder, L.emptyHint, L.sportSwitch]).toEqual([
       "Others on this card",
       "Add someone else to this card",
@@ -1287,6 +1308,32 @@ describe("PlayerPicker — label sets (NEO-528)", () => {
       "Take Dan Marino off this card's cameos",
       "Include Dan Marino",
       "Create and include Dan Marino",
+    ]);
+  });
+
+  it("the Player on every card names read as the E2E specs target them (NEO-528)", () => {
+    const P = EVERY_CARD_PLAYER_PICKER_LABELS;
+    const A = EVERY_CARD_PLAYER_ACTION_LABELS;
+    expect([P.root, P.trigger, P.triggerText, P.search, P.results, P.placeholder, P.sportSwitch]).toEqual([
+      "Whole-checklist pick",
+      "Choose who goes on every card",
+      "Choose who",
+      "Find who goes on every card",
+      "Whole-checklist choices",
+      "Who's on every card?",
+      "Sport for the whole-checklist search",
+    ]);
+    expect([P.chip("Al"), P.remove("Al"), P.option("Al"), P.create("Al")]).toEqual([
+      "Chosen for every card: Al",
+      "Clear Al as the choice",
+      "Choose Al",
+      "Create and choose Al",
+    ]);
+    expect([A.addPlayer, A.addCameo, A.stopPlayer("Al"), A.stopCameo("Al")]).toEqual([
+      "Add to every card",
+      "Add as cameo",
+      "Stop putting Al on new cards",
+      "Stop adding Al as a cameo on new cards",
     ]);
   });
 
