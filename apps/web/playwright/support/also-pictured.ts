@@ -46,6 +46,8 @@ export const ALSO_PICTURED_BULK = {
   yesRemove: (name: string) => `Yes, take ${name} off`,
   added: (name: string, cards: string) => `Added ${name} to ${cards}`,
   tookOff: (name: string, cards: string) => `Took ${name} off ${cards}`,
+  /** The finished run's ledger button (it reads "Dismiss"; this is its name). */
+  dismiss: "Dismiss this run",
 } as const;
 
 /**

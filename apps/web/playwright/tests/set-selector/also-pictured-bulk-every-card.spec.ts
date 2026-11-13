@@ -5,7 +5,11 @@
 // confirms ("Add Q to every card in Base?"), and the run's ledger ends "Added
 // Q to 2 cards"; each card's drawer then lists Q under "Also on this card". Take off
 // every card, confirmed, ends "Took Q off 2 cards", and the drawer's Also
-// pictured is empty again.
+// pictured is empty again. Both confirm dialogs and both finished ledgers pass
+// axe, and the finished ledger's Dismiss ("Dismiss this run") takes it away.
+// The Stop, failure and capped-ledger variants are covered by unit tests only
+// (`components/SetSelector/AlsoPicturedBulkControl.test.tsx`): a live Stop
+// needs a run long enough to interrupt, and a live failure a broken backend.
 //
 // Q is the player of the SECOND ordinary row of the seed's 2024 Topps Chrome
 // Base, read off the collector's checklist (read only), and must not be the
@@ -113,13 +117,17 @@ test(
     await expect(offEvery).toBeEnabled();
     await offEvery.click();
     const askOff = page.getByRole("dialog", { name: ALSO_PICTURED_BULK.askRemove(Q) });
+    await expect(askOff.getByRole("button", { name: ALSO_PICTURED_BULK.yesRemove(Q), exact: true })).toBeVisible();
+    await expectAccessible(page, { within: askOff, label: "Take a player off every card, confirm" });
     await askOff.getByRole("button", { name: ALSO_PICTURED_BULK.yesRemove(Q), exact: true }).click();
     await expect(askOff).toBeHidden();
-    await expect(
-      page
-        .getByRole("region", { name: ALSO_PICTURED_BULK.tookOff(Q, "2 cards"), exact: true })
-        .getByRole("heading", { name: ALSO_PICTURED_BULK.tookOff(Q, "2 cards"), exact: true }),
-    ).toBeVisible();
+    const offLedger = page.getByRole("region", { name: ALSO_PICTURED_BULK.tookOff(Q, "2 cards"), exact: true });
+    await expect(offLedger.getByRole("heading", { name: ALSO_PICTURED_BULK.tookOff(Q, "2 cards"), exact: true })).toBeVisible();
+    await expectAccessible(page, { within: offLedger, label: "Also on every card, the take-off run's ledger done" });
+    // A finished run's ledger stays until dismissed; Dismiss takes it away.
+    await offLedger.getByRole("button", { name: ALSO_PICTURED_BULK.dismiss, exact: true }).click();
+    await expect(offLedger).toHaveCount(0);
+    await expect(addEvery).toBeVisible();
     for (const number of numbers) await drawerLists(number, false);
 
     // --- Cleanup: the two cards ---------------------------------------------
