@@ -69,6 +69,11 @@ export function credentialsWords(platform: ListingPlatform): string {
   return `Profile → Credentials → ${PLATFORM_NAME[platform]}`;
 }
 
+/** A title cap said for a platform: eBay's is 80 characters (NEO-535). */
+function titleCapWords(platform: ListingPlatform): string {
+  return platform === "ebay" ? "eBay's 80 characters" : `the most ${PLATFORM_NAME[platform]} takes`;
+}
+
 /** Why a card didn't list on a platform, in a collector's words. */
 export function problemCopy(platform: ListingPlatform): Record<ListingProblemReason, string> {
   const name = PLATFORM_NAME[platform];
@@ -85,6 +90,8 @@ export function problemCopy(platform: ListingPlatform): Record<ListingProblemRea
     missingAspect: `${name} wants a card detail we don't have yet, so it's held back.`,
     noPhoto: `${name} listings need a photo. Add one to a copy of this card and it goes up.`,
     setupIncomplete: `Finish your ${name} setup in ${credentialsWords(platform)} and this one goes up.`,
+    // NEO-535: NB's own hold, never said as the platform turning it down.
+    titleTooLong: `Its title runs past ${titleCapWords(platform)}, and we won't chop it. Once it's shortened in the set builder, press Sync.`,
   };
 }
 
@@ -105,6 +112,7 @@ export function problemCopyReadOnly(platform: ListingPlatform): Record<ListingPr
     noCondition: "A copy has no condition.",
     noPhoto: `No photo on a copy of this card yet, and ${name} listings need one.`,
     setupIncomplete: `The collector's ${name} setup isn't finished.`,
+    titleTooLong: `Its title runs past ${titleCapWords(platform)}, so it's held back until it's shortened in the set builder.`,
   };
 }
 export const PROBLEM_COPY_READ_ONLY: Record<ListingProblemReason, string> = problemCopyReadOnly("bsc");

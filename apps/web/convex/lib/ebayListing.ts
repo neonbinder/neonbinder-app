@@ -164,7 +164,7 @@ export interface EbayTarget {
   photoCopyId: Id<"collectionCopies"> | null;
 }
 
-export type EbayHoldReason = "graded" | "noCondition" | "noPrice" | "noPhoto" | "missingAspect" | "rejected";
+export type EbayHoldReason = "graded" | "noCondition" | "noPrice" | "noPhoto" | "missingAspect" | "rejected" | "titleTooLong";
 
 export interface EbayHold {
   cardId: Id<"cardChecklist">;

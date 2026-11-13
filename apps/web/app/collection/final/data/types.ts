@@ -1021,7 +1021,10 @@ export type ListingProblemReason =
   // setup (shipping, payment, returns, ships-from) not finished.
   | "missingAspect"
   | "noPhoto"
-  | "setupIncomplete";
+  | "setupIncomplete"
+  // NEO-535, eBay: the card's title is over eBay's 80 characters; NB holds it
+  // back rather than cut it, until the title is shortened in the set builder.
+  | "titleTooLong";
 
 /** One card a sync held back, named as the collector reads it. */
 export interface SyncProblem {

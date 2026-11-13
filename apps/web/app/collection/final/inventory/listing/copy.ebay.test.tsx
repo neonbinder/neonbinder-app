@@ -40,6 +40,22 @@ describe("listing copy, per platform (NEO-415)", () => {
     expect(problemCopyReadOnly("ebay").noPhoto).toContain("eBay listings need one");
   });
 
+  it("NEO-535: titleTooLong is NB's hold, said with eBay's 80 and the set builder, never as eBay turning it down", () => {
+    const line = "Its title runs past eBay's 80 characters, and we won't chop it. Once it's shortened in the set builder, press Sync.";
+    expect(problemCopy("ebay").titleTooLong).toBe(line);
+    expect(problemSentence({ reason: "titleTooLong" }, false, "ebay")).toBe(line);
+    // A stray detail never changes it.
+    expect(problemSentence({ reason: "titleTooLong", detail: "x" }, false, "ebay")).toBe(line);
+    expect(problemCopyReadOnly("ebay").titleTooLong).toBe(
+      "Its title runs past eBay's 80 characters, so it's held back until it's shortened in the set builder.",
+    );
+    for (const sentence of [problemCopy("ebay").titleTooLong, problemCopyReadOnly("ebay").titleTooLong]) {
+      expect(sentence).not.toMatch(/turned this one down/);
+    }
+    // eBay's 80 is never claimed for another platform.
+    expect(problemCopy("bsc").titleTooLong).not.toMatch(/80/);
+  });
+
   it("missingAspect names the detail the server gave, and says eBay", () => {
     expect(problemSentence({ reason: "missingAspect", detail: "Team, Set" }, false, "ebay")).toBe(
       "eBay wants this card's Team, Set, and we don't have it yet, so it's held back.",

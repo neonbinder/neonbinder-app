@@ -20,7 +20,7 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { drainOwnerImpl, type DrainCtx, type DrainReport } from "./listingDrain";
 import { EBAY_SETUP_INCOMPLETE_ERROR } from "./listingDrain";
-import { EBAY_CARD_REJECTED, EBAY_PUBLISH_CONCURRENCY, EBAY_STEP_SAYS, EBAY_TITLE_TOO_LONG, inPool } from "./listingDrainEbay";
+import { EBAY_CARD_REJECTED, EBAY_PUBLISH_CONCURRENCY, EBAY_STEP_SAYS, inPool } from "./listingDrainEbay";
 import { EBAY_SANDBOX_TEST_PICTURE_URL } from "./lib/ebayEnv";
 import { EBAY_PUBLISH_RETRY_PAUSE_MS } from "./adapters/ebaySeller";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
@@ -988,7 +988,7 @@ describe("eBay drain: held-back cards", () => {
     expect(photoFetches).toEqual(["copy-photos/tgood/image.jpg"]);
   });
 
-  test("NEO-535: a title over eBay's 80 is held back in NB's words, never cut; the other card still lists", async () => {
+  test("NEO-535: a title over eBay's 80 is held back titleTooLong (never a rejection), never cut; the other card still lists", async () => {
     const s = await setup();
     const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }] });
     const [long, ok] = v.cardIds;
@@ -1007,8 +1007,10 @@ describe("eBay drain: held-back cards", () => {
 
     const rec = await record(s, v.variantId);
     expect(rec?.problems).toEqual([
-      expect.objectContaining({ cardId: long, reason: "rejected", detail: EBAY_TITLE_TOO_LONG }),
+      expect.objectContaining({ cardId: long, reason: "titleTooLong" }),
     ]);
+    // NB's own hold carries no detail: the web's titleTooLong sentence says it all.
+    expect(rec?.problems[0]).not.toHaveProperty("detail");
     expect(rec?.counts).toMatchObject({ listed: 1, pushed: 1, skipped: 1 });
     expect([...ebay.items.keys()]).toEqual([`NB2-${ok}-NM`]);
     // Nothing about the long card went to eBay: no picture, no item, no offer.
@@ -1051,14 +1053,8 @@ describe("eBay drain: held-back cards", () => {
     expect(ebay.items.get(`NB2-${card}-NM`).product.title).toBe(before);
     expect((await linkOf(s, card, "NM"))?.status).toBe("live");
     expect((await record(s, v.variantId))?.problems).toEqual([
-      expect.objectContaining({ cardId: card, reason: "rejected", detail: EBAY_TITLE_TOO_LONG }),
+      expect.objectContaining({ cardId: card, reason: "titleTooLong" }),
     ]);
-  });
-
-  test("NEO-535: the held-back sentence fits the stored detail and says what to do", () => {
-    expect(EBAY_TITLE_TOO_LONG.length).toBeLessThanOrEqual(160);
-    expect(EBAY_TITLE_TOO_LONG).toMatch(/80 characters/);
-    expect(EBAY_TITLE_TOO_LONG).toMatch(/set builder/);
   });
 
   test("a card whose photo is oversized is held back noPhoto", async () => {

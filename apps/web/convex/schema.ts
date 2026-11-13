@@ -993,6 +993,10 @@ export const ebayConditionCodeValidator = v.union(v.literal("NM"), v.literal("EX
  *                  eBay needs one
  *   setupIncomplete (eBay) the collector's eBay settings (shipping, payment,
  *                  returns, location) are not complete, so nothing was sent
+ *   titleTooLong   (eBay, NEO-535) the card's stored title is over eBay's 80
+ *                  characters; NB never cuts it (a cut would chop the print
+ *                  run), so the card waits for a shorter title in the set
+ *                  builder. NB's own hold, not a platform refusal
  * A new reason widens this union (additive, deploy before writing it).
  */
 export const listingProblemReasonValidator = v.union(
@@ -1008,6 +1012,7 @@ export const listingProblemReasonValidator = v.union(
   v.literal("missingAspect"),
   v.literal("noPhoto"),
   v.literal("setupIncomplete"),
+  v.literal("titleTooLong"),
 );
 
 /**
