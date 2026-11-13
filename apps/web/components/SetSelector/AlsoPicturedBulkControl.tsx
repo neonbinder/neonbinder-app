@@ -364,6 +364,7 @@ export default function AlsoPicturedBulkControl({
   level,
   sportId,
   expanded,
+  onDismissedCollapsed,
 }: {
   /** Which kind of row it is, for the hint's "and its parallels". */
   level: "variantType" | "insert" | "parallel";
@@ -373,6 +374,12 @@ export default function AlsoPicturedBulkControl({
   sportId?: Id<"selectorOptions">;
   /** The panel's own open state: the form shows only when it is open, a run's ledger always. */
   expanded: boolean;
+  /**
+   * Dismiss pressed with the panel shut: the ledger was everything this
+   * control drew, so the panel puts focus somewhere of its own (its expand
+   * toggle) rather than let it fall to <body>.
+   */
+  onDismissedCollapsed?: () => void;
 }) {
   const convex = useConvex();
   const uid = useId();
@@ -507,10 +514,13 @@ export default function AlsoPicturedBulkControl({
   const dismiss = () => {
     setRun(null);
     // The ledger (and the focus in it) goes; the form's first action is
-    // where the next run starts. Collapsed, there is no form to land on.
+    // where the next run starts. Collapsed, there is no form to land on, so
+    // the panel takes it (its expand toggle), before the ledger unmounts.
     if (expanded) {
       parkRef.current = "add";
       setParkTick((n) => n + 1);
+    } else {
+      onDismissedCollapsed?.();
     }
   };
 

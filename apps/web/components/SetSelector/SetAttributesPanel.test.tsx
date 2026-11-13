@@ -288,11 +288,13 @@ vi.mock("./AlsoPicturedBulkControl", () => ({
     level,
     sportId,
     expanded,
+    onDismissedCollapsed,
   }: {
     variantId: string;
     level: string;
     sportId?: string;
     expanded: boolean;
+    onDismissedCollapsed?: () => void;
   }) => (
     <div
       aria-label="Also pictured bulk control (stub)"
@@ -300,7 +302,11 @@ vi.mock("./AlsoPicturedBulkControl", () => ({
       data-level={level}
       data-sport-id={sportId ?? ""}
       data-expanded={String(expanded)}
-    />
+    >
+      <button type="button" onClick={() => onDismissedCollapsed?.()}>
+        Stub dismiss collapsed
+      </button>
+    </div>
   ),
 }));
 
@@ -3934,5 +3940,20 @@ describe("SetAttributesPanel — Also on every card (NEO-528)", () => {
     expect(
       screen.getByLabelText(STUB).getAttribute("data-expanded"),
     ).toBe("false");
+  });
+
+  it("a ledger dismissed with the panel shut hands focus to Edit attributes", () => {
+    currentRow = makeRow({ level: "insert", value: "Diamond Kings" });
+    render(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed={true}
+      />,
+    );
+    const toggle = screen.getByRole("button", { name: "Edit attributes" });
+    const focus = vi.spyOn(toggle, "focus");
+    fireEvent.click(screen.getByRole("button", { name: "Stub dismiss collapsed" }));
+    expect(document.activeElement).toBe(toggle);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
   });
 });

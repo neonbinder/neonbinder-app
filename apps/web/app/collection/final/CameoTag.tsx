@@ -9,9 +9,10 @@ import { cameoPhrase } from "./cameo";
  * sticker in a binder: its SHAPE (an oval cameo brooch with a silhouette in
  * it, where "For sale", "Outside the rule" and "Trade" are arrow-cut price
  * stickers), its WORD ("Cameo"), and its PLACE (a pocket wears it on the
- * left edge, the price stickers ride the right edge, so any mix of them
- * stacks without touching on a phone-width pocket). Teal is the one neon no
- * other sticker wears.
+ * left edge, between the slab label and the ×N count, which it clears on a
+ * phone-width pocket; the price stickers ride the right edge, and never on
+ * a cameo: they live only in the rule-less Up for Trade binder). Teal is
+ * the one neon no other sticker wears.
  *
  * The word is drawn for the eye; a screen reader hears who the cameo is
  * ("Dan Marino is a cameo on this card"). A pocket carries that in its own

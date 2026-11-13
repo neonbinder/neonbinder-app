@@ -630,8 +630,18 @@ describe("AlsoPicturedBulkControl", () => {
     expect(screen.queryByRole("region", { name: ALSO_ON_EVERY_CARD_HEADING })).toBeNull();
 
     // Open again, Dismiss: the ledger goes and focus starts the next run.
-    rerender(<AlsoPicturedBulkControl variantId={VARIANT} level="insert" sportId={SPORT} expanded={true} />);
+    const onDismissedCollapsed = vi.fn();
+    rerender(
+      <AlsoPicturedBulkControl
+        variantId={VARIANT}
+        level="insert"
+        sportId={SPORT}
+        expanded={true}
+        onDismissedCollapsed={onDismissedCollapsed}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: BULK_DISMISS_LABEL }));
+    expect(onDismissedCollapsed).not.toHaveBeenCalled();
     expect(screen.queryByRole("heading", { name: "Added Dan Marino to 3 cards" })).toBeNull();
     await waitFor(() => expect(document.activeElement).toBe(addButton()));
   });
@@ -647,8 +657,19 @@ describe("AlsoPicturedBulkControl", () => {
       fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Yes, add Dan Marino" }));
     });
     await screen.findByRole("heading", { name: "Added Dan Marino to 3 cards" });
-    rerender(<AlsoPicturedBulkControl variantId={VARIANT} level="insert" sportId={SPORT} expanded={false} />);
+    const onDismissedCollapsed = vi.fn();
+    rerender(
+      <AlsoPicturedBulkControl
+        variantId={VARIANT}
+        level="insert"
+        sportId={SPORT}
+        expanded={false}
+        onDismissedCollapsed={onDismissedCollapsed}
+      />,
+    );
     fireEvent.click(screen.getByRole("button", { name: BULK_DISMISS_LABEL }));
+    // The panel is told, so it can take focus (the control has nothing left).
+    expect(onDismissedCollapsed).toHaveBeenCalledTimes(1);
     // Only the (now quiet) live line is left; nothing visible.
     expect(screen.queryByRole("heading")).toBeNull();
     expect(container.querySelectorAll("section")).toHaveLength(0);

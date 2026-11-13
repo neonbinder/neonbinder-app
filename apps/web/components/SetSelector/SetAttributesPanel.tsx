@@ -263,6 +263,12 @@ export default function SetAttributesPanel({
   );
 
   const [expanded, setExpanded] = useState(!defaultCollapsed);
+  /**
+   * NEO-528 — the collapsed panel's "Edit attributes" toggle: where focus
+   * lands when the bulk control's finished ledger is dismissed with the panel
+   * shut (the ledger was all the control drew, so nothing of it is left).
+   */
+  const expandToggleRef = useRef<HTMLButtonElement | null>(null);
   // NEO-412 — the panel's two toasts, at most one showing: a confirmation or
   // progress line (`toast`, the polite status region) and a failure
   // (`failure`, the alert region). Raising either clears the other.
@@ -742,6 +748,7 @@ export default function SetAttributesPanel({
         ) : (
           <div className="flex items-center gap-2 shrink-0">
             <button
+              ref={expandToggleRef}
               type="button"
               onClick={() => setExpanded(true)}
               onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
@@ -997,6 +1004,7 @@ export default function SetAttributesPanel({
           level={leafLevel as "variantType" | "insert" | "parallel"}
           sportId={ancestorSportId}
           expanded={expanded}
+          onDismissedCollapsed={() => expandToggleRef.current?.focus({ preventScroll: true })}
         />
       )}
     </div>

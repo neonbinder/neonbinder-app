@@ -325,11 +325,15 @@
 /*
  * NEO-528: a card the smart binder takes in only as a cameo (its player is
  * pictured, not the subject). Not a price sticker: an oval cameo brooch with a
- * silhouette in it, pinned on the LEFT edge, so it never shares an edge with
- * the For sale / Outside the rule / Trade stickers on the right and any mix
- * of them stacks on a phone-width pocket. Below the slab label (top 3%),
- * above the photo's middle; a need sleeve wears it over its dashed ghost.
- * Shape, word and place carry it, not the teal alone.
+ * silhouette in it, pinned on the LEFT edge, apart from the price stickers on
+ * the right. Below the slab label (top 3%) and above the ×N count (bottom
+ * left); at a 320px phone's pocket it clears both. It never meets
+ * "Outside the rule" (a card the rule no longer takes is not a cameo) nor
+ * "For sale" or "Trade": those live only in the Up for Trade binder, which
+ * has no rule and so no cameos. (Forced together at 320px, the For sale
+ * sticker at 40% would graze it; there is no room above it with a slab
+ * label, so the brooch stays here.) A need sleeve wears it over its dashed
+ * ghost. Shape, word and place carry it, not the teal alone.
  */
 .nb-cameo-tag {
   position: absolute;
