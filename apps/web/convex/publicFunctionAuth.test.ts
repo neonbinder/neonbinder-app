@@ -3416,3 +3416,103 @@ describe("NEO-500: the pick-order seed is locked like the other testing seeds", 
     expect(await written(t)).toBe(0);
   });
 });
+
+/**
+ * NEO-528 — "Also pictured" players on a card. Editing them is operator
+ * tooling (`requireAdmin`): one card's list, the bulk add and remove over a
+ * checklist and its parallels, and the bulk run's target list. A collector
+ * only ever READS them, through the signed-in smart binder read `ruleFits`
+ * (which answers only for the caller's own binder).
+ */
+describe("NEO-528: the also-pictured surface is admin-gated; ruleFits is signed-in", () => {
+  async function seedIds(t: ReturnType<typeof convexTest>) {
+    const sportId = await seedSport(t);
+    return t.run(async (ctx) => {
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: sportId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const playerId = await ctx.db.insert("players", {
+        name: "Dan Marino",
+        nameNormalized: "dan marino",
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: variantId,
+        cardNumber: "1",
+        cardName: "Card",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { variantId, playerId, cardId };
+    });
+  }
+  const ADMIN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) => Promise<unknown>]
+  > = [
+    [
+      "cardSecondaryPlayers.setSecondaryPlayers",
+      (t, ids) => t.mutation(api.cardSecondaryPlayers.setSecondaryPlayers, { cardId: ids.cardId, playerIds: [ids.playerId] }),
+    ],
+    [
+      "cardSecondaryPlayers.addSecondaryPlayerToVariant",
+      (t, ids) =>
+        t.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, {
+          variantId: ids.variantId,
+          playerId: ids.playerId,
+          cursor: null,
+        }),
+    ],
+    [
+      "cardSecondaryPlayers.removeSecondaryPlayerFromVariant",
+      (t, ids) =>
+        t.mutation(api.cardSecondaryPlayers.removeSecondaryPlayerFromVariant, {
+          variantId: ids.variantId,
+          playerId: ids.playerId,
+          cursor: null,
+        }),
+    ],
+    [
+      "cardSecondaryPlayers.secondaryPlayerBulkTargets",
+      (t, ids) => t.query(api.cardSecondaryPlayers.secondaryPlayerBulkTargets, { variantId: ids.variantId }),
+    ],
+  ];
+
+  test.each(ADMIN_GATED)("%s rejects an anonymous caller and writes nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t, ids)).rejects.toThrow(/not authenticated/i);
+    expect(await t.run(async (ctx) => (await ctx.db.get(ids.cardId))?.secondaryPlayerIds ?? null)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s rejects a signed-in non-admin and writes nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity({ subject: "member", role: "member" }) as never, ids)).rejects.toThrow(
+      /admin access required/i,
+    );
+    expect(await t.run(async (ctx) => (await ctx.db.get(ids.cardId))?.secondaryPlayerIds ?? null)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity(ADMIN) as never, ids)).resolves.toBeDefined();
+  });
+
+  test("binderRules.ruleFits rejects an anonymous caller and answers a signed-in non-admin", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.query(api.binderRules.ruleFits, { containerId: "not-an-id", cardIds: [] })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.binderRules.ruleFits, { containerId: "not-an-id", cardIds: [] }),
+    ).resolves.toEqual([]);
+  });
+});

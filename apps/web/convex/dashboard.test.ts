@@ -209,8 +209,33 @@ describe("smartChecklistCount", () => {
       { cardId: "r1", variantId: "red" },
     ];
     const parallels = new Set(["gold", "red"]);
-    expect(smartChecklistCount(fits, new Set(["b1"]), parallels)).toEqual({ have: 1, total: 2 });
-    expect(smartChecklistCount(fits, new Set(["b1", "g2"]), parallels)).toEqual({ have: 2, total: 4 });
+    const none = { have: 0, total: 0 };
+    expect(smartChecklistCount(fits, new Set(["b1"]), parallels)).toEqual({ have: 1, total: 2, secondary: none });
+    expect(smartChecklistCount(fits, new Set(["b1", "g2"]), parallels)).toEqual({ have: 2, total: 4, secondary: none });
+  });
+
+  test("NEO-528: cameo fits count on their own side, and a filed cameo opens its parallel for both sides", () => {
+    const fits = [
+      { cardId: "b1", variantId: "base" },
+      { cardId: "b2", variantId: "base", secondary: true },
+      { cardId: "b3", variantId: "base", secondary: true },
+      { cardId: "g1", variantId: "gold" },
+      { cardId: "g2", variantId: "gold", secondary: true },
+    ];
+    const parallels = new Set(["gold"]);
+    // Gold held by nobody: its fits count on neither side.
+    expect(smartChecklistCount(fits, new Set(["b2"]), parallels)).toEqual({
+      have: 0,
+      total: 1,
+      secondary: { have: 1, total: 2 },
+    });
+    // A CAMEO filed in Gold opens Gold's gaps on the primary side too: the
+    // holds are decided over every fit before the split.
+    expect(smartChecklistCount(fits, new Set(["g2"]), parallels)).toEqual({
+      have: 0,
+      total: 2,
+      secondary: { have: 1, total: 3 },
+    });
   });
 });
 
@@ -518,6 +543,38 @@ describe("smartChecklist", () => {
     expect(await s.me.query(api.dashboard.smartChecklist, { containerId: binderId })).toEqual({ have: 1, total: 2 });
     await line(s, s.fx.gold1, s.fx.goldId, { homeId: binderId, lastUpdated: NOW });
     expect(await s.me.query(api.dashboard.smartChecklist, { containerId: binderId })).toEqual({ have: 2, total: 3 });
+  });
+
+  test("NEO-528: a binder with its cameo option on counts cameo fits apart; off, the shape is unchanged", async () => {
+    const s = await setup();
+    const rule = (secondaryPlayers: boolean) => ({
+      version: 1,
+      match: "all",
+      terms: [
+        { test: { kind: "set", setIds: [s.fx.setId] } },
+        { test: { kind: "player", playerIds: [s.fx.goodenId] } },
+      ],
+      ...(secondaryPlayers ? { secondaryPlayers: true } : {}),
+    });
+    const on = await smartBinder(s, rule(true));
+    const off = await smartBinder(s, rule(false));
+    // Strawberry's #2 fits both binders only as a cameo (Gooden pictured).
+    await s.t.run(async (ctx) => {
+      for (const binderId of [on, off]) {
+        const row = await ctx.db
+          .query("collectionBinderFits")
+          .withIndex("by_binder_card", (q) => q.eq("binderId", binderId).eq("cardId", s.fx.strawberry2))
+          .unique();
+        await ctx.db.patch(row!._id, { secondary: true });
+      }
+    });
+    await line(s, s.fx.strawberry2, s.fx.baseId, { homeId: on, lastUpdated: NOW });
+    expect(await s.me.query(api.dashboard.smartChecklist, { containerId: on })).toEqual({
+      have: 0,
+      total: 1,
+      secondary: { have: 1, total: 1 },
+    });
+    expect(await s.me.query(api.dashboard.smartChecklist, { containerId: off })).toEqual({ have: 0, total: 1 });
   });
 
   test("no honest number: a player rule, fits not computed yet, or another collector asking", async () => {

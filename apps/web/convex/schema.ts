@@ -912,6 +912,16 @@ export const collectionRuleValidator = v.object({
       test: collectionRuleLeafValidator,
     }),
   ),
+  /**
+   * NEO-528 — the collector's per-binder "also take cards where they are
+   * pictured but not the subject" switch, off (absent) by default. On, a
+   * positive `player` or `hallOfFame` line also reads the card's
+   * `secondaryPlayerIds`; `team`, `playedFor` and every negated line still
+   * read the card's own players only (`lib/collection/binder-rule.ts`
+   * `ruleFit`). `cleanRule` drops it from a rule with no positive player or
+   * Hall of Fame line, where it would mean nothing.
+   */
+  secondaryPlayers: v.optional(v.literal(true)),
 });
 
 /**
@@ -1646,6 +1656,23 @@ export default defineSchema({
     // which can drift in the offseason before sets are released.
     playerIds: v.optional(v.array(v.id("players"))),
     /**
+     * NEO-528 — players PICTURED on the card who are not its subject (a
+     * teammate in the dugout, a cameo on a highlight card). NB's own data,
+     * admin-entered only: never derived from a marketplace and never touched
+     * by a re-sync (it is not in `NB_CONTENT_FIELDS`). Absent when empty, and
+     * never holds an id that is in `playerIds` at write time.
+     *
+     * Kept OUT of listing titles, the sync diff, entity review, team
+     * suggestions, collector player search and the admin cards-for-player
+     * list, all of which read `playerIds`. Only a smart binder that turns its
+     * cameo option on reads it (`collectionRuleValidator.secondaryPlayers`).
+     *
+     * One writer, `setCardSecondaryPlayers` in convex/cardSecondaryPlayers.ts,
+     * which also keeps the `cardSecondaryPlayerLinks` index in step;
+     * `cardSecondaryPlayers.pin.test.ts` greps for any other.
+     */
+    secondaryPlayerIds: v.optional(v.array(v.id("players"))),
+    /**
      * ── NEO-254: which NAME this card printed for each player ────────────────
      *
      * Jason, 2026-09-08: a card has to record the name it actually carries. A
@@ -2096,6 +2123,37 @@ export default defineSchema({
     teamId: v.id("teams"),
   })
     .index("by_team", ["teamId"])
+    .index("by_card", ["cardChecklistId"]),
+
+  /**
+   * ── NEO-528: the player → cards index for `cardChecklist.secondaryPlayerIds` ──
+   *
+   * The twin of `cardPlayerLinks`, for the players a card PICTURES without
+   * being about them. Convex cannot index array members, so the links are
+   * stored flat, one row per (card, player). DERIVED from the card's raw
+   * `secondaryPlayerIds` alone; if the two ever disagree the card wins.
+   * Kept apart from `cardPlayerLinks` on purpose: everything that reads that
+   * index (collector player search, the admin cards-for-player list, the
+   * sync) must never see a cameo.
+   *
+   * `sportId` is the CARD's sport, as on `cardPlayerLinks`, so the player
+   * sport-removal guard is one point read here too.
+   *
+   * Every write goes through convex/cardSecondaryPlayers.ts
+   * (`setCardSecondaryPlayers`, and `deleteCardSecondaryPlayerLinks` from
+   * `removeCardRow`); `cardSecondaryPlayers.pin.test.ts` greps for anything
+   * else.
+   */
+  cardSecondaryPlayerLinks: defineTable({
+    cardChecklistId: v.id("cardChecklist"),
+    playerId: v.id("players"),
+    // The CARD's sport, not the player's.
+    sportId: v.id("selectorOptions"),
+  })
+    // A smart binder's player walk (prefix playerId) and the sport-removal
+    // guard (both fields, `.first()`).
+    .index("by_player_and_sport", ["playerId", "sportId"])
+    // Every row for one card: the writer's diff and the card delete.
     .index("by_card", ["cardChecklistId"]),
 
   // Players — first-class entity. Created from BSC `players[]` / SL desc
@@ -4757,6 +4815,14 @@ export default defineSchema({
      * by every recompute.
      */
     held: v.optional(v.boolean()),
+    /**
+     * NEO-528 — the card fits only because the binder's cameo option let a
+     * positive player or Hall of Fame line read the card's
+     * `secondaryPlayerIds`. Absent means it fits on the card's own players.
+     * Rewritten by every recompute, so a card that comes to fit on its own
+     * players loses the mark.
+     */
+    secondary: v.optional(v.literal(true)),
   })
     // The empty-slots read and the stale sweep (prefix binderId).
     .index("by_binder_order", ["binderId", "order"])

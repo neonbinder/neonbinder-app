@@ -8,8 +8,9 @@
  *   - Declines (`decline`, `undecline`, `declined`): per binder, per CARD.
  *     Find cards leaves a declined card out; the Declined view lists them so
  *     one can be pulled back in.
- *   - The Checklists filter and "outside the rule" (`matchingCards`): which
- *     of some cards fit the rule.
+ *   - The Checklists filter and "outside the rule" (`ruleFits`, and the
+ *     older `matchingCards`): which of some cards fit the rule, and which of
+ *     those fit only as a cameo (NEO-528).
  *   - Empty slots (`needs`): the catalog cards a binder is missing, for a
  *     smart binder every card its rule matches, for a binder sorted by
  *     checklist every card of the checklists it holds.
@@ -18,8 +19,9 @@
  * is not theirs reads like one that does not exist. The rule is evaluated by
  * `lib/collection/binder-rule.ts` over a card's NB facts (`FactReader`):
  * players, the teams printed on the card, the players' stints, the set,
- * brand, year and sport the card files under, its features, its print run.
- * NB data only, keyed on ids: no marketplace field is read here.
+ * brand, year and sport the card files under, its features, its print run,
+ * and (NEO-528) who else is pictured on it, for a rule whose cameo option is
+ * on. NB data only, keyed on ids: no marketplace field is read here.
  */
 
 import { v } from "convex/values";
@@ -31,6 +33,7 @@ import { internal } from "./_generated/api";
 import { requireSignedIn } from "./auth";
 import { heldReader } from "./binderFits";
 import { cardPlayerLinkPage } from "./cardPlayerLinks";
+import { cardSecondaryPlayerLinkPage } from "./cardSecondaryPlayers";
 import { cardIdsForTeam } from "./cardTeamLinks";
 import { COLLECTION_ERRORS, MAX_LINES_PER_CARD, copyOut, copyValidator, refuse } from "./collection";
 import { MAX_DRILL_ITEMS, MAX_VARIANT_CARDS, walkSetVariants } from "./collectionCatalog";
@@ -41,11 +44,13 @@ import { teamFullName } from "../lib/teams/team-name";
 import {
   MAX_RULE_IDS,
   MAX_SORTED_LINES,
+  ruleCanUseSecondaryPlayers,
+  ruleFit,
   ruleIds,
-  ruleMatches,
   ruleProblem,
   yearOfSeason,
   type CardFacts,
+  type RuleFit,
   type StoredRule,
   type StoredRuleLeaf,
 } from "../lib/collection/binder-rule";
@@ -102,6 +107,19 @@ export class FactReader {
       if (player.isHallOfFame) hallOfFame = true;
       for (const stint of player.teamYears ?? []) playedForIds.add(stint.teamId as string);
     }
+    // NEO-528 — who else is pictured on the card. Never a player it already
+    // carries, and read only by a positive player or Hall of Fame line of a
+    // rule whose cameo option is on: `playedFor`, `team` and negated lines
+    // stay on the card's own players (`ruleFit`).
+    const secondaryPlayerIds = new Set<string>();
+    let secondaryHallOfFame = false;
+    for (const id of card.secondaryPlayerIds ?? []) {
+      if (playerIds.has(id as string) || secondaryPlayerIds.has(id as string)) continue;
+      const player = await this.player(id);
+      if (!player) continue;
+      secondaryPlayerIds.add(id as string);
+      if (player.isHallOfFame) secondaryHallOfFame = true;
+    }
     // A card that shows him on a team is proof he played for it, whether or
     // not his stints say so yet (most players have none on file).
     const teamIds = new Set((card.teamOnCardIds ?? []).map((id) => id as string));
@@ -121,11 +139,18 @@ export class FactReader {
       year: yearOfSeason(season),
       features: new Set(cardFeatures(card)),
       printRun: typeof card.printRun === "number" && card.printRun > 0 ? card.printRun : null,
+      secondaryPlayerIds,
+      secondaryHallOfFame,
     };
   }
 
+  /** NEO-528 — how the card fits the rule: on its own players, as a cameo, or not (null). */
+  async fit(rule: Rule, card: CardRow): Promise<RuleFit | null> {
+    return ruleFit(rule as StoredRule, await this.facts(card));
+  }
+
   async matches(rule: Rule, card: CardRow): Promise<boolean> {
-    return ruleMatches(rule as StoredRule, await this.facts(card));
+    return (await this.fit(rule, card)) !== null;
   }
 }
 
@@ -165,7 +190,11 @@ export async function cleanRule(ctx: Ctx, raw: Rule): Promise<Rule> {
                 : test;
     return { ...(term.negate ? { negate: true as const } : {}), test: out };
   });
-  const rule: Rule = { version: 1, match: raw.match, terms };
+  // NEO-528 — the cameo option travels with the rule, and is dropped from a
+  // rule where it could change nothing (no positive player or Hall of Fame
+  // line), so a stored rule never claims an option that does nothing.
+  const secondaryPlayers = raw.secondaryPlayers === true && ruleCanUseSecondaryPlayers({ terms });
+  const rule: Rule = { version: 1, match: raw.match, terms, ...(secondaryPlayers ? { secondaryPlayers: true as const } : {}) };
   const problem = ruleProblem(rule as StoredRule);
   if (problem) refuse(COLLECTION_ERRORS.invalid, problem);
   for (const { test } of rule.terms) {
@@ -261,12 +290,17 @@ async function cardsUnderSet(
   });
 }
 
-/** Cards a walkable leaf names, through `add` (false stops the walk). */
+/**
+ * Cards a walkable leaf names, through `add` (false stops the walk). With
+ * `cameos` (NEO-528: the rule's cameo option is on) a player leaf also walks
+ * the cards he is only pictured on.
+ */
 async function leafCards(
   ctx: Ctx,
   leaf: StoredRuleLeaf,
   add: (id: Id<"cardChecklist">) => boolean,
   skip?: SkipVariant,
+  cameos = false,
 ): Promise<void> {
   if (leaf.kind === "player") {
     for (const raw of leaf.playerIds) {
@@ -274,6 +308,10 @@ async function leafCards(
       if (!id) continue;
       const links = await cardPlayerLinkPage(ctx, id, null, MAX_CANDIDATES);
       for (const link of links) if (!add(link.cardChecklistId)) return;
+      if (cameos) {
+        const pictured = await cardSecondaryPlayerLinkPage(ctx, id, null, MAX_CANDIDATES);
+        for (const link of pictured) if (!add(link.cardChecklistId)) return;
+      }
     }
   } else if (leaf.kind === "team") {
     for (const raw of leaf.teamIds) {
@@ -339,9 +377,10 @@ export async function catalogCandidates(
     cardIds.push(id);
     return true;
   };
+  const cameos = rule.secondaryPlayers === true;
   for (const leaf of leaves) {
     if (!complete) break;
-    await leafCards(ctx, leaf, add, skip);
+    await leafCards(ctx, leaf, add, skip, cameos);
   }
   return { cardIds, supported: true, complete };
 }
@@ -367,29 +406,61 @@ async function declinedIds(ctx: Ctx, ownerId: string, binderId: Id<"collectionCo
   return new Set(rows.map((r) => r.cardId as string));
 }
 
+/** NEO-528 — one card that fits a rule; `secondary` when only as a cameo. */
+export const ruleFitValidator = v.object({
+  cardId: v.string(),
+  secondary: v.optional(v.literal(true)),
+});
+
+async function fitsOf(
+  ctx: Ctx,
+  ownerId: string,
+  containerId: string,
+  cardIds: readonly string[],
+): Promise<Array<typeof ruleFitValidator.type>> {
+  if (cardIds.length > MAX_MATCH_CARDS) {
+    refuse(COLLECTION_ERRORS.invalid, `At most ${MAX_MATCH_CARDS} cards per call.`);
+  }
+  const binder = await ownBinder(ctx, ownerId, containerId);
+  if (!binder?.rule) return [];
+  const facts = new FactReader(ctx);
+  const out: Array<typeof ruleFitValidator.type> = [];
+  for (const raw of cardIds) {
+    const id = ctx.db.normalizeId("cardChecklist", raw);
+    const card = id ? await ctx.db.get(id) : null;
+    const fit = card ? await facts.fit(binder.rule, card) : null;
+    if (fit) out.push({ cardId: raw, ...(fit === "secondary" ? { secondary: true as const } : {}) });
+  }
+  return out;
+}
+
 /**
- * Which of `cardIds` fit the binder's rule, in the order asked. A binder
+ * NEO-528 — which of `cardIds` fit the binder's rule, in the order asked,
+ * each marked `secondary` when it fits only because the binder's cameo option
+ * let a player or Hall of Fame line see who else is pictured. A binder
  * without a rule (or not the caller's) fits nothing; a bad id or a private
  * card never fits. At most `MAX_MATCH_CARDS` ids.
+ */
+export const ruleFits = query({
+  args: { containerId: v.string(), cardIds: v.array(v.string()) },
+  returns: v.array(ruleFitValidator),
+  handler: async (ctx, args) => {
+    const ownerId = await requireSignedIn(ctx);
+    return await fitsOf(ctx, ownerId, args.containerId, args.cardIds);
+  },
+});
+
+/**
+ * Which of `cardIds` fit the binder's rule, either way, in the order asked
+ * (`ruleFits` without the cameo mark). Kept for a tab still running the
+ * bundle from before NEO-528.
  */
 export const matchingCards = query({
   args: { containerId: v.string(), cardIds: v.array(v.string()) },
   returns: v.array(v.string()),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
-    if (args.cardIds.length > MAX_MATCH_CARDS) {
-      refuse(COLLECTION_ERRORS.invalid, `At most ${MAX_MATCH_CARDS} cards per call.`);
-    }
-    const binder = await ownBinder(ctx, ownerId, args.containerId);
-    if (!binder?.rule) return [];
-    const facts = new FactReader(ctx);
-    const out: string[] = [];
-    for (const raw of args.cardIds) {
-      const id = ctx.db.normalizeId("cardChecklist", raw);
-      const card = id ? await ctx.db.get(id) : null;
-      if (card && (await facts.matches(binder.rule, card))) out.push(raw);
-    }
-    return out;
+    return (await fitsOf(ctx, ownerId, args.containerId, args.cardIds)).map((fit) => fit.cardId);
   },
 });
 
@@ -397,6 +468,8 @@ const needValidator = v.object({
   card: catalogCardWithPathValidator,
   /** The collector has a copy of it in a binder somewhere (not this one). */
   held: v.boolean(),
+  /** NEO-528 — the card fits the smart binder's rule only as a cameo. */
+  secondary: v.optional(v.literal(true)),
 });
 
 export const needsResultValidator = v.object({
@@ -499,6 +572,7 @@ export async function binderNeeds(
       needs.push({
         card: await facts.catalog.cardWithPath(card),
         held: ownerHeld ? (fit.held ?? (await ownerHeld(fit.cardId))) : false,
+        ...(fit.secondary ? { secondary: true as const } : {}),
       });
     }
     return { needs, supported: true, truncated, pending, failed };
@@ -547,7 +621,12 @@ export const FITS_STUCK_AFTER_MS = 20 * 60 * 1000;
 /** Stuck binders one `requeueStuckFits` pass re-queues. */
 const REQUEUE_BATCH = 50;
 
-const fitValidator = v.object({ cardId: v.id("cardChecklist"), variantId: v.id("selectorOptions") });
+const fitValidator = v.object({
+  cardId: v.id("cardChecklist"),
+  variantId: v.id("selectorOptions"),
+  /** NEO-528 — fits only as a cameo (`collectionBinderFits.secondary`). */
+  secondary: v.optional(v.literal(true)),
+});
 
 /**
  * NEO-401 — the read half of a recompute: every catalog card the binder's
@@ -587,8 +666,13 @@ export const planFits = internalQuery({
         const card = await ctx.db.get(id);
         if (!card || card.variationOfCardId) continue;
         if (await skip(card.selectorOptionId)) continue;
-        if (!(await facts.matches(binder.rule, card))) continue;
-        wanted.push({ cardId: card._id, variantId: card.selectorOptionId });
+        const fit = await facts.fit(binder.rule, card);
+        if (!fit) continue;
+        wanted.push({
+          cardId: card._id,
+          variantId: card.selectorOptionId,
+          ...(fit === "secondary" ? { secondary: true as const } : {}),
+        });
       }
     }
     return { ownerId: binder.ownerId, supported: candidates.supported, complete: candidates.complete, wanted };
@@ -639,9 +723,18 @@ export const writeFitsPage = internalMutation({
           order,
           generation: args.generation,
           held: isHeld,
+          ...(fit.secondary ? { secondary: true as const } : {}),
         });
       } else if (row.generation <= args.generation) {
-        await ctx.db.patch(row._id, { order, variantId: fit.variantId, generation: args.generation, held: isHeld });
+        // `secondary` is passed even when absent, so a card that now fits on
+        // its own players loses the cameo mark (NEO-528).
+        await ctx.db.patch(row._id, {
+          order,
+          variantId: fit.variantId,
+          generation: args.generation,
+          held: isHeld,
+          secondary: fit.secondary,
+        });
       }
     }
     return null;
@@ -1004,6 +1097,12 @@ export const needs = query({
   },
 });
 
+/** NEO-528 — a Find cards copy, marked `secondary` when its card fits only as a cameo. */
+export const foundCopyValidator = v.object({
+  ...copyValidator.fields,
+  secondary: v.optional(v.literal(true)),
+});
+
 /**
  * "Find cards for this binder": the caller's copies that fit the rule and
  * live anywhere but this binder (Main, another binder, a box), a page of
@@ -1015,7 +1114,7 @@ export const needs = query({
  */
 export const findCards = query({
   args: { containerId: v.string(), paginationOpts: paginationOptsValidator },
-  returns: paginationResultValidator(copyValidator),
+  returns: paginationResultValidator(foundCopyValidator),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
     const binder = await ownBinder(ctx, ownerId, args.containerId);
@@ -1030,9 +1129,9 @@ export const findCards = query({
         numItems: Math.max(1, Math.min(Math.floor(args.paginationOpts.numItems), MAX_FIND_PAGE)),
       });
     const facts = new FactReader(ctx);
-    const verdicts = new Map<string, boolean>();
+    const verdicts = new Map<string, RuleFit | null>();
     const homes = new Map<string, ContainerRow | null>();
-    const page: Array<typeof copyValidator.type> = [];
+    const page: Array<typeof foundCopyValidator.type> = [];
     for (const line of result.page) {
       if (line.homeId === binder._id || line.quantity < 1) continue;
       const cardKey = line.cardId as string;
@@ -1044,9 +1143,10 @@ export const findCards = query({
       if (!verdicts.has(cardKey)) {
         const id = ctx.db.normalizeId("cardChecklist", cardKey);
         const card = id ? await ctx.db.get(id) : null;
-        verdicts.set(cardKey, !!card && (await facts.matches(rule, card)));
+        verdicts.set(cardKey, card ? await facts.fit(rule, card) : null);
       }
-      if (verdicts.get(cardKey)) page.push(copyOut(line));
+      const fit = verdicts.get(cardKey);
+      if (fit) page.push({ ...copyOut(line), ...(fit === "secondary" ? { secondary: true as const } : {}) });
     }
     return { ...result, page };
   },

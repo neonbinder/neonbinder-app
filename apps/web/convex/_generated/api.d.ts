@@ -59,6 +59,7 @@ import type * as cardNumberPrefix from "../cardNumberPrefix.js";
 import type * as cardPlayerLinks from "../cardPlayerLinks.js";
 import type * as cardRowCreate from "../cardRowCreate.js";
 import type * as cardRowDelete from "../cardRowDelete.js";
+import type * as cardSecondaryPlayers from "../cardSecondaryPlayers.js";
 import type * as cardTeamLinks from "../cardTeamLinks.js";
 import type * as checklistCandidates from "../checklistCandidates.js";
 import type * as checklistNameResolutions from "../checklistNameResolutions.js";
@@ -267,6 +268,7 @@ declare const fullApi: ApiFromModules<{
   cardPlayerLinks: typeof cardPlayerLinks;
   cardRowCreate: typeof cardRowCreate;
   cardRowDelete: typeof cardRowDelete;
+  cardSecondaryPlayers: typeof cardSecondaryPlayers;
   cardTeamLinks: typeof cardTeamLinks;
   checklistCandidates: typeof checklistCandidates;
   checklistNameResolutions: typeof checklistNameResolutions;

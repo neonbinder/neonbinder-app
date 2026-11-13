@@ -335,25 +335,31 @@ export function ruleNamesChecklist(rule: Pick<StoredRule, "match" | "terms">): b
  * A smart binder's checklist, counted the way its empty slots are drawn
  * (`binderRules.binderNeeds`): every fit, except a parallel's while the
  * binder holds no card of that parallel. `have` is the fits filed in it.
+ *
+ * NEO-528 — counted twice: `have`/`total` over the cards that fit on their
+ * own players, `secondary` over the ones that fit only as a cameo. Which
+ * parallels the binder holds is decided over EVERY fit before the split, so
+ * a cameo card filed in a parallel opens that parallel's gaps on both sides.
  */
 export function smartChecklistCount(
-  fits: ReadonlyArray<{ cardId: string; variantId: string }>,
+  fits: ReadonlyArray<{ cardId: string; variantId: string; secondary?: boolean }>,
   here: ReadonlySet<string>,
   parallels: ReadonlySet<string>,
-): { have: number; total: number } {
+): { have: number; total: number; secondary: { have: number; total: number } } {
   const holds = new Set<string>();
   for (const fit of fits) if (here.has(fit.cardId)) holds.add(fit.variantId);
-  let have = 0;
-  let total = 0;
+  const primary = { have: 0, total: 0 };
+  const secondary = { have: 0, total: 0 };
   for (const fit of fits) {
+    const side = fit.secondary ? secondary : primary;
     if (here.has(fit.cardId)) {
-      have += 1;
-      total += 1;
+      side.have += 1;
+      side.total += 1;
     } else if (holds.has(fit.variantId) || !parallels.has(fit.variantId)) {
-      total += 1;
+      side.total += 1;
     }
   }
-  return { have, total };
+  return { ...primary, secondary };
 }
 
 /** A match row as `intakeRunTally` reads it. */
@@ -704,10 +710,19 @@ export const setBoard = query({
  * rule that names no checklist (`ruleNamesChecklist`), fits not computed,
  * pending, failed, unsupported or cut short, or more lines or fits than one
  * read holds.
+ *
+ * NEO-528 — `have`/`total` count the cards that fit on their own players
+ * only. `secondary` (present only when the binder's cameo option is on)
+ * counts the cards that fit only as a cameo, the same way.
  */
+const checklistCountValidator = v.object({ have: v.number(), total: v.number() });
+
 export const smartChecklist = query({
   args: { containerId: v.string() },
-  returns: v.union(v.object({ have: v.number(), total: v.number() }), v.null()),
+  returns: v.union(
+    v.object({ have: v.number(), total: v.number(), secondary: v.optional(checklistCountValidator) }),
+    v.null(),
+  ),
   handler: async (ctx, args) => {
     const ownerId = await requireSignedIn(ctx);
     const id = ctx.db.normalizeId("collectionContainers", args.containerId);
@@ -735,11 +750,17 @@ export const smartChecklist = query({
       if (await isParallel(variantId)) parallels.add(variantId);
     }
     const counted = smartChecklistCount(
-      fits.map((f) => ({ cardId: f.cardId as string, variantId: f.variantId as string })),
+      fits.map((f) => ({ cardId: f.cardId as string, variantId: f.variantId as string, secondary: f.secondary === true })),
       new Set(lines.map((l) => l.cardId as string)),
       parallels,
     );
-    return counted.total > 0 ? counted : null;
+    const cameos = binder.rule.secondaryPlayers === true;
+    if (counted.total + (cameos ? counted.secondary.total : 0) === 0) return null;
+    return {
+      have: counted.have,
+      total: counted.total,
+      ...(cameos ? { secondary: counted.secondary } : {}),
+    };
   },
 });
 

@@ -109,6 +109,7 @@ import {
   insertCardRow,
   type CardRowSetContext,
 } from "./cardRowCreate";
+import { setCardSecondaryPlayers } from "./cardSecondaryPlayers";
 import {
   cardKey,
   linkCardsToSide,
@@ -1769,6 +1770,18 @@ export const insertParallelCardsPage = internalMutation({
         { sport: parallelSport },
         countLedger,
       );
+      // NEO-528 — the copy pictures the same people as the card it copies:
+      // its "Also pictured" players travel with it, through the one writer.
+      // A player that has since gone is left off rather than failing the page.
+      if ((source.secondaryPlayerIds ?? []).length > 0) {
+        const copied = await ctx.db.get(newId);
+        if (copied) {
+          await setCardSecondaryPlayers(ctx, copied, source.secondaryPlayerIds ?? [], {
+            fresh: true,
+            dropMissing: true,
+          });
+        }
+      }
       newIdOf.set(source._id, newId);
       created.push({ from: source._id, to: newId });
     }

@@ -2315,6 +2315,10 @@ export const getCardChecklist = query({
       // confirmed clean on prod + dev.
       team: v.optional(v.string()),
       playerIds: v.optional(v.array(v.id("players"))),
+      // NEO-528 — players pictured on the card who are not its subject
+      // ("Also pictured"). Listed because this validator is STRICT: a row
+      // carrying it would otherwise fail the whole checklist.
+      secondaryPlayerIds: v.optional(v.array(v.id("players"))),
       // NEO-254 — the name each card PRINTED for its players. The card detail
       // panel renders "As printed: Doc Gooden" beside a chip whose player is
       // filed under a different name. See schema.ts.
@@ -9096,6 +9100,8 @@ type SetBuilderResetResult = {
   cardPlayerLinksDeleted: number;
   /** NEO-358 — the derived team → cards index, drained before the cards. */
   cardTeamLinksDeleted: number;
+  /** NEO-528 — the derived also-pictured player → cards index, drained before the cards. */
+  cardSecondaryPlayerLinksDeleted: number;
   cardChecklistDeleted: number;
   crossListingsDeleted: number;
   /** NEO-294 — staged review rows, the residue that made CI's reset quadratic. */
@@ -9222,6 +9228,7 @@ async function runSetBuilderReset(
     selectorOptionsDeleted: 0,
     cardPlayerLinksDeleted: 0,
     cardTeamLinksDeleted: 0,
+    cardSecondaryPlayerLinksDeleted: 0,
     cardChecklistDeleted: 0,
     crossListingsDeleted: 0,
     entityReviewQueueDeleted: 0,
@@ -9243,7 +9250,8 @@ async function runSetBuilderReset(
   // tables it does drain — and every table that points INTO the skipped
   // eight (slSetReviews, selectorSyncStatus, collectionCopies, collectionWants,
   // collectionContainers, collectionBuildingSets, variantCommonPrices,
-  // the NEO-370 listing tables, cardPlayerLinks, cardTeamLinks, cardChecklist, cardCrossListings,
+  // the NEO-370 listing tables, cardPlayerLinks, cardTeamLinks, cardSecondaryPlayerLinks,
+  // cardChecklist, cardCrossListings,
   // entityReviewQueue, checklistCandidates) is among them.
   const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
     // PR 451 (NEO-482) — the BSC 429 cooldown and the BSC wait rows, FIRST.
@@ -9364,6 +9372,11 @@ async function runSetBuilderReset(
     [
       "cardTeamLinksDeleted",
       internal.selectorOptions.resetCardTeamLinksBatch,
+    ],
+    // NEO-528 — the also-pictured player → cards index, likewise before the cards.
+    [
+      "cardSecondaryPlayerLinksDeleted",
+      internal.selectorOptions.resetCardSecondaryPlayerLinksBatch,
     ],
     ["cardChecklistDeleted", internal.selectorOptions.resetCardChecklistBatch],
     // NEO-21: cardCrossListings rows outlive nothing on their own (they're
@@ -9616,6 +9629,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     cardPlayerLinksDeleted: v.number(),
     // NEO-358 — the derived team → cards index.
     cardTeamLinksDeleted: v.number(),
+    // NEO-528 — the derived also-pictured player → cards index.
+    cardSecondaryPlayerLinksDeleted: v.number(),
     cardChecklistDeleted: v.number(),
     crossListingsDeleted: v.number(),
     // NEO-294 — the staging tables. Reported so the CI seed log carries the
@@ -10071,6 +10086,30 @@ export const resetCardTeamLinksBatch = internalMutation({
   handler: async (ctx) => {
     assertResetArmed();
     const rows = await ctx.db.query("cardTeamLinks").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `cardSecondaryPlayerLinks`, looped by `runSetBuilderReset`
+ * BEFORE the cards. NEO-528. The derived also-pictured player → cards index;
+ * a row that outlived its card would keep naming it in a smart binder's walk.
+ * The one sanctioned reader and deleter of the table outside
+ * convex/cardSecondaryPlayers.ts — `cardSecondaryPlayers.pin.test.ts` checks
+ * it by name.
+ */
+export const resetCardSecondaryPlayerLinksBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("cardSecondaryPlayerLinks").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
