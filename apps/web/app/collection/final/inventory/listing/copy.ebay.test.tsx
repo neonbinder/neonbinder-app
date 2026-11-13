@@ -40,23 +40,27 @@ describe("listing copy, per platform (NEO-415)", () => {
     expect(problemCopyReadOnly("ebay").noPhoto).toContain("eBay listings need one");
   });
 
-  it("NEO-535: titleTooLong is NB's hold, said with eBay's 80 and the set builder, never as eBay turning it down", () => {
+  it("NEO-535: titleTooLong is NB's hold, said as NB's 80-character limit and the set builder, never pinned on eBay", () => {
     const line =
-      "Its title runs past eBay's 80 characters, and we won't chop it. Once it's shortened in the set builder, it goes up on the next sync.";
+      "Its title is over the 80-character limit for listings, and we won't chop it. Once it's shortened in the set builder, it goes up on the next sync.";
     expect(problemCopy("ebay").titleTooLong).toBe(line);
     expect(problemSentence({ reason: "titleTooLong" }, false, "ebay")).toBe(line);
     // A stray detail never changes it.
     expect(problemSentence({ reason: "titleTooLong", detail: "x" }, false, "ebay")).toBe(line);
     expect(problemCopyReadOnly("ebay").titleTooLong).toBe(
-      "Its title runs past eBay's 80 characters, so it's held back until it's shortened in the set builder.",
+      "Its title is over the 80-character limit for listings, so it's held back until it's shortened in the set builder.",
     );
     for (const sentence of [problemCopy("ebay").titleTooLong, problemCopyReadOnly("ebay").titleTooLong]) {
       expect(sentence).not.toMatch(/turned this one down/);
+      // The hold is NB's: the sentence never attributes it to the marketplace.
+      expect(sentence).not.toMatch(/eBay/);
       // A title edit re-queues the card itself (listingTitleRequeue), so nobody is told to press Sync.
       expect(sentence).not.toMatch(/press Sync/i);
     }
     // eBay's 80 is never claimed for another platform.
-    expect(problemCopy("bsc").titleTooLong).not.toMatch(/80/);
+    for (const sentence of [problemCopy("bsc").titleTooLong, problemCopyReadOnly("bsc").titleTooLong]) {
+      expect(sentence).not.toMatch(/80/);
+    }
   });
 
   it("missingAspect names the detail the server gave, and says eBay", () => {
