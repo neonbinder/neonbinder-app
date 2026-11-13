@@ -17,11 +17,11 @@ import {
   assessNewCardListing,
   checkShortNameAnswer,
   checkTitleAnswer,
-  isFillerToken,
   leftOutOfTitle,
+  LISTING_TITLE_KEPT_MAX,
   listingInputsForCard,
   mergeCardFeatures,
-  suggestShortSetName,
+  setDescriptionForTitles,
   titleAttentionItems,
   type ListingCardFacts,
   type ListingSetContext,
@@ -38,11 +38,17 @@ const SET: ListingSetContext = {
   inheritedFeatures: { manufacturer: "Topps", season: "2026" },
 };
 
-/** A set name long enough that the core cannot fit with a player and a number. */
+/** A set name long enough that the title stays over the cap after every cut. */
 const LONG_SET: ListingSetContext = {
   ...SET,
   setNameValue:
     "Chrome Update Series Sapphire Edition Platinum Anniversary Collectors Box",
+};
+
+/** A set name that fits only once the player's first name is cut (NEO-535 row 11). */
+const FIRST_NAME_SET: ListingSetContext = {
+  ...SET,
+  setNameValue: "Chrome Update Series Sapphire Edition Platinum Anniversary",
 };
 
 const LONG_VARIATION =
@@ -65,7 +71,24 @@ const CASES: Case[] = [
     teamNames: ["Los Angeles Angels"],
   },
   {
-    name: "a core cut short by a long set name",
+    // NEO-535 — fits once "Shohei" goes: born `listingTitleTruncated`.
+    name: "a title that fits only without a first name",
+    set: FIRST_NAME_SET,
+    card: { cardNumber: "9" },
+    playerNames: ["Shohei Ohtani"],
+    teamNames: [],
+  },
+  {
+    // NEO-535 — the box replaces a description that is over the cap.
+    name: "a title built from the set's box text",
+    set: { ...LONG_SET, listingShortName: "2026 Topps Sapphire" },
+    card: { cardNumber: "300" },
+    playerNames: ["Shohei Ohtani"],
+    teamNames: [],
+  },
+  {
+    // NEO-535 — over the cap after every cut: the STOP.
+    name: "a title over the cap after every cut",
     set: LONG_SET,
     card: { cardNumber: "300", isRookie: true },
     playerNames: ["Shohei Ohtani"],
@@ -119,8 +142,8 @@ const CASES: Case[] = [
     teamNames: ["Seattle Mariners"],
   },
   {
-    // NEO-335 — "Rookie" → "RC" in the insert's name, because it is needed.
-    name: "a rookie insert that only fits as RC",
+    // NEO-335 — a rookie insert with repeats (AUTO, RC) cut first.
+    name: "a rookie insert whose AUTO and RC are repeats",
     set: { ...SET, insertNameValue: "Rookie Debut Patch Autographs", insertIsRole: true },
     card: { cardNumber: "RD-12", isRookie: true, isRelic: true, autographType: "On-Card", printRun: 99 },
     playerNames: ["Elly De La Cruz"],
@@ -172,7 +195,9 @@ describe("listingInputs — the pre-save step and the insert agree (parity)", ()
           .items.map((i) => i.kind),
       ),
     );
-    expect(kinds).toEqual(new Set(["titleTruncated", "aspectValueOverLimit"]));
+    // NEO-535: the generator STOPs over the cap rather than cut description
+    // words, so a new card can be born over the cap too.
+    expect(kinds).toEqual(new Set(["titleOverLimit", "titleTruncated", "aspectValueOverLimit"]));
   });
 });
 
@@ -251,20 +276,19 @@ describe("mergeCardFeatures / listingInputsForCard", () => {
 });
 
 describe("leftOutOfTitle", () => {
-  test("a core cut reports the identity words it lost, then the dropped tokens", () => {
+  test("an over-cap title reports what was cut, never filler and never a description word", () => {
     const inputs = listingInputsForCard({ cardNumber: "300", isRookie: true }, LONG_SET, {
       playerNames: ["Shohei Ohtani"],
       teamNames: ["Los Angeles Dodgers"],
     });
     const assessment = assessListingTitle(inputs);
-    expect(assessment.coreFits).toBe(false);
-    const left = leftOutOfTitle(inputs, assessment);
-    expect(left).toContain("Shohei Ohtani");
-    // The sport and the second rookie spelling are FILLER: dropped, never
-    // listed as a loss.
-    expect(assessment.dropped).toEqual(expect.arrayContaining(["Rookie", "Baseball"]));
+    expect(assessment.fits).toBe(false);
+    const left = leftOutOfTitle(inputs, assessment.title);
+    expect(left).toEqual(["Los Angeles Dodgers", "#300", "Shohei", "RC"]);
+    // The sport and the second rookie spelling are FILLER: never listed.
     expect(left).not.toContain("Baseball");
     expect(left).not.toContain("Rookie");
+    expect(left).toEqual(assessment.dropped);
     for (const entry of left) {
       expect(assessment.title.toLowerCase()).not.toContain(entry.toLowerCase());
     }
@@ -272,13 +296,13 @@ describe("leftOutOfTitle", () => {
 
   test("a title that fits whole reports nothing", () => {
     const inputs = listingInputsForCard({ cardNumber: "1" }, SET, { playerNames: ["A B"] });
-    expect(leftOutOfTitle(inputs, assessListingTitle(inputs))).toEqual([]);
+    expect(leftOutOfTitle(inputs, assessListingTitle(inputs).title)).toEqual([]);
   });
 
   test("an unknown brand is never reported as left out — it was never in", () => {
     const set = { ...LONG_SET, manufacturerBrandUnknown: true };
     const inputs = listingInputsForCard({ cardNumber: "7" }, set, { playerNames: ["Bobby Witt Jr."] });
-    expect(leftOutOfTitle(inputs, assessListingTitle(inputs))).not.toContain("Topps");
+    expect(leftOutOfTitle(inputs, assessListingTitle(inputs).title)).not.toContain("Topps");
   });
 });
 
@@ -296,10 +320,22 @@ describe("checkTitleAnswer — the write path's caps", () => {
     ).toThrow(/card #1: the title is 81 characters; the limit is 80/);
   });
 
-  test("a kept title is held to the same cap", () => {
+  test("a kept title may be over eBay's cap (the step showed it), up to its own bound", () => {
+    // NEO-535: the generator STOPs over the cap, so the title the step showed
+    // and the operator kept can be over 80. It is bounded, not capped.
+    const over = "t".repeat(LISTING_TITLE_MAX + 1);
+    expect(checkTitleAnswer({ listingTitleKept: over }, "card #3")).toEqual({
+      listingTitleKept: over,
+    });
+    const atBound = "t".repeat(LISTING_TITLE_KEPT_MAX);
+    expect(checkTitleAnswer({ listingTitleKept: atBound }, "card #3")).toEqual({
+      listingTitleKept: atBound,
+    });
     expect(() =>
-      checkTitleAnswer({ listingTitleKept: "t".repeat(LISTING_TITLE_MAX + 1) }, "card #3"),
-    ).toThrow(/card #3: the title is 81 characters; the limit is 80/);
+      checkTitleAnswer({ listingTitleKept: "t".repeat(LISTING_TITLE_KEPT_MAX + 1) }, "card #3"),
+    ).toThrow(
+      `card #3: the title is ${LISTING_TITLE_KEPT_MAX + 1} characters; the limit is ${LISTING_TITLE_KEPT_MAX}.`,
+    );
     expect(checkTitleAnswer({ listingTitleKept: " Shown #3 " }, "card #3")).toEqual({
       listingTitleKept: "Shown #3",
     });
@@ -322,7 +358,7 @@ describe("checkTitleAnswer — the write path's caps", () => {
 });
 
 describe("buildCardRowForInsert — the operator's pre-save answer", () => {
-  const truncatedCase = CASES[1];
+  const truncatedCase = CASES.find((c) => c.name === "a title that fits only without a first name")!;
 
   test("no answer: the generated title, flagged cut short, exactly as before", () => {
     const built = buildCardRowForInsert(newCardRow(truncatedCase), truncatedCase.set, NOW);
@@ -342,21 +378,21 @@ describe("buildCardRowForInsert — the operator's pre-save answer", () => {
 
   test("kept, but the server generated a different title: flagged as before", () => {
     const kept = buildCardRowForInsert(
-      { ...newCardRow(truncatedCase), listingTitleKept: "A title nobody generated #300" },
+      { ...newCardRow(truncatedCase), listingTitleKept: "A title nobody generated #9" },
       truncatedCase.set,
       NOW,
     );
-    expect(kept.row.listingTitle).not.toBe("A title nobody generated #300");
+    expect(kept.row.listingTitle).not.toBe("A title nobody generated #9");
     expect(kept.row.listingTitleTruncated).toBe(true);
   });
 
   test("their own title: written verbatim, NOT flagged; the description is still generated", () => {
     const own = buildCardRowForInsert(
-      { ...newCardRow(truncatedCase), listingTitle: "2026 Topps Chrome Update Shohei Ohtani #300 RC" },
+      { ...newCardRow(truncatedCase), listingTitle: "2026 Topps Chrome Update Shohei Ohtani #9" },
       truncatedCase.set,
       NOW,
     );
-    expect(own.row.listingTitle).toBe("2026 Topps Chrome Update Shohei Ohtani #300 RC");
+    expect(own.row.listingTitle).toBe("2026 Topps Chrome Update Shohei Ohtani #9");
     expect(own.row).not.toHaveProperty("listingTitleTruncated");
     expect(own.row.listingDescription).toContain("Shohei Ohtani");
   });
@@ -364,12 +400,12 @@ describe("buildCardRowForInsert — the operator's pre-save answer", () => {
 
 describe("a generational suffix is never trimmed off a name (NEO-335 visual pass)", () => {
   /**
-   * Every identity length from "the core fits" down to "only the year fits",
-   * so the cut is tried at EVERY boundary inside the names, including the one
-   * right before the suffix.
+   * Every description length from "everything fits" to "over the cap after
+   * every cut", so the first-name cut (NEO-535 row 11) is reached for every
+   * name shape below.
    */
   function sweep(playerNames: string[]) {
-    const out: Array<{ title: string; coreFits: boolean; left: string[] }> = [];
+    const out: Array<{ title: string; coreFits: boolean; firstNameLost: boolean; left: string[] }> = [];
     for (let pad = 0; pad < 70; pad += 1) {
       const inputs = listingInputsForCard(
         { cardNumber: "1" },
@@ -377,31 +413,44 @@ describe("a generational suffix is never trimmed off a name (NEO-335 visual pass
         { playerNames },
       );
       const a = assessListingTitle(inputs);
-      out.push({ title: a.title, coreFits: a.coreFits, left: leftOutOfTitle(inputs, a) });
+      out.push({
+        title: a.title,
+        coreFits: a.coreFits,
+        firstNameLost: a.firstNameLost,
+        left: leftOutOfTitle(inputs, a.title),
+      });
     }
     return out;
   }
 
-  test("Jr. and Sr. on one card: each name is kept whole or dropped whole", () => {
+  test("Jr. and Sr. on one card: each surname keeps its suffix; only a first name goes", () => {
     const results = sweep(["Ken Griffey Jr.", "Ken Griffey Sr."]);
-    for (const { title, coreFits, left } of results) {
+    for (const { title, coreFits, firstNameLost, left } of results) {
       // "Griffey" never ends up without its suffix right after it…
       expect(title).not.toMatch(/Griffey(?! (Jr|Sr)\.)/);
+      // …neither name is ever lost whole…
+      expect(title).toContain("Griffey Jr.");
+      expect(title).toContain("Griffey Sr.");
       // …a bare suffix is never reported as what was left out…
       expect(left).not.toContain("Jr.");
       expect(left).not.toContain("Sr.");
-      // …and a title that lost a name is still flagged.
-      if (left.some((l) => l.startsWith("Ken Griffey"))) expect(coreFits).toBe(false);
+      // …and a title that lost a first name is flagged.
+      if (left.includes("Ken")) {
+        expect(firstNameLost).toBe(true);
+        expect(coreFits).toBe(false);
+      }
     }
-    // The sweep did reach the case that used to split them.
-    expect(results.some((r) => r.left.includes("Ken Griffey Sr."))).toBe(true);
-    expect(results.some((r) => r.left.includes("Ken Griffey Jr."))).toBe(true);
+    // The sweep did reach the first-name cut.
+    expect(results.some((r) => r.left.includes("Ken"))).toBe(true);
   });
 
   test("a single Jr. stays attached", () => {
-    for (const { title } of sweep(["Bobby Witt Jr."])) {
+    const results = sweep(["Bobby Witt Jr."]);
+    for (const { title } of results) {
       expect(title).not.toMatch(/Witt(?! Jr\.)/);
+      expect(title).toContain("Witt Jr.");
     }
+    expect(results.some((r) => r.left.includes("Bobby"))).toBe(true);
   });
 
   test("a suffix without a period (Jr, III) stays attached too", () => {
@@ -413,47 +462,46 @@ describe("a generational suffix is never trimmed off a name (NEO-335 visual pass
     }
   });
 
-  test("a name with no suffix is cut exactly as before (a partial name is still possible)", () => {
+  test("a name with no suffix loses only its first word, and that word is what is reported", () => {
     const results = sweep(["Shohei Ohtani"]);
-    expect(results.some((r) => /Shohei #1$/.test(r.title))).toBe(true);
-    // …and is reported whole.
-    expect(
-      results.filter((r) => /Shohei #1$/.test(r.title)).every((r) => r.left.includes("Shohei Ohtani")),
-    ).toBe(true);
+    for (const { title } of results) expect(title).toContain("Ohtani");
+    const cut = results.filter((r) => !r.title.includes("Shohei"));
+    expect(cut.length).toBeGreaterThan(0);
+    for (const r of cut) {
+      expect(r.left).toContain("Shohei");
+      expect(r.left).not.toContain("Shohei Ohtani");
+    }
   });
 });
 
 describe("filler is never listed as a loss (collector review)", () => {
-  test("a set or player word that reads like the sport is still reported; the sport TOKEN is not", () => {
+  test("a set word that reads like the sport is never cut, and the sport is never listed", () => {
     const inputs = listingInputsForCard(
       { cardNumber: "1" },
       { sportValue: "Baseball", setNameValue: `${"x".repeat(70)} Baseball Heroes` },
       { playerNames: ["Shohei Ohtani"] },
     );
     const a = assessListingTitle(inputs);
-    expect(a.coreFits).toBe(false);
-    expect(a.dropped).toContain("Baseball");
-    const left = leftOutOfTitle(inputs, a);
-    // "Baseball" here is a SET word the core cut lost, so it is a real loss;
-    // the sport token dropped beside it is filler and not listed again.
-    expect(left).toEqual(["Baseball Heroes", "Shohei Ohtani"]);
+    expect(a.fits).toBe(false);
+    expect(a.title).toContain("Baseball Heroes");
+    expect(leftOutOfTitle(inputs, a.title)).toEqual(["#1", "Shohei"]);
   });
 
-  test("isFillerToken: the sport, and Rookie only beside RC", () => {
-    const base = { cardNumber: "1", sport: "Baseball" };
-    expect(isFillerToken("Baseball", base)).toBe(true);
-    expect(isFillerToken("Rookie", { ...base, isRookie: true })).toBe(true);
-    expect(isFillerToken("Rookie", base)).toBe(false);
-    expect(isFillerToken("RC", { ...base, isRookie: true })).toBe(false);
-    expect(isFillerToken("Los Angeles Dodgers", base)).toBe(false);
-  });
-
-  test("isFillerToken: the Insert / Parallel labels, only on their roles", () => {
-    const base = { cardNumber: "1", sport: "Baseball" };
-    expect(isFillerToken("Insert", { ...base, insertName: "Dugout Collection" })).toBe(true);
-    expect(isFillerToken("Insert", base)).toBe(false);
-    expect(isFillerToken("Parallel", { ...base, parallelIsRole: true })).toBe(true);
-    expect(isFillerToken("Parallel", base)).toBe(false);
+  test("the sport, the second Rookie and the labels are never listed; RC and a team are", () => {
+    // NEO-535 retired `isFillerToken`; `leftOutOfTitle` reads the text, so the
+    // same rule is pinned against a title missing every one of them.
+    const inputs = listingInputsForCard(
+      { cardNumber: "1", isRookie: true },
+      { ...FIRST_NAME_SET, insertNameValue: "Dugout", insertIsRole: true, parallelLeafValue: "Gold" },
+      { playerNames: ["Mike Trout"], teamNames: ["Los Angeles Dodgers"] },
+    );
+    expect(inputs.parallelIsRole).toBe(true);
+    expect(
+      leftOutOfTitle(
+        inputs,
+        "2026 Topps Chrome Update Series Sapphire Edition Platinum Anniversary Dugout Gold Mike Trout #1",
+      ),
+    ).toEqual(["Los Angeles Dodgers", "RC"]);
   });
 
   test("the dropped labels are never listed as left out (NEO-335)", () => {
@@ -468,12 +516,13 @@ describe("filler is never listed as a loss (collector review)", () => {
       { playerNames: ["Ken Griffey Jr."], teamNames: ["Seattle Mariners"] },
     );
     const a = assessListingTitle(inputs);
-    expect(a.title).toBe("2026 Topps Chrome Dugout Collection Ken Griffey Jr. #5 Gold Seattle Mariners");
-    expect(a.dropped).toEqual(["Baseball", "Parallel", "Insert"]);
-    expect(leftOutOfTitle(inputs, a)).toEqual([]);
+    // Both labels and the sport went (rows 4-6) so the team fits.
+    expect(a.title).toBe("2026 Topps Chrome Dugout Collection Gold Ken Griffey Jr. #5 Seattle Mariners");
+    expect(a.dropped).toEqual([]);
+    expect(leftOutOfTitle(inputs, a.title)).toEqual([]);
   });
 
-  test("a core cut on an RC-shortened insert does not report \"Rookie\" as lost", () => {
+  test("an RC-shortened insert does not report \"Rookie\" as lost", () => {
     const inputs = listingInputsForCard(
       { cardNumber: "RD-12", isRookie: true },
       {
@@ -484,11 +533,11 @@ describe("filler is never listed as a loss (collector review)", () => {
       { playerNames: ["Elly De La Cruz"] },
     );
     const a = assessListingTitle(inputs);
-    expect(a.coreFits).toBe(false);
-    expect(a.rookieAsRcUsed).toBe(true);
-    const left = leftOutOfTitle(inputs, a);
+    expect(a.fits).toBe(false);
+    expect(a.title).toContain("RC Debut Patch Autographs");
+    const left = leftOutOfTitle(inputs, a.title);
     expect(left.some((entry) => /\bRookie\b/.test(entry))).toBe(false);
-    expect(left).toContain("Elly De La Cruz");
+    expect(left).toEqual(["#RD-12", "Elly"]);
   });
 });
 
@@ -536,7 +585,7 @@ describe("NEO-335 — the insert name, the parallel leaf and the short name reac
     expect(inputs.parallelName).toBe("Gold Refractor");
     expect(inputs.parallelIsRole).toBe(true);
     expect(assessListingTitle(inputs).title).toBe(
-      "2026 Topps Chrome A #5 Gold Refractor Parallel Baseball",
+      "2026 Topps Chrome Gold Refractor Parallel A #5 Baseball",
     );
   });
 
@@ -564,7 +613,7 @@ describe("NEO-335 — the insert name, the parallel leaf and the short name reac
   });
 });
 
-describe("NEO-335 — leftOutOfTitle reports the set and insert words", () => {
+describe("NEO-535 — leftOutOfTitle and the set and insert words", () => {
   const LONG_INSERT: ListingSetContext = {
     ...SET,
     setNameValue: "Chrome Update Series",
@@ -572,18 +621,18 @@ describe("NEO-335 — leftOutOfTitle reports the set and insert words", () => {
     insertIsRole: true,
   };
 
-  test("a cut core reports the insert's lost words", () => {
+  test("an over-cap insert is never cut, so never reported; the number and first name are", () => {
     const inputs = listingInputsForCard({ cardNumber: "300" }, LONG_INSERT, {
       playerNames: ["Shohei Ohtani"],
     });
     const assessment = assessListingTitle(inputs);
-    expect(assessment.coreFits).toBe(false);
-    const left = leftOutOfTitle(inputs, assessment);
-    expect(left).toContain("Shohei Ohtani");
-    expect(left.some((entry) => entry.includes("Box"))).toBe(true);
+    expect(assessment.fits).toBe(false);
+    expect(assessment.title).toContain("Sapphire Edition Platinum Anniversary Collectors Box");
+    const left = leftOutOfTitle(inputs, assessment.title);
+    expect(left).toEqual(["#300", "Shohei"]);
   });
 
-  test("with the short name in use, the full names are not reported — they were replaced", () => {
+  test("with the box in use, the full description is not reported — the box stands in for it", () => {
     const inputs = listingInputsForCard(
       { cardNumber: "300" },
       { ...LONG_INSERT, listingShortName: "Topps Sapphire" },
@@ -591,53 +640,66 @@ describe("NEO-335 — leftOutOfTitle reports the set and insert words", () => {
     );
     const assessment = assessListingTitle(inputs);
     expect(assessment.shortNameUsed).toBe(true);
-    expect(assessment.coreFits).toBe(true);
-    expect(leftOutOfTitle(inputs, assessment)).toEqual([]);
+    expect(assessment.fits).toBe(true);
+    // Built from the box: the card is on the Card titles step (born flagged).
+    expect(assessment.coreFits).toBe(false);
+    expect(leftOutOfTitle(inputs, assessment.title)).toEqual([]);
+  });
+
+  test("an operator's text without the box or the description words reports those words", () => {
+    const inputs = listingInputsForCard(
+      { cardNumber: "300" },
+      { ...LONG_INSERT, listingShortName: "Topps Sapphire" },
+      { playerNames: ["Shohei Ohtani"] },
+    );
+    expect(leftOutOfTitle(inputs, "2026 Topps Shohei Ohtani #300")).toEqual([
+      "Chrome Update Series",
+      "Sapphire Edition Platinum Anniversary Collectors Box",
+    ]);
   });
 });
 
-describe("NEO-335 — suggestShortSetName", () => {
+describe("NEO-535 — setDescriptionForTitles (the box's prefill)", () => {
   const COLLECTORS_CHOICE: ListingSetContext = {
     sportValue: "Baseball",
     setNameValue: "Collector's Choice",
     inheritedFeatures: { manufacturer: "Upper Deck", season: "1990" },
   };
 
-  test("the maker and the insert's first word: Upper Deck Hologram", () => {
+  test("the builder's whole description: year, maker, set and the insert on its role", () => {
     expect(
-      suggestShortSetName({ ...COLLECTORS_CHOICE, insertNameValue: "Hologram", insertIsRole: true }),
-    ).toBe("Upper Deck Hologram");
-  });
-
-  test("no insert: the first word of the set name that is not the maker's", () => {
-    expect(
-      suggestShortSetName({ ...COLLECTORS_CHOICE, setNameValue: "Upper Deck Collector's Choice" }),
-    ).toBe("Upper Deck Collector's");
+      setDescriptionForTitles({ ...COLLECTORS_CHOICE, insertNameValue: "Hologram", insertIsRole: true }),
+    ).toBe("1990 Upper Deck Collector's Choice Hologram");
   });
 
   test("an insert-level row without the role is not read", () => {
     expect(
-      suggestShortSetName({ ...COLLECTORS_CHOICE, insertNameValue: "Hologram", insertIsRole: false }),
-    ).toBe("Upper Deck Collector's");
+      setDescriptionForTitles({ ...COLLECTORS_CHOICE, insertNameValue: "Hologram", insertIsRole: false }),
+    ).toBe("1990 Upper Deck Collector's Choice");
   });
 
   test("an unknown brand is never offered", () => {
     expect(
-      suggestShortSetName({
+      setDescriptionForTitles({
         ...COLLECTORS_CHOICE,
         manufacturerBrandUnknown: true,
-        inheritedFeatures: { manufacturer: "All Brands" },
+        inheritedFeatures: { manufacturer: "All Brands", season: "1990" },
         insertNameValue: "Hologram Heroes",
         insertIsRole: true,
       }),
-    ).toBe("Hologram");
+    ).toBe("1990 Collector's Choice Hologram Heroes");
   });
 
-  test("nothing shorter to offer: undefined", () => {
+  test("the parallel leaf is included, the stored box is ignored, and no label is added", () => {
     expect(
-      suggestShortSetName({ sportValue: "Baseball", setNameValue: "Topps", inheritedFeatures: { manufacturer: "Topps" } }),
-    ).toBeUndefined();
-    expect(suggestShortSetName({ sportValue: "Baseball" })).toBeUndefined();
+      setDescriptionForTitles({
+        ...COLLECTORS_CHOICE,
+        insertNameValue: "Hologram",
+        insertIsRole: true,
+        parallelLeafValue: "Gold",
+        listingShortName: "UD Holo",
+      }),
+    ).toBe("1990 Upper Deck Collector's Choice Hologram Gold");
   });
 });
 
@@ -648,9 +710,11 @@ describe("NEO-335 — checkShortNameAnswer (the write paths' rule, without throw
     expect(checkShortNameAnswer(undefined)).toEqual({});
   });
 
-  test("60 is the cap", () => {
-    expect(checkShortNameAnswer("x".repeat(60))).toEqual({ value: "x".repeat(60) });
-    expect(checkShortNameAnswer("x".repeat(61)).error).toMatch(/60/);
+  test("80 is the cap (NEO-535: the box holds the whole description)", () => {
+    expect(checkShortNameAnswer("x".repeat(80))).toEqual({ value: "x".repeat(80) });
+    expect(checkShortNameAnswer("x".repeat(81)).error).toBe(
+      "Set name in titles tops out at 80 characters.",
+    );
   });
 
   test("control and invisible characters are refused with the server's sentence", () => {

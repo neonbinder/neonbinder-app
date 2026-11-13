@@ -212,14 +212,16 @@ describe("previewListingTitle (NEO-101)", () => {
     const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, {
       cardId,
     });
+    // NEO-535: the parallel ("Gold") is part of the description, before the
+    // number; the tail keeps its order.
     expect(preview.title).toBe(
-      "2024 Topps Chrome #300b AUTO RELIC Gold /25 Image Variation SP Baseball",
+      "2024 Topps Chrome Gold #300b AUTO RELIC /25 Image Variation SP Baseball",
     );
     expect(preview.inputs.printRun).toBe(25);
     expect(preview.inputs.cardVariation).toBe("Image Variation");
   });
 
-  test("reports coreFits: false and the dropped tokens when the row cannot fit", async () => {
+  test("reports fits: false, coreFits: false and what was left out when the row cannot fit", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedSubtree(t);
@@ -244,14 +246,16 @@ describe("previewListingTitle (NEO-101)", () => {
     const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, {
       cardId,
     });
+    // NEO-535, end to end: every cut is made (number, first name, RC, AUTO),
+    // the surname part is never cut, and the title STOPs over the cap.
     expect(preview.coreFits).toBe(false);
-    // "skip, don't stop", end to end: the 5-character " AUTO" did not fit, the
-    // 3-character " RC" behind it did, and the result lands exactly on the cap.
-    expect(preview.dropped).toEqual(["AUTO", "Rookie", "Baseball"]);
+    expect(preview.fits).toBe(false);
+    expect(preview.firstNameLost).toBe(true);
+    expect(preview.dropped).toEqual(["#99999", "An", "RC", "AUTO"]);
     expect(preview.title).toBe(
-      "2024 Topps Chrome An Absurdly Long Player Full Name That Alone Exceeds #99999 RC",
+      "2024 Topps Chrome Absurdly Long Player Full Name That Alone Exceeds The Entire Title Budget",
     );
-    expect(preview.title.length).toBe(80);
+    expect(preview.title.length).toBeGreaterThan(80);
     expect(preview.title).not.toContain("…");
   });
 
@@ -305,7 +309,14 @@ describe("previewListingTitle (NEO-101)", () => {
     );
     expect(widePreview.inputs.playerNames).toHaveLength(MAX_CARD_PLAYERS);
     expect(widePreview.inputs.playerNames[0]).toBe("Player 00");
-    expect(widePreview.title.length).toBeLessThanOrEqual(80);
+    // Twenty players lose every first name ("Player") and the title still
+    // STOPs over the cap (NEO-535): each surname part stays, none is sliced.
+    expect(widePreview.fits).toBe(false);
+    expect(widePreview.title.length).toBeGreaterThan(80);
+    for (let i = 0; i < MAX_CARD_PLAYERS; i++) {
+      expect(widePreview.title).toContain(String(i).padStart(2, "0"));
+    }
+    expect(widePreview.title).not.toContain("Player");
   });
 
   test("resolves team names from teamOnCardIds, deduped and bounded", async () => {

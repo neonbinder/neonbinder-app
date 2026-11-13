@@ -26,11 +26,12 @@ describe("normalizeListingShortName", () => {
 
   test("the cap is inclusive", () => {
     const atCap = "s".repeat(MAX_LISTING_SHORT_NAME_LENGTH);
-    expect(MAX_LISTING_SHORT_NAME_LENGTH).toBe(60);
+    // NEO-535: raised from 60, the box holds the whole set description.
+    expect(MAX_LISTING_SHORT_NAME_LENGTH).toBe(80);
     expect(normalizeListingShortName(atCap)).toBe(atCap);
     expect(() => normalizeListingShortName(`${atCap}s`)).toThrow(ConvexError);
     expect(() => normalizeListingShortName(`${atCap}s`)).toThrow(
-      /at most 60 characters/,
+      "Set name in titles tops out at 80 characters.",
     );
   });
 
@@ -174,13 +175,15 @@ describe("titleChainFacts", () => {
         row("setName", "Collector's Choice", { listingShortName: "UD Choice" }),
       ]).listingShortName,
     ).toBe("UD Hologram");
+    // NEO-535: a value stored above the insert row covers the set, so the
+    // insert's name is appended (trimmed value, verbatim name).
     expect(
       titleChainFacts([
         row("insert", "Hologram"),
         row("variantType", "Inserts"),
         row("setName", "Collector's Choice", { listingShortName: " UD Choice " }),
       ]).listingShortName,
-    ).toBe("UD Choice");
+    ).toBe("UD Choice Hologram");
   });
 
   test("nothing past the setName row is read", () => {
