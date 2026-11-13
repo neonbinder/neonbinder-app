@@ -16,7 +16,10 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
-import { BLANK_LISTING_TITLE_REFUSAL } from "./selectorOptions";
+import {
+  BLANK_LISTING_DESCRIPTION_REFUSAL,
+  BLANK_LISTING_TITLE_REFUSAL,
+} from "./selectorOptions";
 import type { Id } from "./_generated/dataModel";
 import { insertTestCard } from "../lib/testing/card-row";
 
@@ -137,10 +140,12 @@ describe("updateCard structured fields (NEO-25)", () => {
     expect(card.listingDescription).toBe("Mint condition. Ships in a top loader.");
   });
 
-  test("clears fields via empty array / false / empty string (never the title)", async () => {
+  test("clears fields via empty array / false (never the title or description)", async () => {
     // NEO-358 — every field here still clears, except `listingTitle`: a card's
-    // title is what a collector searches, so a blank one is refused (see the
-    // NEO-358 block in the cap describe below). It is left out of the clear.
+    // title is required, so a blank one is refused (see the NEO-358 block in
+    // the cap describe below). NEO-535: nor `listingDescription`, which the
+    // collector's card search reads (its own block below). Both are left out
+    // of the clear and kept.
     const { asAdmin, variantTypeId, cardId } = await seed();
 
     // First set values, then clear them.
@@ -157,7 +162,6 @@ describe("updateCard structured fields (NEO-25)", () => {
       attributes: [],
       isRookie: false,
       isRelic: false,
-      listingDescription: "",
     });
 
     const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
@@ -169,7 +173,32 @@ describe("updateCard structured fields (NEO-25)", () => {
     expect(card.isRookie).toBe(false);
     expect(card.isRelic).toBe(false);
     expect(card.listingTitle).toBe("Some title");
-    expect(card.listingDescription).toBe("");
+    expect(card.listingDescription).toBe("Some description");
+  });
+
+  test("NEO-535: a blank description is refused, the stored one kept, and nothing else in the call written", async () => {
+    const { asAdmin, variantTypeId, cardId } = await seed();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: cardId,
+      listingDescription: "  A real description  ",
+      cardVariation: "Before",
+    });
+    for (const blank of ["", "   ", "\n\t"]) {
+      await expect(
+        asAdmin.mutation(api.selectorOptions.updateCard, {
+          id: cardId,
+          listingDescription: blank,
+          cardVariation: "After",
+        }),
+      ).rejects.toThrow(BLANK_LISTING_DESCRIPTION_REFUSAL);
+    }
+    const cards = await asAdmin.query(api.selectorOptions.getCardChecklist, {
+      selectorOptionId: variantTypeId,
+    });
+    const card = cards.find((c) => c._id === cardId)!;
+    // Stored trimmed, as the panel sends it.
+    expect(card.listingDescription).toBe("A real description");
+    expect(card.cardVariation).toBe("Before");
   });
 
   test("partial patch leaves omitted fields untouched", async () => {

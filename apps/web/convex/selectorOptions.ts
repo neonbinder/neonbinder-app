@@ -271,6 +271,7 @@ import { collectedCardIds, countCollectors, removeCardRow } from "./cardRowDelet
 import { mergeCollectorCounts, type CollectorCount } from "../lib/collection/collectors";
 import { newRowSubtreeCounts, createCardCountLedger } from "./cardCounts";
 import { titleForStoredCard } from "./storedCardTitle";
+import { queueRetitledCardNow } from "./listingTitleRequeue";
 import {
   MAX_TEAM_ALIASES,
   MAX_TEAM_ALIAS_LENGTH,
@@ -6561,12 +6562,15 @@ export const updateCard = mutation({
       return storedCard;
     };
 
+    // NEO-535 — set when the stored title actually changes; queues the card
+    // for eBay after the patch (`listingTitleRequeue`).
+    let titleChanged = false;
     if (typeof filtered.listingTitle === "string") {
       const trimmedTitle = filtered.listingTitle.trim();
-      // NEO-358 — a card's title is what a collector searches
-      // (`search_listing_title`), so it is never stored blank. Refused, never
-      // regenerated: the operator cleared it, and only they can say what it
-      // should read instead. The panel shows this and puts the title back.
+      // NEO-358 — a card's title is never stored blank (Jason: a card's title
+      // is required). Refused, never regenerated: the operator cleared it, and
+      // only they can say what it should read instead. The panel shows this
+      // and puts the title back.
       if (trimmedTitle.length === 0) {
         throw new ConvexError(BLANK_LISTING_TITLE_REFUSAL);
       }
@@ -6591,7 +6595,20 @@ export const updateCard = mutation({
       const existingTitle = (await loadStoredCard()).listingTitle;
       if (trimmedTitle !== existingTitle) {
         filtered.listingTitleTruncated = undefined;
+        titleChanged = true;
       }
+    }
+
+    // NEO-535 — the description is what a collector's card search reads
+    // (`search_listing_description`), so, like the title, it is never stored
+    // blank. Refused, never regenerated; the panel shows this and puts the
+    // stored description back. Trimmed, as the panel already sends it.
+    if (typeof filtered.listingDescription === "string") {
+      const trimmedDescription = filtered.listingDescription.trim();
+      if (trimmedDescription.length === 0) {
+        throw new ConvexError(BLANK_LISTING_DESCRIPTION_REFUSAL);
+      }
+      filtered.listingDescription = trimmedDescription;
     }
 
     // NEO-367 — trimmed, capped, and blank deletes the field (`undefined` in a
@@ -6751,6 +6768,15 @@ export const updateCard = mutation({
         filtered.teamOnCardIds as Array<Id<"teams">>,
       );
     }
+    // NEO-535 — a new title is new eBay item content (and the way out of an
+    // over-80 `titleTooLong` hold): queue the card for eBay for every owner
+    // who holds it in a box, so it is listed without a Sync press. Inline for
+    // a card with a page of copies or fewer, a scheduled paged chain beyond
+    // that (`listingTitleRequeue`), so the save stays light however many
+    // collectors hold the card.
+    if (titleChanged) {
+      await queueRetitledCardNow(ctx, id);
+    }
     return null;
   },
 });
@@ -6762,6 +6788,15 @@ export const updateCard = mutation({
  */
 export const BLANK_LISTING_TITLE_REFUSAL =
   "A card needs a title. Type one in, or hit Regenerate for a fresh one.";
+
+/**
+ * NEO-535 — `updateCard`'s refusal of a blank listing description (what the
+ * collector's card search reads). The card detail panel
+ * (`CardDetailPanel.tsx`, `BLANK_DESCRIPTION_MESSAGE`) says the same sentence
+ * without the round trip; keep the two in step.
+ */
+export const BLANK_LISTING_DESCRIPTION_REFUSAL =
+  "A card needs a description. It's what collectors search, so type one in.";
 
 /**
  * NEO-101 — what the generator WOULD title this stored card today, plus the

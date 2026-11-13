@@ -146,8 +146,14 @@ describe("previewListingTitle and titleForStoredCard", () => {
         .withIdentity(ADMIN)
         .query(api.selectorOptions.previewListingTitle, { cardId });
       const stored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(cardId))!));
+      // NEO-535: the assessment grew `fits`, `firstNameLost` and (only when
+      // the box text built the title) `shortNameUsed`; the preview returns
+      // them all.
       expect(preview, key).toEqual({
         title: stored.title,
+        fits: stored.fits,
+        firstNameLost: stored.firstNameLost,
+        ...(stored.shortNameUsed ? { shortNameUsed: true } : {}),
         coreFits: stored.coreFits,
         dropped: stored.dropped,
         inputs: stored.inputs,
@@ -158,11 +164,11 @@ describe("previewListingTitle and titleForStoredCard", () => {
     expect(titles).toMatchInlineSnapshot(`
       {
         "dangling": "Topps Chrome #18 Baseball",
-        "longCore": "Topps Chrome Bartholomew Maximilian Fitzgerald-Worthington & Bartholomew #19",
+        "longCore": "Topps Chrome Maximilian Fitzgerald-Worthington & Maximilian Fitzgerald-Worthington",
         "pending": "Topps Chrome Doc Gooden #17 New York Mets Baseball",
         "resolved": "2024 Topps Chrome Dwight Gooden & Darryl Strawberry #16 /99 RC New York Mets",
         "underInsert": "2024 Topps Chrome Future Stars Insert Dwight Gooden #FS-1 AUTO Baseball",
-        "underParallel": "2024 Topps Chrome Future Stars Darryl Strawberry #FS-2 Gold Refractor Baseball",
+        "underParallel": "2024 Topps Chrome Future Stars Gold Refractor Darryl Strawberry #FS-2 Baseball",
         "variation": "Topps Chrome Dwight Gooden #16 Image Variation Baseball",
       }
     `);

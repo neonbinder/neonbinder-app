@@ -1872,14 +1872,22 @@ export default defineSchema({
     // eBay-specific.
     //
     // NEO-363: REQUIRED, and never blank (Jason: a card's title is required).
-    // It is what a collector searches (`search_listing_title` below). Every
-    // insert writes one: `insertCardRow` and `addCustomCard` generate it
+    // Every insert writes one: `insertCardRow` and `addCustomCard` generate it
     // (`assessListingTitle` always ends in `#<cardNumber>`, so it cannot come
     // out empty) unless the operator's own pre-save title rides on the card.
     // After insert only `updateCard` writes it, and it refuses a blank one
     // (`BLANK_LISTING_TITLE_REFUSAL`). The NEO-358 backfill filled every
     // older row before this flipped.
     listingTitle: v.string(),
+    // NEO-535: every fact NB knows about the card, in prose
+    // (`generateListingDescription`), and what a collector's free-text card
+    // search reads (`search_listing_description` below): the title is cut to
+    // fit 80 characters, the description never is. Written at insert by
+    // `insertCardRow` and `addCustomCard`; after insert only `updateCard`
+    // writes it, and it refuses a blank one
+    // (`BLANK_LISTING_DESCRIPTION_REFUSAL`). Optional: a row the NEO-535
+    // backfill (`backfillListingDescriptions`) has not reached may lack it,
+    // and such a row is not found by the search until it is filled.
     listingDescription: v.optional(v.string()),
     // NEO-101: the auto-generated title's CORE (year / manufacturer / set /
     // players) did not fit inside eBay's 80-character cap at creation time, so
@@ -1960,8 +1968,8 @@ export default defineSchema({
     /**
      * NEO-358 — the SPORT this card belongs to: the root of its
      * `selectorOptionId` ancestor chain (`findSportForSelectorOption`),
-     * denormalised so the collector's title search can filter by sport
-     * (`search_listing_title`). Set once at insert and never changed: a card
+     * denormalised so the collector's card search can filter by sport
+     * (`search_listing_description`). Set once at insert and never changed: a card
      * only ever moves between rows under one brand, so its sport is fixed.
      *
      * Writers: `insertCardRow` (convex/cardRowCreate.ts) and `addCustomCard`.
@@ -1989,9 +1997,13 @@ export default defineSchema({
     // re-checks every hit: every unquoted word must appear and every quoted
     // phrase must appear verbatim (case-insensitive). Convex caps a search at
     // 1024 results, which is why set and entity suggestions exist beside it.
-    .searchIndex("search_listing_title", {
-      searchField: "listingTitle",
-      filterFields: ["sportId", "selectorOptionId"],
+    // NEO-535: searches the listing DESCRIPTION, not the title. The title is
+    // cut to fit eBay's 80 characters and may lose a first name or a team;
+    // the description keeps every fact, in long and short forms. Filtered by
+    // sport only (no reader filters by row).
+    .searchIndex("search_listing_description", {
+      searchField: "listingDescription",
+      filterFields: ["sportId"],
     }),
 
   // NEO-21: cross-release guest appearances. Some cards complete one set's
