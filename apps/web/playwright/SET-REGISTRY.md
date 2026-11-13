@@ -223,8 +223,8 @@ every run, so these are the values it re-establishes):
 | its SportLots mappings | the one combined set |
 | its card checklist | **220** cards, every one paired across both marketplaces |
 | its FIRST card's name | carries a `NB203-<ATTEMPT_ID>` marker (NEO-203, below) |
-| its NB insert row's name | carries a ` NB211-<ATTEMPT_ID>` suffix (NEO-211, below) — applied at STEP 3b, BEFORE the card fetch (NEO-335 Phase 2) |
-| its NB insert row's `Short name for titles` | `DCAP<token>`, written by the commit from the wizard's Card titles step (NEO-335 Phase 2, below); every card title the commit writes uses it |
+| its NB insert row's name | carries a ` NB211-<ATTEMPT_ID> Hologram Foil Rainbow Refractor Edition` suffix (NEO-211, NEO-535, below) — applied at STEP 3b, BEFORE the card fetch (NEO-335 Phase 2) |
+| its NB insert row's `Set name in titles` | `DCAP<token>`, written by the commit from the wizard's Card titles step (NEO-335 Phase 2, NEO-535, below); every card title the commit writes opens with it |
 
 **NEO-203 — the flow now re-syncs the set once more before it ends.** Its
 STEP 7 edits the first card's name in NeonBinder, re-fetches the same
@@ -241,16 +241,19 @@ dialog. Two consequences worth knowing:
   this flow has just built, and which the sole-writer rule below forbids a
   second flow from building.
 
-**NEO-335 Phase 2 — the Card titles step and the short name for titles.** A
-card under an insert row now carries the insert's name in its title core, so
-the flow renames the insert row to its NB211 marker at STEP 3b, BEFORE the
-first card fetch (the rename used to open STEP 8): with that ~50-character
-insert name nearly every card's title core is cut, which makes the wizard's
-`Card titles` step certain. STEP 6c types `DCAP<token>` into its `Shorter set
-name for titles` field, asserts `Every title fits now.`, and saves; STEP 7a
-reads `1996 Score DCAP<token> …` off a stored card's title. So the insert row
-also ends with `metadata.listingShortName = DCAP<token>`, and all 220 card
-titles use it. Nothing else reads either.
+**NEO-335 Phase 2 / NEO-535 — the Card titles step and "Set name in titles".**
+A card under an insert row carries the insert's name in its title's
+description, which the title builder never cuts (NEO-535), so the flow renames
+the insert row to its NB211 marker plus a filler tail (` Hologram Foil Rainbow
+Refractor Edition`) at STEP 3b, BEFORE the first card fetch (the rename used to
+open STEP 8): the description alone is then over 80 characters, every card's
+title is still over the cap after every cut, and the wizard's `Card titles`
+step is certain. STEP 4b asserts the `Set name in titles` box opens prefilled
+with the builder's description (`1996 Score <renamed>…`, over 80, so it "sits
+out"), replaces it with `DCAP<token>`, asserts `Every title fits now.`, and
+saves; STEP 5 reads a stored card's title opening `DCAP<token> `. So the insert
+row also ends with `metadata.listingShortName = DCAP<token>`, and all 220 card
+titles open with it. Nothing else reads either.
 
 **NEO-211 — the flow now also re-syncs the INSERT LEVEL once, after all of
 that.** Its STEP 3b renames the single insert row (appending ` NB211-<ATTEMPT_ID>`);
@@ -2468,7 +2471,7 @@ would put the wrong question on screen.
 | `rnm-` | `tests/set-selector/rename-selector-option.spec.ts` (also `-${ATTEMPT_ID}`; renamed in-flow to `rnmx-`) |
 | `stt-` | `tests/set-selector/set-team-carries-down-to-cards.spec.ts` (also `-${ATTEMPT_ID}`) — under `E2E Test Sport <w>` › 2026 › Topps, NOT Baseball: the New Team dialog's `League` combobox (NEO-307) then lists only leagues this worker minted, so its typed filters match exactly what the flow expects. It mints ONE league, `STL<token>L`, on STA's dialog and picks it back on STB's (see the minted-names table). Per-attempt because the cascade confirm's body is an EXACT card count. Its two cards are deleted at the end; the set, its `Insert` › `Base` rows and its three teams stand. |
 | `tlf-` | `tests/set-selector/checklist-title-length-limits-and-fixer.spec.ts` (also `-${ATTEMPT_ID}`) |
-| `stn-` | `tests/set-selector/card-title-uses-short-name-for-titles.spec.ts` (also `-${ATTEMPT_ID}`, then `-` and a 60-character hyphenated tail with no spaces, so the set name cannot fit a title core yet still wraps in the Sets column) — under the REAL `Baseball` › 2024 › `Topps`; `Insert` › `Base`, one card `SN1`, and a `Short name for titles` (`SNT<token>`) on that `Base` row. Nothing is deleted: the set is the attempt's alone. |
+| `ttl` | `tests/set-selector/card-title-uses-short-name-for-titles.spec.ts` (NEO-535, per-attempt, a single token: `ttl<token>` padded with `x` to exactly 21 characters, so the title arithmetic is exact on every runner) — under the REAL `Baseball` › 2024 › `Topps`: the quick-add PlayerPicker searches the set's sport, where the reference catalogue's Baseball rows live. `Insert` › `Base` holds cards `91A-AA1234567` and `NB<token>-000…` (31 characters), `Insert` › `Commemorative Anniversary Collectors Edition Hologram Series` holds card `C1` and a `Set name in titles` (`2024 Topps <set> Hologram Series`) on that row. All three cards link the catalogue's **George Brett** (only READ) and carry no team. Nothing is deleted: the set is the attempt's alone. Before NEO-535 the prefix was `stn-` (one card `SN1` and a `Short name for titles` on `Base`); those sets may still stand on old deployments. |
 | `svl` | `tests/set-selector/insert-sub-variants-column-only-when-it-has-some.spec.ts` (NEO-425) — ONE set per attempt, `svl<token>` (single token from `ATTEMPT_TOKEN`, which carries the runner), under `E2E Test Sport <w>` › 2026 › `Topps` (drillToCustomSet). Hand-made, so no marketplace side is resolvable beneath it and every wait is the 7 s budget. Inside it, under `Insert`, the flow creates three inserts, `svlhost<token>`, `svlsub<token>` and `svlleaf<token>`, then moves `svlsub<token>` under `svlhost<token>` with Group Parallels (one promotion, one Save). Per-attempt because that move is the claim: a retry must start with three top-level inserts and `svlhost<token>` holding no sub-variant. Nothing is deleted; the set stands. |
 | `tp-` | `tests/set-selector/team-picker.spec.ts` |
 | `tpr-` | `tests/set-selector/team-picker-ranks-by-set-context.spec.ts` (NEO-331) — under the REAL `Baseball` › 2024 › `Topps`: the picker ranks by the set's League feature, which is derived ONLY at the sport level for the four stick-and-ball sports (Baseball → "MLB"), so a synthetic sport would leave nothing to rank by. `Insert` › `Base`, whose checklist row is the picker's context. **Writes no card**: the whole flow runs in the quick-add form's TeamPicker, whose chips are local state, and cancels the form. Mints four teams and one league (see the team-names table); the set and its rows stand. Per-worker only. |

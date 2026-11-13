@@ -1,7 +1,15 @@
 // Origin: .maestro/flows/set-selector/inserts-1996-score-one-nb-set-two-bsc-sources.yaml (Maestro suite retired in NEO-341; see git history)
 // Sole writer of the 1996 Score Dugout Collection Artists Proofs insert; fresh-only.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { columnOption, columnSearch, drillToSet, pick, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
+import {
+  columnOption,
+  columnSearch,
+  drillToSet,
+  escapeRe,
+  pick,
+  setBuilderReady,
+  syncChecklistButton,
+} from "../../support/set-builder";
 import {
   advanceToSave,
   answerPlayerAsNew,
@@ -28,7 +36,11 @@ test(
   { tag: ["@set-selector"] },
   async ({ page, signIn, env }) => {
     const id = env.ATTEMPT_ID;
-    const renamed = `${MERGED} NB211-${id}`;
+    // NEO-535: the NB211 marker plus a filler tail, so the description alone
+    // ("1996 Score <renamed>", 99+ characters on every runner) is over 80 and
+    // EVERY card's title is still over the cap after every cut (the builder
+    // never cuts a description word): the "Card titles" step is certain.
+    const renamed = `${MERGED} NB211-${id} Hologram Foil Rainbow Refractor Edition`;
     const reconcile = page.getByRole("dialog", { name: "Reconcile Inserts" });
     const pairing = page.getByRole("dialog", { name: /Match Cards/ });
     const confirmMatches = page.getByRole("button", { name: "Confirm card matches", disabled: false });
@@ -92,9 +104,10 @@ test(
     await expectAccessible(page, { label: "Multi-source insert set" });
 
     // ── 3b. Rename the NB set to its NB211 marker BEFORE any card is fetched ──
-    // NEO-335 Phase 2: a card under an insert row carries the INSERT's name in
-    // its title core, so this long name cuts nearly every card's core and the
-    // wizard's "Card titles" step (and its short-name field) comes up on every
+    // NEO-335 Phase 2 / NEO-535: a card under an insert row carries the
+    // INSERT's name in its title's description, which is never cut, so this
+    // long name leaves every card over 80 after every cut and the wizard's
+    // "Card titles" step (and its "Set name in titles" box) comes up on every
     // run (STEP 4b). The card fetches read the row's marketplace ids from its
     // slots, never its name (product invariant 4), so the rename cannot change
     // what STEP 3 fetches. STEP 6 keeps its claim: a row renamed away from its
@@ -178,14 +191,14 @@ test(
     }
     await expect(next.or(confirmSave)).toBeVisible();
 
-    // ── 4b. THE CARD TITLES STEP, AND THE SET'S SHORT NAME FOR TITLES (NEO-335 Phase 2) ──
-    // STEP 3b's long insert name makes the card title core run past 80
-    // characters for nearly every card, so the "Card titles" step is certain; a
-    // run where it does not come up fails at its subtitle below, by name. Typing
-    // a short name recomputes every title live (the short name stands in for the
-    // set AND insert names), it rides the commit as the batch's
-    // `listingShortName`, and STEP 5 reads it back off a stored card. ONE
-    // alphanumeric token per attempt.
+    // ── 4b. THE CARD TITLES STEP, AND THE SET'S "SET NAME IN TITLES" (NEO-335, NEO-535) ──
+    // STEP 3b's long insert name leaves every card's title over 80 after every
+    // cut, so the "Card titles" step is certain; a run where it does not come up
+    // fails at its subtitle below, by name. The box opens prefilled with the
+    // builder's own whole description; untouched and over 80 it sits out. The
+    // operator replaces it: every over-cap title then opens with the box text,
+    // verbatim, it rides the commit as the batch's `listingShortName`, and STEP
+    // 5 reads it back off a stored card. ONE alphanumeric token per attempt.
     const short = `DCAP${env.ATTEMPT_TOKEN}`;
     // Which post-name step came first: the teams step only when a card would save
     // teamless (this fetch names its teams, so usually not). Teams are not this
@@ -196,10 +209,17 @@ test(
       await next.click();
     }
     await expect(wizard.getByText("Card titles", { exact: true })).toBeVisible();
-    const shortName = wizard.getByRole("textbox", { name: "Shorter set name for titles" });
+    const shortName = wizard.getByRole("textbox", { name: "Set name in titles", exact: true });
+    // The prefill: the builder's whole description, year, maker and the insert
+    // first (a parallel name the leaf's features carry would follow it).
+    await expect(shortName).toHaveValue(new RegExp(`^1996 Score ${escapeRe(renamed)}`));
+    await expect(wizard.getByText("Over 80, so it's sitting out. Trim it and your titles pick it up.")).toBeVisible();
+    await shortName.clear();
     await shortName.fill(short);
-    // The proof the short name reached EVERY title: the status line is computed
-    // from the same assessment as the list, over every new card.
+    // Enter settles the box in place; its status is read at the settle. The
+    // proof the box reached EVERY title: the line is computed from the same
+    // assessment as the list, over every new card.
+    await shortName.press("Enter");
     await expect(wizard.getByText("Every title fits now.")).toBeVisible();
     await expect(shortName).toHaveValue(short);
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Card titles step" });
@@ -219,11 +239,10 @@ test(
     const cardName = page.getByRole("textbox", { name: "Card name" });
     await expect(cardName).toBeVisible();
     await expectAccessible(page, { label: "Card detail drawer" });
-    // STEP 4b's short name is in this STORED card's title (the title the commit
-    // wrote, not a preview: nothing here has regenerated it).
-    await expect(page.getByRole("textbox", { name: "Card title" })).toHaveValue(
-      new RegExp(`1996 Score ${short} `),
-    );
+    // STEP 4b's box text OPENS this STORED card's title, verbatim with nothing
+    // prepended (the title the commit wrote, not a preview: nothing here has
+    // regenerated it).
+    await expect(page.getByRole("textbox", { name: "Card title" })).toHaveValue(new RegExp(`^${short} `));
     await cardName.pressSequentially(`NB203-${id}`);
     await cardName.press("Enter");
     await expect(page.getByText(/Saved Card name/)).toBeVisible();
