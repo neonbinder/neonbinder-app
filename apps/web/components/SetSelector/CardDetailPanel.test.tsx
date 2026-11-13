@@ -651,6 +651,27 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
     });
   });
 
+  it("NEO-535: a cleared description is not saved; the stored one comes back with the reason", async () => {
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "   ");
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(description.value).toBe("Stored copy");
+    expect(
+      await screen.findByText(
+        "A card needs a description. It's what collectors search, so type one in.",
+      ),
+    ).toBeTruthy();
+  });
+
   it("NEO-367: notes commit only `notes`, keep line breaks, and clearing sends \"\"", async () => {
     renderPanel({ card: makeCard({ notes: "Short print" }) });
     const notes = screen.getByLabelText("Card notes") as HTMLTextAreaElement;

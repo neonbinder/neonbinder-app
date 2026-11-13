@@ -93,6 +93,7 @@ beforeEach(() => {
       setName: "Topps Chrome",
       teamNames: ["Seattle Mariners"],
       sport: "Baseball",
+      shortPrint: "SP",
     },
   };
 });
@@ -252,7 +253,24 @@ describe("TitleFixer (NEO-101)", () => {
     expect(chips.textContent).toContain("Seattle Mariners");
     expect(chips.textContent).toContain("Baseball");
     expect(chips.querySelector("a")).toBeNull();
-    expect(screen.getByText("Left out to fit: SP")).toBeTruthy();
+    // NEO-535: read from the field's text against the card's facts.
+    expect(screen.getByText("Left out to fit: Seattle Mariners, SP")).toBeTruthy();
+  });
+
+  it("NEO-535: 'Left out to fit' follows the field — retyping a cut word takes it off", async () => {
+    renderFixer([truncated()], makeRow({ listingTitle: "2024 Topps #300b" }));
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+    await waitFor(() =>
+      expect(titleField().value).toBe("2024 Topps Chrome Julio Rodriguez #300b"),
+    );
+    fireEvent.change(titleField(), {
+      target: { value: "2024 Topps Chrome Julio Rodriguez #300b SP Seattle Mariners" },
+    });
+    expect(screen.queryByText(/^Left out to fit/)).toBeNull();
+    fireEvent.change(titleField(), { target: { value: "2024 Topps Chrome Rodriguez #300b SP" } });
+    expect(screen.getByText("Left out to fit: Seattle Mariners, Julio")).toBeTruthy();
   });
 
   it("renders no team or sport chip when the preview carries neither", async () => {

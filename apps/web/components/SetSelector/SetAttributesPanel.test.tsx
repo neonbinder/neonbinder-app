@@ -1528,11 +1528,11 @@ describe("SetAttributesPanel — Card prefix row (NEO-291)", () => {
 });
 
 /**
- * NEO-335 — "Short name for titles": at the set and at the levels cards hang
- * from, saved through its own mutation; an empty row shows the short name it
- * inherits as its placeholder.
+ * NEO-335 / NEO-535 — "Set name in titles": at the set and at the levels
+ * cards hang from, saved through its own mutation; an empty row shows, as its
+ * placeholder, the description its cards get.
  */
-describe("SetAttributesPanel — Short name for titles row (NEO-335)", () => {
+describe("SetAttributesPanel — Set name in titles row (NEO-335)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockSetSelectorOptionListingShortName.mockResolvedValue(null);
@@ -1543,31 +1543,31 @@ describe("SetAttributesPanel — Short name for titles row (NEO-335)", () => {
   });
 
   const field = () =>
-    screen.getByLabelText("Value for Short name for titles") as HTMLInputElement;
+    screen.getByLabelText("Value for Set name in titles") as HTMLInputElement;
 
   it.each(["setName", "insert", "parallel"])("renders at level %s", (level) => {
     currentRow = makeRow({ level, value: "Hologram" });
     currentChain = makeChain("Baseball");
     renderPanel();
-    expect(screen.getByLabelText("Set feature Short name for titles")).toBeTruthy();
+    expect(screen.getByLabelText("Set feature Set name in titles")).toBeTruthy();
   });
 
   it("renders at the base variant type, not at another variant type", () => {
     currentRow = makeRow({ level: "variantType", value: "Base" });
     currentChain = makeChain("Baseball");
     const { unmount } = renderPanel();
-    expect(screen.getByLabelText("Set feature Short name for titles")).toBeTruthy();
+    expect(screen.getByLabelText("Set feature Set name in titles")).toBeTruthy();
     unmount();
     currentRow = makeRow({ level: "variantType", value: "Insert" });
     renderPanel();
-    expect(screen.queryByLabelText("Set feature Short name for titles")).toBeNull();
+    expect(screen.queryByLabelText("Set feature Set name in titles")).toBeNull();
   });
 
   it.each(["sport", "year", "manufacturer"])("is absent at level %s", (level) => {
     currentRow = makeRow({ level, value: "Topps" });
     currentChain = makeChain("Baseball");
     renderPanel();
-    expect(screen.queryByLabelText("Set feature Short name for titles")).toBeNull();
+    expect(screen.queryByLabelText("Set feature Set name in titles")).toBeNull();
   });
 
   it("is described by its hint", () => {
@@ -1576,7 +1576,7 @@ describe("SetAttributesPanel — Short name for titles row (NEO-335)", () => {
     renderPanel();
     const id = field().getAttribute("aria-describedby");
     expect(document.getElementById(id ?? "")?.textContent).toBe(
-      "Used in card titles when the full name won't fit. New cards only.",
+      "How titles name this set: year, brand, set, insert, parallel. Only steps in when a title runs long or drops a first name. New cards only.",
     );
   });
 
@@ -1599,7 +1599,7 @@ describe("SetAttributesPanel — Short name for titles row (NEO-335)", () => {
       });
     });
     await waitFor(() => {
-      expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+      expect(screen.getByText("Saved Set name in titles")).toBeTruthy();
     });
   });
 
@@ -1627,7 +1627,7 @@ describe("SetAttributesPanel — Short name for titles row (NEO-335)", () => {
       });
     });
     await waitFor(() => {
-      expect(screen.getByText("Cleared Short name for titles")).toBeTruthy();
+      expect(screen.getByText("Cleared Set name in titles")).toBeTruthy();
     });
   });
 
@@ -1661,6 +1661,55 @@ describe("SetAttributesPanel — Short name for titles row (NEO-335)", () => {
     ];
     renderPanel();
     expect(field().placeholder).toBe("UD Collector's");
+  });
+
+  it("NEO-535: an inherited value sitting above an insert gets the insert's name added", () => {
+    currentRow = makeRow({ level: "insert", value: "Hologram" });
+    currentChain = [
+      ...makeChain("Baseball").map((c) =>
+        c.level === "setName" ? { ...c, metadata: { listingShortName: "UD Collector's" } } : c,
+      ),
+      { _id: "vt-id", value: "Insert", level: "variantType" },
+      { _id: SELECTOR_OPTION_ID, value: "Hologram", level: "insert" },
+    ];
+    renderPanel();
+    expect(field().placeholder).toBe("UD Collector's Hologram");
+  });
+
+  it("NEO-535: with nothing stored up the chain, the placeholder is the builder's own description", () => {
+    currentRow = makeRow({ level: "insert", value: "Hologram" });
+    currentChain = [
+      { _id: "sport-id", value: "Baseball", level: "sport" },
+      { _id: "year-id", value: "1995", level: "year" },
+      { _id: "mfr-id", value: "Upper Deck", level: "manufacturer" },
+      { _id: "set-id", value: "Collector's Choice", level: "setName" },
+      { _id: "vt-id", value: "Insert", level: "variantType" },
+      { _id: SELECTOR_OPTION_ID, value: "Hologram", level: "insert" },
+    ];
+    renderPanel();
+    expect(field().placeholder).toBe("1995 Upper Deck Collector's Choice Hologram");
+  });
+
+  it("NEO-535: a row's own value is never its placeholder", () => {
+    currentRow = makeRow({
+      level: "setName",
+      value: "Collector's Choice",
+      metadata: { listingShortName: "UD CC" },
+    });
+    currentChain = [
+      { _id: "sport-id", value: "Baseball", level: "sport" },
+      { _id: "year-id", value: "1995", level: "year" },
+      { _id: "mfr-id", value: "Upper Deck", level: "manufacturer" },
+      {
+        _id: SELECTOR_OPTION_ID,
+        value: "Collector's Choice",
+        level: "setName",
+        metadata: { listingShortName: "UD CC" },
+      },
+    ];
+    renderPanel();
+    expect(field().value).toBe("UD CC");
+    expect(field().placeholder).toBe("1995 Upper Deck Collector's Choice");
   });
 });
 
@@ -1809,9 +1858,9 @@ describe("SetAttributesPanel — Autograph format row (NEO-345)", () => {
 
 /**
  * The four rows that used to toast "Saved" BEFORE awaiting their mutation
- * (feature, Card prefix, Short name for titles, Autograph format) now say
+ * (feature, Card prefix, Set name in titles, Autograph format) now say
  * "Saving {label}…" while it is in flight. CI caught the old order: a spec
- * waited for "Saved Short name for titles", pressed Regenerate, and the title
+ * waited for "Saved Set name in titles", pressed Regenerate, and the title
  * query read the row 40 ms before the write landed.
  */
 describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => {
@@ -1827,7 +1876,7 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
   }
 
   const shortNameField = () =>
-    screen.getByLabelText("Value for Short name for titles") as HTMLInputElement;
+    screen.getByLabelText("Value for Set name in titles") as HTMLInputElement;
 
   /** Type into the short-name field and blur, which commits it. */
   async function commitShortName(value: string) {
@@ -1860,14 +1909,14 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
 
     expect(mockSetSelectorOptionListingShortName).toHaveBeenCalledTimes(1);
     const toast = screen.getByRole("status");
-    expect(toast.textContent).toBe("Saving Short name for titles…");
-    expect(screen.queryByText("Saved Short name for titles")).toBeNull();
+    expect(toast.textContent).toBe("Saving Set name in titles…");
+    expect(screen.queryByText("Saved Set name in titles")).toBeNull();
 
     await act(async () => {
       write.resolve(null);
     });
-    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
-    expect(screen.queryByText("Saving Short name for titles…")).toBeNull();
+    expect(screen.getByText("Saved Set name in titles")).toBeTruthy();
+    expect(screen.queryByText("Saving Set name in titles…")).toBeNull();
   });
 
   it("short name: a clear says Saving, then Cleared once it lands", async () => {
@@ -1881,12 +1930,12 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
     renderPanel();
     await commitShortName("");
 
-    expect(screen.getByText("Saving Short name for titles…")).toBeTruthy();
-    expect(screen.queryByText("Cleared Short name for titles")).toBeNull();
+    expect(screen.getByText("Saving Set name in titles…")).toBeTruthy();
+    expect(screen.queryByText("Cleared Set name in titles")).toBeNull();
     await act(async () => {
       write.resolve(null);
     });
-    expect(screen.getByText("Cleared Short name for titles")).toBeTruthy();
+    expect(screen.getByText("Cleared Set name in titles")).toBeTruthy();
   });
 
   it("short name: a refusal replaces Saving with Failed, and Saved is never shown", async () => {
@@ -1894,7 +1943,7 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
     mockSetSelectorOptionListingShortName.mockReturnValueOnce(write.promise);
     renderPanel();
     await commitShortName("x".repeat(61));
-    expect(screen.getByText("Saving Short name for titles…")).toBeTruthy();
+    expect(screen.getByText("Saving Set name in titles…")).toBeTruthy();
 
     await act(async () => {
       write.reject(new ConvexError("A short name is at most 60 characters."));
@@ -1902,8 +1951,8 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
     expect(
       screen.getByText("Failed: A short name is at most 60 characters."),
     ).toBeTruthy();
-    expect(screen.queryByText("Saved Short name for titles")).toBeNull();
-    expect(screen.queryByText("Saving Short name for titles…")).toBeNull();
+    expect(screen.queryByText("Saved Set name in titles")).toBeNull();
+    expect(screen.queryByText("Saving Set name in titles…")).toBeNull();
   });
 
   it("short name: an unchanged value raises no Saving toast and writes nothing", async () => {
@@ -1924,7 +1973,7 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
     mockSetSelectorOptionListingShortName.mockResolvedValueOnce(null);
     renderPanel();
     await commitShortName("First");
-    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+    expect(screen.getByText("Saved Set name in titles")).toBeTruthy();
 
     // 4 s later a second save starts and is held open.
     await act(async () => {
@@ -1933,24 +1982,24 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
     const write = deferred();
     mockSetSelectorOptionListingShortName.mockReturnValueOnce(write.promise);
     await commitShortName("Second");
-    expect(screen.getByText("Saving Short name for titles…")).toBeTruthy();
+    expect(screen.getByText("Saving Set name in titles…")).toBeTruthy();
 
     // Past the first toast's 6 s, and long after: Saving is still up, since
     // that timer was cancelled and a pending save sets none of its own.
     await act(async () => {
       vi.advanceTimersByTime(30_000);
     });
-    expect(screen.getByText("Saving Short name for titles…")).toBeTruthy();
+    expect(screen.getByText("Saving Set name in titles…")).toBeTruthy();
 
     // The write lands: the new "Saved" gets its full 6 s.
     await act(async () => {
       write.resolve(null);
     });
-    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+    expect(screen.getByText("Saved Set name in titles")).toBeTruthy();
     await act(async () => {
       vi.advanceTimersByTime(5900);
     });
-    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+    expect(screen.getByText("Saved Set name in titles")).toBeTruthy();
     await act(async () => {
       vi.advanceTimersByTime(200);
     });
@@ -1962,7 +2011,7 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
     mockSetSelectorOptionListingShortName.mockResolvedValueOnce(null);
     renderPanel();
     await commitShortName("First");
-    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+    expect(screen.getByText("Saved Set name in titles")).toBeTruthy();
 
     mockSetSelectorOptionListingShortName.mockRejectedValueOnce(
       new ConvexError("A short name is at most 60 characters."),
@@ -2162,12 +2211,12 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
     await commitShortName("UD Hologram");
     // The same node, not a new one inserted with its text.
     expect(screen.getByRole("status")).toBe(status);
-    expect(status.textContent).toBe("Saving Short name for titles…");
+    expect(status.textContent).toBe("Saving Set name in titles…");
     await act(async () => {
       write.resolve(null);
     });
     expect(screen.getByRole("status")).toBe(status);
-    expect(status.textContent).toBe("Saved Short name for titles");
+    expect(status.textContent).toBe("Saved Set name in titles");
     expect(screen.getByRole("alert").textContent).toBe("");
   });
 
@@ -2187,7 +2236,7 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
     mockSetSelectorOptionListingShortName.mockReturnValueOnce(write.promise);
     await commitShortName("UD Holo");
     expect(screen.getByRole("status").textContent).toBe(
-      "Saving Short name for titles…",
+      "Saving Set name in titles…",
     );
     expect(screen.getByRole("alert").textContent).toBe("");
 
@@ -2206,7 +2255,7 @@ describe("SetAttributesPanel — Saving until the write lands (NEO-412)", () => 
     mockSetSelectorOptionListingShortName.mockResolvedValueOnce(null);
     const { unmount } = renderPanel();
     await commitShortName("UD Holo");
-    expect(screen.getByText("Saved Short name for titles")).toBeTruthy();
+    expect(screen.getByText("Saved Set name in titles")).toBeTruthy();
     expect(vi.getTimerCount()).toBe(1);
 
     unmount();

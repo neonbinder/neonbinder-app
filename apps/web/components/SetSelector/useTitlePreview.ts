@@ -3,7 +3,7 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 // Pure and browser-safe: the same generator the server titled the card with.
-import { assessListingTitle } from "../../convex/features/generateListing";
+import { assessListingTitle, leftOutOfTitle } from "../../convex/features/generateListing";
 
 /**
  * NEO-101 — "Regenerate", and the source fields behind a generated title.
@@ -41,6 +41,10 @@ export type TitleSourceChip = { label: string; value: string };
 
 type PreviewResult = {
   title: string;
+  /** NEO-535 — optional: an older deploy predates them. */
+  fits?: boolean;
+  firstNameLost?: boolean;
+  shortNameUsed?: boolean;
   coreFits: boolean;
   dropped: string[];
   inputs: {
@@ -73,6 +77,8 @@ type PreviewResult = {
     insertName?: string;
     setShortName?: string;
     parallelName?: string;
+    /** NEO-335 — the leaf's parallel ROLE (earns the "Parallel" label). */
+    parallelIsRole?: boolean;
     isRookie?: boolean;
     isRelic?: boolean;
     autographed?: string;
@@ -109,12 +115,13 @@ function chipValue(value: unknown, whenTrue: string): string | null {
 }
 
 /**
- * The chips for a preview, in the order the generator itself assembles a title:
- * core facts first (year, manufacturer, set, parallel, players, number), then
- * the optional tokens that get dropped from the end when it does not fit.
+ * The chips for a preview, in the order the generator itself lays a title
+ * down (NEO-535): the set description (year, maker, set, insert, parallel —
+ * or the "Set name in titles" box that stood in for all of it), players,
+ * number, then AUTO, RELIC, the print run, the variation, RC, SP/SSP, teams
+ * and sport.
  *
- * Reading the row left to right therefore reads the title left to right, which
- * is what makes "the last chips are the ones at risk" legible without saying so.
+ * Reading the row left to right therefore reads the title left to right.
  */
 export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceChip[] {
   const chips: TitleSourceChip[] = [];
@@ -123,7 +130,45 @@ export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceCh
     if (v !== null) chips.push({ label, value: v });
   };
 
-  // Core first, in the order the generator lays it down.
+  // NEO-335/535 — the set description, or the box text that stood in for all
+  // of it. Which one the title used is the generator's answer for these same
+  // inputs (`shortNameUsed`), never a guess from the title text.
+  const shortNameUsed =
+    !!inputs.setShortName?.trim() && assessListingTitle(inputs).shortNameUsed === true;
+  if (shortNameUsed) {
+    push("Set name in titles", inputs.setShortName);
+  } else {
+    pushDescription(push, inputs);
+  }
+  // One chip per player, not a joined string: on a multi-player card the names
+  // are what an operator weighs against each other when shortening.
+  for (const name of inputs.playerNames ?? []) {
+    if (name) chips.push({ label: "Player", value: name });
+  }
+  if (inputs.cardNumber) chips.push({ label: "Number", value: `#${inputs.cardNumber}` });
+
+  // Then the card's own tokens, in the order the title says them.
+  push("Auto", inputs.autographed, "AUTO");
+  push("Relic", inputs.isRelic, "RELIC");
+  if (inputs.printRun != null) chips.push({ label: "Print run", value: `/${inputs.printRun}` });
+  push("Variation", inputs.cardVariation);
+  push("Rookie", inputs.isRookie, "RC");
+  push("Short print", inputs.shortPrint, "SP");
+  // One chip per team, matching the per-player treatment: a card can carry
+  // two, and "which of these is worth the characters" is the same judgement.
+  for (const name of inputs.teamNames ?? []) {
+    if (name) chips.push({ label: "Team", value: name });
+  }
+  push("Sport", inputs.sport);
+
+  return chips;
+}
+
+/** The builder's own description chips: year, maker, set, insert, parallel. */
+function pushDescription(
+  push: (label: string, value: unknown, whenTrue?: string) => void,
+  inputs: PreviewResult["inputs"],
+): void {
   push("Year", inputs.year);
   // NEO-272: a set whose brand NB has not identified gets NO Maker chip. The
   // generator leaves that manufacturer out of the title, so a chip naming it
@@ -141,50 +186,21 @@ export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceCh
   //
   // Keyed on the flag, never on the manufacturer's name.
   if (!inputs.manufacturerBrandUnknown) push("Maker", inputs.manufacturer);
-  // NEO-335 — the set and insert names, or the short name that stood in for
-  // both. Which one the title used is the generator's answer for these same
-  // inputs (`shortNameUsed`), never a guess from the title text.
-  const shortNameUsed =
-    !!inputs.setShortName?.trim() && assessListingTitle(inputs).shortNameUsed === true;
-  if (shortNameUsed) {
-    push("Short name", inputs.setShortName);
-  } else {
-    push("Set", inputs.setName);
-    push("Insert", inputs.insertName);
-  }
-  // One chip per player, not a joined string: on a multi-player card the names
-  // are what an operator weighs against each other when shortening.
-  for (const name of inputs.playerNames ?? []) {
-    if (name) chips.push({ label: "Player", value: name });
-  }
-  if (inputs.cardNumber) chips.push({ label: "Number", value: `#${inputs.cardNumber}` });
-
-  // Then the optional tokens, in the priority the generator appends them:
-  // AUTO → RELIC → parallel → /printRun → variation → RC → SP/SSP → team(s) →
-  // sport. The last chips are therefore the first to be dropped when a title
-  // does not fit, which is the whole reason this row is ordered at all.
-  push("Auto", inputs.autographed, "AUTO");
-  push("Relic", inputs.isRelic, "RELIC");
+  push("Set", inputs.setName);
+  push("Insert", inputs.insertName);
   push("Parallel", inputs.parallelName);
-  if (inputs.printRun != null) chips.push({ label: "Print run", value: `/${inputs.printRun}` });
-  push("Variation", inputs.cardVariation);
-  push("Rookie", inputs.isRookie, "RC");
-  push("Short print", inputs.shortPrint, "SP");
-  // One chip per team, matching the per-player treatment: a card can carry
-  // two, and "which of these is worth the characters" is the same judgement.
-  for (const name of inputs.teamNames ?? []) {
-    if (name) chips.push({ label: "Team", value: name });
-  }
-  push("Sport", inputs.sport);
-
-  return chips;
 }
 
 export type TitlePreview = {
   /** The source facts behind the last preview. Empty until one is fetched. */
   chips: TitleSourceChip[];
-  /** Tokens the generator had to drop to fit the cap. Empty until fetched. */
-  dropped: string[];
+  /**
+   * NEO-535 — "Left out to fit" for `text`, the title as it reads in the field
+   * NOW (the operator's own words included), from the card's facts. Empty
+   * until a preview is fetched; never the generator's own assessment, so
+   * retyping a cut word takes it off the note.
+   */
+  leftOutOf: (text: string) => string[];
   /** A regenerate is in flight (or its query has not resolved yet). */
   loading: boolean;
   /**
@@ -257,9 +273,15 @@ export function useTitlePreview(
     [preview],
   );
 
+  const inputs = preview?.inputs;
+  const leftOutOf = useCallback(
+    (text: string) => (inputs ? leftOutOfTitle(inputs, text.trim()) : []),
+    [inputs],
+  );
+
   return {
     chips,
-    dropped: preview?.dropped ?? [],
+    leftOutOf,
     loading: pending,
     confirming,
     request,

@@ -147,6 +147,14 @@ const PRINT_RUN_MESSAGE =
 const BLANK_TITLE_MESSAGE =
   "A card needs a title. Type one in, or hit Regenerate for a fresh one.";
 
+/**
+ * NEO-535 — the refusal for a cleared Card description. The same sentence as
+ * `selectorOptions.BLANK_LISTING_DESCRIPTION_REFUSAL`: the description is what
+ * a collector's card search reads, so it is never stored blank.
+ */
+const BLANK_DESCRIPTION_MESSAGE =
+  "A card needs a description. It's what collectors search, so type one in.";
+
 type CardDetailCard = {
   _id: Id<"cardChecklist">;
   selectorOptionId: Id<"selectorOptions">;
@@ -488,18 +496,30 @@ export default function CardDetailPanel({
     onEmptyCommit: () => {
       const stored = card.listingTitle ?? "";
       if (titleInputRef.current) titleInputRef.current.value = stored;
-      setTitleLength(stored.length);
+      setTitleText(stored);
       throw new Error(BLANK_TITLE_MESSAGE);
     },
   });
 
+  const descriptionInputRef = useRef<HTMLTextAreaElement | null>(null);
   const descriptionField = useReactiveField<HTMLTextAreaElement>({
     value: card.listingDescription ?? "",
     // A bare Enter here is a paragraph break the operator typed, not a save.
     enterCommit: "modEnter",
     onSave: (trimmed) =>
       commitField({ listingDescription: trimmed }, "Saved Card description"),
+    // NEO-535 — the description is what a collector searches, so it is never
+    // stored blank (`updateCard` refuses one with the same sentence). A
+    // cleared field puts the stored description back and says why.
+    onEmptyCommit: () => {
+      if (descriptionInputRef.current) {
+        descriptionInputRef.current.value = card.listingDescription ?? "";
+      }
+      throw new Error(BLANK_DESCRIPTION_MESSAGE);
+    },
   });
+  const { ref: descriptionHookRef, ...descriptionInputProps } =
+    descriptionField.inputProps;
 
   // NEO-367 — NB's own note about the card. Multi-line like the description,
   // so a bare Enter is a line break. Blank is a real answer ("no note"), sent
@@ -551,9 +571,10 @@ export default function CardDetailPanel({
   // whenever that changes and the field is idle — the same focus-guard the hook
   // itself applies, for the same reason (a reactive push must not renumber a
   // counter for text the operator can still see in front of them).
-  const [titleLength, setTitleLength] = useState(
-    (card.listingTitle ?? "").length,
-  );
+  // NEO-535 — the title's TEXT, not only its length: "Left out to fit" is
+  // read from what the field holds now.
+  const [titleText, setTitleText] = useState(card.listingTitle ?? "");
+  const titleLength = titleText.length;
   const [variationLength, setVariationLength] = useState(
     (card.cardVariation ?? "").length,
   );
@@ -567,7 +588,7 @@ export default function CardDetailPanel({
       return;
     }
     // Mirroring an external (reactive) value, not deriving render state.
-    setTitleLength((card.listingTitle ?? "").length);
+    setTitleText(card.listingTitle ?? "");
   }, [card.listingTitle]);
 
   useEffect(() => {
@@ -612,10 +633,11 @@ export default function CardDetailPanel({
     replaceTitleRef.current = titleField.replace;
   }, [titleField.replace]);
   const applyTitle = useCallback((title: string) => {
-    setTitleLength(title.length);
+    setTitleText(title);
     void replaceTitleRef.current?.(title);
   }, []);
   const preview = useTitlePreview(card._id, applyTitle);
+  const titleLeftOut = useMemo(() => preview.leftOutOf(titleText), [preview, titleText]);
   /** Does the field hold something other than what is stored? Read live. */
   const titleIsEdited = () =>
     (titleInputRef.current?.value ?? "") !== (card.listingTitle ?? "");
@@ -1127,7 +1149,7 @@ export default function CardDetailPanel({
               }}
               type="text"
               onChange={(e) => {
-                setTitleLength(e.target.value.length);
+                setTitleText(e.target.value);
                 // Typing is the operator changing their mind about replacing
                 // the draft — drop the pending confirm rather than leaving a
                 // second click armed against text they just wrote.
@@ -1172,9 +1194,11 @@ export default function CardDetailPanel({
             {card.listingTitleTruncated && (
               <TitleFieldNote>Auto title was cut short — rewrite it</TitleFieldNote>
             )}
-            {preview.dropped.length > 0 && (
+            {/* NEO-535: read from the text in the field now, so retyping a
+                cut word takes it off the note. */}
+            {titleLeftOut.length > 0 && (
               <TitleFieldNote>
-                Left out to fit: {preview.dropped.join(", ")}
+                Left out to fit: {titleLeftOut.join(", ")}
               </TitleFieldNote>
             )}
             {preview.chips.length > 0 && (
@@ -1211,7 +1235,11 @@ export default function CardDetailPanel({
             </label>
             <Textarea
               bare
-              {...descriptionField.inputProps}
+              {...descriptionInputProps}
+              ref={(el) => {
+                descriptionHookRef(el);
+                descriptionInputRef.current = el;
+              }}
               rows={3}
               readOnly={descriptionField.busy}
               aria-busy={descriptionField.busy || undefined}

@@ -353,11 +353,14 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     );
   });
 
-  it("reports the tokens the generator had to leave out", async () => {
+  it("reports what the title in the field leaves out of the card's facts (NEO-535)", async () => {
+    const base = previewResult as { inputs: Record<string, unknown> } & Record<string, unknown>;
     previewResult = {
-      ...(previewResult as Record<string, unknown>),
+      ...base,
       coreFits: false,
-      dropped: ["SP", "/99"],
+      // The server's own list is never what the note shows any more.
+      dropped: ["stale server list"],
+      inputs: { ...base.inputs, printRun: 99 },
     };
     renderPanel(makeCard({ listingTitle: "stale" }));
 
@@ -366,8 +369,24 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByText("Left out to fit: SP, /99")).toBeTruthy(),
+      expect(
+        screen.getByText(
+          "Left out to fit: Seattle Mariners, SP, Image Variation; Wearing sunglasses, /99",
+        ),
+      ).toBeTruthy(),
     );
+    expect(screen.queryByText(/stale server list/)).toBeNull();
+
+    // Retyping a cut thing takes it off the note, keystroke by keystroke.
+    await act(async () => {
+      focusField(titleInput());
+      fireEvent.change(titleInput(), {
+        target: { value: "2024 Topps Chrome Julio Rodriguez #300b SP /99" },
+      });
+    });
+    expect(
+      screen.getByText("Left out to fit: Seattle Mariners, Image Variation; Wearing sunglasses"),
+    ).toBeTruthy();
   });
 
   /**

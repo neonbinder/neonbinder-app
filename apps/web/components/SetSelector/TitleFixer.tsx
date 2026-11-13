@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
@@ -84,6 +84,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
   const wasTruncated = items.some((i) => i.kind === "titleTruncated");
 
   const titleState = titleLengthState(title.length, LISTING_TITLE_MAX, true);
+  const leftOut = useMemo(() => preview.leftOutOf(title), [preview, title]);
   const titleDirty = title !== (row.listingTitle ?? "");
   const canSave = !busy && !titleState.over;
 
@@ -229,9 +230,11 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             Auto title was cut short — rewrite it
           </TitleFieldNote>
         )}
-        {preview.dropped.length > 0 && (
+        {/* NEO-535: read from the text in the field now, so retyping a
+            cut word takes it off the note. */}
+        {leftOut.length > 0 && (
           <TitleFieldNote surface="dark">
-            Left out to fit: {preview.dropped.join(", ")}
+            Left out to fit: {leftOut.join(", ")}
           </TitleFieldNote>
         )}
         {preview.chips.length > 0 && (

@@ -1,6 +1,7 @@
 /**
- * NEO-335 — the wizard's "Card titles" step: grouping, the meters, inline
- * edits, recompute on a team change, and that nothing here blocks a save.
+ * NEO-335 / NEO-535 — the wizard's "Card titles" step: grouping, "Left out to
+ * fit" read from each field's text, the meters, inline edits, over-cap rows,
+ * recompute on a team change, and that nothing here blocks a save.
  *
  * Deciding lives in `card-titles.ts` (its own test); this pins what the
  * operator sees and what the wizard is told.
@@ -19,24 +20,27 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const LONG_SET =
-  "Chrome Update Series Sapphire Edition Platinum Anniversary Collectors Box";
+/** "2026 Topps <this>" is 69 characters: titles keep the surname, not the first name. */
+const FIRST_NAME_SET = "Chrome Update Series Sapphire Edition Platinum Anniversary";
+/** "2026 Topps <this>" is 84 characters: every title stays over the cap. */
+const OVER_SET = `${FIRST_NAME_SET} Collectors Box`;
 const LONG_VARIATION =
   "Image Variation; Wearing a throwback uniform with the 1970s powder blue logo";
 
 const CONTEXT: TitleContext = {
   sportValue: "Baseball",
-  setNameValue: LONG_SET,
+  setNameValue: FIRST_NAME_SET,
   inheritedFeatures: { manufacturer: "Topps", season: "2026" },
   setTeamNames: [],
   players: [
     { printed: "Shohei Ohtani", name: "Shohei Ohtani" },
-    { printed: "Mike Trout", name: "Mike Trout" },
+    { printed: "Julio Rodriguez", name: "Julio Rodriguez" },
   ],
   teams: [],
 };
 
 const SHORT: TitleContext = { ...CONTEXT, setNameValue: "Chrome" };
+const OVER: TitleContext = { ...CONTEXT, setNameValue: OVER_SET };
 
 function card(n: string, extra: Partial<PreviewCardForTitles> = {}): PreviewCardForTitles {
   return { cardNumber: n, cardName: `Card ${n}`, players: ["Shohei Ohtani"], ...extra };
@@ -87,25 +91,55 @@ describe("CardTitlesStep — what is on screen", () => {
     });
     expect(screen.getByRole("heading", { name: "Variation's too long to list. Trim it to 65." }))
       .toBeTruthy();
-    expect(screen.getByRole("heading", { name: "Trimmed to fit. Keep it, or make it yours." }))
-      .toBeTruthy();
+    expect(
+      screen.getByRole("heading", {
+        name: "These titles lost a first name or ran long. Keep 'em, or make 'em yours.",
+      }),
+    ).toBeTruthy();
 
     const variation = screen.getByRole("textbox", { name: "Variation for #2 Card 2" });
     expect((variation as HTMLInputElement).value).toBe(LONG_VARIATION);
     expect(screen.getByText(`${LONG_VARIATION.length}/65`)).toBeTruthy();
 
     const title = screen.getByRole("textbox", { name: "Title for #1 Card 1" }) as HTMLInputElement;
-    expect(title.value).toMatch(/#1 RC$|#1$/);
+    expect(title.value).toBe(`2026 Topps ${FIRST_NAME_SET} Ohtani #1`);
     expect(screen.getAllByText(`${title.value.length}/80`).length).toBeGreaterThan(0);
   });
 
   test("identical drops share one line with a count; each card's own name sits under its field", () => {
-    setup({ cards: [card("1"), card("2", { players: ["Mike Trout"] })] });
-    const shared = screen.getByText(/^Left out to fit: Collectors Box/);
+    setup({
+      cards: [
+        card("1", { cardVariation: "Throwback" }),
+        card("2", { players: ["Julio Rodriguez"], cardVariation: "Throwback" }),
+      ],
+    });
+    const shared = screen.getByText(/^Left out to fit: Throwback/);
     expect(shared.textContent).toContain("(2 cards)");
-    expect(shared.textContent).not.toMatch(/Ohtani|Trout/);
-    expect(screen.getByText("Left out to fit: Shohei Ohtani")).toBeTruthy();
-    expect(screen.getByText("Left out to fit: Mike Trout")).toBeTruthy();
+    expect(shared.textContent).not.toMatch(/Shohei|Julio/);
+    expect(screen.getByText("Left out to fit: Shohei")).toBeTruthy();
+    expect(screen.getByText("Left out to fit: #2, Julio")).toBeTruthy();
+  });
+
+  test("NEO-535: retyping a cut word takes it off the note", () => {
+    setup({ cards: [card("1")] });
+    expect(screen.getByText("Left out to fit: Shohei")).toBeTruthy();
+    fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
+      target: { value: `2026 Topps Chrome Shohei Ohtani #1` },
+    });
+    expect(screen.queryByText(/Left out to fit:.*Shohei/)).toBeNull();
+    // What the operator's own words now leave out is what the note says.
+    expect(screen.getByText(/^Left out to fit: Update Series Sapphire Edition Platinum Anniversary$/))
+      .toBeTruthy();
+  });
+
+  test("NEO-535: a title the builder could not fit arrives over the cap, said once, never cut", () => {
+    setup({ cards: [card("1")], titleContext: OVER });
+    const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" }) as HTMLTextAreaElement;
+    expect(field.value).toContain(OVER_SET);
+    expect(field.value.length).toBeGreaterThan(80);
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(screen.getByRole("status").textContent).toBe("Too long to list as-is.");
+    expect(screen.getByText(`${field.value.length}/80`)).toBeTruthy();
   });
 
   test("two rows the same words would name get distinct field names", () => {
@@ -116,23 +150,23 @@ describe("CardTitlesStep — what is on screen", () => {
 });
 
 describe("CardTitlesStep — inline edit", () => {
-  test("typing makes the title theirs: meter follows, 'Use trimmed title' appears, blur tells the wizard", () => {
+  test("typing makes the title theirs: meter follows, 'Use generated title' appears, blur tells the wizard", () => {
     const { onAnswersChange } = setup({ cards: [card("1")] });
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
     fireEvent.change(field, { target: { value: "2026 Topps Chrome Ohtani #1 RC" } });
     expect(screen.getByText("30/80")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Use trimmed title for #1 Card 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Use generated title for #1 Card 1" })).toBeTruthy();
     fireEvent.blur(field);
     expect(onAnswersChange).toHaveBeenLastCalledWith([{ listingTitle: "2026 Topps Chrome Ohtani #1 RC" }]);
   });
 
-  test("'Use trimmed title' puts the generated title back", () => {
+  test("'Use generated title' puts the generated title back", () => {
     const { onAnswersChange } = setup({ cards: [card("1")] });
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" }) as HTMLInputElement;
     const generated = field.value;
     fireEvent.change(field, { target: { value: "Mine #1" } });
     fireEvent.blur(field);
-    fireEvent.click(screen.getByRole("button", { name: "Use trimmed title for #1 Card 1" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use generated title for #1 Card 1" }));
     expect(field.value).toBe(generated);
     fireEvent.blur(field);
     expect(onAnswersChange).toHaveBeenLastCalledWith([undefined]);
@@ -230,7 +264,11 @@ describe("CardTitlesStep — recomputed from the team answers", () => {
     fireEvent.change(second, { target: { value: "Mine #2" } });
 
     rerenderWith({ teamAnswers: [{ teamIds: [teamId] }, { teamIds: [teamId] }] });
-    expect(screen.getAllByText(/Left out to fit: Shohei Ohtani, Los Angeles Dodgers/)).toHaveLength(2);
+    // Both fields lack the team now: it is the line they share.
+    expect(screen.getByText(/^Left out to fit: Los Angeles Dodgers/).textContent).toContain(
+      "(2 cards)",
+    );
+    expect(screen.getByText("Left out to fit: Shohei")).toBeTruthy();
     expect(
       (screen.getByRole("textbox", { name: "Title for #2 Card 2" }) as HTMLInputElement).value,
     ).toBe("Mine #2");
@@ -243,29 +281,29 @@ describe("CardTitlesStep — never blocks", () => {
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
     fireEvent.change(field, { target: { value: "t".repeat(90) } });
     const buttons = screen.queryAllByRole("button").map((b) => b.textContent);
-    expect(buttons).toEqual(["Use trimmed title"]);
+    expect(buttons).toEqual(["Use generated title"]);
     expect(document.querySelector("[disabled]")).toBeNull();
   });
 });
 
 describe("CardTitlesStep — accessibility wiring", () => {
-  test("'Use trimmed title' hands focus to its field instead of dropping it on <body>", () => {
+  test("'Use generated title' hands focus to its field instead of dropping it on <body>", () => {
     setup({ cards: [card("1")] });
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
     fireEvent.change(field, { target: { value: "Mine #1" } });
-    const reset = screen.getByRole("button", { name: "Use trimmed title for #1 Card 1" });
+    const reset = screen.getByRole("button", { name: "Use generated title for #1 Card 1" });
     reset.focus();
     fireEvent.click(reset);
-    expect(screen.queryByRole("button", { name: "Use trimmed title for #1 Card 1" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use generated title for #1 Card 1" })).toBeNull();
     expect(document.activeElement).toBe(field);
   });
 
-  test("'Use trimmed title' clears the 24px target floor", () => {
+  test("'Use generated title' clears the 24px target floor", () => {
     setup({ cards: [card("1")] });
     fireEvent.change(screen.getByRole("textbox", { name: "Title for #1 Card 1" }), {
       target: { value: "Mine #1" },
     });
-    const reset = screen.getByRole("button", { name: "Use trimmed title for #1 Card 1" });
+    const reset = screen.getByRole("button", { name: "Use generated title for #1 Card 1" });
     expect(reset.className).toContain("leading-4");
     expect(reset.className).toContain("py-1");
   });
@@ -276,7 +314,7 @@ describe("CardTitlesStep — accessibility wiring", () => {
       headingId: "titles-lead",
     });
     expect(document.getElementById("titles-lead")?.textContent).toBe(
-      "Trimmed to fit. Keep it, or make it yours.",
+      "These titles lost a first name or ran long. Keep 'em, or make 'em yours.",
     );
   });
 
@@ -296,7 +334,7 @@ describe("CardTitlesStep — accessibility wiring", () => {
     const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
     const ids = (field.getAttribute("aria-describedby") ?? "").split(" ");
     const texts = ids.map((id) => document.getElementById(id)?.textContent);
-    expect(texts).toContain("Left out to fit: Shohei Ohtani");
+    expect(texts).toContain("Left out to fit: Shohei");
     expect(texts.some((t) => /\/80/.test(t ?? ""))).toBe(true);
     // The over-cap status joins only once the title is over.
     fireEvent.change(field, { target: { value: "t".repeat(84) } });
@@ -307,10 +345,15 @@ describe("CardTitlesStep — accessibility wiring", () => {
   });
 
   test("a group of cards is described by the drop they share; its <li> stays a list item", () => {
-    setup({ cards: [card("1"), card("2", { players: ["Mike Trout"] })] });
+    setup({
+      cards: [
+        card("1", { cardVariation: "Throwback" }),
+        card("2", { players: ["Julio Rodriguez"], cardVariation: "Throwback" }),
+      ],
+    });
     const group = screen.getByRole("group");
     const line = document.getElementById(group.getAttribute("aria-describedby")!);
-    expect(line?.textContent).toMatch(/^Left out to fit: Collectors Box/);
+    expect(line?.textContent).toMatch(/^Left out to fit: Throwback/);
     expect(group.tagName).toBe("DIV");
     expect(group.parentElement?.tagName).toBe("LI");
     expect(within(group).getAllByRole("textbox")).toHaveLength(2);

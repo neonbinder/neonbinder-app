@@ -64,15 +64,16 @@ const labels = (inputs: PreviewInputs): string[] =>
 const pairs = (inputs: PreviewInputs): string[] =>
   titleSourceChips(inputs).map((c) => `${c.label}:${c.value}`);
 
+/** NEO-535 — the title's own order: the description (parallel included), then the card. */
 const FULL_ORDER = [
   "Year",
   "Maker",
   "Set",
+  "Parallel",
   "Player",
   "Number",
   "Auto",
   "Relic",
-  "Parallel",
   "Print run",
   "Variation",
   "Rookie",
@@ -142,7 +143,7 @@ describe("titleSourceChips — the Maker chip (NEO-272)", () => {
   });
 });
 
-describe("titleSourceChips — the insert and the short name (NEO-335)", () => {
+describe("titleSourceChips — the insert and Set name in titles (NEO-335, NEO-535)", () => {
   it("an insert's name gets its own chip, right after the set", () => {
     expect(labels(fullInputs({ insertName: "Hologram" })).slice(0, 4)).toEqual([
       "Year",
@@ -152,7 +153,7 @@ describe("titleSourceChips — the insert and the short name (NEO-335)", () => {
     ]);
   });
 
-  it("a short name the title USED replaces the Set and Insert chips", () => {
+  it("a box value the title USED replaces the whole description: year, maker, set, insert, parallel", () => {
     const inputs = fullInputs({
       manufacturer: "Upper Deck",
       setName: "Collector's Choice Extraordinarily Photographic Sapphire",
@@ -160,22 +161,24 @@ describe("titleSourceChips — the insert and the short name (NEO-335)", () => {
       setShortName: "Upper Deck Hologram",
     });
     const chips = pairs(inputs);
-    expect(chips).toContain("Short name:Upper Deck Hologram");
-    expect(labels(inputs)).not.toContain("Set");
-    expect(labels(inputs)).not.toContain("Insert");
+    expect(chips).toContain("Set name in titles:Upper Deck Hologram");
+    expect(labels(inputs)[0]).toBe("Set name in titles");
+    for (const gone of ["Year", "Maker", "Set", "Insert", "Parallel"]) {
+      expect(labels(inputs)).not.toContain(gone);
+    }
   });
 
-  it("a short name the title did not need gets no chip; the full names keep theirs", () => {
+  it("a box value the title did not need gets no chip; the full names keep theirs", () => {
     const inputs = fullInputs({
       playerNames: ["A"],
       setShortName: "Topps C",
-      // A short title: everything fits whole, so rule A never reaches for it.
+      // A short title: everything fits whole, so the builder never reaches for it.
       cardVariation: undefined,
       teamNames: [],
       parallelName: undefined,
       printRun: undefined,
     });
     expect(labels(inputs)).toContain("Set");
-    expect(labels(inputs)).not.toContain("Short name");
+    expect(labels(inputs)).not.toContain("Set name in titles");
   });
 });
