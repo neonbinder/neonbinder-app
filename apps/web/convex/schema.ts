@@ -1778,11 +1778,14 @@ export default defineSchema({
     // A HINT, and only a hint. It is NOT a team, and nothing may treat it as
     // one: `features/cardAttention.ts` still badges the card "missing team",
     // and this is deliberately not `pendingTeamNames` (which the attention
-    // rule reads as the card HAVING a team). Written only by
-    // `cardChecklist.applyBscTeamResolution`, capped at 120 characters to
-    // match `MAX_TEAM_NAME_LENGTH`, and never read by any matching or
-    // creation logic — a marketplace string is input for a human, never a
-    // source of truth.
+    // rule reads as the card HAVING a team). Written by
+    // `cardChecklist.applyBscTeamResolution` and the commit's pre-save answer
+    // (`settleCardTeamAnswer`), capped at 120 characters to match
+    // `MAX_TEAM_NAME_LENGTH`. Code may read it only as a PRESENCE check that
+    // stops an automated team fill (product invariant 8: a listing that
+    // names a team holds back a guess, as the parallel build's Set Team fill
+    // does), never match it against a team and never write it as one — a
+    // marketplace string is input for a human, never a source of truth.
     bscTeamName: v.optional(v.string()),
     // NEO-102: an OPERATOR decided this card carries no team at all.
     //

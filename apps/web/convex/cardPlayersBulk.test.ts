@@ -449,13 +449,20 @@ describe("paging, cursors and refusals", () => {
     }
   });
 
-  test("each cursor names the row it was handed out for", async () => {
+  test("each cursor names the row it was handed out for, and the run it belongs to", async () => {
     const t = convexTest(schema, modules);
     const fx = await seedCollectionCatalog(t);
     const first = await t
       .withIdentity(ADMIN)
       .mutation(api.cardPlayersBulk.addCameoToVariant, { variantId: fx.baseId, playerId: fx.strawberryId, cursor: null });
-    expect(JSON.parse(first.cursor!)).toEqual({ i: 1, t: fx.goldId, c: null });
+    expect(JSON.parse(first.cursor!)).toEqual({
+      i: 1,
+      t: fx.goldId,
+      c: null,
+      v: fx.baseId,
+      p: fx.strawberryId,
+      k: "cameo",
+    });
   });
 
   test("a parallel added between pages shifts the rows, and the next page is refused rather than walked as the wrong row", async () => {
@@ -512,6 +519,47 @@ describe("paging, cursors and refusals", () => {
     expect(silver.playerIds).toBeUndefined();
   });
 
+  test("a cursor is bound to its run: another row, player or add is refused, and nothing is written", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seedCollectionCatalog(t);
+    const admin = t.withIdentity(ADMIN);
+    const stamps = () =>
+      t.run(async (ctx) =>
+        (await ctx.db.query("cardChecklist").collect()).map((c) => `${c._id}:${c.lastUpdated}`).sort(),
+      );
+    // A real mid-run cursor (Base is done, Gold is next): the first page of
+    // a player add from Base by Strawberry.
+    const first = await admin.mutation(api.cardPlayersBulk.addPlayerToVariant, {
+      variantId: fx.baseId,
+      playerId: fx.strawberryId,
+      cursor: null,
+    });
+    expect(first.cursor).not.toBeNull();
+    const cursor = first.cursor!;
+    const written = await stamps();
+    // The same cursor in another player's run, in the cameo add, and from
+    // another row (Gold, which the cursor's target index would also reach).
+    await expect(
+      admin.mutation(api.cardPlayersBulk.addPlayerToVariant, { variantId: fx.baseId, playerId: fx.goodenId, cursor }),
+    ).rejects.toThrow(BULK_CHECKLIST_CHANGED);
+    await expect(
+      admin.mutation(api.cardPlayersBulk.addCameoToVariant, { variantId: fx.baseId, playerId: fx.strawberryId, cursor }),
+    ).rejects.toThrow(BULK_CHECKLIST_CHANGED);
+    await expect(
+      admin.mutation(api.cardPlayersBulk.addPlayerToVariant, { variantId: fx.goldId, playerId: fx.strawberryId, cursor }),
+    ).rejects.toThrow(BULK_CHECKLIST_CHANGED);
+    // Nothing moved after the refusals.
+    expect(await stamps()).toEqual(written);
+    // The run it belongs to still resumes from it.
+    const next = await admin.mutation(api.cardPlayersBulk.addPlayerToVariant, {
+      variantId: fx.baseId,
+      playerId: fx.strawberryId,
+      cursor,
+    });
+    expect(next.targetId).toBe(fx.goldId);
+    expect(JSON.parse(cursor)).toMatchObject({ v: fx.baseId, p: fx.strawberryId, k: "player" });
+  });
+
   test("a player deleted before a page is refused in the operator's words, by both adds", async () => {
     const t = convexTest(schema, modules);
     const fx = await seedBlank(t);
@@ -528,15 +576,20 @@ describe("paging, cursors and refusals", () => {
     const fx = await seedCollectionCatalog(t);
     const admin = t.withIdentity(ADMIN);
     const args = { variantId: fx.baseId, playerId: fx.goodenId };
-    for (const fn of [api.cardPlayersBulk.addCameoToVariant, api.cardPlayersBulk.addPlayerToVariant]) {
+    for (const [fn, k] of [
+      [api.cardPlayersBulk.addCameoToVariant, "cameo"],
+      [api.cardPlayersBulk.addPlayerToVariant, "player"],
+    ] as const) {
+      // Bound to this run (`v`, `p`, `k`), so only the index is wrong below.
+      const run = { v: fx.baseId, p: fx.goodenId, k };
       await expect(admin.mutation(fn, { ...args, cursor: "nope" })).rejects.toThrow(BULK_CHECKLIST_CHANGED);
       await expect(
-        admin.mutation(fn, { ...args, cursor: JSON.stringify({ i: 9, t: fx.goldId, c: null }) }),
+        admin.mutation(fn, { ...args, cursor: JSON.stringify({ i: 9, t: fx.goldId, c: null, ...run }) }),
       ).rejects.toThrow(BULK_CHECKLIST_CHANGED);
       // A cursor without the target it was handed out for is refused too.
-      await expect(admin.mutation(fn, { ...args, cursor: JSON.stringify({ i: 1, c: null }) })).rejects.toThrow(
-        BULK_CHECKLIST_CHANGED,
-      );
+      await expect(
+        admin.mutation(fn, { ...args, cursor: JSON.stringify({ i: 1, c: null, ...run }) }),
+      ).rejects.toThrow(BULK_CHECKLIST_CHANGED);
       const gone = await t.run(async (ctx) => {
         const id = await ctx.db.insert("selectorOptions", {
           level: "insert",

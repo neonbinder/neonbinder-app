@@ -36,6 +36,7 @@ import {
   MAX_EVERY_CARD_WALK,
   alreadyThePlayerMessage,
   bulkTargets,
+  wrongSportMessage,
   cardPlayerDefaultsChain,
   effectiveCardPlayerDefaults,
   type CardPlayerDefaultKind,
@@ -742,4 +743,126 @@ describe("the walk down stays bounded", () => {
     // the walk must leave room under the 4,096 limit.
     expect(calls).toBeLessThan(1_000);
   }, 60_000);
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// The sport check (audit round 3, S2)
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("a player who doesn't play the row's sport", () => {
+  test("is refused as the player or a cameo, at any level under the sport, in the operator's words", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seedTree(t);
+    const admin = t.withIdentity(ADMIN);
+    const message = wrongSportMessage("Shohei Ohtani", "Football");
+    expect(message).toBe("Shohei Ohtani doesn't play Football, so they can't go on every card here.");
+    for (const id of [fx.sport, fx.set, fx.base, fx.gold]) {
+      for (const kind of ["player", "cameo"] as const) {
+        await expect(
+          admin.mutation(api.cardPlayersBulk.setCardPlayerDefault, { selectorOptionId: id, kind, playerId: fx.ohtani }),
+        ).rejects.toThrow(message);
+      }
+      const row = await rowOf(t, id);
+      expect(row.defaultPlayerIds).toBeUndefined();
+      expect(row.defaultCameoIds).toBeUndefined();
+    }
+    // Their own sport's row takes them.
+    await admin.mutation(api.cardPlayersBulk.setCardPlayerDefault, {
+      selectorOptionId: fx.baseball,
+      kind: "player",
+      playerId: fx.ohtani,
+    });
+    expect((await rowOf(t, fx.baseball)).defaultPlayerIds).toEqual([fx.ohtani]);
+  });
+
+  test("a player who also plays the row's sport (playerSports) is stored", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seedTree(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("playerSports", {
+        playerId: fx.ohtani,
+        sportId: fx.sport,
+        nameNormalized: normalizeEntityName("Shohei Ohtani"),
+      });
+    });
+    await t.withIdentity(ADMIN).mutation(api.cardPlayersBulk.setCardPlayerDefault, {
+      selectorOptionId: fx.set,
+      kind: "cameo",
+      playerId: fx.ohtani,
+    });
+    expect((await rowOf(t, fx.set)).defaultCameoIds).toEqual([fx.ohtani]);
+  });
+
+  test("a row with no sport above it has nothing to check against and is allowed", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seedTree(t);
+    const orphan = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", { level: "setName", value: "Loose", platformData: {}, children: [], lastUpdated: NOW }),
+    );
+    await t.withIdentity(ADMIN).mutation(api.cardPlayersBulk.setCardPlayerDefault, {
+      selectorOptionId: orphan,
+      kind: "player",
+      playerId: fx.ohtani,
+    });
+    expect((await rowOf(t, orphan)).defaultPlayerIds).toEqual([fx.ohtani]);
+  });
+
+  test("the whole-checklist run leaves a card of another sport alone and counts it (both adds)", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seedTree(t);
+    // A card under the Football Base stamped Baseball (a set moved between
+    // sports): Mahomes never lands on it, as the player or as a cameo.
+    const { blank, named } = await t.run(async (ctx) => ({
+      blank: await insertTestCard(ctx, {
+        selectorOptionId: fx.base,
+        cardNumber: "9",
+        cardName: "Card 9",
+        sportId: fx.baseball,
+        platformData: {},
+        sortOrder: 9,
+        lastUpdated: NOW,
+      }),
+      named: await insertTestCard(ctx, {
+        selectorOptionId: fx.base,
+        cardNumber: "10",
+        cardName: "Card 10",
+        sportId: fx.baseball,
+        playerIds: [fx.ohtani],
+        playerLinks: [{ playerId: fx.ohtani, nameOnCard: "Shohei Ohtani" }],
+        platformData: {},
+        sortOrder: 10,
+        lastUpdated: NOW,
+      }),
+    }));
+    const admin = t.withIdentity(ADMIN);
+    const run = async (fn: typeof api.cardPlayersBulk.addPlayerToVariant) => {
+      const totals = { changed: 0, skippedSport: 0 };
+      let cursor: string | null = null;
+      let pages = 0;
+      do {
+        const page: { cursor: string | null; changed: number; skippedSport: number } = await admin.mutation(fn, {
+          variantId: fx.base,
+          playerId: fx.mahomes,
+          cursor,
+        });
+        totals.changed += page.changed;
+        totals.skippedSport += page.skippedSport;
+        cursor = page.cursor;
+        pages++;
+      } while (cursor !== null && pages < 20);
+      return totals;
+    };
+    // Player add: base1, base2 and Silver's card are filled; the blank
+    // Baseball card is skipped for its sport (the named one is "other").
+    expect(await run(api.cardPlayersBulk.addPlayerToVariant)).toEqual({ changed: 3, skippedSport: 1 });
+    // Cameo add: the cards Mahomes now heads are skipped as his own; the
+    // named Baseball card is skipped for its sport.
+    const cameo = await run(api.cardPlayersBulk.addCameoToVariant);
+    expect(cameo.skippedSport).toBe(2);
+    const after = await t.run(async (ctx) => ({ blank: (await ctx.db.get(blank))!, named: (await ctx.db.get(named))! }));
+    expect(after.blank.playerIds).toBeUndefined();
+    expect(after.blank.secondaryPlayerIds).toBeUndefined();
+    expect(after.named.playerIds).toEqual([fx.ohtani]);
+    expect(after.named.secondaryPlayerIds).toBeUndefined();
+  });
 });

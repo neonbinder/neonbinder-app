@@ -32,7 +32,11 @@
  *   - `addCameoToVariant` adds them under "Also on this card" (the cameo
  *     list, through `cardSecondaryPlayers.setCardSecondaryPlayers`).
  *
- * Neither takes anything away; there is no remove.
+ * Neither takes anything away; there is no remove. Neither puts anyone on a
+ * card of a sport they don't play (`skippedSport`), the rule a new card's
+ * defaults follow too; storing such a player is refused up front
+ * (`setCardPlayerDefault`). A page's cursor is bound to its run (the row,
+ * the player, the add), so it cannot resume a different run.
  *
  * The run walks every card-holding row beneath the one asked about
  * (`everyCardTargets`), EXCEPT rows whose cards a nearer row's own value of
@@ -135,6 +139,10 @@ export const DEFAULT_CAMEOS_FULL = `Every card can carry at most ${MAX_CARD_PLAY
 /** A cameo store of the row's own stored player. */
 export function alreadyThePlayerMessage(name: string): string {
   return `${name} is already the player on every card.`;
+}
+/** A store of a player who does not play the row's sport. */
+export function wrongSportMessage(name: string, sport: string): string {
+  return `${name} doesn't play ${sport}, so they can't go on every card here.`;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -549,6 +557,14 @@ export const setCardPlayerDefault = mutation({
     if (!row) throw new ConvexError(DEFAULT_ROW_MISSING);
     const player = await ctx.db.get(args.playerId);
     if (!player) throw new ConvexError(BULK_MISSING_PLAYER);
+    // The row's sport, from the same walk a new card's lookup takes (the row
+    // itself when it IS the sport). A player who doesn't play it would be
+    // dropped from every card it reaches, so it is refused here rather than
+    // stored to do nothing. No sport in the chain: nothing to check against.
+    const sport = (await cardPlayerDefaultsChain(ctx, row._id)).find((r) => r.level === "sport");
+    if (sport && !(await playerBelongsToSport(ctx, player, sport._id))) {
+      throw new ConvexError(wrongSportMessage(player.name, sport.value));
+    }
     const own = ownDefaults(row);
     const players = own.playerId ? [own.playerId] : [];
     let cameos = own.cameoIds;
@@ -732,6 +748,11 @@ const bulkPageValidator = v.object({
   skippedOther: v.number(),
   /** Player add: the card has no player yet but a name waiting for review. */
   skippedPending: v.number(),
+  /**
+   * Either add: the card's sport is one the player doesn't play (a cross-sport
+   * set, or a set moved under another sport). Left as it is.
+   */
+  skippedSport: v.number(),
   /** Player add: changed cards whose generated title was regenerated. */
   titlesRefreshed: v.number(),
   /** Player add: changed cards whose title a person had typed, kept as is. */
@@ -749,19 +770,28 @@ type Counts = Omit<BulkPage, "targetId" | "targetIndex" | "targetCount" | "curso
  * target's id (so a row added or removed between pages, which shifts every
  * index after it, is refused rather than walked as the wrong row), and `c`
  * the page cursor inside it. Null for the first page.
+ *
+ * Bound to the run that handed it out: `v` the row the run started from, `p`
+ * the player, `k` the kind. A cursor from one run passed to another (another
+ * row, another player, the other add) is refused rather than resumed part
+ * way through the wrong checklist.
  */
 type BulkCursor = { i: number; t: string | null; c: string | null };
+type BulkRun = { variantId: Id<"selectorOptions">; playerId: Id<"players">; op: BulkOp };
 
-export function parseCursor(raw: string | null): BulkCursor {
+export function parseCursor(raw: string | null, run: BulkRun): BulkCursor {
   if (raw === null) return { i: 0, t: null, c: null };
   try {
-    const parsed = JSON.parse(raw) as { i?: unknown; t?: unknown; c?: unknown };
+    const parsed = JSON.parse(raw) as { i?: unknown; t?: unknown; c?: unknown; v?: unknown; p?: unknown; k?: unknown };
     if (
       typeof parsed.i === "number" &&
       Number.isInteger(parsed.i) &&
       parsed.i >= 0 &&
       typeof parsed.t === "string" &&
-      (parsed.c === null || typeof parsed.c === "string")
+      (parsed.c === null || typeof parsed.c === "string") &&
+      parsed.v === run.variantId &&
+      parsed.p === run.playerId &&
+      parsed.k === run.op
     ) {
       return { i: parsed.i, t: parsed.t, c: parsed.c };
     }
@@ -769,6 +799,10 @@ export function parseCursor(raw: string | null): BulkCursor {
     // fall through
   }
   throw new ConvexError(BULK_CHECKLIST_CHANGED);
+}
+
+function formatCursor(at: { i: number; t: string; c: string | null }, run: BulkRun): string {
+  return JSON.stringify({ ...at, v: run.variantId, p: run.playerId, k: run.op });
 }
 
 /**
@@ -852,7 +886,8 @@ export async function runBulkPage(
   const player = await ctx.db.get(args.playerId);
   if (!player) throw new ConvexError(BULK_MISSING_PLAYER);
   cache.players.set(player._id as string, player.name);
-  const at = parseCursor(args.cursor);
+  const run: BulkRun = { variantId: args.variantId, playerId: args.playerId, op };
+  const at = parseCursor(args.cursor, run);
   const { targets } = await bulkTargets(ctx, args.variantId, op);
   // The cursor names the row it was handed out for; a checklist whose
   // rows moved under the run would otherwise send this page into a
@@ -874,16 +909,33 @@ export async function runBulkPage(
     skippedFull: 0,
     skippedOther: 0,
     skippedPending: 0,
+    skippedSport: 0,
     titlesRefreshed: 0,
     titlesKept: 0,
+  };
+  // Whether the player plays a card's sport, once per sport per page (the
+  // same rule a new card's default follows: a card of another sport never
+  // gets them). A card with no sport stamped is not refused for it.
+  const sportFits = new Map<string, boolean>();
+  const playsCardSport = async (card: CardRow): Promise<boolean> => {
+    if (!card.sportId) return true;
+    const key = card.sportId as string;
+    let fits = sportFits.get(key);
+    if (fits === undefined) {
+      fits = await playerBelongsToSport(ctx, player, card.sportId);
+      sportFits.set(key, fits);
+    }
+    return fits;
   };
   for (const card of page.page) {
     counts.scanned++;
     if (op === "player") {
       // "Do not alter any cards that already have a player set" (Jason).
       const plan = planDefaultPlayers(card, { playerId: args.playerId });
-      if (plan.kind === "fill") await putPlayerOnCard(ctx, card, player, plan.promote, cache, counts);
-      else if (plan.kind === "unchanged") counts.unchanged++;
+      if (plan.kind === "fill") {
+        if (await playsCardSport(card)) await putPlayerOnCard(ctx, card, player, plan.promote, cache, counts);
+        else counts.skippedSport++;
+      } else if (plan.kind === "unchanged") counts.unchanged++;
       else if (plan.kind === "skip" && plan.reason === "other") counts.skippedOther++;
       else if (plan.kind === "skip") counts.skippedPending++;
       continue;
@@ -901,14 +953,18 @@ export async function runBulkPage(
       counts.skippedFull++;
       continue;
     }
+    if (!(await playsCardSport(card))) {
+      counts.skippedSport++;
+      continue;
+    }
     const result = await setCardSecondaryPlayers(ctx, card, plan.ids, { dropMissing: true, cache });
     if (result.changed) counts.changed++;
     else counts.unchanged++;
   }
   const cursor = !page.isDone
-    ? JSON.stringify({ i: at.i, t: target._id, c: page.continueCursor })
+    ? formatCursor({ i: at.i, t: target._id, c: page.continueCursor }, run)
     : at.i + 1 < targets.length
-      ? JSON.stringify({ i: at.i + 1, t: targets[at.i + 1]._id, c: null })
+      ? formatCursor({ i: at.i + 1, t: targets[at.i + 1]._id, c: null }, run)
       : null;
   return { targetId: target._id, targetIndex: at.i, targetCount: targets.length, ...counts, cursor };
 }

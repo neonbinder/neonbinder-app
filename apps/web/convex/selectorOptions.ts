@@ -16563,6 +16563,48 @@ export function commitChunkSize(extraWritesPerCard: number): number {
 }
 
 /**
+ * NEO-528 round 3 — the default index rows (player + cameos) ONE new card in
+ * a chunk may be born with. The action sizes the chunk from the defaults it
+ * read (`sizedWritesPerCard`, from `commitChunkDefaultWrites`), but the chunk
+ * re-reads them in its own transaction, so an operator who widens the cameo
+ * list between the two would otherwise send a chunk past the budget it was
+ * sized for. The allowance is the sized count, so every chunk of one commit
+ * agrees on it. A caller that sized nothing (absent) gets the room the
+ * chunk's own length leaves under `COMMIT_CHUNK_OP_BUDGET`.
+ */
+export function commitChunkDefaultAllowance(
+  chunkLength: number,
+  sizedWritesPerCard: number | undefined,
+): number {
+  if (sizedWritesPerCard !== undefined) return Math.max(0, Math.floor(sizedWritesPerCard));
+  return Math.max(
+    0,
+    Math.floor(COMMIT_CHUNK_OP_BUDGET / Math.max(1, chunkLength)) - COMMIT_CHUNK_OPS_PER_CARD,
+  );
+}
+
+/**
+ * The defaults a new card in the chunk is born with, cut to `allowance`
+ * index rows: the player first (one row), then the cameos in stored order.
+ * Only cameos are ever cut: a default player that appeared after the sizing
+ * costs one row per card, which the budget's two spare rows per card
+ * (`COMMIT_CHUNK_OP_BUDGET`) already hold, and dropping the card's one player
+ * for the sake of a cameo would be the wrong way round.
+ */
+export function capChunkPlayerDefaults(
+  defaults: EffectiveCardPlayerDefaults,
+  allowance: number,
+): EffectiveCardPlayerDefaults {
+  const cameoRoom = Math.max(0, allowance - (defaults.playerId ? 1 : 0));
+  if (defaults.cameoIds.length <= cameoRoom) return defaults;
+  return {
+    ...defaults,
+    cameoIds: defaults.cameoIds.slice(0, cameoRoom),
+    cameos: defaults.cameos.slice(0, cameoRoom),
+  };
+}
+
+/**
  * NEO-528 round 3 — the index rows a new card under this leaf would be born
  * with from its "Player on every card" defaults (1 for a default player, plus
  * one per default cameo), for sizing the commit's chunks. The chunk re-reads
@@ -19735,6 +19777,13 @@ const commitChunkCardValidator = v.object({
   // them.
   listingTitle: v.optional(v.string()),
   listingTitleKept: v.optional(v.string()),
+  // NEO-528 round 3 — the checklist named a player for this card, whatever
+  // became of the name (resolved, pending, or ruled "not a person" in entity
+  // review, which leaves neither an id nor a pending name). A card the
+  // listing named someone on is never born with the "Player on every card"
+  // default (product invariant 8: a data claim holds back a guess). Only
+  // presence is sent; the name stays where it is.
+  listingNamedPlayer: v.optional(v.literal(true)),
 });
 
 /**
@@ -19833,6 +19882,11 @@ export const commitCardChecklistChunk = internalMutation({
     // it. Absent means no such answer is honoured: the flag is never written
     // without the operator it belongs to.
     operatorUserId: v.optional(v.string()),
+    // NEO-528 round 3 — the default index rows per new card the action sized
+    // this chunk for (`commitChunkDefaultWrites`). The chunk applies no more
+    // than `commitChunkDefaultAllowance` of them, so defaults widened after
+    // the sizing cannot push it past its budget.
+    defaultWritesPerCard: v.optional(v.number()),
   },
   returns: v.object({
     storedIds: v.array(v.id("cardChecklist")),
@@ -19964,10 +20018,13 @@ export const commitCardChecklistChunk = internalMutation({
     const leafPlayerDefaults = async (): Promise<EffectiveCardPlayerDefaults> => {
       if (!chunkPlayerDefaults) {
         const sportId = await cardSport();
-        chunkPlayerDefaults = await effectiveCardPlayerDefaults(ctx, args.selectorOptionId, {
-          ...(sportId ? { sportId } : {}),
-          cache: newSelectorRowCache(),
-        });
+        chunkPlayerDefaults = capChunkPlayerDefaults(
+          await effectiveCardPlayerDefaults(ctx, args.selectorOptionId, {
+            ...(sportId ? { sportId } : {}),
+            cache: newSelectorRowCache(),
+          }),
+          commitChunkDefaultAllowance(args.cards.length, args.defaultWritesPerCard),
+        );
       }
       return chunkPlayerDefaults;
     };
@@ -20036,6 +20093,17 @@ export const commitCardChecklistChunk = internalMutation({
             field === "teamOnCardIds" &&
             !(Array.isArray(incoming.teamOnCardIds) &&
               incoming.teamOnCardIds.length > 0)
+          ) {
+            continue;
+          }
+          // NEO-528 — likewise the roster: an empty incoming player list never
+          // clears a stored one (a player set by hand or by "Player on every
+          // card" is NB content; a marketplace that names nobody is not a
+          // claim that nobody is on the card). Leaving `playerIds` out also
+          // leaves `playerLinks` and the card → player index untouched below.
+          if (
+            field === "playerIds" &&
+            !(Array.isArray(incoming.playerIds) && incoming.playerIds.length > 0)
           ) {
             continue;
           }
@@ -20375,8 +20443,11 @@ export const commitCardChecklistChunk = internalMutation({
         // NEO-528 round 3 — a card that resolved no player and carries no
         // name waiting for review is born with the leaf's default player (ids,
         // printed name and the names the title and Signed By read, together);
-        // a resolved or pending player always wins. Default cameos are added
-        // either way. Never a team.
+        // a resolved or pending player always wins. So does a name the
+        // checklist listed that entity review ruled out (`listingNamedPlayer`):
+        // the listing named someone, so the default is not a guess to make
+        // over it. Default cameos are added either way. Never a team.
+        const chunkDefaults = await leafPlayerDefaults();
         const born = bornCardPlayers(
           {
             playerIds: card.playerIds,
@@ -20384,7 +20455,9 @@ export const commitCardChecklistChunk = internalMutation({
             pendingPlayerNames: insertPendingPlayerNames,
           },
           { playerNames: card.playerNames },
-          await leafPlayerDefaults(),
+          card.listingNamedPlayer
+            ? { ...chunkDefaults, playerId: null, player: null }
+            : chunkDefaults,
         );
 
         // NEO-312 — the row itself (features, Signed By, the write-once
@@ -23419,6 +23492,14 @@ export const commitCardChecklist = action({
           ...(match.existingIdByIndex[index] === undefined && c.listingTitleKept?.trim()
             ? { listingTitleKept: c.listingTitleKept.trim() }
             : {}),
+          // NEO-528 round 3 — the checklist named a player here. A name
+          // entity review ruled "not a person" reaches the chunk as neither an
+          // id nor a pending name (the skip keeps it out of the next review),
+          // so without this the card would look like nobody's and take the
+          // "Player on every card" default over the listing's own claim.
+          ...((c.players ?? []).some((p) => p.trim().length > 0)
+            ? { listingNamedPlayer: true as const }
+            : {}),
         },
       };
     });
@@ -23443,14 +23524,13 @@ export const commitCardChecklist = action({
     let droppedPendingNameCount = 0;
     // NEO-528 round 3 — fewer cards per chunk when the leaf's "Player on
     // every card" defaults give each new card many index rows; 150 otherwise.
-    const chunkSize =
+    const defaultWritesPerCard: number =
       chunkCards.length > 0
-        ? commitChunkSize(
-            await ctx.runQuery(internal.selectorOptions.commitChunkDefaultWrites, {
-              selectorOptionId: args.selectorOptionId,
-            }),
-          )
-        : CARDS_PER_COMMIT_CHUNK;
+        ? await ctx.runQuery(internal.selectorOptions.commitChunkDefaultWrites, {
+            selectorOptionId: args.selectorOptionId,
+          })
+        : 0;
+    const chunkSize = commitChunkSize(defaultWritesPerCard);
     const chunkCount = Math.ceil(chunkCards.length / chunkSize);
     for (let start = 0; start < chunkCards.length; start += chunkSize) {
       const slice = chunkCards.slice(start, start + chunkSize);
@@ -23487,6 +23567,8 @@ export const commitCardChecklist = action({
             skippedTeamNames: prelude.skippedTeamNames,
             // NEO-335 — who a "No team on this card" answer is stamped as.
             operatorUserId,
+            // NEO-528 round 3 — what this chunk was sized for.
+            defaultWritesPerCard,
           }),
       );
       // The chunk returns one stored id per card it was given, in order.

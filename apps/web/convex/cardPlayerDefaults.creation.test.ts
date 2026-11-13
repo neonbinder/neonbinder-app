@@ -33,9 +33,13 @@ import { insertTestCard } from "../lib/testing/card-row";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import {
   CARDS_PER_COMMIT_CHUNK,
+  COMMIT_CHUNK_OP_BUDGET,
+  capChunkPlayerDefaults,
   commitCardChecklistChunk,
+  commitChunkDefaultAllowance,
   commitChunkSize,
 } from "./selectorOptions";
+import { syncCardPlayerLinks } from "./cardPlayerLinks";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 
@@ -113,6 +117,8 @@ type ChunkCard = {
   pendingPlayerNames?: string[];
   attributes?: string[];
   existingId?: Id<"cardChecklist">;
+  applyFields?: string[];
+  baseVersion?: number;
 };
 
 const wireCard = (n: string, extra: Partial<ChunkCard> = {}): ChunkCard => ({
@@ -125,12 +131,18 @@ const wireCard = (n: string, extra: Partial<ChunkCard> = {}): ChunkCard => ({
   ...extra,
 });
 
-function chunkArgs(fx: Fx, cards: ChunkCard[], inheritedFeatures?: Record<string, string>) {
+function chunkArgs(
+  fx: Fx,
+  cards: ChunkCard[],
+  inheritedFeatures?: Record<string, string>,
+  defaultWritesPerCard?: number,
+) {
   return {
     selectorOptionId: fx.base,
     sportValue: "Football",
     setNameValue: "Profiles",
     ...(inheritedFeatures ? { inheritedFeatures } : {}),
+    ...(defaultWritesPerCard !== undefined ? { defaultWritesPerCard } : {}),
     cards,
   };
 }
@@ -371,7 +383,9 @@ describe("one full commit chunk with defaults set stays inside the transaction b
     })._handler;
     return t.run(async (ctx) => {
       const { db, stats } = counting(ctx.db);
-      const result = await handler({ ...ctx, db }, chunkArgs(fx, cards));
+      // Sized as the action sizes it, so the chunk applies every default.
+      const sized = (defaults.player ? 1 : 0) + defaults.cameos;
+      const result = await handler({ ...ctx, db }, chunkArgs(fx, cards, undefined, sized));
       return { stored: result.storedIds.length, ...stats };
     });
   }
@@ -553,5 +567,161 @@ describe("titleSetFacts — the default player's name and id for the pre-save ti
     await t.run(async (ctx) => ctx.db.delete(fx.kelce));
     expect(await facts()).not.toHaveProperty("setPlayerId");
     expect((await facts()).setPlayerNames).toEqual([]);
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// Audit round 3: S1, N1, N4
+// ───────────────────────────────────────────────────────────────────────────
+
+describe("a re-sync never clears a stored roster (S1)", () => {
+  test("an accepted playerIds change with an empty incoming list leaves the player, the links and the index alone", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    const existing = await t.run(async (ctx) => {
+      const id = await insertTestCard(ctx, {
+        selectorOptionId: fx.base,
+        cardNumber: "1",
+        cardName: "Card 1",
+        playerIds: [fx.mahomes],
+        playerLinks: [{ playerId: fx.mahomes, nameOnCard: "Patrick Mahomes" }],
+        platformData: {},
+        sortOrder: 1,
+        lastUpdated: NOW,
+      });
+      await syncCardPlayerLinks(ctx, id, [fx.mahomes], fx.sport);
+      return id;
+    });
+    for (const playerIds of [[], undefined]) {
+      const before = (await cardsOn(t, fx.base)).get("1")!;
+      await commit(t, fx, [
+        wireCard("1", {
+          existingId: existing,
+          applyFields: ["playerIds"],
+          baseVersion: before.lastUpdated,
+          ...(playerIds ? { playerIds, playerLinks: [] } : {}),
+        }),
+      ]);
+      const card = (await cardsOn(t, fx.base)).get("1")!;
+      expect(card.playerIds).toEqual([fx.mahomes]);
+      expect(card.playerLinks).toEqual([{ playerId: fx.mahomes, nameOnCard: "Patrick Mahomes" }]);
+      expect(await playerIndex(t, existing)).toEqual([fx.mahomes]);
+    }
+    // A non-empty accepted change still writes, as before.
+    const before = (await cardsOn(t, fx.base)).get("1")!;
+    await commit(t, fx, [
+      wireCard("1", {
+        existingId: existing,
+        applyFields: ["playerIds"],
+        baseVersion: before.lastUpdated,
+        playerIds: [fx.allen],
+        playerLinks: [{ playerId: fx.allen, nameOnCard: "Josh Allen" }],
+      }),
+    ]);
+    const after = (await cardsOn(t, fx.base)).get("1")!;
+    expect(after.playerIds).toEqual([fx.allen]);
+    expect(await playerIndex(t, existing)).toEqual([fx.allen]);
+  });
+});
+
+describe("a chunk applies no more default rows than it was sized for (N1)", () => {
+  test("the allowance is the sized count; with none sized, the room the chunk's length leaves", () => {
+    expect(commitChunkDefaultAllowance(CARDS_PER_COMMIT_CHUNK, 3)).toBe(3);
+    expect(commitChunkDefaultAllowance(10, 0)).toBe(0);
+    expect(commitChunkDefaultAllowance(CARDS_PER_COMMIT_CHUNK, undefined)).toBe(
+      Math.floor(COMMIT_CHUNK_OP_BUDGET / CARDS_PER_COMMIT_CHUNK) - 6,
+    );
+    // Every size the action can pick leaves the sized count inside the budget.
+    for (const sized of [0, 1, 2, 5, 1 + MAX_CARD_PLAYERS]) {
+      expect(commitChunkSize(sized) * (6 + Math.max(sized, 1))).toBeLessThanOrEqual(COMMIT_CHUNK_OP_BUDGET);
+    }
+  });
+
+  test("the cap cuts cameos only, in stored order, and keeps the player", () => {
+    const ids = ["p", "a", "b", "c"] as unknown as Array<Id<"players">>;
+    const defaults = {
+      playerId: ids[0],
+      player: { _id: ids[0], name: "P" },
+      cameoIds: ids.slice(1),
+      cameos: ids.slice(1).map((id) => ({ _id: id, name: String(id) })),
+      playerFromId: null,
+      cameosFromId: null,
+    };
+    expect(capChunkPlayerDefaults(defaults, 2).cameoIds).toEqual(["a"]);
+    expect(capChunkPlayerDefaults(defaults, 2).cameos.map((c) => c._id)).toEqual(["a"]);
+    expect(capChunkPlayerDefaults(defaults, 0)).toMatchObject({ playerId: "p", cameoIds: [] });
+    expect(capChunkPlayerDefaults(defaults, 10)).toBe(defaults);
+    expect(capChunkPlayerDefaults({ ...defaults, playerId: null, player: null }, 2).cameoIds).toEqual(["a", "b"]);
+  });
+
+  test("cameos added after the commit was sized are cut to what the chunk was sized for", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    // Sized for the player and one cameo (2 rows per card) ...
+    // ... then the operator widened the list to three.
+    await store(t, fx.set, { defaultPlayerIds: [fx.mahomes], defaultCameoIds: [fx.kelce, fx.allen] });
+    const extra = await t.run(async (ctx) =>
+      ctx.db.insert("players", { name: "Chris Jones", nameNormalized: "chris jones", sportId: fx.sport, lastUpdated: NOW }),
+    );
+    await store(t, fx.set, { defaultCameoIds: [fx.kelce, fx.allen, extra] });
+    const cards = Array.from({ length: commitChunkSize(2) }, (_, i) => wireCard(String(i + 1)));
+    await t.mutation(internal.selectorOptions.commitCardChecklistChunk, chunkArgs(fx, cards, undefined, 2));
+    const stored = await cardsOn(t, fx.base);
+    expect(stored.size).toBe(cards.length);
+    for (const card of stored.values()) {
+      expect(card.playerIds).toEqual([fx.mahomes]);
+      expect(card.secondaryPlayerIds).toEqual([fx.kelce]);
+      // The description names exactly the stored cameos.
+      expect(card.listingDescription!.split("\n")).toContain("Cameo: Travis Kelce.");
+    }
+  });
+});
+
+describe("a card whose listing named a player is never given the default player (N4)", () => {
+  test("a name entity review ruled out stays out of review AND holds back the default; the cameos still go on", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await store(t, fx.set, { defaultPlayerIds: [fx.mahomes], defaultCameoIds: [fx.kelce] });
+    // An earlier save ruled "Team Leaders" not a person, for this checklist.
+    await t.run(async (ctx) =>
+      ctx.db.insert("entityReviewSkips", {
+        selectorOptionId: fx.base,
+        kind: "player",
+        nameNormalized: normalizeEntityName("Team Leaders"),
+        name: "Team Leaders",
+        skippedAt: NOW,
+        skippedByUserId: "admin_earlier",
+      }),
+    );
+    const card = (n: string, players: string[]) => ({
+      cardNumber: n,
+      cardName: `Card ${n}`,
+      players,
+      teams: [],
+      attributes: [],
+      platformData: { bsc: { ref: `bsc-${n}` } },
+    });
+    const result = await t.withIdentity(ADMIN).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: fx.base,
+      sportId: fx.sport,
+      cards: [card("1", ["Team Leaders"]), card("2", []), card("3", ["  "])],
+    });
+    expect(result).toMatchObject({ success: true, count: 3 });
+    const cards = await cardsOn(t, fx.base);
+    const leaders = cards.get("1")!;
+    // The listing named someone: no default player, nothing pending (the skip
+    // keeps the name out of the next review), the cameo still added.
+    expect(leaders.playerIds).toBeUndefined();
+    expect(leaders.playerLinks).toBeUndefined();
+    expect(leaders.pendingPlayerNames).toBeUndefined();
+    expect(await playerIndex(t, leaders._id)).toEqual([]);
+    expect(leaders.secondaryPlayerIds).toEqual([fx.kelce]);
+    // A card the listing named nobody on (or only blanks) gets the default.
+    for (const n of ["2", "3"]) {
+      expect(cards.get(n)!.playerIds).toEqual([fx.mahomes]);
+      expect(cards.get(n)!.secondaryPlayerIds).toEqual([fx.kelce]);
+    }
+    await drainScheduled(t);
+    await cancelScheduled(t);
   });
 });
