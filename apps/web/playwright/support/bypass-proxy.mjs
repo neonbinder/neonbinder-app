@@ -1,7 +1,12 @@
 // localhost:3000 -> Vercel preview, injecting the deployment-protection
 // bypass header on every request. A copy of the proxy the Maestro runner
 // action starts (apps/web/.github/actions/maestro-runner/action.yml), so both
-// suites reach the preview the same way. Started by playwright.config.ts's
+// suites reach the preview the same way. It also sends `x-vercel-skip-toolbar`
+// (documented for end-to-end tests at
+// https://vercel.com/docs/vercel-toolbar/managing-toolbar, "Disable toolbar
+// for automation"): Vercel then leaves its preview toolbar out of the page, so
+// <vercel-live-feedback> cannot sit over a real control and intercept a click.
+// Production never has the toolbar. Started by playwright.config.ts's
 // `webServer` when PREVIEW_URL is set. Reads the secret from the environment;
 // never logs it.
 import http from "node:http";
@@ -22,6 +27,7 @@ const server = http.createServer((req, res) => {
         ...req.headers,
         host: upstream.hostname,
         "x-vercel-protection-bypass": bypass,
+        "x-vercel-skip-toolbar": "1",
       },
     },
     (upstreamRes) => {
