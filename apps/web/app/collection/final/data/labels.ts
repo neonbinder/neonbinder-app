@@ -5,13 +5,18 @@
  * `prototypes/_shared/data`, which keeps its own copies for the prototypes.
  */
 
+import { setLabel as sharedSetLabel } from "@/convex/lib/catalogView";
 import { contrastRatio } from "@/lib/print/contrast";
 import { tokenHex } from "@/src/theme/tokens";
 import type { Card, CardTeam, SetRef, VariantKind, VariantRef } from "./types";
 
-/** "1996 Playoff Contenders", "1996-97 Upper Deck". */
+/**
+ * "1996 Playoff Contenders", "1996-97 Upper Deck". The shared wording from
+ * `convex/lib/catalogView`, so the rule summary the server writes and every
+ * screen here name a set alike (NEO-528).
+ */
 export function setLabel(set: Pick<SetRef, "season" | "name">): string {
-  return `${set.season} ${set.name}`;
+  return sharedSetLabel(set);
 }
 
 /** "Base", "Pennant Flyers", "Gold Refractor", "Pennant Flyers Gold". */

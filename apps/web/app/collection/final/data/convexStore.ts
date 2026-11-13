@@ -70,6 +70,7 @@ import type {
   SetRef as RawSetRef,
   VariantRef as RawVariantRef,
 } from "@/convex/lib/catalogView";
+import { setLabel } from "@/convex/lib/catalogView";
 import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
 import { resizeCopyPhoto, type ResizedPhoto } from "@/lib/collection/copy-photo-resize";
@@ -1332,7 +1333,7 @@ function suggestionsFrom(raw: RawSuggest): Suggestion[] {
       (s): Suggestion => ({
         kind: "set",
         id: s._id,
-        label: `${s.season} ${s.name}`,
+        label: setLabel(s),
         sport: s.sport?.name ?? "",
       }),
     ),

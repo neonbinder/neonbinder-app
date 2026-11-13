@@ -13,7 +13,7 @@ import schema, { collectionRuleValidator } from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import type { Id } from "./_generated/dataModel";
 import { FactReader, MAX_MATCH_CARDS, binderNeeds } from "./binderRules";
-import { CatalogReader } from "./lib/catalogView";
+import { CatalogReader, setLabel } from "./lib/catalogView";
 import { setCardSecondaryPlayers } from "./cardSecondaryPlayers";
 
 const modules = (import.meta as unknown as {
@@ -86,6 +86,42 @@ describe("a smart binder's rule", () => {
     });
     const row = await s.t.run(async (ctx) => ctx.db.get(copyId as Id<"collectionCopies">));
     expect(row?.slot).toBe(0);
+  });
+
+  test("names a set exactly as the rule picker does, never with the brand put in front again", async () => {
+    const s = await setup();
+    // A set whose name doesn't carry its brand, beside the fixture's
+    // "Topps Chrome": the brand is never added to either.
+    const cosmicId = await s.t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Cosmic",
+        platformData: {},
+        isCustom: false,
+        children: [],
+        parentId: s.fx.toppsId,
+        lastUpdated: 1_700_000_000_000,
+      } as never);
+      const topps = await ctx.db.get(s.fx.toppsId);
+      await ctx.db.patch(s.fx.toppsId, { children: [...(topps?.children ?? []), id] });
+      return id;
+    });
+    const rule = {
+      version: 1 as const,
+      match: "any" as const,
+      terms: [{ test: { kind: "set" as const, setIds: [s.fx.setId, cosmicId] } }],
+    };
+    const id = await smartBinder(s, rule);
+    const listed = (await s.me.query(api.collectionContainers.list, {})).find((c) => c._id === id)!;
+    const named = Object.fromEntries((listed.ruleNames ?? []).map((n) => [n.id, n.name]));
+    expect(named[s.fx.setId]).toBe("2024 Topps Chrome");
+    expect(named[cosmicId]).toBe("2024 Cosmic");
+    // The picker's chip wording: the suggestion's set ref through the same label.
+    for (const [setId, q] of [[s.fx.setId, "2024 Topps Chrome"], [cosmicId, "2024 Cosmic"]] as const) {
+      const suggested = (await s.me.query(api.collectionCatalog.suggest, { q })).sets.find((x) => x._id === setId);
+      expect(suggested).toBeDefined();
+      expect(named[setId]).toBe(setLabel(suggested!));
+    }
   });
 
   test("refuses a rule with nothing to include, a wrong kind of id, and Main", async () => {

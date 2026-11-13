@@ -14,6 +14,7 @@ Learned writing `collection/smart-binder-secondary-player` and `set-selector/pla
 - **PlayerPicker chip row and chips** carry `aria-label` on generic elements (no role): find them with `getByLabel(..., { exact: true })`, not `getByRole("group")`.
 - **Bulk run ledger** is its own `region` named by its heading (`Added <P> to 2 cards`), a sibling of the control's region, not inside it.
 - **Failure hook on mobile:** a `context.newPage()` cleanup page left behind the test page stalled (a 7 s step took ~1000 s). `await clean.bringToFront()` fixed it. Using the test's own `page` also works but the failure artifacts then show the post-cleanup page.
+- **Smart rule summary names sets differently from its picker** (seen 2026-11-13): the Sets combobox option/chip reads `2024 Topps Chrome` / `2024 <hand-made>` (season + set name) but the settings dialog's `Takes ...` line reads `2024 Topps Topps Chrome` / `2024 Topps <hand-made>` (season + manufacturer + set name, `convex/binderRules.ts` `ruleNames`). A summary regex built from the picker's words goes red; check which wording the product settled on before asserting it.
 - **Parallel builders edit copy live:** Vite serves the working tree, so names can change between two runs. Read `git diff` of the labels module before trusting a red on a name; keep the names in one support module.
 
 **Why:** each of these cost a red run. **How to apply:** any spec on smart binders, cameos/also-on-this-card, or a sorted binder.

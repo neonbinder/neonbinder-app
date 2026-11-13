@@ -75,6 +75,17 @@ export const setRefValidator = v.object({
 });
 
 /**
+ * What a set reads as to a collector: its season, then its own name
+ * ("2024 Topps Chrome", "1996-97 Upper Deck"). The brand is not added: a
+ * set's name already carries it where collectors say it. The one wording for
+ * a set on the collection screens, the smart binder rule picker and its
+ * summary (NEO-528), so the chip and the "Takes …" line can't disagree.
+ */
+export function setLabel(set: { season: string; name: string }): string {
+  return `${set.season} ${set.name}`.trim();
+}
+
+/**
  * The card-bearing row a card hangs off (a variant type such as Base, an
  * insert, or a sub-variant) and the rows above it inside its set.
  *
