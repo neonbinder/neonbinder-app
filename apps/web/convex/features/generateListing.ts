@@ -28,11 +28,13 @@
  *
  * ## The cut loop (eBay's cap, `LISTING_TITLE_MAX` = 80)
  *
- * 1. Start from the full title; walk the cut list (`CUT_ROWS` below) from
+ * 1. Start from the full title; walk the cut list (`planCuts` below) from
  *    row 1.
  * 2. Before every cut, the first one included: at 80 or under, stop; at
  *    exactly 81 with the card number still carrying its "#", drop the "#"
- *    ("#91A-AA1" -> "91A-AA1") and stop. Checked once more after the last cut.
+ *    ("#91A-AA1" -> "91A-AA1") and stop. Nothing is checked after the last
+ *    cut: by then the number itself is out (row 10), so there is no "#" left
+ *    to drop. A number cut whole may still come back bare in the refill.
  * 3. Otherwise make the next cut.
  * 4. Refill: put cut tokens back, most valuable first, wherever they still
  *    fit, skipping any that do not. A REPEAT (rows 1-3) comes back only when
@@ -730,7 +732,6 @@ function cutToFit(
     cut.out = true;
     done.push(cut);
   }
-  if (length() > LISTING_TITLE_MAX) hashRule();
 
   // Step 4 — the refill, most valuable first (the reverse of the cut order).
   // Latent tokens join it in their own places: a team that sat out because
