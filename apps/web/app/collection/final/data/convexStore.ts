@@ -263,6 +263,8 @@ function toCard(raw: CatalogCard, set: SetRef, variant: VariantRef): Card {
     ...(raw.secondaryPlayers?.length
       ? { secondaryPlayers: raw.secondaryPlayers.map((p) => ({ id: p._id, name: p.name })) }
       : {}),
+    // NEO-528 — names a card with no player (a cameo-only card): `cardSubject`.
+    ...(raw.cardName?.trim() ? { cardName: raw.cardName.trim() } : {}),
     teams: raw.teams.map((t) => ({
       id: t._id,
       name: t.name,

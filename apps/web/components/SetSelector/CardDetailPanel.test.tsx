@@ -554,6 +554,23 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
     expect(status.textContent).toBe("Saved Card name");
   });
 
+  it("shows the save in the drawer's footer, in place of the autosave rule, never over the fields", async () => {
+    renderPanel();
+
+    await editAndCommit(nameInput(), "Shohei Ohtani");
+
+    const status = await screen.findByRole("status");
+    // Inside the dialog (NEO-528 audit: the viewport-fixed toast sat on Card
+    // name), beside Done, and not positioned over anything.
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.contains(status)).toBe(true);
+    const footer = screen.getByLabelText("Done editing card").parentElement!;
+    expect(footer.contains(status)).toBe(true);
+    expect(status.className).not.toMatch(/\bfixed\b|\babsolute\b/);
+    // It stands in for the rule while it shows.
+    expect(screen.queryByText("Changes save as you leave each field.")).toBeNull();
+  });
+
   /**
    * NEO-36 pin — the bug class this whole drawer was rebuilt around.
    *

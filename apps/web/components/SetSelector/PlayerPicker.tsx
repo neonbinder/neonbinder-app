@@ -244,6 +244,7 @@ export default function PlayerPicker({
   disabled,
   labels: labelsProp,
   ariaDescribedBy,
+  roomyTriggerOnPhones = false,
 }: {
   value: Array<Id<"players">>;
   onChange: (next: Array<Id<"players">>) => void;
@@ -268,6 +269,13 @@ export default function PlayerPicker({
    * trigger (the control a keyboard user lands on).
    */
   ariaDescribedBy?: string;
+  /**
+   * NEO-528 — the "+ Add" trigger grows to a 32px, text-sm target below
+   * 768px (Radix's `sm`), to sit level with full-size NeonButtons beside it
+   * on a phone (the Set Builder's bulk "Also on every card" row). Off, it is
+   * the compact 24px box everywhere.
+   */
+  roomyTriggerOnPhones?: boolean;
 }) {
   const labels = resolvePlayerPickerLabels(labelsProp);
   const { mode } = useTheme();
@@ -709,7 +717,9 @@ export default function PlayerPicker({
           // a11y (WCAG 2.5.8, NEO-528) — a real 24px box, not a hit-area
           // pseudo: text-xs + py-0.5 + the border drew 22px. Every caller
           // takes it from here, never per call site.
-          className="inline-flex min-h-6 items-center px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2"
+          className={`inline-flex min-h-6 items-center px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2${
+            roomyTriggerOnPhones ? " max-md:min-h-8 max-md:px-3 max-md:text-sm" : ""
+          }`}
         >
           + {labels.triggerText}
         </button>

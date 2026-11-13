@@ -4,7 +4,7 @@ import { Input } from "@/components/primitives/Input";
 import Modal from "../../prototypes/p2/Modal";
 import { cameoNames } from "../cameo";
 import { CameoTag } from "../CameoTag";
-import { cardLabel } from "../data/labels";
+import { cardHeadline, cardLabel } from "../data/labels";
 import { useCards, useDeclined, useFindCards } from "../data/store";
 import type { Card, CardId, Container, Copy } from "../data/types";
 import { describeSmartRule } from "./RuleBuilder";
@@ -127,7 +127,7 @@ export default function FindCardsDialog({
               const card = cards.get(d.cardId);
               return (
                 <li key={d.cardId} className="flex flex-wrap items-center gap-3 py-3">
-                  <span className="min-w-0 flex-1 text-sm text-ink">{card ? cardLabel(card) : "A card"}</span>
+                  <span className="min-w-0 flex-1 text-sm text-ink">{card ? cardHeadline(card) : "A card"}</span>
                   <NeonButton
                     type="button"
                     variant="secondary"
@@ -196,7 +196,7 @@ function FoundRow({
       <div className="flex flex-wrap items-center gap-3">
         <div className="min-w-0 flex-1">
           <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm font-medium text-ink">
-            <span className="min-w-0">{card ? cardLabel(card) : "Loading the card…"}</span>
+            <span className="min-w-0">{card ? cardHeadline(card) : "Loading the card…"}</span>
             {cameo && <CameoTag names={cameo} />}
           </p>
           <p className="text-sm text-ink-3">

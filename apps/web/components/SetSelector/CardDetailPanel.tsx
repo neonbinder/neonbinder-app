@@ -27,6 +27,7 @@ import {
 } from "./TitleLengthMeter";
 import { useTitlePreview } from "./useTitlePreview";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import { CheckIcon } from "@heroicons/react/20/solid";
 import NeonButton from "@/components/modules/NeonButton";
 
 const AUTOGRAPHED_FEATURE = EXPECTED_FEATURES.find(
@@ -929,25 +930,6 @@ export default function CardDetailPanel({
         aria-hidden="true"
         onClick={onClose}
       />
-      {/* The one save confirmation for the whole drawer.
-
-          NEO-47's reasoning, inherited from SetAttributesPanel: FIXED in the
-          viewport rather than in-flow, because an edit made while scrolled
-          down to the print run would otherwise render its confirmation above
-          the fold, invisible to the operator who just made it.
-
-          NEO-341: `pointer-events-none`. It only reports; on a phone the
-          drawer is full width and this toast lands on the Card name field,
-          so for its few seconds it swallowed the tap meant for the field. */}
-      {toast && (
-        <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg"
-          role="status"
-          aria-live="polite"
-        >
-          {toast}
-        </div>
-      )}
       {/*
         NEO-272 — THE WIDTH IS MEASURED OFF AN 80-CHARACTER TITLE, not picked
         off a breakpoint. Same derivation, same field and the same number as
@@ -1822,9 +1804,32 @@ export default function CardDetailPanel({
             open — the NEO-189 stranding finding. "Done" is that element, and
             it does exactly what Escape and the × do. */}
         <div className="px-4 py-3 border-t border-rule-strong flex items-center justify-between gap-3">
-          <span className="text-[10px] text-ink-3">
-            Changes save as you leave each field.
-          </span>
+          {/* The one save confirmation for the whole drawer, in place of the
+              rule it confirms while it shows.
+
+              NEO-47 wanted it where an edit made far down the drawer can
+              still see it, which once meant fixed to the viewport, centred
+              at the top. NEO-528's audit: there it sat on the drawer's own
+              Card name field (on a phone, and on a desktop window narrower
+              than the drawer's 45rem). The footer has the same property
+              without the cover: it never scrolls away (the body scrolls
+              between header and footer), and it is where the operator was
+              told that leaving a field saves it. Mounted with its text, as
+              the fixed toast was. */}
+          {toast ? (
+            <span
+              className="min-w-0 inline-flex items-center gap-1.5 px-2 py-1 bg-raised-deep border border-neon-green-text/60 rounded text-xs font-medium text-neon-green-text"
+              role="status"
+              aria-live="polite"
+            >
+              <CheckIcon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 break-words">{toast}</span>
+            </span>
+          ) : (
+            <span className="text-[10px] text-ink-3">
+              Changes save as you leave each field.
+            </span>
+          )}
           <NeonButton
             type="button"
             size="1"

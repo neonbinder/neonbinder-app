@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  cardHeadline,
   cardLabel,
+  cardSubject,
   compareCards,
   LIVERY_FALLBACK,
   playerInitials,
@@ -81,6 +83,42 @@ describe("cardLabel", () => {
   it("leaves out a player or team NB does not know, rather than a blank", () => {
     expect(cardLabel(card({ players: [], teams: [] }))).toBe("2024 Topps Chrome #1");
     expect(shortCardName(card({ players: [], cardVariation: "Sliding" }))).toBe("#1, Sliding variation");
+  });
+});
+
+describe("cardSubject and cardHeadline (NEO-528)", () => {
+  const marino = { id: "dm", name: "Dan Marino" };
+  const duper = { id: "md", name: "Mark Duper" };
+
+  it("leads with the players whenever the card has any, own name and cameos aside", () => {
+    const c = card({ cardName: "Ohtani Rookie Stars", secondaryPlayers: [marino] });
+    expect(cardSubject(c)).toBe("Shohei Ohtani");
+    expect(cardHeadline(c)).toBe(cardLabel(c));
+  });
+
+  it("names a card with no player by its own name", () => {
+    const c = card({ players: [], cardName: "  Dolphins Leaders ", secondaryPlayers: [marino] });
+    expect(cardSubject(c)).toBe("Dolphins Leaders");
+    expect(cardHeadline(c)).toBe("2024 Topps Chrome #1 Dolphins Leaders, Dodgers");
+  });
+
+  it("with no player and no name, says who is pictured", () => {
+    expect(cardSubject(card({ players: [], secondaryPlayers: [marino] }))).toBe("With Dan Marino");
+    expect(cardSubject(card({ players: [], cardName: " ", secondaryPlayers: [marino, duper] }))).toBe(
+      "With Dan Marino and Mark Duper",
+    );
+    expect(
+      cardHeadline(card({ players: [], teams: [], secondaryPlayers: [marino], variant: variant({ kind: "base" }) })),
+    ).toBe("2024 Topps Chrome #1 With Dan Marino");
+  });
+
+  it("is empty when nothing is known, and the accessible label is unchanged by any of it", () => {
+    const bare = card({ players: [], teams: [] });
+    expect(cardSubject(bare)).toBe("");
+    expect(cardHeadline(bare)).toBe("2024 Topps Chrome #1");
+    const cameoOnly = card({ players: [], teams: [], cardName: "Dolphins Leaders", secondaryPlayers: [marino] });
+    expect(cardLabel(cameoOnly)).toBe("2024 Topps Chrome #1");
+    expect(shortCardName(cameoOnly)).toBe("#1");
   });
 });
 

@@ -5,7 +5,7 @@ import NeonButton from "@/components/modules/NeonButton";
 import { FOCUS, QUIET_BUTTON, useLiverySurface } from "../prototypes/p1/ui";
 import {
   cardLabel,
-  playerNames,
+  cardSubject,
   printRunLabel,
   setAndVariant,
   shortCardName,
@@ -251,6 +251,10 @@ export default function CardRowGroup({
   if (run) sub.push(run);
   if (card.cardVariation) sub.push(`${card.cardVariation} variation`);
   const stacked = lines.length > 1;
+  // NEO-528 — players, else the card's own name, else "With <cameo>". A
+  // cameo row never says "Player unknown": its Cameo tag already says why it
+  // is here, so with nothing else known the line is left to the tag.
+  const subject = cardSubject(card) || (cameo ? "" : "Player unknown");
   const rowClick =
     onRowClick ?? ((copyId?: CopyId) => actions.open(card, copyId, undefined, copyId !== undefined));
 
@@ -296,8 +300,13 @@ export default function CardRowGroup({
       <div className="min-w-0 flex-1 max-sm:basis-[calc(100%-4rem)]">
         <div className="flex min-w-0 items-baseline gap-2 text-sm">
           <span className="min-w-0 sm:truncate">
-            <span className="font-medium text-ink">{playerNames(card) || "Player unknown"}</span>
-            {summary && <span className="text-neon-blue-text"> · {summary}</span>}
+            {subject && <span className="font-medium text-ink">{subject}</span>}
+            {summary && (
+              <span className="text-neon-blue-text">
+                {subject ? " · " : ""}
+                {summary}
+              </span>
+            )}
           </span>
           {top && cameo && <CameoTag names={cameo} />}
         </div>

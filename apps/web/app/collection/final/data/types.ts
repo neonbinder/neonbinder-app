@@ -204,6 +204,12 @@ export interface Card {
    * `players`; absent when there are none.
    */
   secondaryPlayers?: CardPlayer[];
+  /**
+   * NEO-528 — the card's own name in the checklist ("Dolphins Leaders"),
+   * trimmed; absent when blank. Read only to name a card that has no player
+   * (`cardSubject`), never in place of one.
+   */
+  cardName?: string;
   /** Teams printed on the card (the uniform), not every team the player had. */
   teams: CardTeam[];
   /** Numbered print run: 50 means "/50", 1 a 1/1; null = unnumbered. */

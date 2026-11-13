@@ -19,6 +19,7 @@ vi.mock("../catalog/search", async (importOriginal) => ({
 }));
 
 import Pocket from "./Pocket";
+import CardFace from "../../prototypes/_shared/CardFace";
 import RuleBuilder, { CAMEOS_DROPPED_NOTE } from "./RuleBuilder";
 import { markOutside, paginate, sortedPages, type CameoOf, type PocketModel } from "./model";
 import { Cover } from "./parts";
@@ -327,5 +328,49 @@ describe("Include cameos in the rule builder", () => {
     const next = onChange.mock.calls[0][0] as SmartRule;
     expect(next.terms[0].negate).toBe(true);
     expect(next.secondaryPlayers).toBeUndefined();
+  });
+});
+
+describe("a cameo-only card's face (NEO-528 audit)", () => {
+  const face = (c: Card) => {
+    const { container } = render(
+      <Theme>
+        <CardFace model={c} size="lg" />
+      </Theme>,
+    );
+    return container;
+  };
+  const RED_SOX = { id: "t-bos", name: "Red Sox", location: "Boston" };
+
+  it("puts the card's own name on the nameplate, and leaves the team out of the line under it when none is known", () => {
+    const c = card(9, { players: [], cardName: "Dolphins Leaders", secondaryPlayers: [MARINO] });
+    const el = face(c);
+    expect(screen.getByText("Dolphins Leaders")).toBeTruthy();
+    // No leading ", " where the team would go.
+    const lines = Array.from(el.querySelectorAll("span")).map((s) => s.textContent ?? "");
+    expect(lines.some((t) => t.startsWith(", "))).toBe(false);
+    // Monogram from the card's own name, not "?".
+    expect(screen.getByText("DL")).toBeTruthy();
+  });
+
+  it("with no name either, says who is pictured", () => {
+    face(card(9, { players: [], secondaryPlayers: [MARINO] }));
+    expect(screen.getByText("With Dan Marino")).toBeTruthy();
+    expect(screen.getByText("DM")).toBeTruthy();
+  });
+
+  it("joins team, variation and variant with commas, skipping the blanks", () => {
+    const el = face(
+      card(9, {
+        teams: [RED_SOX] as Card["teams"],
+        cardVariation: "Sliding",
+        variant: { id: "v2", kind: "parallel", name: "Gold", order: 1 } as unknown as Card["variant"],
+      }),
+    );
+    expect(screen.getByText("Red Sox, Sliding, Gold")).toBeTruthy();
+    cleanup();
+    const bare = face(card(9, { cardVariation: "Sliding" }));
+    const texts = Array.from(bare.querySelectorAll("span")).map((s) => s.textContent);
+    expect(texts).toContain("Sliding");
   });
 });

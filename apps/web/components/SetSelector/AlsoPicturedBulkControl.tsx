@@ -173,16 +173,22 @@ function totalChanged(run: BulkRun): number {
   return run.lines.reduce((sum, line) => sum + line.counts.changed, 0);
 }
 
-/** The ledger's heading: the count while running, the outcome once it ends. */
+/**
+ * The ledger's heading: which checklist the run is on while it runs, the
+ * outcome once it ends. The running count is CHECKLISTS ("checklist 2 of
+ * 13"), said so, because the outcome after it counts cards; a bare "0 of 1"
+ * read as cards and then the run said "Added Dan Marino to 19 cards".
+ */
 export function bulkHeading(run: BulkRun): string {
   const who = run.playerName;
   const changed = totalChanged(run);
   const n = run.lines.length;
   const done = run.lines.filter((l) => l.kind === "built" || l.kind === "skipped").length;
   if (run.phase === "running") {
+    const at = `checklist ${Math.min(done + 1, n).toLocaleString()} of ${n.toLocaleString()}`;
     return run.op === "add"
-      ? `Adding ${who} to every card: ${done} of ${n}`
-      : `Taking ${who} off every card: ${done} of ${n}`;
+      ? `Adding ${who} to every card: ${at}`
+      : `Taking ${who} off every card: ${at}`;
   }
   if (run.phase === "done") {
     if (run.op === "add") {
@@ -343,6 +349,13 @@ export const BULK_REMOVE_LABEL = "Take off every card";
 /** The finished ledger's close: visible "Dismiss", named apart from every notice's Dismiss. */
 export const BULK_DISMISS_LABEL = "Dismiss this run";
 const CHOOSE_FIRST = "Choose who first";
+/**
+ * Full size (32px) on a phone, the panel's compact 24px from Radix's `sm`
+ * (768px) up: a thumb needs the bigger target, the desktop panel the
+ * density. The picker's "+ Choose who" switches at the same width
+ * (`roomyTriggerOnPhones`), so the row never mixes the two.
+ */
+const BULK_BUTTON_SIZE = { initial: "2", sm: "1" } as const;
 
 type Asking = {
   op: BulkOp;
@@ -648,10 +661,11 @@ export default function AlsoPicturedBulkControl({
               disabled={busy}
               labels={BULK_ALSO_PICTURED_PICKER_LABELS}
               ariaDescribedBy={hintId}
+              roomyTriggerOnPhones
             />
             <NeonButton
               type="button"
-              size="1"
+              size={BULK_BUTTON_SIZE}
               data-bulk-op="add"
               aria-disabled={blocked || undefined}
               title={blockedTitle}
@@ -663,7 +677,7 @@ export default function AlsoPicturedBulkControl({
             </NeonButton>
             <NeonButton
               type="button"
-              size="1"
+              size={BULK_BUTTON_SIZE}
               variant="negative"
               outline
               data-bulk-op="remove"

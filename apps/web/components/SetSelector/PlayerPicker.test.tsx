@@ -1300,6 +1300,16 @@ describe("PlayerPicker — label sets (NEO-528)", () => {
     renderPicker();
     const trigger = screen.getByRole("button", { name: "Add player" });
     expect(trigger.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-h-6", "inline-flex", "items-center"]));
+    // Compact everywhere unless a caller asks for the phone size.
+    expect(trigger.className).not.toContain("max-md:");
+  });
+
+  it("roomyTriggerOnPhones grows the trigger to a 32px, text-sm target below 768px only", () => {
+    renderPicker({ roomyTriggerOnPhones: true });
+    const classes = screen.getByRole("button", { name: "Add player" }).className.split(/\s+/);
+    expect(classes).toEqual(
+      expect.arrayContaining(["min-h-6", "text-xs", "max-md:min-h-8", "max-md:px-3", "max-md:text-sm"]),
+    );
   });
 
   it("with no labels, renders exactly the names the existing specs target", () => {

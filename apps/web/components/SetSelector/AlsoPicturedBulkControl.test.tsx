@@ -39,14 +39,20 @@ vi.mock("./PlayerPicker", () => ({
     labels,
     disabled,
     ariaDescribedBy,
+    roomyTriggerOnPhones,
   }: {
     value: string[];
     onChange: (next: string[]) => void;
     labels?: { root: string };
     disabled?: boolean;
     ariaDescribedBy?: string;
+    roomyTriggerOnPhones?: boolean;
   }) => (
-    <div aria-label={labels?.root} data-described-by={ariaDescribedBy ?? ""}>
+    <div
+      aria-label={labels?.root}
+      data-described-by={ariaDescribedBy ?? ""}
+      data-roomy={roomyTriggerOnPhones ? "yes" : "no"}
+    >
       <span>Picked: {value.join(",")}</span>
       <button type="button" disabled={disabled} onClick={() => onChange([...value, "p1"])}>
         Stub pick p1
@@ -193,7 +199,7 @@ describe("also-pictured bulk run — the ledger steps", () => {
     const run = startRun("add", "Dan Marino", TARGETS, false);
     expect(run.lines.map((l) => l.kind)).toEqual(["building", "waiting", "waiting"]);
     expect(run.announcement).toBe("Adding Dan Marino to every card in Base and its 2 parallels.");
-    expect(bulkHeading(run)).toBe("Adding Dan Marino to every card: 0 of 3");
+    expect(bulkHeading(run)).toBe("Adding Dan Marino to every card: checklist 1 of 3");
   });
 
   it("a page on the same checklist adds its counts and keeps the line working", () => {
@@ -212,7 +218,18 @@ describe("also-pictured bulk run — the ledger steps", () => {
     expect(run.lines.map((l) => l.kind)).toEqual(["built", "building", "waiting"]);
     expect(bulkLineText(run.lines[0], run)).toBe("Base — added to 10 cards");
     expect(run.announcement).toBe("1 of 3 done");
-    expect(bulkHeading(run)).toBe("Adding Dan Marino to every card: 1 of 3");
+    expect(bulkHeading(run)).toBe("Adding Dan Marino to every card: checklist 2 of 3");
+  });
+
+  it("the running heading counts checklists, says so, and never runs past the last", () => {
+    let run = startRun("remove", "Dan Marino", TARGETS, false);
+    expect(bulkHeading(run)).toBe("Taking Dan Marino off every card: checklist 1 of 3");
+    run = applyPage(run, page({ targetIndex: 2, cursor: "c", scanned: 4, changed: 4 }));
+    expect(run.lines.map((l) => l.kind)).toEqual(["skipped", "skipped", "building"]);
+    expect(bulkHeading(run)).toBe("Taking Dan Marino off every card: checklist 3 of 3");
+    // Every line finished but the run not yet told it is over: still "3 of 3".
+    run = { ...run, lines: run.lines.map((l) => ({ ...l, kind: "built" as const })) };
+    expect(bulkHeading(run)).toBe("Taking Dan Marino off every card: checklist 3 of 3");
   });
 
   it("a checklist the server skipped past with no cards reads as empty, not as a result", () => {
@@ -319,6 +336,18 @@ describe("AlsoPicturedBulkControl", () => {
       expect((button as HTMLButtonElement).disabled).toBe(false);
       expect(button.getAttribute("aria-disabled")).toBe("true");
       expect(button.getAttribute("title")).toBe("Choose who first");
+    }
+  });
+
+  it("on a phone its picker trigger and both actions are full size, compact from Radix's sm up", () => {
+    renderControl();
+    expect(
+      screen.getByLabelText(BULK_ALSO_PICTURED_PICKER_LABELS.root).getAttribute("data-roomy"),
+    ).toBe("yes");
+    for (const button of [addButton(), removeButton()]) {
+      const classes = button.className.split(/\s+/);
+      expect(classes).toContain("rt-r-size-2");
+      expect(classes).toContain("sm:rt-r-size-1");
     }
   });
 
@@ -511,7 +540,7 @@ describe("AlsoPicturedBulkControl", () => {
     rerender(
       <AlsoPicturedBulkControl variantId={VARIANT} level="insert" sportId={SPORT} expanded={false} />,
     );
-    expect(screen.getByRole("heading", { name: "Adding Dan Marino to every card: 0 of 3" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Adding Dan Marino to every card: checklist 1 of 3" })).toBeTruthy();
     expect(screen.queryByRole("button", { name: BULK_ADD_LABEL })).toBeNull();
   });
 

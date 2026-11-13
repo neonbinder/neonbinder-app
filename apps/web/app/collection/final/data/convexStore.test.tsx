@@ -303,6 +303,11 @@ describe("NEO-528 cameos: who else is pictured, and the cards a binder takes in 
     expect("secondaryPlayers" in toCard(raw({ secondaryPlayers: [] }), null as never, variant)).toBe(false);
   });
 
+  it("carries the card's own name, trimmed, for naming a card with no player; blank leaves the key off", () => {
+    expect(toCard(raw({ cardName: "  Dolphins Leaders " }), null as never, variant).cardName).toBe("Dolphins Leaders");
+    expect("cardName" in toCard(raw({ cardName: "  " }), null as never, variant)).toBe(false);
+  });
+
   it("rule matches read ruleFits: every fit, and the cameo fits apart", () => {
     loaded.set("binderRules:ruleFits", (args: { cardIds: string[] }) =>
       args.cardIds.flatMap((id) => (id === "own" ? [{ cardId: id }] : id === "cameo" ? [{ cardId: id, secondary: true }] : [])),
