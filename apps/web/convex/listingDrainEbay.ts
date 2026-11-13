@@ -606,6 +606,15 @@ export const EBAY_CARD_REJECTED: Record<EbayStep, string> = {
   withdraw: "eBay didn't take NeonBinder's zero for this listing.",
 };
 
+/**
+ * NEO-535 — a card held back before anything is sent because its stored
+ * title runs past eBay's 80 characters (`ebayListingText` never cuts it: a
+ * cut would chop off the print run). Shown after "eBay turned this one
+ * down.", like the step sentences above; NB's words, at most `MAX_DETAIL`.
+ */
+export const EBAY_TITLE_TOO_LONG =
+  "Its title runs past the 80 characters eBay takes, and we won't chop it. Once it's shortened in the set builder, press Sync.";
+
 /** A step's failure in NB words: the adapter's own sentences for a session or pause; the step's for the rest. */
 export function sayEbayStepFailure(step: EbayStep | "aspects", failure: EbayFailure): string {
   const says = EBAY_STEP_SAYS[step];
@@ -1113,7 +1122,23 @@ async function syncEbayVariant(
       });
       continue;
     }
-    const text = ebayListingText(f);
+    const said = ebayListingText(f);
+    if (!said.ok) {
+      // NEO-535: never cut a title to fit; the card is held back and says why.
+      // It keeps any live listing as it is (it is still a target).
+      console.log(
+        JSON.stringify({
+          msg: "ebay_title_over_limit",
+          platform: "ebay",
+          operation: "plan",
+          cardId: t.cardId,
+          titleLength: said.titleLength,
+        }),
+      );
+      addHold({ cardId: t.cardId, reason: "rejected", conditionCode: t.conditionCode, detail: EBAY_TITLE_TOO_LONG });
+      continue;
+    }
+    const text = said.text;
     const priceCents = t.priceCents as number;
     const slot = fulfillmentSlotFor(priceCents);
     const fulfillmentPolicyId = slot === "twentyPlus" ? settings.fulfillmentPolicy20PlusId : settings.fulfillmentPolicyUnder20Id;

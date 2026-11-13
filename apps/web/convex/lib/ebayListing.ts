@@ -365,15 +365,34 @@ export function readCategoryAspects(body: unknown): { required: string[]; maxLen
 
 // ── Item content and its fingerprint ────────────────────────────────────────
 
-/** The listing's text: NB's stored title and description, capped to eBay's limits. */
-export function ebayListingText(card: { listingTitle: string; listingDescription?: string }): {
+/** The item text NB sends eBay. Its exact shape is in `contentFingerprint`, so it stays these two fields. */
+export interface EbayListingText {
   title: string;
   description: string;
-} {
-  const title = card.listingTitle.trim().slice(0, EBAY_TITLE_MAX);
+}
+
+/**
+ * The listing's text, or why the card can't go up as it is.
+ *
+ * NEO-535: the title is NB's stored title exactly (trimmed), never cut. A
+ * title can be stored over eBay's 80 characters (flagged `titleOverLimit`,
+ * waiting for a person in the set builder's Card titles), and a cut there
+ * would chop the end off it, which is where the print run (`/5`) sits. Such
+ * a card is refused here and held back by the drain instead.
+ *
+ * The description is NB's own text (the title when blank), capped to eBay's
+ * limit; it is not where the card's identity lives.
+ */
+export type EbayListingTextResult =
+  | { ok: true; text: EbayListingText }
+  | { ok: false; reason: "titleTooLong"; titleLength: number };
+
+export function ebayListingText(card: { listingTitle: string; listingDescription?: string }): EbayListingTextResult {
+  const title = card.listingTitle.trim();
+  if (title.length > EBAY_TITLE_MAX) return { ok: false, reason: "titleTooLong", titleLength: title.length };
   const described = card.listingDescription?.trim();
   const description = (described && described.length > 0 ? described : title).slice(0, EBAY_DESCRIPTION_MAX);
-  return { title, description };
+  return { ok: true, text: { title, description } };
 }
 
 /** A short stable fingerprint of what NB sent as item content (FNV-1a, hex). */

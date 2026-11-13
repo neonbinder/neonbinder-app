@@ -20,7 +20,7 @@ import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { drainOwnerImpl, type DrainCtx, type DrainReport } from "./listingDrain";
 import { EBAY_SETUP_INCOMPLETE_ERROR } from "./listingDrain";
-import { EBAY_CARD_REJECTED, EBAY_PUBLISH_CONCURRENCY, EBAY_STEP_SAYS, inPool } from "./listingDrainEbay";
+import { EBAY_CARD_REJECTED, EBAY_PUBLISH_CONCURRENCY, EBAY_STEP_SAYS, EBAY_TITLE_TOO_LONG, inPool } from "./listingDrainEbay";
 import { EBAY_SANDBOX_TEST_PICTURE_URL } from "./lib/ebayEnv";
 import { EBAY_PUBLISH_RETRY_PAUSE_MS } from "./adapters/ebaySeller";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
@@ -986,6 +986,79 @@ describe("eBay drain: held-back cards", () => {
     ]);
     expect(ebay.items.has(`NB2-${card}-NM`)).toBe(false);
     expect(photoFetches).toEqual(["copy-photos/tgood/image.jpg"]);
+  });
+
+  test("NEO-535: a title over eBay's 80 is held back in NB's words, never cut; the other card still lists", async () => {
+    const s = await setup();
+    const v = await seedVariant(s.t, { cards: [{ number: "1" }, { number: "2" }] });
+    const [long, ok] = v.cardIds;
+    const longTitle = "2024 Topps Chrome Update All-Star Game Dual Autographs Gold Refractor Ohtani & Trout /50";
+    expect(longTitle.length).toBeGreaterThan(80);
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(long, { listingTitle: longTitle });
+    });
+    for (const [card, token] of [[long, "tl"], [ok, "to"]] as const) {
+      await addWithPhoto(s, card, { homeId: s.box, condition: "Near Mint", minPriceCents: 500 }, token);
+    }
+    await listOnEbay(s);
+    await queue(s, v.cardIds.map((cardId) => ({ cardId, variantId: v.variantId })));
+
+    await drain(s);
+
+    const rec = await record(s, v.variantId);
+    expect(rec?.problems).toEqual([
+      expect.objectContaining({ cardId: long, reason: "rejected", detail: EBAY_TITLE_TOO_LONG }),
+    ]);
+    expect(rec?.counts).toMatchObject({ listed: 1, pushed: 1, skipped: 1 });
+    expect([...ebay.items.keys()]).toEqual([`NB2-${ok}-NM`]);
+    // Nothing about the long card went to eBay: no picture, no item, no offer.
+    expect(JSON.stringify(ebay.calls)).not.toContain(String(long));
+    expect(photoFetches).toEqual(["copy-photos/to/image.jpg"]);
+    expect((await linkOf(s, long, "NM"))?.status ?? null).not.toBe("live");
+    // The stored title is untouched.
+    expect(await s.t.run(async (ctx) => (await ctx.db.get(long))?.listingTitle)).toBe(longTitle);
+  });
+
+  test("NEO-535: a title of exactly 80 goes to eBay whole", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    const title = "2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver Aiva Arquette /5";
+    expect(title).toHaveLength(80);
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(card, { listingTitle: title });
+    });
+
+    await drain(s);
+
+    expect((await record(s, v.variantId))?.problems).toEqual([]);
+    expect(ebay.items.get(`NB2-${card}-NM`).product.title).toBe(title);
+  });
+
+  test("NEO-535: a live card whose title grows past 80 keeps its listing as it is and says why", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await drain(s);
+    const before = ebay.items.get(`NB2-${card}-NM`).product.title;
+    ebay.calls = [];
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(card, { listingTitle: `${"t".repeat(78)} /5` });
+    });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    expect(ebay.writes()).toEqual([]);
+    expect(ebay.items.get(`NB2-${card}-NM`).product.title).toBe(before);
+    expect((await linkOf(s, card, "NM"))?.status).toBe("live");
+    expect((await record(s, v.variantId))?.problems).toEqual([
+      expect.objectContaining({ cardId: card, reason: "rejected", detail: EBAY_TITLE_TOO_LONG }),
+    ]);
+  });
+
+  test("NEO-535: the held-back sentence fits the stored detail and says what to do", () => {
+    expect(EBAY_TITLE_TOO_LONG.length).toBeLessThanOrEqual(160);
+    expect(EBAY_TITLE_TOO_LONG).toMatch(/80 characters/);
+    expect(EBAY_TITLE_TOO_LONG).toMatch(/set builder/);
   });
 
   test("a card whose photo is oversized is held back noPhoto", async () => {
