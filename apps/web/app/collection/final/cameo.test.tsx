@@ -118,7 +118,7 @@ describe("AlsoPicturedRow on the card's detail", () => {
         <AlsoPicturedRow players={[MARINO, DUPER]} />
       </dl>,
     );
-    expect(screen.getByText("Also pictured").tagName).toBe("DT");
+    expect(screen.getByText("Also on this card").tagName).toBe("DT");
     expect(screen.getByText("Dan Marino, Mark Duper").tagName).toBe("DD");
     expect(screen.queryByRole("button")).toBeNull();
     expect(screen.queryByRole("textbox")).toBeNull();

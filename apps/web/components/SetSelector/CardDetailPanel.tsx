@@ -10,7 +10,10 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import type { Id } from "../../convex/_generated/dataModel";
 import TeamPicker from "./TeamPicker";
 import PlayerPicker from "./PlayerPicker";
-import { ALSO_PICTURED_PICKER_LABELS } from "./player-picker-labels";
+import {
+  ALSO_ON_THIS_CARD_HEADING,
+  ALSO_PICTURED_PICKER_LABELS,
+} from "./player-picker-labels";
 import CardFeaturesEditor, { CardFeatureRow } from "./CardFeaturesEditor";
 import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
 import { useReactiveField } from "../forms/useReactiveField";
@@ -146,15 +149,16 @@ const PRINT_RUN_MESSAGE =
  * any other client: the server is the rule, this saves the round trip.
  */
 /**
- * NEO-528 — the Also pictured field's words. "Cameo" is what a collector's
- * smart binder calls such a card, so the hint says where these go.
+ * NEO-528 — the "Also on this card" field's words. "Cameo" is what a
+ * collector's smart binder calls such a card, so the hint says where these go.
  */
 export const ALSO_PICTURED_HINT =
-  "Anyone else in the shot who isn't the card's subject. Smart binders can count these cards as cameos.";
+  "Anyone on the card besides its main player: a teammate in the photo, a name on a team leaders card, the star a Profiles card is about. Smart binders can count these as cameos.";
 export const ALREADY_A_PLAYER_MESSAGE =
-  "Already under Players. A card's own player can't be a cameo on it too.";
-const ALSO_PICTURED_SAVE_FAILED =
-  "Couldn't save Also pictured. Give it another go.";
+  "They're already this card's player. No cameo needed.";
+export const ALSO_PICTURED_SAVED = `Saved ${ALSO_ON_THIS_CARD_HEADING}`;
+export const ALSO_PICTURED_MOVED_TO_PLAYERS = `Saved Players and moved them out of ${ALSO_ON_THIS_CARD_HEADING}`;
+const ALSO_PICTURED_SAVE_FAILED = `Couldn't save ${ALSO_ON_THIS_CARD_HEADING}. Give it another go.`;
 
 const BLANK_TITLE_MESSAGE =
   "A card needs a title. Type one in, or hit Regenerate for a fresh one.";
@@ -176,7 +180,7 @@ type CardDetailCard = {
   playerLinks?: Array<{ playerId: Id<"players">; nameOnCard: string }>;
   /**
    * NEO-528 — players PICTURED on the card who are not its subject (a
-   * teammate in the shot, a manager). "Also pictured" here; a smart binder
+   * teammate in the photo, a manager). "Also on this card" here; a smart binder
    * that opts in counts the card as a cameo. Admin-entered NB data, never
    * read from a marketplace, never touched by a re-sync. Absent when empty,
    * and never holds an id that is also in `playerIds`.
@@ -794,7 +798,7 @@ export default function CardDetailPanel({
     setAlsoPending(kept);
     try {
       await writeAlsoPictured(kept);
-      announce("Saved Also pictured");
+      announce(ALSO_PICTURED_SAVED);
     } catch (e) {
       setAlsoError(userFacingMessage(e, ALSO_PICTURED_SAVE_FAILED));
     } finally {
@@ -824,7 +828,7 @@ export default function CardDetailPanel({
     try {
       await writeAlsoPictured(kept);
       setAlsoError(null);
-      announce("Saved Players and moved them out of Also pictured");
+      announce(ALSO_PICTURED_MOVED_TO_PLAYERS);
     } catch (e) {
       setAlsoError(userFacingMessage(e, ALSO_PICTURED_SAVE_FAILED));
     } finally {
@@ -1695,14 +1699,14 @@ export default function CardDetailPanel({
             />
           </div>
 
-          {/* NEO-528 — Also pictured: the second PlayerPicker in this drawer,
+          {/* NEO-528 — Also on this card: the second PlayerPicker in this drawer,
               so every name it renders is reworded apart from the one above
               (`ALSO_PICTURED_PICKER_LABELS`). The hint is the trigger's
               description, so a keyboard user hears what the field is for on
               the control they land on. */}
           <div>
             <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
-              Also pictured
+              {ALSO_ON_THIS_CARD_HEADING}
             </label>
             <PlayerPicker
               value={alsoPicturedIds}

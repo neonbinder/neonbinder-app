@@ -278,7 +278,7 @@ vi.mock("./TeamPicker", () => ({
 }));
 
 /**
- * NEO-528 — the bulk "Also pictured on every card" control owns its own
+ * NEO-528 — the bulk "Also on every card" control owns its own
  * Convex calls and has its own test file (AlsoPicturedBulkControl.test.tsx).
  * Here it is a stand-in that reports what the panel handed it.
  */
@@ -3893,7 +3893,7 @@ describe("SetAttributesPanel — set ⇄ parallel row actions (NEO-305)", () => 
   );
 });
 
-describe("SetAttributesPanel — Also pictured on every card (NEO-528)", () => {
+describe("SetAttributesPanel — Also on every card (NEO-528)", () => {
   const STUB = "Also pictured bulk control (stub)";
 
   it.each([

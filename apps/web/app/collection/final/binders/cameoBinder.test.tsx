@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useState } from "react";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { Theme } from "@radix-ui/themes";
 import type { Card, Copy, SmartRule } from "../data/types";
@@ -18,7 +19,7 @@ vi.mock("../catalog/search", async (importOriginal) => ({
 }));
 
 import Pocket from "./Pocket";
-import RuleBuilder from "./RuleBuilder";
+import RuleBuilder, { CAMEOS_DROPPED_NOTE } from "./RuleBuilder";
 import { markOutside, paginate, sortedPages, type CameoOf, type PocketModel } from "./model";
 import { Cover } from "./parts";
 import type { OpenView } from "./openView";
@@ -127,12 +128,12 @@ describe("the binder model marks cameos", () => {
   });
 });
 
-function renderPocket(pocket: PocketModel, saleTag = false) {
+function renderPocket(pocket: PocketModel, saleTag = false, variant: "binder" | "browse" = "binder") {
   render(
     <Theme>
       <Pocket
         pocket={pocket}
-        variant="binder"
+        variant={variant}
         index={0}
         pageNumber={1}
         aimed={false}
@@ -173,6 +174,28 @@ describe("a cameo pocket", () => {
       screen.getByRole("button", { name: /Mark Clayton.*, Dan Marino is a cameo on this card, need\. Add it$/ }),
     ).toBeTruthy();
     expect(screen.getByText("Cameo").className).toBe("nb-cameo-tag");
+  });
+
+  it("in browse, a held cameo's name says who too", () => {
+    renderPocket(
+      { content: { kind: "have", card: cameoHeld, copies: [copy(cameoHeld)] }, cameo: ["Dan Marino"] },
+      false,
+      "browse",
+    );
+    expect(
+      screen.getByRole("button", { name: /Mark Clayton.*, have, Dan Marino is a cameo on this card$/ }),
+    ).toBeTruthy();
+    expect(screen.getByText("Cameo").className).toBe("nb-cameo-tag");
+  });
+
+  it("in browse, a needed cameo wears the brooch and its Add chip says who", () => {
+    renderPocket({ content: { kind: "need", card: cameoNeed }, cameo: ["Dan Marino"] }, false, "browse");
+    expect(
+      screen.getByRole("button", { name: /^Add .*Mark Clayton.*, Dan Marino is a cameo on this card$/ }),
+    ).toBeTruthy();
+    const tag = screen.getByText("Cameo");
+    expect(tag.className).toBe("nb-cameo-tag");
+    expect(tag.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("the player's own card wears no brooch", () => {
@@ -258,6 +281,44 @@ describe("Include cameos in the rule builder", () => {
     cleanup();
     renderRule({ version: 1, match: "all", terms: [{ negate: true, test: { kind: "player", playerIds: [MARINO.id] } }] });
     expect(screen.queryByRole("checkbox", { name: "Include cameos" })).toBeNull();
+  });
+
+  it("says what it adds, in the collector's words", () => {
+    renderRule(marino);
+    const box = screen.getByRole("checkbox", { name: "Include cameos" });
+    const help = document.getElementById(box.getAttribute("aria-describedby")!);
+    expect(help?.textContent).toBe(
+      "Pull in cards they only cameo on too, like a team leaders card or a teammate's highlight. Cameos get their own count.",
+    );
+  });
+
+  it("says so, politely, when an edit takes the option away with its last player line", () => {
+    function Harness() {
+      const [rule, setRule] = useState<SmartRule>({ ...marino, secondaryPlayers: true });
+      return <RuleBuilder rule={rule} names={{}} onChange={(next) => setRule(next)} showProblems={false} />;
+    }
+    render(<Harness />);
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("");
+    fireEvent.click(screen.getByRole("checkbox", { name: "Leave these out" }));
+    expect(screen.queryByRole("checkbox", { name: "Include cameos" })).toBeNull();
+    // The same node, mounted before it spoke.
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status.textContent).toBe(CAMEOS_DROPPED_NOTE);
+    // A player line again: the box is back and the note goes.
+    fireEvent.click(screen.getByRole("checkbox", { name: "Leave these out" }));
+    expect(screen.getByRole("checkbox", { name: "Include cameos" })).toBeTruthy();
+    expect(status.textContent).toBe("");
+  });
+
+  it("no note when the option was never on", () => {
+    function Harness() {
+      const [rule, setRule] = useState<SmartRule>(marino);
+      return <RuleBuilder rule={rule} names={{}} onChange={(next) => setRule(next)} showProblems={false} />;
+    }
+    render(<Harness />);
+    fireEvent.click(screen.getByRole("checkbox", { name: "Leave these out" }));
+    expect(screen.getByRole("status").textContent).toBe("");
   });
 
   it("turning the last player line around drops the option from the draft", () => {

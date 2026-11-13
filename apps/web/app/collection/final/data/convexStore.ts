@@ -259,7 +259,7 @@ function toCard(raw: CatalogCard, set: SetRef, variant: VariantRef): Card {
     variant,
     cardNumber: raw.cardNumber,
     players: raw.players.map((p) => ({ id: p._id, name: p.name, ...(p.nameOnCard ? { nameOnCard: p.nameOnCard } : {}) })),
-    // NEO-528 — "Also pictured": absent when the card pictures no one else.
+    // NEO-528 — "Also on this card": absent when the card pictures no one else.
     ...(raw.secondaryPlayers?.length
       ? { secondaryPlayers: raw.secondaryPlayers.map((p) => ({ id: p._id, name: p.name })) }
       : {}),

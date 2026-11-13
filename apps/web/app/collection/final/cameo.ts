@@ -6,8 +6,8 @@ import type { Card, SmartRule } from "./data/types";
  * "Include cameos" option). The words the binder, list rows and Find cards
  * use for it, kept in one place so every surface reads the same.
  *
- * The collector never sees "secondary": it is a Cameo (tag), "Also pictured"
- * (card detail) and "Include cameos" (the rule's option).
+ * The collector never sees "secondary": it is a Cameo (tag), "Also on this
+ * card" (card detail) and "Include cameos" (the rule's option).
  */
 
 /**

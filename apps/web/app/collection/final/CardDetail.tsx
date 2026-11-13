@@ -892,7 +892,8 @@ function locationNamesAHome(location: string | undefined, homes: readonly NamedB
  */
 /**
  * NEO-528 — who else is pictured on the card besides its own players (a
- * teammate on a team leaders card): read-only, "Also pictured: Dan Marino".
+ * teammate on a team leaders card): read-only, "Also on this card: Dan
+ * Marino".
  * Nothing at all when the card pictures no one else. An admin sets it in the
  * set builder; a smart binder with "Include cameos" takes the card in for
  * them.
@@ -901,7 +902,7 @@ export function AlsoPicturedRow({ players }: { players?: readonly { name: string
   if (!players?.length) return null;
   return (
     <>
-      <dt className="text-ink-3">Also pictured</dt>
+      <dt className="text-ink-3">Also on this card</dt>
       <dd className="min-w-0 text-ink-2 [overflow-wrap:anywhere]">{players.map((p) => p.name).join(", ")}</dd>
     </>
   );

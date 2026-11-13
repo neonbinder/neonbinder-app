@@ -16,6 +16,8 @@ import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import { insertTestCard } from "../lib/testing/card-row";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import {
+  BULK_CHECKLIST_CHANGED,
+  BULK_MISSING_PLAYER,
   BULK_PAGE,
   TOO_MANY_SECONDARY_PLAYERS,
   planSecondaryPlayerIds,
@@ -175,6 +177,36 @@ describe("setSecondaryPlayers (one card)", () => {
     expect(await linksOf(s, s.fx.strawberry2)).toEqual([]);
   });
 
+  test("refuses a list past twice the cap before reading the card or any player", async () => {
+    const s = await setup();
+    // A card that is gone: were the card read first, this would be "isn't in
+    // NB anymore". The same id repeated: were the list deduped first, it
+    // would be one player and fit.
+    const gone = await s.t.run(async (ctx) => {
+      const id = await insertTestCard(ctx, {
+        selectorOptionId: s.fx.futureStarsId,
+        cardNumber: "GONE-1",
+        cardName: "Gone",
+        platformData: {},
+        sortOrder: 99,
+        lastUpdated: NOW,
+      });
+      await ctx.db.delete(id);
+      return id;
+    });
+    const playerIds = Array.from({ length: 2 * MAX_CARD_PLAYERS + 1 }, () => s.fx.goodenId);
+    await expect(
+      s.admin.mutation(api.cardSecondaryPlayers.setSecondaryPlayers, { cardId: gone, playerIds }),
+    ).rejects.toThrow(TOO_MANY_SECONDARY_PLAYERS);
+    // Exactly twice the cap still reaches the card (and its own refusal).
+    await expect(
+      s.admin.mutation(api.cardSecondaryPlayers.setSecondaryPlayers, {
+        cardId: gone,
+        playerIds: playerIds.slice(1),
+      }),
+    ).rejects.toThrow(/isn't in NB anymore/);
+  });
+
   test("is admin-only", async () => {
     const s = await setup();
     await expect(
@@ -310,18 +342,101 @@ describe("the bulk control (a checklist and its parallels)", () => {
     expect((await cardOf(s, s.fx.gold1)).secondaryPlayerIds).toEqual(full);
   });
 
+  test("each marker names the row it was handed out for", async () => {
+    const s = await setup();
+    const args = { variantId: s.fx.baseId, playerId: s.fx.strawberryId };
+    const first = await s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, { ...args, cursor: null });
+    expect(JSON.parse(first.cursor!)).toEqual({ i: 1, t: s.fx.goldId, c: null });
+  });
+
+  test("a parallel added between pages shifts the rows, and the next page is refused rather than walked as the wrong row", async () => {
+    const s = await setup();
+    // A second Parallel variant type with its own parallel, so the walk is
+    // Base, Gold Refractor (Parallels), Silver (Parallel).
+    const silverCard = await s.t.run(async (ctx) => {
+      const typeId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Parallel",
+        platformData: {},
+        isCustom: false,
+        children: [],
+        parentId: s.fx.setId,
+        lastUpdated: NOW,
+      } as never);
+      const silverId = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Silver",
+        platformData: {},
+        isCustom: false,
+        children: [],
+        parentId: typeId,
+        lastUpdated: NOW,
+      } as never);
+      return insertTestCard(ctx, {
+        selectorOptionId: silverId,
+        cardNumber: "1",
+        cardName: "Silver",
+        platformData: {},
+        sortOrder: 1,
+        lastUpdated: NOW,
+      });
+    });
+    const args = { variantId: s.fx.baseId, playerId: s.fx.strawberryId };
+    const fn = api.cardSecondaryPlayers.addSecondaryPlayerToVariant;
+    const p1 = await s.admin.mutation(fn, { ...args, cursor: null });
+    const p2 = await s.admin.mutation(fn, { ...args, cursor: p1.cursor });
+    expect(p2.targetId).toBe(s.fx.goldId);
+    expect(p2.cursor).not.toBeNull();
+    // Now a new parallel lands under the first Parallels type: it sorts after
+    // Gold Refractor and BEFORE Silver, so index 2 is no longer Silver.
+    await s.t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Blue",
+        platformData: {},
+        isCustom: false,
+        children: [],
+        parentId: s.fx.parallelsTypeId,
+        lastUpdated: NOW,
+      } as never),
+    );
+    await expect(s.admin.mutation(fn, { ...args, cursor: p2.cursor })).rejects.toThrow(BULK_CHECKLIST_CHANGED);
+    expect((await cardOf(s, silverCard)).secondaryPlayerIds).toBeUndefined();
+  });
+
+  test("a player deleted before a page is refused in the operator's words", async () => {
+    const s = await setup();
+    const gone = await newPlayer(s, "Gone Player");
+    await s.t.run(async (ctx) => ctx.db.delete(gone));
+    await expect(
+      s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, {
+        variantId: s.fx.baseId,
+        playerId: gone,
+        cursor: null,
+      }),
+    ).rejects.toThrow(BULK_MISSING_PLAYER);
+  });
+
   test("refuses a marker it did not hand out, a non-card row, and a non-admin", async () => {
     const s = await setup();
     const args = { variantId: s.fx.baseId, playerId: s.fx.goodenId };
     await expect(
       s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, { ...args, cursor: "nope" }),
-    ).rejects.toThrow(/progress marker/);
+    ).rejects.toThrow(BULK_CHECKLIST_CHANGED);
     await expect(
       s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, {
         ...args,
-        cursor: JSON.stringify({ i: 9, c: null }),
+        cursor: JSON.stringify({ i: 9, t: s.fx.goldId, c: null }),
       }),
-    ).rejects.toThrow(/past the end/);
+    ).rejects.toThrow(BULK_CHECKLIST_CHANGED);
+    // A marker without the target it was handed out for (the pre-NEO-528
+    // audit shape) is refused too, rather than trusted by index alone.
+    await expect(
+      s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, {
+        ...args,
+        cursor: JSON.stringify({ i: 1, c: null }),
+      }),
+    ).rejects.toThrow(BULK_CHECKLIST_CHANGED);
     await expect(
       s.admin.mutation(api.cardSecondaryPlayers.addSecondaryPlayerToVariant, {
         variantId: s.fx.setId,

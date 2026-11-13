@@ -136,6 +136,9 @@ export function describeSmartRule(rule: SmartRule, names: Readonly<Record<string
   return rule.secondaryPlayers && ruleCanUseSecondaryPlayers(rule) ? `${text}, cameos included` : text;
 }
 
+/** NEO-528 — said (politely) when an edit drops the cameo option with its last player line. */
+export const CAMEOS_DROPPED_NOTE = "Include cameos is off now: no line names a player or Hall of Famers.";
+
 /** NEO-528 — the rule with its cameo option dropped when no line could use it. */
 export function withCameoOption(rule: SmartRule): SmartRule {
   if (!rule.secondaryPlayers || ruleCanUseSecondaryPlayers(rule)) return rule;
@@ -171,7 +174,18 @@ export default function RuleBuilder({
 }) {
   const id = useId();
   const problem = ruleProblem(rule);
-  const change = (next: SmartRule, more: Record<string, string>) => onChange(withCameoOption(next), more);
+  /**
+   * a11y (NEO-528) — set when an edit took away the last line Include cameos
+   * could use, so the option dropped with it: the checkbox vanishes, and the
+   * polite note below says why rather than leaving a silent gap.
+   */
+  const [cameosDropped, setCameosDropped] = useState(false);
+  const change = (next: SmartRule, more: Record<string, string>) => {
+    const kept = withCameoOption(next);
+    if (next.secondaryPlayers && !kept.secondaryPlayers) setCameosDropped(true);
+    else if (cameosDropped && ruleCanUseSecondaryPlayers(kept)) setCameosDropped(false);
+    onChange(kept, more);
+  };
   const setTerm = (i: number, term: SmartRuleTerm, more: Record<string, string> = {}) =>
     change({ ...rule, terms: rule.terms.map((t, j) => (j === i ? term : t)) }, { ...names, ...more });
   const removeTerm = (i: number) => change({ ...rule, terms: rule.terms.filter((_, j) => j !== i) }, { ...names });
@@ -236,12 +250,17 @@ export default function RuleBuilder({
               <CameoGlyph className="h-3.5 w-3 text-neon-teal-text" />
             </span>
             <span id={`${id}-cameos`} className="mt-0.5 block text-ink-2">
-              Also take cards they only show up on, like a team leaders card or a teammate&apos;s highlight. Cameos
+              Pull in cards they only cameo on too, like a team leaders card or a teammate&apos;s highlight. Cameos
               get their own count.
             </span>
           </span>
         </label>
       )}
+      {/* Mounted always, so the note is read when it fills (a live region
+          added with its text is often skipped). */}
+      <p role="status" className="text-sm text-ink-2 empty:hidden">
+        {cameosDropped && !cameosApply ? CAMEOS_DROPPED_NOTE : ""}
+      </p>
       <p role="alert" className="text-sm text-notice-warn-ink empty:hidden">
         {showProblems && problem ? problem : ""}
       </p>

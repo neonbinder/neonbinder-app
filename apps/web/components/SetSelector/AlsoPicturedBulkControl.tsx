@@ -14,10 +14,13 @@ import {
   type RunLineKind,
 } from "../modules/RunLedger";
 import PlayerPicker from "./PlayerPicker";
-import { BULK_ALSO_PICTURED_PICKER_LABELS } from "./player-picker-labels";
+import {
+  ALSO_ON_EVERY_CARD_HEADING,
+  BULK_ALSO_PICTURED_PICKER_LABELS,
+} from "./player-picker-labels";
 
 /**
- * NEO-528 — one player added to, or taken off, the "Also pictured" list of
+ * NEO-528 — one player added to, or taken off, the "Also on this card" list of
  * every card in a checklist and its parallels, from the Set Builder's
  * Attributes panel. The case it exists for: a manager's card set, a team
  * photo insert, a "Combo" checklist where the same second face is on every
@@ -202,19 +205,23 @@ export function bulkHeading(run: BulkRun): string {
   return `Stopped at ${where?.name ?? "a checklist"}. So far: ${soFar}. Run it again to finish; cards already done are skipped.`;
 }
 
+export const BULK_CHECKLIST_CHANGED_TEXT = "This checklist changed mid-way. Give it another go.";
+export const BULK_PLAYER_GONE_TEXT = "Can't find that player anymore. Pick them again.";
+
 /**
  * A refusal in the operator's words. The server's own sentences are shown as
- * they are, except the two that describe the run's bookkeeping rather than
- * anything the operator did or can see.
+ * they are (`cardSecondaryPlayers.BULK_CHECKLIST_CHANGED` and
+ * `BULK_MISSING_PLAYER` already are these two), and any older wording about
+ * the run's bookkeeping, or a player gone, is mapped onto them.
  */
 export function bulkErrorText(error: unknown): string {
   const message = userFacingMessage(error, "");
   if (!message) return "The connection dropped before these cards saved.";
-  if (/progress marker|cursor/i.test(message)) {
-    return "This checklist changed while the run was going.";
+  if (/progress marker|cursor|changed mid-way/i.test(message)) {
+    return BULK_CHECKLIST_CHANGED_TEXT;
   }
-  if (/no longer exists/i.test(message)) {
-    return "That player isn't in NB anymore. Choose them again.";
+  if (/no longer exists|can't find that player/i.test(message)) {
+    return BULK_PLAYER_GONE_TEXT;
   }
   return message;
 }
@@ -333,6 +340,9 @@ export const BULK_STOP_LABEL = "Stop after these cards";
 export const BULK_STOPPING_LABEL = "Stopping after these cards…";
 export const BULK_ADD_LABEL = "Add to every card";
 export const BULK_REMOVE_LABEL = "Take off every card";
+/** The finished ledger's close: visible "Dismiss", named apart from every notice's Dismiss. */
+export const BULK_DISMISS_LABEL = "Dismiss this run";
+const CHOOSE_FIRST = "Choose who first";
 
 type Asking = {
   op: BulkOp;
@@ -345,8 +355,8 @@ type Asking = {
 /** The hint under the heading; a parallel has no parallels of its own. */
 export function bulkHintText(level: "variantType" | "insert" | "parallel"): string {
   return level === "parallel"
-    ? "Same face on every card? Choose them once to add them to every card in this parallel, or take them off. Cards already done are skipped."
-    : "Same face on every card? Choose them once to add them to every card here and its parallels, or take them off. Cards already done are skipped.";
+    ? "Same face on every card? Pick them once to add them to every card in this parallel, or take them off. Cards that already have them are skipped."
+    : "Same face on every card? Pick them once to add them to every card here and its parallels, or take them off. Cards that already have them are skipped.";
 }
 
 export default function AlsoPicturedBulkControl({
@@ -361,7 +371,7 @@ export default function AlsoPicturedBulkControl({
   variantId: Id<"selectorOptions">;
   /** The set's sport row, for the picker. */
   sportId?: Id<"selectorOptions">;
-  /** The panel's own open state: the form shows only when it is open, a live run always. */
+  /** The panel's own open state: the form shows only when it is open, a run's ledger always. */
   expanded: boolean;
 }) {
   const convex = useConvex();
@@ -387,15 +397,21 @@ export default function AlsoPicturedBulkControl({
   const stopRef = useRef(false);
   const formRef = useRef<HTMLDivElement | null>(null);
   const ledgerRef = useRef<HTMLElement | null>(null);
-  /** Where focus goes once the confirm closes (it was inert behind it). */
+  /** Where focus goes next: the ledger, or back to the action pressed. */
   const parkRef = useRef<"ledger" | BulkOp | null>(null);
+  /** Bumped to run the park effect when nothing else it watches changed. */
+  const [parkTick, setParkTick] = useState(0);
 
   const running = run?.phase === "running";
   const busy = running || counting !== null;
+  const phase = run?.phase ?? null;
 
-  // a11y — the form is `inert` while the confirm is up, which blurs the
-  // button that opened it, so `ConfirmDialog`'s own restore captured <body>.
-  // Park focus here instead, after the commit that lifted `inert`.
+  // a11y — two moments leave focus with nowhere to be. (1) The form is
+  // `inert` while the confirm is up, which blurs the button that opened it,
+  // so `ConfirmDialog`'s own restore captured <body>: park after the commit
+  // that lifted `inert`. (2) A prep failure: the pressed action is
+  // aria-disabled (never natively disabled), so it keeps focus, but a
+  // re-render must not strand it; put it back when it is not already there.
   useEffect(() => {
     if (asking !== null || parkRef.current === null) return;
     const target = parkRef.current;
@@ -404,10 +420,36 @@ export default function AlsoPicturedBulkControl({
       ledgerRef.current?.focus({ preventScroll: true });
       return;
     }
-    formRef.current
-      ?.querySelector<HTMLButtonElement>(`[data-bulk-op="${target}"]`)
-      ?.focus();
-  }, [asking]);
+    const button = formRef.current?.querySelector<HTMLButtonElement>(
+      `[data-bulk-op="${target}"]`,
+    );
+    if (button && document.activeElement !== button) button.focus();
+  }, [asking, parkTick]);
+
+  // a11y — when a run stops running, the Stop button it carried unmounts.
+  // If focus went with it (to <body>) or still sits inside the ledger, land
+  // it on the ledger so its outcome heading is read next. Only then: a
+  // keyboard user who moved on (Tab to another field) keeps their place. In
+  // a frame, after the browser has finished moving focus off the removed
+  // node, and only if it really is on <body> (raf-focus-park-race).
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (phase === "running") {
+      wasRunning.current = true;
+      return;
+    }
+    if (!wasRunning.current) return;
+    wasRunning.current = false;
+    const frame = requestAnimationFrame(() => {
+      const ledger = ledgerRef.current;
+      if (!ledger) return;
+      const active = document.activeElement;
+      const stranded = active === null || active === document.body;
+      const insideLedger = active !== ledger && active !== null && ledger.contains(active);
+      if (stranded || insideLedger) ledger.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [phase]);
 
   const ask = async (op: BulkOp) => {
     if (!picked || !pickedName || busy) return;
@@ -421,6 +463,8 @@ export default function AlsoPicturedBulkControl({
       setAsking({ op, playerId: picked, playerName: pickedName, targets, truncated });
     } catch (e) {
       setPrepError(bulkErrorText(e));
+      parkRef.current = op;
+      setParkTick((n) => n + 1);
     } finally {
       setCounting(null);
     }
@@ -460,6 +504,16 @@ export default function AlsoPicturedBulkControl({
     setStopping(false);
   };
 
+  const dismiss = () => {
+    setRun(null);
+    // The ledger (and the focus in it) goes; the form's first action is
+    // where the next run starts. Collapsed, there is no form to land on.
+    if (expanded) {
+      parkRef.current = "add";
+      setParkTick((n) => n + 1);
+    }
+  };
+
   const scrolls = (run?.lines.length ?? 0) > SCROLL_AFTER;
   const ledgerList = run && (
     <ul className="space-y-0.5">
@@ -477,7 +531,10 @@ export default function AlsoPicturedBulkControl({
   const ledger = run && (
     // a11y — a labelled region, not a live one (the heading ticks on every
     // page); the one live line below speaks the start, the pulses and the
-    // end. `tabIndex={-1}` is where focus parks once a run starts.
+    // end. `tabIndex={-1}` is where focus parks once a run starts and ends.
+    // It stays on screen until dismissed, panel open or not: closing the
+    // panel must neither hide work still writing cards nor throw away what a
+    // finished run did.
     <section
       ref={ledgerRef}
       tabIndex={-1}
@@ -488,7 +545,7 @@ export default function AlsoPicturedBulkControl({
         <h5 id={runHeadingId} className="font-semibold tabular-nums">
           {bulkHeading(run)}
         </h5>
-        {running && (
+        {running ? (
           <button
             type="button"
             onClick={() => {
@@ -500,6 +557,15 @@ export default function AlsoPicturedBulkControl({
             className="shrink-0 rounded-sm font-semibold underline decoration-dotted hover:decoration-solid py-1.5 -my-1.5 aria-disabled:no-underline aria-disabled:cursor-not-allowed aria-disabled:opacity-75"
           >
             {stopping ? BULK_STOPPING_LABEL : BULK_STOP_LABEL}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={dismiss}
+            aria-label={BULK_DISMISS_LABEL}
+            className="shrink-0 rounded-sm font-semibold underline decoration-dotted hover:decoration-solid py-1.5 -my-1.5"
+          >
+            Dismiss
           </button>
         )}
       </div>
@@ -530,103 +596,116 @@ export default function AlsoPicturedBulkControl({
           the first 500 need a run from their own row.
         </p>
       )}
-      <LiveLine text={run.announcement} />
     </section>
   );
 
-  if (!expanded) {
-    // Collapsed, only a run in progress stays on screen: closing the panel
-    // must not hide work that is still writing cards.
-    return running ? ledger : null;
-  }
+  /**
+   * a11y — the run's one polite line, mounted before any run starts (with
+   * the control, never with the ledger) so the start announcement is read:
+   * a live region inserted already holding its text is often skipped.
+   */
+  const live = <LiveLine text={run?.announcement ?? ""} />;
 
-  const canAct = picked !== null && pickedName !== null && !busy;
+  // aria-disabled, never native `disabled`: a press while counting keeps
+  // focus on the button (native disabled would drop it to <body>), and the
+  // pre-pick state stays reachable so its title can say why.
+  const blocked = picked === null || pickedName === null || busy;
+  const blockedTitle = picked ? undefined : CHOOSE_FIRST;
 
   return (
-    <section aria-labelledby={headingId} className="space-y-2 rounded border border-rule-strong p-3">
-      <h4 id={headingId} className="text-xs font-semibold text-ink">
-        Also pictured on every card
-      </h4>
-      <p id={hintId} className="text-[11px] text-ink-3">
-        {bulkHintText(level)}
-      </p>
-      <div
-        ref={formRef}
-        inert={asking !== null}
-        className="flex flex-wrap items-center gap-2"
-      >
-        <PlayerPicker
-          value={picked ? [picked] : []}
-          // One player at a time: a new pick replaces the last.
-          onChange={(next) => {
-            setPrepError(null);
-            setPicked(next.length > 0 ? next[next.length - 1] : null);
-          }}
-          sportId={sportId}
-          disabled={busy}
-          labels={BULK_ALSO_PICTURED_PICKER_LABELS}
-          ariaDescribedBy={hintId}
-        />
-        <NeonButton
-          type="button"
-          size="1"
-          data-bulk-op="add"
-          disabled={!canAct}
-          title={picked ? undefined : "Choose who first"}
-          onClick={() => void ask("add")}
-        >
-          {counting === "add" ? "Counting cards…" : BULK_ADD_LABEL}
-        </NeonButton>
-        <NeonButton
-          type="button"
-          size="1"
-          variant="negative"
-          outline
-          data-bulk-op="remove"
-          disabled={!canAct}
-          title={picked ? undefined : "Choose who first"}
-          onClick={() => void ask("remove")}
-        >
-          {counting === "remove" ? "Counting cards…" : BULK_REMOVE_LABEL}
-        </NeonButton>
-      </div>
-      {prepError && (
-        <p role="alert" className="text-[11px] text-notice-danger-ink">
-          {prepError}
-        </p>
-      )}
-      {asking && (
-        <ConfirmDialog
-          title={
-            asking.op === "add"
-              ? `Add ${asking.playerName} to every card in ${scopeText(asking.targets)}?`
-              : `Take ${asking.playerName} off every card in ${scopeText(asking.targets)}?`
-          }
-          description={
-            asking.op === "add"
-              ? `Each card lists ${asking.playerName} as also pictured. Cards that are ${possessive(asking.playerName)} own, or already list them, are left as they are.`
-              : `${asking.playerName} comes off the also-pictured list of every card that has them. Nothing else on the cards changes.`
-          }
-          confirmLabel={
-            asking.op === "add"
-              ? `Yes, add ${asking.playerName}`
-              : `Yes, take ${asking.playerName} off`
-          }
-          busyLabel="Starting…"
-          busy={false}
-          onConfirm={() => {
-            const plan = asking;
-            parkRef.current = "ledger";
-            setAsking(null);
-            void go(plan);
-          }}
-          onCancel={() => {
-            parkRef.current = asking.op;
-            setAsking(null);
-          }}
-        />
+    <>
+      {expanded && (
+        <section aria-labelledby={headingId} className="space-y-2 rounded border border-rule-strong p-3">
+          <h4 id={headingId} className="text-xs font-semibold text-ink">
+            {ALSO_ON_EVERY_CARD_HEADING}
+          </h4>
+          <p id={hintId} className="text-[11px] text-ink-3">
+            {bulkHintText(level)}
+          </p>
+          <div
+            ref={formRef}
+            inert={asking !== null}
+            className="flex flex-wrap items-center gap-2"
+          >
+            <PlayerPicker
+              value={picked ? [picked] : []}
+              // One player at a time: a new pick replaces the last.
+              onChange={(next) => {
+                setPrepError(null);
+                setPicked(next.length > 0 ? next[next.length - 1] : null);
+              }}
+              sportId={sportId}
+              disabled={busy}
+              labels={BULK_ALSO_PICTURED_PICKER_LABELS}
+              ariaDescribedBy={hintId}
+            />
+            <NeonButton
+              type="button"
+              size="1"
+              data-bulk-op="add"
+              aria-disabled={blocked || undefined}
+              title={blockedTitle}
+              onClick={() => {
+                if (!blocked) void ask("add");
+              }}
+            >
+              {counting === "add" ? "Counting cards…" : BULK_ADD_LABEL}
+            </NeonButton>
+            <NeonButton
+              type="button"
+              size="1"
+              variant="negative"
+              outline
+              data-bulk-op="remove"
+              aria-disabled={blocked || undefined}
+              title={blockedTitle}
+              onClick={() => {
+                if (!blocked) void ask("remove");
+              }}
+            >
+              {counting === "remove" ? "Counting cards…" : BULK_REMOVE_LABEL}
+            </NeonButton>
+          </div>
+          {prepError && (
+            <p role="alert" className="text-[11px] text-notice-danger-ink">
+              {prepError}
+            </p>
+          )}
+          {asking && (
+            <ConfirmDialog
+              title={
+                asking.op === "add"
+                  ? `Add ${asking.playerName} to every card in ${scopeText(asking.targets)}?`
+                  : `Take ${asking.playerName} off every card in ${scopeText(asking.targets)}?`
+              }
+              description={
+                asking.op === "add"
+                  ? `Each card gets ${asking.playerName} under Also on this card. Cards that are ${possessive(asking.playerName)} own, or already have them, are left as they are.`
+                  : `${asking.playerName} comes off Also on this card on every card that has them. Nothing else on the cards changes.`
+              }
+              confirmLabel={
+                asking.op === "add"
+                  ? `Yes, add ${asking.playerName}`
+                  : `Yes, take ${asking.playerName} off`
+              }
+              busyLabel="Starting…"
+              busy={false}
+              onConfirm={() => {
+                const plan = asking;
+                parkRef.current = "ledger";
+                setAsking(null);
+                void go(plan);
+              }}
+              onCancel={() => {
+                parkRef.current = asking.op;
+                setAsking(null);
+              }}
+            />
+          )}
+        </section>
       )}
       {ledger}
-    </section>
+      {live}
+    </>
   );
 }

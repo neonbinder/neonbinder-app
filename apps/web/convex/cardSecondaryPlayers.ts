@@ -44,15 +44,31 @@ type ReadCtx = Pick<QueryCtx, "db">;
 type WriteCtx = Pick<MutationCtx, "db">;
 type CardRow = Doc<"cardChecklist">;
 
-/** Cards one bulk page reads and writes (each costs ~3 database calls). */
+/**
+ * Cards one bulk page reads and writes. A card it changes costs up to ~22
+ * database reads: the card itself, one `get` per player its new list names
+ * (up to `MAX_CARD_PLAYERS`, so the writer can refuse a deleted one) and one
+ * read of its index rows by `by_card`; plus a few writes. A card it skips
+ * costs only its own read. On top of the cards, every page re-reads
+ * `bulkTargets`: the variant, up to `MAX_VARIANT_TYPES` variant types and up
+ * to `MAX_BULK_PARALLELS` parallel rows. So a page reads at most about
+ * 100 x 22 + 601 documents.
+ */
 export const BULK_PAGE = 100;
 /** Parallels a bulk run walks under one checklist (the parallel build's cap). */
 export const MAX_BULK_PARALLELS = 500;
 /** Variant types read under one set when finding a Base's parallels. */
 const MAX_VARIANT_TYPES = 100;
 
-export const TOO_MANY_SECONDARY_PLAYERS = `A card can list at most ${MAX_CARD_PLAYERS} also-pictured players.`;
+export const TOO_MANY_SECONDARY_PLAYERS = `A card can have at most ${MAX_CARD_PLAYERS} people under Also on this card.`;
 const MISSING_PLAYER = "One of the selected players no longer exists.";
+/** A bulk run's player was deleted mid-way (or before the first page). */
+export const BULK_MISSING_PLAYER = "Can't find that player anymore. Pick them again.";
+/**
+ * A bulk cursor this run's checklist no longer matches: its targets changed
+ * (a parallel added or removed) or the cursor is not one a page handed out.
+ */
+export const BULK_CHECKLIST_CHANGED = "This checklist changed mid-way. Give it another go.";
 
 // ───────────────────────────────────────────────────────────────────────────
 // Pure pieces
@@ -227,6 +243,12 @@ export const setSecondaryPlayers = mutation({
   }),
   handler: async (ctx, args) => {
     const userId = await requireAdmin(ctx);
+    // Twice the cap leaves room for the card's own players riding along (the
+    // writer strips them); past that nothing can fit, so refuse before
+    // reading the card or a single player.
+    if (args.playerIds.length > 2 * MAX_CARD_PLAYERS) {
+      throw new ConvexError(TOO_MANY_SECONDARY_PLAYERS);
+    }
     const card = await ctx.db.get(args.cardId);
     if (!card) throw new ConvexError("That card isn't in NB anymore.");
     const result = await setCardSecondaryPlayers(ctx, card, args.playerIds);
@@ -340,22 +362,31 @@ const bulkPageValidator = v.object({
 
 type BulkPage = typeof bulkPageValidator.type;
 
-function parseCursor(raw: string | null): { i: number; c: string | null } {
-  if (raw === null) return { i: 0, c: null };
+/**
+ * Where a run is: `i` the target's index in `bulkTargets` order, `t` that
+ * target's id (so a parallel added or removed between pages, which shifts
+ * every index after it, is refused rather than walked as the wrong row), and
+ * `c` the page cursor inside it. Null for the first page.
+ */
+type BulkCursor = { i: number; t: string | null; c: string | null };
+
+export function parseCursor(raw: string | null): BulkCursor {
+  if (raw === null) return { i: 0, t: null, c: null };
   try {
-    const parsed = JSON.parse(raw) as { i?: unknown; c?: unknown };
+    const parsed = JSON.parse(raw) as { i?: unknown; t?: unknown; c?: unknown };
     if (
       typeof parsed.i === "number" &&
       Number.isInteger(parsed.i) &&
       parsed.i >= 0 &&
+      typeof parsed.t === "string" &&
       (parsed.c === null || typeof parsed.c === "string")
     ) {
-      return { i: parsed.i, c: parsed.c };
+      return { i: parsed.i, t: parsed.t, c: parsed.c };
     }
   } catch {
     // fall through
   }
-  throw new ConvexError("That progress marker is not one this run handed out. Start again.");
+  throw new ConvexError(BULK_CHECKLIST_CHANGED);
 }
 
 async function bulkPage(
@@ -364,11 +395,14 @@ async function bulkPage(
   op: "add" | "remove",
 ): Promise<BulkPage> {
   const userId = await requireAdmin(ctx);
-  if (op === "add" && !(await ctx.db.get(args.playerId))) throw new ConvexError(MISSING_PLAYER);
-  const { targets } = await bulkTargets(ctx, args.variantId);
+  if (op === "add" && !(await ctx.db.get(args.playerId))) throw new ConvexError(BULK_MISSING_PLAYER);
   const at = parseCursor(args.cursor);
-  if (at.i >= targets.length) {
-    throw new ConvexError("That progress marker is past the end of this checklist. Start again.");
+  const { targets } = await bulkTargets(ctx, args.variantId);
+  // The cursor names the row it was handed out for; a checklist whose
+  // parallels moved under the run would otherwise send this page into a
+  // different row's cards with another row's page cursor.
+  if (at.i >= targets.length || (at.t !== null && (targets[at.i]._id as string) !== at.t)) {
+    throw new ConvexError(BULK_CHECKLIST_CHANGED);
   }
   const target = targets[at.i];
   const page = await ctx.db
@@ -417,9 +451,9 @@ async function bulkPage(
     }
   }
   const cursor = !page.isDone
-    ? JSON.stringify({ i: at.i, c: page.continueCursor })
+    ? JSON.stringify({ i: at.i, t: target._id, c: page.continueCursor })
     : at.i + 1 < targets.length
-      ? JSON.stringify({ i: at.i + 1, c: null })
+      ? JSON.stringify({ i: at.i + 1, t: targets[at.i + 1]._id, c: null })
       : null;
   // Ids and counts only.
   console.log(

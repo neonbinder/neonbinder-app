@@ -95,7 +95,13 @@ export class FactReader {
     return this.players.get(key) ?? null;
   }
 
-  async facts(card: CardRow): Promise<CardFacts> {
+  /**
+   * `cameos`: the rule's cameo option is on (`StoredRule.secondaryPlayers`).
+   * Off, the card's also-on-this-card players are never read: a binder that
+   * did not ask for cameos costs not one extra `get` for them, and its facts
+   * carry none (`ruleFit` would ignore them anyway).
+   */
+  async facts(card: CardRow, { cameos }: { cameos: boolean }): Promise<CardFacts> {
     const playerIds = new Set<string>();
     for (const id of card.playerIds ?? []) playerIds.add(id as string);
     for (const link of card.playerLinks ?? []) playerIds.add(link.playerId as string);
@@ -113,7 +119,7 @@ export class FactReader {
     // stay on the card's own players (`ruleFit`).
     const secondaryPlayerIds = new Set<string>();
     let secondaryHallOfFame = false;
-    for (const id of card.secondaryPlayerIds ?? []) {
+    for (const id of cameos ? (card.secondaryPlayerIds ?? []) : []) {
       if (playerIds.has(id as string) || secondaryPlayerIds.has(id as string)) continue;
       const player = await this.player(id);
       if (!player) continue;
@@ -146,7 +152,8 @@ export class FactReader {
 
   /** NEO-528 — how the card fits the rule: on its own players, as a cameo, or not (null). */
   async fit(rule: Rule, card: CardRow): Promise<RuleFit | null> {
-    return ruleFit(rule as StoredRule, await this.facts(card));
+    const stored = rule as StoredRule;
+    return ruleFit(stored, await this.facts(card, { cameos: stored.secondaryPlayers === true }));
   }
 
   async matches(rule: Rule, card: CardRow): Promise<boolean> {

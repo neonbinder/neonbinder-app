@@ -193,7 +193,7 @@ const RESULT_STINT_LIMIT = 3;
  * the quick-add form in `CardChecklist`, neither hiding the other).
  *
  * NEO-528 — and now every name the picker renders, chips and options
- * included, because the card drawer mounts TWO: Players and "Also pictured".
+ * included, because the card drawer mounts TWO: Players and "Also on this card".
  * The same player can never be on both lists (the server keeps a card's own
  * players out of its also-pictured list), but a spec's `Remove player X` or
  * `/^Remove player /` matches by substring, so the second picker's chips must
@@ -706,7 +706,10 @@ export default function PlayerPicker({
           aria-label={labels.trigger}
           aria-describedby={ariaDescribedBy}
           aria-expanded={popoverOpen}
-          className="px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2"
+          // a11y (WCAG 2.5.8, NEO-528) — a real 24px box, not a hit-area
+          // pseudo: text-xs + py-0.5 + the border drew 22px. Every caller
+          // takes it from here, never per call site.
+          className="inline-flex min-h-6 items-center px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2"
         >
           + {labels.triggerText}
         </button>

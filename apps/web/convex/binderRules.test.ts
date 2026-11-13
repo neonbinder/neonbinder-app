@@ -12,7 +12,7 @@ import { api, internal } from "./_generated/api";
 import schema, { collectionRuleValidator } from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import type { Id } from "./_generated/dataModel";
-import { binderNeeds } from "./binderRules";
+import { FactReader, MAX_MATCH_CARDS, binderNeeds } from "./binderRules";
 import { CatalogReader } from "./lib/catalogView";
 import { setCardSecondaryPlayers } from "./cardSecondaryPlayers";
 
@@ -953,5 +953,62 @@ describe("NEO-528: cameos (also-pictured players) in a smart binder", () => {
     expect(
       await s.me.query(api.binderRules.ruleFits, { containerId: id, cardIds: [s.fx.gooden1, s.fx.strawberry2] }),
     ).toEqual([{ cardId: s.fx.strawberry2 }]);
+  });
+
+  test("another collector asking about my cameo binder learns nothing, and past 200 ids is refused", async () => {
+    const s = await setup();
+    await giveCameo(s);
+    const id = await smartBinder(s, withCameos(s));
+    const cardIds = [s.fx.gooden1, s.fx.strawberry2];
+    // The owner's binder does take both, one as a cameo.
+    expect(await s.me.query(api.binderRules.ruleFits, { containerId: id, cardIds })).toEqual([
+      { cardId: s.fx.gooden1 },
+      { cardId: s.fx.strawberry2, secondary: true },
+    ]);
+    expect(await s.them.query(api.binderRules.ruleFits, { containerId: id, cardIds })).toEqual([]);
+    expect(await s.them.query(api.binderRules.matchingCards, { containerId: id, cardIds })).toEqual([]);
+
+    const tooMany = Array.from({ length: MAX_MATCH_CARDS + 1 }, () => s.fx.strawberry2 as string);
+    await expect(s.me.query(api.binderRules.ruleFits, { containerId: id, cardIds: tooMany })).rejects.toThrow(
+      /At most 200 cards/,
+    );
+    await expect(s.me.query(api.binderRules.matchingCards, { containerId: id, cardIds: tooMany })).rejects.toThrow(
+      /At most 200 cards/,
+    );
+    // Exactly the cap is fine.
+    expect(
+      await s.me.query(api.binderRules.ruleFits, { containerId: id, cardIds: tooMany.slice(1) }),
+    ).toHaveLength(MAX_MATCH_CARDS);
+  });
+
+  test("a binder without the cameo option never reads the card's cameo players", async () => {
+    const s = await setup();
+    await giveCameo(s);
+    const read = (cameos: boolean) =>
+      s.t.run(async (ctx) => {
+        const gets: string[] = [];
+        const db = new Proxy(ctx.db, {
+          get(target, prop) {
+            const value = Reflect.get(target, prop, target) as unknown;
+            if (prop === "get") {
+              return async (...args: unknown[]) => {
+                gets.push(String(args[args.length - 1]));
+                return (value as (...a: unknown[]) => unknown).apply(target, args);
+              };
+            }
+            return typeof value === "function" ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+          },
+        });
+        const card = (await ctx.db.get(s.fx.strawberry2))!;
+        const facts = await new FactReader({ ...ctx, db } as never).facts(card, { cameos });
+        return { gets, secondary: [...(facts.secondaryPlayerIds ?? [])] };
+      });
+    const off = await read(false);
+    expect(off.secondary).toEqual([]);
+    expect(off.gets).not.toContain(s.fx.goodenId);
+    // The control: on, the same card reads Gooden and reports him.
+    const on = await read(true);
+    expect(on.secondary).toEqual([s.fx.goodenId]);
+    expect(on.gets).toContain(s.fx.goodenId);
   });
 });

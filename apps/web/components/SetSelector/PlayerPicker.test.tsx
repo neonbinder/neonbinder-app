@@ -96,6 +96,8 @@ import PlayerPicker from "./PlayerPicker";
 import {
   ALSO_PICTURED_PICKER_LABELS,
   BULK_ALSO_PICTURED_PICKER_LABELS,
+  ALSO_ON_EVERY_CARD_HEADING,
+  ALSO_ON_THIS_CARD_HEADING,
   DEFAULT_PLAYER_PICKER_LABELS,
   type ResolvedPlayerPickerLabels,
 } from "./player-picker-labels";
@@ -1214,6 +1216,13 @@ describe("PlayerPicker — label sets (NEO-528)", () => {
     "Player results for the new card",
   ];
 
+  /**
+   * NEO-528 — the headings the two reworded pickers sit under, and the card
+   * drawer's other "Also …" section. A spec finds a heading by its text, so
+   * no picker name may contain one (or sit inside one) either.
+   */
+  const HEADINGS = [ALSO_ON_THIS_CARD_HEADING, ALSO_ON_EVERY_CARD_HEADING, "Also appears in"];
+
   /** Every accessible name a set produces, for a sample name. */
   function namesOf(labels: ResolvedPlayerPickerLabels, name: string): string[] {
     return [
@@ -1245,6 +1254,8 @@ describe("PlayerPicker — label sets (NEO-528)", () => {
         for (const n of namesOf(labels, sample)) all.push([set, n.toLowerCase()]);
       }
       for (const n of QUICK_ADD_CONTAINER) all.push(["quick add", n.toLowerCase()]);
+      // Each heading is its own group: they must stay apart from each other too.
+      for (const n of HEADINGS) all.push([`heading ${n}`, n.toLowerCase()]);
       for (const [setA, a] of all) {
         for (const [setB, b] of all) {
           if (setA === setB) continue;
@@ -1257,10 +1268,38 @@ describe("PlayerPicker — label sets (NEO-528)", () => {
     },
   );
 
+  it("the card drawer's set reads as the E2E specs target it (NEO-528)", () => {
+    const L = ALSO_PICTURED_PICKER_LABELS;
+    expect(ALSO_ON_THIS_CARD_HEADING).toBe("Also on this card");
+    expect(ALSO_ON_EVERY_CARD_HEADING).toBe("Also on every card");
+    expect([L.root, L.trigger, L.triggerText, L.search, L.results, L.placeholder, L.emptyHint, L.sportSwitch]).toEqual([
+      "Others on this card",
+      "Add someone else to this card",
+      "Add someone else",
+      "Find someone else for this card",
+      "Someone-else matches",
+      "Who else is on this card?",
+      "Type a name…",
+      "Sport for finding someone else",
+    ]);
+    expect([L.chip("Dan Marino"), L.remove("Dan Marino"), L.option("Dan Marino"), L.create("Dan Marino")]).toEqual([
+      "On this card too: Dan Marino",
+      "Take Dan Marino off this card's cameos",
+      "Include Dan Marino",
+      "Create and include Dan Marino",
+    ]);
+  });
+
   it("each override set keeps its visible trigger text inside the trigger's name (SC 2.5.3)", () => {
     for (const [, labels] of SETS) {
       expect(labels.trigger.toLowerCase()).toContain(labels.triggerText.toLowerCase());
     }
+  });
+
+  it("draws the + Add trigger as a 24px target for every caller (WCAG 2.5.8)", () => {
+    renderPicker();
+    const trigger = screen.getByRole("button", { name: "Add player" });
+    expect(trigger.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-h-6", "inline-flex", "items-center"]));
   });
 
   it("with no labels, renders exactly the names the existing specs target", () => {

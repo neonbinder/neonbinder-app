@@ -44,8 +44,10 @@ import NeonButton from "@/components/modules/NeonButton";
  *
  * NEO-528 — a card a smart binder takes in only as a cameo (`pocket.cameo`)
  * wears the Cameo brooch on the sleeve's left edge (`PocketCameoTag`), on a
- * card it holds and on a need sleeve alike, and its name says who: ", Dan
- * Marino is a cameo on this card".
+ * card it holds and on a need sleeve alike, in a binder and in browse, and
+ * its name says who: ", Dan Marino is a cameo on this card" ends the
+ * pocket's own name, or the Add chip's on a browse need sleeve (the one
+ * control that sleeve has).
  *
  * `ReadOnlyPocket` (NEO-444) is a visitor's sleeve on a share link: no drop,
  * no drag, nothing to fill or add. A filled pocket only opens the card; every
@@ -204,7 +206,7 @@ export default function Pocket({
             <button
               type="button"
               aria-haspopup="dialog"
-              aria-label={`${havePocketLabel(card, copies)}, have`}
+              aria-label={`${havePocketLabel(card, copies)}, have${cameo}`}
               onClick={open}
               className="relative block w-full rounded focus-visible:outline-none"
             >
@@ -244,7 +246,8 @@ export default function Pocket({
         <IdTooltip content={slip(card)}>
           <div ref={setNodeRef} className={`p2-sleeve${ring}`}>
             <CardFace model={card} size="fill" state="need" />
-            <AddChip label={`Add ${cardLabel(card)}`} text="Add" onClick={() => onAdd(card)} />
+            {pocket.cameo && <PocketCameoTag />}
+            <AddChip label={`Add ${cardLabel(card)}${cameo}`} text="Add" onClick={() => onAdd(card)} />
           </div>
         </IdTooltip>
       );

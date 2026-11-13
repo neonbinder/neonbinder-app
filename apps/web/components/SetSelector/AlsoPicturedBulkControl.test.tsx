@@ -1,5 +1,5 @@
 /**
- * NEO-528 — the Attributes panel's "Also pictured on every card" control:
+ * NEO-528 — the Attributes panel's "Also on every card" control:
  * the pure run steps (what each page does to the ledger, and the words), and
  * the control end to end against a stubbed client that pages like the
  * server (`cardSecondaryPlayers.addSecondaryPlayerToVariant` and friends).
@@ -60,6 +60,9 @@ vi.mock("./PlayerPicker", () => ({
 
 import AlsoPicturedBulkControl, {
   BULK_ADD_LABEL,
+  BULK_CHECKLIST_CHANGED_TEXT,
+  BULK_DISMISS_LABEL,
+  BULK_PLAYER_GONE_TEXT,
   BULK_REMOVE_LABEL,
   BULK_STOP_LABEL,
   applyPage,
@@ -75,7 +78,10 @@ import AlsoPicturedBulkControl, {
   type BulkPage,
   type BulkTarget,
 } from "./AlsoPicturedBulkControl";
-import { BULK_ALSO_PICTURED_PICKER_LABELS } from "./player-picker-labels";
+import {
+  ALSO_ON_EVERY_CARD_HEADING,
+  BULK_ALSO_PICTURED_PICKER_LABELS,
+} from "./player-picker-labels";
 import type { Id } from "../../convex/_generated/dataModel";
 
 const VARIANT = "variant-1" as unknown as Id<"selectorOptions">;
@@ -154,15 +160,24 @@ describe("also-pictured bulk run — the words", () => {
   });
 
   it("never shows the run's bookkeeping words to the operator", () => {
+    expect(BULK_CHECKLIST_CHANGED_TEXT).toBe("This checklist changed mid-way. Give it another go.");
+    expect(BULK_PLAYER_GONE_TEXT).toBe("Can't find that player anymore. Pick them again.");
+    // The server's own words now (`cardSecondaryPlayers.BULK_*`), shown as they are.
+    expect(bulkErrorText(new ConvexError(BULK_CHECKLIST_CHANGED_TEXT))).toBe(BULK_CHECKLIST_CHANGED_TEXT);
+    expect(bulkErrorText(new ConvexError(BULK_PLAYER_GONE_TEXT))).toBe(BULK_PLAYER_GONE_TEXT);
+    // An older server's wording is mapped onto them.
     expect(
       bulkErrorText(new ConvexError("That progress marker is not one this run handed out. Start again.")),
-    ).toBe("This checklist changed while the run was going.");
+    ).toBe(BULK_CHECKLIST_CHANGED_TEXT);
     expect(
       bulkErrorText(new ConvexError("That progress marker is past the end of this checklist. Start again.")),
-    ).toBe("This checklist changed while the run was going.");
+    ).toBe(BULK_CHECKLIST_CHANGED_TEXT);
     expect(bulkErrorText(new ConvexError("One of the selected players no longer exists."))).toBe(
-      "That player isn't in NB anymore. Choose them again.",
+      BULK_PLAYER_GONE_TEXT,
     );
+    for (const text of [BULK_CHECKLIST_CHANGED_TEXT, BULK_PLAYER_GONE_TEXT]) {
+      expect(text).not.toMatch(/progress marker|cursor|\brun\b|\bNB\b/);
+    }
     expect(bulkErrorText(new Error("Server Error"))).toBe(
       "The connection dropped before these cards saved.",
     );
@@ -240,9 +255,9 @@ describe("also-pictured bulk run — the ledger steps", () => {
   it("fail: the line being worked on carries the reason, the rest are not reached", () => {
     let run = startRun("remove", "Dan Marino", TARGETS, false);
     run = applyPage(run, page({ targetIndex: 1, cursor: "c", scanned: 4, changed: 4 }));
-    run = failRun(run, "This checklist changed while the run was going.");
+    run = failRun(run, BULK_CHECKLIST_CHANGED_TEXT);
     expect(run.lines.map((l) => l.kind)).toEqual(["skipped", "failed", "stopped"]);
-    expect(bulkLineText(run.lines[1], run)).toBe("Gold — This checklist changed while the run was going.");
+    expect(bulkLineText(run.lines[1], run)).toBe(`Gold — ${BULK_CHECKLIST_CHANGED_TEXT}`);
     expect(bulkHeading(run)).toBe(
       "Stopped at Gold. So far: took Dan Marino off 4 cards. Run it again to finish; cards already done are skipped.",
     );
@@ -290,14 +305,49 @@ describe("AlsoPicturedBulkControl", () => {
 
   it("names itself, describes its picker with the hint, and holds both actions until someone is chosen", () => {
     renderControl();
-    expect(screen.getByRole("region", { name: "Also pictured on every card" })).toBeTruthy();
+    expect(ALSO_ON_EVERY_CARD_HEADING).toBe("Also on every card");
+    expect(screen.getByRole("region", { name: ALSO_ON_EVERY_CARD_HEADING })).toBeTruthy();
     const hint = screen.getByText(bulkHintText("insert"));
+    expect(hint.textContent).toBe(
+      "Same face on every card? Pick them once to add them to every card here and its parallels, or take them off. Cards that already have them are skipped.",
+    );
     expect(
       screen.getByLabelText(BULK_ALSO_PICTURED_PICKER_LABELS.root).getAttribute("data-described-by"),
     ).toBe(hint.id);
-    expect((addButton() as HTMLButtonElement).disabled).toBe(true);
-    expect((removeButton() as HTMLButtonElement).disabled).toBe(true);
-    expect(addButton().getAttribute("title")).toBe("Choose who first");
+    // Held with aria-disabled, never native disabled: still reachable, so its title can say why.
+    for (const button of [addButton(), removeButton()]) {
+      expect((button as HTMLButtonElement).disabled).toBe(false);
+      expect(button.getAttribute("aria-disabled")).toBe("true");
+      expect(button.getAttribute("title")).toBe("Choose who first");
+    }
+  });
+
+  it("a press before anyone is chosen does nothing and keeps focus on the button", () => {
+    renderControl();
+    act(() => addButton().focus());
+    fireEvent.click(addButton());
+    fireEvent.click(removeButton());
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(addButton());
+  });
+
+  it("while it counts, the pressed action stays focused and a second press asks nothing more", async () => {
+    let answer: (v: unknown) => void = () => {};
+    mockQuery.mockImplementation(() => new Promise((resolve) => (answer = resolve)));
+    renderControl();
+    fireEvent.click(screen.getByText("Stub pick p1"));
+    act(() => addButton().focus());
+    fireEvent.click(addButton());
+    const counting = screen.getByRole("button", { name: "Counting cards…" });
+    expect(counting.getAttribute("aria-disabled")).toBe("true");
+    expect((counting as HTMLButtonElement).disabled).toBe(false);
+    expect(document.activeElement).toBe(counting);
+    fireEvent.click(counting);
+    fireEvent.click(removeButton());
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    await act(async () => answer({ targets: TARGETS, truncated: false }));
+    expect(await screen.findByRole("dialog")).toBeTruthy();
   });
 
   it("keeps one player at a time: a second pick replaces the first", () => {
@@ -357,8 +407,9 @@ describe("AlsoPicturedBulkControl", () => {
     expect(within(ledger).getByText("Gold — added to 30 cards")).toBeTruthy();
     expect(within(ledger).getByText("Black — added to 28 cards, 2 already listed")).toBeTruthy();
     // Done: the actions are free again, and there is nothing to stop.
-    expect((addButton() as HTMLButtonElement).disabled).toBe(false);
+    expect(addButton().getAttribute("aria-disabled")).toBeNull();
     expect(screen.queryByRole("button", { name: BULK_STOP_LABEL })).toBeNull();
+    expect(within(ledger).getByRole("button", { name: BULK_DISMISS_LABEL }).textContent).toBe("Dismiss");
   });
 
   it("removes through the remove mutation", async () => {
@@ -425,7 +476,7 @@ describe("AlsoPicturedBulkControl", () => {
       fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Yes, add Dan Marino" }));
     });
     await screen.findByRole("heading", { name: /^Stopped at Base\./ });
-    expect(screen.getByText("Base — This checklist changed while the run was going.")).toBeTruthy();
+    expect(screen.getByText(`Base — ${BULK_CHECKLIST_CHANGED_TEXT}`)).toBeTruthy();
     expect(document.body.textContent).not.toMatch(/progress marker|cursor/i);
   });
 
@@ -476,5 +527,130 @@ describe("AlsoPicturedBulkControl", () => {
       fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Yes, add Dan Marino" }));
     });
     expect(await screen.findByText(/more parallels than one run reaches/)).toBeTruthy();
+  });
+  it("a failed count puts focus back on the action that was pressed", async () => {
+    let refuse: (e: unknown) => void = () => {};
+    mockQuery.mockImplementation(() => new Promise((_, reject) => (refuse = reject)));
+    renderControl();
+    fireEvent.click(screen.getByText("Stub pick p1"));
+    act(() => removeButton().focus());
+    fireEvent.click(removeButton());
+    // Focus wandered off while it counted (a stray click on the page).
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    act(() => outside.focus());
+    await act(async () => {
+      refuse(new ConvexError("Pick a checklist (a variant type, insert or parallel) to change its cards."));
+    });
+    await screen.findByRole("alert");
+    expect(document.activeElement).toBe(removeButton());
+    outside.remove();
+  });
+
+  it("mounts its live line before any run, so the start is announced", async () => {
+    mockMutation.mockImplementation(() => new Promise(() => {}));
+    renderControl();
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("");
+    fireEvent.click(screen.getByText("Stub pick p1"));
+    await act(async () => {
+      fireEvent.click(addButton());
+    });
+    await act(async () => {
+      fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Yes, add Dan Marino" }));
+    });
+    // The same node, now speaking: it was in the page before the run began.
+    expect(screen.getByRole("status")).toBe(status);
+    expect(status.textContent).toBe("Adding Dan Marino to every card in Base and its 2 parallels.");
+  });
+
+  it("when the run ends with Stop gone from under focus, focus lands on the ledger", async () => {
+    let release: (p: BulkPage) => void = () => {};
+    mockMutation.mockImplementationOnce(() => new Promise<BulkPage>((resolve) => (release = resolve)));
+    renderControl();
+    fireEvent.click(screen.getByText("Stub pick p1"));
+    await act(async () => {
+      fireEvent.click(addButton());
+    });
+    await act(async () => {
+      fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Yes, add Dan Marino" }));
+    });
+    const stop = await screen.findByRole("button", { name: BULK_STOP_LABEL });
+    act(() => stop.focus());
+    fireEvent.click(stop);
+    await act(async () => {
+      release(page({ targetIndex: 0, cursor: "more", scanned: 100, changed: 100 }));
+    });
+    const ledger = await screen.findByRole("region", { name: /^Stopped after you asked\./ });
+    await waitFor(() => expect(document.activeElement).toBe(ledger));
+  });
+
+  it("when the run ends while the operator is elsewhere, focus stays where they put it", async () => {
+    let release: (p: BulkPage) => void = () => {};
+    mockMutation.mockImplementationOnce(() => new Promise<BulkPage>((resolve) => (release = resolve)));
+    renderControl();
+    fireEvent.click(screen.getByText("Stub pick p1"));
+    await act(async () => {
+      fireEvent.click(addButton());
+    });
+    await act(async () => {
+      fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Yes, add Dan Marino" }));
+    });
+    await screen.findByRole("button", { name: BULK_STOP_LABEL });
+    // Let the start's own park on the ledger settle, then move on (the
+    // picker is held while running, so to a stable element outside).
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    const outside = document.createElement("button");
+    document.body.appendChild(outside);
+    act(() => outside.focus());
+    await act(async () => {
+      release(page({ targetIndex: 2, cursor: null, scanned: 3, changed: 3 }));
+    });
+    await screen.findByRole("heading", { name: "Added Dan Marino to 3 cards" });
+    await new Promise((r) => requestAnimationFrame(() => r(null)));
+    expect(document.activeElement).toBe(outside);
+    outside.remove();
+  });
+
+  it("a finished ledger stays, panel open or shut, until Dismiss clears it", async () => {
+    mockMutation.mockResolvedValue(page({ targetIndex: 2, cursor: null, scanned: 3, changed: 3 }));
+    const { rerender } = renderControl();
+    fireEvent.click(screen.getByText("Stub pick p1"));
+    await act(async () => {
+      fireEvent.click(addButton());
+    });
+    await act(async () => {
+      fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Yes, add Dan Marino" }));
+    });
+    await screen.findByRole("heading", { name: "Added Dan Marino to 3 cards" });
+
+    // Shut: the outcome is still on screen, with its Dismiss.
+    rerender(<AlsoPicturedBulkControl variantId={VARIANT} level="insert" sportId={SPORT} expanded={false} />);
+    expect(screen.getByRole("heading", { name: "Added Dan Marino to 3 cards" })).toBeTruthy();
+    expect(screen.queryByRole("region", { name: ALSO_ON_EVERY_CARD_HEADING })).toBeNull();
+
+    // Open again, Dismiss: the ledger goes and focus starts the next run.
+    rerender(<AlsoPicturedBulkControl variantId={VARIANT} level="insert" sportId={SPORT} expanded={true} />);
+    fireEvent.click(screen.getByRole("button", { name: BULK_DISMISS_LABEL }));
+    expect(screen.queryByRole("heading", { name: "Added Dan Marino to 3 cards" })).toBeNull();
+    await waitFor(() => expect(document.activeElement).toBe(addButton()));
+  });
+
+  it("Dismiss with the panel shut leaves nothing behind", async () => {
+    mockMutation.mockResolvedValue(page({ targetIndex: 2, cursor: null, scanned: 3, changed: 3 }));
+    const { rerender, container } = renderControl();
+    fireEvent.click(screen.getByText("Stub pick p1"));
+    await act(async () => {
+      fireEvent.click(addButton());
+    });
+    await act(async () => {
+      fireEvent.click(within(await screen.findByRole("dialog")).getByRole("button", { name: "Yes, add Dan Marino" }));
+    });
+    await screen.findByRole("heading", { name: "Added Dan Marino to 3 cards" });
+    rerender(<AlsoPicturedBulkControl variantId={VARIANT} level="insert" sportId={SPORT} expanded={false} />);
+    fireEvent.click(screen.getByRole("button", { name: BULK_DISMISS_LABEL }));
+    // Only the (now quiet) live line is left; nothing visible.
+    expect(screen.queryByRole("heading")).toBeNull();
+    expect(container.querySelectorAll("section")).toHaveLength(0);
   });
 });

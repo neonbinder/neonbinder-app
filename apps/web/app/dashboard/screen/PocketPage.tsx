@@ -58,7 +58,7 @@ export function PocketTitle({ binder, headingRef }: PocketTitleProps) {
         {binder.cameos && (
           <span className="text-ink-2">
             {" "}
-            Cameos: <strong className="text-ink">{binder.cameos.have}</strong> of {binder.cameos.total}.
+            Cameos: <strong className="text-ink">{binder.cameos.have}</strong> of {binder.cameos.total}
           </span>
         )}
       </p>

@@ -1361,7 +1361,7 @@ describe("CardDetailPanel — NEO-331 the set context reaches the team picker", 
 // NEO-528 — Also pictured: a second player list, its own writer.
 // ---------------------------------------------------------------------------
 
-describe("CardDetailPanel — Also pictured (NEO-528)", () => {
+describe("CardDetailPanel — Also on this card (NEO-528)", () => {
   const ids = (...xs: string[]) => xs as unknown as Array<Id<"players">>;
   const ALSO = `${ALSO_PICTURED_PICKER_LABELS.root} (stub)`;
 
@@ -1374,7 +1374,7 @@ describe("CardDetailPanel — Also pictured (NEO-528)", () => {
 
   it("mounts a second picker under its own labels, seeded with the card's also-pictured players", () => {
     renderPanel({ card: makeCard({ secondaryPlayerIds: ids("cameo-1", "cameo-2") }) });
-    expect(screen.getByText("Also pictured", { selector: "label" })).toBeTruthy();
+    expect(screen.getByText("Also on this card", { selector: "label" })).toBeTruthy();
     expect(screen.getByLabelText(ALSO)).toBeTruthy();
     expect(screen.getByText("Also pictured: cameo-1,cameo-2")).toBeTruthy();
     // The Players picker is still the default-labelled one.
@@ -1382,6 +1382,10 @@ describe("CardDetailPanel — Also pictured (NEO-528)", () => {
   });
 
   it("describes the picker with the visible hint", () => {
+    expect(ALSO_PICTURED_HINT).toBe(
+      "Anyone on the card besides its main player: a teammate in the photo, a name on a team leaders card, the star a Profiles card is about. Smart binders can count these as cameos.",
+    );
+    expect(ALREADY_A_PLAYER_MESSAGE).toBe("They're already this card's player. No cameo needed.");
     renderPanel();
     const hint = screen.getByText(ALSO_PICTURED_HINT);
     expect(hint.id).not.toBe("");
@@ -1400,7 +1404,7 @@ describe("CardDetailPanel — Also pictured (NEO-528)", () => {
       );
     });
     expect(mockUpdateCard).not.toHaveBeenCalled();
-    expect(await screen.findByText("Saved Also pictured")).toBeTruthy();
+    expect(await screen.findByText("Saved Also on this card")).toBeTruthy();
   });
 
   it("a remove writes the shortened list; the last one off writes []", async () => {
@@ -1430,14 +1434,14 @@ describe("CardDetailPanel — Also pictured (NEO-528)", () => {
 
   it("shows the server's refusal inline and snaps back to the live row", async () => {
     mockConvexMutation.mockRejectedValue(
-      new ConvexError("A card can list at most 20 also-pictured players."),
+      new ConvexError("A card can have at most 20 people under Also on this card."),
     );
     renderPanel({ card: makeCard({ secondaryPlayerIds: ids("cameo-1") }) });
     await act(async () => {
       fireEvent.click(screen.getByText("Stub add cameo"));
     });
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe("A card can list at most 20 also-pictured players.");
+    expect(alert.textContent).toBe("A card can have at most 20 people under Also on this card.");
     expect(screen.getByText("Also pictured: cameo-1")).toBeTruthy();
   });
 
@@ -1448,7 +1452,7 @@ describe("CardDetailPanel — Also pictured (NEO-528)", () => {
       fireEvent.click(screen.getByText("Stub add cameo"));
     });
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe("Couldn't save Also pictured. Give it another go.");
+    expect(alert.textContent).toBe("Couldn't save Also on this card. Give it another go.");
   });
 
   it("a player made one of the card's own players leaves Also pictured", async () => {
@@ -1473,7 +1477,7 @@ describe("CardDetailPanel — Also pictured (NEO-528)", () => {
       playerIds: ["player-1", "player-new"],
     });
     expect(
-      await screen.findByText("Saved Players and moved them out of Also pictured"),
+      await screen.findByText("Saved Players and moved them out of Also on this card"),
     ).toBeTruthy();
   });
 

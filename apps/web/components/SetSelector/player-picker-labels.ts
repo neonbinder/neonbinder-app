@@ -12,7 +12,7 @@
  * replaces, in either direction, and none with any other set that can be on
  * the same page. Playwright's `name:` and `getByLabel` match a substring by
  * default, so a label that merely CONTAINS another ("Remove player X from
- * also pictured") would make a spec's `Remove player X` find two elements.
+ * this card") would make a spec's `Remove player X` find two elements.
  * Reworded whole, never suffixed. Pinned in `PlayerPicker.test.tsx`
  * (NEO-220 for the container labels, NEO-528 for the rest).
  */
@@ -74,31 +74,39 @@ export function resolvePlayerPickerLabels(
 }
 
 /**
- * NEO-528 — the card drawer's second picker, "Also pictured": players on the
- * card who are not its subject. Mounted right under the drawer's own
- * default-labelled Players picker, so every field is reworded.
+ * NEO-528 — the card drawer's second picker, under the heading "Also on this
+ * card" (`ALSO_ON_THIS_CARD_HEADING`): anyone on the card besides its main
+ * player. Mounted right under the drawer's own default-labelled Players
+ * picker, so every field is reworded, and none contains (or sits inside) that
+ * heading either.
  */
 export const ALSO_PICTURED_PICKER_LABELS: ResolvedPlayerPickerLabels = {
-  root: "Also pictured on this card",
-  trigger: "Add someone also pictured",
-  search: "Find someone also pictured",
-  results: "Also-pictured matches",
-  triggerText: "Add someone",
-  placeholder: "Who else is in the shot?",
+  root: "Others on this card",
+  trigger: "Add someone else to this card",
+  search: "Find someone else for this card",
+  results: "Someone-else matches",
+  triggerText: "Add someone else",
+  placeholder: "Who else is on this card?",
   emptyHint: "Type a name…",
-  chip: (name) => `Also pictured: ${name}`,
-  remove: (name) => `Take ${name} off also pictured`,
+  chip: (name) => `On this card too: ${name}`,
+  remove: (name) => `Take ${name} off this card's cameos`,
   option: (name) => `Include ${name}`,
   create: (typed) => `Create and include ${typed}`,
-  sportSwitch: "Sport for the also-pictured search",
+  sportSwitch: "Sport for finding someone else",
 };
+
+/** NEO-528 — the card drawer's field heading for `ALSO_PICTURED_PICKER_LABELS`. */
+export const ALSO_ON_THIS_CARD_HEADING = "Also on this card";
+
+/** NEO-528 — the bulk control's region heading (`BULK_ALSO_PICTURED_PICKER_LABELS`). */
+export const ALSO_ON_EVERY_CARD_HEADING = "Also on every card";
 
 /**
  * NEO-528 — the Attributes panel's bulk control: ONE player to add to (or
  * take off) every card of a checklist and its parallels. On the Set Builder
  * page beside the quick-add form's picker, with the card drawer able to open
  * over both, so it is worded apart from the defaults, the drawer's
- * also-pictured picker and the quick-add set alike.
+ * "Also on this card" picker and the quick-add set alike.
  */
 export const BULK_ALSO_PICTURED_PICKER_LABELS: ResolvedPlayerPickerLabels = {
   root: "Whole-checklist cameo",

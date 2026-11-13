@@ -782,7 +782,7 @@ describe("smart binders", () => {
     expect(smart.cameos).toEqual({ have: 2, total: 5 });
     render(<PocketTitle binder={smart} headingRef={{ current: null }} />);
     expect(screen.getByText(/of the checklist\./)).toBeTruthy();
-    expect(screen.getByText(/Cameos:/).textContent).toBe(" Cameos: 2 of 5.");
+    expect(screen.getByText(/Cameos:/).textContent).toBe(" Cameos: 2 of 5");
     // Only cameos fit so far: no percent of nothing, the cameo count still shows.
     const cameoOnly = shelfBinderOf(container({ id: "smart2", smartRule: cameoRule }), [], {
       checklist: { have: 0, total: 0, secondary: { have: 1, total: 3 } },
