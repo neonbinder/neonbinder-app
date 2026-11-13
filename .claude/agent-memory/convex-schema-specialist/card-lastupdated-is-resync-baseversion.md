@@ -14,7 +14,7 @@ selectorOptions model backfills (`backfillBrandUnknownRole`) bump
 `lastUpdated` on what they patch, so copying that shape onto cards is the trap.
 
 **Why:** found sizing the NEO-535 description backfill (2026-11-13). Bumping
-`lastUpdated` on ~100k cards would silently turn every in-flight review's
+`lastUpdated` on every card would silently turn every in-flight review's
 accepted field changes into "stale, not written" — counted, never thrown.
 
 **How to apply:** a backfill of a field the re-sync diff does not compare
