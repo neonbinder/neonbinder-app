@@ -93,6 +93,12 @@ vi.mock("convex/react", () => ({
 // ---------------------------------------------------------------------------
 
 import PlayerPicker from "./PlayerPicker";
+import {
+  ALSO_PICTURED_PICKER_LABELS,
+  BULK_ALSO_PICTURED_PICKER_LABELS,
+  DEFAULT_PLAYER_PICKER_LABELS,
+  type ResolvedPlayerPickerLabels,
+} from "./player-picker-labels";
 import type { Id } from "../../convex/_generated/dataModel";
 
 // NEO-96: pickers take the sport-level selectorOptions ROW ID now, not a
@@ -1177,5 +1183,170 @@ describe("PlayerPicker — the popover escapes its clip box (NEO-272)", () => {
         screen.getByRole("button", { name: "Add Devin Walker, no birth year" }),
       ).toBeTruthy();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-528 — every rendered name is overridable, and the sets never overlap
+// ---------------------------------------------------------------------------
+
+describe("PlayerPicker — label sets (NEO-528)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentSelectedRows = [];
+    currentCandidates = [];
+    currentSports = [];
+    currentSearchResults = undefined;
+    currentPlayerById = new Map();
+    currentFragmentCheck = undefined;
+    mockFindOrCreate.mockResolvedValue(pid("new-player-1"));
+  });
+
+  /**
+   * The quick-add form's container names (`QUICK_ADD_PLAYER_LABELS`, a
+   * module constant in CardChecklist.tsx), restated: it is on the Set
+   * Builder page with all three of the sets below.
+   */
+  const QUICK_ADD_CONTAINER = [
+    "Players on the new card",
+    "Add a player to the new card",
+    "Find a player for the new card",
+    "Player results for the new card",
+  ];
+
+  /** Every accessible name a set produces, for a sample name. */
+  function namesOf(labels: ResolvedPlayerPickerLabels, name: string): string[] {
+    return [
+      labels.root,
+      labels.trigger,
+      labels.search,
+      labels.results,
+      labels.placeholder,
+      labels.sportSwitch,
+      labels.chip(name),
+      labels.remove(name),
+      labels.option(name),
+      labels.create(name),
+    ];
+  }
+
+  const SETS: Array<[string, ResolvedPlayerPickerLabels]> = [
+    ["default", DEFAULT_PLAYER_PICKER_LABELS],
+    ["also pictured", ALSO_PICTURED_PICKER_LABELS],
+    ["bulk", BULK_ALSO_PICTURED_PICKER_LABELS],
+  ];
+
+  // A chip always carries a name, or the "Loading…" stand-in.
+  it.each(["Dan Marino", "Al", "Loading…"])(
+    "no name in one set contains, or is contained by, a name in another (sample %j)",
+    (sample) => {
+      const all: Array<[string, string]> = [];
+      for (const [set, labels] of SETS) {
+        for (const n of namesOf(labels, sample)) all.push([set, n.toLowerCase()]);
+      }
+      for (const n of QUICK_ADD_CONTAINER) all.push(["quick add", n.toLowerCase()]);
+      for (const [setA, a] of all) {
+        for (const [setB, b] of all) {
+          if (setA === setB) continue;
+          // A bare sample name inside both is fine; the FIXED words must differ.
+          if (a.includes(b) || b.includes(a)) {
+            throw new Error(`"${a}" (${setA}) and "${b}" (${setB}) overlap`);
+          }
+        }
+      }
+    },
+  );
+
+  it("each override set keeps its visible trigger text inside the trigger's name (SC 2.5.3)", () => {
+    for (const [, labels] of SETS) {
+      expect(labels.trigger.toLowerCase()).toContain(labels.triggerText.toLowerCase());
+    }
+  });
+
+  it("with no labels, renders exactly the names the existing specs target", () => {
+    currentSelectedRows = [makePlayer("p1", "Mike Trout")];
+    currentCandidates = [makePlayer("p2", "Mookie Betts")];
+    renderPicker({ value: [pid("p1")] });
+
+    expect(screen.getByLabelText("Player picker")).toBeTruthy();
+    expect(screen.getByLabelText("Player: Mike Trout")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remove player Mike Trout" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add player" }).textContent).toBe("+ Add player");
+
+    fireEvent.click(screen.getByLabelText("Add player"));
+    const search = screen.getByRole("textbox", { name: "Search players" });
+    expect(search.getAttribute("placeholder")).toBe("Search or add a player...");
+    fireEvent.change(search, { target: { value: "Moo" } });
+    expect(screen.getByRole("option", { name: "Add Mookie Betts" })).toBeTruthy();
+    fireEvent.change(search, { target: { value: "Zed Brandnew" } });
+    expect(screen.getByRole("option", { name: "Create player Zed Brandnew" })).toBeTruthy();
+  });
+
+  it("with the also-pictured set, renders that set's names on every control and none of the defaults", () => {
+    const L = ALSO_PICTURED_PICKER_LABELS;
+    currentSelectedRows = [makePlayer("p1", "Mike Trout")];
+    currentCandidates = [makePlayer("p2", "Mookie Betts")];
+    currentSports = [{ _id: SPORT_ID, value: "Baseball" }];
+    renderPicker({ value: [pid("p1")], labels: L, ariaDescribedBy: "hint-1" });
+
+    expect(screen.getByLabelText(L.root)).toBeTruthy();
+    expect(screen.getByLabelText(L.chip("Mike Trout"))).toBeTruthy();
+    expect(screen.getByRole("button", { name: L.remove("Mike Trout") })).toBeTruthy();
+    const trigger = screen.getByRole("button", { name: L.trigger });
+    expect(trigger.textContent).toBe(`+ ${L.triggerText}`);
+    expect(trigger.getAttribute("aria-describedby")).toBe("hint-1");
+
+    fireEvent.click(trigger);
+    const search = screen.getByRole("textbox", { name: L.search });
+    expect(search.getAttribute("placeholder")).toBe(L.placeholder);
+    expect(screen.getByRole("listbox", { name: L.results })).toBeTruthy();
+    fireEvent.change(search, { target: { value: "Moo" } });
+    expect(screen.getByRole("option", { name: L.option("Mookie Betts") })).toBeTruthy();
+    fireEvent.change(search, { target: { value: "Zed Brandnew" } });
+    expect(screen.getByRole("option", { name: L.create("Zed Brandnew") })).toBeTruthy();
+    expect(screen.getByRole("button", { name: `${L.sportSwitch}: Baseball` })).toBeTruthy();
+
+    // None of the default names is on screen.
+    for (const name of [
+      "Player picker",
+      "Player: Mike Trout",
+      "Remove player Mike Trout",
+      "Add player",
+      "Search players",
+      "Player typeahead results",
+      "Add Mookie Betts",
+      "Create player Zed Brandnew",
+    ]) {
+      expect(screen.queryByLabelText(name)).toBeNull();
+    }
+    expect(screen.queryByText("+ Add player")).toBeNull();
+  });
+
+  it("shows the set's own hint under an empty search box", () => {
+    const L = ALSO_PICTURED_PICKER_LABELS;
+    renderPicker({ labels: L });
+    fireEvent.click(screen.getByRole("button", { name: L.trigger }));
+    expect(screen.getByText(L.emptyHint)).toBeTruthy();
+    expect(screen.queryByText("Type a player name…")).toBeNull();
+  });
+
+  it("the fragment panel's pick uses the set's option wording", async () => {
+    const L = ALSO_PICTURED_PICKER_LABELS;
+    currentCandidates = [];
+    currentFragmentCheck = {
+      isFragment: true,
+      truncated: false,
+      matches: [{ _id: "p9", name: "Devin Walker" }],
+    };
+    renderPicker({ labels: L });
+    fireEvent.click(screen.getByRole("button", { name: L.trigger }));
+    fireEvent.change(screen.getByRole("textbox", { name: L.search }), {
+      target: { value: "Walker" },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("option", { name: L.create("Walker") }));
+    });
+    expect(await screen.findByRole("button", { name: L.option("Devin Walker") })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Add Devin Walker" })).toBeNull();
   });
 });

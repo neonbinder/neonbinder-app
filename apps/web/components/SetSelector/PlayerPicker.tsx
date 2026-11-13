@@ -19,6 +19,10 @@ import type { ThemeMode } from "../../src/theme/theme-mode";
 import { TOKENS, tokenHex } from "../../src/theme/tokens";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
 import SportSwitch from "./SportSwitch";
+import {
+  resolvePlayerPickerLabels,
+  type PlayerPickerLabels,
+} from "./player-picker-labels";
 import NameFragmentPanel, {
   fragmentCheckChoices,
   fragmentRefusalMatches,
@@ -184,42 +188,23 @@ const NO_ROWS: PickerPlayerRow[] = [];
 const RESULT_STINT_LIMIT = 3;
 
 /**
- * NEO-220 — the four container-level accessible names, overridable per
- * instance. Every one of them is present whatever the picker's state, and
- * NONE of them carries a player's name, so they are exactly the labels that
- * collide when two PlayerPickers are on screen at once — which is now
- * reachable in `CardChecklist`, where the card drawer and the quick-add form
- * mount one each and neither hides the other.
+ * NEO-220 — the container-level accessible names, overridable per instance,
+ * because two PlayerPickers can be on screen at once (the card drawer and
+ * the quick-add form in `CardChecklist`, neither hiding the other).
  *
- * Whole strings rather than a prefix/suffix knob, deliberately. Maestro
- * selects by `resource-id` (= the aria-label) with a REGEX FIND, so a derived
- * label that contains the base one — "Add player to new card" — would make the
- * drawer's own `id: "Add player"` match BOTH elements: strictly worse than the
- * collision it set out to fix. Every override below is checked to share no
- * substring with its default in either direction.
+ * NEO-528 — and now every name the picker renders, chips and options
+ * included, because the card drawer mounts TWO: Players and "Also pictured".
+ * The same player can never be on both lists (the server keeps a card's own
+ * players out of its also-pictured list), but a spec's `Remove player X` or
+ * `/^Remove player /` matches by substring, so the second picker's chips must
+ * not read like the first's. The sets and the rule they keep live in
+ * `player-picker-labels.ts`.
  *
- * Chip and option labels ("Player: Mike Trout", "Add Mike Trout", "Create
- * player X") are deliberately NOT overridable: they carry the player's name,
- * which is the disambiguator, and the existing drawer flows target them that
- * way.
+ * Whole strings rather than a prefix/suffix knob, deliberately: a derived
+ * label that contains the base one ("Add player to new card") makes a
+ * locator for the base match BOTH elements.
  */
-export type PlayerPickerLabels = {
-  /** The chip row's own name. Default "Player picker". */
-  root: string;
-  /** The "+ Add player" trigger. Default "Add player". */
-  trigger: string;
-  /** The popover's search input. Default "Search players". */
-  search: string;
-  /** The popover listbox. Default "Player typeahead results". */
-  results: string;
-};
-
-const DEFAULT_LABELS: PlayerPickerLabels = {
-  root: "Player picker",
-  trigger: "Add player",
-  search: "Search players",
-  results: "Player typeahead results",
-};
+export type { PlayerPickerLabels } from "./player-picker-labels";
 
 /**
  * NEO-25 — multi-select player picker. Mirrors `TeamPicker`'s chip/popover
@@ -257,7 +242,8 @@ export default function PlayerPicker({
   onChange,
   sportId,
   disabled,
-  labels = DEFAULT_LABELS,
+  labels: labelsProp,
+  ariaDescribedBy,
 }: {
   value: Array<Id<"players">>;
   onChange: (next: Array<Id<"players">>) => void;
@@ -270,13 +256,20 @@ export default function PlayerPicker({
   sportId?: Id<"selectorOptions">;
   disabled?: boolean;
   /**
-   * Accessible names for this instance's four container controls. Omit on the
-   * one picker a screen can be sure of having only one of; pass all four when a
-   * second picker can be mounted alongside it. All four together, never a
-   * subset — a half-renamed instance is a collision you then have to find.
+   * Accessible names for this instance. Omit on the one picker a screen can
+   * be sure of having only one of; when a second picker can be mounted
+   * alongside it, pass a whole set from `player-picker-labels.ts` (the four
+   * container names at least, never a subset of those — a half-renamed
+   * instance is a collision you then have to find).
    */
   labels?: PlayerPickerLabels;
+  /**
+   * NEO-528 — id(s) of a visible hint about this field, read with the "+ Add"
+   * trigger (the control a keyboard user lands on).
+   */
+  ariaDescribedBy?: string;
 }) {
+  const labels = resolvePlayerPickerLabels(labelsProp);
   const { mode } = useTheme();
   const selectedRows = useQuery(api.players.getManyByIds, { ids: value });
   const setSportPool = useQuery(
@@ -660,7 +653,7 @@ export default function PlayerPicker({
         >
           <span
             className="truncate max-w-[140px]"
-            aria-label={`Player: ${labelById.get(id as unknown as string) ?? "Loading…"}`}
+            aria-label={labels.chip(labelById.get(id as unknown as string) ?? "Loading…")}
           >
             {labelById.get(id as unknown as string) ?? "Loading…"}
           </span>
@@ -675,7 +668,7 @@ export default function PlayerPicker({
             type="button"
             disabled={disabled}
             onClick={() => removeChip(id)}
-            aria-label={`Remove player ${labelById.get(id as unknown as string) ?? id}`}
+            aria-label={labels.remove(labelById.get(id as unknown as string) ?? id)}
             // NEO-356: on the chip's grey, pink TEXT is 3:1 in dark and ink-3 is
             // 3.9:1 (tokens.ts TEXT_NEVER_ON). Quiet ink-2 at rest; under the
             // pointer or focus the × takes a pink FILL with black ink (6:1 in
@@ -711,10 +704,11 @@ export default function PlayerPicker({
             first.focus();
           }}
           aria-label={labels.trigger}
+          aria-describedby={ariaDescribedBy}
           aria-expanded={popoverOpen}
           className="px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2"
         >
-          + Add player
+          + {labels.triggerText}
         </button>
 
         {popoverOpen && (
@@ -740,7 +734,7 @@ export default function PlayerPicker({
               ref={inputRef}
               type="text"
               value={query}
-              placeholder="Search or add a player..."
+              placeholder={labels.placeholder}
               aria-label={labels.search}
               onChange={(e) => {
                 // The refusal described the name that was in this box; the
@@ -804,7 +798,7 @@ export default function PlayerPicker({
               matches.length === 0 &&
               query.trim().length === 0 && (
                 <div className="text-xs text-ink-3 px-2 py-1">
-                  Type a player name…
+                  {labels.emptyHint}
                 </div>
               )}
             <div
@@ -821,7 +815,7 @@ export default function PlayerPicker({
                   type="button"
                   onClick={() => addChip(m._id)}
                   onMouseEnter={() => setHighlightIdx(idx)}
-                  aria-label={`Add ${m.name}`}
+                  aria-label={labels.option(m.name)}
                   role="option"
                   aria-selected={idx === highlightIdx}
                   className={`w-full text-left px-2 py-1 text-sm rounded ${
@@ -896,7 +890,7 @@ export default function PlayerPicker({
                   aria-disabled={creating || undefined}
                   onClick={() => void createAndAdd()}
                   onMouseEnter={() => setHighlightIdx(matches.length)}
-                  aria-label={`Create player ${query.trim()}`}
+                  aria-label={labels.create(query.trim())}
                   role="option"
                   aria-selected={highlightIdx === matches.length}
                   className={`w-full text-left px-2 py-1 text-sm rounded border-t border-rule-strong ${
@@ -924,7 +918,7 @@ export default function PlayerPicker({
                 // The picker's own verb: a press adds the player to the card,
                 // as a typeahead row would. The rows are hidden while this is
                 // up, so the names cannot collide.
-                pickLabel={(n) => `Add ${n}`}
+                pickLabel={labels.option}
                 disabled={disabled}
                 confirmBusy={creating}
                 onPick={(id) => {
@@ -956,7 +950,7 @@ export default function PlayerPicker({
                   // Only one picker's popover is ever open, but the review
                   // wizard's own switch ("Sport for this name") can share the
                   // screen, so this one is worded apart from it.
-                  label="Sport to search for players"
+                  label={labels.sportSwitch}
                   value={activeSportId ?? sportId}
                   setSportId={sportId}
                   disabled={disabled}

@@ -277,6 +277,33 @@ vi.mock("./TeamPicker", () => ({
   ),
 }));
 
+/**
+ * NEO-528 — the bulk "Also pictured on every card" control owns its own
+ * Convex calls and has its own test file (AlsoPicturedBulkControl.test.tsx).
+ * Here it is a stand-in that reports what the panel handed it.
+ */
+vi.mock("./AlsoPicturedBulkControl", () => ({
+  default: ({
+    variantId,
+    level,
+    sportId,
+    expanded,
+  }: {
+    variantId: string;
+    level: string;
+    sportId?: string;
+    expanded: boolean;
+  }) => (
+    <div
+      aria-label="Also pictured bulk control (stub)"
+      data-variant-id={variantId}
+      data-level={level}
+      data-sport-id={sportId ?? ""}
+      data-expanded={String(expanded)}
+    />
+  ),
+}));
+
 // ---------------------------------------------------------------------------
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
@@ -3864,4 +3891,48 @@ describe("SetAttributesPanel — set ⇄ parallel row actions (NEO-305)", () => 
       expect(screen.queryByRole("button", { name: "Promote to set" })).toBeNull();
     },
   );
+});
+
+describe("SetAttributesPanel — Also pictured on every card (NEO-528)", () => {
+  const STUB = "Also pictured bulk control (stub)";
+
+  it.each([
+    ["variantType", "Base"],
+    ["insert", "Diamond Kings"],
+    ["parallel", "Gold Refractor"],
+  ])("offers the bulk control where cards hang: %s %s", (level, value) => {
+    currentRow = makeRow({ level, value });
+    renderPanel();
+    const stub = screen.getByLabelText(STUB);
+    expect(stub.getAttribute("data-variant-id")).toBe(SELECTOR_OPTION_ID);
+    expect(stub.getAttribute("data-level")).toBe(level);
+    expect(stub.getAttribute("data-sport-id")).toBe("sport-id");
+    expect(stub.getAttribute("data-expanded")).toBe("true");
+  });
+
+  it.each([
+    ["sport", "Baseball"],
+    ["year", "2024"],
+    ["manufacturer", "Topps"],
+    ["setName", "2024 Topps Chrome"],
+    // A non-Base variant type holds inserts, not cards.
+    ["variantType", "Inserts"],
+  ])("leaves it off a container row: %s %s", (level, value) => {
+    currentRow = makeRow({ level, value });
+    renderPanel();
+    expect(screen.queryByLabelText(STUB)).toBeNull();
+  });
+
+  it("stays mounted while the panel is collapsed, told so (a running ledger must not vanish)", () => {
+    currentRow = makeRow({ level: "insert", value: "Diamond Kings" });
+    render(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed={true}
+      />,
+    );
+    expect(
+      screen.getByLabelText(STUB).getAttribute("data-expanded"),
+    ).toBe("false");
+  });
 });

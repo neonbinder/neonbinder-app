@@ -40,6 +40,7 @@ import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
 import PromoteToSetControl from "./PromoteToSetControl";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
+import AlsoPicturedBulkControl from "./AlsoPicturedBulkControl";
 import {
   ALL_SIDES,
   joinLabels,
@@ -979,6 +980,23 @@ export default function SetAttributesPanel({
             ))}
           </div>
         </>
+      )}
+
+      {/* NEO-528 — one player added to (or taken off) the "Also pictured"
+          list of every card here and in its parallels. At the levels cards
+          hang from (`showsCardPrefix`), after the grid: it acts on cards,
+          not on this row. Outside the `expanded` branch so a run still
+          writing cards stays on screen when the panel is collapsed; the
+          control shows its form only while expanded. Keyed on the row so a
+          confirm or a finished run never carries over to the next one. */}
+      {showCardPrefixRow && (
+        <AlsoPicturedBulkControl
+          key={`also-pictured-${selectorOptionId}`}
+          variantId={selectorOptionId}
+          level={leafLevel as "variantType" | "insert" | "parallel"}
+          sportId={ancestorSportId}
+          expanded={expanded}
+        />
       )}
     </div>
   );

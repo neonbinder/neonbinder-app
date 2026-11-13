@@ -213,3 +213,4 @@
 - [Demo content column is ~806px at 1024](reference_demo_content_column_is_806px_at_e2e_width.md) — lg:pr-170 rail gutter; budget demo tables to ~800px or they slide under the exit rail
 - [Picker context league is the row's own feature](reference_picker_context_league_is_the_rows_own_feature.md) — pickerCandidates reads L off the context row only (year walks up); prove tiers on a tree built via addCustomSelectorOption
 - [sr-only suffix in a name is unstable](reference_sr_only_suffix_in_a_name_is_unstable.md) — extra screen-reader words on a role=heading: aria-label, not an sr-only child (happy-dom pads it)
+- [Wrapping label with hint names the control](reference_wrapping_label_with_hint_names_the_control.md) — checkbox label holding a help line: name it via aria-labelledby on the title span
