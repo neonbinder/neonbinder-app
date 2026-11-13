@@ -117,13 +117,51 @@ describe("NEO-528: only cardSecondaryPlayers.ts writes the cameo list and its in
     expect(callers).toEqual([]);
   });
 
-  test("the parallel build copies a card's cameos through the writer, after the copy is inserted", () => {
-    const src = read("parallelChecklistBuild.ts");
-    const insertAt = src.indexOf("const newId = await insertCardRow(");
-    expect(insertAt).toBeGreaterThan(0);
-    expect(src.slice(insertAt, insertAt + 6000)).toMatch(
-      /setCardSecondaryPlayers\(ctx, copied, source\.secondaryPlayerIds \?\? \[\]/,
+  test("a card born with cameos gets them in its insert literal and its index rows right after, through the writer", () => {
+    // NEO-528 round 3 — the shared insert: the field comes from the writer's
+    // born-with helper (never named here), and the index rows follow the
+    // insert through `bornSecondaryPlayers`.
+    const create = read("cardRowCreate.ts");
+    const build = create.slice(
+      create.indexOf("export function buildCardRowForInsert"),
+      create.indexOf("export async function insertCardRow"),
     );
+    expect(build).toContain("...bornSecondaryPlayerFields(card, cameos.map((c) => c.playerId)),");
+    expect(build).toMatch(/generateListingDescription\(listingInputs, \{\s*cameoNames: cameos\.map/);
+    const insert = create.slice(create.indexOf("export async function insertCardRow"));
+    const inserted = insert.indexOf('ctx.db.insert("cardChecklist", row)');
+    expect(inserted).toBeGreaterThan(0);
+    expect(insert.indexOf("await bornSecondaryPlayers(ctx, id, row, names)")).toBeGreaterThan(inserted);
+
+    // The parallel build hands each copy's cameos (its source's, then the
+    // parallel's defaults) to that insert.
+    const parallel = read("parallelChecklistBuild.ts");
+    const insertAt = parallel.indexOf("const newId = await insertCardRow(");
+    expect(insertAt).toBeGreaterThan(0);
+    expect(parallel.slice(insertAt, insertAt + 1500)).toContain("cameos: born.cameos,");
+    expect(parallel).not.toMatch(/setCardSecondaryPlayers\(/);
+
+    // The commit chunk's insert branch does too.
+    const commit = read("selectorOptions.ts");
+    const chunk = commit.slice(commit.indexOf("export const commitCardChecklistChunk"));
+    const chunkInsert = chunk.indexOf("const newCardId = await insertCardRow(");
+    expect(chunkInsert).toBeGreaterThan(0);
+    expect(chunk.slice(chunkInsert, chunkInsert + 1000)).toContain("cameos: born.cameos,");
+
+    // `addCustomCard` inserts by hand: the field by the spread, the rows after.
+    const add = commit.slice(commit.indexOf("export const addCustomCard"), commit.indexOf("export const updateCard"));
+    const addInsert = add.indexOf('ctx.db.insert("cardChecklist", {');
+    expect(addInsert).toBeGreaterThan(0);
+    expect(add.indexOf("...cameoFields,")).toBeGreaterThan(addInsert);
+    expect(add.indexOf("await bornSecondaryPlayers(")).toBeGreaterThan(addInsert);
+
+    // Nobody else calls the born-with helpers.
+    const callers = sourceFiles(CONVEX_DIR)
+      .filter((file) => !isFile(file, "cardSecondaryPlayers.ts"))
+      .filter((file) => /bornSecondaryPlayer(s|Fields)\(/.test(readFileSync(file, "utf8")))
+      .map(relative)
+      .sort();
+    expect(callers).toEqual(["cardRowCreate.ts", "selectorOptions.ts"]);
   });
 });
 

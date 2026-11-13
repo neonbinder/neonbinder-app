@@ -57,10 +57,18 @@ import {
 } from "./listingTitleContext";
 import { generateSku } from "./sku";
 import {
+  bornCardPlayers,
   insertCardRow,
   requireCardSport,
   type CarriedCardFields,
 } from "./cardRowCreate";
+import {
+  effectiveCardPlayerDefaults,
+  newSelectorRowCache,
+  type EffectiveCardPlayerDefaults,
+} from "./cardPlayersBulk";
+import { bornSecondaryPlayerFields, bornSecondaryPlayers } from "./cardSecondaryPlayers";
+import { newStoredCardReadCache } from "./storedCardTitle";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import { blockedSideFailed, sideMissingFromRun } from "./parallelChecklistBuild";
 import {
@@ -6083,6 +6091,25 @@ export const addCustomCard = mutation({
       MAX_PENDING_TEAM_NAMES,
     );
 
+    // NEO-528 round 3 — "Player on every card": a card added with no player
+    // picked and no name typed is born with the default player of the nearest
+    // row up its chain that stores one; default cameos are added either way
+    // (`bornCardPlayers`, the rule every new card follows). A default whose
+    // player is gone, or plays another sport, was already dropped by the
+    // lookup: it never refuses the card.
+    const bornDefaults = bornCardPlayers(
+      { playerIds: args.playerIds, pendingPlayerNames: typedPlayerNames ?? [] },
+      { playerNames: [] },
+      await effectiveCardPlayerDefaults(ctx, args.selectorOptionId),
+    );
+    const requestedPlayerIds =
+      bornDefaults.player.kind === "fill" ? bornDefaults.playerIds ?? [] : args.playerIds ?? [];
+    const cameoFields = bornSecondaryPlayerFields(
+      { playerIds: requestedPlayerIds },
+      bornDefaults.cameos.map((c) => c.playerId),
+    );
+    const cameoNames = bornDefaults.cameos.map((c) => c.name);
+
     // NEO-220 — validated BEFORE anything is written, same as the teams below,
     // so a bad id (unknown, wrong sport, over the cap) leaves no half-created
     // card behind. The returned names are the rows this already read; the
@@ -6096,7 +6123,7 @@ export const addCustomCard = mutation({
       await resolvePlayerIdsForWrite(
         ctx,
         args.selectorOptionId,
-        args.playerIds ?? [],
+        requestedPlayerIds,
         nameOnCardMap(args.playerNamesOnCard),
       );
     const hasLinkedPlayers = playerIds.length > 0;
@@ -6284,11 +6311,14 @@ export const addCustomCard = mutation({
       // NEO-254: `playerLinks` is written in the same breath and is the same
       // list — see the note in schema.ts. Never one without the other.
       ...(hasLinkedPlayers ? { playerIds, playerLinks } : {}),
+      // NEO-528 round 3 — the default cameos (absent when none), named by
+      // their one writer.
+      ...cameoFields,
       ...(hasLinkedTeams ? { teamOnCardIds } : {}),
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
       ...(notes ? { notes } : {}),
       listingTitle: listingTitle.title,
-      listingDescription: generateListingDescription(listingInputs),
+      listingDescription: generateListingDescription(listingInputs, { cameoNames }),
       // NEO-101: recorded only when the core actually had to be cut — the
       // field is absent, not `false`, on the overwhelming majority of rows
       // that fit fine (mean real title length is 34 characters).
@@ -6305,6 +6335,18 @@ export const addCustomCard = mutation({
     // NEO-358 — and the team → cards index.
     if (hasLinkedTeams) {
       await syncCardTeamLinks(ctx, id, teamOnCardIds, { fresh: true });
+    }
+    // NEO-528 round 3 — and the cameo index, through the one writer (the
+    // names are known, so it reads no player).
+    if (cameoNames.length > 0) {
+      const names = newStoredCardReadCache();
+      for (const cameo of bornDefaults.cameos) names.players.set(cameo.playerId as string, cameo.name);
+      await bornSecondaryPlayers(
+        ctx,
+        id,
+        { ...cameoFields, playerIds, playerLinks, sportId: insertSportId },
+        names,
+      );
     }
     // NEO-358 — the row's counts: one more card, born a non-variation.
     const ledger = createCardCountLedger();
@@ -16502,6 +16544,40 @@ export const resolveChecklistEntities = action({
 export const CARDS_PER_COMMIT_CHUNK = 150;
 
 /**
+ * NEO-528 round 3 — the operations one chunk is sized for: the
+ * `CARDS_PER_COMMIT_CHUNK` calibration (~6 per card) plus room for two
+ * index-row inserts per card. A card born with "Player on every card"
+ * defaults costs one more insert for the player's index row and one per
+ * cameo, so a leaf with only a default player (or one cameo) still commits
+ * 150 cards per chunk, and one with a long cameo list commits fewer
+ * (`commitChunkSize`). At the cap (a player and `MAX_CARD_PLAYERS` cameos)
+ * that is 44 cards, about 1,200 operations, where 150 would be ~4,000.
+ */
+const COMMIT_CHUNK_OPS_PER_CARD = 6;
+export const COMMIT_CHUNK_OP_BUDGET = CARDS_PER_COMMIT_CHUNK * (COMMIT_CHUNK_OPS_PER_CARD + 2);
+
+/** Cards per commit chunk when every new card costs `extraWritesPerCard` more inserts. */
+export function commitChunkSize(extraWritesPerCard: number): number {
+  const perCard = COMMIT_CHUNK_OPS_PER_CARD + Math.max(0, extraWritesPerCard);
+  return Math.max(1, Math.min(CARDS_PER_COMMIT_CHUNK, Math.floor(COMMIT_CHUNK_OP_BUDGET / perCard)));
+}
+
+/**
+ * NEO-528 round 3 — the index rows a new card under this leaf would be born
+ * with from its "Player on every card" defaults (1 for a default player, plus
+ * one per default cameo), for sizing the commit's chunks. The chunk re-reads
+ * the defaults itself; this only sizes them.
+ */
+export const commitChunkDefaultWrites = internalQuery({
+  args: { selectorOptionId: v.id("selectorOptions") },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    const defaults = await effectiveCardPlayerDefaults(ctx, args.selectorOptionId);
+    return (defaults.playerId ? 1 : 0) + defaults.cameoIds.length;
+  },
+});
+
+/**
  * NEO-203 — hard ceiling on how many rows one commit may be told to delete.
  *
  * Mirrors `MAX_CROSS_LISTING_CARD_NUMBERS` above and exists for the same
@@ -19879,6 +19955,23 @@ export const commitCardChecklistChunk = internalMutation({
     // once, after the loop.
     const countLedger = createCardCountLedger();
 
+    // NEO-528 round 3 — "Player on every card": the player and cameos a NEW
+    // card under this leaf is born with (the nearest row up its chain that
+    // stores each), read once per chunk and only when the chunk inserts. An
+    // existing card is never filled: that is NB content a re-sync may only
+    // suggest a change to.
+    let chunkPlayerDefaults: EffectiveCardPlayerDefaults | undefined;
+    const leafPlayerDefaults = async (): Promise<EffectiveCardPlayerDefaults> => {
+      if (!chunkPlayerDefaults) {
+        const sportId = await cardSport();
+        chunkPlayerDefaults = await effectiveCardPlayerDefaults(ctx, args.selectorOptionId, {
+          ...(sportId ? { sportId } : {}),
+          cache: newSelectorRowCache(),
+        });
+      }
+      return chunkPlayerDefaults;
+    };
+
     for (const card of args.cards) {
       // Deliberately `rowsById.get`, not `ctx.db.get`: the map is this
       // selectorOption's own snapshot, so an id that is foreign to this
@@ -20279,6 +20372,21 @@ export const commitCardChecklistChunk = internalMutation({
           );
         }
 
+        // NEO-528 round 3 — a card that resolved no player and carries no
+        // name waiting for review is born with the leaf's default player (ids,
+        // printed name and the names the title and Signed By read, together);
+        // a resolved or pending player always wins. Default cameos are added
+        // either way. Never a team.
+        const born = bornCardPlayers(
+          {
+            playerIds: card.playerIds,
+            playerLinks: card.playerLinks,
+            pendingPlayerNames: insertPendingPlayerNames,
+          },
+          { playerNames: card.playerNames },
+          await leafPlayerDefaults(),
+        );
+
         // NEO-312 — the row itself (features, Signed By, the write-once
         // listing title and description, the SKU) is built by the helper the
         // parallel build shares, so a copied card and a synced card are born
@@ -20289,8 +20397,11 @@ export const commitCardChecklistChunk = internalMutation({
             selectorOptionId: args.selectorOptionId,
             cardNumber: card.cardNumber,
             cardName: card.cardName,
-            playerIds: card.playerIds,
-            playerLinks: card.playerLinks,
+            // NEO-254 — the pair, together (NEO-528: the default's, on a card
+            // that had none).
+            playerIds: born.playerIds,
+            playerLinks: born.playerLinks,
+            cameos: born.cameos,
             // NEO-277: the card's own team, else the leaf's set-level default.
             teamOnCardIds: insertTeamOnCardIds,
             attributes: card.attributes,
@@ -20304,8 +20415,8 @@ export const commitCardChecklistChunk = internalMutation({
             pendingTeamNames: insertPendingTeamNames,
             sortOrder: card.sortOrder,
             // Resolved in the prelude, once per player rather than once per
-            // card.
-            playerNames: card.playerNames,
+            // card (or the default player's, read once per chunk).
+            playerNames: born.playerNames,
             teamNames: insertTeamNames,
             // NEO-335 — written with the row rather than patched after it, so
             // an answered card costs this chunk no extra operation.
@@ -23330,10 +23441,20 @@ export const commitCardChecklist = action({
     // NEO-246 — names the chunks' `boundPendingNames` dropped. Subtracted from
     // `stampedUnreviewedNames.size` below.
     let droppedPendingNameCount = 0;
-    const chunkCount = Math.ceil(chunkCards.length / CARDS_PER_COMMIT_CHUNK);
-    for (let start = 0; start < chunkCards.length; start += CARDS_PER_COMMIT_CHUNK) {
-      const slice = chunkCards.slice(start, start + CARDS_PER_COMMIT_CHUNK);
-      const index = Math.floor(start / CARDS_PER_COMMIT_CHUNK) + 1;
+    // NEO-528 round 3 — fewer cards per chunk when the leaf's "Player on
+    // every card" defaults give each new card many index rows; 150 otherwise.
+    const chunkSize =
+      chunkCards.length > 0
+        ? commitChunkSize(
+            await ctx.runQuery(internal.selectorOptions.commitChunkDefaultWrites, {
+              selectorOptionId: args.selectorOptionId,
+            }),
+          )
+        : CARDS_PER_COMMIT_CHUNK;
+    const chunkCount = Math.ceil(chunkCards.length / chunkSize);
+    for (let start = 0; start < chunkCards.length; start += chunkSize) {
+      const slice = chunkCards.slice(start, start + chunkSize);
+      const index = Math.floor(start / chunkSize) + 1;
       const result: {
         storedIds: Array<Id<"cardChecklist">>;
         bscTeamEnrichmentIds: Array<Id<"cardChecklist">>;

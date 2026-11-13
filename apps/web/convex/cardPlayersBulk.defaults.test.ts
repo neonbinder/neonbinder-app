@@ -143,11 +143,11 @@ describe("cardPlayerDefaultsChain: nearest first, through the row a parallel bel
     expect(chain).toEqual([fx.gold, fx.ins, fx.insertsType, fx.set, fx.brand, fx.year, fx.sport]);
   });
 
-  test("an insert under a Parallel type walks the set's Base before its own variant type", async () => {
+  test("an insert under a Parallel type walks its own Parallel type, then the set's Base, then the set", async () => {
     const t = convexTest(schema, modules);
     const fx = await seedTree(t);
     const chain = await t.run(async (ctx) => (await cardPlayerDefaultsChain(ctx, fx.silver)).map((r) => r._id));
-    expect(chain).toEqual([fx.silver, fx.base, fx.parallelsType, fx.set, fx.brand, fx.year, fx.sport]);
+    expect(chain).toEqual([fx.silver, fx.parallelsType, fx.base, fx.set, fx.brand, fx.year, fx.sport]);
   });
 
   test("an insert under an Insert type has no Base in its walk", async () => {
@@ -199,15 +199,15 @@ describe("effectiveCardPlayerDefaults: what a new card is born with", () => {
     expect((await effective(t, fx.ins)).playerFromId).toBe(fx.ins); // own still wins
   });
 
-  test("the Base's parallels: the Base's value outranks the Parallel type's, which outranks the set's", async () => {
+  test("the Base's parallels: the Parallel type's value outranks the Base's, which outranks the set's", async () => {
     const t = convexTest(schema, modules);
     const fx = await seedTree(t);
     await store(t, fx.set, { defaultPlayerIds: [fx.allen] });
     expect((await effective(t, fx.silver)).playerFromId).toBe(fx.set);
-    await store(t, fx.parallelsType, { defaultPlayerIds: [fx.kelce] });
-    expect((await effective(t, fx.silver)).playerFromId).toBe(fx.parallelsType);
     await store(t, fx.base, { defaultPlayerIds: [fx.mahomes] });
     expect((await effective(t, fx.silver)).playerFromId).toBe(fx.base);
+    await store(t, fx.parallelsType, { defaultPlayerIds: [fx.kelce] });
+    expect((await effective(t, fx.silver)).playerFromId).toBe(fx.parallelsType);
     await store(t, fx.silver, { defaultPlayerIds: [fx.allen] });
     expect((await effective(t, fx.silver)).playerFromId).toBe(fx.silver);
   });
@@ -423,6 +423,20 @@ describe("the walk down and the lookup agree", () => {
     await store(t, fx.parallelsType, { defaultPlayerIds: [fx.allen] });
     await store(t, fx.silver, { defaultCameoIds: [fx.kelce] });
     await assertAgreement(t, fx);
+  });
+
+  test("with values on both the Base and the Parallel type (the Parallel type is nearer for Silver)", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seedTree(t);
+    await store(t, fx.base, { defaultPlayerIds: [fx.mahomes], defaultCameoIds: [fx.kelce] });
+    await store(t, fx.parallelsType, { defaultPlayerIds: [fx.allen] });
+    await assertAgreement(t, fx);
+    // The Base's player run leaves Silver to the Parallel type; its cameo run
+    // still reaches Silver, whose Parallel type stores no cameos.
+    const player = (await t.run(async (ctx) => bulkTargets(ctx, fx.base, "player"))).targets.map((x) => x._id);
+    const cameo = (await t.run(async (ctx) => bulkTargets(ctx, fx.base, "cameo"))).targets.map((x) => x._id);
+    expect(player).not.toContain(fx.silver);
+    expect(cameo).toContain(fx.silver);
   });
 
   test("with nothing stored", async () => {

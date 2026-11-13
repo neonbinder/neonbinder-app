@@ -45,6 +45,19 @@ import { generateSku } from "./sku";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
 import { syncCardTeamLinks } from "./cardTeamLinks";
 import type { CardCountLedger } from "./cardCounts";
+import {
+  bornSecondaryPlayerFields,
+  bornSecondaryPlayers,
+  primaryPlayerIdsOf,
+} from "./cardSecondaryPlayers";
+import { newStoredCardReadCache } from "./storedCardTitle";
+import { MAX_CARD_PLAYERS } from "./features/cardAttention";
+import {
+  planCardPlayerDefaults,
+  type CardPlayerFacts,
+  type DefaultPlayerPlan,
+} from "./lib/cardPlayerDefaults";
+import type { EffectiveCardPlayerDefaults } from "./cardPlayersBulk";
 
 /**
  * Set-level values resolved once per commit (or per build page). The title
@@ -102,6 +115,14 @@ export type NewCardRow = {
   playerNames: string[];
   /** Canonical team names, for the listing text. */
   teamNames?: string[];
+  /**
+   * NEO-528 round 3 — the people the card is born with under "Also on this
+   * card" (its cameos), with their NB names for the description's cameo
+   * line. Usually `bornCardPlayers`' answer. Repeats and the card's own
+   * players are left out and the list is cut at `MAX_CARD_PLAYERS`; the
+   * stored list and the description always name the same people.
+   */
+  cameos?: ReadonlyArray<BornCameo>;
   carried?: CarriedCardFields;
   /**
    * NEO-312 — the features map to merge the card's observed facts ONTO,
@@ -145,6 +166,95 @@ export type NewCardRow = {
    */
   listingTitleKept?: string;
 };
+
+/** A cameo a new card is born with: the player, and their NB name. */
+export type BornCameo = { playerId: Id<"players">; name: string };
+
+/**
+ * NEO-528 round 3 — the cameos a new card actually stores, in order: repeats
+ * and the card's own players taken out, cut at `MAX_CARD_PLAYERS`. The same
+ * filter `bornSecondaryPlayerFields` applies, applied first here so the
+ * description names exactly the stored list.
+ */
+function bornCameoList(
+  card: Pick<NewCardRow, "playerIds" | "playerLinks" | "cameos">,
+): BornCameo[] {
+  const own = primaryPlayerIdsOf(card);
+  const seen = new Set<string>();
+  const out: BornCameo[] = [];
+  for (const cameo of card.cameos ?? []) {
+    const key = cameo.playerId as string;
+    if (seen.has(key) || own.has(key)) continue;
+    seen.add(key);
+    out.push(cameo);
+    if (out.length === MAX_CARD_PLAYERS) break;
+  }
+  return out;
+}
+
+/**
+ * NEO-528 round 3 — "Player on every card": what a NEW card is born with once
+ * the defaults of its row (`cardPlayersBulk.effectiveCardPlayerDefaults`) are
+ * applied, through the one per-card rule (`planCardPlayerDefaults`):
+ *
+ *   - a card that names NO player and carries no name waiting for review gets
+ *     the default player: `playerIds`, `playerLinks` (printed as the player's
+ *     NB name) and `playerNames`, all three naming them, in one answer;
+ *   - a card that names anyone, or holds a pending name, keeps what it has
+ *     (a marketplace-resolved or typed player always wins);
+ *   - cameos: the card's own first (those `cameoName` cannot name are gone
+ *     and left off), then each default cameo that is new, never one of the
+ *     card's players. A pending name blocks the player, never the cameos.
+ *
+ * Writes no team, ever (product invariant 8). Pure. `facts` is what the card
+ * arrives with; `cameoName` names its own cameos (null = no longer in NB).
+ * With no defaults the card is returned as it came.
+ */
+export function bornCardPlayers(
+  facts: CardPlayerFacts,
+  own: {
+    playerNames: string[];
+    cameoName?: (id: Id<"players">) => string | null;
+  },
+  defaults: Pick<EffectiveCardPlayerDefaults, "playerId" | "cameoIds" | "player" | "cameos"> | null,
+): {
+  playerIds?: Array<Id<"players">>;
+  playerLinks?: Array<{ playerId: Id<"players">; nameOnCard: string }>;
+  playerNames: string[];
+  cameos: BornCameo[];
+  player: DefaultPlayerPlan;
+} {
+  const defaultNames = new Map<string, string>();
+  for (const cameo of defaults?.cameos ?? []) defaultNames.set(cameo._id as string, cameo.name);
+  if (defaults?.player) defaultNames.set(defaults.player._id as string, defaults.player.name);
+  const plan = planCardPlayerDefaults(facts, {
+    playerId: defaults?.player ? defaults.playerId : null,
+    cameoIds: defaults?.cameoIds ?? [],
+  });
+  const cameos: BornCameo[] = [];
+  for (const id of plan.cameos.ids) {
+    const name = defaultNames.get(id as string) ?? own.cameoName?.(id) ?? null;
+    if (name !== null) cameos.push({ playerId: id, name });
+  }
+  if (plan.player.kind === "fill" && defaults?.player) {
+    const { _id, name } = defaults.player;
+    return {
+      // NEO-254 — the pair, one list, same order.
+      playerIds: [_id],
+      playerLinks: [{ playerId: _id, nameOnCard: name }],
+      playerNames: [name],
+      cameos,
+      player: plan.player,
+    };
+  }
+  return {
+    ...(facts.playerIds !== undefined ? { playerIds: facts.playerIds } : {}),
+    ...(facts.playerLinks !== undefined ? { playerLinks: facts.playerLinks } : {}),
+    playerNames: own.playerNames,
+    cameos,
+    player: plan.player,
+  };
+}
 
 /**
  * NEO-363 — everything a card row is born with except its `sportId`, which
@@ -215,6 +325,9 @@ export function buildCardRowForInsert(
     mergedFeatures,
   );
   const listingTitle = assessListingTitle(listingInputs);
+  // NEO-528 round 3 — the cameos it is born with, named in the description
+  // exactly as stored (never in the title).
+  const cameos = bornCameoList(card);
   // NEO-335 — the operator's answer from the "Card titles" step, when one
   // rode on the card: their own words, or the trimmed title kept. Either way
   // the cut-short question was put before save, so the flag is not written.
@@ -245,12 +358,17 @@ export function buildCardRowForInsert(
     // "Card titles" step measured; see `listingInputs.storedCardVariation`.
     cardVariation: storedCardVariation(card.cardVariation),
     platformData: card.platformData,
+    // NEO-528 round 3 — absent when it has none; the field is named only by
+    // its one writer (`cardSecondaryPlayers.ts`).
+    ...bornSecondaryPlayerFields(card, cameos.map((c) => c.playerId)),
     ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
     // NEO-363 — required and never blank: the generated title always ends in
     // `#<cardNumber>` (`assessListingTitle`'s guarantee 2), and a blank
     // operator answer falls through to it.
     listingTitle: operatorTitle || listingTitle.title,
-    listingDescription: generateListingDescription(listingInputs),
+    listingDescription: generateListingDescription(listingInputs, {
+      cameoNames: cameos.map((c) => c.name),
+    }),
     // NEO-101: only when the core was actually cut (see schema.ts), and
     // NEO-335: never over an operator's pre-save answer.
     ...(flagTruncated ? { listingTitleTruncated: true } : {}),
@@ -382,6 +500,13 @@ export async function insertCardRow(
   }
   if ((card.teamOnCardIds ?? []).length > 0) {
     await syncCardTeamLinks(ctx, id, card.teamOnCardIds, { fresh: true });
+  }
+  // NEO-528 round 3 — and its cameo index rows, through the one writer. The
+  // names are already known, so the writer reads no player.
+  if ((card.cameos ?? []).length > 0) {
+    const names = newStoredCardReadCache();
+    for (const cameo of card.cameos ?? []) names.players.set(cameo.playerId as string, cameo.name);
+    await bornSecondaryPlayers(ctx, id, row, names);
   }
   ledger.addCard(row);
   if (!card.keepSku) {

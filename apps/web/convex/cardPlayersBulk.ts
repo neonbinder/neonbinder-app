@@ -182,12 +182,13 @@ async function baseVariantTypeOf(
 /**
  * The rows whose defaults a card on `startId` reads, nearest first: the row
  * itself, then up the `parentId` chain to the sport. A row that is a
- * PARALLEL of another row passes through that row first:
+ * PARALLEL of another row passes through that row too:
  *
  *   - a `parallel` row's parent IS its insert, so the plain chain covers it;
  *   - an `insert` under a Parallel variant type (the base set's parallels,
- *     NEO-321) is followed by the set's Base variant type, then by its own
- *     variant type and the rest of the chain.
+ *     NEO-321) is followed by its own Parallel variant type (its structural
+ *     parent), then by the set's Base variant type, then by the set and the
+ *     rest of the chain.
  *
  * Kinds come from the variant type's title through `variantTypeKind`, the
  * NEO-334 exception; nothing else is read from a name. A missing row ends the
@@ -216,8 +217,13 @@ export async function cardPlayerDefaultsChain(
       variantTypeKind(parent) === "parallel" &&
       parent.parentId
     ) {
+      // The insert's own Parallel type first (its structural parent), then
+      // the set's Base, then on up from the set.
+      if (!push(parent)) break;
       const base = await baseVariantTypeOf(ctx, parent.parentId, cache);
       if (base) push(base);
+      row = await rowFor(ctx, parent.parentId, cache);
+      continue;
     }
     row = parent;
   }
