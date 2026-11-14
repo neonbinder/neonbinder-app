@@ -15,3 +15,4 @@
 - [Adapter error string is body and classifier](reference_adapter_error_string_is_body_and_classifier.md) — sanitising an adapter's `error` also changes `error_class`; status code is flag-driven and safe
 - [Never log fully-qualified resource names](feedback_never_log_fully_qualified_resource_names.md) — bare secret id + version ordinal in logs; NEO-294 reversed the old "resource names are safe to log" position
 - [Node version in agent shells](node-version-in-agent-shells.md) — agent Bash runs default Node 24, not the .nvmrc 22; prepend nvm 22 bin before browser gates
+- [Cross-service TS in node --test](reference_cross_service_ts_in_node_test.md) — strip types to a temp .mjs to run a sibling service's dependency-free TS against browser code

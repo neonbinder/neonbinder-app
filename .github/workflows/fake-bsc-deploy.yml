@@ -1,0 +1,141 @@
+name: Fake BSC deploy
+
+# NEO-552: deploys services/fake-bsc, the standing fake BuySportsCards, to the
+# DEV project's Cloud Run service. Invoked by release.yml (workflow_call) AHEAD
+# of the browser lane, because the dev browser service and the previews point at
+# it; `workflow_dispatch` is the manual path.
+#
+# Do NOT give this workflow a `push:` trigger. release.yml is the single driver
+# of push-to-main deploys (CLAUDE.md, CI/CD). Dev only: there is no prod lane
+# and no prod service, ever.
+#
+# Why no blue/green: the fake is a test double with min 0 / max 1, nothing
+# production reads it, and a bad revision is fixed by the next merge. The
+# service, its IAM, bucket and secrets are Terraform's (neonbinder_ioc); this
+# workflow only moves the image (`gcloud run services update --image`), so it
+# can never drift that config. Gated on the repo variable FAKE_BSC_DEPLOY_ENABLED
+# so a merge before the Terraform apply does not fail the release.
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+concurrency:
+  group: fake-bsc-deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  PROJECT: neonbinder-dev
+  REGION: us-central1
+  SERVICE: neonbinder-fake-bsc
+  IMAGE: gcr.io/neonbinder-dev/neonbinder-fake-bsc
+
+jobs:
+  test:
+    name: Build + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: services/fake-bsc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: services/fake-bsc/.nvmrc
+          cache: npm
+          cache-dependency-path: services/fake-bsc/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+  deploy:
+    name: Build, push, deploy and smoke (dev)
+    needs: test
+    if: vars.FAKE_BSC_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker --quiet
+
+      - name: Build and push the image
+        working-directory: services/fake-bsc
+        env:
+          SHA: ${{ github.sha }}
+        # NEO-484: one image manifest, not an OCI index (image-push-report.sh).
+        run: |
+          set -euo pipefail
+          docker build --provenance=false --sbom=false \
+            --label "org.opencontainers.image.revision=$SHA" \
+            -f Dockerfile -t "$IMAGE:$SHA" -t "$IMAGE:latest" .
+          docker push "$IMAGE:$SHA"
+          docker push "$IMAGE:latest"
+          bash "$GITHUB_WORKSPACE/.github/scripts/image-push-report.sh" "$IMAGE:$SHA"
+
+      - name: Move the service to the new image
+        env:
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          gcloud run services update "$SERVICE" \
+            --image "$IMAGE:$SHA" \
+            --region "$REGION" --project "$PROJECT"
+
+      # The service is IAM-gated and the app wants its own key, so the smoke
+      # sends a Google ID token in X-Serverless-Authorization (the fake's
+      # contract) and the caller key.
+      - id: url
+        name: Capture the service URL (token audience)
+        run: |
+          set -euo pipefail
+          url=$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" --format='value(status.url)')
+          [ -n "$url" ] || { echo "::error::no service URL"; exit 1; }
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - id: token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.url.outputs.url }}
+          id_token_include_email: true
+
+      - name: Smoke the new revision
+        env:
+          URL: ${{ steps.url.outputs.url }}
+          ID_TOKEN: ${{ steps.token.outputs.id_token }}
+        run: |
+          set -euo pipefail
+          key=$(gcloud secrets versions access latest --secret=fake-bsc-caller-key --project="$PROJECT")
+          echo "::add-mask::$key"
+          echo "::add-mask::$ID_TOKEN"
+          for attempt in $(seq 1 12); do
+            code=$(curl -sS -o "$RUNNER_TEMP/healthz.json" -w '%{http_code}' --max-time 30 \
+              -H "X-Serverless-Authorization: Bearer $ID_TOKEN" \
+              -H "x-nb-fake-bsc-key: $key" "$URL/healthz" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "fake BSC healthy after $attempt attempt(s)"
+              exit 0
+            fi
+            echo "attempt $attempt: HTTP $code"
+            sleep 10
+          done
+          echo "::error::the fake BSC did not answer /healthz with 200"
+          exit 1

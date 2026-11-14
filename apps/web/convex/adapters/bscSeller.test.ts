@@ -30,10 +30,12 @@ import {
   readCappedText,
   type BscSellerSession,
 } from "./bscSeller";
+import { openBscGate } from "../../lib/testing/bsc-gate-stub";
 
 const session = (): BscSellerSession => ({ ownerId: "owner", token: "tok", reauthAttempted: false, dead: false });
 // No call here reaches a 401, so the credential actions are never run.
-const ctx = { runAction: vi.fn() } as never;
+// NEO-552: an always-open call gate, so the calls reach the stubbed fetch.
+const ctx = { runAction: vi.fn(), ...openBscGate().ctx } as never;
 
 /** A body delivered in chunks, with no Content-Length. */
 function streamed(chunks: Uint8Array[]): Response {
@@ -342,7 +344,7 @@ describe("NEO-475: the seller profile read (5 s per attempt, one immediate retry
     const runAction = vi.fn(async () => ({ token: "tok-2", refreshed: true }));
     const { asked } = scriptProfile([401, 401, "ok"]);
     const s = session();
-    expect(await fetchBscSellerId({ runAction } as never, s)).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
+    expect(await fetchBscSellerId({ runAction, ...openBscGate().ctx } as never, s)).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
     expect(asked).toHaveLength(2);
     expect(s.dead).toBe(true);
   });

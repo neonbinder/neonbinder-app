@@ -1,0 +1,28 @@
+{
+  "name": "neonbinder_fake_bsc",
+  "version": "1.0.0",
+  "private": true,
+  "description": "A standing fake of BuySportsCards for previews, worktree deployments and dev (NEO-552). Never contacts BSC.",
+  "main": "dist/src/index.js",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/src/index.js",
+    "test": "node --test 'tests/*.test.mjs'",
+    "recorder": "node dist/recorder/cli.js"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "@google-cloud/storage": "8.4.0",
+    "express": "^5.3.0",
+    "google-auth-library": "11.3.1"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.5",
+    "typescript": "^7.0.2"
+  }
+}

@@ -168,6 +168,10 @@ jobs:
       tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
       prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
@@ -210,6 +214,20 @@ jobs:
             echo "::error::See NEO-415. Set the repo variables with gh variable set and add the secret version with gcloud secrets versions add ebay-client-secret."
             exit 1
           fi
+      # NEO-552: dev talks to the FAKE BSC. Never set in the prod lane below.
+      - id: fakebsc
+        name: Preflight fake BSC config (dev project)
+        env:
+          FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+        run: |
+          set -euo pipefail
+          re='^https://[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          if [[ -z "${FAKE_BSC_URL:-}" ]] || [[ ! "${FAKE_BSC_URL%/}" =~ $re ]]; then
+            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL must be set to the fake BSC's https *.run.app origin (NEO-552)."
+            exit 1
+          fi
+          version=$(bash .github/scripts/resolve-secret-version.sh fake-bsc-caller-key neonbinder-dev)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
       - id: capture-prev
         name: Capture dev's currently-serving revision
         run: |
@@ -230,8 +248,10 @@ jobs:
             EBAY_CLIENT_ID=${{ vars.EBAY_CLIENT_ID_SANDBOX }}
             EBAY_RU_NAME=${{ vars.EBAY_RU_NAME_SANDBOX }}
             EBAY_ENVIRONMENT=sandbox
+            NEONBINDER_FAKE_BSC_URL=${{ vars.NEONBINDER_FAKE_BSC_URL }}
           secrets: |
             EBAY_CLIENT_SECRET=ebay-client-secret:${{ steps.ebay.outputs.version }}
+            NEONBINDER_FAKE_BSC_KEY=fake-bsc-caller-key:${{ steps.fakebsc.outputs.version }}
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           # Cost control (NEO-95): min-instances=0 intentionally, allow cold start.
@@ -257,7 +277,7 @@ jobs:
   # Real BSC + SportLots login round-trip against the dev tagged revision
   # (catches auth regressions before any traffic shift).
   dev-login-probe:
-    name: Dev login probe (BSC + SportLots)
+    name: Dev login probe (fake BSC + SportLots)
     needs: deploy-dev
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true')
     runs-on: ubuntu-latest
@@ -296,21 +316,23 @@ jobs:
           token_format: id_token
           id_token_audience: ${{ steps.base-url.outputs.base_url }}
           id_token_include_email: true
-      - name: Run login suite against dev tagged URL
+      # NEO-552: dev's BSC is the fake. Signs in with the fake's constant
+      # credentials and asserts /health says bscTarget=fake. SportLots is real.
+      - name: BSC probe against the dev tagged URL (fake)
+        env:
+          TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" fake
+      - name: Run SportLots login suite against dev tagged URL
         working-directory: services/browser
         env:
           TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
           PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
-          BSC_USERNAME: ${{ secrets.MAESTRO_BSC_USERNAME }}
-          BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
           SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
           SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
-          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch
-          # so this gate (which promotion depends on) skips only the SportLots
-          # half during a known, operator-chosen outage. No `if:` gating: BSC
-          # keeps probing unconditionally.
+          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch.
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-        run: npm run test:prod-gate
+        run: node --test tests/integration/sportlots-login.test.mjs
 
   # Shift 100% dev traffic to the new revision. Gated (enabled-push only) — never
   # on dispatch, so a validation dispatch can't move live dev traffic.
@@ -462,7 +484,7 @@ jobs:
   # The signal the dev probe can't give: prod env + prod Secret Manager + prod SA
   # actually authenticating to BSC + SportLots, against the prod tagged revision.
   prod-login-probe:
-    name: Prod login probe (BSC + SportLots)
+    name: Prod login probe (real BSC + SportLots)
     needs: deploy-prod
     if: github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
@@ -499,21 +521,28 @@ jobs:
           token_format: id_token
           id_token_audience: ${{ steps.base-url.outputs.base_url }}
           id_token_include_email: true
-      - name: Run login suite against prod tagged URL
+      # NEO-552: the prod gate. /probe/bsc runs the service's OWN stored
+      # account through sign-in, one catalogue read and the parser, against the
+      # tagged revision. No BSC credential is ever in CI. Fails on a sign-in
+      # failure, a non-2xx catalogue read, a parser rejection, or /health not
+      # saying bscTarget=real (a prod revision that reaches the fake, or an
+      # old service with no probe, never promotes). The fake var is never set
+      # in this lane.
+      - name: BSC probe against the prod tagged URL (real)
+        env:
+          TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" real
+      - name: Run SportLots login suite against prod tagged URL
         working-directory: services/browser
         env:
           TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
           PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
-          BSC_USERNAME: ${{ secrets.MAESTRO_BSC_USERNAME }}
-          BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
           SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
           SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
-          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch
-          # so this gate (which promotion depends on) skips only the SportLots
-          # half during a known, operator-chosen outage. No `if:` gating: BSC
-          # keeps probing unconditionally.
+          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch.
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-        run: npm run test:prod-gate
+        run: node --test tests/integration/sportlots-login.test.mjs
 
   prod-promote:
     name: Promote prod to 100%

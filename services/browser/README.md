@@ -112,6 +112,36 @@ Failures: 422 when the marketplace refused the credentials
 for an integration or marketplace failure, 500 when our code threw. Every failure
 body is `{ error, error_class, diagnostic? }`, with no credential material.
 
+### POST /probe/bsc and the fake BSC (NEO-552)
+
+`src/bsc-endpoints.ts` is the only file that names a BuySportsCards host
+(`tests/bsc-endpoints.test.mjs` fails on a host literal anywhere else in
+`src/`). Every BSC request goes through `bscFetch` (`src/bsc-fetch.ts`).
+
+- **Fake mode.** `NEONBINDER_FAKE_BSC_URL` (the fake's origin) points the B2C
+  sign-in and the API at the standing fake BSC (`services/fake-bsc`):
+  `<FAKE>/identity/...` and `<FAKE>/api/...`. Every request to it carries
+  `x-nb-fake-bsc-key` (`NEONBINDER_FAKE_BSC_KEY`) and, over https, this
+  service's Google ID token in `X-Serverless-Authorization`. **A process with
+  the fake URL set and `ENVIRONMENT=prod` refuses to boot.** `GET /health`
+  reports `bscTarget: "real" | "fake"`.
+- **429 breaker.** A 429 from BSC stops every BSC call from this process for its
+  `Retry-After` (default 60 s, 1 s to 15 min); callers see a synthetic 429 with
+  `x-nb-bsc-breaker: open`. Against the fake it is scoped per credential key,
+  so one test's injected 429 does not stall the others. Attempts stay fixed:
+  one per B2C step (15 s each), one refresh grant, one silent re-authorize, at
+  most two profile reads; a 429 is never retried.
+- **`bscPasswordSignIn({username, password, authority?})`** (`src/bsc-signin.ts`)
+  is the persistence-free B2C sign-in shared by `/login/bsc`, the probe and the
+  fake's local recorder.
+- **`POST /probe/bsc`** (`src/routes/bsc-probe.ts`): a fresh sign-in plus
+  pinned catalogue and seller reads, returning statuses, parser verdicts and
+  value-free shapes, never values. In prod it ignores the body and signs in
+  with the canary account; on a fake revision it uses the body's fake
+  credentials. One call a minute; honours the BSC pause flag. Contract:
+  `services/fake-bsc/CONTRACT.md`, "Probe, drift and ops wiring"; verdict:
+  `.github/scripts/bsc-probe-verdict.sh`.
+
 ### EasyPost postage routes
 
 Convex never holds a seller's EasyPost API key (NEO-20's credential boundary),
@@ -480,6 +510,11 @@ token again instead of renewing it. BSC calls in that window keep failing with
 minutes, until new Convex is live (its next renewal sends `tokenRefused`) or
 the stall ends. Nothing is lost: the stored session is untouched, and waiting or
 signing in again clears it.
+
+**Additive fields that did not bump the version.** `bscTarget` on `/health`
+(NEO-552) is informational: Convex never acts on it, and an older service
+simply omits it (CI's probe verdict reads a missing value as the wrong target).
+`POST /probe/bsc` is new and Convex never calls it.
 
 ### The mechanical check
 

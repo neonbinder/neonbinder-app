@@ -1,0 +1,629 @@
+// The fake over real HTTP on a loopback port: auth, replay and misses,
+// recording uploads, synthesis, faults, write captures and drift.
+import { describe, it, before, after, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import { createRequire } from "node:module";
+import {
+  ADMIN_KEY,
+  AUDIENCE,
+  CALLER,
+  CALLER_KEY,
+  FILTERS_PATH,
+  LOADER,
+  RESULTS_PATH,
+  STRANGER,
+  idToken,
+  rawResultsRow,
+  resultsBody,
+  startFake,
+} from "./helpers.mjs";
+
+const require = createRequire(import.meta.url);
+const { requestKey } = require("../dist/src/requestKey.js");
+const { sanitiseCatalogue, SANITISE_ALLOWLIST_VERSION } = require("../dist/src/sanitise.js");
+const { checkCapture, synthesisedWrite } = require("../dist/src/captures.js");
+const { shapeOf } = require("../dist/src/shape.js");
+
+const NS = "happy-cat-123-w0";
+const BSC = `tok-${NS}`;
+const FILTERS = { sport: ["baseball"], year: ["1996"], setName: ["score"] };
+
+function recording(path, method, body, responseBody, status = 200) {
+  return { request: { method, path, query: [], body }, response: { status, body: responseBody }, allowlistVersion: SANITISE_ALLOWLIST_VERSION };
+}
+
+function cleanRows() {
+  return sanitiseCatalogue("results", [rawResultsRow("c1", "1", "Ken Griffey Jr."), rawResultsRow("c2", "2", "Cal Ripken Jr.")]).value;
+}
+
+describe("auth", () => {
+  let fake;
+  before(async () => (fake = await startFake()));
+  after(() => fake.close());
+
+  it("refuses a missing or wrong caller key", async () => {
+    let res = await fetch(`${fake.base}/healthz`);
+    assert.equal(res.status, 401);
+    res = await fetch(`${fake.base}/healthz`, { headers: { "x-nb-fake-bsc-key": "nope".repeat(10), "X-Serverless-Authorization": `Bearer ${idToken(CALLER)}` } });
+    assert.equal(res.status, 401);
+  });
+
+  it("refuses a missing, unverified, expired, wrong-audience or unverified-email ID token", async () => {
+    const cases = [
+      undefined,
+      `Bearer ${idToken(CALLER, { sig: "forged" })}`,
+      `Bearer ${idToken(CALLER, { exp: 1 })}`,
+      `Bearer ${idToken(CALLER, { aud: "https://other.run.app" })}`,
+      `Bearer ${idToken(CALLER, { iss: "https://evil.example" })}`,
+      `Bearer ${idToken(CALLER, { verified: false })}`,
+      // Unsigned (as Cloud Run forwards it) is refused off Cloud Run.
+      `Bearer ${idToken(CALLER, { sig: "" })}`,
+      "Bearer not-a-jwt",
+    ];
+    for (const h of cases) {
+      const res = await fetch(`${fake.base}/healthz`, { headers: { "x-nb-fake-bsc-key": CALLER_KEY, ...(h ? { "X-Serverless-Authorization": h } : {}) } });
+      assert.equal(res.status, 401, String(h));
+    }
+  });
+
+  it("refuses a verified caller who is not on the allowed list", async () => {
+    const r = await fake.call("GET", "/healthz", { email: STRANGER });
+    assert.equal(r.status, 403);
+  });
+
+  it("answers health to an allowed caller", async () => {
+    const r = await fake.call("GET", "/healthz");
+    assert.equal(r.status, 200);
+    assert.equal(r.body.instanceId, "test-instance");
+    assert.equal(r.body.allowlistVersion, SANITISE_ALLOWLIST_VERSION);
+  });
+
+  it("needs the admin key AND an admin caller for admin endpoints", async () => {
+    assert.equal((await fake.call("GET", "/__fake/recordings", { email: CALLER })).status, 403);
+    assert.equal((await fake.call("GET", "/__fake/recordings", { email: CALLER, admin: true })).status, 403);
+    assert.equal((await fake.call("GET", "/__fake/recordings", { email: LOADER })).status, 403);
+    assert.equal((await fake.call("GET", "/__fake/recordings", { email: LOADER, admin: true })).status, 200);
+  });
+
+  it("lets a plain caller read misses by prefix, and nothing broader", async () => {
+    assert.equal((await fake.call("GET", "/__fake/misses?prefix=happy-cat-123-")).status, 200);
+    assert.equal((await fake.call("GET", "/__fake/misses")).status, 400);
+    assert.equal((await fake.call("GET", "/__fake/misses?prefix=h")).status, 400);
+  });
+
+  it("answers 401 to a seller call with no fake BSC token", async () => {
+    assert.equal((await fake.call("GET", "/api/marketplace/user/profile")).status, 401);
+    assert.equal((await fake.call("GET", "/api/marketplace/user/profile", { bsc: "not-ours" })).status, 401);
+  });
+});
+
+describe("cloud run identity", () => {
+  it("accepts an unsigned token only on Cloud Run, with the claims checked", async () => {
+    const { callerIdentity } = require("../dist/src/auth.js");
+    const never = async () => {
+      throw new Error("must not verify an unsigned token");
+    };
+    const unsigned = `Bearer ${idToken(CALLER, { sig: "" })}`;
+    assert.deepEqual(await callerIdentity(unsigned, { audience: AUDIENCE, onCloudRun: true }, never), { ok: true, email: CALLER });
+    assert.deepEqual(await callerIdentity(unsigned, { audience: null, onCloudRun: true }, never), { ok: true, email: CALLER });
+    assert.equal((await callerIdentity(unsigned, { audience: AUDIENCE, onCloudRun: false }, never)).ok, false);
+    const expired = `Bearer ${idToken(CALLER, { sig: "", exp: 5 })}`;
+    assert.equal((await callerIdentity(expired, { audience: null, onCloudRun: true }, never)).ok, false);
+    // A signed token always needs an audience to verify against.
+    assert.equal((await callerIdentity(`Bearer ${idToken(CALLER)}`, { audience: null, onCloudRun: true }, async () => ({}))).ok, false);
+  });
+});
+
+describe("config fails closed", () => {
+  const { readConfig } = require("../dist/src/config.js");
+  const base = {
+    FAKE_BSC_CALLER_KEY: CALLER_KEY,
+    FAKE_BSC_ADMIN_KEY: ADMIN_KEY,
+    FAKE_BSC_ALLOWED_CALLERS: CALLER,
+  };
+  it("refuses the local bypass on Cloud Run", () => {
+    assert.throws(() => readConfig({ ...base, FAKE_BSC_LOCAL_DEV_BYPASS: "1", K_SERVICE: "fake-bsc", FAKE_BSC_BUCKET: "b" }), /K_SERVICE/);
+  });
+  it("refuses short or equal keys, an empty caller list, and Cloud Run without a bucket", () => {
+    assert.throws(() => readConfig({ ...base, FAKE_BSC_CALLER_KEY: "short" }));
+    assert.throws(() => readConfig({ ...base, FAKE_BSC_ADMIN_KEY: CALLER_KEY }));
+    assert.throws(() => readConfig({ ...base, FAKE_BSC_ALLOWED_CALLERS: "" }));
+    assert.throws(() => readConfig({ ...base, K_SERVICE: "fake-bsc" }), /BUCKET/);
+    assert.throws(() => readConfig({ ...base, FAKE_BSC_ADMIN_CALLERS: STRANGER }));
+  });
+  it("allows the bypass locally", () => {
+    const c = readConfig({ ...base, FAKE_BSC_ALLOWED_CALLERS: "", FAKE_BSC_LOCAL_DEV_BYPASS: "1" });
+    assert.equal(c.localDevBypass, true);
+  });
+});
+
+describe("replay, misses and uploads", () => {
+  let fake;
+  beforeEach(async () => {
+    if (fake) await fake.close();
+    fake = await startFake();
+  });
+  after(() => fake.close());
+
+  it("answers 501 + x-nb-fake: unrecorded and lists the miss under the namespace", async () => {
+    const r = await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body: { filters: { sport: ["baseball"] } } });
+    assert.equal(r.status, 501);
+    assert.equal(r.headers.get("x-nb-fake"), "unrecorded");
+    const m = await fake.call("GET", `/__fake/misses?prefix=happy-cat-`);
+    assert.equal(m.body.misses.length, 1);
+    const miss = m.body.misses[0];
+    assert.equal(miss.ns, NS);
+    assert.equal(miss.kind, "catalogue");
+    assert.equal(miss.endpoint, "filters");
+    assert.equal(miss.key, requestKey({ method: "POST", path: FILTERS_PATH, body: { filters: { sport: ["baseball"] } } }));
+    assert.deepEqual(miss.request.body, { filters: { sport: ["baseball"] } });
+    // A second identical miss counts, not duplicates.
+    await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body: { filters: { sport: ["baseball"] } } });
+    assert.equal((await fake.call("GET", `/__fake/misses?ns=${NS}`)).body.misses[0].count, 2);
+    // Other namespaces don't see it.
+    assert.equal((await fake.call("GET", `/__fake/misses?prefix=other-slug-`)).body.misses.length, 0);
+  });
+
+  it("serves an uploaded recording and clears its miss; shows a near-miss diff as paths", async () => {
+    const body = { filters: { sport: ["baseball"] } };
+    await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body });
+    const answer = { aggregations: { year: [{ label: "1996", slug: "1996", count: 4, active: false }] } };
+    const up = await fake.call("POST", "/__fake/recordings", { email: LOADER, admin: true, body: { recordings: [recording(FILTERS_PATH, "POST", body, answer)] } });
+    assert.equal(up.status, 200, JSON.stringify(up.body));
+    assert.equal(up.body.manifestVersion, 1);
+    const r = await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body });
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body, answer);
+    assert.equal((await fake.call("GET", `/__fake/misses?ns=${NS}`)).body.misses.length, 0);
+
+    await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body: { filters: { sport: ["football"] } } });
+    const miss = (await fake.call("GET", `/__fake/misses?ns=${NS}`)).body.misses[0];
+    assert.deepEqual(miss.nearMiss.diffPaths, ["body.filters.sport"]);
+  });
+
+  it("refuses an upload carrying anything outside the allowlist, naming paths only", async () => {
+    const body = resultsBody(FILTERS);
+    const raw = [rawResultsRow("c1", "1", "Ken Griffey Jr.")];
+    const up = await fake.call("POST", "/__fake/recordings", { email: LOADER, admin: true, body: { recordings: [recording(RESULTS_PATH, "POST", body, raw)] } });
+    assert.equal(up.status, 400);
+    assert.equal(up.body.reason, "outside_allowlist");
+    assert.deepEqual(up.body.droppedPaths, ["[].imgFront", "[].seller", "[].sellerId"]);
+    assert.ok(!JSON.stringify(up.body).includes("someone@example.com"));
+    assert.equal(fake.catalogue.size, 0);
+  });
+
+  it("refuses nested PII hidden under an allowed name on upload", async () => {
+    const answer = { teamName: { name: "Mariners", owner: { email: "x@y.co" } } };
+    const up = await fake.call("POST", "/__fake/recordings", {
+      email: LOADER,
+      admin: true,
+      body: { recordings: [recording("marketplace/card/c1/card-listing", "GET", undefined, answer)] },
+    });
+    assert.equal(up.status, 400);
+    assert.deepEqual(up.body.droppedPaths, ["teamName"]);
+  });
+
+  it("refuses a non-catalogue endpoint, a wrong key, a wrong allowlist version and a 5xx", async () => {
+    const bad = [
+      recording("seller/bulk-upload/results", "POST", {}, []),
+      { ...recording(FILTERS_PATH, "POST", {}, {}), key: "0".repeat(64) },
+      { ...recording(FILTERS_PATH, "POST", {}, {}), allowlistVersion: SANITISE_ALLOWLIST_VERSION + 1 },
+      recording(FILTERS_PATH, "POST", {}, null, 503),
+    ];
+    const reasons = [];
+    for (const rec of bad) {
+      const up = await fake.call("POST", "/__fake/recordings", { email: LOADER, admin: true, body: { recordings: [rec] } });
+      assert.equal(up.status, 400);
+      reasons.push(up.body.reason);
+    }
+    assert.deepEqual(reasons, ["not_a_catalogue_endpoint", "key_mismatch", "allowlist_version", "status_not_recordable"]);
+  });
+
+  it("serves card-listing without a BSC token, and a recorded 404 as a 404", async () => {
+    await fake.call("POST", "/__fake/recordings", {
+      email: LOADER,
+      admin: true,
+      body: { recordings: [recording("marketplace/card/c1/card-listing", "GET", undefined, { teamName: "Seattle Mariners" }), recording("marketplace/card/gone/card-listing", "GET", undefined, null, 404)] },
+    });
+    const r = await fake.call("GET", "/api/marketplace/card/c1/card-listing");
+    assert.deepEqual(r.body, { teamName: "Seattle Mariners" });
+    assert.equal((await fake.call("GET", "/api/marketplace/card/gone/card-listing")).status, 404);
+    // An anonymous miss is listed under every prefix.
+    await fake.call("GET", "/api/marketplace/card/c9/card-listing");
+    const misses = (await fake.call("GET", "/__fake/misses?prefix=any-slug-")).body.misses;
+    assert.equal(misses.length, 1);
+    assert.equal(misses[0].ns, null);
+  });
+
+  it("lists an unmodelled endpoint as needs-model, keeping no body", async () => {
+    const r = await fake.call("POST", "/api/seller/something/new", { bsc: BSC, body: { secret: "do-not-keep" } });
+    assert.equal(r.status, 501);
+    assert.equal(r.headers.get("x-nb-fake"), "unrecorded");
+    const m = (await fake.call("GET", `/__fake/misses?ns=${NS}`)).body.misses[0];
+    assert.equal(m.kind, "needs-model");
+    assert.equal(m.request, undefined);
+    assert.ok(!JSON.stringify(m).includes("do-not-keep"));
+  });
+});
+
+describe("seller synthesis", () => {
+  let fake;
+  const sellerId = async () => (await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC })).body.sellerProfile.sellerId;
+  const sheet = (condition) =>
+    fake.call("POST", "/api/seller/bulk-upload/results", {
+      bsc: BSC,
+      body: { condition, currentListings: true, productType: "raw", page: 0, size: 5000, sort: "default", filters: FILTERS },
+    });
+
+  beforeEach(async () => {
+    if (fake) await fake.close();
+    fake = await startFake();
+  });
+  after(() => fake.close());
+
+  it("synthesises a stable per-namespace profile in the shape NB reads", async () => {
+    const p = (await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC })).body;
+    assert.match(p.sellerProfile.sellerId, /^[A-Za-z0-9_-]{1,64}$/);
+    assert.equal(typeof p.sellerProfile.sellerStoreName, "string");
+    const other = (await fake.call("GET", "/api/marketplace/user/profile", { bsc: "tok-other-slug-w1" })).body;
+    assert.notEqual(other.sellerProfile.sellerId, p.sellerProfile.sellerId);
+    assert.equal(await sellerId(), p.sellerProfile.sellerId);
+  });
+
+  it("asks for the catalogue recording when the sheet's filters are unrecorded", async () => {
+    const r = await sheet("near_mint");
+    assert.equal(r.status, 501);
+    const miss = (await fake.call("GET", `/__fake/misses?ns=${NS}`)).body.misses[0];
+    assert.equal(miss.endpoint, "results");
+    assert.equal(miss.key, requestKey({ method: "POST", path: RESULTS_PATH, body: resultsBody(FILTERS) }));
+  });
+
+  it("answers BSC's 500 for a sheet with no condition", async () => {
+    const r = await fake.call("POST", "/api/seller/bulk-upload/results", { bsc: BSC, body: { filters: FILTERS } });
+    assert.equal(r.status, 500);
+  });
+
+  it("builds the sheet from the recorded catalogue, overlays listings, and mints template productIds per read", async () => {
+    fake.catalogue.primeForTests([
+      { key: requestKey({ method: "POST", path: RESULTS_PATH, body: resultsBody(FILTERS) }), allowlistVersion: 1, endpoint: "results", request: { method: "POST", path: RESULTS_PATH, query: [], body: resultsBody(FILTERS) }, response: { status: 200, body: cleanRows() }, recordedAt: new Date().toISOString() },
+    ]);
+    const first = (await sheet("near_mint")).body;
+    assert.equal(first.length, 2);
+    for (const row of first) {
+      assert.equal(row.card.id, row.cardId);
+      assert.equal(row.availableQuantity, 0);
+      assert.equal(row.price, "0");
+      assert.equal(row.condition, "near_mint");
+      assert.ok(row.sellerImgFront.includes("Default"));
+    }
+    const again = (await sheet("near_mint")).body;
+    assert.notEqual(again[0].productId, first[0].productId, "a template mints a new productId on each read");
+
+    const id = await sellerId();
+    const put = await fake.call("PUT", "/api/seller/bulk-upload", {
+      bsc: BSC,
+      body: { sellerId: id, listings: [{ ...first[0], availableQuantity: 3, price: 0.5, sellerSku: "303|1" }] },
+    });
+    assert.equal(put.status, 200);
+    const after = (await sheet("near_mint")).body;
+    const listed = after.find((r) => r.cardId === "c1");
+    assert.equal(listed.availableQuantity, 3);
+    assert.equal(listed.price, "0.50");
+    assert.equal(listed.sellerSku, "303|1");
+    assert.equal(listed.card.cardNo, "1");
+    const stable = (await sheet("near_mint")).body.find((r) => r.cardId === "c1");
+    assert.equal(stable.productId, listed.productId, "a listing keeps its productId");
+    // Another condition, and "all", do not show it.
+    assert.equal((await sheet("excellent")).body.find((r) => r.cardId === "c1").availableQuantity, 0);
+    assert.equal((await sheet("all")).body.find((r) => r.cardId === "c1").availableQuantity, 0);
+
+    // Quantity 0 removes it: the card is a template again.
+    await fake.call("PUT", "/api/seller/bulk-upload", { bsc: BSC, body: { sellerId: id, listings: [{ ...listed, availableQuantity: 0 }] } });
+    assert.equal((await sheet("near_mint")).body.find((r) => r.cardId === "c1").availableQuantity, 0);
+    // State is per namespace.
+    const otherSheet = await fake.call("POST", "/api/seller/bulk-upload/results", { bsc: "tok-other-slug-w1", body: { condition: "near_mint", filters: FILTERS } });
+    assert.equal(otherSheet.status, 200);
+  });
+
+  it("refuses a PUT for another seller, a bad row, and too many rows", async () => {
+    const id = await sellerId();
+    const row = { cardId: "c1", condition: "near_mint", availableQuantity: 1, price: "0.25" };
+    assert.equal((await fake.call("PUT", "/api/seller/bulk-upload", { bsc: BSC, body: { sellerId: "someone-else", listings: [row] } })).status, 403);
+    assert.equal((await fake.call("PUT", "/api/seller/bulk-upload", { bsc: BSC, body: { sellerId: id, listings: [{ ...row, availableQuantity: -1 }] } })).status, 400);
+    assert.equal((await fake.call("PUT", "/api/seller/bulk-upload", { bsc: BSC, body: { sellerId: id, listings: Array(101).fill(row) } })).status, 400);
+    assert.equal(fake.state.get(NS).listings.size, 0);
+  });
+
+  it("answers a repeated (card, condition) in one PUT with BSC's half-applied 500", async () => {
+    const id = await sellerId();
+    const a = { cardId: "c1", condition: "near_mint", availableQuantity: 1, price: "0.25" };
+    const b = { cardId: "c2", condition: "near_mint", availableQuantity: 2, price: "0.25" };
+    const r = await fake.call("PUT", "/api/seller/bulk-upload", { bsc: BSC, body: { sellerId: id, listings: [a, b, { ...a, availableQuantity: 5 }] } });
+    assert.equal(r.status, 500);
+    const listings = fake.state.get(NS).listings;
+    assert.equal(listings.size, 2);
+    assert.equal(listings.get("c1|near_mint").availableQuantity, 1);
+  });
+
+  it("takes a multipart photo and answers an object key", async () => {
+    const form = new FormData();
+    form.append("attachment", new Blob([new Uint8Array([1, 2, 3])], { type: "image/jpeg" }), "front.jpg");
+    const res = await fetch(`${fake.base}/api/common/card/undefined/product/undefined/attachment`, { method: "POST", headers: fake.headers(CALLER, { bsc: BSC }), body: form });
+    assert.equal(res.status, 200);
+    const { objectKey } = await res.json();
+    assert.match(objectKey, /^[A-Za-z0-9._\-/]{1,300}$/);
+    const bad = await fetch(`${fake.base}/api/common/card/undefined/product/undefined/attachment`, { method: "POST", headers: { ...fake.headers(CALLER, { bsc: BSC }), "content-type": "application/json" }, body: "{}" });
+    assert.equal(bad.status, 400);
+  });
+
+  it("starts with no orders and serves injected ones in BSC's wire shape, lowering listings", async () => {
+    const empty = (await fake.call("POST", "/api/seller/order/history", { bsc: BSC, body: { page: 0, size: 50, status: [] } })).body;
+    assert.deepEqual(empty, { totalElements: 0, results: [] });
+    const id = await sellerId();
+    await fake.call("PUT", "/api/seller/bulk-upload", { bsc: BSC, body: { sellerId: id, listings: [{ cardId: "c1", condition: "near_mint", availableQuantity: 3, price: "0.50", sellerSku: "303|1" }] } });
+
+    const add = await fake.call("POST", "/__fake/orders", { body: { ns: NS, order: { items: [{ cardId: "c1", condition: "near_mint", quantity: 2 }] } } });
+    assert.equal(add.status, 200);
+    const { orderId } = add.body.orders[0];
+    assert.equal(add.body.orderId, orderId);
+    assert.deepEqual(add.body.orderIds, [orderId]);
+    assert.deepEqual(add.body.orders[0].items, [{ cardId: "c1", condition: "near_mint", quantity: 2, priceCents: 50, sellerSku: "303|1" }]);
+    assert.equal(add.body.orders[0].status, "READY_TO_SHIP");
+    const hist = (await fake.call("POST", "/api/seller/order/history", { bsc: BSC, body: { page: 0, size: 50, status: [] } })).body;
+    assert.equal(hist.totalElements, 1);
+    assert.equal(hist.results[0].orderId, orderId);
+    assert.equal(hist.results[0].orderStatus, "READY_TO_SHIP");
+    assert.match(hist.results[0].orderDate, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/);
+    const detail = (await fake.call("GET", `/api/seller/order/${orderId}`, { bsc: BSC })).body;
+    assert.equal(detail.orderItems[0].card.id, "c1");
+    assert.equal(detail.orderItems[0].cardId, "c1");
+    assert.equal(detail.orderItems[0].orderQuantity, 2);
+    assert.equal(detail.orderItems[0].price, "0.50");
+    assert.equal(detail.orderItems[0].sellerSku, "303|1");
+    assert.equal(detail.orderItems[0].productType, "raw");
+    assert.match(detail.orderDate, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}$/);
+    for (const k of ["buyer", "shippingAddress", "billingAddress", "stripePaymentId"]) assert.equal(detail[k], undefined);
+    assert.equal(fake.state.get(NS).listings.get("c1|near_mint").availableQuantity, 1);
+    assert.equal((await fake.call("GET", "/api/seller/order/nope", { bsc: BSC })).status, 404);
+    // Another namespace sees none of it.
+    assert.equal((await fake.call("GET", `/api/seller/order/${orderId}`, { bsc: "tok-other-slug-w1" })).status, 404);
+    // A cancelled order lowers nothing.
+    await fake.call("POST", "/__fake/orders", { body: { ns: NS, order: { status: "CANCELLED", items: [{ cardId: "c1", condition: "near_mint", quantity: 1 }] } } });
+    assert.equal(fake.state.get(NS).listings.get("c1|near_mint").availableQuantity, 1);
+  });
+
+  it("refuses a malformed order", async () => {
+    for (const order of [{}, { items: [] }, { items: [{ cardId: "../x", condition: "nm", quantity: 1 }] }, { items: [{ cardId: "c1", condition: "nm", quantity: 0 }] }, { status: "lower", items: [{ cardId: "c1", condition: "nm", quantity: 1 }] }]) {
+      assert.equal((await fake.call("POST", "/__fake/orders", { body: { ns: NS, order } })).status, 400, JSON.stringify(order));
+    }
+    assert.equal((await fake.call("POST", "/__fake/orders", { body: { ns: "Bad NS", order: { items: [{ cardId: "c1", condition: "nm", quantity: 1 }] } } })).status, 400);
+  });
+});
+
+describe("faults and resets", () => {
+  let fake;
+  let clock;
+  let slept;
+  beforeEach(async () => {
+    if (fake) await fake.close();
+    clock = { t: Date.parse("2026-11-14T12:00:00Z") };
+    slept = [];
+    fake = await startFake({ now: () => clock.t, sleep: async (ms) => slept.push(ms) });
+  });
+  after(() => fake.close());
+
+  const setFaults = (rules, ns = NS) => fake.call("POST", "/__fake/faults", { body: { ns, rules } });
+
+  it("answers a 429 with Retry-After for `times` requests, then passes", async () => {
+    assert.equal((await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/user/profile" }, kind: "429", retryAfterS: 30, times: 2 }])).status, 200);
+    for (let i = 0; i < 2; i++) {
+      const r = await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC });
+      assert.equal(r.status, 429);
+      assert.equal(r.headers.get("retry-after"), "30");
+    }
+    assert.equal((await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC })).status, 200);
+  });
+
+  it("expires a rule after its TTL (default 10 minutes)", async () => {
+    await setFaults([{ match: { method: "*", pathTemplate: "seller/order/history" }, kind: "503" }]);
+    assert.equal((await fake.call("POST", "/api/seller/order/history", { bsc: BSC, body: {} })).status, 503);
+    clock.t += 10 * 60 * 1000 + 1;
+    assert.equal((await fake.call("POST", "/api/seller/order/history", { bsc: BSC, body: {} })).status, 200);
+  });
+
+  it("delays, then answers normally", async () => {
+    await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/user/profile" }, kind: "delay", delayMs: 4000 }]);
+    assert.equal((await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC })).status, 200);
+    assert.deepEqual(slept, [4000]);
+  });
+
+  it("drops the connection on reset", async () => {
+    await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/user/profile" }, kind: "reset", times: 1 }]);
+    await assert.rejects(fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC }));
+  });
+
+  it("hangs until the client gives up", async () => {
+    await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/user/profile" }, kind: "hang", times: 1 }]);
+    await assert.rejects(
+      fetch(`${fake.base}/api/marketplace/user/profile`, { headers: fake.headers(CALLER, { bsc: BSC }), signal: AbortSignal.timeout(200) }),
+    );
+  });
+
+  it("stalls a card id for an anonymous card-listing call (the stall-ids replacement)", async () => {
+    await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/card/:id/card-listing", cardId: "stallme" }, kind: "503" }]);
+    assert.equal((await fake.call("GET", "/api/marketplace/card/stallme/card-listing")).status, 503);
+    assert.equal((await fake.call("GET", "/api/marketplace/card/other/card-listing")).status, 501);
+  });
+
+  it("matches the photo upload by Convex's literal template", async () => {
+    await setFaults([{ match: { method: "POST", pathTemplate: "common/card/undefined/product/undefined/attachment" }, kind: "429" }]);
+    const r = await fake.call("POST", "/api/common/card/undefined/product/undefined/attachment", { bsc: BSC, body: {} });
+    assert.equal(r.status, 429);
+  });
+
+  it("refuses malformed rules", async () => {
+    for (const rules of [{}, [{ kind: "429" }], [{ match: { method: "GET", pathTemplate: "x" }, kind: "teapot" }], [{ match: { method: "GET", pathTemplate: "x" }, kind: "delay" }], [{ match: { method: "GET", pathTemplate: "x" }, kind: "429", ttlS: 99999 }]]) {
+      assert.equal((await setFaults(rules)).status, 400, JSON.stringify(rules));
+    }
+  });
+
+  it("reset clears run state and faults but never identity sessions; reset-all drops them too", async () => {
+    await setFaults([{ match: { method: "*", pathTemplate: "marketplace/user/profile" }, kind: "503" }]);
+    await fake.call("POST", "/api/seller/x", { bsc: BSC, body: {} });
+    const r = await fake.call("POST", "/__fake/reset", { body: { prefix: "happy-cat-" } });
+    assert.deepEqual(r.body, { ok: true, cleared: 1 });
+    assert.deepEqual(fake.identity.resets, []);
+    assert.equal((await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC })).status, 200);
+    assert.equal((await fake.call("GET", `/__fake/misses?ns=${NS}`)).body.misses.length, 0);
+    assert.equal((await fake.call("POST", "/__fake/reset", { body: { prefix: "h" } })).status, 400);
+    assert.equal((await fake.call("POST", "/__fake/reset-all", { body: {} })).status, 403);
+    assert.equal((await fake.call("POST", "/__fake/reset-all", { email: LOADER, admin: true, body: {} })).status, 200);
+    assert.deepEqual(fake.identity.resets, [{}]);
+  });
+});
+
+describe("write captures", () => {
+  let fake;
+  before(async () => (fake = await startFake()));
+  after(() => fake.close());
+
+  it("stores a capture and judges the synthesis against it", async () => {
+    // What a real PUT answer could look like: more fields than the fake makes.
+    const realPut = [{ productId: "p", productType: "raw", cardId: "c", condition: "near_mint", availableQuantity: 1, price: "0.25", sellerId: "s", sellerSku: "1|1", updatedTimestamp: "t", active: true }];
+    const ok = await fake.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint: "PUT seller/bulk-upload", status: 200, shape: shapeOf(realPut) } });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.body.verdict, "ok");
+    const drift = await fake.call("POST", "/__fake/write-captures", {
+      email: LOADER,
+      admin: true,
+      body: { endpoint: "POST common/card/undefined/product/undefined/attachment", status: 200, shape: shapeOf({ key: "x" }) },
+    });
+    assert.equal(drift.body.verdict, "shape_drift");
+    assert.deepEqual(drift.body.paths, ["objectKey"]);
+    const list = (await fake.call("GET", "/__fake/write-captures", { email: LOADER, admin: true })).body.captures;
+    assert.equal(list.length, 2);
+  });
+
+  it("refuses a capture for an unknown endpoint, with values, or from a non-admin", async () => {
+    assert.equal((await fake.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint: "DELETE everything", status: 200, shape: {} } })).status, 400);
+    assert.equal((await fake.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint: "PUT seller/bulk-upload", status: 200, shape: { objectKey: "a value" } } })).status, 400);
+    assert.equal((await fake.call("POST", "/__fake/write-captures", { body: { endpoint: "PUT seller/bulk-upload", status: 200, shape: {} } })).status, 403);
+  });
+
+  it("synthesis matches the latest stored capture for every write endpoint that has one", async () => {
+    const captures = fake.captures.list();
+    assert.ok(captures.length > 0);
+    for (const c of captures) {
+      const v = checkCapture(c);
+      if (c.endpoint === "PUT seller/bulk-upload") assert.equal(v.verdict, "ok", `${c.endpoint}: ${v.paths.join(", ")}`);
+    }
+    assert.equal(synthesisedWrite("PUT seller/bulk-upload").status, 200);
+  });
+});
+
+describe("drift-compare", () => {
+  let fake;
+  before(async () => {
+    fake = await startFake();
+    const body = { filters: { sport: ["baseball"] } };
+    await fake.call("POST", "/__fake/recordings", {
+      email: LOADER,
+      admin: true,
+      body: { recordings: [recording(FILTERS_PATH, "POST", body, { aggregations: { year: [{ label: "1996", slug: "1996", count: 4, active: false }] } })] },
+    });
+  });
+  after(() => fake.close());
+
+  const probe = (shapes, extra = {}) => fake.call("POST", "/__fake/drift-compare", { email: LOADER, admin: true, body: { shapes, ...extra } });
+  const realShape = {
+    "": "object",
+    aggregations: "object",
+    "aggregations.year": "array",
+    "aggregations.year[]": "object",
+    "aggregations.year[].label": "string",
+    "aggregations.year[].slug": "string",
+    "aggregations.year[].count": "number",
+    "aggregations.year[].active": "boolean",
+    "aggregations.year[].sellerOnly": "string", // outside the allowlist: ignored
+    "aggregations.setName": "array", // a facet the recording lacks: not drift
+  };
+
+  it("is ok when the allowlisted shape agrees", async () => {
+    const r = await probe({ "search/bulk-upload/filters": realShape });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.outcome, "ok", JSON.stringify(r.body));
+  });
+
+  it("reports shape_drift for a type change and a dropped field, as paths", async () => {
+    const changed = { ...realShape, "aggregations.year[].count": "string" };
+    delete changed["aggregations.year[].slug"];
+    const r = await probe({ "POST search/bulk-upload/filters": changed });
+    assert.equal(r.body.outcome, "shape_drift");
+    assert.deepEqual(r.body.endpoints[0].paths, ["aggregations.year[].count", "aggregations.year[].slug"]);
+    assert.deepEqual(r.body.paths, ["POST search/bulk-upload/filters aggregations.year[].count", "POST search/bulk-upload/filters aggregations.year[].slug"]);
+  });
+
+  it("reports an unrecorded pinned key", async () => {
+    const r = await probe({ "search/bulk-upload/filters": realShape }, { requests: { "search/bulk-upload/filters": { method: "POST", path: FILTERS_PATH, body: { filters: { sport: ["hockey"] } } } } });
+    assert.equal(r.body.outcome, "unrecorded pinned key");
+    const pinned = await probe({ "search/bulk-upload/filters": realShape }, { requests: { "search/bulk-upload/filters": { method: "POST", path: FILTERS_PATH, body: { filters: { sport: ["baseball"] } } } } });
+    assert.equal(pinned.body.outcome, "ok");
+    assert.equal((await probe({ "search/bulk-upload/results": { "": "array" } })).body.outcome, "unrecorded pinned key");
+  });
+
+  it("checks the profile paths NB reads", async () => {
+    const r = await probe({ "marketplace/user/profile": { "": "object", sellerProfile: "object", "sellerProfile.sellerId": "number", "sellerProfile.sellerStoreName": "string" } });
+    assert.equal(r.body.outcome, "shape_drift");
+    assert.deepEqual(r.body.endpoints[0].paths, ["sellerProfile.sellerId"]);
+  });
+
+  it("reads the probe's dialect: $ root, unions, {*} map keys", async () => {
+    const dialect = {
+      $: "object",
+      aggregations: "object",
+      "aggregations.year": "array",
+      "aggregations.year[]": "object",
+      "aggregations.year[].label": "string",
+      "aggregations.year[].slug": "string|null",
+      "aggregations.year[].count": "number",
+      "aggregations.year[].active": "boolean",
+      "aggregations.{*}": "array",
+    };
+    const r = await probe({ "search/bulk-upload/filters": dialect }, { requests: { "search/bulk-upload/filters": { method: "POST", path: FILTERS_PATH, query: [], body: { filters: { sport: ["baseball"] } } } } });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.outcome, "ok", JSON.stringify(r.body));
+  });
+
+  it("compares the synthesised seller sheet and order history on the paths NB reads", async () => {
+    const sheet = {
+      $: "array",
+      "[]": "object",
+      "[].productId": "string",
+      "[].productType": "string",
+      "[].cardId": "string",
+      "[].price": "string",
+      "[].condition": "string",
+      "[].availableQuantity": "number",
+      "[].sellerSku": "string|null",
+      "[].sellerImgFront": "string",
+      "[].sellerImgBack": "string",
+      "[].card": "object",
+      "[].card.id": "string",
+      "[].card.cardNo": "string",
+      "[].someNewField": "string",
+    };
+    assert.equal((await probe({ "seller/bulk-upload/results": sheet })).body.outcome, "ok");
+    const moved = { ...sheet, "[].availableQuantity": "string" };
+    delete moved["[].card.id"];
+    const r = await probe({ "seller/bulk-upload/results": moved });
+    assert.deepEqual(r.body.endpoints[0].paths, ["[].availableQuantity", "[].card.id"]);
+    // An empty order history (no items to describe) is not drift.
+    assert.equal((await probe({ "seller/order/history": { $: "object", totalElements: "number", results: "array" } })).body.outcome, "ok");
+    assert.equal((await probe({ "seller/order/history": { $: "object", totalElements: "string", results: "array" } })).body.outcome, "shape_drift");
+  });
+
+  it("refuses a malformed probe", async () => {
+    assert.equal((await probe({ "search/bulk-upload/filters": { "bad path!": "string" } })).status, 400);
+    assert.equal((await fake.call("POST", "/__fake/drift-compare", { body: { shapes: {} } })).status, 403);
+  });
+});

@@ -21,7 +21,9 @@
 import type { ActionCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { isPlatformPaused } from "../marketplacePause";
-import { BSC_API_BASE, bscHeaders } from "../lib/bscHttp";
+import { actionBscIdTokenSource, bscFetch, bscHeaders } from "../lib/bscHttp";
+// NEO-552 — the deployment-wide call gate every BSC call passes.
+import { bscCallGateFor } from "../bscCallGate";
 import {
   parseBscOrder,
   parseBscOrderHistoryPage,
@@ -132,7 +134,11 @@ export interface BscSellerSession {
 }
 
 /** The ctx a session needs: the two credential actions. */
-type SessionCtx = Pick<ActionCtx, "runAction">;
+/**
+ * NEO-552: `runMutation` / `runQuery` for the call gate; `runAction` for the
+ * token, the re-auth, and (fake mode only) the fake's ID token.
+ */
+type SessionCtx = Pick<ActionCtx, "runAction" | "runMutation" | "runQuery">;
 
 function failure(kind: BscSellerFailureKind, message: string, httpStatus?: number): BscSellerFailure {
   return { kind, message, ...(httpStatus !== undefined ? { httpStatus } : {}) };
@@ -398,16 +404,26 @@ async function send(
     });
     last.call = call;
     try {
-      const res = await fetch(`${BSC_API_BASE}/${opts.path}`, {
-        method: opts.method,
-        headers: bscHeaders(session.token, { json: opts.form === undefined }),
-        ...(opts.json !== undefined ? { body: JSON.stringify(opts.json) } : {}),
-        ...(opts.form !== undefined ? { body: opts.form() } : {}),
-        // The bearer token goes to BSC's API host and nowhere else: a
-        // redirect is a failure, never followed.
-        redirect: "error",
-        signal: AbortSignal.timeout(opts.timeoutMs),
-      });
+      const res = await bscFetch(
+        opts.path,
+        {
+          method: opts.method,
+          headers: bscHeaders(session.token, { json: opts.form === undefined }),
+          ...(opts.json !== undefined ? { body: JSON.stringify(opts.json) } : {}),
+          ...(opts.form !== undefined ? { body: opts.form() } : {}),
+          // The bearer token goes to BSC's API host and nowhere else: a
+          // redirect is a failure, never followed.
+          redirect: "error",
+          signal: AbortSignal.timeout(opts.timeoutMs),
+        },
+        {
+          // google-auth-library is Node-only: fake mode mints the ID token
+          // in a Node action (cached per isolate).
+          idToken: actionBscIdTokenSource(() => ctx.runAction(internal.fakeBsc.idToken, {})),
+          pathTemplate: opts.pathTemplate,
+          gate: bscCallGateFor(ctx),
+        },
+      );
       rec.respond(call, res);
       logCall(opts.operation, startedAt, res.ok ? "ok" : "http_error", res.status, opts.logFields);
       return res;

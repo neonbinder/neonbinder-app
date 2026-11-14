@@ -488,31 +488,52 @@ jobs:
       # no longer depends on query.wikidata.org's health. Read back like the
       # NEONBINDER_BROWSER_URL wiring in pr-pipeline.yml — a silent no-op here would
       # otherwise pass and just seed slow/flaky instead of failing loudly.
-      # PR 451 (D7): the test-only BSC stall switch for
-      # checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards.spec.ts. Literal
-      # public BSC catalogue card ids, not secrets. Honoured by the lookup
-      # boundary only when `TESTING_RESET_SECRET` is also set (prod has none),
-      # and it fakes a retryable timeout, never a 429. Written on THIS PR's
-      # Convex preview (`CONVEX_NAME` is guarded against prod in `setup`),
-      # every run, before the reset (the reset clears data, not env).
-      - name: Set NEONBINDER_TEST_BSC_STALL_CARD_IDS on the Convex preview
+      # NEO-552: every BuySportsCards call from this PR's Convex preview goes to
+      # the standing fake BSC (a dev Cloud Run service), never to the real site.
+      # This replaces the old NEONBINDER_TEST_BSC_STALL_CARD_IDS stall switch:
+      # the stall specs now arm a fault on the fake (POST /__fake/faults).
+      # `bscFetch` (convex/lib/bscHttp.ts) honours NEONBINDER_BSC_API_BASE only
+      # when TESTING_RESET_SECRET is also set and the URL is https on *.run.app,
+      # so a stray value on a non-preview deployment is inert. Written every run
+      # (a branch-reused preview keeps old env, NEO-184) and read back so a silent
+      # no-op fails here instead of letting a run reach the real BSC. The key is
+      # a shared secret for the fake only; it is masked and never echoed.
+      - name: Point the Convex preview at the fake BSC
         working-directory: apps/web
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-          STALL_IDS: 96f9a87adeb7d02c275e117ef10d569c,9dba15716322d30fc94e4bd96034e4bf,adf14c41cda48abecf2b69b0faa399ae
+          FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+          FAKE_BSC_KEY: ${{ secrets.NEONBINDER_FAKE_BSC_KEY }}
         run: |
           set -euo pipefail
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_TEST_BSC_STALL_CARD_IDS "$STALL_IDS" --deployment "$CONVEX_NAME"
-          got=$(npx --yes convex@1.39.1 env get NEONBINDER_TEST_BSC_STALL_CARD_IDS --deployment "$CONVEX_NAME")
-          if [ "$got" != "$STALL_IDS" ]; then
-            echo "::error::read-back mismatch for NEONBINDER_TEST_BSC_STALL_CARD_IDS"; exit 1
+          if [ -z "${FAKE_BSC_URL:-}" ] || [ -z "${FAKE_BSC_KEY:-}" ]; then
+            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL and repo secret NEONBINDER_FAKE_BSC_KEY must both be set. The E2E never falls back to the real BuySportsCards (NEO-552)."
+            exit 1
           fi
-          echo "Convex preview NEONBINDER_TEST_BSC_STALL_CARD_IDS set (3 ids)"
+          echo "::add-mask::${FAKE_BSC_KEY}"
+          re='^https://[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          base="${FAKE_BSC_URL%/}"
+          if [[ "$base" == *$'\n'* ]] || [[ ! "$base" =~ $re ]]; then
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be an https *.run.app origin"
+            exit 1
+          fi
+          api_base="${base}/api"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_BSC_API_BASE "$api_base" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_BSC_API_BASE --deployment "$CONVEX_NAME")
+          if [ "$got" != "$api_base" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_BSC_API_BASE"; exit 1
+          fi
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_FAKE_BSC_KEY "$FAKE_BSC_KEY" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_FAKE_BSC_KEY --deployment "$CONVEX_NAME")
+          if [ "$got" != "$FAKE_BSC_KEY" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_FAKE_BSC_KEY"; exit 1
+          fi
+          echo "Convex preview NEONBINDER_BSC_API_BASE set to the fake; NEONBINDER_FAKE_BSC_KEY set (read-back ok)"
 
       - name: Set NEONBINDER_ENRICHMENT_FIXTURES on the Convex preview
         working-directory: apps/web
@@ -567,6 +588,50 @@ jobs:
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # NEO-552: prove the browser service this run talks to is wired to the
+      # FAKE BSC before anything signs in. The Convex preview's
+      # NEONBINDER_BROWSER_URL (the PR's own pr-<N> preview, or canonical dev)
+      # is read back from the preview, and its /health must say
+      # bscTarget=fake. A browser revision without NEONBINDER_FAKE_BSC_URL
+      # would sign in to the real BuySportsCards, so this fails the run here.
+      # The token audience is the BASE service URL, never the tagged host.
+      # Runs before the bundle download, which drops the GCP credentials.
+      # (Once per run: the mobile pass uses the same preview and browser.)
+      - name: Resolve the browser service this run uses
+        id: browser-target
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          url=$(npx --yes convex@1.39.1 env get NEONBINDER_BROWSER_URL --deployment "$CONVEX_NAME")
+          re='^https://([a-z0-9-]+---)?neonbinder-browser-[a-z0-9]+-uc\.a\.run\.app$'
+          if [[ "$url" == *$'\n'* ]] || [[ ! "$url" =~ $re ]]; then
+            echo "::error::the Convex preview's NEONBINDER_BROWSER_URL is not a dev browser Cloud Run URL"
+            exit 1
+          fi
+          base=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder-dev --format='value(status.url)')
+          if [ -z "$base" ]; then echo "::error::could not resolve the browser base URL"; exit 1; fi
+          echo "target_url=$url" >> "$GITHUB_OUTPUT"
+          echo "base_url=$base" >> "$GITHUB_OUTPUT"
+
+      - id: browser-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.browser-target.outputs.base_url }}
+          id_token_include_email: true
+
+      - name: Assert the browser service talks to the fake BSC
+        env:
+          TARGET_URL: ${{ steps.browser-target.outputs.target_url }}
+          PROBE_ID_TOKEN: ${{ steps.browser-token.outputs.id_token }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" fake --health-only
 
       - name: Download reference-seed bundle
         env:
@@ -1109,9 +1174,9 @@ jobs:
   seller-desktop:
     # NEO-415: the marketplace-seller specs (playwright/project-scope.mjs
     # SELLER_SPECS: the BuySportsCards and eBay sandbox listing specs) on the
-    # desktop project. Every PR's CI shares ONE BuySportsCards test seller and
-    # ONE eBay sandbox seller, so two PRs running these at once clobber each
-    # other; sharding cannot fix that. No shard runs them (shard-plan.mjs
+    # desktop project. NEO-552: BuySportsCards is the fake now (a namespace per
+    # run), so only the ONE eBay sandbox seller is still shared; two PRs running
+    # these at once clobber each other on eBay, and sharding cannot fix that. No shard runs them (shard-plan.mjs
     # leaves them out); this job does, and only after it has had its turn in a
     # repo-wide queue (the seller-queue step).
     #
@@ -1160,11 +1225,12 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/seller-queue.sh"
 
-      # NEO-445: a run that died mid-spec leaves listings on the shared sellers,
+      # NEO-445: a run that died mid-spec leaves listings on the shared seller,
       # and no later run can end them through the product (an eBay SKU names a
-      # per-deployment card). So the accounts are cleared here, inside this job's
-      # turn and before any spec: every published eBay offer ended, and every
-      # BuySportsCards row of the sets the specs list set to 0. A cleanup that
+      # per-deployment card). So the account is cleared here, inside this job's
+      # turn and before any spec: every published eBay offer ended. (NEO-552: the
+      # BuySportsCards zeroing is gone with the shared BSC seller; the fake keeps
+      # listings per run namespace. The action must skip BSC.) A cleanup that
       # cannot finish fails the job instead of running specs on a dirty account.
       # Never in the seed: seeds run outside the queue. The action
       # (convex/testingSellerCleanup.ts) is internal, so only this deploy key
@@ -1189,11 +1255,9 @@ jobs:
             echo "::error::Clearing the seller accounts failed (the reason is above), so the seller specs did not run. Re-run the workflow."
             exit 1
           fi
-          twins=$(jq -r '.bsc.twinKeysRemaining // 0' "$out")
-          if [ "$twins" != "0" ]; then
-            # Both copies are at 0, but the listing planner refuses any pair shown twice.
-            echo "::warning::BuySportsCards still shows $twins card/condition pairs twice, at 0. A spec listing one of them reads it as held back."
-          fi
+          # NEO-552: BuySportsCards is the fake now, one namespace per run, so there
+          # is no shared BSC seller to clear and no twin-key warning to print.
+          # Only the eBay sandbox seller is shared.
 
       - name: Start Convex log capture (seller desktop)
         env:
@@ -1401,31 +1465,52 @@ jobs:
             echo "- Convex preview \`NEONBINDER_PAUSED_PLATFORMS\` = \`${got:-<unset>}\`";
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # PR 451 (D7): the test-only BSC stall switch for
-      # checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards.spec.ts. Literal
-      # public BSC catalogue card ids, not secrets. Honoured by the lookup
-      # boundary only when `TESTING_RESET_SECRET` is also set (prod has none),
-      # and it fakes a retryable timeout, never a 429. Written on THIS PR's
-      # Convex preview (`CONVEX_NAME` is guarded against prod in `setup`),
-      # every run, before the reset (the reset clears data, not env).
-      - name: Set NEONBINDER_TEST_BSC_STALL_CARD_IDS on the Convex preview
+      # NEO-552: every BuySportsCards call from this PR's Convex preview goes to
+      # the standing fake BSC (a dev Cloud Run service), never to the real site.
+      # This replaces the old NEONBINDER_TEST_BSC_STALL_CARD_IDS stall switch:
+      # the stall specs now arm a fault on the fake (POST /__fake/faults).
+      # `bscFetch` (convex/lib/bscHttp.ts) honours NEONBINDER_BSC_API_BASE only
+      # when TESTING_RESET_SECRET is also set and the URL is https on *.run.app,
+      # so a stray value on a non-preview deployment is inert. Written every run
+      # (a branch-reused preview keeps old env, NEO-184) and read back so a silent
+      # no-op fails here instead of letting a run reach the real BSC. The key is
+      # a shared secret for the fake only; it is masked and never echoed.
+      - name: Point the Convex preview at the fake BSC
         working-directory: apps/web
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-          STALL_IDS: 96f9a87adeb7d02c275e117ef10d569c,9dba15716322d30fc94e4bd96034e4bf,adf14c41cda48abecf2b69b0faa399ae
+          FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+          FAKE_BSC_KEY: ${{ secrets.NEONBINDER_FAKE_BSC_KEY }}
         run: |
           set -euo pipefail
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_TEST_BSC_STALL_CARD_IDS "$STALL_IDS" --deployment "$CONVEX_NAME"
-          got=$(npx --yes convex@1.39.1 env get NEONBINDER_TEST_BSC_STALL_CARD_IDS --deployment "$CONVEX_NAME")
-          if [ "$got" != "$STALL_IDS" ]; then
-            echo "::error::read-back mismatch for NEONBINDER_TEST_BSC_STALL_CARD_IDS"; exit 1
+          if [ -z "${FAKE_BSC_URL:-}" ] || [ -z "${FAKE_BSC_KEY:-}" ]; then
+            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL and repo secret NEONBINDER_FAKE_BSC_KEY must both be set. The E2E never falls back to the real BuySportsCards (NEO-552)."
+            exit 1
           fi
-          echo "Convex preview NEONBINDER_TEST_BSC_STALL_CARD_IDS set (3 ids)"
+          echo "::add-mask::${FAKE_BSC_KEY}"
+          re='^https://[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          base="${FAKE_BSC_URL%/}"
+          if [[ "$base" == *$'\n'* ]] || [[ ! "$base" =~ $re ]]; then
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be an https *.run.app origin"
+            exit 1
+          fi
+          api_base="${base}/api"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_BSC_API_BASE "$api_base" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_BSC_API_BASE --deployment "$CONVEX_NAME")
+          if [ "$got" != "$api_base" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_BSC_API_BASE"; exit 1
+          fi
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_FAKE_BSC_KEY "$FAKE_BSC_KEY" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_FAKE_BSC_KEY --deployment "$CONVEX_NAME")
+          if [ "$got" != "$FAKE_BSC_KEY" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_FAKE_BSC_KEY"; exit 1
+          fi
+          echo "Convex preview NEONBINDER_BSC_API_BASE set to the fake; NEONBINDER_FAKE_BSC_KEY set (read-back ok)"
 
       - name: Set NEONBINDER_ENRICHMENT_FIXTURES on the Convex preview
         working-directory: apps/web
@@ -1993,9 +2078,9 @@ jobs:
   seller-mobile:
     # NEO-415: the marketplace-seller specs (playwright/project-scope.mjs
     # SELLER_SPECS: the BuySportsCards and eBay sandbox listing specs) on the
-    # mobile project. Every PR's CI shares ONE BuySportsCards test seller and
-    # ONE eBay sandbox seller, so two PRs running these at once clobber each
-    # other; sharding cannot fix that. No shard runs them (shard-plan.mjs
+    # mobile project. NEO-552: BuySportsCards is the fake now (a namespace per
+    # run), so only the ONE eBay sandbox seller is still shared; two PRs running
+    # these at once clobber each other on eBay, and sharding cannot fix that. No shard runs them (shard-plan.mjs
     # leaves them out); this job does, and only after it has had its turn in a
     # repo-wide queue (the seller-queue step).
     #
@@ -2044,11 +2129,12 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/seller-queue.sh"
 
-      # NEO-445: a run that died mid-spec leaves listings on the shared sellers,
+      # NEO-445: a run that died mid-spec leaves listings on the shared seller,
       # and no later run can end them through the product (an eBay SKU names a
-      # per-deployment card). So the accounts are cleared here, inside this job's
-      # turn and before any spec: every published eBay offer ended, and every
-      # BuySportsCards row of the sets the specs list set to 0. A cleanup that
+      # per-deployment card). So the account is cleared here, inside this job's
+      # turn and before any spec: every published eBay offer ended. (NEO-552: the
+      # BuySportsCards zeroing is gone with the shared BSC seller; the fake keeps
+      # listings per run namespace. The action must skip BSC.) A cleanup that
       # cannot finish fails the job instead of running specs on a dirty account.
       # Never in the seed: seeds run outside the queue. The action
       # (convex/testingSellerCleanup.ts) is internal, so only this deploy key
@@ -2073,11 +2159,9 @@ jobs:
             echo "::error::Clearing the seller accounts failed (the reason is above), so the seller specs did not run. Re-run the workflow."
             exit 1
           fi
-          twins=$(jq -r '.bsc.twinKeysRemaining // 0' "$out")
-          if [ "$twins" != "0" ]; then
-            # Both copies are at 0, but the listing planner refuses any pair shown twice.
-            echo "::warning::BuySportsCards still shows $twins card/condition pairs twice, at 0. A spec listing one of them reads it as held back."
-          fi
+          # NEO-552: BuySportsCards is the fake now, one namespace per run, so there
+          # is no shared BSC seller to clear and no twin-key warning to print.
+          # Only the eBay sandbox seller is shared.
 
       - name: Start Convex log capture (seller mobile)
         env:
@@ -2428,6 +2512,42 @@ jobs:
             exit 0
           fi
           "$GITHUB_WORKSPACE/.github/scripts/enrichment-fixture-coverage.sh"
+
+      # NEO-552: what this run asked the fake BSC for that it had no recording
+      # of (it answers 501 and keeps a miss list per preview). Printed so the
+      # recorder's to-do list is in the run log. It goes through an internal
+      # Convex action on the preview, so the fake's admin key never reaches
+      # this runner. Non-failing: a miss already failed its own spec.
+      - name: Print the fake BSC's misses for this preview
+        working-directory: apps/web
+        continue-on-error: true
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ] || [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::No Convex preview name or deploy key; cannot read the fake BSC's misses."
+            exit 0
+          fi
+          out="${RUNNER_TEMP}/fake-bsc-misses.json"
+          if ! npx --yes convex@1.39.1 run fakeBsc:reportMisses '{}' --deployment "$CONVEX_NAME" > "$out"; then
+            echo "::warning::Reading the fake BSC's misses failed (the reason is above)."
+            exit 0
+          fi
+          count=$(jq -r '(.misses // []) | length' "$out" 2>/dev/null || echo "?")
+          {
+            echo "### Fake BSC misses for this preview"
+            if [ "$count" = "0" ]; then
+              echo "None: every catalogue read was recorded."
+            else
+              echo "${count} unrecorded request(s). Run the recorder (--watch or --prefix) to load them:"
+              echo
+              echo '```json'
+              jq -c '.misses[]' "$out" 2>/dev/null | head -n 100
+              echo '```'
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Download merged report
         continue-on-error: true

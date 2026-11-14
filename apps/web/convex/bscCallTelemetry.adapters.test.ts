@@ -55,6 +55,15 @@ vi.mock("./credentials", async (importOriginal) => {
   };
 });
 
+// NEO-552 — these tests pin call telemetry through deliberate runs of mixed
+// failures, which the real call gate would turn into a breaker opening (and
+// whose burst is 10). The gate itself is pinned in bscCallGate.test.ts.
+vi.mock("./bscCallGate", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./bscCallGate")>();
+  const { openBscCallGate } = await import("../lib/testing/bsc-open-gate");
+  return { ...actual, bscCallGateFor: () => openBscCallGate() };
+});
+
 /** What one stubbed BSC call does. */
 type Step =
   | { status: number; body?: string; contentType?: string }
