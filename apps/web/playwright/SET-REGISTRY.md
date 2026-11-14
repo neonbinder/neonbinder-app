@@ -262,6 +262,28 @@ saves; STEP 5 reads a stored card's title opening `DCAP<token> `. So the insert
 row also ends with `metadata.listingShortName = DCAP<token>`, and all 220 card
 titles open with it. Nothing else reads either.
 
+**NEO-535 — what the flow leaves behind when SportLots is PAUSED (the other branch).**
+The table above is the LIVE contract. With SportLots paused nothing reconciles, so the
+two BSC series stay two NB rows and the flow proves the Card titles step on ONE of
+them (it would otherwise run only behind the SportLots-live branch, SL being down):
+
+| | |
+| -- | -- |
+| NB insert rows | TWO: `Dugout Collection Artist's Proofs Series 2` (BSC's own name, never fetched) and Series 1 **renamed** to `Dugout Collection Artists Proofs Hologram Foil Series II` (a FIXED 56-character string, no minted token, so the title arithmetic is exact on every runner) |
+| Series 1's checklist | **110** cards, BSC only, fetched with `1996-score-insert-dugout-collection-artists-proofs-series-1.csv` uploaded first (see "Published-checklist fixtures": every row names a team, so BSC is asked for no card one by one) |
+| its `Set name in titles` | `1996 Score Dugout Collection Artists Proofs`, written by the commit from the wizard's Card titles step |
+| three cards the flow reads back | #104 LaTroy Hawkins (a title typed by hand), #106 Derek Jeter (fits with full names: the builder's own title, untouched by the box), #107 Michael Tucker (lost "Michael": opens with the box text); #76 Todd Hollandsworth runs over 80 after every cut |
+
+The arithmetic is the title builder's (`assessListingTitle` over the captured file, with the
+description `1996 Score <name>` at 67 characters): of the 110 cards 65 fit whole and 45 are
+LISTED on the step (all but one lost a first name; #76 runs over 80; under the step's
+50-row cap, so every row is drawn). Three names the catalogue lacked on 2026-11-14 (Frank
+Rodriguez first) opened the wizard on a name step; on a deployment that already holds
+them the wizard opens straight on Card titles, and the flow accepts both. Measured on a
+per-worktree deployment, SportLots paused, 2026-11-14: 20 s desktop, 21 s mobile, `Saved
+110 cards` inside the 7 s budget. Sole writer, fresh-only, exactly as the live branch: a
+second run on one seed fails at the Series 1 row's original name, by name.
+
 **NEO-211 — the flow now also re-syncs the INSERT LEVEL once, after all of
 that.** Its STEP 3b renames the single insert row (appending ` NB211-<ATTEMPT_ID>`);
 its STEP 8 then forces `Sync Inserts`, saves the reconcile dialog with no edits, and then
@@ -3287,6 +3309,7 @@ the reason the specs upload instead of fetching card by card.
 | `1995-hockey-roanoke-express-echl-base-one-live` | same | 24 (**Chris Pollack's row is left OUT**: his is the one card BSC is asked about, per sync) | 24 | `checklist-one-marketplace-skips-match-dialog`, uploaded before STEP 5 and again before the STEP 10 re-sync, so the spec makes 2 live BSC lookups, not 50. Made from the full file with no BSC call: `node playwright/tools/capture-bsc-checklist-teams.mjs --out <file> --cache <the full file's cache> --sport hockey --year 1995 --set-name roanoke-express-echl --variant base --omit-player "Chris Pollack"` |
 | `2025-bowman-draft-insert-bowman-draft-nights-autographs` | Baseball > 2025 > Bowman > Bowman Draft > Insert > Bowman Draft Nights Autographs | 5 (`BDNA-EW`, `-GF`, `-KA`, `-SH`, `-XN`) | 5 | `checklist-autograph-format-asked-applied-and-changeable` (the AU + SN99 tags come from BSC's checklist, not from the file) |
 | `2025-bowman-draft-insert-prospect-dual-autographs` | Baseball > 2025 > Bowman > Bowman Draft > Insert > Prospect Dual Autographs | 13 (14 cards; **`PDA-WW`'s row is left OUT**: its "Boston Red Sox, Detroit Tigers" value is the live read the spec is about) | 13 | `checklist-dual-team-card-links-both-teams`. Re-capture with `--omit-number PDA-WW` (`--set-name bowman-draft --variant insert --variant-name prospect-dual-autographs`) |
+| `1996-score-insert-dugout-collection-artists-proofs-series-1` | Baseball > 1996 > Score > Score > Insert > Dugout Collection Artist's Proofs Series 1 | 110 (`1`..`110`, every number on one row) | 110 (a team on every row) | `inserts-1996-score-one-nb-set-two-bsc-sources`, SportLots-PAUSED branch (NEO-535), uploaded before its Sync. Captured 2026-11-14 with `node playwright/tools/capture-bsc-checklist-teams.mjs --out <file> --sport baseball --year 1996 --set-name score --variant insert --variant-name dugout-collection-artists-proofs-series-1` (3 BSC 429s, one episode, 105 s; no omissions) |
 | `2026-bowman-insert-anime` | Baseball > 2026 > Bowman > Insert > Anime | 36 lines, all 36 read (`TBD` is a number as printed, NEO-489, so Terrell Owens' card pairs by it and no card is asked of BSC live); six of the cards are football players | 36 | `bowman-insert-grouping-builds-parallels`, PART 4 (Anime's fetch) |
 | `1995-hockey-halifax-mooseheads-qmjhl-base-full` | Hockey > 1995 > Halifax Mooseheads QMJHL > Base | 26 (cards 1-25 and one `NNO`) | 26 | none uploaded whole: the source of the next file |
 | `1995-hockey-halifax-mooseheads-qmjhl-base-five-live` | same | 21 (cards 1, 2, 3, 24 and 25 left OUT, so BSC is asked for exactly those five: #1-#3 are the stalled ids, #24 and #25 answer) | 21 | `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`. Made from the full file with no BSC call: `node playwright/tools/capture-bsc-checklist-teams.mjs --out <file> --cache <the full file's cache> --sport hockey --year 1995 --set-name halifax-mooseheads-qmjhl --variant base --omit-number 1 --omit-number 2 --omit-number 3 --omit-number 24 --omit-number 25` |
