@@ -293,6 +293,15 @@ export interface TitleReviewOptions {
 }
 
 /**
+ * NEO-535 — a title (or the "Set name in titles" box) is one line. Its field
+ * wraps so the whole text stays in view, but a newline (a paste, say) is
+ * never part of the value: each run of line breaks reads as one space.
+ */
+export function oneLine(raw: string): string {
+  return raw.replace(/\s*[\r\n]+\s*/g, " ");
+}
+
+/**
  * NEO-335 — the short-name draft that counts: trimmed, within the rule both
  * write paths apply. A draft the server would refuse counts as none, so the
  * titles shown and the titles kept never assume a name that will not land.

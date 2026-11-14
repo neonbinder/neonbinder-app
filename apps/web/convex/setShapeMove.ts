@@ -56,6 +56,8 @@ import { compareCardNumbers } from "../lib/cards/card-number";
 import { createCardCountLedger } from "./cardCounts";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import { forgetBuildingCards, HomeSides } from "./collection";
+import { refreshedListingDescription } from "./cardDescriptionRefresh";
+import { newStoredCardLookupCache } from "./storedCardTitle";
 // NEO-370 — a moved card lists under another marketplace set: its box
 // copies' owners re-sync both variants.
 import { enqueueMovedListingCards, listsAnywhere, type MovedListingCard } from "./listingOutbox";
@@ -747,6 +749,23 @@ export async function moveCards(
   await countLedger.flush(ctx);
   await forgetBuildingCards(ctx, movedSets);
   await listing.schedule(ctx);
+  // NEO-535 — a card's description names its set, insert and parallel, so a
+  // card that changed rows has its unedited description rebuilt. Scheduled,
+  // not inline: a move carries up to MAX_CARDS_PER_MOVE cards, and the rebuild
+  // reads each card's chain, players and teams. Only cards with a description
+  // to keep current are handed over.
+  const described = ordered
+    .filter(
+      ({ card }) =>
+        card.selectorOptionId !== destId && (card.listingDescription?.trim() ?? "") !== "",
+    )
+    .map(({ card }) => ({ cardId: card._id, fromId: card.selectorOptionId }));
+  if (described.length > 0) {
+    await ctx.scheduler.runAfter(0, internal.setShapeMove.refreshMovedCardDescriptions, {
+      moved: described,
+      index: 0,
+    });
+  }
   if (later.length > 0) {
     console.log(
       JSON.stringify({
@@ -769,6 +788,58 @@ export async function moveCards(
     );
   }
 }
+
+/** NEO-535 — cards per `refreshMovedCardDescriptions` run. */
+export const MOVED_DESCRIPTION_PAGE = 100;
+
+/**
+ * NEO-535 — the description tail of `moveCards`: each moved card whose stored
+ * description is exactly what the builder made for it on its OLD row gets
+ * the builder's description for its new row (`refreshedListingDescription`;
+ * an operator's own description is kept). A page per run, scheduling itself
+ * until the list is done.
+ *
+ * Read from the card's CURRENT row, so a re-run writes nothing, and a card
+ * moved again in between (or back) is judged against where it is now: a card
+ * no longer away from `fromId` is skipped, as is one that is gone.
+ */
+export const refreshMovedCardDescriptions = internalMutation({
+  args: {
+    moved: v.array(
+      v.object({ cardId: v.id("cardChecklist"), fromId: v.id("selectorOptions") }),
+    ),
+    index: v.number(),
+  },
+  returns: v.object({ rewritten: v.number(), done: v.boolean() }),
+  handler: async (ctx, args) => {
+    const start = Number.isInteger(args.index) && args.index >= 0 ? args.index : 0;
+    const end = Math.min(start + MOVED_DESCRIPTION_PAGE, args.moved.length);
+    const cache = newStoredCardLookupCache();
+    let rewritten = 0;
+    for (let i = start; i < end; i++) {
+      const { cardId, fromId } = args.moved[i];
+      const card = await ctx.db.get(cardId);
+      if (!card || card.selectorOptionId === fromId) continue;
+      const listingDescription = await refreshedListingDescription(
+        ctx,
+        { ...card, selectorOptionId: fromId },
+        { selectorOptionId: card.selectorOptionId },
+        cache,
+      );
+      if (listingDescription === undefined) continue;
+      await ctx.db.patch(card._id, { listingDescription });
+      rewritten += 1;
+    }
+    const done = end >= args.moved.length;
+    if (!done) {
+      await ctx.scheduler.runAfter(0, internal.setShapeMove.refreshMovedCardDescriptions, {
+        moved: args.moved,
+        index: end,
+      });
+    }
+    return { rewritten, done };
+  },
+});
 
 /**
  * NEO-358 — the tail of `moveCards`: re-point the copies of `cardIds` that the

@@ -14,6 +14,10 @@ import {
   titleLengthState,
 } from "./TitleLengthMeter";
 import { useTitlePreview } from "./useTitlePreview";
+import {
+  goToSetNameInTitles,
+  useSetNameInTitlesReachable,
+} from "./set-name-in-titles-jump";
 import type { AttentionFixerProps } from "./cardAttentionRegistry";
 
 /**
@@ -65,6 +69,11 @@ import type { AttentionFixerProps } from "./cardAttentionRegistry";
  * pattern failure class this codebase has hit and fixed several times
  * (NEO-152, NEO-189, NEO-102's own Fixer siblings).
  */
+/** NEO-535 copy, in the NB voice. */
+const TOO_LONG = "Too long to list as-is. Trim it here, or shorten the set name for the whole row.";
+const SET_NAME_HOGGING = "Set name hogging it?";
+const TRIM_SET_NAME = "Trim Set name in titles";
+
 export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps) {
   const updateCard = useMutation(api.selectorOptions.updateCard);
 
@@ -81,7 +90,12 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
 
   // Only the fields the card was actually flagged for get edited — and written.
   const fixesVariation = items.some((i) => i.kind === "aspectValueOverLimit");
-  const wasTruncated = items.some((i) => i.kind === "titleTruncated");
+  // NEO-535 — an over-cap title is also flagged "cut short" when it was built
+  // from the box; "cut short" beside "too long" contradicts itself, so the
+  // longer problem speaks for both.
+  const isOverLimit = items.some((i) => i.kind === "titleOverLimit");
+  const reasons = isOverLimit ? items.filter((i) => i.kind !== "titleTruncated") : items;
+  const canGoToSetName = useSetNameInTitlesReachable();
 
   const titleState = titleLengthState(title.length, LISTING_TITLE_MAX, true);
   const leftOut = useMemo(() => preview.leftOutOf(title), [preview, title]);
@@ -137,7 +151,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             role in Safari + VoiceOver. `role="list"` restores it so a screen
             reader still announces "list, N items" for the reasons below. */}
         <ul role="list" className="mt-0.5 list-none text-xs text-ink-3">
-          {items.map((item) => (
+          {reasons.map((item) => (
             <li key={item.kind}>{attentionItemLabel(item)}</li>
           ))}
         </ul>
@@ -214,7 +228,36 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           aria-disabled={busy || undefined}
           readOnly={busy}
         />
-        <TitleLengthAlert id={titleAlertId} length={title.length} surface="dark" />
+        {titleState.over && (
+          // NEO-535 — ONE message for a title past the cap, where there used
+          // to be three (the length alert, "cut short" and "Left out to
+          // fit"). Its text never changes while the operator trims, so it is
+          // announced once, when the title crosses the cap; the meter above
+          // carries the count.
+          <div className="mt-1 space-y-0.5">
+            <p
+              id={titleAlertId}
+              role="alert"
+              aria-atomic="true"
+              className="text-[10px] text-neon-pink-text"
+            >
+              {TOO_LONG}
+            </p>
+            {canGoToSetName && (
+              <p className="text-[10px] text-ink-2">
+                {SET_NAME_HOGGING}{" "}
+                <button
+                  type="button"
+                  onClick={() => goToSetNameInTitles()}
+                  // leading-4 + py-1: a 24px target (SC 2.5.8) at 10px type.
+                  className="-my-1 rounded py-1 leading-4 text-neon-blue-text underline decoration-dotted hover:text-ink focus-outline"
+                >
+                  {TRIM_SET_NAME}
+                </button>
+              </p>
+            )}
+          </div>
+        )}
         {preview.confirming && (
           <p
             id={`${uid}-regen-confirm`}
@@ -225,14 +268,12 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             Regenerate again to replace the title you have typed.
           </p>
         )}
-        {wasTruncated && (
-          <TitleFieldNote surface="dark">
-            Auto title was cut short — rewrite it
-          </TitleFieldNote>
-        )}
         {/* NEO-535: read from the text in the field now, so retyping a
-            cut word takes it off the note. */}
-        {leftOut.length > 0 && (
+            cut word takes it off the note. Not over the cap: there the one
+            message above says what to do, and what else the title lacks
+            only matters once it fits. It also says what "cut short" meant,
+            so that note is gone. */}
+        {!titleState.over && leftOut.length > 0 && (
           <TitleFieldNote surface="dark">
             Left out to fit: {leftOut.join(", ")}
           </TitleFieldNote>

@@ -55,6 +55,7 @@
 import { LISTING_TITLE_MAX } from "./listingLimits";
 import { variantTypeKindFromTitle } from "../variantRole";
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
+import { roughlySays } from "../listingShortName";
 
 export type ListingCardInputs = {
   cardNumber: string;
@@ -858,7 +859,7 @@ export function leftOutOfTitle(inputs: ListingCardInputs, text: string): string[
 
   const teams = (inputs.teamNames ?? []).map((t) => t.trim()).filter(Boolean);
   for (const team of [...teams].reverse()) {
-    if (!alreadySaid(text, team)) add(team);
+    if (!titleNamesTeam(text, team, inputs.sport)) add(team);
   }
 
   const cardNumber = inputs.cardNumber?.trim();
@@ -888,6 +889,28 @@ export function leftOutOfTitle(inputs: ListingCardInputs, text: string): string[
   if (inputs.autographed && inputs.autographed !== "None" && !repeatOf(AUTO_WORDS)) add("AUTO");
   if (inputs.printRun && !present.has(`/${inputs.printRun}`)) add(`/${inputs.printRun}`);
   return out;
+}
+
+/**
+ * NEO-535 — does `text` already name `team`, roughly? A title (or the box text
+ * it opens with) that says "Dodgers" has told the buyer the team, so "Los
+ * Angeles Dodgers" is not "left out" of "2024 Topps Dodgers Japan Edition".
+ *
+ * Said when the text roughly says (`roughlySays`: case, a plural "s" folded)
+ * the whole name, or its nickname: the last word of a name of two words or
+ * more, once a trailing sport word is set aside ("Oregon Ducks baseball" reads
+ * "Ducks"). A one-word team is said only whole. Display only: it decides what
+ * "Left out to fit" lists, never what a title carries.
+ */
+function titleNamesTeam(text: string, team: string, sport: string | undefined): boolean {
+  if (alreadySaid(text, team) || roughlySays(text, team)) return true;
+  const words = team.split(/\s+/).filter(Boolean);
+  const sportWord = sport?.trim().toLowerCase();
+  if (words.length > 1 && sportWord && words[words.length - 1].toLowerCase() === sportWord) {
+    words.pop();
+    if (roughlySays(text, words.join(" "))) return true;
+  }
+  return words.length > 1 && roughlySays(text, words[words.length - 1]);
 }
 
 /**
@@ -971,4 +994,45 @@ export function generateListingDescription(inputs: ListingCardInputs): string {
   const sport = inputs.sport?.trim();
   if (sport) lines.push(`Sport: ${sport}.`);
   return lines.join("\n");
+}
+
+/**
+ * The lines `generateListingDescription` writes after its opening line, one
+ * shape per fact. Kept beside the generator so the two change together; a
+ * test runs the generator's own output back through
+ * `readsAsGeneratedDescription`.
+ */
+const DESCRIPTION_FACT_LINES: readonly RegExp[] = [
+  /^Insert: .+\.$/,
+  /^Parallel: .+\.$/,
+  /^Variation: .+$/,
+  /^Serial numbered to \d+ \(\/\d+\)\.$/,
+  /^Autographed \(AUTO\), .+\.$/,
+  /^Includes a memorabilia relic piece \(RELIC\)\.$/,
+  /^Rookie Card \(RC\)\.$/,
+  /^(?:Super )?Short Print \(.+\)\.$/,
+  /^Team: .+\.$/,
+  /^Sport: .+\.$/,
+];
+
+/** The opening line: "<set> card of <players>, #<n>." and its shorter forms. */
+const DESCRIPTION_OPENING_LINE = /^(?:.+ card|Card)(?:\.| #.+\.| of .+\.)$/;
+
+/**
+ * NEO-535 — does `text` read as `generateListingDescription`'s own output (for
+ * SOME set of facts, not necessarily the card's current ones)? Its opening
+ * line, then only lines of the generator's fact shapes, no blank lines.
+ *
+ * What the card detail panel's Regenerate goes on: it rebuilds a description
+ * that reads as the builder's (one written from older facts, a player renamed
+ * since, say) and leaves one an operator wrote alone. The NB-owned write paths
+ * use the stricter test instead (`cardDescriptionRefresh`): the stored text
+ * must equal what the builder made from the card's facts before the change.
+ */
+export function readsAsGeneratedDescription(text: string): boolean {
+  const lines = text.trim().split("\n");
+  if (lines.length === 0 || !DESCRIPTION_OPENING_LINE.test(lines[0])) return false;
+  return lines
+    .slice(1)
+    .every((line) => DESCRIPTION_FACT_LINES.some((shape) => shape.test(line)));
 }

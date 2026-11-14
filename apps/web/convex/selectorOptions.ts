@@ -270,7 +270,12 @@ import { syncCardTeamLinks } from "./cardTeamLinks";
 import { collectedCardIds, countCollectors, removeCardRow } from "./cardRowDelete";
 import { mergeCollectorCounts, type CollectorCount } from "../lib/collection/collectors";
 import { newRowSubtreeCounts, createCardCountLedger } from "./cardCounts";
-import { titleForStoredCard } from "./storedCardTitle";
+import { newStoredCardLookupCache, titleForStoredCard } from "./storedCardTitle";
+import {
+  patchNamesDescriptionFacts,
+  refreshedListingDescription,
+  regeneratedDescription,
+} from "./cardDescriptionRefresh";
 import { queueRetitledCardNow } from "./listingTitleRequeue";
 import {
   MAX_TEAM_ALIASES,
@@ -6469,6 +6474,13 @@ export const updateCard = mutation({
     pendingTeamNames: v.optional(v.array(v.string())),
     listingTitle: v.optional(v.string()),
     listingDescription: v.optional(v.string()),
+    /**
+     * NEO-535 — the card detail panel's Regenerate: rebuild the description
+     * from the card's facts now, unless an operator wrote it
+     * (`regeneratedDescription`). Not stored; ignored when the same call
+     * sends `listingDescription`.
+     */
+    regenerateDescription: v.optional(v.literal(true)),
     // NEO-367 — NB's own note about the card. "" clears it, like every other
     // string here; see `normalizeCardNotes`.
     notes: v.optional(v.string()),
@@ -6489,7 +6501,12 @@ export const updateCard = mutation({
      * `updates` it would be spread straight into `ctx.db.patch` and refused by
      * the schema as an unexpected field — which is exactly what happened.
      */
-    const { id, playerNamesOnCard: _printedNames, ...updates } = args;
+    const {
+      id,
+      playerNamesOnCard: _printedNames,
+      regenerateDescription,
+      ...updates
+    } = args;
     const filtered: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined) {
@@ -6753,6 +6770,27 @@ export const updateCard = mutation({
     for (const key of ["pendingPlayerNames", "pendingTeamNames"] as const) {
       const value = filtered[key];
       if (Array.isArray(value) && value.length === 0) filtered[key] = undefined;
+    }
+
+    // NEO-535 — the description follows the facts. A write that changes a
+    // fact the description carries rebuilds it, but only when the stored one
+    // is what the builder made from the facts BEFORE this write (never a
+    // hand-edited one), in this same patch (`cardDescriptionRefresh`).
+    // Regenerate asks for a rebuild outright; it still leaves an operator's
+    // own description alone. A description sent in this call wins either way.
+    if (
+      filtered.listingDescription === undefined &&
+      (regenerateDescription || patchNamesDescriptionFacts(filtered))
+    ) {
+      const stored = await loadStoredCard();
+      const description = regenerateDescription
+        ? await regeneratedDescription(ctx, stored)
+        : await refreshedListingDescription(
+            ctx,
+            stored,
+            filtered as Partial<Doc<"cardChecklist">>,
+          );
+      if (description !== undefined) filtered.listingDescription = description;
     }
 
     if (Object.keys(filtered).length > 0) {
@@ -8003,6 +8041,7 @@ export const cascadeSelectorOptionTeams = internalMutation({
     let nodeIndex = args.nodeIndex ?? 0;
     let cursor: number | undefined = args.cursor;
     let budget = TEAM_CASCADE_CARD_PAGE;
+    const descriptionCache = newStoredCardLookupCache();
     while (nodeIndex < nodeIds.length && budget > 0) {
       const nodeId = nodeIds[nodeIndex];
       const after = cursor;
@@ -8018,8 +8057,18 @@ export const cascadeSelectorOptionTeams = internalMutation({
       for (const card of rows) {
         budget -= 1;
         if (cardTeamFollowVerdict(card, previous, next) !== "follow") continue;
+        // NEO-535 — the card's description names its team: an unedited one
+        // follows it, in the same write. One lookup cache per page, so the
+        // chain and the teams are read once.
+        const listingDescription = await refreshedListingDescription(
+          ctx,
+          card,
+          { teamOnCardIds: [...next] },
+          descriptionCache,
+        );
         await ctx.db.patch(card._id, {
           teamOnCardIds: [...next],
+          ...(listingDescription !== undefined ? { listingDescription } : {}),
           lastUpdated: Date.now(),
         });
         // NEO-358 — the team → cards index follows the card.
@@ -8109,8 +8158,12 @@ export const setCardFeature = mutation({
       }
     }
 
+    // NEO-535 — an autograph, short print or parallel the description carries
+    // rebuilds an unedited description in the same write.
+    const listingDescription = await refreshedListingDescription(ctx, card, { features });
     await ctx.db.patch(args.cardChecklistId, {
       features,
+      ...(listingDescription !== undefined ? { listingDescription } : {}),
       lastUpdated: Date.now(),
     });
     return null;

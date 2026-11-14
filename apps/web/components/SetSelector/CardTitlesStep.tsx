@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
-import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
 import {
   checkShortNameAnswer,
@@ -13,6 +12,7 @@ import {
 } from "./TitleLengthMeter";
 import {
   buildTitleGroups,
+  oneLine,
   setNameInTitlesPrefill,
   type PreviewCardForTitles,
   type TitleAnswer,
@@ -107,12 +107,9 @@ const USE_GENERATED = "Use generated title";
 /** Title rows drawn before the rest are counted instead (a long insert). */
 export const TITLE_ROWS_SHOWN = 50;
 
-/**
- * A title is one line. The field wraps so the whole 80 characters are in view
- * (an `<input>` would scroll most of the title out of sight, and seeing it is
- * the point of the step), but a newline is never part of the value.
- */
-const oneLine = (raw: string): string => raw.replace(/\s*[\r\n]+\s*/g, " ");
+// A title is one line (`oneLine`). The field wraps so the whole 80 characters
+// are in view (an `<input>` would scroll most of the title out of sight, and
+// seeing it is the point of the step), but a newline is never part of the value.
 
 /**
  * Geometry for both fields: grows with its content (`field-sizing`), two lines
@@ -378,7 +375,7 @@ export default function CardTitlesStep({
     };
 
   /** Enter settles the short name in place; Escape undoes in place, or is the wizard's. */
-  const shortKeys = (event: KeyboardEvent<HTMLInputElement>) => {
+  const shortKeys = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === "Enter") {
       event.preventDefault();
       event.stopPropagation();
@@ -429,11 +426,13 @@ export default function CardTitlesStep({
           </h3>
           <label className="mt-2 block text-xs text-ink-3">
             {SHORT_LABEL}
-            <Input
+            {/* NEO-535: the same wrapping one-line field as the titles
+                below, so a long set description stays in view on a phone. */}
+            <Textarea
               bare
-              type="text"
+              rows={2}
               value={shortDraft}
-              onChange={(e) => setShortDraft(e.target.value)}
+              onChange={(e) => setShortDraft(oneLine(e.target.value))}
               onFocus={() => {
                 shortUndo.current = shortLatest.current;
               }}
@@ -450,7 +449,7 @@ export default function CardTitlesStep({
               aria-invalid={shortCheck.error ? true : undefined}
               aria-disabled={disabled || undefined}
               readOnly={disabled}
-              className={`mt-1 block w-full p-1.5 text-sm ${disabled ? "opacity-60" : ""}`}
+              className={`mt-1 ${FIELD_CLASS} ${disabled ? "opacity-60" : ""}`}
             />
           </label>
           <div id={shortMeterId} className="mt-0.5 flex justify-end text-[11px]">

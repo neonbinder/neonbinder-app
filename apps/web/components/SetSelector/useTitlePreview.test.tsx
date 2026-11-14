@@ -181,4 +181,25 @@ describe("titleSourceChips — the insert and Set name in titles (NEO-335, NEO-5
     expect(labels(inputs)).toContain("Set");
     expect(labels(inputs)).not.toContain("Set name in titles");
   });
+
+  describe("NEO-535: a chip with no real value is not drawn", () => {
+    it("a base card's 'Base' parallel gets no Parallel chip, in either case or number", () => {
+      for (const parallelName of ["Base", "base", "Bases"]) {
+        expect(labels(fullInputs({ parallelName, insertName: "Future Stars" }))).not.toContain(
+          "Parallel",
+        );
+      }
+      // A real parallel keeps its chip.
+      expect(pairs(fullInputs({ parallelName: "Gold Refractor" }))).toContain(
+        "Parallel:Gold Refractor",
+      );
+    });
+
+    it("'None' is not an autograph and not a short print", () => {
+      const inputs = fullInputs({ autographed: "None", shortPrint: "None" });
+      expect(labels(inputs)).not.toContain("Auto");
+      expect(labels(inputs)).not.toContain("Short print");
+      expect(pairs(fullInputs({ autographed: "On Card" }))).toContain("Auto:On Card");
+    });
+  });
 });

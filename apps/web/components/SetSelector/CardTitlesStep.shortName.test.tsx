@@ -113,6 +113,21 @@ describe("CardTitlesStep — the box shows whenever the step lists titles", () =
   });
 });
 
+describe("CardTitlesStep — the box is a wrapping one-line field (NEO-535)", () => {
+  test("a textarea that grows with its text; a pasted line break is a space; Enter settles in place", () => {
+    const { onShortNameChange, onWizardKey } = setup({ cards: [card("1")] });
+    const box = screen.getByRole("textbox", { name: LABEL }) as HTMLTextAreaElement;
+    expect(box.tagName).toBe("TEXTAREA");
+    expect(box.className).toContain("[field-sizing:content]");
+    fireEvent.change(box, { target: { value: "2026 Topps\nChrome Sapphire" } });
+    expect(box.value).toBe(BOX);
+    fireEvent.keyDown(box, { key: "Enter" });
+    expect(onShortNameChange).toHaveBeenLastCalledWith(BOX);
+    // Enter is the box's own: it never reaches the wizard behind it.
+    expect(onWizardKey).not.toHaveBeenCalledWith("Enter");
+  });
+});
+
 describe("CardTitlesStep — typing rewrites the listed titles live", () => {
   test("the titles follow the box; the list holds still", () => {
     setup({ cards: [card("1"), card("2")] });

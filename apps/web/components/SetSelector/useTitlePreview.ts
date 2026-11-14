@@ -4,6 +4,7 @@ import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 // Pure and browser-safe: the same generator the server titled the card with.
 import { assessListingTitle, leftOutOfTitle } from "../../convex/features/generateListing";
+import { variantTypeKindFromTitle } from "../../convex/variantRole";
 
 /**
  * NEO-101 — "Regenerate", and the source fields behind a generated title.
@@ -28,12 +29,14 @@ import { assessListingTitle, leftOutOfTitle } from "../../convex/features/genera
  * links — a card's variation text is operator- and marketplace-sourced content,
  * not a destination.
  *
- * ## Laziness
+ * ## Subscribed from the start (NEO-535)
  *
- * `previewListingTitle` is a real server round-trip per card, and the drawer
- * opens on every card an operator arrows through. So the query stays `"skip"`
- * until the operator asks for it, and then stays subscribed for the life of the
- * component so a second Regenerate is instant and the chips keep rendering.
+ * The query used to stay `"skip"` until the operator pressed Regenerate, so
+ * "Left out to fit" and the chips appeared only after a press, on a title that
+ * was already stored. They are read from the card's facts, which only the
+ * server holds, so the hook now subscribes as it mounts: one small query per
+ * opened card (the card, its chain, its players and teams), and Regenerate
+ * itself is instant because its answer is already here.
  */
 
 /** One labelled source fact, e.g. `Set` → `Topps Chrome`. */
@@ -114,6 +117,10 @@ function chipValue(value: unknown, whenTrue: string): string | null {
   return null;
 }
 
+/** NEO-535 — a feature value that says the card has no such thing. */
+const noValue = (value: string | undefined): boolean =>
+  !value?.trim() || value.trim() === "None";
+
 /**
  * The chips for a preview, in the order the generator itself lays a title
  * down (NEO-535): the set description (year, maker, set, insert, parallel —
@@ -148,12 +155,14 @@ export function titleSourceChips(inputs: PreviewResult["inputs"]): TitleSourceCh
   if (inputs.cardNumber) chips.push({ label: "Number", value: `#${inputs.cardNumber}` });
 
   // Then the card's own tokens, in the order the title says them.
-  push("Auto", inputs.autographed, "AUTO");
+  // NEO-535 — "None" is the features' word for "not an autograph" / "not a
+  // short print": no chip, as for any other absent fact.
+  if (!noValue(inputs.autographed)) push("Auto", inputs.autographed, "AUTO");
   push("Relic", inputs.isRelic, "RELIC");
   if (inputs.printRun != null) chips.push({ label: "Print run", value: `/${inputs.printRun}` });
   push("Variation", inputs.cardVariation);
   push("Rookie", inputs.isRookie, "RC");
-  push("Short print", inputs.shortPrint, "SP");
+  if (!noValue(inputs.shortPrint)) push("Short print", inputs.shortPrint, "SP");
   // One chip per team, matching the per-player treatment: a card can carry
   // two, and "which of these is worth the characters" is the same judgement.
   for (const name of inputs.teamNames ?? []) {
@@ -188,7 +197,10 @@ function pushDescription(
   if (!inputs.manufacturerBrandUnknown) push("Maker", inputs.manufacturer);
   push("Set", inputs.setName);
   push("Insert", inputs.insertName);
-  push("Parallel", inputs.parallelName);
+  // NEO-535 — "Base" names no parallel (the Base kind's word, read through the
+  // role helper, never a literal), so a base card shows no Parallel chip.
+  const parallel = inputs.parallelName?.trim();
+  if (parallel && variantTypeKindFromTitle(parallel) !== "base") push("Parallel", parallel);
 }
 
 export type TitlePreview = {
@@ -224,9 +236,6 @@ export function useTitlePreview(
   cardId: Id<"cardChecklist">,
   applyTitle: (title: string) => void,
 ): TitlePreview {
-  // Once true, stays true: the subscription is cheap to keep and expensive to
-  // re-establish, and the chips must survive after the title has been applied.
-  const [subscribed, setSubscribed] = useState(false);
   const [pending, setPending] = useState(false);
   const [confirming, setConfirming] = useState(false);
 
@@ -235,7 +244,7 @@ export function useTitlePreview(
   // this line instead of quietly rendering nothing.
   const preview: PreviewResult | undefined = useQuery(
     api.selectorOptions.previewListingTitle,
-    subscribed ? { cardId } : "skip",
+    { cardId },
   );
 
   useEffect(() => {
@@ -257,7 +266,6 @@ export function useTitlePreview(
         return;
       }
       setConfirming(false);
-      setSubscribed(true);
       setPending(true);
     },
     [confirming],

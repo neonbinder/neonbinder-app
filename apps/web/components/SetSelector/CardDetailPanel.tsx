@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
+import { oneLine } from "./card-titles";
 import { NotesLengthMeter } from "./NotesLengthMeter";
 import { Theme } from "@radix-ui/themes";
 import { useMutation, useQuery } from "convex/react";
@@ -427,7 +428,7 @@ export default function CardDetailPanel({
     api.selectorOptions.removeCrossListing,
   );
   const cardNameInputRef = useRef<HTMLInputElement | null>(null);
-  const titleInputRef = useRef<HTMLInputElement | null>(null);
+  const titleInputRef = useRef<HTMLTextAreaElement | null>(null);
   // Unique per-field marker class so Maestro's inputText targets the tapped
   // field rather than the first input in the drawer (see useFieldTestClass).
   const fieldClass = useFieldTestClass();
@@ -486,7 +487,7 @@ export default function CardDetailPanel({
    * the over-length text in the field with the explanation beside it; the
    * server enforces the same constant either way.
    */
-  const titleField = useReactiveField({
+  const titleField = useReactiveField<HTMLTextAreaElement>({
     value: card.listingTitle ?? "",
     onSave: async (trimmed) => {
       const state = titleLengthState(trimmed.length, LISTING_TITLE_MAX, true);
@@ -649,9 +650,26 @@ export default function CardDetailPanel({
   useEffect(() => {
     replaceTitleRef.current = titleField.replace;
   }, [titleField.replace]);
+  // NEO-535 — Regenerate rebuilds the description too, on the server's rule
+  // (`regeneratedDescription`): one that reads as the builder's own is rebuilt
+  // from the facts now, one an operator wrote is left alone. Its own write,
+  // so a title refused for length still gets its description rebuilt; the
+  // description field hydrates from the row like any reactive update.
+  const regenerateDescription = useCallback(async () => {
+    try {
+      await updateCard({ id: card._id, regenerateDescription: true });
+    } catch (err) {
+      announce(userFacingMessage(err, "Couldn't rebuild the card description"));
+    }
+  }, [updateCard, card._id, announce]);
+  const regenerateDescriptionRef = useRef(regenerateDescription);
+  useEffect(() => {
+    regenerateDescriptionRef.current = regenerateDescription;
+  }, [regenerateDescription]);
   const applyTitle = useCallback((title: string) => {
     setTitleText(title);
     void replaceTitleRef.current?.(title);
+    void regenerateDescriptionRef.current();
   }, []);
   const preview = useTitlePreview(card._id, applyTitle);
   const titleLeftOut = useMemo(() => preview.leftOutOf(titleText), [preview, titleText]);
@@ -1157,16 +1175,22 @@ export default function CardDetailPanel({
                 </button>
               </span>
             </div>
-            <Input
+            {/* NEO-535: a wrapping one-line field, the Card titles step's
+                shape, so the whole title is in view on a phone. Enter still
+                saves (the hook's default), and a pasted line break reads as
+                a space: a title is one line. */}
+            <Textarea
               bare
               {...titleInputProps}
               ref={(el) => {
                 titleHookRef(el);
                 titleInputRef.current = el;
               }}
-              type="text"
+              rows={2}
               onChange={(e) => {
-                setTitleText(e.target.value);
+                const flat = oneLine(e.target.value);
+                if (flat !== e.target.value) e.target.value = flat;
+                setTitleText(flat);
                 // Typing is the operator changing their mind about replacing
                 // the draft — drop the pending confirm rather than leaving a
                 // second click armed against text they just wrote.
@@ -1177,7 +1201,7 @@ export default function CardDetailPanel({
               // No maxLength, deliberately: it would silently swallow the tail
               // of a pasted title, and an over-length title the operator cannot
               // SEE is one they cannot fix. Let it overflow and say so.
-              className={`${fieldClass("cardTitle")} w-full p-1.5 text-sm`}
+              className={`${fieldClass("cardTitle")} block w-full resize-none p-1.5 text-sm [field-sizing:content]`}
               placeholder="Listing title reused across marketplaces"
               aria-label="Card title"
               aria-invalid={titleState.over || Boolean(titleField.error) || undefined}
@@ -1208,7 +1232,10 @@ export default function CardDetailPanel({
                 Regenerate again to replace the title you have typed.
               </p>
             )}
-            {card.listingTitleTruncated && (
+            {/* NEO-535: never beside the over-cap alert, where a long title
+                is not "cut short"; nor beside "Left out to fit", which says
+                exactly what was cut. */}
+            {card.listingTitleTruncated && !titleState.over && titleLeftOut.length === 0 && (
               <TitleFieldNote>Auto title was cut short — rewrite it</TitleFieldNote>
             )}
             {/* NEO-535: read from the text in the field now, so retyping a

@@ -289,6 +289,7 @@ import SetAttributesPanel, {
 } from "./SetAttributesPanel";
 import { DEFAULT_TEAM_PICKER_LABELS } from "./TeamPicker";
 import { SET_ROW_ACTION_TONE_CLASSES } from "./SetRowActionButton";
+import { goToSetNameInTitles } from "./set-name-in-titles-jump";
 
 /** The set row's picker trigger — see SET_TEAM_PICKER_LABELS. */
 const PICK = SET_TEAM_PICKER_LABELS.trigger;
@@ -1568,6 +1569,33 @@ describe("SetAttributesPanel — Set name in titles row (NEO-335)", () => {
     currentChain = makeChain("Baseball");
     renderPanel();
     expect(screen.queryByLabelText("Set feature Set name in titles")).toBeNull();
+  });
+
+  /**
+   * NEO-535 — the attention walker's "Trim Set name in titles" door lands
+   * here: a collapsed panel opens and the row's box takes focus.
+   */
+  it("opens and focuses the box when the walker's door is used", async () => {
+    currentRow = makeRow({ level: "insert", value: "Hologram" });
+    currentChain = makeChain("Baseball");
+    render(
+      <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={true} />,
+    );
+    expect(screen.queryByLabelText("Value for Set name in titles")).toBeNull();
+
+    let went = false;
+    act(() => {
+      went = goToSetNameInTitles();
+    });
+    expect(went).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(field()));
+  });
+
+  it("offers no door where the row has no box", () => {
+    currentRow = makeRow({ level: "year", value: "2024" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    expect(goToSetNameInTitles()).toBe(false);
   });
 
   it("is described by its hint", () => {

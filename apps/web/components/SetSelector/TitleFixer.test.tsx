@@ -43,6 +43,10 @@ vi.mock("convex/react", () => ({
 }));
 
 import TitleFixer from "./TitleFixer";
+import {
+  useClosesForSetNameInTitles,
+  useSetNameInTitlesTarget,
+} from "./set-name-in-titles-jump";
 import type { AttentionItem } from "./card-attention";
 import type { CardChecklistRow } from "./cardAttentionRegistry";
 
@@ -100,12 +104,25 @@ beforeEach(() => {
 
 describe("TitleFixer (NEO-101)", () => {
   it("anchors on the card number and states every reason the card was flagged", () => {
-    renderFixer([overLimit(84), truncated()]);
+    renderFixer([truncated(), aspectOver(70)]);
 
-    expect(screen.getByText(/#300b/)).toBeTruthy();
-    expect(screen.getByText("Julio Rodriguez", { exact: false })).toBeTruthy();
-    expect(screen.getByText("title is over the 80-character limit")).toBeTruthy();
+    const heading = screen.getByRole("heading", { level: 3 });
+    expect(heading.textContent).toContain("#300b");
+    expect(heading.textContent).toContain("Julio Rodriguez");
     expect(screen.getByText("auto-generated title was cut short")).toBeTruthy();
+    expect(screen.getByText("variation text is over the 65-character limit")).toBeTruthy();
+  });
+
+  it("NEO-535: an over-cap card is not also called cut short — the longer problem speaks for both", () => {
+    renderFixer([overLimit(84), truncated()], makeRow({ listingTitle: "z".repeat(84) }));
+
+    expect(screen.getByText("title is over the 80-character limit")).toBeTruthy();
+    expect(screen.queryByText("auto-generated title was cut short")).toBeNull();
+    // One message under the field, not three: no "cut short" note and no
+    // "Left out to fit" while the title is over the cap.
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.queryByText(/cut short — rewrite it/)).toBeNull();
+    expect(screen.queryByText(/^Left out to fit/)).toBeNull();
   });
 
   it("pre-fills the stored title and focuses it, so the operator can just type", async () => {
@@ -148,7 +165,9 @@ describe("TitleFixer (NEO-101)", () => {
 
     expect(screen.getByText("84/80")).toBeTruthy();
     const alert = screen.getByRole("alert");
-    expect(alert.textContent).toContain("4 over the 80-character limit");
+    expect(alert.textContent).toBe(
+      "Too long to list as-is. Trim it here, or shorten the set name for the whole row.",
+    );
 
     const save = saveButton();
     expect(save.getAttribute("aria-disabled")).toBe("true");
@@ -310,5 +329,45 @@ describe("TitleFixer (NEO-101)", () => {
       ).toBeTruthy(),
     );
     expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  describe("NEO-535: the way to the row's Set name in titles", () => {
+    function Target({ open }: { open: () => void }) {
+      useSetNameInTitlesTarget(open);
+      return null;
+    }
+    function Closer({ close }: { close: () => void }) {
+      useClosesForSetNameInTitles(close);
+      return null;
+    }
+
+    it("is offered on an over-cap title when the row's box is on screen, and goes there", () => {
+      const open = vi.fn();
+      const close = vi.fn();
+      render(
+        <>
+          <Target open={open} />
+          <Closer close={close} />
+        </>,
+      );
+      renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+
+      expect(screen.getByText(/Set name hogging it\?/)).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Trim Set name in titles" }));
+      // The dialog in front closes, then the box opens.
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it("is never a dead end: no box on screen, no door", () => {
+      renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+      expect(screen.queryByRole("button", { name: "Trim Set name in titles" })).toBeNull();
+    });
+
+    it("is not offered on a title that fits", () => {
+      render(<Target open={vi.fn()} />);
+      renderFixer([truncated()]);
+      expect(screen.queryByRole("button", { name: "Trim Set name in titles" })).toBeNull();
+    });
   });
 });

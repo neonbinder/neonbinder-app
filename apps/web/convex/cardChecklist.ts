@@ -47,6 +47,7 @@ import { isDatedTeamYear } from "../lib/players/team-tenure";
 import { recentCardIdsForPlayer } from "./cardPlayerLinks";
 // NEO-358 — every `teamOnCardIds` write here keeps the team → cards index.
 import { syncCardTeamLinks } from "./cardTeamLinks";
+import { refreshedListingDescription } from "./cardDescriptionRefresh";
 // NEO-330: also the key `entityReviewSkips.nameNormalized` is written with
 // (the commit prelude's `norm`). A skip lookup keyed any other way would miss.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
@@ -505,6 +506,13 @@ export async function applyBscAttributeFill(
   if (isRelic) patch.isRelic = true;
   if (featuresChanged) patch.features = features;
 
+  // NEO-535 — a print run, RC, RELIC, SP or autograph the fill adds is a fact
+  // the description carries: an unedited description follows, in this write.
+  if (Object.keys(patch).length > 0) {
+    const listingDescription = await refreshedListingDescription(ctx, row, patch);
+    if (listingDescription !== undefined) patch.listingDescription = listingDescription;
+  }
+
   const wrote = Object.keys(patch).length > 0;
   if (wrote) {
     patch.lastUpdated = Date.now();
@@ -885,6 +893,7 @@ export const applyBscTeamResolution = internalMutation({
         );
       if (wholeTeamId) {
         await ctx.db.patch(row._id, {
+          ...(await descriptionForTeams(ctx, row._id, [wholeTeamId])),
           teamOnCardIds: [wholeTeamId],
           teamCheckDoneAt: Date.now(),
           teamCheckOutcome: "answered",
@@ -985,6 +994,7 @@ export const applyBscTeamResolution = internalMutation({
     }
 
     await ctx.db.patch(row._id, {
+      ...(await descriptionForTeams(ctx, row._id, resolvedTeamIds)),
       teamOnCardIds: resolvedTeamIds,
       teamCheckDoneAt: Date.now(),
       teamCheckOutcome: "answered",
@@ -1000,6 +1010,23 @@ export const applyBscTeamResolution = internalMutation({
     return { applied: true, unmatched: false };
   },
 });
+
+/**
+ * NEO-535 — the description half of a resolved-team write: the card's
+ * unedited description rebuilt to name its teams (`cardDescriptionRefresh`),
+ * as a patch fragment, or nothing. Read FRESH, not from the row the mutation
+ * started with: the attribute fill above may already have written the card.
+ */
+async function descriptionForTeams(
+  ctx: MutationCtx,
+  cardId: Id<"cardChecklist">,
+  teamOnCardIds: Array<Id<"teams">>,
+): Promise<{ listingDescription?: string }> {
+  const card = await ctx.db.get(cardId);
+  if (!card) return {};
+  const listingDescription = await refreshedListingDescription(ctx, card, { teamOnCardIds });
+  return listingDescription !== undefined ? { listingDescription } : {};
+}
 
 /** NEO-345 — the token a live re-ask must carry. */
 const REASK_CONFIRM_TOKEN = "REASK";

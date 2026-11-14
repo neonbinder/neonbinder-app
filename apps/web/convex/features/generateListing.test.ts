@@ -4,6 +4,8 @@ import {
   brandedSetName,
   generateListingTitle,
   generateListingDescription,
+  leftOutOfTitle,
+  readsAsGeneratedDescription,
   rookieAsRc,
   titleDescription,
   withoutFirstName,
@@ -1364,5 +1366,98 @@ describe("brandedSetName (NEO-464) — the set as its cards' titles name it", ()
       parallelName: "Base",
     });
     expect(title.startsWith(`1993 ${brandedSetName({ manufacturer: "Topps", setName: "Finest" })} `)).toBe(true);
+  });
+});
+
+describe("NEO-535 leftOutOfTitle: a team the title already names is not left out", () => {
+  const card = (teamNames: string[], sport = "Baseball"): ListingCardInputs => ({
+    cardNumber: "17",
+    playerNames: ["Shohei Ohtani"],
+    year: "2024",
+    manufacturer: "Topps",
+    setName: "Topps",
+    teamNames,
+    sport,
+  });
+
+  test("the nickname in the box text counts ('…Dodgers Japan Edition')", () => {
+    const text = "2024 Topps Dodgers Japan Edition Shohei Ohtani #17";
+    expect(leftOutOfTitle(card(["Los Angeles Dodgers"]), text)).not.toContain(
+      "Los Angeles Dodgers",
+    );
+  });
+
+  test("a plural or case difference still counts", () => {
+    expect(
+      leftOutOfTitle(card(["Los Angeles Dodgers"]), "2024 Topps DODGER Stadium Shohei Ohtani #17"),
+    ).not.toContain("Los Angeles Dodgers");
+  });
+
+  test("a team the title does not name is still listed", () => {
+    expect(leftOutOfTitle(card(["Los Angeles Dodgers"]), "2024 Topps Shohei Ohtani #17")).toContain(
+      "Los Angeles Dodgers",
+    );
+  });
+
+  test("a trailing sport word is set aside: 'Oregon Ducks baseball' reads 'Ducks'", () => {
+    expect(
+      leftOutOfTitle(card(["Oregon Ducks baseball"]), "2024 Topps Ducks Shohei Ohtani #17"),
+    ).not.toContain("Oregon Ducks baseball");
+    // The sport word alone never names the team.
+    expect(
+      leftOutOfTitle(card(["Oregon Ducks baseball"]), "2024 Topps Shohei Ohtani #17 Baseball"),
+    ).toContain("Oregon Ducks baseball");
+  });
+
+  test("a one-word team is named only whole", () => {
+    expect(leftOutOfTitle(card(["Brazil"]), "2024 Topps Brazil Shohei Ohtani #17")).not.toContain(
+      "Brazil",
+    );
+    expect(leftOutOfTitle(card(["Brazil"]), "2024 Topps Shohei Ohtani #17")).toContain("Brazil");
+  });
+});
+
+describe("NEO-535 readsAsGeneratedDescription", () => {
+  const full: ListingCardInputs = {
+    cardNumber: "85",
+    playerNames: ["Vladimir Guerrero Jr."],
+    year: "2019",
+    manufacturer: "Topps",
+    setName: "Topps Chrome Update",
+    insertName: "Rookie Debut",
+    parallelName: "Gold Refractor",
+    isRookie: true,
+    isRelic: true,
+    autographed: "On Card",
+    shortPrint: "SSP",
+    printRun: 50,
+    cardVariation: "Batting Helmet",
+    teamNames: ["Toronto Blue Jays"],
+    sport: "Baseball",
+  };
+
+  test("the generator's own output reads as the generator's, for full and sparse facts", () => {
+    const cases: ListingCardInputs[] = [
+      full,
+      { cardNumber: "1" },
+      { cardNumber: "" },
+      { cardNumber: "7", playerNames: ["Mike Trout"] },
+      { cardNumber: "7", year: "2011", setName: "Topps Update" },
+      { ...full, shortPrint: "SP", printRun: undefined, cardVariation: "Sliding." },
+      { ...full, playerNames: ["Shohei Ohtani", "Mike Trout"], teamNames: ["A", "B"] },
+    ];
+    for (const inputs of cases) {
+      const text = generateListingDescription(inputs);
+      expect(readsAsGeneratedDescription(text), text).toBe(true);
+    }
+  });
+
+  test("an operator's own words do not", () => {
+    const generated = generateListingDescription(full);
+    expect(readsAsGeneratedDescription("Mint condition. Ships in a top loader.")).toBe(false);
+    expect(readsAsGeneratedDescription(`${generated}\nSharp corners, great centering.`)).toBe(false);
+    expect(readsAsGeneratedDescription(`${generated}\n\nShips fast.`)).toBe(false);
+    expect(readsAsGeneratedDescription(`Pulled this myself!\n${generated}`)).toBe(false);
+    expect(readsAsGeneratedDescription("")).toBe(false);
   });
 });
