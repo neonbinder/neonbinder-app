@@ -16,12 +16,19 @@
 //     and finds nothing left; the parallel opens with the box text in its
 //     titles and no attention.
 //   * `Anime Red Refractors` is renamed to a name whose description is 65
-//     characters, and Anime's BA-3 title is hand edited to drop the first name
-//     ("Murakami #BA-3"). Rebuilt, BA-3 is the one card the builder fails on
-//     (it would lose "Munetaka") that the hand edit rescues, so the copy carries
-//     the edit and is not in the dialog; the four whose names are too long to
-//     fit even so (BA-12, BA-19, BA-20, BA-29) are. The checklist's own
-//     "Fix card titles" reopens the dialog after a reload.
+//     characters (the builder says the shared word "Anime" once: the parallel's
+//     name starts with its insert's, so the description reads
+//     "2026 Bowman <parallel>"), and Anime's BA-3 title is hand edited to drop
+//     the first name ("Murakami #BA-3"). Rebuilt, BA-3 is the one card the
+//     builder fails on (it would lose "Munetaka") that the hand edit rescues,
+//     so the copy carries the edit at exactly 80 characters and is not in the
+//     dialog; the four whose names are too long to fit even so (BA-12, BA-19,
+//     BA-20, BA-29) are. The checklist's own "Fix card titles" reopens the
+//     dialog after a reload.
+//   * The dialog's "Set name in titles" box opens holding the full set
+//     description including the parallel's name (never a bare insert name);
+//     typing it past 80 is refused in place and again on Save; Escape after an
+//     edit asks "Toss your title edits?" and tossing forgets the edit.
 //   Both are renamed back at the end. The arithmetic (`calc` of the builder over
 //   the 29 BA- cards of fixtures/checklists/2026-bowman-insert-anime.csv) is
 //   in the comment at LONG_PARALLEL and CARRY_PARALLEL.
@@ -54,8 +61,16 @@ const BLACK = "Anime Black Refractors";
  * parallel can fit and every card of it (29) is failing.
  */
 const LONG_PARALLEL = "Anime Black Refractors Hologram Collectors Anniversary Platinum Rainbow Foil Edition";
+/**
+ * A parallel's description is "2026 Bowman " + its name: the name starts with
+ * the insert's ("Anime"), and the builder says that word once. LONG_PARALLEL's
+ * is 96 characters, so no title of the parallel can fit.
+ */
+const descriptionOf = (parallel: string) => `2026 Bowman ${parallel}`;
 /** What the operator types into "Set name in titles" for LONG_PARALLEL: the box replaces the whole description. */
 const FIX_BOX = "2026 Bowman Anime Black";
+/** The cards each parallel holds (the 29 `BA-` rows of the Anime checklist file). */
+const COPIES = 29;
 /** Anime's third parallel, as BSC names it. */
 const RED = "Anime Red Refractors";
 /**
@@ -64,11 +79,11 @@ const RED = "Anime Red Refractors";
  * whose names are the longest and which lose a first name; BA-3 (Munetaka
  * Murakami) would too, and its hand edit below, re-headed, is exactly 80.
  */
-const CARRY_PARALLEL = "Anime Red Refractors Hologram Foils Anniversary";
+const CARRY_PARALLEL = "Anime Red Refractors Hologram Foils Anniversary Prism";
 /** BA-3's title as the operator edits it on Anime: the first name dropped. */
 const HAND_EDIT = "2026 Bowman Anime Murakami #BA-3";
 /** What BA-3's copy on CARRY_PARALLEL reads: the edit, re-headed with that parallel's description. */
-const CARRIED_TITLE = `2026 Bowman Anime ${CARRY_PARALLEL} Murakami #BA-3`;
+const CARRIED_TITLE = `${descriptionOf(CARRY_PARALLEL)} Murakami #BA-3`;
 /** Rename the option the attributes panel is showing, by its pencil. */
 async function renameSelected(page: Page, from: string, to: string): Promise<void> {
   await page.getByRole("button", { name: `Rename ${from}`, exact: true }).click();
@@ -286,12 +301,58 @@ test(
     const sections = titlesDialog.getByRole("heading", { level: 3 });
     await expect(sections).toHaveCount(1);
     await expect(sections).toContainText(LONG_PARALLEL);
-    await expect(sections).toContainText(/[1-9][0-9]* titles?/);
+    // Every one of the 29 cards fails: the description alone is 96 characters.
+    expect(descriptionOf(LONG_PARALLEL)).toHaveLength(96);
+    await expect(sections).toContainText(`${COPIES} titles`);
     await expect(titlesDialog.getByRole("textbox", { name: /^Title for #/ }).first()).toBeVisible();
     await expectAccessible(page, { within: titlesDialog, label: "Card titles dialog, a parallel's copies that run long" });
 
-    // One shorter box fixes every title: it replaces the description on the cards that need it.
+    // The box opens holding the FULL set description, the parallel's name in it
+    // (the insert's word said once), not a bare insert name; 96 is over the
+    // box's 80, so it says it is sitting out.
     const box = titlesDialog.getByRole("textbox", { name: "Set name in titles", exact: true });
+    await expect(box).toHaveValue(descriptionOf(LONG_PARALLEL));
+    await expect(titlesDialog.getByRole("status").filter({ hasText: "Over 80, so it's sitting out." })).toBeVisible();
+
+    // A box typed past 80 is refused in place, and again when Save is pressed
+    // (naming the parallel, with focus on the box); nothing is written.
+    const fixTitles = page.getByRole("button", { name: /^Fix [1-9][0-9]* card titles?$/ });
+    await box.fill(`${descriptionOf(LONG_PARALLEL)} extra`);
+    await box.press("Tab");
+    await expect(titlesDialog.getByRole("alert").filter({ hasText: "Set name in titles tops out at 80 characters." })).toBeVisible();
+    await titlesDialog.getByRole("button", { name: "Save titles" }).click();
+    await expect(
+      titlesDialog.getByRole("alert").filter({
+        hasText: `${LONG_PARALLEL}'s Set name in titles won't save as typed. Fix it or put it back, then save.`,
+      }),
+    ).toBeVisible();
+    await expect(box).toBeFocused();
+    await expect(titlesDialog).toBeVisible();
+    await expectAccessible(page, { within: titlesDialog, label: "Card titles dialog, a box refused" });
+
+    // Escape after an edit asks first; Cancel keeps the edit, "Toss 'em" forgets it.
+    const toss = page.getByRole("dialog", { name: "Toss your title edits?", exact: true });
+    await box.fill(FIX_BOX);
+    await box.press("Tab");
+    await expect(titlesDialog.getByRole("status").filter({ hasText: "Every title fits now." })).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(toss).toBeVisible();
+    await expectAccessible(page, { within: toss, label: "Toss your title edits confirm" });
+    await toss.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(toss).toBeHidden();
+    await expect(titlesDialog).toBeVisible();
+    await expect(box).toHaveValue(FIX_BOX);
+    await page.keyboard.press("Escape");
+    await expect(toss).toBeVisible();
+    await toss.getByRole("button", { name: "Toss 'em", exact: true }).click();
+    await expect(titlesDialog).toBeHidden();
+    await expect(fixTitles).toBeFocused();
+    // Nothing was written: the door opens it again holding the description, not the edit.
+    await fixTitles.click();
+    await expect(titlesDialog).toBeVisible();
+    await expect(box).toHaveValue(descriptionOf(LONG_PARALLEL));
+
+    // One shorter box fixes every title: it replaces the description on the cards that need it.
     await box.fill(FIX_BOX);
     await box.press("Tab");
     await expect(titlesDialog.getByRole("status").filter({ hasText: "Every title fits now." })).toBeVisible();
@@ -300,16 +361,23 @@ test(
     await expect(titlesDialog).toBeHidden();
 
     // The ticker keeps its button, focus is back on it, and it has nothing left to fix.
-    const fixTitles = page.getByRole("button", { name: /^Fix [1-9][0-9]* card titles?$/ });
     await expect(fixTitles).toBeVisible();
     await expect(fixTitles).toBeFocused();
     const fixed = Number(((await fixTitles.textContent()) ?? "").match(/\d+/)?.[0]);
-    expect(fixed).toBeGreaterThan(0);
-    // (a screen-reader line repeats the saved sentence: either one will do)
-    await expect(page.getByText(`Saved ${fixed} ${fixed === 1 ? "title" : "titles"}.`).first()).toBeVisible();
+    expect(fixed).toBe(COPIES);
+    // The saved sentence is said twice, once each: the plain text beside the
+    // door, and the ticker's screen-reader line (role status, always on screen
+    // to Playwright). Two matches in all, exactly one of them a status.
+    const savedLine = `Saved ${fixed} ${fixed === 1 ? "title" : "titles"}.`;
+    await expect(page.getByRole("status").filter({ hasText: savedLine })).toHaveCount(1);
+    await expect(page.getByText(savedLine)).toHaveCount(2);
     await fixTitles.click();
-    await expect(page.getByText("Every title fits now. Nothing to fix.").first()).toBeVisible();
+    // The same pair again: the door's line beside it, and the live line.
+    const nothingToFix = "Every title fits now. Nothing to fix.";
+    await expect(page.getByRole("status").filter({ hasText: nothingToFix })).toHaveCount(1);
+    await expect(page.getByText(nothingToFix)).toHaveCount(2);
     await expect(titlesDialog).toHaveCount(0);
+    await expectAccessible(page, { label: "Parallel build ticker, nothing left to fix" });
 
     await expect(
       page.getByRole("heading", { name: /Anime parallels — [1-9][0-9]* built(, [0-9]+ (blocked|skipped|failed))*/ }),
@@ -356,6 +424,10 @@ test(
 
     await openParallel(LONG_PARALLEL);
     await expect(page.getByRole("heading", { name: /^Cards \([1-9][0-9]*\)$/ })).toBeVisible();
+    // A positive first (a negative passes on a list that never drew): the
+    // rows are on screen, so "no attention" and "no Fix card titles" are read
+    // off a loaded checklist.
+    await expect(page.getByRole("button", { name: /^Edit card .+/ }).first()).toBeVisible();
     await expect(needYou).toBeHidden();
     await expect(fixCardTitles).toBeHidden();
     await page.getByRole("button", { name: /^Edit card .+/ }).first().click();
@@ -387,6 +459,13 @@ test(
     await expect(sections).toContainText(CARRY_PARALLEL);
     // The arithmetic at CARRY_PARALLEL: these four cannot fit; BA-3's hand edit does, so it is carried.
     await expect(sections).toContainText("4 titles");
+    // The box holds the full description, the parallel's name in it, said once
+    // after "2026 Bowman" (65 characters: it fits, so it is not sitting out).
+    expect(descriptionOf(CARRY_PARALLEL)).toHaveLength(65);
+    expect(CARRIED_TITLE).toHaveLength(80);
+    await expect(titlesDialog.getByRole("textbox", { name: "Set name in titles", exact: true })).toHaveValue(
+      descriptionOf(CARRY_PARALLEL),
+    );
     const titleRow = (number: string) => titlesDialog.getByRole("textbox", { name: new RegExp(`^Title for #${escapeRe(number)} `) });
     for (const number of ["BA-12", "BA-19", "BA-20", "BA-29"]) await expect(titleRow(number)).toBeVisible();
     await expect(titleRow("BA-3")).toBeHidden();
@@ -409,6 +488,7 @@ test(
     await expect(titlesDialog).toBeVisible();
     await expect(titleRow("BA-12")).toBeVisible();
     await expect(titleRow("BA-3")).toBeHidden();
+    await expectAccessible(page, { within: titlesDialog, label: "Card titles dialog, opened again after a reload" });
     await titlesDialog.getByRole("button", { name: "Not now" }).click();
     await expect(titlesDialog).toBeHidden();
     await expect(fixCardTitles).toBeFocused();
