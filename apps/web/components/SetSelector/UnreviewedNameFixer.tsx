@@ -253,12 +253,14 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
     // Says which side is still open, not a generic "link something" — on a
     // card with two unlinked sides, "link a player or a team" is exactly the
     // instruction that leads to a half-answer.
+    // NEO-556: the team side names both of its answers, a linked team or No
+    // Team, so the toggle beside "+ Add team" reads as a way through.
     if (!clearsCard) {
-      const missing = [
-        ...(playerSideOpen ? ["a player"] : []),
-        ...(teamSideOpen ? ["a team"] : []),
-      ];
-      return `Link ${missing.join(" and ")} to clear this card.`;
+      if (playerSideOpen && teamSideOpen) {
+        return "Link a player, and a team or No Team, to clear this card.";
+      }
+      if (teamSideOpen) return "Link a team, or choose No Team, to clear this card.";
+      return "Link a player to clear this card.";
     }
     if (!idsChanged && !retiresNames && !teamNone) {
       return "Nothing to change here — skip this card.";
@@ -268,9 +270,14 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
       parts.push(`${playerIds.length} ${playerIds.length === 1 ? "player" : "players"}`);
     }
     if (teamNone) {
-      return parts.length > 0
-        ? `Links ${parts.join("")} to this card and marks it No Team.`
+      // No Team over a typed team name drops that name: say which one goes.
+      const dropped = unlinkedTeamNames.map((name) => `"${name}"`).join(" and ");
+      const noTeamPart = dropped
+        ? `Drops ${dropped} and marks this card No Team.`
         : "Marks this card No Team.";
+      return parts.length > 0
+        ? `Links ${parts.join("")} to this card. ${noTeamPart}`
+        : noTeamPart;
     }
     if (teamIds.length > 0) {
       parts.push(`${teamIds.length} ${teamIds.length === 1 ? "team" : "teams"}`);

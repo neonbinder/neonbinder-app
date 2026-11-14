@@ -273,7 +273,7 @@ describe("UnreviewedNameFixer — linking", () => {
 
     const saveButton = screen.getByRole("button", { name: /Save & Next/ });
     expect(saveButton.getAttribute("aria-disabled")).toBe("true");
-    expect(screen.getByText("Link a player and a team to clear this card."))
+    expect(screen.getByText("Link a player, and a team or No Team, to clear this card."))
       .toBeTruthy();
 
     pickTeam("Houston Astros");
@@ -442,11 +442,11 @@ describe("UnreviewedNameFixer — NEO-556 No Team", () => {
 
   it("No Team answers a typed team name: one write with the request, no team half", async () => {
     renderFixer(baseRow({ pendingPlayerNames: undefined, pendingTeamNames: ["Astross"] }));
-    expect(hint()).toBe("Link a team to clear this card.");
+    expect(hint()).toBe("Link a team, or choose No Team, to clear this card.");
 
     fireEvent.click(noTeam());
     expect(noTeam().getAttribute("aria-pressed")).toBe("true");
-    expect(hint()).toBe("Marks this card No Team.");
+    expect(hint()).toBe('Drops "Astross" and marks this card No Team.');
     await save();
 
     expect(mockUpdateCard).toHaveBeenCalledWith({
@@ -465,7 +465,7 @@ describe("UnreviewedNameFixer — NEO-556 No Team", () => {
     renderFixer(baseRow({ pendingTeamNames: ["Astross"] }));
     pickPlayer("Yordan Alvarez");
     fireEvent.click(noTeam());
-    expect(hint()).toBe("Links 1 player to this card and marks it No Team.");
+    expect(hint()).toBe('Links 1 player to this card. Drops "Astross" and marks this card No Team.');
     await save();
     expect(mockUpdateCard).toHaveBeenCalledTimes(1);
     expect(mockUpdateCard).toHaveBeenCalledWith({

@@ -1570,16 +1570,31 @@ describe("CardDetailPanel — No Team (NEO-556)", () => {
     await act(async () => resolve());
   });
 
-  it("a stamped card shows it pressed; pressing again writes nothing and says how to change it", async () => {
+  it("a stamped card shows it pressed; pressing again clears No Team (the card is teamless again)", async () => {
+    let resolve: () => void = () => {};
+    mockUpdateCard.mockImplementationOnce(() => new Promise<void>((r) => (resolve = r)));
     renderPanel({ card: makeCard({ teamNoneConfirmedAt: 1 }) });
     expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    act(() => {
+      fireEvent.click(toggle());
+    });
+    // Off at once, while the write is out.
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, teamNone: false });
+    await act(async () => resolve());
+    expect(await screen.findByText("Cleared No Team")).toBeTruthy();
+    expect(screen.queryByText(/No Team stays/)).toBeNull();
+  });
+
+  it("a refused clear shows the server's sentence and the toggle reads the stamp again", async () => {
+    mockUpdateCard.mockRejectedValueOnce(new ConvexError("This card changed. Give it another go."));
+    renderPanel({ card: makeCard({ teamNoneConfirmedAt: 1 }) });
     await act(async () => {
       fireEvent.click(toggle());
     });
-    expect(mockUpdateCard).not.toHaveBeenCalled();
-    expect(
-      await screen.findByText("No Team stays until you pick a team for this card."),
-    ).toBeTruthy();
+    expect(await screen.findByText("This card changed. Give it another go.")).toBeTruthy();
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
   });
 
   it("picking a team on a stamped card saves just the team (the server retires the stamp)", async () => {

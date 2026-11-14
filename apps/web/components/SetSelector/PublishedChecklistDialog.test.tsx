@@ -485,18 +485,18 @@ describe("the copy helpers and the chip", () => {
 });
 
 describe("PublishedChecklistDialog — No Team (NEO-489)", () => {
-  it("shows a No Team row's team cell as 'No team' at a team's strength, and a blank one as a muted \"We'll look it up\"", async () => {
+  it("shows a No Team row's team cell as 'No Team' at a team's strength, and a blank one as a muted \"We'll look it up\"", async () => {
     open();
     await paste("1 Host One - No Team\n2 Rhett Lowder\n3 Pat Smith - Cincinnati Reds");
     await waitFor(() => expect(screen.getByText("3 rows")).toBeTruthy());
     const table = screen.getByRole("table");
-    expect(NO_TEAM_CELL).toBe("No team");
+    expect(NO_TEAM_CELL).toBe("No Team");
     expect(TEAM_LOOKED_UP_CELL).toBe("We'll look it up");
     const rows = within(table).getAllByRole("row");
     const cellsOf = (n: string) =>
       within(rows.find((r) => within(r).queryByText(n))!).getAllByRole("cell");
     const noTeam = cellsOf("Host One")[2];
-    expect(noTeam.textContent).toBe("No team");
+    expect(noTeam.textContent).toBe("No Team");
     // The claim reads at a team's strength: no muted wrapper around it.
     expect(noTeam.querySelector(".text-ink-3")).toBeNull();
     // A blank team cell is no claim: the sync looks it up, said in words

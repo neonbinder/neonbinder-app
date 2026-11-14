@@ -34,12 +34,16 @@ import NoTeamCardsControl, {
   NO_TEAM_DISMISS_LABEL,
   NO_TEAM_RECOUNT_LABEL,
   NO_TEAM_STOP_LABEL,
+  NO_TEAM_STOPPING_LABEL,
+  NO_TEAM_WALK_TRUNCATED_TEXT,
+  NO_TEAM_COUNT_TRUNCATED_TEXT,
   applyNoTeamPage,
   failNoTeamRun,
   keptReasonLines,
   noTeamConfirmCopy,
   noTeamHeading,
   noTeamLineText,
+  noTeamCountResultText,
   offerLabel,
   startNoTeamRun,
   stopNoTeamRun,
@@ -68,7 +72,8 @@ function view(overrides: Partial<NoTeamTargetsView> = {}): NoTeamTargetsView {
     toStamp: 5,
     kept: { ...KEPT0 },
     rowsWithOtherDefault: 0,
-    truncated: false,
+    walkTruncated: false,
+    countTruncated: false,
     ...overrides,
   };
 }
@@ -94,15 +99,45 @@ describe("No Team run — words", () => {
   it("the offer counts the cards and pluralises", () => {
     expect(offerLabel(1)).toBe("Mark 1 teamless card No Team");
     expect(offerLabel(1200)).toBe(`Mark ${(1200).toLocaleString()} teamless cards No Team`);
+    expect(offerLabel(2000, true)).toBe(`Mark at least ${(2000).toLocaleString()} teamless cards No Team`);
   });
 
-  it("the confirm says no card gains or loses a team, and says a floor when the count stopped", () => {
-    const copy = noTeamConfirmCopy(view());
-    expect(copy.title).toBe("Mark 5 cards No Team?");
-    expect(copy.description).toContain("No card gains or loses a team.");
-    const floor = noTeamConfirmCopy(view({ truncated: true }));
-    expect(floor.title).toBe("Mark at least 5 cards No Team?");
-    expect(floor.description).toContain("the run checks every one");
+  it("the count's status line ends in an answer, never silence", () => {
+    expect(noTeamCountResultText(view({ toStamp: 3 }))).toBe("3 teamless cards can be marked No Team.");
+    expect(noTeamCountResultText(view({ toStamp: 1 }))).toBe("1 teamless card can be marked No Team.");
+    expect(noTeamCountResultText(view({ toStamp: 0 }))).toBe("No teamless cards here.");
+    expect(noTeamCountResultText(view({ toStamp: 2000, countTruncated: true }))).toBe(
+      `At least ${(2000).toLocaleString()} teamless cards can be marked No Team.`,
+    );
+  });
+
+  it("the confirm says why the cards read No Team and that no card gains or loses a team", () => {
+    expect(noTeamConfirmCopy(view())).toEqual({
+      title: "Mark 5 cards No Team?",
+      description:
+        "Nothing on these cards names a team, so they read No Team from here on. No card gains or loses a team.",
+    });
+    expect(noTeamConfirmCopy(view({ toStamp: 1 })).description).toBe(
+      "Nothing on this card names a team, so it reads No Team from here on. No card gains or loses a team.",
+    );
+  });
+
+  it("each cap says its own thing: the count cap a floor, the walk cap the checklists left out", () => {
+    const count = noTeamConfirmCopy(view({ countTruncated: true }));
+    expect(count.title).toBe("Mark at least 5 cards No Team?");
+    expect(count.description).toContain(NO_TEAM_COUNT_TRUNCATED_TEXT);
+    expect(count.description).not.toContain(NO_TEAM_WALK_TRUNCATED_TEXT);
+
+    const walk = noTeamConfirmCopy(view({ walkTruncated: true }));
+    expect(walk.title).toBe("Mark 5 cards No Team?");
+    expect(walk.description).toContain("This run covers only the first 500");
+    expect(walk.description).not.toContain(NO_TEAM_COUNT_TRUNCATED_TEXT);
+
+    const both = noTeamConfirmCopy(view({ walkTruncated: true, countTruncated: true }));
+    expect(both.title).toBe("Mark at least 5 cards No Team?");
+    expect(both.description).toContain(NO_TEAM_WALK_TRUNCATED_TEXT);
+    // "The run checks every card" is false past the walk cap; never said then.
+    expect(both.description).not.toContain("checks every card");
   });
 
   it("lists every reason a card is left alone, only those with cards, in verdict order", () => {
@@ -124,10 +159,10 @@ describe("No Team run — words", () => {
     ).toEqual([
       "1 card is already No Team.",
       "2 cards have a team, and keep it.",
-      "1 card has a team name waiting for review.",
-      "3 cards are listed with a team NB couldn't match. Pick those yourself.",
+      "1 card has a team name waiting for review. Link it under Attention on its checklist.",
+      "3 cards come with a team name NB hasn't matched yet. Pick those yourself.",
       "1 card is still waiting on a team check. Each gets No Team if the check finds none.",
-      "2 cards never got an answer from the team check. Those are your call.",
+      "2 cards never got an answer from the team check. Pick those yourself under Attention on their checklist.",
       "1 checklist under this one has a team of its own and is left out.",
     ]);
   });
@@ -169,7 +204,7 @@ describe("No Team run — pure steps", () => {
       page({ targetCount: 1, scanned: 2, kept: { ...KEPT0, alreadyNoTeam: 2 }, cursor: null }),
     );
     expect(noTeamLineText(again.lines[0])).toBe("Base — nothing to mark, 2 already No Team");
-    expect(noTeamHeading(again)).toBe("Nothing to mark: every card here already has an answer");
+    expect(noTeamHeading(again)).toBe("Nothing to mark this time. The cards left are listed below.");
   });
 
   it("stop and fail say how far it got and that a rerun finishes", () => {
@@ -222,7 +257,36 @@ describe("NoTeamCardsControl", () => {
     expect(mockQuery).toHaveBeenCalledWith("cardNoTeamBulk.noTeamTargets", { selectorOptionId: ROW });
     // The hint describes it: nothing moves until it is pressed.
     const hint = document.getElementById(offer.getAttribute("aria-describedby") ?? "");
-    expect(hint?.textContent).toContain("only change when you mark them");
+    expect(hint?.textContent).toBe(
+      "Teamless new cards get No Team on their own. Cards already here change only when you mark them.",
+    );
+  });
+
+  it("the count's status line says Counting, then the answer in its place", async () => {
+    let answer: (v: NoTeamTargetsView) => void = () => {};
+    mockQuery.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = resolve;
+        }),
+    );
+    renderControl();
+    const status = () =>
+      screen.getAllByRole("status").find((n) => n.tagName === "SPAN") as HTMLElement;
+    await waitFor(() => expect(status().textContent).toBe("Counting cards…"));
+    await act(async () => answer(view({ toStamp: 3 })));
+    expect(status().textContent).toBe("3 teamless cards can be marked No Team.");
+    // The offer button shows the count on screen; the line is for the screen reader.
+    expect(status().className).toContain("sr-only");
+  });
+
+  it("a count of none says so in the status line, on screen", async () => {
+    mockQuery.mockResolvedValue(view({ toStamp: 0 }));
+    renderControl();
+    const status = () =>
+      screen.getAllByRole("status").find((n) => n.tagName === "SPAN") as HTMLElement;
+    await waitFor(() => expect(status().textContent).toBe("No teamless cards here."));
+    expect(status().className).not.toContain("sr-only");
   });
 
   it("asks nothing and shows nothing for a row that is not No Team, or with the panel shut", () => {
@@ -285,7 +349,7 @@ describe("NoTeamCardsControl", () => {
     const dialog = screen.getByRole("dialog");
     expect(within(dialog).getByText("Mark 5 cards No Team?")).toBeTruthy();
     const reasons = within(dialog).getByRole("group", { name: "Cards left as they are" });
-    expect(within(reasons).getByText(/2 cards are listed with a team NB couldn't match/)).toBeTruthy();
+    expect(within(reasons).getByText(/2 cards come with a team name NB hasn't matched yet/)).toBeTruthy();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -335,7 +399,12 @@ describe("NoTeamCardsControl", () => {
     fireEvent.click(screen.getByRole("button", { name: NO_TEAM_CONFIRM_LABEL }));
 
     fireEvent.click(await screen.findByRole("button", { name: NO_TEAM_STOP_LABEL }));
+    // "Stopping…" is spoken through the ledger's live line, not left to the
+    // button's relabel (which a screen reader does not announce).
+    const live = () => screen.getAllByRole("status").find((n) => n.tagName === "P") as HTMLElement;
+    await waitFor(() => expect(live().textContent).toBe(NO_TEAM_STOPPING_LABEL));
     await act(async () => release(page({ scanned: 2, stamped: 2, cursor: "c1" })));
+    await waitFor(() => expect(live().textContent).toMatch(/^Stopped, like you asked/));
 
     expect(
       await screen.findByRole("region", { name: /^Stopped, like you asked\. So far: marked 2 cards No Team\./ }),
@@ -378,6 +447,16 @@ describe("NoTeamCardsControl", () => {
     fireEvent.click(screen.getByRole("button", { name: NO_TEAM_DISMISS_LABEL }));
     expect(screen.queryByRole("region")).toBeNull();
     expect(onDismissed).toHaveBeenCalledTimes(1);
+  });
+
+  it("a run past the walk cap says, under the ledger, that it covers only the first 500 checklists", async () => {
+    mockQuery.mockResolvedValue(view({ walkTruncated: true }));
+    mockMutation.mockResolvedValueOnce(page({ targetCount: 2, scanned: 5, stamped: 5, cursor: null }));
+    renderControl();
+    fireEvent.click(await screen.findByRole("button", { name: "Mark 5 teamless cards No Team" }));
+    fireEvent.click(screen.getByRole("button", { name: NO_TEAM_CONFIRM_LABEL }));
+    const ledger = await screen.findByRole("region", { name: "Marked 5 cards No Team" });
+    expect(within(ledger).getByText(NO_TEAM_WALK_TRUNCATED_TEXT)).toBeTruthy();
   });
 
   it("its Stop and Dismiss are named apart from NEO-528's ledger, which can share the screen", () => {

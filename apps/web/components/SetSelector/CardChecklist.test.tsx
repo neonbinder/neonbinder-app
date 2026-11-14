@@ -6831,4 +6831,81 @@ describe("CardChecklist — NEO-556 quick-add No Team", () => {
     openAddForm();
     expect(noTeamToggle().getAttribute("aria-pressed")).toBe("false");
   });
+
+  describe("under a No Team checklist", () => {
+    beforeEach(() => {
+      state.variantRow = { value: "Test Set", noTeamDefault: { setAt: 1, setByUserId: "u" } };
+    });
+    const fromSet = () => screen.queryByText("From the set. Pick a team to change it.");
+
+    it("starts pressed, says it came from the set, and saves No Team", async () => {
+      renderChecklist();
+      openAddForm();
+      expect(noTeamToggle().getAttribute("aria-pressed")).toBe("true");
+      const hint = fromSet();
+      expect(hint).toBeTruthy();
+      // The toggle (and "+ Add team") is described by the line.
+      expect(noTeamToggle().getAttribute("aria-describedby")).toBe(hint?.id);
+
+      fillCardNumber("611");
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Submit new card"));
+      });
+      const args = mockAddCustomCard.mock.calls[0][0];
+      expect(args.teamNone).toBe(true);
+      expect(args).not.toHaveProperty("teamOnCardIds");
+    });
+
+    it("un-pressing it sends teamNone false: don't mark this card", async () => {
+      renderChecklist();
+      openAddForm();
+      fireEvent.click(noTeamToggle());
+      expect(noTeamToggle().getAttribute("aria-pressed")).toBe("false");
+      expect(fromSet()).toBeNull();
+
+      fillCardNumber("612");
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Submit new card"));
+      });
+      const args = mockAddCustomCard.mock.calls[0][0];
+      expect(args.teamNone).toBe(false);
+      expect(args).not.toHaveProperty("teamOnCardIds");
+    });
+
+    it("picking a team replaces it: the team alone is sent", async () => {
+      renderChecklist();
+      openAddForm();
+      fillCardNumber("613");
+      pickTeam("New York Mets");
+      expect(noTeamToggle().getAttribute("aria-pressed")).toBe("false");
+      expect(fromSet()).toBeNull();
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText("Submit new card"));
+      });
+      const args = mockAddCustomCard.mock.calls[0][0];
+      expect(args.teamOnCardIds).toEqual([METS._id]);
+      expect(args).not.toHaveProperty("teamNone");
+    });
+
+    it("an un-press does not carry into the next card: it starts from the set again", () => {
+      renderChecklist();
+      openAddForm();
+      fireEvent.click(noTeamToggle());
+      fireEvent.click(screen.getByLabelText("Cancel new card"));
+      openAddForm();
+      expect(noTeamToggle().getAttribute("aria-pressed")).toBe("true");
+      expect(fromSet()).toBeTruthy();
+    });
+  });
+
+  it("with no No Team on the checklist, an untouched toggle sends nothing about No Team", async () => {
+    renderChecklist();
+    openAddForm();
+    expect(screen.queryByText("From the set. Pick a team to change it.")).toBeNull();
+    fillCardNumber("614");
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    expect(mockAddCustomCard.mock.calls[0][0]).not.toHaveProperty("teamNone");
+  });
 });

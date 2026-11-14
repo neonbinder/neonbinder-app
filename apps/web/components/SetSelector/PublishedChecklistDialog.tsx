@@ -148,7 +148,7 @@ export function checklistTeamsLine(matched: number, total: number): string {
  * with " · Boston Red Sox" when the row names a team. Players and teams join
  * with " / ", as the dialog's other rosters do. A card printed with no number
  * reads "NNO Mike Lowell": "#NNO" would claim a number the card does not have.
- * NEO-489: a row whose checklist said "No Team" reads " · No team", the same
+ * NEO-489: a row whose checklist said "No Team" reads " · No Team", the same
  * words the preview's team cell uses (`NO_TEAM_CELL`), so the operator sees
  * the claim before linking it.
  */
@@ -176,7 +176,7 @@ export const SUBSET_QUESTION = "Which of these belong to this set?";
 export const PICK_A_SUBSET = "Tick at least one subset first — then use it.";
 
 /** NEO-489 — the team cell of a row whose checklist said "No Team". */
-export const NO_TEAM_CELL = "No team";
+export const NO_TEAM_CELL = "No Team";
 /**
  * NEO-489 — the team cell of a row whose checklist named no team and made no
  * No Team claim (blank, None, N/A, a dash): the sync looks the team up.

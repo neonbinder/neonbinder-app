@@ -302,9 +302,19 @@ export function cardTeamStrings(card: PreviewCardForTeams): string[] {
 export type SetTeamDefaultKind = "teams" | "noTeam" | "none";
 
 export function setTeamDefaultKind(
-  row: { teamIds?: ReadonlyArray<unknown>; noTeamDefault?: unknown } | null | undefined,
+  row:
+    | {
+        teamIds?: ReadonlyArray<unknown>;
+        /** `getAncestorChain`'s row: the third state as a plain flag. */
+        noTeam?: boolean;
+        /** `getSelectorOptionById`'s whole document: the stored stamp. */
+        noTeamDefault?: unknown;
+      }
+    | null
+    | undefined,
 ): SetTeamDefaultKind {
   if ((row?.teamIds?.length ?? 0) > 0) return "teams";
+  if (row?.noTeam === true) return "noTeam";
   if (row?.noTeamDefault !== undefined && row?.noTeamDefault !== null) return "noTeam";
   return "none";
 }

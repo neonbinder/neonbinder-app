@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { useConvex, useMutation, useQuery } from "convex/react";
@@ -271,6 +271,13 @@ export default function SetAttributesPanel({
    * shut (the ledger was all the control drew, so nothing of it is left).
    */
   const expandToggleRef = useRef<HTMLButtonElement | null>(null);
+  /**
+   * NEO-556 — the expanded panel's "Hide attributes" toggle and the Team row
+   * itself: where a dismissed No Team run puts focus. Refs, never a document
+   * query, so a second panel on the page can never take it.
+   */
+  const collapseToggleRef = useRef<HTMLButtonElement | null>(null);
+  const teamRowRef = useRef<HTMLDivElement | null>(null);
   // NEO-412 — the panel's two toasts, at most one showing: a confirmation or
   // progress line (`toast`, the polite status region) and a failure
   // (`failure`, the alert region). Raising either clears the other.
@@ -757,6 +764,7 @@ export default function SetAttributesPanel({
         </div>
         {expanded ? (
           <button
+            ref={collapseToggleRef}
             type="button"
             onClick={() => setExpanded(false)}
             onKeyDown={(e) => activateOnEnter(e, () => setExpanded(false))}
@@ -921,6 +929,7 @@ export default function SetAttributesPanel({
           {showTeamRow && (
             <SetTeamRow
               key={selectorOptionId}
+              rowRef={teamRowRef}
               selectorOptionId={selectorOptionId}
               level={leafLevel}
               teamIds={teamIds}
@@ -948,11 +957,16 @@ export default function SetAttributesPanel({
           teamCascadeStartedAt={row.teamCascadeStartedAt}
           expanded={expanded}
           onDismissed={() => {
-            if (expanded) {
-              document.querySelector<HTMLElement>(NO_TEAM_TOGGLE_SELECTOR)?.focus({ preventScroll: true });
-            } else {
+            if (!expanded) {
               expandToggleRef.current?.focus({ preventScroll: true });
+              return;
             }
+            // This panel's own Team row's toggle; when it is disabled (a save
+            // or a cascade in flight) a focus() on it is a no-op that drops
+            // focus to <body>, so the panel's "Hide attributes" takes it.
+            const toggle = teamRowRef.current?.querySelector<HTMLButtonElement>(NO_TEAM_TOGGLE_SELECTOR);
+            const target = toggle && !toggle.disabled ? toggle : collapseToggleRef.current;
+            target?.focus({ preventScroll: true });
           }}
         />
       )}
@@ -1770,8 +1784,17 @@ export function teamSavedToast(preview: TeamCascadePreview | null): string {
   return `Saved Team · applying to ${followingCards(preview)}`;
 }
 
-/** NEO-556 — the toast after No Team is saved. */
-export const NO_TEAM_SAVED_TOAST = "Saved No Team · new cards here get No Team";
+/**
+ * NEO-556 — the toast after No Team is saved. "Teamless": a new card whose
+ * listing names a team keeps it (invariant 8), so not every new card.
+ */
+export const NO_TEAM_SAVED_TOAST = "Saved No Team · teamless new cards get it";
+/**
+ * NEO-556 — the line when a No Team save's cascade finishes. No Team reaches
+ * the checklists beneath, never a card, so "Team applied to cards" would
+ * claim what did not happen.
+ */
+export const NO_TEAM_APPLIED_TOAST = "No Team applied to the checklists under it";
 /** NEO-556 — the toast after No Team is withdrawn (the row goes back to unset). */
 export const NO_TEAM_CLEARED_TOAST = "Cleared No Team · cards unchanged";
 
@@ -1786,7 +1809,7 @@ export const NO_TEAM_CLEARED_TOAST = "Cleared No Team · cards unchanged";
  * teamless cards already here are the next step (`NoTeamCardsControl`).
  *
  *   title: "Set this set to No Team?"
- *   body:  "Every new card here gets No Team. 3 checklists under it switch
+ *   body:  "New cards with nothing naming a team get No Team. 3 checklists under it switch
  *           to No Team too. 28 cards keep Durham Bulls. Cards already here
  *           stay as they are; you can mark the teamless ones next."
  */
@@ -1801,7 +1824,7 @@ export function setNoTeamConfirmCopy({
   currentTeamNames: string | null;
 }): { title: string; description: string } {
   const noun = levelLabel.toLowerCase();
-  const parts = ["Every new card here gets No Team."];
+  const parts = ["New cards with nothing naming a team get No Team."];
   if (preview.nodesFollowing > 0) {
     parts.push(
       `${plural(preview.nodesFollowing, "checklist", "checklists")} under it switch${preview.nodesFollowing === 1 ? "es" : ""} to No Team too.`,
@@ -1921,6 +1944,7 @@ const NO_TEAM_TOGGLE_SELECTOR = `button[aria-label="${NO_TEAM_LABELS.everyCard}"
  * unmounted under the operator's finger). Focus never falls to `<body>`.
  */
 function SetTeamRow({
+  rowRef,
   selectorOptionId,
   level,
   teamIds,
@@ -1930,6 +1954,8 @@ function SetTeamRow({
   onSaved,
   onFailed,
 }: {
+  /** The row's container, shared with the panel (a dismissed run's focus target). */
+  rowRef: RefObject<HTMLDivElement | null>;
   selectorOptionId: Id<"selectorOptions">;
   level: Level;
   /** The row's stored value; `[]` when the field is absent. */
@@ -1957,7 +1983,6 @@ function SetTeamRow({
       : null;
   const labelId = useId();
   const hintId = useId();
-  const rowRef = useRef<HTMLDivElement | null>(null);
   const seqRef = useRef(0);
 
   /** The picker's value while a pick is being previewed or saved. */
@@ -2002,27 +2027,71 @@ function SetTeamRow({
     const prev = prevStartedAtRef.current;
     prevStartedAtRef.current = teamCascadeStartedAt;
     if (prev !== undefined && teamCascadeStartedAt === undefined) {
-      onSaved("Team applied to cards");
+      // NEO-556: a No Team save's cascade moved checklists, not cards; its
+      // finish line says so rather than replacing the No Team toast with a
+      // claim about cards.
+      onSaved(noTeam ? NO_TEAM_APPLIED_TOAST : "Team applied to cards");
     }
     // `onSaved` is a fresh closure per parent render; the transition is what
     // this effect is about.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [teamCascadeStartedAt]);
 
-  const focusTrigger = () => {
-    setTimeout(() => {
-      rowRef.current
-        ?.querySelector<HTMLElement>(PICKER_TRIGGER_SELECTOR)
-        ?.focus();
-    }, 0);
-  };
-  const focusNoTeamToggle = () => {
-    setTimeout(() => {
-      rowRef.current
-        ?.querySelector<HTMLElement>(NO_TEAM_TOGGLE_SELECTOR)
-        ?.focus();
-    }, 0);
-  };
+  /**
+   * NEO-556 — focus while the row's controls are disabled (a save, or a
+   * cascade in flight: a No Team save that moves checklists beneath leaves
+   * the row in flight). A focused button that turns disabled drops focus to
+   * <body>, and focus() on a disabled one does nothing. So the row itself
+   * holds focus meanwhile (a labelled group whose "Applying to cards…" line
+   * says why its controls rest), remembering the control it stands in for,
+   * and hands focus back to it once the controls are free again.
+   */
+  const parkedRef = useRef<HTMLButtonElement | null>(null);
+  const controlsDisabled = busy || inFlight;
+  // Layout effect: before the browser's own focus fixup moves focus off the
+  // newly disabled button.
+  useLayoutEffect(() => {
+    const row = rowRef.current;
+    if (!row) return;
+    const active = document.activeElement;
+    if (controlsDisabled) {
+      if (active instanceof HTMLButtonElement && active.disabled && row.contains(active)) {
+        parkedRef.current = active;
+        row.focus({ preventScroll: true });
+      }
+      return;
+    }
+    const parked = parkedRef.current;
+    parkedRef.current = null;
+    if (active === row && parked?.isConnected && !parked.disabled) parked.focus();
+  }, [controlsDisabled, rowRef]);
+
+  /**
+   * Park focus on a control in this row after a decision (see above). A
+   * request, carried out in an effect after the commit it lands in: that
+   * commit also unmounts a closing ConfirmDialog, whose own restore (to the
+   * control that opened it, possibly disabled now) runs first, so this word
+   * is the last one. A timer raced that unmount.
+   */
+  const [focusRequest, setFocusRequest] = useState<{ selector: string; seq: number } | null>(null);
+  const focusInRow = (selector: string) =>
+    setFocusRequest((r) => ({ selector, seq: (r?.seq ?? 0) + 1 }));
+  useEffect(() => {
+    if (!focusRequest) return;
+    const row = rowRef.current;
+    if (!row) return;
+    const control = row.querySelector<HTMLButtonElement>(focusRequest.selector);
+    if (!control) return;
+    if (!control.disabled) {
+      parkedRef.current = null;
+      control.focus();
+      return;
+    }
+    parkedRef.current = control;
+    row.focus({ preventScroll: true });
+  }, [focusRequest, rowRef]);
+  const focusTrigger = () => focusInRow(PICKER_TRIGGER_SELECTOR);
+  const focusNoTeamToggle = () => focusInRow(NO_TEAM_TOGGLE_SELECTOR);
 
   const save = async (
     next: Array<Id<"teams">>,
@@ -2240,7 +2309,10 @@ function SetTeamRow({
       role="group"
       aria-labelledby={labelId}
       aria-describedby={hintId}
-      className="flex flex-col gap-1 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
+      // Focusable by script only: where focus rests while the row's controls
+      // are disabled (`focusInRow`).
+      tabIndex={-1}
+      className="flex flex-col gap-1 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30 focus-outline"
     >
       <span
         id={labelId}

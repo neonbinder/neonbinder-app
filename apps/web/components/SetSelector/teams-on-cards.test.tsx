@@ -1284,6 +1284,12 @@ describe("NEO-556 setTeamDefaultKind", () => {
     expect(setTeamDefaultKind({ noTeamDefault: { setAt: 1 } })).toBe("noTeam");
     expect(setTeamDefaultKind({ teamIds: ["t"], noTeamDefault: { setAt: 1 } })).toBe("teams");
   });
+
+  test("reads getAncestorChain's `noTeam` flag as well as the stored stamp", () => {
+    expect(setTeamDefaultKind({ noTeam: true })).toBe("noTeam");
+    expect(setTeamDefaultKind({ noTeam: false })).toBe("none");
+    expect(setTeamDefaultKind({ teamIds: ["t"], noTeam: true })).toBe("teams");
+  });
 });
 
 describe("NEO-556 setDefaultSettlesNewRow", () => {

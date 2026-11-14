@@ -450,7 +450,7 @@ const NO_CARD_INDEXES: readonly number[] = [];
 /**
  * NEO-335 Phase 2 (C7) — how many cards make the teams step "long" enough to
  * point at the set-level team instead. Below this, answering card by card is
- * quicker than a trip to Set details.
+ * quicker than a trip to the Attributes panel ("Edit attributes").
  */
 export const SET_TEAM_HINT_MIN_CARDS = 8;
 
@@ -624,7 +624,7 @@ export default function EntityReviewWizard({
   /**
    * NEO-335 Phase 2 (C7) — the node these cards save under already carries a
    * set-level team (NEO-277), or NEO-556's set-level "No Team". Without
-   * either, a long teams step hints at setting one in Set details instead of
+   * either, a long teams step hints at setting one under "Edit attributes" instead of
    * answering every card.
    */
   hasSetTeam?: boolean;

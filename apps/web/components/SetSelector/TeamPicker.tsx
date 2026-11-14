@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
-import { NoSymbolIcon } from "@heroicons/react/16/solid";
+import { CheckIcon, NoSymbolIcon } from "@heroicons/react/16/solid";
 import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
 import { teamFullName } from "../../lib/teams/team-name";
@@ -941,7 +941,13 @@ export default function TeamPicker({
           like a team chip, with the selection line as well as the fill (a tint
           alone is a colour-only mark in light mode, DESIGN.md "No Glow Alone").
           The slashed circle is the "none" sign in both states, so the word is
-          never carried by colour.
+          never carried by colour. Pressed also adds a shape and a weight: a
+          check after the word and semibold type (SC 1.4.1, the state is
+          never the tint alone).
+
+          `min-h-6`: the 24px target floor (SC 2.5.8) on a chip-sized face.
+          `aria-describedby` follows "+ Add team"'s: the caller's hint says
+          what the answer reaches, for this control as much as the trigger.
 
           The same element in both states, so focus never moves under the
           operator's finger when it toggles.
@@ -951,18 +957,20 @@ export default function TeamPicker({
           disabled={disabled}
           aria-pressed={noTeamOn}
           aria-label={noTeam.label ?? NO_TEAM_LABELS.card}
+          aria-describedby={ariaDescribedBy}
           onClick={() => {
             if (disabled) return;
             noTeam.onChange(!noTeamOn);
           }}
-          className={`inline-flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border focus-outline disabled:cursor-not-allowed disabled:opacity-50 ${
+          className={`inline-flex min-h-6 items-center gap-1 px-2 py-0.5 text-xs rounded-full border focus-outline disabled:cursor-not-allowed disabled:opacity-50 ${
             noTeamOn
-              ? "bg-chip border-selection text-ink"
+              ? "bg-chip border-selection text-ink font-semibold"
               : "border-control text-ink-2 hover:border-neon-green-text"
           }`}
         >
           <NoSymbolIcon aria-hidden="true" className="size-3 shrink-0" />
           {NO_TEAM_TEXT}
+          {noTeamOn && <CheckIcon aria-hidden="true" data-pressed-mark="" className="size-3 shrink-0" />}
         </button>
       )}
 

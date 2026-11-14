@@ -367,6 +367,7 @@ vi.mock("./EveryCardPlayerControl", () => ({
 // ---------------------------------------------------------------------------
 
 import SetAttributesPanel, {
+  NO_TEAM_APPLIED_TOAST,
   NO_TEAM_CLEARED_TOAST,
   NO_TEAM_SAVED_TOAST,
   SET_TEAM_PICKER_LABELS,
@@ -4071,7 +4072,7 @@ describe("SetAttributesPanel — No Team (NEO-556)", () => {
     vi.restoreAllMocks();
   });
 
-  it("offers No Team on the Team row, named for every card here, unpressed on an unset row", () => {
+  it("offers No Team on the Team row, named for new cards here, unpressed on an unset row", () => {
     currentRow = makeRow({ level: "setName", teamIds: [] });
     renderPanel();
     expect(toggle().getAttribute("aria-pressed")).toBe("false");
@@ -4224,6 +4225,116 @@ describe("SetAttributesPanel — No Team (NEO-556)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stub No Team dismiss" }));
     expect(document.activeElement).toBe(toggle());
   });
+
+  it("a dismissed run never reaches into another panel's Team row", () => {
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    // Another panel's toggle, earlier in the document, with the same name.
+    const stray = document.createElement("button");
+    stray.setAttribute("aria-label", NO_TEAM_LABELS.everyCard);
+    document.body.prepend(stray);
+    try {
+      renderPanel();
+      fireEvent.click(screen.getByRole("button", { name: "Stub No Team dismiss" }));
+      expect(document.activeElement).not.toBe(stray);
+      expect(document.activeElement?.closest('[role="group"][aria-labelledby]')).toBeTruthy();
+    } finally {
+      stray.remove();
+    }
+  });
+
+  it("a dismissed run lands on Hide attributes when the toggle is disabled (a cascade in flight)", () => {
+    currentRow = makeRow({
+      level: "setName",
+      noTeamDefault: NO_TEAM,
+      teamCascadeStartedAt: Date.now() - 5_000,
+    });
+    renderPanel();
+    expect((toggle() as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Stub No Team dismiss" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Hide attributes" }));
+  });
+
+  it("after a straight No Team save, focus rests on the toggle once the row is free again", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    mockSetSelectorOptionTeams.mockImplementation(async () => {
+      currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+      return null;
+    });
+    renderPanel();
+    toggle().focus();
+    fireEvent.click(toggle());
+    await waitFor(() => expect(mockSetSelectorOptionTeams).toHaveBeenCalled());
+    await waitFor(() => expect(document.activeElement).toBe(toggle()));
+    expect((toggle() as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("after a confirmed No Team save that leaves the row in flight, focus rests on the Team row, never <body>", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    armPreview({ ...NOTHING_FOLLOWS, nodesFollowing: 3 });
+    // The save schedules the node pass: the row comes back in flight, so the
+    // toggle is disabled when focus is parked.
+    mockSetSelectorOptionTeams.mockImplementation(async () => {
+      currentRow = makeRow({
+        level: "setName",
+        noTeamDefault: NO_TEAM,
+        teamCascadeStartedAt: Date.now(),
+      });
+      return null;
+    });
+    const { rerender } = renderPanel();
+    fireEvent.click(toggle());
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Yes, set No Team" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    const group = screen.getByRole("group", { name: "Team" });
+    await waitFor(() => expect(document.activeElement).toBe(group));
+    expect((toggle() as HTMLButtonElement).disabled).toBe(true);
+    expect(within(group).getByRole("status").textContent).toBe("Applying to cards…");
+
+    // The cascade's last chunk clears the field: the toggle is free again and
+    // focus goes back to it from the row.
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    rerender(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} />);
+    await waitFor(() => expect(document.activeElement).toBe(toggle()));
+    expect((toggle() as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("a focused toggle that the save disables hands focus to its row, and gets it back after", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    let release: () => void = () => {};
+    mockSetSelectorOptionTeams.mockImplementation(
+      () =>
+        new Promise<null>((resolve) => {
+          release = () => {
+            currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+            resolve(null);
+          };
+        }),
+    );
+    renderPanel();
+    toggle().focus();
+    fireEvent.click(toggle());
+    await waitFor(() => expect(mockSetSelectorOptionTeams).toHaveBeenCalled());
+    // Busy: the toggle is disabled, and focus is on the row, not <body>.
+    expect((toggle() as HTMLButtonElement).disabled).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole("group", { name: "Team" }));
+    await act(async () => release());
+    await waitFor(() => expect(document.activeElement).toBe(toggle()));
+  });
+
+  it("when a No Team save's cascade finishes, the line speaks of checklists, never 'Team applied to cards'", async () => {
+    currentRow = makeRow({
+      level: "setName",
+      noTeamDefault: NO_TEAM,
+      teamCascadeStartedAt: Date.now() - 5_000,
+    });
+    const { rerender } = renderPanel();
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    rerender(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} />);
+    expect(await screen.findByText(NO_TEAM_APPLIED_TOAST)).toBeTruthy();
+    expect(screen.queryByText("Team applied to cards")).toBeNull();
+  });
 });
 
 describe("setNoTeamConfirmCopy (NEO-556)", () => {
@@ -4237,7 +4348,7 @@ describe("setNoTeamConfirmCopy (NEO-556)", () => {
     ).toEqual({
       title: "Set this set to No Team?",
       description:
-        "Every new card here gets No Team. 1 checklist under it switches to No Team too. 1 card keeps Durham Bulls. Cards already here stay as they are; you can mark the teamless ones next.",
+        "New cards with nothing naming a team get No Team. 1 checklist under it switches to No Team too. 1 card keeps Durham Bulls. Cards already here stay as they are; you can mark the teamless ones next.",
     });
   });
 
@@ -4249,7 +4360,7 @@ describe("setNoTeamConfirmCopy (NEO-556)", () => {
         currentTeamNames: null,
       }).description,
     ).toBe(
-      "Every new card here gets No Team. Cards already here stay as they are; you can mark the teamless ones next.",
+      "New cards with nothing naming a team get No Team. Cards already here stay as they are; you can mark the teamless ones next.",
     );
   });
 });

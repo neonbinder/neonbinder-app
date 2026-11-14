@@ -1292,7 +1292,7 @@ describe("checklistRowLine (NEO-490)", () => {
   test("a No Team row says so, in the preview's own words (NEO-489)", () => {
     expect(
       checklistRowLine({ number: "9", players: ["Show Card"], teams: [], noTeam: true }),
-    ).toBe("#9 Show Card · No team");
+    ).toBe("#9 Show Card · No Team");
     // A row that merely names no team makes no claim and shows none.
     expect(checklistRowLine({ number: "9", players: ["Show Card"], teams: [] })).toBe(
       "#9 Show Card",

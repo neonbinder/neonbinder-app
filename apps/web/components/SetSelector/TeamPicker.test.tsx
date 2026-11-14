@@ -1758,6 +1758,25 @@ describe("TeamPicker — labels prop (NEO-277)", () => {
       expect(document.activeElement).toBe(before);
     });
 
+    it("carries the caller's hint, as '+ Add team' does", () => {
+      renderWithNoTeam(false, { ariaDescribedBy: "team-hint" });
+      expect(toggle().getAttribute("aria-describedby")).toBe("team-hint");
+      expect(screen.getByLabelText("Add team").getAttribute("aria-describedby")).toBe("team-hint");
+    });
+
+    it("meets the 24px target floor and marks pressed by shape and weight, not tint alone", () => {
+      const { unmount } = renderWithNoTeam(false);
+      expect(toggle().className).toContain("min-h-6");
+      expect(toggle().querySelector("[data-pressed-mark]")).toBeNull();
+      expect(toggle().className).not.toContain("font-semibold");
+      unmount();
+      renderWithNoTeam(true);
+      expect(toggle().querySelector("[data-pressed-mark]")).not.toBeNull();
+      expect(toggle().className).toContain("font-semibold");
+      // The added mark is decoration; the name stays the visible words.
+      expect(toggle().textContent?.trim()).toBe(NO_TEAM_TEXT);
+    });
+
     it("is disabled with the picker", () => {
       const { onNoTeam } = renderWithNoTeam(false, { disabled: true });
       expect((toggle() as HTMLButtonElement).disabled).toBe(true);

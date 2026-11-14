@@ -164,8 +164,8 @@ const ALSO_PICTURED_SAVE_FAILED = `Couldn't save ${ALSO_ON_THIS_CARD_HEADING}. G
 
 /** NEO-556 — the drawer's No Team toasts. */
 export const NO_TEAM_SAVED_ON_CARD = "Saved No Team";
-export const NO_TEAM_STAYS_HINT =
-  "No Team stays until you pick a team for this card.";
+/** The card is teamless again, and is asked about its team like any other. */
+export const NO_TEAM_CLEARED_ON_CARD = "Cleared No Team";
 
 const BLANK_TITLE_MESSAGE =
   "A card needs a title. Type one in, or hit Regenerate for a fresh one.";
@@ -758,8 +758,9 @@ export default function CardDetailPanel({
   /**
    * NEO-556 — No Team, as the picker's toggle. `null` = show what is stored.
    * Pressing it asks the server to stamp the card (the same patch empties the
-   * teams); there is no "un-confirm" write — giving the card a team is what
-   * retires the stamp — so pressing it again only says how to change it.
+   * teams); pressing it again sends `teamNone: false`, which takes the stamp
+   * off and leaves the card teamless, so it is asked about its team again.
+   * Picking a team retires the stamp too (the server's rule on a team write).
    */
   const [noTeamPending, setNoTeamPending] = useState<boolean | null>(null);
   const noTeamOn =
@@ -768,14 +769,13 @@ export default function CardDetailPanel({
       ? false
       : card.teamNoneConfirmedAt !== undefined && teamIds.length === 0);
   const saveNoTeam = async (next: boolean) => {
-    if (!next) {
-      announce(NO_TEAM_STAYS_HINT);
-      return;
-    }
-    setNoTeamPending(true);
-    setTeamsPending([]);
+    setNoTeamPending(next);
+    if (next) setTeamsPending([]);
     try {
-      await commitField({ teamNone: true }, NO_TEAM_SAVED_ON_CARD);
+      await commitField(
+        { teamNone: next },
+        next ? NO_TEAM_SAVED_ON_CARD : NO_TEAM_CLEARED_ON_CARD,
+      );
       setTeamsError(null);
     } catch (e) {
       setTeamsError(e instanceof Error ? e.message : String(e));

@@ -23,10 +23,11 @@ export const NO_TEAM_TEXT = "No Team";
  *
  *  - `card`: the card drawer and the unlinked-name fixer (never both open).
  *  - `newCard`: the checklist's quick-add form, which can sit under the drawer.
- *  - `everyCard`: the Attributes panel's Team row, the set-level default.
+ *  - `everyCard`: the Attributes panel's Team row, the set-level default
+ *    (named for NEW cards: the cards already here move only when marked).
  */
 export const NO_TEAM_LABELS = {
   card: "No Team for this card",
   newCard: "No Team for the new card",
-  everyCard: "No Team for every card here",
+  everyCard: "No Team for new cards here",
 } as const;

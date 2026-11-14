@@ -46,7 +46,7 @@ import EntityReviewWizard from "./EntityReviewWizard";
 const CONFIRM_SAVE_NAME = "Confirm & Save (Enter) — commit this review";
 const TITLES_LEAD = "Trimmed to fit. Keep it, or make it yours.";
 const SET_TEAM_HINT =
-  "Most of these share one team, or have none at all? Set a whole-set team or No Team in Set details and every new card gets it.";
+  "Most of these share one team, or show none at all? Pick a set team, or No Team, under Edit attributes and every new card gets it.";
 /** A set name long enough that every new card's title is trimmed to fit. */
 const LONG_TITLES = {
   sportValue: "Baseball",

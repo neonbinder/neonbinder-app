@@ -46,7 +46,13 @@ export type NoTeamTargetsView = {
   toStamp: number;
   kept: ReasonCounts;
   rowsWithOtherDefault: number;
-  truncated: boolean;
+  /**
+   * The walk stopped at `MAX_NO_TEAM_WALK` checklists: the ones past it are
+   * NOT in `targets`, and the run never visits them.
+   */
+  walkTruncated: boolean;
+  /** The count stopped at its cap: every count here is a floor ("at least"). */
+  countTruncated: boolean;
 };
 
 /** One `applyNoTeamPage` answer. */
@@ -73,7 +79,8 @@ export type NoTeamLine = {
 export type NoTeamRun = {
   lines: NoTeamLine[];
   phase: "running" | "done" | "stopped" | "failed";
-  truncated: boolean;
+  /** The run covers only the first `MAX_NO_TEAM_WALK` checklists. */
+  walkTruncated: boolean;
   announcement: string;
 };
 
@@ -95,13 +102,26 @@ const count = (n: number) => n.toLocaleString();
 const cards = (n: number) => `${count(n)} card${n === 1 ? "" : "s"}`;
 const checklists = (n: number) => `${count(n)} checklist${n === 1 ? "" : "s"}`;
 
-/** The offer's visible text, which is also its accessible name. */
-export function offerLabel(toStamp: number): string {
-  return `Mark ${count(toStamp)} teamless card${toStamp === 1 ? "" : "s"} No Team`;
+/**
+ * The offer's visible text, which is also its accessible name. `floor`: the
+ * count stopped at its cap, so it says "at least".
+ */
+export function offerLabel(toStamp: number, floor = false): string {
+  return `Mark ${floor ? "at least " : ""}${count(toStamp)} teamless card${toStamp === 1 ? "" : "s"} No Team`;
+}
+/**
+ * The offer's status line once the count is in, said where "Counting cards…"
+ * was so the wait ends in an answer rather than silence.
+ */
+export function noTeamCountResultText(view: Pick<NoTeamTargetsView, "toStamp" | "countTruncated">): string {
+  const n = view.toStamp;
+  if (n === 0) return "No teamless cards here.";
+  const floor = view.countTruncated ? "At least " : "";
+  return `${floor}${count(n)} teamless card${n === 1 ? "" : "s"} can be marked No Team.`;
 }
 /** Says what the offer does, and that nothing moves until it is pressed. */
 export const NO_TEAM_OFFER_HINT =
-  "New cards get No Team on their own. Cards already here only change when you mark them.";
+  "Teamless new cards get No Team on their own. Cards already here change only when you mark them.";
 export const NO_TEAM_CONFIRM_LABEL = "Yes, mark them No Team";
 export const NO_TEAM_COUNTING_TEXT = "Counting cards…";
 /** The count could not be read (the server's sentence shows beside it); asks once more. */
@@ -116,8 +136,12 @@ export const NO_TEAM_STOP_LABEL = "Stop marking cards";
 export const NO_TEAM_STOPPING_LABEL = "Stopping…";
 /** The finished ledger's close: visible "Dismiss", named apart from NEO-528's "Dismiss this run". */
 export const NO_TEAM_DISMISS_LABEL = "Dismiss the No Team run";
-export const NO_TEAM_TRUNCATED_TEXT =
-  "Over 500 checklists here. This run covers the first 500; mark the rest from their own set or insert.";
+/** The walk cap: checklists past the first 500 are not in this run at all. */
+export const NO_TEAM_WALK_TRUNCATED_TEXT =
+  "Over 500 checklists here. This run covers only the first 500; mark the rest from their own set or insert.";
+/** The count cap (and no walk cap): the run still reaches every card. */
+export const NO_TEAM_COUNT_TRUNCATED_TEXT =
+  "NB stopped counting at 2,000 cards, so each count here is at least what it says. The run checks every card.";
 /** Anything the server didn't word for a person. */
 export const NO_TEAM_SIDEWAYS_TEXT = "Something went sideways. Give it another go.";
 
@@ -133,12 +157,20 @@ export function keptReasonLines(view: Pick<NoTeamTargetsView, "kept" | "rowsWith
   const have = (n: number) => (n === 1 ? "has" : "have");
   if (k.alreadyNoTeam > 0) lines.push(`${cards(k.alreadyNoTeam)} ${are(k.alreadyNoTeam)} already No Team.`);
   if (k.hasTeam > 0) lines.push(`${cards(k.hasTeam)} ${have(k.hasTeam)} a team, and keep${k.hasTeam === 1 ? "s" : ""} it.`);
+  // Where to act, by the checklist's own visible words: its "Attention" row
+  // holds the "N need you" button that walks these cards.
+  const those = (n: number) => (n === 1 ? "it" : "those");
+  const their = (n: number) => (n === 1 ? "its" : "their");
   if (k.pendingName > 0) {
-    lines.push(`${cards(k.pendingName)} ${have(k.pendingName)} a team name waiting for review.`);
+    const n = k.pendingName;
+    lines.push(
+      `${cards(n)} ${have(n)} a team name waiting for review. Link ${those(n)} under Attention on ${their(n)} checklist.`,
+    );
   }
   if (k.listingNamesTeam > 0) {
+    const n = k.listingNamesTeam;
     lines.push(
-      `${cards(k.listingNamesTeam)} ${are(k.listingNamesTeam)} listed with a team NB couldn't match. Pick those yourself.`,
+      `${cards(n)} come${n === 1 ? "s" : ""} with a team name NB hasn't matched yet. Pick those yourself.`,
     );
   }
   if (k.awaitingLookup > 0) {
@@ -147,8 +179,9 @@ export function keptReasonLines(view: Pick<NoTeamTargetsView, "kept" | "rowsWith
     );
   }
   if (k.lookupGaveUp > 0) {
+    const n = k.lookupGaveUp;
     lines.push(
-      `${cards(k.lookupGaveUp)} never got an answer from the team check. Those are your call.`,
+      `${cards(n)} never got an answer from the team check. Pick ${those(n)} yourself under Attention on ${their(n)} checklist.`,
     );
   }
   if (view.rowsWithOtherDefault > 0) {
@@ -161,12 +194,21 @@ export function keptReasonLines(view: Pick<NoTeamTargetsView, "kept" | "rowsWith
 /** The confirm's title and body. */
 export function noTeamConfirmCopy(view: NoTeamTargetsView): { title: string; description: string } {
   const n = view.toStamp;
-  const floor = view.truncated ? "at least " : "";
+  const floor = view.countTruncated ? "at least " : "";
+  const body =
+    n === 1
+      ? "Nothing on this card names a team, so it reads No Team from here on."
+      : "Nothing on these cards names a team, so they read No Team from here on.";
+  // The walk cap says more than the count cap (checklists left out entirely),
+  // so it is the one said when both hit.
+  const cap = view.walkTruncated
+    ? ` ${NO_TEAM_WALK_TRUNCATED_TEXT}`
+    : view.countTruncated
+      ? ` ${NO_TEAM_COUNT_TRUNCATED_TEXT}`
+      : "";
   return {
     title: `Mark ${floor}${cards(n)} No Team?`,
-    description:
-      `${n === 1 ? "This card has" : "These cards have"} no team and nothing saying ${n === 1 ? "it should" : "they should"}, so ${n === 1 ? "it reads" : "they read"} No Team from here on. No card gains or loses a team.` +
-      (view.truncated ? " Counted the first 2,000 cards; the run checks every one." : ""),
+    description: `${body} No card gains or loses a team.${cap}`,
   };
 }
 
@@ -225,7 +267,7 @@ export function noTeamHeading(run: NoTeamRun): string {
   if (run.phase === "done") {
     if (stamped > 0) return `Marked ${cards(stamped)} No Team`;
     if (scanned === 0) return "No cards here yet; new cards get No Team";
-    return "Nothing to mark: every card here already has an answer";
+    return "Nothing to mark this time. The cards left are listed below.";
   }
   const soFar = `marked ${cards(stamped)} No Team`;
   const again = "Run it again to finish; cards already done are skipped.";
@@ -244,7 +286,7 @@ export function noTeamErrorText(error: unknown): string {
 // The run, as pure steps (tested directly)
 // ---------------------------------------------------------------------------
 
-export function startNoTeamRun(view: Pick<NoTeamTargetsView, "targets" | "truncated">): NoTeamRun {
+export function startNoTeamRun(view: Pick<NoTeamTargetsView, "targets" | "walkTruncated">): NoTeamRun {
   return {
     lines: view.targets.map((t, i) => ({
       id: t._id as string,
@@ -253,7 +295,7 @@ export function startNoTeamRun(view: Pick<NoTeamTargetsView, "targets" | "trunca
       counts: ZERO,
     })),
     phase: "running",
-    truncated: view.truncated,
+    walkTruncated: view.walkTruncated,
     announcement: "Marking teamless cards No Team.",
   };
 }
@@ -523,15 +565,24 @@ export default function NoTeamCardsControl({
                 aria-describedby={hintId}
                 onClick={() => setAsking(view)}
               >
-                {offerLabel(view.toStamp)}
+                {offerLabel(view.toStamp, view.countTruncated)}
               </NeonButton>
               <p id={hintId} className="min-w-0 text-xs text-ink-3">
                 {NO_TEAM_OFFER_HINT}
               </p>
             </div>
           )}
-          <span role="status" className="text-xs text-ink-2 empty:hidden">
-            {counting && !run ? NO_TEAM_COUNTING_TEXT : ""}
+          {/* a11y — mounted for as long as the offer area is, so a change is
+              read: "Counting cards…", then the answer in its place (never
+              cleared to silence). Quiet while a run's ledger is up, whose
+              own live line is speaking. */}
+          <span
+            role="status"
+            // The offer button already shows the count; the answer is then
+            // for the screen reader only, not said twice on screen.
+            className={showOffer ? "sr-only" : "text-xs text-ink-2 empty:hidden"}
+          >
+            {run ? "" : counting ? NO_TEAM_COUNTING_TEXT : view ? noTeamCountResultText(view) : ""}
           </span>
           {readError && !counting && !run && (
             <div className="flex flex-wrap items-center gap-2">
@@ -604,6 +655,10 @@ export default function NoTeamCardsControl({
                   if (stopping) return;
                   stopRef.current = true;
                   setStopping(true);
+                  // a11y — the button's own relabel is not announced; the
+                  // ledger's live line says it. The run's next state (the
+                  // stopped heading) replaces it when the page in flight lands.
+                  setRun((r) => (r ? { ...r, announcement: NO_TEAM_STOPPING_LABEL } : r));
                 }}
                 aria-disabled={stopping || undefined}
                 className="shrink-0 rounded-sm font-semibold underline decoration-dotted hover:decoration-solid py-1.5 -my-1.5 aria-disabled:no-underline aria-disabled:cursor-not-allowed aria-disabled:opacity-75"
@@ -638,7 +693,7 @@ export default function NoTeamCardsControl({
               ledgerList
             )}
           </div>
-          {run.truncated && <p className="mt-2 text-xs">{NO_TEAM_TRUNCATED_TEXT}</p>}
+          {run.walkTruncated && <p className="mt-2 text-xs">{NO_TEAM_WALK_TRUNCATED_TEXT}</p>}
         </section>
       )}
       {/* a11y — mounted with the offer, before any run (never with the
