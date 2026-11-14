@@ -544,3 +544,36 @@ describe("buildCardRowForInsert — a parallel copy's parallelName (NEO-321)", (
     expect(blank.row.listingTitle).toBe(withNothing.row.listingTitle);
   });
 });
+
+describe("buildCardRowForInsert — a card committed on a parallel leaf names the leaf (NEO-535)", () => {
+  // The leaf's snapshot inherited "Base" from a Parallel type; the chain says
+  // the leaf IS a parallel (`parallelLeafValue`, set only on that role).
+  const leafSet = baseSet({
+    setNameValue: "Bowman",
+    inheritedFeatures: { season: "2026", manufacturer: "Bowman", parallelName: "Base" },
+    insertNameValue: "Anime",
+    insertIsRole: true,
+    parallelLeafValue: "Anime Red Refractors",
+  });
+
+  test("the commit (no parallelName passed) is born like a parallel copy", () => {
+    const committed = buildCardRowForInsert(baseCard({ cardNumber: "BA-3", playerNames: ["Murakami"] }), leafSet, 1);
+    const copied = buildCardRowForInsert(
+      baseCard({ cardNumber: "BA-3", playerNames: ["Murakami"], parallelName: "Anime Red Refractors" }),
+      leafSet,
+      1,
+    );
+    expect(committed.row.features?.parallelName).toBe("Anime Red Refractors");
+    expect(committed.row.listingTitle).toBe(copied.row.listingTitle);
+    expect(committed.row.listingTitle).toContain("2026 Bowman Anime Insert Red Refractors Parallel Murakami");
+  });
+
+  test("off a parallel leaf nothing changes: the snapshot's name stands", () => {
+    const row = buildCardRowForInsert(
+      baseCard(),
+      baseSet({ inheritedFeatures: { season: "2026", parallelName: "Refractor" } }),
+      1,
+    );
+    expect(row.row.features?.parallelName).toBe("Refractor");
+  });
+});

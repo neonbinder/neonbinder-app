@@ -112,7 +112,7 @@ beforeEach(() => {
 
 type T = ReturnType<typeof convexTest>;
 
-async function seed(t: T) {
+async function seed(t: T, parallelFeatures: Record<string, string> = {}) {
   return t.run(async (ctx) => {
     const sport = await ctx.db.insert("selectorOptions", {
       level: "sport",
@@ -162,7 +162,7 @@ async function seed(t: T) {
       parentId: anime,
       platformData: { bsc: { b0: "kanji-xyzw" } },
       platformFacets: { bsc: { b0: "variantName" } },
-      features: { ...SET_FACTS, cardType: "Parallel" },
+      features: { ...SET_FACTS, cardType: "Parallel", ...parallelFeatures },
       children: [],
       lastUpdated: SENTINEL,
     });
@@ -314,6 +314,24 @@ describe("access", () => {
   });
 });
 
+describe("failingTitles — the box prefill (the whole description)", () => {
+  test("names the parallel even when its snapshot inherited another name", async () => {
+    for (const inherited of ["Base", "Anime"]) {
+      const t = convexTest(schema, modules);
+      const { parallel } = await seed(t, { parallelName: inherited });
+      const page = await failingTitles(t, parallel);
+      expect(page.boxPrefill).toBe(`2024 Topps Chrome Anime ${PARALLEL}`);
+    }
+  });
+
+  test("a stored box on the parallel is the prefill", async () => {
+    const t = convexTest(schema, modules);
+    const { parallel } = await seed(t);
+    await t.run((ctx) => ctx.db.patch(parallel, { metadata: { listingShortName: "Anime Kanji XYZW" } }));
+    expect((await failingTitles(t, parallel)).boxPrefill).toBe("Anime Kanji XYZW");
+  });
+});
+
 describe("failingTitles", () => {
   test("lists only the failing cards, with their inputs and any carried rest", async () => {
     const t = convexTest(schema, modules);
@@ -321,7 +339,7 @@ describe("failingTitles", () => {
     const page = await failingTitles(t, parallel);
 
     expect(page.parallel).toEqual({ _id: parallel, value: PARALLEL });
-    expect(page.boxPrefill).toContain("Topps Chrome");
+    expect(page.boxPrefill).toBe(`2024 Topps Chrome Anime ${PARALLEL}`);
     expect(page.cursor).toBeNull();
     expect(page.failingInPage).toBe(2);
     expect(page.cards.map((c) => c.cardNumber)).toEqual(["3", "4"]);

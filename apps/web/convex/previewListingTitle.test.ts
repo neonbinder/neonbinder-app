@@ -165,6 +165,53 @@ describe("previewListingTitle (NEO-101)", () => {
     });
   });
 
+  test("NEO-535: a stored card on a parallel leaf names the leaf, not the name its features inherited", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { setNameId } = await seedSubtree(t);
+    const leafId = await t.run(async (ctx) => {
+      const inserts = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: {},
+        parentId: setNameId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const anime = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Anime",
+        platformData: {},
+        parentId: inserts,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const red = await ctx.db.insert("selectorOptions", {
+        level: "parallel",
+        value: "Anime Red Refractors",
+        platformData: {},
+        features: { manufacturer: "Topps", season: "2024", parallelName: "Base" },
+        parentId: anime,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.patch(inserts, { children: [anime] });
+      await ctx.db.patch(anime, { children: [red] });
+      return red;
+    });
+    // Committed before NEO-535: its features carry the leaf's inherited "Base".
+    const cardId = await insertCard(t, leafId, {
+      cardNumber: "BA-3",
+      pendingPlayerNames: ["Murakami"],
+      features: { season: "2024", manufacturer: "Topps", parallelName: "Base" },
+    });
+
+    const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
+    expect(preview.inputs.parallelName).toBe("Anime Red Refractors");
+    // The insert's word is said once (the parallel's leading "Anime").
+    expect(preview.title.startsWith("2024 Topps Chrome Anime Insert Red Refractors Parallel Murakami")).toBe(true);
+  });
+
   test("falls back to pendingPlayerNames when a custom card has no resolved players", async () => {
     // A hand-added card carries the names the operator TYPED until the next
     // sync reconciles them into `players` rows. Those are the operator's

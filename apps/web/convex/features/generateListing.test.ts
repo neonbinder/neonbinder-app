@@ -1470,3 +1470,48 @@ describe("NEO-535 readsAsGeneratedDescription", () => {
     expect(readsAsGeneratedDescription(`${"Rookie Card (RC).\n".repeat(100_000)}`)).toBe(false);
   });
 });
+
+describe("NEO-535 — a parallel's leading insert words are said once", () => {
+  const BOWMAN: ListingCardInputs = {
+    cardNumber: "BA-3",
+    playerNames: ["Takashi Murakami"],
+    year: "2026",
+    manufacturer: "Bowman",
+    setName: "Bowman",
+    insertName: "Anime",
+    parallelName: "Anime Red Refractors",
+    parallelIsRole: true,
+    sport: "Baseball",
+  };
+
+  test("Anime + Anime Red Refractors reads Anime Red Refractors", () => {
+    expect(titleDescription(BOWMAN)).toBe("2026 Bowman Anime Red Refractors");
+    expect(assessListingTitle(BOWMAN).title.startsWith("2026 Bowman Anime Insert Red Refractors Parallel")).toBe(true);
+  });
+
+  test("TRItanium Prismatic White + TRItanium Red Flood reads TRItanium Prismatic White Red Flood", () => {
+    expect(
+      titleDescription({
+        ...BOWMAN,
+        year: "2025",
+        manufacturer: "Topps",
+        setName: "Topps Chrome",
+        insertName: "TRItanium Prismatic White",
+        parallelName: "TRItanium Red Flood",
+      }),
+    ).toBe("2025 Topps Chrome TRItanium Prismatic White Red Flood");
+  });
+
+  test("a parallel that is all insert words is not said again", () => {
+    expect(titleDescription({ ...BOWMAN, parallelName: "Anime" })).toBe("2026 Bowman Anime");
+  });
+
+  test("a parallel that shares no leading word is untouched", () => {
+    expect(titleDescription({ ...BOWMAN, parallelName: "Red Refractors" })).toBe(
+      "2026 Bowman Anime Red Refractors",
+    );
+    expect(titleDescription({ ...BOWMAN, parallelName: "Red Anime Refractors" })).toBe(
+      "2026 Bowman Anime Red Anime Refractors",
+    );
+  });
+});

@@ -139,8 +139,16 @@ export type ListingCardFacts = {
 
 /**
  * The card's `features` as a new row is born with them: the set snapshot (or
- * a copy's base), then what the card itself shows, then a copy's own
- * parallel name. Precedence is NEO-71-74's: inherited < observed.
+ * a copy's base), then what the card itself shows, then its parallel name.
+ * Precedence is NEO-71-74's: inherited < observed.
+ *
+ * NEO-535 — a card born on a parallel leaf names that leaf, whatever path
+ * creates it: a parallel copy passes the leaf's NB name itself
+ * (`card.parallelName`, NEO-321), and a card committed through the wizard or
+ * added by hand gets the same from the chain (`set.parallelLeafValue`, set by
+ * `titleChainFacts` only on a parallel ROLE, read through `variantRole`).
+ * The leaf's snapshot often inherits another name ("Base" from a Parallel
+ * type), which would leave the parallel out of the title.
  */
 export function mergeCardFeatures(
   card: ListingCardFacts,
@@ -156,7 +164,7 @@ export function mergeCardFeatures(
       attributes: card.attributes,
     }),
   };
-  const ownParallelName = card.parallelName?.trim();
+  const ownParallelName = card.parallelName?.trim() || set.parallelLeafValue?.trim();
   if (ownParallelName) merged.parallelName = ownParallelName;
   // NEO-345 — the leaf's autograph FORMAT (`set.inheritedFeatures
   // .autographFormat`: the operator's answer stored on the leaf, or the
@@ -194,13 +202,17 @@ export function listingInputsForCard(
   // never on its level or its name (product invariant 4).
   const insertName =
     set.insertIsRole === true ? set.insertNameValue?.trim() || undefined : undefined;
-  // NEO-335 — a parallel leaf synced straight from a marketplace has no
-  // `features.parallelName`; its own value (set only for the NB parallel
-  // role) is the parallel token then. A named parallel in the features wins.
+  // NEO-535 — a card on a parallel leaf names that leaf, as every parallel
+  // copy does (NEO-321): the leaf's own NB value, set only on the parallel
+  // ROLE (`titleChainFacts` → `derivedVariantFlags`), wins over whatever the
+  // features say. Those are often a name the leaf's snapshot inherited ("Base"
+  // from a Parallel type) and stored on cards committed before NEO-535, so a
+  // stored card's preview and Regenerate name the leaf too. `parallelName` is
+  // not an operator-editable feature (`expectedFeatures`), so nothing an
+  // operator typed is overridden. Off a parallel leaf the features' name is
+  // the parallel token, as before (NEO-335).
   const parallelName =
-    mergedFeatures.parallelName?.trim()
-      ? mergedFeatures.parallelName
-      : set.parallelLeafValue?.trim() || undefined;
+    set.parallelLeafValue?.trim() || mergedFeatures.parallelName?.trim() || undefined;
   const setShortName = set.listingShortName?.trim() || undefined;
   // NEO-335 — the leaf's parallel ROLE earns the parallel its "Parallel"
   // label. `parallelLeafValue` is set by `titleChainFacts` only on that role
@@ -339,14 +351,26 @@ export { leftOutOfTitle };
  * NEO-535 — the prefill for the "Set name in titles" box when nothing is
  * stored: the builder's own full description for this set's cards, without
  * the "Insert" / "Parallel" labels ("2026 Leaf Metal 1991 Gold Prospects
- * Autographs Prismatic Silver"). Reads the set facts only (the year and maker
- * from the leaf's features snapshot, the insert on its NB role, the parallel
- * from the snapshot or the parallel leaf); never the stored box text.
+ * Autographs Prismatic Silver"). The year and maker come from the leaf's
+ * features snapshot, the insert from its NB role. Never the stored box text.
+ *
+ * The box holds the WHOLE description, parallel included (Jason). A card on
+ * a parallel leaf names that leaf: the parallel build gives every copy the
+ * leaf's own NB name as its `parallelName` (NEO-321), over whatever the
+ * leaf's snapshot inherited (often the "Base" a Parallel type handed down,
+ * which the description leaves out). So the description is read for such a
+ * card, never a blank one. `card.parallelName` is that name when the caller
+ * has the row; otherwise the parallel leaf's value (`parallelLeafValue`,
+ * set only on a parallel role) stands in for it.
  */
-export function setDescriptionForTitles(set: ListingSetContext): string {
+export function setDescriptionForTitles(
+  set: ListingSetContext,
+  card: { parallelName?: string } = {},
+): string {
+  const parallelName = card.parallelName?.trim() || set.parallelLeafValue?.trim() || undefined;
   return titleDescription(
     listingInputsForCard(
-      { cardNumber: "" },
+      { cardNumber: "", ...(parallelName ? { parallelName } : {}) },
       { ...set, listingShortName: undefined },
       { playerNames: [] },
     ),

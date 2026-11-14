@@ -221,3 +221,4 @@
 - [Cross-sibling jump via a store](reference_cross_sibling_jump_via_store.md) — walker door to SetAttributesPanel: targets + closers store, door only when reachable, focus a frame late
 - [Title year and maker come from features](reference_title_year_and_maker_come_from_features.md) — convex-test trees need features.season/manufacturer or titles drop the year and length boundaries shift
 - [Nested ConfirmDialog leaks Escape/Tab](reference_nested_confirmdialog_leaks_escape_and_tab.md) — wrap it to stop Escape/Tab; count-gated door stays mounted while busy
+- [Spec arithmetic: old vs new probe](reference_spec_arithmetic_old_vs_new_probe.md) — zzold_ copy of HEAD + CSV probe; OLD must reproduce the spec first

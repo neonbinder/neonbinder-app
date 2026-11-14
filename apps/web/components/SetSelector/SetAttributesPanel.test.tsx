@@ -1744,6 +1744,31 @@ describe("SetAttributesPanel — Set name in titles row (NEO-335)", () => {
     expect(field().placeholder).toBe("1995 Upper Deck Collector's Choice Hologram");
   });
 
+  it("NEO-535: a parallel row's placeholder names the parallel, whatever its snapshot inherited", () => {
+    // The whole description (Jason): year, maker, set, insert AND parallel.
+    // The snapshot's inherited name is never the parallel's (the build names
+    // each copy by the row itself), so it must not hide the row's own name.
+    for (const inherited of ["Base", "Anime"]) {
+      currentRow = makeRow({
+        level: "parallel",
+        value: "Anime Red Refractors",
+        features: { parallelName: inherited },
+      });
+      currentChain = [
+        { _id: "sport-id", value: "Baseball", level: "sport" },
+        { _id: "year-id", value: "2026", level: "year" },
+        { _id: "mfr-id", value: "Bowman", level: "manufacturer" },
+        { _id: "set-id", value: "Bowman", level: "setName" },
+        { _id: "vt-id", value: "Inserts", level: "variantType" },
+        { _id: "insert-id", value: "Anime", level: "insert" },
+        { _id: SELECTOR_OPTION_ID, value: "Anime Red Refractors", level: "parallel" },
+      ];
+      const { unmount } = renderPanel();
+      expect(field().placeholder).toBe("2026 Bowman Anime Red Refractors");
+      unmount();
+    }
+  });
+
   it("NEO-535: a row's own value is never its placeholder", () => {
     currentRow = makeRow({
       level: "setName",

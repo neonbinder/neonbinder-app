@@ -6176,13 +6176,21 @@ export const addCustomCard = mutation({
     // inheritance. Precedence = that snapshot < card-observed facts (a fact
     // seen on THIS card, e.g. it's a rookie, wins).
     const inheritedFeatures: Record<string, string> = parentNode?.features ?? {};
+    // The chain's facts: read here, before the merge, because a card on a
+    // parallel leaf is born naming that leaf (NEO-535, `mergeCardFeatures`).
+    const {
+      setName: setNameValue,
+      sport: sportValue,
+      manufacturerBrandUnknown,
+      ...chainFacts
+    } = await findAncestorLabels(ctx, parentNode);
     // NEO-345 — through `mergeCardFeatures`, the merge every other new card
     // goes through: the leaf's node-only `autographFormat` is stripped from
     // the card, and an AU card under a leaf that has one is born
     // `autographed` with it (fill-empty).
     const mergedFeatures: Record<string, string> = mergeCardFeatures(
       { cardNumber: args.cardNumber, attributes: args.attributes },
-      { sportValue: "", inheritedFeatures },
+      { sportValue: "", inheritedFeatures, parallelLeafValue: chainFacts.parallelLeafValue },
     );
     // NEO-345 — and Signed By seeded, by the rule `buildCardRowForInsert` and
     // `setCardFeature` apply: only when autographed just became non-None and
@@ -6212,12 +6220,6 @@ export const addCustomCard = mutation({
     // confirmed, via commitCardChecklist), but the operator typed a real name,
     // so it's the right thing to show regardless of reconciliation state.
     // Either way the title says what the operator meant.
-    const {
-      setName: setNameValue,
-      sport: sportValue,
-      manufacturerBrandUnknown,
-      ...chainFacts
-    } = await findAncestorLabels(ctx, parentNode);
     /*
      * NEO-335 — built by `listingInputsForCard`, the mapping the commit's
      * insert, the parallel build and the pre-save Card titles step share,

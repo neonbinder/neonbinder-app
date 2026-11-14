@@ -172,7 +172,14 @@ export function titleChainFacts(
       short = appendUnsaid(short, facts.insertNameValue);
     }
     if (facts.parallelLeafValue !== undefined && shortIndex > 0) {
-      short = appendUnsaid(short, facts.parallelLeafValue);
+      // The parallel's own words only: its leading insert words are said by
+      // the insert (in the box or appended above), never twice.
+      short = appendUnsaid(
+        short,
+        facts.insertIsRole
+          ? parallelAfterInsert(facts.parallelLeafValue, facts.insertNameValue)
+          : facts.parallelLeafValue,
+      );
     }
     facts.listingShortName = short;
   }
@@ -218,6 +225,35 @@ export function roughlySays(text: string, name: string): boolean {
   if (wanted.length === 0) return false;
   const present = new Set(foldedWords(text));
   return wanted.every((w) => present.has(w));
+}
+
+/**
+ * NEO-535 — a parallel's name as a description writes it after its insert:
+ * the leading words it shares with the insert's name are said once, by the
+ * insert. Jason's rule: "2026 Bowman Anime Red Refractors" reads
+ * "2026 Bowman Anime Red Refractors", and "TRItanium Prismatic White
+ * TRItanium Red Flood" reads "TRItanium Prismatic White Red Flood".
+ *
+ * Only a LEADING run, matched word by word from the start of both names
+ * (folded as `roughlySays` folds: case, edge punctuation, a plural "s", the
+ * autograph spellings). A shared word later in the name stays. Returns "" when
+ * the parallel's name is all insert words (the insert already says it). The
+ * one rule the builder's description (`generateListing`) and the box's
+ * parallel append (`titleChainFacts`) both apply, so every title path agrees.
+ */
+export function parallelAfterInsert(parallel: string, insert: string | undefined): string {
+  const words = parallel.trim().split(/\s+/).filter(Boolean);
+  const insertWords = (insert ?? "").trim().split(/\s+/).filter(Boolean).map(foldWord);
+  let shared = 0;
+  while (
+    shared < words.length &&
+    shared < insertWords.length &&
+    insertWords[shared] !== "" &&
+    foldWord(words[shared]) === insertWords[shared]
+  ) {
+    shared += 1;
+  }
+  return words.slice(shared).join(" ");
 }
 
 /** `text` then `name`, unless `text` already says it (`roughlySays`). */

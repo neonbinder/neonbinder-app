@@ -26,7 +26,7 @@ import {
   type ListingCardFacts,
   type ListingSetContext,
 } from "./listingInputs";
-import { assessListingTitle } from "./generateListing";
+import { assessListingTitle, titleDescription } from "./generateListing";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "./listingLimits";
 
 const SELECTOR_ID = "selector-1" as unknown as Id<"selectorOptions">;
@@ -589,17 +589,33 @@ describe("NEO-335 — the insert name, the parallel leaf and the short name reac
     );
   });
 
-  test("a parallel the features already name wins over the leaf's value", () => {
-    const inputs = listingInputsForCard(
-      { cardNumber: "5" },
-      {
-        ...SET,
-        inheritedFeatures: { ...SET.inheritedFeatures, parallelName: "Refractor" },
-        parallelLeafValue: "Gold Refractor",
-      },
-      { playerNames: ["A"] },
+  test("NEO-535: the parallel leaf's own name wins over a name the features carry", () => {
+    // Reversed from NEO-335 ("features win"): a card on a parallel leaf names
+    // the leaf, as every parallel copy does; the snapshot's name was often
+    // one it inherited. New cards and stored cards (preview, Regenerate) alike.
+    const set = {
+      ...SET,
+      inheritedFeatures: { ...SET.inheritedFeatures, parallelName: "Refractor" },
+      parallelLeafValue: "Gold Refractor",
+    };
+    expect(listingInputsForCard({ cardNumber: "5" }, set, { playerNames: ["A"] }).parallelName).toBe(
+      "Gold Refractor",
     );
-    expect(inputs.parallelName).toBe("Refractor");
+    // A stored card's features passed in as they are stored.
+    expect(
+      listingInputsForCard({ cardNumber: "5" }, set, { playerNames: ["A"] }, { parallelName: "Base" })
+        .parallelName,
+    ).toBe("Gold Refractor");
+    // Born naming the leaf, so the stored features agree with the title.
+    expect(mergeCardFeatures({ cardNumber: "5" }, set).parallelName).toBe("Gold Refractor");
+  });
+
+  test("off a parallel leaf the features' name is the parallel", () => {
+    const set = { ...SET, inheritedFeatures: { ...SET.inheritedFeatures, parallelName: "Refractor" } };
+    expect(listingInputsForCard({ cardNumber: "5" }, set, { playerNames: ["A"] }).parallelName).toBe(
+      "Refractor",
+    );
+    expect(mergeCardFeatures({ cardNumber: "5" }, set).parallelName).toBe("Refractor");
   });
 
   test("the short name rides through trimmed; blank is none", () => {
@@ -700,6 +716,60 @@ describe("NEO-535 — setDescriptionForTitles (the box's prefill)", () => {
         listingShortName: "UD Holo",
       }),
     ).toBe("1990 Upper Deck Collector's Choice Hologram Gold");
+  });
+});
+
+describe("NEO-535 — setDescriptionForTitles on a parallel leaf (the whole description)", () => {
+  /** 2026 Bowman → Inserts → Anime → Anime Red Refractors, as the E2E builds it. */
+  const ANIME: ListingSetContext = {
+    sportValue: "Baseball",
+    setNameValue: "Bowman",
+    inheritedFeatures: { manufacturer: "Bowman", season: "2026" },
+    insertNameValue: "Anime",
+    insertIsRole: true,
+    parallelLeafValue: "Anime Red Refractors",
+  };
+  const WHOLE = "2026 Bowman Anime Red Refractors";
+
+  test("the leaf names the parallel even when its snapshot inherited another name", () => {
+    for (const inherited of ["Base", "Anime", "Red"]) {
+      expect(
+        setDescriptionForTitles({
+          ...ANIME,
+          inheritedFeatures: { ...ANIME.inheritedFeatures, parallelName: inherited },
+        }),
+      ).toBe(WHOLE);
+    }
+    expect(setDescriptionForTitles(ANIME)).toBe(WHOLE);
+  });
+
+  test("a card's own parallel name wins, as the build's copies carry it", () => {
+    expect(
+      setDescriptionForTitles(
+        { ...ANIME, parallelLeafValue: undefined, inheritedFeatures: { ...ANIME.inheritedFeatures, parallelName: "Base" } },
+        { parallelName: "Anime Red Refractors" },
+      ),
+    ).toBe(WHOLE);
+  });
+
+  test("it is the description a copy on the parallel is titled with", () => {
+    const copy = listingInputsForCard(
+      { cardNumber: "BA-1", parallelName: "Anime Red Refractors" },
+      { ...ANIME, inheritedFeatures: { ...ANIME.inheritedFeatures, parallelName: "Base" } },
+      { playerNames: ["Mike Trout"] },
+    );
+    // The builder's description for that copy, labels aside.
+    expect(titleDescription(copy)).toBe(WHOLE);
+  });
+
+  test("off a parallel leaf the snapshot's name still counts", () => {
+    expect(
+      setDescriptionForTitles({
+        ...ANIME,
+        parallelLeafValue: undefined,
+        inheritedFeatures: { ...ANIME.inheritedFeatures, parallelName: "Gold" },
+      }),
+    ).toBe("2026 Bowman Anime Gold");
   });
 });
 

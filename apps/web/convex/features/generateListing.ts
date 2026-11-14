@@ -55,7 +55,7 @@
 import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./listingLimits";
 import { variantTypeKindFromTitle } from "../variantRole";
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
-import { roughlySays } from "../listingShortName";
+import { parallelAfterInsert, roughlySays } from "../listingShortName";
 
 export type ListingCardInputs = {
   cardNumber: string;
@@ -391,9 +391,11 @@ type DescriptionParts = {
  * it is named after it ("Topps Chrome Refractor" under "Topps Chrome"), and is
  * left out when the set already says every word of it; otherwise it follows
  * the set with the year and maker words stripped (row 0). The parallel follows
- * the insert the same way. A "parallel" that is the card's own variation text
- * (NEO-189 copies `cardVariation` into `features.parallelName`) is not a
- * parallel: the variation states itself in the tail.
+ * the insert the same way, and the leading words it shares with the insert's
+ * name are said once (NEO-535, `parallelAfterInsert`). A "parallel" that is
+ * the card's own variation text (NEO-189 copies `cardVariation` into
+ * `features.parallelName`) is not a parallel: the variation states itself in
+ * the tail.
  */
 function builderDescriptionParts(inputs: ListingCardInputs): DescriptionParts {
   const year = inputs.year?.trim();
@@ -422,7 +424,10 @@ function builderDescriptionParts(inputs: ListingCardInputs): DescriptionParts {
   if (isRealParallel(inputs)) {
     const raw = inputs.parallelName!.trim();
     if (raw.toLowerCase() !== variation) {
-      const stripped = stripDoubledWords(raw, inputs);
+      // NEO-535 — the leading words the parallel shares with its insert are
+      // said once, by the insert ("Anime" + "Anime Red Refractors" →
+      // "Anime Red Refractors"; `parallelAfterInsert`).
+      const stripped = stripDoubledWords(parallelAfterInsert(raw, insert ?? insertRaw), inputs);
       if (stripped && !alreadySaid(soFar, stripped)) parallel = stripped;
     }
   }

@@ -399,6 +399,17 @@ describe("NEO-535 — Set name in titles on the step", () => {
     );
   });
 
+  test("prefill on a parallel leaf names the parallel, whatever its snapshot inherited", () => {
+    const leaf = context({
+      setNameValue: "Bowman",
+      inheritedFeatures: { manufacturer: "Bowman", season: "2026", parallelName: "Base" },
+      insertNameValue: "Anime",
+      insertIsRole: true,
+      parallelLeafValue: "Anime Red Refractors",
+    });
+    expect(setNameInTitlesPrefill(leaf)).toBe("2026 Bowman Anime Red Refractors");
+  });
+
   test("the draft rewrites the listed titles as typed; the list never moves", () => {
     const before = buildTitleGroups(cards, context());
     const after = buildTitleGroups(cards, context(), undefined, { listingShortName: BOX });

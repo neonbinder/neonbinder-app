@@ -211,7 +211,11 @@ export const failingTitles = query({
     await requireAdmin(ctx);
     const { parallel, source } = await requireBuildableParallel(ctx, args.parallelId);
     const set = await parallelSetContext(ctx, parallel);
-    const boxPrefill = set.listingShortName?.trim() || setDescriptionForTitles(set);
+    // The stored box, else the description a copy on this parallel gets: the
+    // build names each copy by the parallel row itself (`parallelName`).
+    const boxPrefill =
+      set.listingShortName?.trim() ||
+      setDescriptionForTitles(set, { parallelName: parallel.value });
 
     const page = await ctx.db
       .query("cardChecklist")
