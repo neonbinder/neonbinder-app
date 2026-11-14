@@ -66,11 +66,18 @@ test(
       await page.getByRole("button", { name: "Dismiss pause notice" }).click();
       await expect(page.getByText("SportLots is on pause.")).toBeHidden();
     }
-    // A reader scrolls the page to the column: how far down the cascade sits
+    // A reader scrolls the page down to the column: how far down the cascade sits
     // depends on the Admin tabs above it (they wrap to a second line at this
     // width), and the proof is the list's own scroll, not the page's. Only the
-    // page moves here: the heading sits outside the list's scroll box.
-    await columnHeading(page, "Sports").evaluate((el) => el.scrollIntoView({ block: "start" }));
+    // page moves here: the wheel turns over the page's left margin, outside every
+    // list, so no list's scroll is touched. (The centred row sits at about 670 px
+    // of a 629 px viewport until the page is scrolled. A wheel turn is what a
+    // reader does; the former `evaluate(scrollIntoView)` left the page unmoved
+    // in the NEO-552 local runs.)
+    const viewport = page.viewportSize();
+    if (!viewport) throw new Error("the page has no viewport size");
+    await page.mouse.move(viewport.width * 0.01, viewport.height * 0.5);
+    await page.mouse.wheel(0, 300);
     await expect(racing).toBeInViewport();
     await expect(baseball).not.toBeInViewport();
     await expectAccessible(page, { label: "Sports column re-expanded at its selection" });
