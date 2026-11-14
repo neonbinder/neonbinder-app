@@ -555,6 +555,50 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     );
   });
 
+  it("NEO-535 (a11y): a rebuilt description is said on the drawer's status line", async () => {
+    const stale = makeCard({ listingTitle: "stale title", listingDescription: "old words" });
+    const props = {
+      ancestorSport: "Baseball",
+      onClose: vi.fn(),
+      onPrev: vi.fn(),
+      onNext: vi.fn(),
+      hasPrev: false,
+      hasNext: false,
+    };
+    const { rerender } = render(<CardDetailPanel card={stale} {...props} />);
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+    expect(screen.queryByText(/Description rebuilt/)).toBeNull();
+    // The rebuilt description arrives on the subscription.
+    rerender(<CardDetailPanel card={{ ...stale, listingDescription: "new words" }} {...props} />);
+    const status = await screen.findByText(/Description rebuilt/);
+    expect(status.closest('[role="status"]')).not.toBeNull();
+  });
+
+  it("NEO-535 (a11y): an unchanged description says nothing, and a later change is not called a rebuild", async () => {
+    const card = makeCard({ listingTitle: "stale title", listingDescription: "my own words" });
+    const props = {
+      ancestorSport: "Baseball",
+      onClose: vi.fn(),
+      onPrev: vi.fn(),
+      onNext: vi.fn(),
+      hasPrev: false,
+      hasNext: false,
+    };
+    const { rerender } = render(<CardDetailPanel card={card} {...props} />);
+    // A description no Regenerate asked for changes: not a rebuild.
+    rerender(<CardDetailPanel card={{ ...card, listingDescription: "edited elsewhere" }} {...props} />);
+    expect(screen.queryByText(/Description rebuilt/)).toBeNull();
+  });
+
+  it("NEO-535 (a11y): the title field says Enter saves", () => {
+    renderPanel(makeCard({ listingTitle: "short" }));
+    const ids = (titleInput().getAttribute("aria-describedby") ?? "").split(" ");
+    const said = ids.map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
+    expect(said).toContain("Enter saves it.");
+  });
+
   it("NEO-535: the title is a wrapping one-line field; Enter saves and a pasted line break is a space", async () => {
     renderPanel(makeCard({ listingTitle: "short" }));
     const field = titleInput();

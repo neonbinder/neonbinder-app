@@ -14,7 +14,7 @@ import React from "react";
 import { describe, expect, test, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import { assessListingTitle } from "../../convex/features/generateListing";
-import CardTitlesStep from "./CardTitlesStep";
+import CardTitlesStep, { KEYS_HINT } from "./CardTitlesStep";
 import { parallelTitlesSource, type ParallelTitlesSection, type StoredTitleCard } from "./parallel-titles";
 
 const PARALLEL = "Kanji Orange Wave Refractor Sapphire Gold XYZW";
@@ -78,6 +78,47 @@ describe("CardTitlesStep — fed a source (NEO-535)", () => {
     expect(screen.getByRole("textbox", { name: "Set name in titles for Kanji XYZW" })).toBeTruthy();
     for (const field of screen.getAllByRole("textbox", { name: /^Title for/ })) {
       expect(field.getAttribute("aria-label")).toMatch(/^Title for Kanji XYZW /);
+    }
+  });
+
+  test("a scope names each section's landmark with its parallel (a11y)", () => {
+    setup("Kanji XYZW");
+    const regions = screen.getAllByRole("region");
+    expect(regions.length).toBeGreaterThan(1);
+    for (const region of regions) {
+      expect(region.getAttribute("aria-label")).toMatch(/^Kanji XYZW: /);
+    }
+  });
+
+  test("two scoped steps on one screen never share a landmark name", () => {
+    render(
+      <>
+        <CardTitlesStep
+          source={parallelTitlesSource(SECTION, "Kanji XYZW")}
+          answers={[]}
+          onAnswersChange={vi.fn()}
+          onShortNameChange={vi.fn()}
+        />
+        <CardTitlesStep
+          source={parallelTitlesSource({ ...SECTION, parallelValue: "Gold" }, "Gold")}
+          answers={[]}
+          onAnswersChange={vi.fn()}
+          onShortNameChange={vi.fn()}
+        />
+      </>,
+    );
+    const names = screen.getAllByRole("region").map((r) => r.getAttribute("aria-label"));
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  test("every field says Enter locks it in (a11y)", () => {
+    setup();
+    const fields = screen.getAllByRole("textbox");
+    expect(fields.length).toBeGreaterThan(1);
+    for (const field of fields) {
+      const ids = (field.getAttribute("aria-describedby") ?? "").split(" ");
+      const said = ids.map((id) => document.getElementById(id)?.textContent ?? "");
+      expect(said).toContain(KEYS_HINT);
     }
   });
 

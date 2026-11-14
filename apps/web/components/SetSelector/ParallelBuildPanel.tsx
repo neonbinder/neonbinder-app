@@ -1085,10 +1085,18 @@ export default function ParallelBuildPanel({
     () => runTitlesToFix(run),
     [run],
   );
+  const runKey = `parallel-run:${run.waitKey ?? run.startedFrom}`;
   const titlesAutoOpenKey =
-    run.phase === "finished" || run.phase === "stopped"
-      ? `parallel-run:${run.waitKey ?? run.startedFrom}`
-      : undefined;
+    run.phase === "finished" || run.phase === "stopped" ? runKey : undefined;
+  // NEO-535 (a11y) — the Card titles door's lines ("Loading titles…", "Saved
+  // 12 titles.") are said through this panel's one live line, not a second
+  // live region inside the banner. Held with the run they belong to.
+  const [titlesLine, setTitlesLine] = useState<{ run: string; line: string } | null>(null);
+  const onTitlesLine = useCallback(
+    (line: string) => setTitlesLine({ run: runKey, line }),
+    [runKey],
+  );
+  const doorLine = titlesLine?.run === runKey ? titlesLine.line : "";
 
   /**
    * a11y (WCAG 2.4.3) — Stop unmounts when the run ends. If it had focus the
@@ -1307,6 +1315,8 @@ export default function ParallelBuildPanel({
             parallels={titleParallels}
             label={fixRunTitlesLabel(titleTotal)}
             autoOpenKey={titlesAutoOpenKey}
+            announceStatus={false}
+            onStatusChange={onTitlesLine}
           />
         </div>
       )}
@@ -1327,7 +1337,9 @@ export default function ParallelBuildPanel({
         in the final heading, said once at the end. Every line also stays in
         the ledger above to be read at leisure.
       */}
-      <LiveLine text={run.announcement} />
+      {/* NEO-535 — the Card titles door's latest line takes the live line
+          once the run has ended; a new run's announcement replaces it. */}
+      <LiveLine text={doorLine || run.announcement} />
     </section>
   );
 }

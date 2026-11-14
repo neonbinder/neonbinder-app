@@ -304,7 +304,10 @@ export default function SetAttributesPanel({
   // NEO-535 — the walker's "Trim Set name in titles" door lands here: the
   // panel opens and the row's box takes focus (`set-name-in-titles-jump`).
   // Counted rather than flagged, so a second trip re-runs the effect. Focused
-  // a frame late: the walker closing restores focus to its opener first.
+  // a frame late: the walker closing restores focus to its opener first. A
+  // collapsed panel may take a few frames to draw the box, so the look is
+  // retried for `SHORT_NAME_FRAMES`; if the box never shows, focus lands on
+  // the panel itself rather than staying wherever the walker left it.
   const regionRef = useRef<HTMLDivElement | null>(null);
   const [shortNameTrips, setShortNameTrips] = useState(0);
   const openShortName = useCallback(() => {
@@ -313,14 +316,27 @@ export default function SetAttributesPanel({
   }, []);
   useEffect(() => {
     if (shortNameTrips === 0) return;
-    const frame = requestAnimationFrame(() => {
-      const field = regionRef.current?.querySelector<HTMLElement>(
+    let frame = 0;
+    let tries = 0;
+    const look = () => {
+      const region = regionRef.current;
+      const field = region?.querySelector<HTMLElement>(
         `[data-feat-key="${SHORT_NAME_FEATURE.key}"]`,
       );
-      if (!field) return;
-      field.scrollIntoView({ block: "center" });
-      field.focus({ preventScroll: true });
-    });
+      if (field) {
+        field.scrollIntoView({ block: "center" });
+        field.focus({ preventScroll: true });
+        return;
+      }
+      tries += 1;
+      if (tries < SHORT_NAME_FRAMES) {
+        frame = requestAnimationFrame(look);
+        return;
+      }
+      region?.scrollIntoView({ block: "start" });
+      region?.focus({ preventScroll: true });
+    };
+    frame = requestAnimationFrame(look);
     return () => cancelAnimationFrame(frame);
   }, [shortNameTrips]);
 
@@ -654,8 +670,11 @@ export default function SetAttributesPanel({
 
   return (
     <div
-      className="border border-rule-strong rounded-lg bg-raised-deep/60 p-4 space-y-3"
+      className="border border-rule-strong rounded-lg bg-raised-deep/60 p-4 space-y-3 focus-outline"
       ref={regionRef}
+      // NEO-535: the "Trim Set name in titles" jump's fallback focus target;
+      // never a Tab stop.
+      tabIndex={-1}
       role="region"
       aria-label="Set attributes panel"
     >
@@ -1018,6 +1037,9 @@ export default function SetAttributesPanel({
  * its cards get: the value it inherits (with its insert and parallel names
  * added, `titleChainFacts`), else the builder's own (`setDescriptionForTitles`).
  */
+/** Frames the "Set name in titles" jump waits for the box before focusing the panel. */
+const SHORT_NAME_FRAMES = 10;
+
 const SHORT_NAME_FEATURE: ExpectedFeature = {
   key: "listingShortName",
   label: "Set name in titles",

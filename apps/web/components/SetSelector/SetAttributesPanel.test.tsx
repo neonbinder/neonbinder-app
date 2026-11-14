@@ -1591,6 +1591,32 @@ describe("SetAttributesPanel — Set name in titles row (NEO-335)", () => {
     await waitFor(() => expect(document.activeElement).toBe(field()));
   });
 
+  it("lands on the panel itself when the box never shows (a11y)", async () => {
+    currentRow = makeRow({ level: "insert", value: "Hologram" });
+    currentChain = makeChain("Baseball");
+    render(
+      <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={true} />,
+    );
+    // The box is looked up by its feature key; make every look miss.
+    const real = Element.prototype.querySelector;
+    const spy = vi
+      .spyOn(Element.prototype, "querySelector")
+      .mockImplementation(function (this: Element, selector: string) {
+        if (selector.includes('data-feat-key="listingShortName"')) return null;
+        return real.call(this, selector);
+      });
+    try {
+      act(() => {
+        goToSetNameInTitles();
+      });
+      const region = screen.getByRole("region", { name: "Set attributes panel" });
+      await waitFor(() => expect(document.activeElement).toBe(region));
+      expect(region.getAttribute("tabindex")).toBe("-1");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it("offers no door where the row has no box", () => {
     currentRow = makeRow({ level: "year", value: "2024" });
     currentChain = makeChain("Baseball");

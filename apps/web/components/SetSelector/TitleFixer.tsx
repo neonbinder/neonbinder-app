@@ -1,10 +1,11 @@
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
 import NeonButton from "../modules/NeonButton";
+import { ConfirmDialog } from "../modules/confirm-dialog";
 import { attentionItemLabel } from "./card-attention";
 import {
   ASPECT_VALUE_MAX,
@@ -72,9 +73,20 @@ import type { AttentionFixerProps } from "./cardAttentionRegistry";
  * (NEO-152, NEO-189, NEO-102's own Fixer siblings).
  */
 /** NEO-535 copy, in the NB voice. */
-const TOO_LONG = "Too long to list as-is. Trim it here, or shorten the set name for the whole row.";
+export const TOO_LONG = "Too long to list as-is. Trim it here, or shorten the set name for the whole row.";
+/** Said when the title drops back under the cap. */
+export const FITS_NOW = "Fits now. Enter saves it.";
 const SET_NAME_HOGGING = "Set name hogging it?";
-const TRIM_SET_NAME = "Trim Set name in titles";
+export const TRIM_SET_NAME = "Trim Set name in titles";
+/** "Trim Set name in titles" with a typed title that can't be saved first. */
+export const TOSS_TYPED_TITLE = "Toss what you typed?";
+const TOSS_TYPED_DESCRIPTION =
+  "The title's still too long to save, so your typing won't come along. This card keeps what it has now.";
+export const TOSS_TYPED_CONFIRM = "Toss it and go";
+const TOSS_TYPED_BUSY = "Heading over…";
+
+/** Over the cap, the way the meter and the save guard both count it. */
+const overCap = (text: string) => titleLengthState(text.length, LISTING_TITLE_MAX, true).over;
 
 export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps) {
   const updateCard = useMutation(api.selectorOptions.updateCard);
@@ -86,9 +98,29 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
   const titleRef = useRef<HTMLTextAreaElement>(null);
   const uid = useId();
   const titleAlertId = `${uid}-title-limit`;
+  const saveHintId = `${uid}-save-hint`;
   const variationAlertId = `${uid}-variation-limit`;
 
-  const preview = useTitlePreview(row._id, setTitle);
+  // a11y (NEO-535) — the over-cap line is always mounted. It speaks politely
+  // when a card arrives over the cap (the field's description reads it too),
+  // as an alert only when the operator's own keystroke takes the title over,
+  // and politely again ("Fits now.") when the title drops back under.
+  const [overByKeystroke, setOverByKeystroke] = useState(false);
+  const [fitsNow, setFitsNow] = useState(false);
+  const latestTitle = useRef(title);
+  const changeTitle = useCallback((next: string, byKeystroke: boolean) => {
+    const wasOver = overCap(latestTitle.current);
+    const nowOver = overCap(next);
+    latestTitle.current = next;
+    if (nowOver && !wasOver) setOverByKeystroke(byKeystroke);
+    if (nowOver) setFitsNow(false);
+    else if (wasOver) setFitsNow(true);
+    setTitle(next);
+  }, []);
+  const applyGenerated = useCallback((next: string) => changeTitle(next, false), [changeTitle]);
+  const [confirmingTrim, setConfirmingTrim] = useState(false);
+
+  const preview = useTitlePreview(row._id, applyGenerated);
 
   // Only the fields the card was actually flagged for get edited — and written.
   const fixesVariation = items.some((i) => i.kind === "aspectValueOverLimit");
@@ -102,6 +134,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
   const titleState = titleLengthState(title.length, LISTING_TITLE_MAX, true);
   const leftOut = useMemo(() => preview.leftOutOf(title), [preview, title]);
   const titleDirty = title !== (row.listingTitle ?? "");
+  const variationDirty = fixesVariation && variation !== (row.cardVariation ?? "");
   const canSave = !busy && !titleState.over;
 
   // Focus the field the operator is here to edit. The walker remounts this
@@ -135,6 +168,18 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
     } finally {
       setBusy(false);
     }
+  };
+
+  /**
+   * NEO-535 (a11y) — "Trim Set name in titles" closes the walker, which would
+   * drop anything typed here. Untouched: go. Typed: ask first (Toss / Cancel).
+   * Never save-first: the door shows only while the title is over the cap,
+   * so what was typed can never be saved as it stands.
+   */
+  const trimSetName = () => {
+    if (busy) return;
+    if (titleDirty || variationDirty) setConfirmingTrim(true);
+    else goToSetNameInTitles();
   };
 
   return (
@@ -205,7 +250,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           rows={2}
           value={title}
           onChange={(e) => {
-            setTitle(oneLine(e.target.value));
+            changeTitle(oneLine(e.target.value), true);
             preview.cancelConfirm();
           }}
           onKeyDown={(e) => {
@@ -221,7 +266,11 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           // takes a regex, so `Card title for #.*` still targets it.
           aria-label={`Card title for #${row.cardNumber}`}
           aria-invalid={titleState.over || undefined}
-          aria-describedby={titleState.over ? titleAlertId : undefined}
+          // The save hint says Enter saves: a wrapping field reads as one
+          // where Enter makes a new line.
+          aria-describedby={[titleState.over ? titleAlertId : null, saveHintId]
+            .filter(Boolean)
+            .join(" ")}
           // a11y (audit fix): native `disabled` here would strand focus. Enter
           // in THIS field is what sets `busy` — the moment it goes native-
           // disabled, the browser force-blurs the very input that had focus,
@@ -234,27 +283,28 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           aria-disabled={busy || undefined}
           readOnly={busy}
         />
+        {/* NEO-535 — ONE message for a title past the cap, where there used
+            to be three (the length alert, "cut short" and "Left out to
+            fit"). Its text never changes while the operator trims; the meter
+            above carries the count. Always mounted (a11y): polite on arrival,
+            an alert only when a keystroke crosses the cap, and "Fits now."
+            when the title drops back under. */}
+        <p
+          id={titleAlertId}
+          role={titleState.over && overByKeystroke ? "alert" : "status"}
+          aria-atomic="true"
+          className={`mt-1 text-[10px] empty:hidden ${titleState.over ? "text-neon-pink-text" : "text-neon-green-text"}`}
+        >
+          {titleState.over ? TOO_LONG : fitsNow ? FITS_NOW : ""}
+        </p>
         {titleState.over && (
-          // NEO-535 — ONE message for a title past the cap, where there used
-          // to be three (the length alert, "cut short" and "Left out to
-          // fit"). Its text never changes while the operator trims, so it is
-          // announced once, when the title crosses the cap; the meter above
-          // carries the count.
-          <div className="mt-1 space-y-0.5">
-            <p
-              id={titleAlertId}
-              role="alert"
-              aria-atomic="true"
-              className="text-[10px] text-neon-pink-text"
-            >
-              {TOO_LONG}
-            </p>
+          <div className="mt-0.5">
             {canGoToSetName && (
               <p className="text-[10px] text-ink-2">
                 {SET_NAME_HOGGING}{" "}
                 <button
                   type="button"
-                  onClick={() => goToSetNameInTitles()}
+                  onClick={trimSetName}
                   // leading-4 + py-1: a 24px target (SC 2.5.8) at 10px type.
                   className="-my-1 rounded py-1 leading-4 text-neon-blue-text underline decoration-dotted hover:text-ink focus-outline"
                 >
@@ -325,9 +375,12 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             }}
             className={`w-full p-1.5 text-sm ${busy ? "opacity-60" : ""}`}
             aria-label={`Card variation for #${row.cardNumber}`}
-            aria-describedby={
-              variation.length > ASPECT_VALUE_MAX ? variationAlertId : undefined
-            }
+            aria-describedby={[
+              variation.length > ASPECT_VALUE_MAX ? variationAlertId : null,
+              saveHintId,
+            ]
+              .filter(Boolean)
+              .join(" ")}
             // a11y (audit fix): same reasoning as the title field above — this
             // field can now also trigger `save()` on Enter while it holds
             // focus, so native `disabled` here is the same stranding hazard.
@@ -348,7 +401,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
       <div className="flex flex-wrap items-center gap-2">
         <NeonButton
           aria-disabled={canSave ? undefined : true}
-          aria-describedby={titleState.over ? titleAlertId : `${uid}-save-hint`}
+          aria-describedby={titleState.over ? titleAlertId : saveHintId}
           onClick={() => void save()}
         >
           {busy ? "Saving…" : "Save (Enter)"}
@@ -357,11 +410,34 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
       {/* gray-400, not gray-500: 500 measures 3.67:1 on this dialog's
           bg-gray-900 and fails 1.4.3 — the recurring bug logged in
           accessibility-auditor/contrast-reference.md. */}
-      <p id={`${uid}-save-hint`} className="text-xs text-ink-3">
+      <p id={saveHintId} className="text-xs text-ink-3">
         {fixesVariation
-          ? "Saves the title and variation on this card."
-          : "Saves the title on this card."}
+          ? "Enter saves the title and variation on this card."
+          : "Enter saves the title on this card."}
       </p>
+      {confirmingTrim && (
+        // Not portalled: it sits inside the walker. Its Escape and Tab stop
+        // here, so the walker's own Escape (close) and Tab trap never see
+        // them while it is up.
+        <div
+          onKeyDown={(event) => {
+            if (event.key === "Escape" || event.key === "Tab") event.stopPropagation();
+          }}
+        >
+          <ConfirmDialog
+            title={TOSS_TYPED_TITLE}
+            description={TOSS_TYPED_DESCRIPTION}
+            confirmLabel={TOSS_TYPED_CONFIRM}
+            busyLabel={TOSS_TYPED_BUSY}
+            busy={false}
+            onConfirm={() => {
+              setConfirmingTrim(false);
+              goToSetNameInTitles();
+            }}
+            onCancel={() => setConfirmingTrim(false)}
+          />
+        </div>
+      )}
     </div>
   );
 }

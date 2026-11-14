@@ -164,3 +164,39 @@ describe("the Fix card titles door on the ticker", () => {
     expect(mockQuery).not.toHaveBeenCalled();
   });
 });
+
+describe("the door's lines go through the ticker's one live line (a11y)", () => {
+  test("no second live region in the banner; the live line says the door's line", async () => {
+    const { container } = render(
+      <ParallelBuildPanel run={run({ announcement: "Built 3 parallels." })} onStop={() => {}} />,
+    );
+    // Self-opens, finds nothing left to fix, says so.
+    await waitFor(() =>
+      expect(screen.getByText("Every title fits now. Nothing to fix.")).toBeTruthy(),
+    );
+    const live = container.querySelectorAll('[role="status"]');
+    expect(live).toHaveLength(1);
+    expect(live[0].textContent).toBe("Every title fits now. Nothing to fix.");
+    // The visible line is plain text, outside any live region.
+    const shown = screen.getByText("Every title fits now. Nothing to fix.", { selector: "span" });
+    expect(shown.closest('[role="status"]')).toBeNull();
+  });
+
+  test("a new run's announcement takes the live line back", async () => {
+    const { container, rerender } = render(
+      <ParallelBuildPanel run={run({ announcement: "Built 3 parallels." })} onStop={() => {}} />,
+    );
+    await waitFor(() =>
+      expect(container.querySelector('[role="status"]')!.textContent).toBe(
+        "Every title fits now. Nothing to fix.",
+      ),
+    );
+    rerender(
+      <ParallelBuildPanel
+        run={run({ startedFrom: B, phase: "running", atIndex: 0, announcement: "Building 3 parallels." })}
+        onStop={() => {}}
+      />,
+    );
+    expect(container.querySelector('[role="status"]')!.textContent).toBe("Building 3 parallels.");
+  });
+});

@@ -32,6 +32,8 @@ vi.mock("convex/react", () => ({
 
 import {
   ALL_TITLES_FIT,
+  LOADING_TITLES_LABEL,
+  boxNotSavableLine,
   DISCARD_CONFIRM,
   DISCARD_TITLE,
   NOT_NOW_LABEL,
@@ -235,6 +237,117 @@ describe("ParallelTitlesDialog — saving", () => {
     fireEvent.click(screen.getByRole("button", { name: SAVE_TITLES_LABEL }));
     await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/^Titles not saved:/));
     expect(dialog()).not.toBeNull();
+  });
+});
+
+describe("NEO-535 (a11y) — the door while it loads", () => {
+  test("keeps its name, is busy, and says Loading titles… politely", async () => {
+    let answer: (value: unknown) => void = () => {};
+    mockQuery.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} />);
+    fireEvent.click(door());
+    await waitFor(() => expect(door().getAttribute("aria-busy")).toBe("true"));
+    expect(door().textContent).toBe(LABEL);
+    expect(screen.getByRole("status").textContent).toBe(LOADING_TITLES_LABEL);
+    await act(async () => answer(page()));
+    await waitFor(() => expect(dialog()).not.toBeNull());
+  });
+
+  test("a full section reads later pages for counts only (wantCards: 0)", async () => {
+    const many = Array.from({ length: 50 }, (_, i) => storedCard(String(i + 1)));
+    mockQuery
+      .mockResolvedValueOnce({ ...page(many), cursor: "c1" })
+      .mockResolvedValueOnce({ ...page([]), failingInPage: 7, cursor: null });
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} />);
+    await openByHand();
+    expect(mockQuery).toHaveBeenNthCalledWith(1, "failingTitles", { parallelId: PARALLEL_ID });
+    expect(mockQuery).toHaveBeenNthCalledWith(2, "failingTitles", {
+      parallelId: PARALLEL_ID,
+      cursor: "c1",
+      wantCards: 0,
+    });
+  });
+
+  test("tells its host when it is busy and what it last said", async () => {
+    const active = vi.fn();
+    const lines = vi.fn();
+    render(
+      <ParallelTitlesDoor
+        parallels={PARALLELS}
+        label={LABEL}
+        onActiveChange={active}
+        onStatusChange={lines}
+      />,
+    );
+    await openByHand();
+    expect(active).toHaveBeenLastCalledWith(true);
+    fireEvent.click(screen.getByRole("button", { name: SAVE_TITLES_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    expect(active).toHaveBeenLastCalledWith(false);
+    expect(lines).toHaveBeenLastCalledWith("Saved 2 titles.");
+  });
+
+  test("with announceStatus off its line is plain text, never a live region", async () => {
+    mockQuery.mockResolvedValue(page([]));
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} announceStatus={false} />);
+    fireEvent.click(door());
+    await waitFor(() => expect(screen.getByText(ALL_TITLES_FIT)).toBeTruthy());
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+});
+
+describe("NEO-535 (a11y) — two doors, one dialog", () => {
+  test("when the ticker's and the checklist's doors both self-open, the second holds back", async () => {
+    const OTHER = "Fix card titles";
+    render(
+      <>
+        <ParallelTitlesDoor parallels={PARALLELS} label={LABEL} autoOpenKey="run-a" />
+        <ParallelTitlesDoor parallels={PARALLELS} label={OTHER} autoOpenKey="build-a" />
+      </>,
+    );
+    await waitFor(() => expect(dialog()).not.toBeNull());
+    expect(screen.getAllByRole("dialog", { name: TITLES_DIALOG_TITLE })).toHaveLength(1);
+    expect(screen.getByText(heldBackLine(OTHER))).toBeTruthy();
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  test("once the first closes, a later self-open goes through", async () => {
+    const { rerender } = render(
+      <ParallelTitlesDoor parallels={PARALLELS} label={LABEL} autoOpenKey="run-b" />,
+    );
+    await waitFor(() => expect(dialog()).not.toBeNull());
+    fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    rerender(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} autoOpenKey="run-c" />);
+    await waitFor(() => expect(dialog()).not.toBeNull());
+  });
+});
+
+describe("NEO-535 (a11y) — refusals land where they can be fixed", () => {
+  test("a box that won't save names its parallel and takes focus", async () => {
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} />);
+    await openByHand();
+    const box = screen.getByRole("textbox", { name: "Set name in titles" });
+    fireEvent.change(box, { target: { value: "x".repeat(81) } });
+    fireEvent.blur(box);
+    fireEvent.click(screen.getByRole("button", { name: SAVE_TITLES_LABEL }));
+    await waitFor(() =>
+      expect(screen.getByText(boxNotSavableLine(PARALLEL)).getAttribute("role")).toBe("alert"),
+    );
+    await waitFor(() => expect(document.activeElement).toBe(box));
+    expect(mockMutation).not.toHaveBeenCalled();
+  });
+
+  test("after a failed save focus is back on Save", async () => {
+    mockMutation.mockRejectedValue(new Error("boom"));
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} />);
+    await openByHand();
+    const save = screen.getByRole("button", { name: SAVE_TITLES_LABEL });
+    fireEvent.click(save);
+    await waitFor(() => expect(screen.getByRole("alert").textContent).toMatch(/^Titles not saved:/));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: SAVE_TITLES_LABEL })),
+    );
   });
 });
 

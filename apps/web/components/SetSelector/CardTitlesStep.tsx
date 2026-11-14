@@ -111,6 +111,19 @@ const stillOverLine = (n: number) =>
 const PREFILL_OVER = "Over 80, so it's sitting out. Trim it and your titles pick it up.";
 const moreRowsLine = (n: number) => `And ${n} more, saved as generated.`;
 const USE_GENERATED = "Use generated title";
+/**
+ * NEO-535 (a11y) — these fields wrap like a text box, where Enter would make a
+ * new line; here it locks the field in. Every field is described by this.
+ */
+export const KEYS_HINT = "Enter locks a field in. Esc takes back what you just typed.";
+
+/**
+ * NEO-535 (a11y) — a section's landmark name. Scoped with the parallel's name
+ * when the dialog holds several, so "Titles…" never names two regions.
+ */
+function sectionName(scope: string | undefined, lead: string): { "aria-label": string } | undefined {
+  return scope ? { "aria-label": `${scope}: ${lead}` } : undefined;
+}
 
 /** Title rows drawn before the rest are counted instead (a long insert). */
 export const TITLE_ROWS_SHOWN = 50;
@@ -427,6 +440,7 @@ export default function CardTitlesStep({
   const shortStatusId = `${uid}-short-status`;
   const shortErrorId = `${uid}-short-error`;
   const shortMeterId = `${uid}-short-meter`;
+  const keysHintId = `${uid}-keys`;
   const stillOver = settledTitleGroups.reduce(
     (n, g) => n + g.cards.filter((c) => c.text.trim().length > LISTING_TITLE_MAX).length,
     0,
@@ -446,10 +460,17 @@ export default function CardTitlesStep({
         undoPoint.current = latest.current;
       }}
     >
+      <p id={keysHintId} className="text-[11px] text-ink-3">
+        {KEYS_HINT}
+      </p>
       {showShortName && (
         // One answer for every card, set apart from the per-card fields
         // below by a rule down its left edge.
-        <section aria-labelledby={shortLeadId} className="border-l-2 border-neon-blue-text pl-3">
+        <section
+          aria-labelledby={scope ? undefined : shortLeadId}
+          {...sectionName(scope, SHORT_LEAD)}
+          className="border-l-2 border-neon-blue-text pl-3"
+        >
           <Heading id={shortLeadId} className="text-sm font-normal text-ink-2">
             {SHORT_LEAD}
           </Heading>
@@ -472,7 +493,7 @@ export default function CardTitlesStep({
               autoComplete="off"
               spellCheck={false}
               aria-label={shortLabel}
-              aria-describedby={[shortLeadId, shortMeterId, shortStatusId, shortError ? shortErrorId : null]
+              aria-describedby={[shortLeadId, shortMeterId, shortStatusId, shortError ? shortErrorId : null, keysHintId]
                 .filter(Boolean)
                 .join(" ")}
               aria-invalid={shortCheck.error ? true : undefined}
@@ -505,7 +526,10 @@ export default function CardTitlesStep({
       )}
 
       {variationGroups.length > 0 && (
-        <section aria-labelledby={variationsId}>
+        <section
+          aria-labelledby={scope ? undefined : variationsId}
+          {...sectionName(scope, VARIATION_LEAD)}
+        >
           <Heading id={variationsId} className="text-sm font-normal text-ink-2">
             {VARIATION_LEAD}
           </Heading>
@@ -515,6 +539,7 @@ export default function CardTitlesStep({
                 key={group.key}
                 group={group}
                 leadId={variationsId}
+                hintId={keysHintId}
                 value={drafts[group.cards[0].index]?.cardVariation ?? group.variation}
                 onChange={(value) =>
                   setField(
@@ -536,13 +561,17 @@ export default function CardTitlesStep({
       )}
 
       {titleGroups.length > 0 && (
-        <section aria-labelledby={titlesId}>
+        <section
+          aria-labelledby={scope ? undefined : titlesId}
+          {...sectionName(scope, TITLES_LEAD)}
+        >
           <Heading id={titlesId} className="text-sm font-normal text-ink-2">
             {TITLES_LEAD}
           </Heading>
           <TitleGroups
             groups={titleGroups}
             scope={scope}
+            hintId={keysHintId}
             drafts={drafts}
             onChange={(index, value) => setField([index], "listingTitle", value)}
             onReset={(index) => clearField([index], "listingTitle")}
@@ -569,6 +598,7 @@ function cardsPhrase(cards: VariationGroup["cards"]): string {
 function VariationLine({
   group,
   leadId,
+  hintId,
   value,
   onChange,
   onBlur,
@@ -577,6 +607,7 @@ function VariationLine({
 }: {
   group: VariationGroup;
   leadId: string;
+  hintId: string;
   value: string;
   onChange: (value: string) => void;
   onBlur: () => void;
@@ -599,7 +630,7 @@ function VariationLine({
         // No maxLength: the value arrives over the cap and must stay visible
         // to be trimmed. The meter says where the cap is.
         aria-label={`Variation for ${owner}`}
-        aria-describedby={`${leadId} ${meterId}`}
+        aria-describedby={`${leadId} ${meterId} ${hintId}`}
         aria-invalid={length > ASPECT_VALUE_MAX || undefined}
         aria-disabled={disabled || undefined}
         readOnly={disabled}
@@ -648,6 +679,7 @@ function CardList({
 function TitleGroups({
   groups,
   scope,
+  hintId,
   drafts,
   onChange,
   onReset,
@@ -658,6 +690,8 @@ function TitleGroups({
   groups: TitleGroup[];
   /** Prefixes each row's name, so two steps' rows never read the same. */
   scope?: string;
+  /** The step's keys hint, on every field's description. */
+  hintId: string;
   drafts: ReadonlyArray<TitleAnswer | undefined>;
   onChange: (index: number, value: string) => void;
   onReset: (index: number) => void;
@@ -717,6 +751,7 @@ function TitleGroups({
                       onReset={() => onReset(card.index)}
                       onBlur={onBlur}
                       onKeyDown={keysFor(card.index)}
+                      hintId={hintId}
                       disabled={disabled}
                     />
                   ))}
@@ -741,6 +776,7 @@ function TitleRow({
   onReset,
   onBlur,
   onKeyDown,
+  hintId,
   disabled,
 }: {
   card: TitleRowView;
@@ -750,6 +786,7 @@ function TitleRow({
   onReset: () => void;
   onBlur: () => void;
   onKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  hintId: string;
   disabled: boolean;
 }) {
   const meterId = useId();
@@ -779,7 +816,7 @@ function TitleRow({
           onKeyDown={onKeyDown}
           // No maxLength: an over-long title must stay visible to be fixed.
           aria-label={`Title for ${label}`}
-          aria-describedby={[card.leftOut.length > 0 ? ownLineId : null, meterId, over ? alertId : null]
+          aria-describedby={[card.leftOut.length > 0 ? ownLineId : null, meterId, over ? alertId : null, hintId]
             .filter(Boolean)
             .join(" ")}
           aria-invalid={over || undefined}

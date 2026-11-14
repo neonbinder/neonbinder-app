@@ -154,6 +154,11 @@ const BLANK_TITLE_MESSAGE =
  * `selectorOptions.BLANK_LISTING_DESCRIPTION_REFUSAL`: the description is what
  * a collector's card search reads, so it is never stored blank.
  */
+/** NEO-535 — said when Regenerate rebuilt the Card description too. */
+const DESCRIPTION_REBUILT = "Description rebuilt";
+/** How long after Regenerate a description change still counts as its rebuild. */
+const DESCRIPTION_REBUILD_WINDOW_MS = 10_000;
+
 const BLANK_DESCRIPTION_MESSAGE =
   "A card needs a description. It's what collectors search, so type one in.";
 
@@ -626,6 +631,7 @@ export default function CardDetailPanel({
   const titleErrorId = `${uid}-title-error`;
   const descriptionErrorId = `${uid}-description-error`;
   const descriptionHintId = `${uid}-description-hint`;
+  const titleHintId = `${uid}-title-hint`;
   const notesErrorId = `${uid}-notes-error`;
   const notesHintId = `${uid}-notes-hint`;
   const notesId = `${uid}-notes`;
@@ -655,13 +661,40 @@ export default function CardDetailPanel({
   // from the facts now, one an operator wrote is left alone. Its own write,
   // so a title refused for length still gets its description rebuilt; the
   // description field hydrates from the row like any reactive update.
+  // a11y (NEO-535) — the rebuilt description arrives on the subscription
+  // after the write, in a field the operator is not looking at. Armed with
+  // the description as it stood when Regenerate was pressed; the first
+  // different value the row brings is said once ("Description rebuilt"), on
+  // the drawer's one status line. An unchanged description (an operator's
+  // own, left alone) says nothing and the arm lapses.
+  const descriptionRebuildRef = useRef<{ from: string; until: number } | null>(null);
   const regenerateDescription = useCallback(async () => {
+    descriptionRebuildRef.current = {
+      from: card.listingDescription ?? "",
+      until: Date.now() + DESCRIPTION_REBUILD_WINDOW_MS,
+    };
     try {
       await updateCard({ id: card._id, regenerateDescription: true });
     } catch (err) {
+      descriptionRebuildRef.current = null;
       announce(userFacingMessage(err, "Couldn't rebuild the card description"));
     }
-  }, [updateCard, card._id, announce]);
+  }, [updateCard, card._id, card.listingDescription, announce]);
+  useEffect(() => {
+    const armed = descriptionRebuildRef.current;
+    if (!armed) return;
+    const now = card.listingDescription ?? "";
+    if (now === armed.from) return;
+    descriptionRebuildRef.current = null;
+    if (Date.now() > armed.until) return;
+    // Mirroring a reactive write into the drawer's status line, not deriving
+    // render state; appended so a "Saved Card title" just said is kept.
+    setToast((prev) =>
+      prev && prev !== DESCRIPTION_REBUILT ? `${prev}. ${DESCRIPTION_REBUILT}` : DESCRIPTION_REBUILT,
+    );
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = setTimeout(() => setToast(null), 6000);
+  }, [card.listingDescription]);
   const regenerateDescriptionRef = useRef(regenerateDescription);
   useEffect(() => {
     regenerateDescriptionRef.current = regenerateDescription;
@@ -1209,9 +1242,12 @@ export default function CardDetailPanel({
                 [
                   titleState.over ? titleAlertId : null,
                   titleField.error ? titleErrorId : null,
+                  // NEO-535: a wrapping field reads as one where Enter makes
+                  // a new line; the hint says Enter saves.
+                  titleHintId,
                 ]
                   .filter(Boolean)
-                  .join(" ") || undefined
+                  .join(" ")
               }
             />
             <TitleLengthAlert id={titleAlertId} length={titleLength} />
@@ -1269,8 +1305,8 @@ export default function CardDetailPanel({
                 ))}
               </ul>
             )}
-            <p className="text-[10px] text-ink-3 mt-1">
-              Stored once and reused by every marketplace listing.
+            <p id={titleHintId} className="text-[10px] text-ink-3 mt-1">
+              Enter saves it. Stored once and reused by every marketplace listing.
             </p>
           </div>
           <div>

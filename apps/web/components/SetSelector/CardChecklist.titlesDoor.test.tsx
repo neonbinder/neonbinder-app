@@ -9,7 +9,7 @@
  * CardChecklist.needsYou.test.tsx.
  */
 
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -81,6 +81,8 @@ vi.mock("./TeamPicker", () => ({ default: () => null }));
 vi.mock("./PlayerPicker", () => ({ default: () => null }));
 
 const state: { cards: unknown; refs: Set<string> } = { cards: [], refs: new Set() };
+// The door's one-shot reads and its save (NEO-535 a11y tests drive these).
+const convexClient = { query: vi.fn(), action: vi.fn(), mutation: vi.fn() };
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string) => {
@@ -94,7 +96,7 @@ vi.mock("convex/react", () => ({
   },
   useMutation: () => vi.fn(),
   useAction: () => vi.fn(),
-  useConvex: () => ({ query: vi.fn(), action: vi.fn() }),
+  useConvex: () => convexClient,
 }));
 
 import CardChecklist, { FIX_CARD_TITLES_LABEL } from "./CardChecklist";
@@ -158,6 +160,85 @@ describe("CardChecklist — the Fix card titles door (NEO-535)", () => {
     state.cards = [card(1), card(2, { listingTitle: "x".repeat(80) })];
     render(ui(PARALLEL_ROLE));
     expect(door()).toBeNull();
+  });
+
+  describe("a save that clears the last title flag (a11y)", () => {
+    const stored = {
+      cardId: "card-1" as unknown as Id<"cardChecklist">,
+      cardNumber: "1",
+      cardName: "Card 1",
+      title: "2024 Topps Chrome Anime Card 1 #1",
+      inputs: {
+        cardNumber: "1",
+        playerNames: ["Card 1"],
+        teamNames: [],
+        year: "2024",
+        manufacturer: "Topps",
+        setName: "Topps Chrome",
+        insertName: "Anime",
+        sport: "Baseball",
+      },
+    };
+
+    function openWithSaveHeld() {
+      convexClient.query.mockResolvedValue({
+        parallel: { _id: VARIANT_ID, value: "Base" },
+        boxPrefill: "2024 Topps Chrome Anime",
+        cards: [stored],
+        failingInPage: 1,
+        cursor: null,
+      });
+      let finish: (value: unknown) => void = () => {};
+      convexClient.mutation.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+      return () =>
+        finish({ saved: 0, rewritten: 0, kept: 1, skipped: 0, stillFailing: 0 });
+    }
+    const titlesDialog = () => screen.queryByRole("dialog", { name: "Card titles" });
+
+    it("keeps the door and its dialog up mid-save, then says the line and parks focus on the pill", async () => {
+      const finish = openWithSaveHeld();
+      // Card 2 still needs a team, so the pill outlives the title flag.
+      state.cards = [card(1, { listingTitleTruncated: true }), card(2, { teamOnCardIds: [] })];
+      const { rerender } = render(ui(PARALLEL_ROLE));
+      fireEvent.click(door()!);
+      await waitFor(() => expect(titlesDialog()).not.toBeNull());
+
+      fireEvent.click(screen.getByRole("button", { name: "Save titles" }));
+      // The save lands on the subscription before the mutation resolves.
+      state.cards = [card(1), card(2, { teamOnCardIds: [] })];
+      rerender(ui(PARALLEL_ROLE));
+      expect(titlesDialog()).not.toBeNull();
+      expect(door()).not.toBeNull();
+
+      await act(async () => finish());
+      await waitFor(() => expect(titlesDialog()).toBeNull());
+      expect(door()).toBeNull();
+      const line = screen.getAllByRole("status").find((n) => /^Saved 1 title/.test(n.textContent ?? ""));
+      expect(line).toBeTruthy();
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByRole("button", { name: "1 needs you" })),
+      );
+    });
+
+    it("with no pill left, focus parks on the line that says how the save went", async () => {
+      const finish = openWithSaveHeld();
+      state.cards = [card(1, { listingTitleTruncated: true })];
+      const { rerender } = render(ui(PARALLEL_ROLE));
+      fireEvent.click(door()!);
+      await waitFor(() => expect(titlesDialog()).not.toBeNull());
+      fireEvent.click(screen.getByRole("button", { name: "Save titles" }));
+      state.cards = [card(1)];
+      rerender(ui(PARALLEL_ROLE));
+      expect(titlesDialog()).not.toBeNull();
+
+      await act(async () => finish());
+      await waitFor(() => expect(titlesDialog()).toBeNull());
+      expect(door()).toBeNull();
+      expect(screen.queryByRole("button", { name: /needs? you/ })).toBeNull();
+      const line = screen.getAllByRole("status").find((n) => /^Saved 1 title/.test(n.textContent ?? ""));
+      expect(line).toBeTruthy();
+      await waitFor(() => expect(document.activeElement).toBe(line));
+    });
   });
 
   it("never shows on an insert's or a base's checklist", () => {

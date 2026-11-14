@@ -220,3 +220,4 @@
 - [Card description follows facts](reference_card_description_follows_facts.md) — card-fact writers call refreshedListingDescription; renames via cardDescriptionFanOut (overlay before-reads)
 - [Cross-sibling jump via a store](reference_cross_sibling_jump_via_store.md) — walker door to SetAttributesPanel: targets + closers store, door only when reachable, focus a frame late
 - [Title year and maker come from features](reference_title_year_and_maker_come_from_features.md) — convex-test trees need features.season/manufacturer or titles drop the year and length boundaries shift
+- [Nested ConfirmDialog leaks Escape/Tab](reference_nested_confirmdialog_leaks_escape_and_tab.md) — wrap it to stop Escape/Tab; count-gated door stays mounted while busy

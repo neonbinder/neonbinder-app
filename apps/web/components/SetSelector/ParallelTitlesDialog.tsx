@@ -2,6 +2,7 @@ import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react"
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import { useConvex, type ConvexReactClient } from "convex/react";
+import type { FunctionArgs } from "convex/server";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
@@ -37,17 +38,29 @@ import {
  * run ends with titles to fix, a parallel's checklist shows one while its
  * cards carry a title flag, and both can open it once on their own when the
  * build that made the titles has just finished (`autoOpenKey`, once per key
- * per tab). That self-open holds back when another dialog is up or the
- * operator is typing in a field: the button stays, and its status line says
- * so. It is never navigation (no route, no search param): it is a fix-up over
- * the page the operator is on.
+ * per tab). That self-open holds back when another dialog is up, when
+ * another door is already opening one (`openingDoor`: the ticker's and the
+ * checklist's can both fire for one build), or when the operator is typing in
+ * a field: the button stays, and its status line says so. It is never
+ * navigation (no route, no search param): it is a fix-up over the page the
+ * operator is on.
+ *
+ * A host that drops the door when its flags clear keeps it mounted while it
+ * is busy (`onActiveChange`), so a save that clears the last flag never tears
+ * the dialog out mid-save; it hears the door's last line (`onStatusChange`) to
+ * say it once the door has gone. A host with its own live line (the build
+ * ticker) takes the door's line through it (`announceStatus={false}`), so
+ * there are never two live regions saying one thing.
  *
  * ## Loads before it opens
  *
  * The parallel's failing cards are read ONE-SHOT (`useConvex().query`, never
  * subscribed: a parallel can hold thousands of cards), every page, before the
- * dialog mounts, so it never opens empty. Nothing left to fix → no dialog,
- * and the status line says every title fits.
+ * dialog mounts, so it never opens empty. Once a section holds its
+ * `SECTION_CARDS`, later pages ask for counts only (`wantCards: 0`). Nothing
+ * left to fix → no dialog, and the status line says every title fits. While
+ * it loads the button keeps its name (`aria-busy`) and the status line says
+ * "Loading titles…".
  *
  * ## Keys and focus
  *
@@ -65,8 +78,9 @@ export const SAVING_TITLES_LABEL = "Saving titles…";
 export const NOT_NOW_LABEL = "Not now";
 export const LOADING_TITLES_LABEL = "Loading titles…";
 export const ALL_TITLES_FIT = "Every title fits now. Nothing to fix.";
-export const BOX_NOT_SAVABLE =
-  "Set name in titles can't be saved as typed. Fix it, or put it back, then save.";
+/** A box that won't save, named for its parallel (the dialog can hold several). */
+export const boxNotSavableLine = (parallel: string) =>
+  `${parallel}'s Set name in titles won't save as typed. Fix it or put it back, then save.`;
 export const DISCARD_TITLE = "Toss your title edits?";
 const DISCARD_DESCRIPTION =
   "Nothing you changed here gets saved. The cards keep the titles they have now.";
@@ -89,9 +103,18 @@ const SECTION_CARDS = 50;
 /** Keys that already opened (or tried to open) the dialog on their own, this tab. */
 const autoOpened = new Set<string>();
 
-/** Test hook: forget which keys have self-opened. */
+/**
+ * The door opening (or showing) Card titles right now, this tab. Another
+ * door's self-open holds back while one is set, so the ticker's and the
+ * checklist's doors never stack two dialogs for one build. Cleared on close,
+ * on nothing-to-fix, on a failed load, and when its door unmounts.
+ */
+let openingDoor: object | null = null;
+
+/** Test hook: forget which keys have self-opened, and any door mid-open. */
 export function resetParallelTitlesAutoOpen(): void {
   autoOpened.clear();
+  openingDoor = null;
 }
 
 type TitlesClient = Pick<ConvexReactClient, "query" | "mutation">;
@@ -113,10 +136,14 @@ async function loadSections(
     let value = target.value;
     let cursor: string | undefined;
     for (let page = 0; page < MAX_PAGES; page++) {
-      const result = await convex.query(api.parallelCopyTitles.failingTitles, {
+      // Typed, not spread: a misspelt arg fails the typecheck, not the server.
+      const args: FunctionArgs<typeof api.parallelCopyTitles.failingTitles> = {
         parallelId: target.id,
-        ...(cursor ? { cursor } : {}),
-      });
+      };
+      if (cursor) args.cursor = cursor;
+      // The section is full: later pages are read for their counts only.
+      if (cards.length >= SECTION_CARDS) args.wantCards = 0;
+      const result = await convex.query(api.parallelCopyTitles.failingTitles, args);
       if (page === 0) {
         boxPrefill = result.boxPrefill;
         value = result.parallel.value;
@@ -156,16 +183,33 @@ export function ParallelTitlesDoor({
   autoOpenKey,
   held = false,
   heldDescribedBy,
+  onActiveChange,
+  onStatusChange,
+  announceStatus = true,
 }: {
   /** Memoise: a new array per render reloads nothing, but re-arms the handler. */
   parallels: readonly ParallelTitlesTarget[];
-  /** The button's text and accessible name; distinct per door. */
+  /** The button's text and accessible name; distinct per door. Never swapped while loading. */
   label: string;
   /** Open once on its own for this key (the build that made the titles just ended). */
   autoOpenKey?: string;
   /** A build holds this checklist: the door is reachable but does nothing. */
   held?: boolean;
   heldDescribedBy?: string;
+  /**
+   * True from a press (or self-open) until the dialog closes, or the load ends
+   * with nothing to open. A host that mounts the door off a live count keeps
+   * it mounted while this is true.
+   */
+  onActiveChange?: (active: boolean) => void;
+  /** Told every line the status shows, so a host can say the last one after the door has gone. */
+  onStatusChange?: (line: string) => void;
+  /**
+   * False when the host already has a live line and says the door's lines
+   * through it: the line still shows here, but as plain text, never a second
+   * live region.
+   */
+  announceStatus?: boolean;
 }) {
   const convex = useConvex();
   const [loading, setLoading] = useState(false);
@@ -173,23 +217,56 @@ export function ParallelTitlesDoor({
   const [status, setStatus] = useState("");
   const doorRef = useRef<HTMLButtonElement | null>(null);
   const loadingRef = useRef(false);
+  // This door's token for `openingDoor`.
+  const [me] = useState(() => ({}));
+  const hostRef = useRef({ onActiveChange, onStatusChange });
+  useEffect(() => {
+    hostRef.current = { onActiveChange, onStatusChange };
+  }, [onActiveChange, onStatusChange]);
+
+  const say = useCallback((line: string) => {
+    setStatus(line);
+    hostRef.current.onStatusChange?.(line);
+  }, []);
+  /** This door is done opening: let the next one through, and tell the host. */
+  const settle = useCallback(() => {
+    if (openingDoor === me) openingDoor = null;
+    hostRef.current.onActiveChange?.(false);
+  }, [me]);
+  // A door unmounting mid-open never leaves the other doors held back.
+  useEffect(
+    () => () => {
+      if (openingDoor === me) openingDoor = null;
+    },
+    [me],
+  );
 
   const open = useCallback(async () => {
     if (loadingRef.current) return;
     loadingRef.current = true;
+    openingDoor ??= me;
+    hostRef.current.onActiveChange?.(true);
     setLoading(true);
-    setStatus("");
+    // The button keeps its name; this is what says the press took.
+    say(LOADING_TITLES_LABEL);
+    let opened = false;
     try {
       const loaded = await loadSections(convex, parallels);
-      if (loaded.length === 0) setStatus(ALL_TITLES_FIT);
-      else setSections(loaded);
+      if (loaded.length === 0) {
+        say(ALL_TITLES_FIT);
+      } else {
+        say("");
+        setSections(loaded);
+        opened = true;
+      }
     } catch (error) {
-      setStatus(loadFailedLine(errorText(error)));
+      say(loadFailedLine(errorText(error)));
     } finally {
       loadingRef.current = false;
       setLoading(false);
+      if (!opened) settle();
     }
-  }, [convex, parallels]);
+  }, [convex, parallels, me, say, settle]);
 
   // The self-open: once per key, a beat after mount (so a StrictMode double
   // effect cancels the first try instead of spending the key on it).
@@ -198,14 +275,22 @@ export function ParallelTitlesDoor({
     const timer = setTimeout(() => {
       if (autoOpened.has(autoOpenKey)) return;
       autoOpened.add(autoOpenKey);
-      if (held || anotherDialogOpen() || isEditableTarget(document.activeElement)) {
-        setStatus(heldBackLine(label));
+      if (
+        held ||
+        (openingDoor !== null && openingDoor !== me) ||
+        anotherDialogOpen() ||
+        isEditableTarget(document.activeElement)
+      ) {
+        say(heldBackLine(label));
         return;
       }
+      // Claimed before the load starts, so a second door's timer in this
+      // same tick already sees it.
+      openingDoor = me;
       void open();
     }, 0);
     return () => clearTimeout(timer);
-  }, [autoOpenKey, held, label, open]);
+  }, [autoOpenKey, held, label, open, me, say]);
 
   // Focus back to the door once the dialog has gone (its cleanup released
   // the background first, so the door is focusable again).
@@ -234,12 +319,13 @@ export function ParallelTitlesDoor({
         aria-haspopup="dialog"
         aria-describedby={held ? heldDescribedBy : undefined}
       >
-        {loading ? LOADING_TITLES_LABEL : label}
+        {label}
       </NeonButton>
       {/* Always mounted, so what it says is announced. Polite: nothing here
           stops work. Inherits its ink: it sits in the build ticker's banner
-          and on the checklist card, and reads in each one's own text colour. */}
-      <span role="status" className="text-xs empty:hidden">
+          and on the checklist card, and reads in each one's own text colour.
+          In the ticker it is plain text: the ticker's own live line says it. */}
+      <span role={announceStatus ? "status" : undefined} className="text-xs empty:hidden">
         {status}
       </span>
       {sections && (
@@ -248,7 +334,8 @@ export function ParallelTitlesDoor({
           convex={convex}
           onClose={(saved) => {
             setSections(null);
-            setStatus(saved ?? "");
+            say(saved ?? "");
+            settle();
           }}
         />
       )}
@@ -275,6 +362,11 @@ export function ParallelTitlesDialog({
   const errorId = useId();
   const dialogRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  const saveRef = useRef<HTMLButtonElement | null>(null);
+  // Each parallel's section, so a refusal can land on that parallel's box.
+  const sectionRefs = useRef<Array<HTMLElement | null>>([]);
+  // A failed save hands focus back to Save once it is pressable again.
+  const focusSaveRef = useRef(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -308,8 +400,15 @@ export function ParallelTitlesDialog({
   }, []);
 
   // Native `disabled` blurs the pressed Save; hold focus inside meanwhile.
+  // When the save fails, Save is live again: focus goes back to it, so the
+  // operator is one Enter from trying again, with the reason just announced.
   useEffect(() => {
-    if (saving) panelRef.current?.focus();
+    if (saving) {
+      panelRef.current?.focus();
+    } else if (focusSaveRef.current) {
+      focusSaveRef.current = false;
+      saveRef.current?.focus();
+    }
   }, [saving]);
 
   const edited = () =>
@@ -328,8 +427,20 @@ export function ParallelTitlesDialog({
     const boxes = shortNamesRef.current.map((raw) =>
       raw === undefined ? undefined : validShortName(raw),
     );
-    if (shortNamesRef.current.some((raw, i) => raw !== undefined && boxes[i] === undefined)) {
-      setError(BOX_NOT_SAVABLE);
+    const refused = shortNamesRef.current.findIndex(
+      (raw, i) => raw !== undefined && boxes[i] === undefined,
+    );
+    if (refused >= 0) {
+      setError(boxNotSavableLine(sections[refused].parallelValue));
+      // The refusal names the parallel; focus goes to its box, the one
+      // marked invalid (else the section's first field: the box leads it).
+      requestAnimationFrame(() => {
+        const section = sectionRefs.current[refused];
+        const box =
+          section?.querySelector<HTMLElement>('[aria-invalid="true"]') ??
+          section?.querySelector<HTMLElement>("textarea");
+        box?.focus();
+      });
       return;
     }
     setSaving(true);
@@ -349,6 +460,7 @@ export function ParallelTitlesDialog({
       onClose(savedTitlesLine(totals));
     } catch (e) {
       setError(saveFailedLine(errorText(e)));
+      focusSaveRef.current = true;
       setSaving(false);
     }
   };
@@ -416,6 +528,9 @@ export function ParallelTitlesDialog({
             {sections.map((section, i) => (
               <TitlesSection
                 key={section.parallelId}
+                sectionRef={(node) => {
+                  sectionRefs.current[i] = node;
+                }}
                 section={section}
                 source={sources[i]}
                 answers={answers[i] ?? []}
@@ -443,6 +558,7 @@ export function ParallelTitlesDialog({
           )}
           <div className="flex shrink-0 flex-wrap gap-3 px-5 pt-3 pb-5">
             <NeonButton
+              ref={saveRef}
               type="button"
               onClick={() => void save()}
               onKeyDown={(event) => activateOnEnter(event, () => void save(), saving)}
@@ -485,6 +601,7 @@ export function ParallelTitlesDialog({
 
 /** One parallel's part: its name, its count, and the step. */
 function TitlesSection({
+  sectionRef,
   section,
   source,
   answers,
@@ -493,6 +610,7 @@ function TitlesSection({
   onAnswersChange,
   onShortNameChange,
 }: {
+  sectionRef: (node: HTMLElement | null) => void;
   section: ParallelTitlesSection;
   source: ReturnType<typeof parallelTitlesSource>;
   answers: ReadonlyArray<TitleAnswer | undefined>;
@@ -504,7 +622,7 @@ function TitlesSection({
   const headingId = useId();
   const total = section.cards.length + section.moreCount;
   return (
-    <section aria-labelledby={headingId} className="py-4 first:pt-1">
+    <section ref={sectionRef} aria-labelledby={headingId} className="py-4 first:pt-1">
       <h3 id={headingId} className="flex flex-wrap items-baseline gap-x-2 text-sm font-semibold">
         <span className="break-words text-neon-green-text">{section.parallelValue}</span>
         <span className="text-xs font-normal text-ink-3 tabular-nums">

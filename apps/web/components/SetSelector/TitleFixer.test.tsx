@@ -42,7 +42,12 @@ vi.mock("convex/react", () => ({
     ref === "previewListingTitle" && args !== "skip" ? previewResult : undefined,
 }));
 
-import TitleFixer from "./TitleFixer";
+import TitleFixer, {
+  FITS_NOW,
+  TOO_LONG,
+  TOSS_TYPED_CONFIRM,
+  TOSS_TYPED_TITLE,
+} from "./TitleFixer";
 import {
   useClosesForSetNameInTitles,
   useSetNameInTitlesTarget,
@@ -119,8 +124,10 @@ describe("TitleFixer (NEO-101)", () => {
     expect(screen.getByText("title is over the 80-character limit")).toBeTruthy();
     expect(screen.queryByText("auto-generated title was cut short")).toBeNull();
     // One message under the field, not three: no "cut short" note and no
-    // "Left out to fit" while the title is over the cap.
-    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    // "Left out to fit" while the title is over the cap. On arrival it is a
+    // polite status (the field's description reads it), never an alert.
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getAllByRole("status").filter((n) => n.textContent === TOO_LONG)).toHaveLength(1);
     expect(screen.queryByText(/cut short — rewrite it/)).toBeNull();
     expect(screen.queryByText(/^Left out to fit/)).toBeNull();
   });
@@ -164,10 +171,11 @@ describe("TitleFixer (NEO-101)", () => {
     renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
 
     expect(screen.getByText("84/80")).toBeTruthy();
-    const alert = screen.getByRole("alert");
+    const alert = screen.getByText(TOO_LONG);
     expect(alert.textContent).toBe(
       "Too long to list as-is. Trim it here, or shorten the set name for the whole row.",
     );
+    expect(titleField().getAttribute("aria-describedby")).toContain(alert.id);
 
     const save = saveButton();
     expect(save.getAttribute("aria-disabled")).toBe("true");
@@ -353,6 +361,47 @@ describe("TitleFixer (NEO-101)", () => {
     expect(onSaved).not.toHaveBeenCalled();
   });
 
+  describe("NEO-535 (a11y): the over-cap line is always mounted", () => {
+    const line = () => document.getElementById(
+      titleField().getAttribute("aria-describedby")!.split(" ").find((id) => id.endsWith("-title-limit"))!,
+    );
+
+    it("is an alert only when a keystroke takes the title over, and says when it fits again", () => {
+      renderFixer([truncated()], makeRow({ listingTitle: "2024 Topps Chrome #300b" }));
+      const node = document.querySelector('[id$="-title-limit"]') as HTMLElement;
+      expect(node).not.toBeNull();
+      expect(node.textContent).toBe("");
+      expect(node.getAttribute("role")).toBe("status");
+
+      fireEvent.change(titleField(), { target: { value: "x".repeat(81) } });
+      expect(line()).toBe(node);
+      expect(node.getAttribute("role")).toBe("alert");
+      expect(node.textContent).toBe(TOO_LONG);
+
+      fireEvent.change(titleField(), { target: { value: "x".repeat(80) } });
+      expect(document.querySelector('[id$="-title-limit"]')).toBe(node);
+      expect(node.getAttribute("role")).toBe("status");
+      expect(node.textContent).toBe(FITS_NOW);
+    });
+
+    it("a card that arrives over the cap is said politely, then fits once trimmed", () => {
+      renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+      const node = line()!;
+      expect(node.getAttribute("role")).toBe("status");
+      expect(node.textContent).toBe(TOO_LONG);
+      fireEvent.change(titleField(), { target: { value: "z".repeat(70) } });
+      expect(document.querySelector('[id$="-title-limit"]')).toBe(node);
+      expect(node.textContent).toBe(FITS_NOW);
+    });
+
+    it("the title field says Enter saves", () => {
+      renderFixer([truncated()]);
+      const ids = titleField().getAttribute("aria-describedby")!.split(" ");
+      const said = ids.map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
+      expect(said).toContain("Enter saves the title on this card.");
+    });
+  });
+
   describe("NEO-535: the way to the row's Set name in titles", () => {
     function Target({ open }: { open: () => void }) {
       useSetNameInTitlesTarget(open);
@@ -379,6 +428,69 @@ describe("TitleFixer (NEO-101)", () => {
       // The dialog in front closes, then the box opens.
       expect(close).toHaveBeenCalledTimes(1);
       expect(open).toHaveBeenCalledTimes(1);
+    });
+
+    it("asks before tossing a typed title, and Cancel stays put", () => {
+      const open = vi.fn();
+      const close = vi.fn();
+      render(
+        <>
+          <Target open={open} />
+          <Closer close={close} />
+        </>,
+      );
+      renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+      fireEvent.change(titleField(), { target: { value: "y".repeat(85) } });
+
+      fireEvent.click(screen.getByRole("button", { name: "Trim Set name in titles" }));
+      expect(screen.getByRole("dialog", { name: TOSS_TYPED_TITLE })).toBeTruthy();
+      expect(open).not.toHaveBeenCalled();
+      expect(close).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("dialog", { name: TOSS_TYPED_TITLE })).toBeNull();
+      expect(titleField().value).toBe("y".repeat(85));
+      expect(open).not.toHaveBeenCalled();
+    });
+
+    it("Escape in the toss question answers it, and never reaches the walker", () => {
+      const walkerKeys = vi.fn();
+      render(<Target open={vi.fn()} />);
+      const onSaved = vi.fn();
+      render(
+        <div onKeyDown={(e) => walkerKeys(e.key)}>
+          <TitleFixer
+            row={makeRow({ listingTitle: "z".repeat(84) })}
+            items={[overLimit(84)]}
+            onSaved={onSaved}
+            onSkip={vi.fn()}
+          />
+        </div>,
+      );
+      fireEvent.change(titleField(), { target: { value: "y".repeat(85) } });
+      fireEvent.click(screen.getByRole("button", { name: "Trim Set name in titles" }));
+      const question = screen.getByRole("dialog", { name: TOSS_TYPED_TITLE });
+      fireEvent.keyDown(question, { key: "Escape" });
+      expect(screen.queryByRole("dialog", { name: TOSS_TYPED_TITLE })).toBeNull();
+      expect(walkerKeys).not.toHaveBeenCalledWith("Escape");
+    });
+
+    it("tossing the typed title goes on to the row's box", () => {
+      const open = vi.fn();
+      const close = vi.fn();
+      render(
+        <>
+          <Target open={open} />
+          <Closer close={close} />
+        </>,
+      );
+      renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+      fireEvent.change(titleField(), { target: { value: "y".repeat(85) } });
+      fireEvent.click(screen.getByRole("button", { name: "Trim Set name in titles" }));
+      fireEvent.click(screen.getByRole("button", { name: TOSS_TYPED_CONFIRM }));
+      expect(close).toHaveBeenCalledTimes(1);
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(mockUpdateCard).not.toHaveBeenCalled();
     });
 
     it("is never a dead end: no box on screen, no door", () => {

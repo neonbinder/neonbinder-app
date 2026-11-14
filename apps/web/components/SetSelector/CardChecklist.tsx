@@ -2777,6 +2777,35 @@ export default function CardChecklist({
     [variantRow, parallelBuild?.role, variantId],
   );
   /**
+   * NEO-535 (a11y) — the door is mounted off the live flag count, and a save
+   * that clears the last flag would tear the door and its dialog out mid-save
+   * (the saved line never said, focus dropped to <body>). So the door says
+   * when it is busy, and stays mounted until its dialog has closed. Its last
+   * line is kept here too, and said by the always-mounted line under the row
+   * once the door itself has gone.
+   */
+  const [titlesDoorActive, setTitlesDoorActive] = useState(false);
+  // Held with its parallel: this component is reused across checklists, and
+  // one parallel's "Saved 12 titles." must not show on the next.
+  const [titlesDoorLine, setTitlesDoorLine] = useState<{
+    parallelId: string;
+    line: string;
+  } | null>(null);
+  const titlesDoorShown =
+    titleDoorParallels.length > 0 && (titleFlagCount > 0 || titlesDoorActive);
+  /** Armed when the door goes idle: if it then leaves, focus is parked. */
+  const titlesParkRef = useRef(false);
+  /** The door's line once it has gone: the park when no pill is left. */
+  const titlesLineRef = useRef<HTMLParagraphElement | null>(null);
+  const onTitlesDoorActive = useCallback((active: boolean) => {
+    titlesParkRef.current = !active;
+    setTitlesDoorActive(active);
+  }, []);
+  const onTitlesDoorLine = useCallback(
+    (line: string) => setTitlesDoorLine({ parallelId: variantId, line }),
+    [variantId],
+  );
+  /**
    * NEO-335 (a11y) — the count the live region says, held until it has stood
    * still for a moment. A save, or a walker fixing cards back to back, moves
    * the count several times in a second; announcing each step would queue a
@@ -2923,9 +2952,13 @@ export default function CardChecklist({
    * same "only if focus really fell to body" guard as `parallelParkRef`.
    */
   const needsYouParkRef = useRef(false);
+  // NEO-535 — the pill itself, for the Card titles door's focus park.
+  const needsYouNodeRef = useRef<HTMLButtonElement | null>(null);
   const needsYouRef = useCallback((node: HTMLButtonElement | null) => {
     if (!node) return;
+    needsYouNodeRef.current = node;
     return () => {
+      if (needsYouNodeRef.current === node) needsYouNodeRef.current = null;
       if (document.activeElement === node) needsYouParkRef.current = true;
     };
   }, []);
@@ -2937,6 +2970,22 @@ export default function CardChecklist({
     if (active && active !== document.body) return;
     (syncNoticeRef.current ?? syncButtonRef.current)?.focus();
   }, [needsYouShown]);
+
+  /**
+   * NEO-535 (a11y, WCAG 2.4.3) — the Card titles door's dialog closed (or its
+   * load found nothing) and the save cleared the last flag, so the door left
+   * with focus on it, or the dialog's focus return had nowhere to go. Park on
+   * the "N need you" pill when it is still there, else on the line that says
+   * how the save went (a `tabIndex={-1}` park, so landing there reads it);
+   * only if focus really fell to <body>.
+   */
+  useEffect(() => {
+    if (titlesDoorShown || !titlesParkRef.current) return;
+    titlesParkRef.current = false;
+    const active = document.activeElement;
+    if (active && active !== document.body) return;
+    (needsYouNodeRef.current ?? titlesLineRef.current)?.focus();
+  }, [titlesDoorShown]);
 
   const sortedCards = useMemo(() => {
     if (!cards) return [];
@@ -3903,27 +3952,30 @@ export default function CardChecklist({
             could never match "N need you". Flows find it by `text:`. While a build holds this
             checklist it is aria-disabled and described by the line that says
             why, like every other held control. */}
-        {attentionCount > 0 && (
+        {(attentionCount > 0 || titlesDoorShown) && (
           <div className="flex items-center gap-2 flex-wrap mb-3">
             {/* a11y (1.4.3): text-ink-3 clears 4.5:1 against this card's
                 surface in both modes. */}
             <span className="text-xs font-semibold text-ink-3 uppercase tracking-wide w-24 shrink-0">
               Attention
             </span>
-            <SetRowActionButton
-              ref={needsYouRef}
-              tone="attention"
-              onActivate={openAttentionWalker}
-              disabled={editsHeld}
-              aria-describedby={editsHeld ? heldDescribedBy : undefined}
-              aria-haspopup="dialog"
-            >
-              {needsYouLabel(attentionCount)}
-            </SetRowActionButton>
+            {attentionCount > 0 && (
+              <SetRowActionButton
+                ref={needsYouRef}
+                tone="attention"
+                onActivate={openAttentionWalker}
+                disabled={editsHeld}
+                aria-describedby={editsHeld ? heldDescribedBy : undefined}
+                aria-haspopup="dialog"
+              >
+                {needsYouLabel(attentionCount)}
+              </SetRowActionButton>
+            )}
             {/* NEO-535 — a parallel's Card titles: every copy whose title
                 still fails, in one dialog with one box for the lot. Shown
-                only while the loaded cards carry a title flag. */}
-            {titleFlagCount > 0 && titleDoorParallels.length > 0 && (
+                while the loaded cards carry a title flag, and for as long as
+                its own load or dialog is up (`titlesDoorActive`). */}
+            {titlesDoorShown && (
               <ParallelTitlesDoor
                 parallels={titleDoorParallels}
                 label={FIX_CARD_TITLES_LABEL}
@@ -3934,10 +3986,26 @@ export default function CardChecklist({
                 }
                 held={editsHeld}
                 heldDescribedBy={heldDescribedBy}
+                onActiveChange={onTitlesDoorActive}
+                onStatusChange={onTitlesDoorLine}
               />
             )}
           </div>
         )}
+        {/* NEO-535 — the Card titles door's last line ("Saved 12 titles."),
+            once the door has gone with the last flag. Always mounted, so the
+            line is announced; empty while the door is up and says its own. */}
+        <p
+          ref={titlesLineRef}
+          role="status"
+          // A programmatic focus park only, never a Tab stop; its own ring (2.4.7).
+          tabIndex={-1}
+          className="mb-3 rounded-sm text-xs text-ink-2 empty:hidden focus-outline"
+        >
+          {!titlesDoorShown && titlesDoorLine?.parallelId === variantId
+            ? titlesDoorLine.line
+            : ""}
+        </p>
         {/*
           The pill's text changes silently — a screen reader is never told
           that the count went from 5 to 4 when a card is fixed. This is the
