@@ -126,3 +126,4 @@
 - [First seller press may wait for the seller account](patterns_first_seller_press_may_wait_for_the_seller_account.md) — NEO-483: expectRunOrSellerWait + claim wait capped at SELLER_ACCOUNT_CAP_MS; both orders end in the same asserts
 - [eBay hold spec on a hand-made set](patterns_ebay_hold_spec_on_a_handmade_set.md) — NEO-535: over-80 title fixture, hold-only run shape, tagged seller spec vs shard-plan
 - [Re-run a fresh-only spec w/o reseed](patterns_rerun_a_fresh_only_spec_without_a_reseed.md) — gcloud expired: restore spec + reset --except-reference-seed; push a break to prove stored-title asserts
+- [Parallel titles dialog specs](patterns_parallel_titles_dialog_specs.md) — NEO-535: builder-engineered names, box beats carry, sr-only duplicate status, Vite reload false red

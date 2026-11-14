@@ -42,6 +42,13 @@ test(
     // The ledger names the one parallel that was built.
     const built = page.getByText(/^.+ — (Built|Rebuilt) [1-9][0-9]* cards?(, .+)?$/).first();
     await expect(built).toBeVisible();
+    // NEO-535: a Base's copies take the builder's own titles, which fit, so the
+    // ledger names no title to fix, the ticker offers no "Fix N card titles"
+    // button and the Card titles dialog never opens by itself. Nothing here
+    // tolerates one: the line above is the positive that the run has ended.
+    await expect(built).not.toContainText(/titles? needs? a fix/);
+    await expect(page.getByRole("button", { name: /^Fix [0-9]+ card titles?$/ })).toHaveCount(0);
+    await expect(page.getByRole("dialog", { name: "Card titles" })).toHaveCount(0);
     const parallel = ((await built.textContent()) ?? "").split(" — ")[0].trim();
     expect(parallel.length).toBeGreaterThan(0);
 

@@ -447,8 +447,30 @@ all at the head of every run):
 | Insert | every set the Insert reconcile saved, with the ids the sync gave it — every pending BSC insert among them (NEO-308); every word-prefix pair nested by Accept All (`Anime Kanji` a parallel under `Anime`, its BSC slot tagged `variantName`); `All-America Game Autos` with the parallel `Red Ink` |
 | Parallel | every SportLots-only colour the review filed, plus BSC's parallels; `Blue` with BSC + SportLots links; NO `All-America Game Autos Red Ink` (moved by STEP 14, and a second Parallels sync, STEP 15, did not bring it back) |
 | `Anime` checklist | COMMITTED, every card from BSC (plus SportLots' when paired); its unknown names SKIPPED, so no players or teams are minted |
-| `Anime`'s parallels | all 4 built as copies of `Anime`'s cards (NEO-312), each copy linked to its parallel's OWN BSC (and SportLots, when paired) card; nothing pressed `Build`/`Rebuild` on a parallel row |
-| never touched | Base, any other checklist, any card edit |
+| `Anime`'s parallels | all 4 built as copies of `Anime`'s cards (NEO-312), each copy linked to its parallel's OWN BSC (and SportLots, when paired) card. NEO-535: the flow then presses `Rebuild from Anime` once, on `Anime Red Refractors`, so its copies are 29 fresh ones; `Anime Black Refractors`' 29 titles carry the flow's "Set name in titles" box (see the NEO-535 section below) |
+| `Anime`'s BA-3 | NEO-535: its title is HAND EDITED to `2026 Bowman Anime Murakami #BA-3` (the one card write the flow makes on the insert's checklist) |
+| the renames | NEO-535: `Anime Black Refractors` and `Anime Red Refractors` are renamed to long names during the flow and renamed BACK before it ends; a failed run leaves them renamed, which the next seed removes |
+| never touched | Base, any other checklist, any card edit but BA-3's title (NEO-535) |
+
+**NEO-535 — parallel copies and the Card titles dialog, proved HERE.** The
+inserts flow owns the claim because it is the one spec that builds real
+parallels from a real insert with names it controls (`Anime` is committed from
+`fixtures/checklists/2026-bowman-insert-anime.csv`, 29 `BA-` cards on each
+parallel). A copy's description is `2026 Bowman Anime ` + the parallel's name
+and the builder never cuts a description word, so the parallel's NB name sets
+whether a title can fit (arithmetic from the product's own builder over the
+CSV; the same code runs in the spec):
+
+| | |
+| -- | -- |
+| the ticker's dialog | BEFORE `Anime`'s cards are fetched, `Anime Black Refractors` is renamed `Anime Black Refractors Hologram Collectors Anniversary Platinum Rainbow Foil Edition` (description 102): every one of its 29 copies fails. The build ends, `Card titles` opens by itself listing that parallel ONLY (the other three fit), a shorter `Set name in titles` (`2026 Bowman Anime Black`) reads `Every title fits now.`, Save writes it, and the ticker's `Fix N card titles` button (kept, focus returned) finds nothing left. The parallel then opens with titles that start with the box text and no `N need you` or `Fix card titles` |
+| the carried hand edit | `Anime`'s BA-3 title is edited to drop the first name; `Anime Red Refractors` (renamed `Anime Red Refractors Hologram Foils Anniversary`, description 65, with its 29 cards) is rebuilt: BA-3 is the one card whose builder title would lose "Munetaka" and whose edit, re-headed, comes to exactly 80, so its copy reads `2026 Bowman Anime <renamed parallel> Murakami #BA-3` and is NOT in the dialog; BA-12, BA-19, BA-20 and BA-29 (the four longest names) are. `Not now` writes nothing; after a reload the parallel's checklist offers `Fix card titles` and opens the same four |
+| why a SECOND parallel | once a parallel holds the box, step 1 of the title order (the builder's title with the box) fits and wins, so a hand edit is never reached; the carried edit only matters on a parallel with no box, which is why it is proved on a parallel no one has fixed |
+| after | both renamed back to their BSC names |
+
+A change to the CSV, the builder's cut order or either name's length moves
+the counts (29, 4) and the 80-character edge; re-run the arithmetic (the
+spec's comments name it) before editing any of them.
 
 **One sole writer per row, fresh-only.** No other flow may drill into 2026
 Bowman. A local re-run of either Bowman flow needs a fresh seed (reset +
