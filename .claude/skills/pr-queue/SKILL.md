@@ -71,11 +71,16 @@ enqueue.
    - triage as in the turn flow: a Sonnet agent finds candidate `ci-fail`
      tickets, the session matches the error signature;
    - **every re-enqueue repeats the pre-enqueue checklist first**: step 0
-     (fork/author check), the `run-e2e` label removal in step 1, and step 2's
-     ruleset predicate, then `gh pr merge`;
+     (fork/author check), the `run-e2e` label removal in step 1, step 2's
+     ruleset predicate, and the `Preview Cleanup` wait (next bullet), then
+     `gh pr merge`;
+   - **before any re-enqueue, wait for the PR's `Preview Cleanup` run to finish**
+     (`gh run list --workflow preview-cleanup.yml --limit 5`, find the run for
+     this PR): a dequeue tears the PR's previews down, and enqueueing while that
+     runs races the rebuild;
    - a known failure (signature matches, nothing in the diff touches it) gets
-     its Occurrences bumped and is re-enqueued unchanged with
-     `gh pr merge <PR> --squash`, every time (a merge-group run cannot be
+     its Occurrences bumped and, after that checklist, is re-enqueued unchanged
+     with `gh pr merge <PR> --squash`, every time (a merge-group run cannot be
      rerun); no new audit is needed because the code is unchanged;
    - anything else goes to `feature-planner`; report to Jason and wait for
      his lead before any fix or re-enqueue;
@@ -83,11 +88,8 @@ enqueue.
      **re-enqueueing after a code fix needs the same bar as re-joining the
      Claude-run queue today**: the delta audit of the fix and the local gates
      (and covering specs) green first;
-   - **before any re-enqueue, wait for the PR's `Preview Cleanup` run to finish**
-     (`gh run list --workflow preview-cleanup.yml --limit 5`, find the run for
-     this PR): a dequeue tears the PR's previews down, and enqueueing while that
-     runs races the rebuild;
-   - send the Mac notification: `REASON='#499 ejected: one-line reason' notify.sh 'NEO-123 ejected' "$REASON"`
+   - send the Mac notification, with the ticket's Occurrences count for a
+     known failure so a loop shows: `REASON='#499 ejected: one-line reason' notify.sh 'NEO-123 ejected' "$REASON"`
      (free text single-quoted, as above);
    - `cc-state answer` only if Jason must decide; otherwise keep working.
 6. **`DONE REMOVED`** (a person, an unknown dequeue reason, or a closed PR) →
@@ -311,7 +313,9 @@ still be open when it starts.
       stay in line. Then `cc-state ci`, before anything else.
    2. **Merge in main.** `git fetch origin && git merge origin/main`. Resolve
       any conflict. If the merge brought in code, run the fast gates for the
-      areas touched (the monorepo CLAUDE.md lists them).
+      areas touched (the monorepo CLAUDE.md lists them). If you resolved
+      conflicts by hand, delta-audit the resolution before the push; if that
+      cannot finish quickly, pass the turn and rejoin.
    3. **Push the branch and open the PR.** `git push -u origin HEAD`. If no PR
       exists yet, `gh pr create` with the ticket in the title, then retitle it
       `NEO-123(<pr>) Short title` and set the tab title the same way. If the
@@ -359,7 +363,8 @@ still be open when it starts.
       also turns it green. Also confirm the PR's pushed head holds current main:
       `git fetch origin && git merge-base --is-ancestor origin/main "$(gh pr view <pr> --json headRefOid -q .headRefOid)"`
       succeeds. If something merged during your turn, the queue was bypassed:
-      stop (step 6) and tell Jason.
+      stop (the pass, notify and `cc-state answer` at the end of step 6, no
+      triage) and tell Jason.
    8. **Notify the merge.** The moment the merge commit exists:
       `notify.sh "NEO-123 merged" "#<pr> is on main: <short title>"`.
    9. **Tell every other session main moved.** `ListAgents`, then one message

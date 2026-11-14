@@ -139,7 +139,9 @@ re-measure before quoting them for Playwright.
    area they touch (a public Convex function, `services/browser`, a workflow
    or `.claude/` always reaches `security-auditor`). Any commit made after
    the round, a red's fix included, gets a delta audit before the ticket
-   rejoins the queue or is re-enqueued. Never rerun the full round.
+   rejoins the queue or is re-enqueued. A clean merge of main is not a
+   change; a merge with hand-resolved conflicts is, and its resolution gets a
+   delta audit before the push. Never rerun the full round.
 
 Two shipping modes, chosen by the repo variable `MERGE_QUEUE`
 (`gh variable get MERGE_QUEUE -R neonbinder/neonbinder-app`). Every skill reads
@@ -165,7 +167,8 @@ means the Claude-run queue.
    matches, nothing in the diff touches it) gets its occurrence count bumped
    and rejoins the queue unchanged, every time.
    Anything else goes to `feature-planner`, which says whether it is an
-   outside outage (rerun) or something to fix; report that to Jason and wait
+   outside outage (go again unchanged on a later turn, or re-enqueue) or
+   something to fix; report that to Jason and wait
    for his lead: no fix, no rejoin, no rerun until he says. The `pr-queue`
    skill has the exact steps. Churning on reds is what burns CI cycles and
    tokens.
@@ -193,10 +196,12 @@ run off-queue.
    re-enqueue). A green PR run alone is never "green". Discord is a backup for
    when no session is alive, not the signal.
 7. **`MERGED`:** `pr-close` does the production check, smoke test, Linear and
-   cleanup. **`EJECTED`:** triage it like a red in step 7 above: save
+   cleanup. **`EJECTED`:** triage it like a Claude-run red (step 7 of the
+   Claude-run list): save
    artifacts; a known `ci-fail` signature is bumped and re-enqueued
    unchanged; anything else goes to the planner, then Jason, before any fix
-   or re-enqueue. Send the Mac notification. There are no
+   or re-enqueue. Every re-enqueue first waits for the PR's `Preview Cleanup`
+   run to finish. Send the Mac notification. There are no
    turns, no `MAIN MOVED` messages and no `state.sh` in this mode.
 
 #### The fast gates, by area

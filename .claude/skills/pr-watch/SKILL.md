@@ -112,13 +112,13 @@ Terminal lines (one, then the Monitor ends):
 **Acting on the verdict (the session that enqueued does this, not Discord):**
 - `MERGED` → read `gh pr view <PR> --json state,mergeCommit` once, then the
   caller's next step (pr-close: notify, prod check, close-out).
-- `EJECTED` → this is a red run: follow the red-run rules of the `pr-queue`
-  skill (save the artifacts first, check for a ci-fail ticket, run the failure
-  through the planner), fix, push (pushes are free in queue mode), re-enqueue,
-  and re-arm `--queue`. Send the Mac notification
-  (`.claude/skills/pr-queue/notify.sh`). Set `cc-state answer` only if Jason has
-  to decide; otherwise keep working. Read the failing job logs with
-  `gh run view <run-id> --log-failed`; unlike plain PR mode, diagnosing is the job here.
+- `EJECTED` → this is a red run: triage it per the `pr-queue` skill's
+  GitHub-queue flow step 5. A known `ci-fail` signature is bumped and
+  re-enqueued unchanged after the pre-enqueue checklist (Preview Cleanup wait
+  included), then re-arm `--queue`. Anything else goes to the planner, is
+  reported to Jason with `cc-state answer`, and gets no fix or re-enqueue until
+  he says. Send the Mac notification (`.claude/skills/pr-queue/notify.sh`).
+  Read the failing job logs with `gh run view <run-id> --log-failed`.
 - `REMOVED` → stop and tell Jason with the reason and actor the line prints.
   Never re-enqueue on your own: an unknown reason is treated as a person's decision.
 - Discord is only a backup for when no session is alive; never rely on it.

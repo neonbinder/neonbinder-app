@@ -97,13 +97,15 @@ else, this step and the rest of the skill apply exactly as written.
   - `DONE MERGED`: continue below with the merge commit it prints (confirm with
     `gh pr view <PR> --json mergeCommit --jq .mergeCommit.oid`).
   - `DONE EJECTED` (GitHub removed it itself): the PR did not merge. Do not continue the gates. Treat it
-    as a red per the `pr-queue` skill's GitHub-queue flow (artifacts, ci-fail
-    ticket, planner, fix, re-enqueue, Mac notification) and re-run this skill
-    when the next verdict is MERGED. A re-enqueue repeats the pre-enqueue
-    checks above (items 1-3: ruleset predicate, fork/author check, `run-e2e`
-    label removal) before `gh pr merge`. Re-enqueueing after a code fix needs the
-    delta audit and local gates first (the `pr-queue` bar), and the PR's
-    `Preview Cleanup` run must have finished.
+    as a red per the `pr-queue` skill's GitHub-queue flow step 5 (artifacts;
+    a known `ci-fail` signature is bumped and re-enqueued unchanged; anything
+    else goes to the planner and Jason, with no fix or re-enqueue until he
+    says; Mac notification) and re-run this skill when the next verdict is
+    MERGED. Every re-enqueue repeats the pre-enqueue checks above (items 1-3:
+    ruleset predicate, fork/author check, `run-e2e` label removal) and waits
+    for the PR's `Preview Cleanup` run to finish before `gh pr merge`.
+    Re-enqueueing after a code fix also needs the delta audit and local gates
+    first (the `pr-queue` bar).
   - `DONE REMOVED` / `NOT_QUEUED`: stop and tell Jason; never re-enqueue.
 - After `MERGED`, **keep everything else in this skill**: Mac notification
   (`notify.sh`, as below), then gate 2 (production verify), the smoke test,
