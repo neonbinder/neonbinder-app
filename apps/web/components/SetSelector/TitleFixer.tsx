@@ -185,7 +185,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
   return (
     <div className="space-y-3">
       {error && (
-        <p role="alert" className="text-xs text-neon-pink-text">
+        <p role="alert" className="text-xs text-notice-danger-ink">
           {error}
         </p>
       )}
@@ -205,10 +205,10 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
       </div>
 
       <div>
-        <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3">
+        <div className="mb-1 flex items-center justify-between gap-2 text-xs uppercase tracking-wide text-ink-3">
           <span>Card title</span>
           <span className="flex items-center gap-2">
-            <TitleLengthMeter length={title.length} soft surface="dark" />
+            <TitleLengthMeter length={title.length} soft />
             <button
               type="button"
               onClick={() => preview.request(titleDirty)}
@@ -228,8 +228,8 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
               aria-describedby={
                 preview.confirming ? `${uid}-regen-confirm` : undefined
               }
-              // a11y (2.5.8): min-h-6 lifts the 15px label line to a 24px
-              // target; the 10px caption type stays as it was.
+              // a11y (2.5.8): min-h-6 lifts the label line to a 24px target;
+              // the caption type stays as it was.
               className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-neon-blue-text underline decoration-dotted focus-outline hover:text-ink"
             >
               {preview.loading
@@ -260,7 +260,9 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           }}
           // No maxLength: a pasted over-length title must stay visible to be
           // fixable. See the same note in CardDetailPanel.
-          className={`block w-full resize-none p-1.5 text-sm [field-sizing:content] ${busy ? "opacity-60" : ""}`}
+          // The held look (readOnly + aria-disabled while busy) is the
+          // Textarea primitive's own; no fade here.
+          className="block w-full resize-none p-1.5 text-sm [field-sizing:content]"
           // Anchored to the card number so it cannot collide with the drawer's
           // own "Card title" field in a selector — Maestro's `id:` matcher
           // takes a regex, so `Card title for #.*` still targets it.
@@ -293,24 +295,21 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           id={titleAlertId}
           role={titleState.over && overByKeystroke ? "alert" : "status"}
           aria-atomic="true"
-          className={`mt-1 text-[10px] empty:hidden ${titleState.over ? "text-neon-pink-text" : "text-neon-green-text"}`}
+          className={`mt-1 text-xs empty:hidden ${titleState.over ? "text-notice-danger-ink" : "text-neon-green-text"}`}
         >
           {titleState.over ? TOO_LONG : fitsNow ? FITS_NOW : ""}
         </p>
         {titleState.over && (
           <div className="mt-0.5">
             {canGoToSetName && (
-              <p className="text-[10px] text-ink-2">
-                {SET_NAME_HOGGING}{" "}
-                <button
-                  type="button"
-                  onClick={trimSetName}
-                  // leading-4 + py-1: a 24px target (SC 2.5.8) at 10px type.
-                  className="-my-1 rounded py-1 leading-4 text-neon-blue-text underline decoration-dotted hover:text-ink focus-outline"
-                >
+              // The lead, then the way out of it: a quiet neutral action
+              // (DESIGN.md: `secondary outline`), size 1 for a 24px target.
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <p className="text-xs text-ink-2">{SET_NAME_HOGGING}</p>
+                <NeonButton variant="secondary" outline size="1" type="button" onClick={trimSetName}>
                   {TRIM_SET_NAME}
-                </button>
-              </p>
+                </NeonButton>
+              </div>
             )}
           </div>
         )}
@@ -319,7 +318,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             id={`${uid}-regen-confirm`}
             role="status"
             aria-atomic="true"
-            className="mt-1 text-[10px] text-neon-blue-text"
+            className="mt-1 text-xs text-neon-blue-text"
           >
             Regenerate again to replace the title you have typed.
           </p>
@@ -330,7 +329,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             only matters once it fits. It also says what "cut short" meant,
             so that note is gone. */}
         {!titleState.over && leftOut.length > 0 && (
-          <TitleFieldNote surface="dark">
+          <TitleFieldNote>
             Left out to fit: {leftOut.join(", ")}
           </TitleFieldNote>
         )}
@@ -339,7 +338,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             {preview.chips.map((chip, idx) => (
               <li
                 key={`${chip.label}-${chip.value}-${idx}`}
-                className="rounded-full border border-rule-strong bg-raised/60 px-2 py-0.5 text-[10px] text-ink-2"
+                className="rounded-full border border-rule-strong bg-raised/60 px-2 py-0.5 text-xs text-ink-2"
               >
                 <span className="mr-1 uppercase tracking-wide text-ink-3">
                   {chip.label}
@@ -353,9 +352,9 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
 
       {fixesVariation && (
         <div>
-          <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3">
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs uppercase tracking-wide text-ink-3">
             <span>Variation</span>
-            <TitleLengthMeter length={variation.length} max={ASPECT_VALUE_MAX} surface="dark" />
+            <TitleLengthMeter length={variation.length} max={ASPECT_VALUE_MAX} />
           </div>
           <Input
             bare
@@ -373,7 +372,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
               e.preventDefault();
               void save();
             }}
-            className={`w-full p-1.5 text-sm ${busy ? "opacity-60" : ""}`}
+            className="w-full p-1.5 text-sm"
             aria-label={`Card variation for #${row.cardNumber}`}
             aria-describedby={[
               variation.length > ASPECT_VALUE_MAX ? variationAlertId : null,
@@ -393,7 +392,6 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             max={ASPECT_VALUE_MAX}
             what="Variation"
             blocking={false}
-            surface="dark"
           />
         </div>
       )}

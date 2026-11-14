@@ -159,7 +159,17 @@ export function sectionEdited(
   });
 }
 
-/** The save results, summed, as one line for the door's status. */
+/** Said when a save wrote nothing and has nothing else to report. */
+export const NOTHING_CHANGED = "Nothing changed, dude.";
+
+/**
+ * The save results, summed, as one line for the door's status.
+ *
+ * Save stays live with nothing edited: it answers every row shown (keeping
+ * the titles the rows show), so an untouched save is a real decision. It can
+ * still write nothing (every row ran past the kept cap, or a typed title was
+ * still over), and then "Saved 0 titles." would read as a count of work done.
+ */
 export function savedTitlesLine(totals: {
   saved: number;
   rewritten: number;
@@ -168,8 +178,9 @@ export function savedTitlesLine(totals: {
   stillFailing: number;
 }): string {
   const fixed = totals.saved + totals.rewritten + totals.kept;
+  if (fixed === 0 && totals.stillFailing === 0 && totals.skipped === 0) return NOTHING_CHANGED;
   const parts = [
-    fixed === 1 ? "Saved 1 title." : `Saved ${fixed} titles.`,
+    fixed === 0 ? "No titles saved." : fixed === 1 ? "Saved 1 title." : `Saved ${fixed} titles.`,
   ];
   if (totals.stillFailing > 0) {
     parts.push(

@@ -16,6 +16,7 @@ import {
   parallelTitlesSource,
   saveTitleFixesArgs,
   savedTitlesLine,
+  NOTHING_CHANGED,
   sectionEdited,
   type ParallelTitlesSection,
   type StoredTitleCard,
@@ -170,7 +171,12 @@ describe("savedTitlesLine", () => {
       "Saved 1 title. 1 still runs long. 1 changed while you were in there, so it was left alone.",
     );
     expect(savedTitlesLine({ ...zero, stillFailing: 2, skipped: 3 })).toBe(
-      "Saved 0 titles. 2 still run long. 3 changed while you were in there, so they were left alone.",
+      "No titles saved. 2 still run long. 3 changed while you were in there, so they were left alone.",
     );
+  });
+
+  test("a save that wrote nothing says so, never 'Saved 0 titles.'", () => {
+    expect(savedTitlesLine(zero)).toBe(NOTHING_CHANGED);
+    expect(NOTHING_CHANGED).toBe("Nothing changed, dude.");
   });
 });

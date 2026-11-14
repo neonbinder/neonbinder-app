@@ -5,6 +5,7 @@ import {
   type ReactiveFieldOptions,
 } from "../forms/useReactiveField";
 import NeonButton from "@/components/modules/NeonButton";
+import { FIELD_OFF } from "./field-off";
 
 /**
  * NEO-44 — the app's shared text input.
@@ -110,8 +111,7 @@ export interface InputProps extends NativeInputProps {
  * page's `text-foreground`: the field owns its surface, so it owns the ink on
  * it. Focus is the app-wide outline (NEO-356), never a box-shadow ring.
  */
-const BASE_INPUT =
-  "border rounded-md focus-outline disabled:cursor-not-allowed disabled:opacity-50";
+const BASE_INPUT = `border rounded-md focus-outline ${FIELD_OFF}`;
 
 /**
  * The colours, per {@link InputProps.surface}, as roles (app/theme.css). In
@@ -318,7 +318,7 @@ export const Input = React.forwardRef<HTMLInputElement, InputProps>(
         {(helperText || error) && (
           <p
             id={messageId}
-            className={`text-sm ${error ? "text-neon-pink-text" : "text-ink-3"}`}
+            className={`text-sm ${error ? "text-notice-danger-ink" : "text-ink-3"}`}
           >
             {error || helperText}
           </p>

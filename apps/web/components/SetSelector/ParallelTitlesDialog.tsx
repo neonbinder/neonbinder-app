@@ -506,14 +506,15 @@ export function ParallelTitlesDialog({
         onClick={leave}
       >
         {/* Header / body / footer, only the body scrolls: the buttons and the
-            refusal stay on screen at the 1024x629 E2E viewport. The panel is
+            refusal stay on screen at the 1024x629 E2E viewport, and on a
+            phone whose browser bar is showing (dvh, not vh). The panel is
             inert under the discard confirm, which is not portalled and traps
             Tab only. */}
         <div
           ref={panelRef}
           tabIndex={-1}
           inert={confirming || undefined}
-          className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col rounded-lg border border-rule-strong bg-raised-deep shadow-xl shadow-offset outline-none"
+          className="flex max-h-[calc(100dvh-2rem)] w-full max-w-2xl flex-col rounded-lg border border-rule-strong bg-raised-deep shadow-xl shadow-offset outline-none"
           onClick={(event) => event.stopPropagation()}
         >
           <div className="shrink-0 px-5 pt-5 pb-3">
@@ -566,8 +567,9 @@ export function ParallelTitlesDialog({
             >
               {saving ? SAVING_TITLES_LABEL : SAVE_TITLES_LABEL}
             </NeonButton>
+            {/* Backing out, so pink (DESIGN.md), like the wizard's Cancel. */}
             <NeonButton
-              variant="secondary"
+              variant="negative"
               type="button"
               onClick={leave}
               onKeyDown={(event) => activateOnEnter(event, leave, saving)}

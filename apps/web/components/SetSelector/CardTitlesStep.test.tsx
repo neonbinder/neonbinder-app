@@ -53,6 +53,7 @@ function setup(props: {
   answers?: Array<TitleAnswer | undefined>;
   names?: React.ComponentProps<typeof CardTitlesStep>["names"];
   headingId?: string;
+  disabled?: boolean;
 }) {
   const onAnswersChange = vi.fn();
   const onWizardKey = vi.fn();
@@ -67,6 +68,7 @@ function setup(props: {
         headingId={p.headingId}
         answers={p.answers ?? []}
         onAnswersChange={onAnswersChange}
+        disabled={p.disabled}
       />
     </div>
   );
@@ -304,8 +306,31 @@ describe("CardTitlesStep — accessibility wiring", () => {
       target: { value: "Mine #1" },
     });
     const reset = screen.getByRole("button", { name: "Use generated title for #1 Card 1" });
-    expect(reset.className).toContain("leading-4");
-    expect(reset.className).toContain("py-1");
+    // NEO-535: the house NeonButton at Radix size 1, whose height is 24px.
+    expect(reset.className).toContain("neon-button");
+    expect(reset.className).toContain("rt-r-size-1");
+  });
+
+  test("while the step saves, the field and 'Use generated title' read as held, with no caller fade", () => {
+    const { rerenderWith } = setup({ cards: [card("1")] });
+    const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    fireEvent.change(field, { target: { value: "Mine #1" } });
+    const reset = screen.getByRole("button", { name: "Use generated title for #1 Card 1" });
+    expect(reset.getAttribute("aria-disabled")).toBeNull();
+    expect(reset.style.cursor).toBe("");
+
+    rerenderWith({ disabled: true });
+    // The button's held look is NeonButton's own (aria-disabled → neutral fill).
+    expect(reset.getAttribute("aria-disabled")).toBe("true");
+    expect(reset.style.cursor).toBe("not-allowed");
+    // The field's is the Textarea primitive's (aria-disabled variants), never an opacity.
+    expect(field.getAttribute("aria-disabled")).toBe("true");
+    expect(field.hasAttribute("readonly")).toBe(true);
+    expect(field.className).toContain("aria-disabled:bg-button-neutral");
+    expect(field.className).not.toMatch(/(^|\s)opacity-/);
+    // The guard holds: pressing it while held keeps the typed title.
+    fireEvent.click(reset);
+    expect((field as HTMLTextAreaElement).value).toBe("Mine #1");
   });
 
   test("headingId lands on the titles lead when there are titles, for the wizard's Next", () => {
@@ -376,7 +401,9 @@ describe("CardTitlesStep — the meter is neutral until past the cap", () => {
       target: { value: "t".repeat(84) },
     });
     const meter = screen.getByText("84/80");
-    expect(meter.parentElement?.className).toContain("text-neon-pink-text");
+    // The danger ink, never pink: pink is backing out and taking away.
+    expect(meter.parentElement?.className).toContain("text-notice-danger-ink");
+    expect(meter.parentElement?.className).not.toContain("neon-pink");
     expect(screen.getByText("4 over")).toBeTruthy();
   });
 });

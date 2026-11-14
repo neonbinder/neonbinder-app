@@ -379,7 +379,7 @@ export default function NewTeamDialog({
           content height wins and the cap does nothing.
         */}
         <div
-          className="flex max-h-[calc(100vh-2rem)] w-full max-w-lg flex-col rounded-lg border border-rule-strong bg-raised-deep shadow-xl shadow-offset"
+          className="flex max-h-[calc(100dvh-2rem)] w-full max-w-lg flex-col rounded-lg border border-rule-strong bg-raised-deep shadow-xl shadow-offset"
           onClick={(event) => event.stopPropagation()}
         >
           <h2

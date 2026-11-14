@@ -198,7 +198,7 @@ Each hue plays three roles: the fill (`bg-neon-X`, borders, rings), the hue as t
 | `list-hover-raised` | a checklist row on a raised card under the pointer | gray-700 at 50% | #F0F2F9 |
 | `chip` | a neutral tag or filter chip at rest | gray-700 | #E8EAF2 |
 | `chip-strong` | one step up: a tag sitting on a row tile, a chip under the pointer | gray-600 | #DDE0EA |
-| `button-neutral`, `button-neutral-hover` | a neutral filled button (Sign In on the landing page, a Cancel beside a neon Save), and a disabled button's fill | slate-700, slate-600 | #E8EAF2, #DDE0EA |
+| `button-neutral`, `button-neutral-hover` | a neutral filled button (Sign In on the landing page, a Cancel beside a neon Save), and the fill of a disabled button or a held text field | slate-700, slate-600 | #E8EAF2, #DDE0EA |
 
 `bg-hover` equals `bg-raised` in dark, so never use it for a hover that sits on a raised surface; that is what `hover-raised` is for.
 
@@ -218,7 +218,7 @@ In dark these tiles are light greys, and `ink-3` and the pink and violet `-text`
 
 ### Notices
 
-`notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink. Danger is red in both modes: dark's red-900 family, and in light a pale red ground (#FDECEE), deep red ink (#A3001A) and a red rule (#C4001F). A notice is not a button: buttons never borrow its red.
+`notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink. Danger is red in both modes: dark's red-900 family, and in light a pale red ground (#FDECEE), deep red ink (#A3001A) and a red rule (#C4001F). A notice is not a button: buttons never borrow its red. `text-notice-danger-ink` is also the ink for an inline error and for a count past a field's limit ("84/80 · 4 over", "Too long to list as-is."); neon pink never marks an error.
 
 ### State that differs by mode
 
@@ -252,7 +252,9 @@ In dark these tiles are light greys, and `ink-3` and the pink and violet `-text`
 - **Headline** (700, 1.5rem): page titles.
 - **Title** (700, 1.25rem): section and card headings. `text-xl` is the most-used heading size.
 - **Body** (400, 0.875rem): the working size. `text-sm` is the most-used class in the app.
-- **Label** (400, 0.75rem): metadata, badges, helper text. Field labels are `text-sm` in `ink-2`.
+- **Label** (400, 0.75rem): metadata, badges, helper text, meters. Field labels are `text-sm` in `ink-2`.
+
+Label is the floor. Nothing in the working UI is set below `text-xs`: an arbitrary `text-[10px]` or `text-[11px]` is off the scale.
 
 ### Named Rules
 **The One Sign Rule.** The Neon face is the wordmark. It is never used for headings, buttons or body copy.
@@ -317,7 +319,9 @@ Crisp, solid and few. One neon fill per decision. Every action button is `NeonBu
 ### Inputs / Fields
 - **Style:** `field` background, 1px `field-rule` border (3:1 in light), 6px radius, `ink` text, `ink-3` placeholder, 8px × 12px.
 - **Focus:** the `focus-outline` (cyan in dark, violet in light).
-- **Labels:** visible `text-sm` labels in `ink-2`, above the field (or left of it at 84px minimum width).
+- **Labels:** visible `text-sm` labels in `ink-2`, above the field (or left of it at 84px minimum width). A row's own name beside its field (`#12 Ohtani` beside its title) is that field's label, and takes the same size and ink.
+- **Error:** the message under the field is `text-sm` in `notice-danger-ink`, tied to the field by `aria-describedby` with `aria-invalid` set. Never neon pink: pink is backing out and taking away.
+- **Off:** native `disabled`, or `aria-disabled` on a `readOnly` field that keeps focus while it waits, swaps the well for the `button-neutral` fill and the ink for `ink-2`, with a not-allowed cursor: the same swap a disabled button makes, one ink step lighter so the held value stays readable (`ink-3` misses 4.5:1 on that fill in dark). `Input` and `Textarea` own it (`components/primitives/field-off.ts`); a caller never fades a field with an opacity. Bare `readOnly` alone is not off: a field read-only only while an autosave lands must not flash grey.
 
 ### Lists and pickers
 - **Tile rows** (the set picker's columns): `bg-row border-row-rule hover:bg-row-hover`. White tiles with a visible edge in light, never a heavy grey tile.

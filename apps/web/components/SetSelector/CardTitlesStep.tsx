@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { Textarea } from "../primitives/Textarea";
+import NeonButton from "../modules/NeonButton";
 import {
   checkShortNameAnswer,
   type TitleContext,
@@ -460,7 +461,7 @@ export default function CardTitlesStep({
         undoPoint.current = latest.current;
       }}
     >
-      <p id={keysHintId} className="text-[11px] text-ink-3">
+      <p id={keysHintId} className="text-xs text-ink-3">
         {KEYS_HINT}
       </p>
       {showShortName && (
@@ -474,7 +475,7 @@ export default function CardTitlesStep({
           <Heading id={shortLeadId} className="text-sm font-normal text-ink-2">
             {SHORT_LEAD}
           </Heading>
-          <label className="mt-2 block text-xs text-ink-3">
+          <label className="mt-2 block text-sm text-ink-2">
             {SHORT_LABEL}
             {/* NEO-535: the same wrapping one-line field as the titles
                 below, so a long set description stays in view on a phone. */}
@@ -499,26 +500,25 @@ export default function CardTitlesStep({
               aria-invalid={shortCheck.error ? true : undefined}
               aria-disabled={disabled || undefined}
               readOnly={disabled}
-              className={`mt-1 ${FIELD_CLASS} ${disabled ? "opacity-60" : ""}`}
+              className={`mt-1 ${FIELD_CLASS}`}
             />
           </label>
-          <div id={shortMeterId} className="mt-0.5 flex justify-end text-[11px]">
+          <div id={shortMeterId} className="mt-0.5 flex justify-end text-xs">
             <TitleLengthMeter
               length={shortDraft.trim().length}
               max={MAX_LISTING_SHORT_NAME_LENGTH}
-              surface="dark"
             />
           </div>
           {/* Always mounted, so a change is announced. Polite progress, read
               from the box as it last settled, never per keystroke. */}
-          <p id={shortStatusId} role="status" className="mt-1 text-[11px] text-ink-2 empty:hidden">
+          <p id={shortStatusId} role="status" className="mt-1 text-xs text-ink-2 empty:hidden">
             {shortStatus}
           </p>
           {shortError && (
             // a11y: a refusal is its own alert. The danger notice ink, not the
             // neon pink as text: it clears 4.5:1 on this dialog in both modes
             // (10:1+ dark, 8.2:1 light), where pink is 4.56:1 on a raised row.
-            <p id={shortErrorId} role="alert" className="mt-1 text-[11px] text-notice-danger-ink">
+            <p id={shortErrorId} role="alert" className="mt-1 text-xs text-notice-danger-ink">
               {shortError}
             </p>
           )}
@@ -634,10 +634,10 @@ function VariationLine({
         aria-invalid={length > ASPECT_VALUE_MAX || undefined}
         aria-disabled={disabled || undefined}
         readOnly={disabled}
-        className={`${FIELD_CLASS} ${disabled ? "opacity-60" : ""}`}
+        className={FIELD_CLASS}
       />
-      <div id={meterId} className="flex justify-end text-[11px]">
-        <TitleLengthMeter length={length} max={ASPECT_VALUE_MAX} surface="dark" />
+      <div id={meterId} className="flex justify-end text-xs">
+        <TitleLengthMeter length={length} max={ASPECT_VALUE_MAX} />
       </div>
     </li>
   );
@@ -654,7 +654,7 @@ function CardList({
   if (cards.length === 1) {
     const card = cards[0];
     return (
-      <p className="break-words text-xs text-ink-3">
+      <p className="break-words text-sm text-ink-2">
         <span className="text-neon-green-text">#{card.cardNumber}</span> {card.cardName}
       </p>
     );
@@ -802,7 +802,7 @@ function TitleRow({
   const edited = draft !== undefined && draft.trim() !== card.title;
   return (
     <li className="sm:grid sm:grid-cols-[minmax(0,10rem)_minmax(0,1fr)] sm:items-start sm:gap-x-3">
-      <p className="break-words pt-1.5 text-xs text-ink-3">
+      <p className="break-words pt-1.5 text-sm text-ink-2">
         <span className="text-neon-green-text">#{card.cardNumber}</span> {card.cardName}
       </p>
       <div className="min-w-0">
@@ -822,19 +822,22 @@ function TitleRow({
           aria-invalid={over || undefined}
           aria-disabled={disabled || undefined}
           readOnly={disabled}
-          className={`${FIELD_CLASS} ${disabled ? "opacity-60" : ""}`}
+          className={FIELD_CLASS}
         />
         {card.leftOut.length > 0 && (
           // What this card's field lacks beyond its group's line — most often
           // its own names and number, the loss an operator most wants to put
           // back, so it sits right under the field.
-          <p id={ownLineId} className="mt-0.5 break-words text-[11px] text-notice-warn-ink">
+          <p id={ownLineId} className="mt-0.5 break-words text-xs text-notice-warn-ink">
             Left out to fit: {card.leftOut.join(", ")}
           </p>
         )}
-        <div className="mt-0.5 flex flex-wrap items-center justify-between gap-x-3 text-[11px]">
+        <div className="mt-1 flex flex-wrap items-center justify-between gap-x-3 text-xs">
           {edited ? (
-            <button
+            <NeonButton
+              variant="secondary"
+              outline
+              size="1"
               type="button"
               onClick={() => {
                 if (disabled) return;
@@ -846,12 +849,12 @@ function TitleRow({
                 fieldRef.current?.focus();
               }}
               aria-label={`${USE_GENERATED} for ${label}`}
+              // NeonButton draws the held look off aria-disabled (NEO-535):
+              // the guard above is what stops the reset while the step saves.
               aria-disabled={disabled || undefined}
-              // leading-4 + py-1: a 24px target (SC 2.5.8) at text-[11px].
-              className="-my-1 rounded py-1 leading-4 text-neon-blue-text underline decoration-dotted hover:text-ink focus-outline"
             >
               {USE_GENERATED}
-            </button>
+            </NeonButton>
           ) : (
             <span />
           )}
@@ -859,7 +862,7 @@ function TitleRow({
             {/* Neutral until past the cap (no `soft` bands): every title on
                 this step sits near 80, so "may clip in search" would be on
                 every row and say nothing. TitleFixer keeps its bands. */}
-            <TitleLengthMeter length={value.trim().length} max={LISTING_TITLE_MAX} surface="dark" />
+            <TitleLengthMeter length={value.trim().length} max={LISTING_TITLE_MAX} />
           </span>
         </div>
         {/* Always mounted, so its text is announced when it appears (a live
@@ -867,7 +870,7 @@ function TitleRow({
             an alert: the step never blocks, so nothing here stops work. Its
             text changes only when the title crosses the cap, so it speaks
             once per crossing rather than per keystroke. */}
-        <p id={alertId} role="status" className="mt-0.5 text-[11px] text-neon-pink-text empty:hidden">
+        <p id={alertId} role="status" className="mt-0.5 text-xs text-notice-danger-ink empty:hidden">
           {over ? TITLE_OVER : ""}
         </p>
       </div>
