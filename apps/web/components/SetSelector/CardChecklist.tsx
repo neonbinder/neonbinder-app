@@ -105,6 +105,8 @@ import ParallelBuildPanel, {
   type ParallelBuildRole,
   type ParallelBuildRunner,
 } from "./ParallelBuildPanel";
+import { ParallelTitlesDoor } from "./ParallelTitlesDialog";
+import { storedTitleFails } from "../../convex/features/carriedTitle";
 import PublishedChecklistDialog, {
   PublishedChecklistChip,
   checklistTeamsLine,
@@ -656,6 +658,12 @@ const NO_HAYSTACK: CardSearchHaystack = {
 function needsYouLabel(count: number): string {
   return count === 1 ? "1 needs you" : `${count} need you`;
 }
+
+/**
+ * NEO-535 — the parallel checklist's Card titles button. Worded apart from
+ * the build ticker's ("Fix 12 card titles"), which can be on the same page.
+ */
+export const FIX_CARD_TITLES_LABEL = "Fix card titles";
 
 /**
  * NEO-335 — is any of a stored row's pending names one the set's skip records
@@ -2740,6 +2748,35 @@ export default function CardChecklist({
     [cards],
   );
   /**
+   * NEO-535 — a parallel's cards whose stored title still fails (over 80, or
+   * cut short), off the same live subscription: the Card titles door beside
+   * the "N need you" pill shows while there are any. No new subscription.
+   */
+  const titleFlagCount = useMemo(
+    () =>
+      parallelBuild?.role === "parallel"
+        ? (cards ?? []).filter((c) => storedTitleFails(c)).length
+        : 0,
+    [cards, parallelBuild?.role],
+  );
+  /**
+   * NEO-535 — the parallel whose own-row build just landed with titles to
+   * fix: its Card titles opens once on its own (keyed by this build), as soon
+   * as the copies are on the checklist. Held on the parallel's id, so it
+   * never fires on another checklist this component is reused for.
+   */
+  const [titlesAutoOpen, setTitlesAutoOpen] = useState<{
+    parallelId: string;
+    key: string;
+  } | null>(null);
+  const titleDoorParallels = useMemo(
+    () =>
+      variantRow && parallelBuild?.role === "parallel"
+        ? [{ id: variantId, value: variantRow.value }]
+        : [],
+    [variantRow, parallelBuild?.role, variantId],
+  );
+  /**
    * NEO-335 (a11y) — the count the live region says, held until it has stood
    * still for a moment. A save, or a walker fixing cards back to back, moves
    * the count several times in a second; announcing each step would queue a
@@ -2812,6 +2849,14 @@ export default function CardChecklist({
       });
       setNoticeDetailOpen(false);
       if (here) parallelParkRef.current = true;
+      // NEO-535 — a build on this parallel's own row left titles to fix: the
+      // Card titles door opens once, when the copies reach the checklist.
+      if (here && committed && (result?.titlesToFix ?? 0) > 0) {
+        setTitlesAutoOpen({
+          parallelId,
+          key: `parallel-build:${parallelId}:${Date.now()}`,
+        });
+      }
     },
     [setSyncNotice],
   );
@@ -3875,6 +3920,22 @@ export default function CardChecklist({
             >
               {needsYouLabel(attentionCount)}
             </SetRowActionButton>
+            {/* NEO-535 — a parallel's Card titles: every copy whose title
+                still fails, in one dialog with one box for the lot. Shown
+                only while the loaded cards carry a title flag. */}
+            {titleFlagCount > 0 && titleDoorParallels.length > 0 && (
+              <ParallelTitlesDoor
+                parallels={titleDoorParallels}
+                label={FIX_CARD_TITLES_LABEL}
+                autoOpenKey={
+                  titlesAutoOpen?.parallelId === variantId
+                    ? titlesAutoOpen.key
+                    : undefined
+                }
+                held={editsHeld}
+                heldDescribedBy={heldDescribedBy}
+              />
+            )}
           </div>
         )}
         {/*

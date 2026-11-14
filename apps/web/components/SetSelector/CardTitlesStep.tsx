@@ -14,6 +14,7 @@ import {
   buildTitleGroups,
   oneLine,
   setNameInTitlesPrefill,
+  type CardTitlesSource,
   type PreviewCardForTitles,
   type TitleAnswer,
   type TitleGroup,
@@ -87,6 +88,13 @@ import type { TeamAnswer } from "./teams-on-cards";
  * `TITLE_ROWS_SHOWN` rows are drawn; the rest are counted ("And N more, saved
  * as generated.") and save with their generated titles, exactly as an
  * untouched row does.
+ *
+ * ## Any source of cards (NEO-535)
+ *
+ * The wizard hands the step its preview cards. The parallel Card titles
+ * dialog hands it a `source` instead (`CardTitlesSource`): a parallel's
+ * stored cards, its box prefill, and a line for cards past the page. Same
+ * fields, same keys, same groups; the dialog owns the Save.
  */
 
 /** Approved copy (Jason, 2026-10-10). */
@@ -153,35 +161,14 @@ function rowNames(cards: readonly TitleRowView[]): Map<number, string> {
   return out;
 }
 
-export default function CardTitlesStep({
-  cards,
-  titleContext,
-  teamAnswers,
-  names,
-  existingIndexes,
-  answers,
-  onAnswersChange,
-  shortName,
-  onShortNameChange,
-  disabled = false,
-  headingId,
-}: {
-  /** The confirmed preview cards, in preview order. */
-  cards: readonly PreviewCardForTitles[];
-  /** `resolveChecklistEntities`' `titleContext`. */
-  titleContext: TitleContext;
-  /** The Teams step's answers, positionally aligned with `cards`. */
-  teamAnswers?: ReadonlyArray<TeamAnswer | undefined>;
-  /** The names decided in the wizard — see `TitleNameSources`. */
-  names?: TitleNameSources;
-  /** Positions that re-sync a stored row: never asked about. */
-  existingIndexes?: readonly number[];
-  /** The operator's edits so far, positionally aligned with `cards`. */
+/** The props both sources share. */
+type CardTitlesStepCommon = {
+  /** The operator's edits so far, positionally aligned with the cards. */
   answers: ReadonlyArray<TitleAnswer | undefined>;
   /** Told the whole edit list whenever an edit settles. */
   onAnswersChange: (answers: Array<TitleAnswer | undefined>) => void;
   /**
-   * NEO-535 — the "Set name in titles" edit as the wizard last heard it (kept
+   * NEO-535 — the "Set name in titles" edit as the host last heard it (kept
    * while the step unmounts); undefined = not edited, and the box shows its
    * prefill.
    */
@@ -202,10 +189,55 @@ export default function CardTitlesStep({
    * on the variation lead. Generated when absent.
    */
   headingId?: string;
-}) {
+  /** 4 when the step sits under a host's own h3 (the parallel dialog's sections). */
+  headingLevel?: 3 | 4;
+};
+
+/** The wizard's step: its preview cards. */
+type PreviewCardsProps = {
+  source?: undefined;
+  /** The confirmed preview cards, in preview order. */
+  cards: readonly PreviewCardForTitles[];
+  /** `resolveChecklistEntities`' `titleContext`. */
+  titleContext: TitleContext;
+  /** The Teams step's answers, positionally aligned with `cards`. */
+  teamAnswers?: ReadonlyArray<TeamAnswer | undefined>;
+  /** The names decided in the wizard — see `TitleNameSources`. */
+  names?: TitleNameSources;
+  /** Positions that re-sync a stored row: never asked about. */
+  existingIndexes?: readonly number[];
+};
+
+/** NEO-535 — any other source of cards (the parallel Card titles dialog). */
+type SourceProps = {
+  source: CardTitlesSource;
+  cards?: undefined;
+  titleContext?: undefined;
+  teamAnswers?: undefined;
+  names?: undefined;
+  existingIndexes?: undefined;
+};
+
+export default function CardTitlesStep({
+  source,
+  cards,
+  titleContext,
+  teamAnswers,
+  names,
+  existingIndexes,
+  answers,
+  onAnswersChange,
+  shortName,
+  onShortNameChange,
+  disabled = false,
+  headingId,
+  headingLevel = 3,
+}: CardTitlesStepCommon & (PreviewCardsProps | SourceProps)) {
   const uid = useId();
+  // How many answer positions there are: the preview's cards, or the source's.
+  const count = source ? source.count : (cards?.length ?? 0);
   const [drafts, setDrafts] = useState<Array<TitleAnswer | undefined>>(() =>
-    Array.from({ length: cards.length }, (_, i) => answers[i]),
+    Array.from({ length: count }, (_, i) => answers[i]),
   );
   // The edits as the wizard last heard them.
   const settled = useRef<Drafts>(drafts);
@@ -240,7 +272,9 @@ export default function CardTitlesStep({
 
   // NEO-535 — the box's prefill: the stored box text, else the builder's own
   // description. Read once: the box must not change under the operator.
-  const [prefill] = useState(() => setNameInTitlesPrefill(titleContext));
+  const [prefill] = useState(() =>
+    source ? source.prefill : titleContext ? setNameInTitlesPrefill(titleContext) : "",
+  );
   /** What the box reports: its trimmed text, only when edited away from the prefill. */
   const shortValue = useCallback(
     (raw: string): string | undefined => {
@@ -280,6 +314,19 @@ export default function CardTitlesStep({
   useEffect(() => () => flushShortRef.current(), []);
 
   const existing = existingIndexes ?? NO_POSITIONS;
+  /** The step's lists for these drafts and box draft, from whichever source. */
+  const groupsFor = useCallback(
+    (draftAnswers: Drafts, listingShortName: string | undefined) =>
+      source
+        ? source.groups({ answers: draftAnswers, listingShortName })
+        : buildTitleGroups(cards ?? [], titleContext as TitleContext, teamAnswers, {
+            names,
+            existingIndexes: existing,
+            answers: draftAnswers,
+            listingShortName,
+          }),
+    [source, cards, titleContext, teamAnswers, names, existing],
+  );
   const shortEdited = shortValue(shortDraft) !== undefined;
   // Only an edit is checked: an untouched prefill is never sent, so a long
   // builder description is no fault of the operator's.
@@ -289,14 +336,8 @@ export default function CardTitlesStep({
   );
   const liveShortName = onShortNameChange && shortEdited ? shortCheck.value : undefined;
   const { variationGroups, titleGroups } = useMemo(
-    () =>
-      buildTitleGroups(cards, titleContext, teamAnswers, {
-        names,
-        existingIndexes: existing,
-        answers: drafts,
-        listingShortName: liveShortName,
-      }),
-    [cards, titleContext, teamAnswers, names, existing, drafts, liveShortName],
+    () => groupsFor(drafts, liveShortName),
+    [groupsFor, drafts, liveShortName],
   );
   // The same reading at the last settle, for the box's status and refusal.
   const settledEdited = shortValue(shortSettledText) !== undefined;
@@ -309,29 +350,14 @@ export default function CardTitlesStep({
     () =>
       settledShortName === liveShortName
         ? titleGroups
-        : buildTitleGroups(cards, titleContext, teamAnswers, {
-            names,
-            existingIndexes: existing,
-            answers: drafts,
-            listingShortName: settledShortName,
-          }).titleGroups,
-    [
-      settledShortName,
-      liveShortName,
-      titleGroups,
-      cards,
-      titleContext,
-      teamAnswers,
-      names,
-      existing,
-      drafts,
-    ],
+        : groupsFor(drafts, settledShortName).titleGroups,
+    [settledShortName, liveShortName, titleGroups, groupsFor, drafts],
   );
 
   const setField = (indexes: readonly number[], field: keyof TitleAnswer, value: string) => {
     setDrafts((prev) => {
       const next = [...prev];
-      while (next.length < cards.length) next.push(undefined);
+      while (next.length < count) next.push(undefined);
       for (const i of indexes) next[i] = { ...next[i], [field]: value };
       return next;
     });
@@ -388,6 +414,9 @@ export default function CardTitlesStep({
   };
 
   if (variationGroups.length === 0 && titleGroups.length === 0) return null;
+  const Heading = headingLevel === 4 ? "h4" : "h3";
+  const scope = source?.scope;
+  const shortLabel = scope ? `${SHORT_LABEL} for ${scope}` : SHORT_LABEL;
   // The box shows whenever the step lists titles (membership never reads the
   // draft, so it cannot vanish mid-word).
   const showShortName = !!onShortNameChange && titleGroups.length > 0;
@@ -421,9 +450,9 @@ export default function CardTitlesStep({
         // One answer for every card, set apart from the per-card fields
         // below by a rule down its left edge.
         <section aria-labelledby={shortLeadId} className="border-l-2 border-neon-blue-text pl-3">
-          <h3 id={shortLeadId} className="text-sm font-normal text-ink-2">
+          <Heading id={shortLeadId} className="text-sm font-normal text-ink-2">
             {SHORT_LEAD}
-          </h3>
+          </Heading>
           <label className="mt-2 block text-xs text-ink-3">
             {SHORT_LABEL}
             {/* NEO-535: the same wrapping one-line field as the titles
@@ -442,7 +471,7 @@ export default function CardTitlesStep({
               // stay visible to be trimmed. The meter says where the cap is.
               autoComplete="off"
               spellCheck={false}
-              aria-label={SHORT_LABEL}
+              aria-label={shortLabel}
               aria-describedby={[shortLeadId, shortMeterId, shortStatusId, shortError ? shortErrorId : null]
                 .filter(Boolean)
                 .join(" ")}
@@ -477,9 +506,9 @@ export default function CardTitlesStep({
 
       {variationGroups.length > 0 && (
         <section aria-labelledby={variationsId}>
-          <h3 id={variationsId} className="text-sm font-normal text-ink-2">
+          <Heading id={variationsId} className="text-sm font-normal text-ink-2">
             {VARIATION_LEAD}
-          </h3>
+          </Heading>
           <ul className="mt-1 divide-y divide-rule">
             {variationGroups.map((group) => (
               <VariationLine
@@ -508,11 +537,12 @@ export default function CardTitlesStep({
 
       {titleGroups.length > 0 && (
         <section aria-labelledby={titlesId}>
-          <h3 id={titlesId} className="text-sm font-normal text-ink-2">
+          <Heading id={titlesId} className="text-sm font-normal text-ink-2">
             {TITLES_LEAD}
-          </h3>
+          </Heading>
           <TitleGroups
             groups={titleGroups}
+            scope={scope}
             drafts={drafts}
             onChange={(index, value) => setField([index], "listingTitle", value)}
             onReset={(index) => clearField([index], "listingTitle")}
@@ -520,6 +550,9 @@ export default function CardTitlesStep({
             keysFor={(index) => fieldKeys([index], "listingTitle")}
             disabled={disabled}
           />
+          {source?.more && source.more.count > 0 && (
+            <p className="mt-1 text-xs text-ink-3">{source.more.line}</p>
+          )}
         </section>
       )}
     </div>
@@ -614,6 +647,7 @@ function CardList({
 
 function TitleGroups({
   groups,
+  scope,
   drafts,
   onChange,
   onReset,
@@ -622,6 +656,8 @@ function TitleGroups({
   disabled,
 }: {
   groups: TitleGroup[];
+  /** Prefixes each row's name, so two steps' rows never read the same. */
+  scope?: string;
   drafts: ReadonlyArray<TitleAnswer | undefined>;
   onChange: (index: number, value: string) => void;
   onReset: (index: number) => void;
@@ -675,7 +711,7 @@ function TitleGroups({
                     <TitleRow
                       key={card.index}
                       card={card}
-                      label={labels.get(card.index) ?? `#${card.cardNumber}`}
+                      label={`${scope ? `${scope} ` : ""}${labels.get(card.index) ?? `#${card.cardNumber}`}`}
                       draft={drafts[card.index]?.listingTitle}
                       onChange={(value) => onChange(card.index, value)}
                       onReset={() => onReset(card.index)}

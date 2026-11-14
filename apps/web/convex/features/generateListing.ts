@@ -456,6 +456,41 @@ export function titleDescription(inputs: ListingCardInputs): string {
   return [parts.head, parts.insert, parts.parallel].filter(Boolean).join(" ");
 }
 
+/**
+ * NEO-535 — every form the builder's description can take in a title it
+ * wrote, longest first: with and without the "Insert" and "Parallel" labels
+ * (cut rows 4 and 5), and with the insert's "Rookie" read as "RC" (row 8).
+ * What `features/carriedTitle` looks for in a source card's hand-edited title
+ * to tell its description from the operator's own words. Ignores
+ * `setShortName` (the caller adds the box text as its own candidate).
+ */
+export function titleDescriptionForms(inputs: ListingCardInputs): string[] {
+  const parts = builderDescriptionParts(inputs);
+  const inserts: Array<string | undefined> = parts.insert
+    ? [parts.insert, ...(parts.insertRc ? [parts.insertRc] : [])]
+    : [undefined];
+  const insertLabels = parts.insertLabel ? [true, false] : [false];
+  const parallelLabels = parts.parallelLabel ? [true, false] : [false];
+  const forms = new Set<string>();
+  for (const insert of inserts) {
+    for (const insertLabel of insertLabels) {
+      for (const parallelLabel of parallelLabels) {
+        const form = [
+          parts.head,
+          insert,
+          insertLabel ? INSERT_LABEL : undefined,
+          parts.parallel,
+          parallelLabel ? PARALLEL_LABEL : undefined,
+        ]
+          .filter(Boolean)
+          .join(" ");
+        if (form) forms.add(form);
+      }
+    }
+  }
+  return [...forms].sort((a, b) => b.length - a.length);
+}
+
 type TailKind =
   | "auto"
   | "relic"

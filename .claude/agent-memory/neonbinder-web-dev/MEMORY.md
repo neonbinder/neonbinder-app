@@ -219,3 +219,4 @@
 - [Agent shell Node is not the apps/web pin](reference_agent_shell_node_is_not_the_apps_web_pin.md) — prepend nvm's $(cat .nvmrc) bin in the same call as each gate; print node --version
 - [Card description follows facts](reference_card_description_follows_facts.md) — card-fact writers call refreshedListingDescription; renames via cardDescriptionFanOut (overlay before-reads)
 - [Cross-sibling jump via a store](reference_cross_sibling_jump_via_store.md) — walker door to SetAttributesPanel: targets + closers store, door only when reachable, focus a frame late
+- [Title year and maker come from features](reference_title_year_and_maker_come_from_features.md) — convex-test trees need features.season/manufacturer or titles drop the year and length boundaries shift

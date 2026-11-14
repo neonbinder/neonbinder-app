@@ -129,8 +129,10 @@ export type NewCardRow = {
    * written verbatim instead of the generated one. Already trimmed and held
    * to `LISTING_TITLE_MAX` by the caller (`listingInputs.checkTitleAnswer`).
    * A human authored it, so `listingTitleTruncated` is never written beside
-   * it — the same rule `updateCard` applies to an operator title edit. Only
-   * the commit's insert branch passes it.
+   * it — the same rule `updateCard` applies to an operator title edit. The
+   * commit's insert branch passes it, and (NEO-535) the parallel build, for a
+   * copy whose builder title fails but whose source's hand edit, re-headed
+   * with the parallel's description, fits (`features/carriedTitle`).
    */
   listingTitle?: string;
   /**
@@ -140,8 +142,11 @@ export type NewCardRow = {
    * cut short" flag is skipped only when the generated title is exactly this
    * text: then the question it raises was asked and answered before save. A
    * title that came out differently is one nobody saw, so it is flagged as
-   * before (security audit, NEO-335). Only the commit's insert branch passes
-   * it, already trimmed and capped (`listingInputs.checkTitleAnswer`).
+   * before (security audit, NEO-335). The commit's insert branch passes it,
+   * already trimmed and capped (`listingInputs.checkTitleAnswer`), and
+   * (NEO-535) the parallel build, with the title it just generated for a copy
+   * built from the box that fits with every first name: the box was the
+   * operator's answer, so the copy is not flagged cut short.
    */
   listingTitleKept?: string;
 };

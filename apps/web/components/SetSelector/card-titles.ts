@@ -334,7 +334,7 @@ export function shortNameFieldApplies(
 }
 
 /** On the step for its title: over the cap, or short a first name / on the box. */
-function isTitleCard(a: Pick<CardTitleAssessment, "items">): boolean {
+export function isTitleCard(a: Pick<CardTitleAssessment, "items">): boolean {
   return a.items.some((i) => i.kind === "titleOverLimit" || i.kind === "titleTruncated");
 }
 
@@ -376,15 +376,7 @@ function assessAll(
     const overCapVariation = own.items.some((it) => it.kind === "aspectValueOverLimit")
       ? card.cardVariation?.trim()
       : undefined;
-    const ownWords = new Set(
-      [...names.playerNames, ...names.teamNames, card.cardNumber, `#${card.cardNumber}`].flatMap(
-        (n) => n.toLowerCase().split(/\s+/).filter(Boolean),
-      ),
-    );
-    const baseline = withoutVariation(
-      leftOutOfTitle(own.inputs, own.assessment.title),
-      overCapVariation,
-    );
+    const ownWords = ownWordsOf(names, card.cardNumber);
     out.push({
       index: i,
       cardNumber: card.cardNumber,
@@ -394,7 +386,7 @@ function assessAll(
       inputs: shown.inputs,
       ownWords,
       ...(overCapVariation ? { overCapVariation } : {}),
-      groupKey: `left:${baseline.filter((e) => !isOwnEntry(e, ownWords)).join("\u0000")}`,
+      groupKey: titleGroupKey(own.inputs, own.assessment.title, ownWords, overCapVariation),
       items: own.items,
     });
   });
@@ -477,8 +469,8 @@ export function buildTitleGroups(
   options?: TitleReviewOptions,
 ): { variationGroups: VariationGroup[]; titleGroups: TitleGroup[] } {
   const variationGroups = new Map<string, VariationGroup>();
-  const byKey = new Map<string, Array<{ card: CardTitleAssessment; text: string; missing: string[] }>>();
-  for (const a of assessAll(cards, titleContext, teamAnswers, options)) {
+  const assessments = assessAll(cards, titleContext, teamAnswers, options);
+  for (const a of assessments) {
     if (a.items.some((i) => i.kind === "aspectValueOverLimit")) {
       const variation = (cards[a.index].cardVariation ?? "").trim();
       const group = variationGroups.get(variation) ?? {
@@ -489,13 +481,31 @@ export function buildTitleGroups(
       group.cards.push({ index: a.index, cardNumber: a.cardNumber, cardName: a.cardName });
       variationGroups.set(variation, group);
     }
-    if (isTitleCard(a)) {
-      const draft = options?.answers?.[a.index]?.listingTitle;
-      const text = draft !== undefined && draft.trim() ? draft : a.title;
-      const list = byKey.get(a.groupKey) ?? [];
-      list.push({ card: a, text, missing: leftOutOfCardTitle(a, text) });
-      byKey.set(a.groupKey, list);
-    }
+  }
+  return {
+    variationGroups: [...variationGroups.values()],
+    titleGroups: groupTitleAssessments(assessments, options?.answers),
+  };
+}
+
+/**
+ * NEO-535 — the grouping half of `buildTitleGroups`, over any assessed cards:
+ * the wizard's preview cards, or a parallel's stored cards in the Card titles
+ * dialog (`parallel-titles.ts`). Only the cards on the step for their TITLE
+ * are grouped; each row's text is the operator's draft, else the title.
+ */
+export function groupTitleAssessments(
+  assessments: readonly CardTitleAssessment[],
+  answers?: ReadonlyArray<TitleAnswer | undefined>,
+): TitleGroup[] {
+  const byKey = new Map<string, Array<{ card: CardTitleAssessment; text: string; missing: string[] }>>();
+  for (const a of assessments) {
+    if (!isTitleCard(a)) continue;
+    const draft = answers?.[a.index]?.listingTitle;
+    const text = draft !== undefined && draft.trim() ? draft : a.title;
+    const list = byKey.get(a.groupKey) ?? [];
+    list.push({ card: a, text, missing: leftOutOfCardTitle(a, text) });
+    byKey.set(a.groupKey, list);
   }
   const titleGroups: TitleGroup[] = [];
   for (const [key, members] of byKey) {
@@ -514,10 +524,36 @@ export function buildTitleGroups(
       })),
     });
   }
-  return {
-    variationGroups: [...variationGroups.values()],
-    titleGroups,
-  };
+  return titleGroups;
+}
+
+/**
+ * The words a card's own players, teams and number are made of
+ * (`CardTitleAssessment.ownWords`).
+ */
+export function ownWordsOf(
+  names: { playerNames: readonly string[]; teamNames: readonly string[] },
+  cardNumber: string,
+): Set<string> {
+  return new Set(
+    [...names.playerNames, ...names.teamNames, cardNumber, `#${cardNumber}`].flatMap((n) =>
+      n.toLowerCase().split(/\s+/).filter(Boolean),
+    ),
+  );
+}
+
+/**
+ * The group a card sits in, read from the title it was given (never a
+ * draft): what that title leaves out beyond the card's own names and number.
+ */
+export function titleGroupKey(
+  inputs: ListingCardInputs,
+  title: string,
+  ownWords: ReadonlySet<string>,
+  overCapVariation?: string,
+): string {
+  const baseline = withoutVariation(leftOutOfTitle(inputs, title), overCapVariation);
+  return `left:${baseline.filter((e) => !isOwnEntry(e, ownWords)).join("\u0000")}`;
 }
 
 /** Where an operator's title draft stands against the generated title. */
@@ -602,4 +638,30 @@ export function teamIdNamesFromRefs(
   const out = new Map<string, string>();
   for (const ref of refs) if (ref.teamId && !out.has(ref.teamId)) out.set(ref.teamId, ref.label);
   return out;
+}
+
+/**
+ * NEO-535 — where a `CardTitlesStep` gets its cards. The wizard's step reads
+ * the preview cards it is given (its default); the parallel Card titles
+ * dialog hands it a parallel's stored cards (`parallel-titles.ts`). Keep the
+ * object stable across renders (memoise it): the step recomputes its groups
+ * whenever it changes.
+ */
+export interface CardTitlesSource {
+  /** Positions the step's answers are aligned with. */
+  count: number;
+  /** What the "Set name in titles" box opens with. */
+  prefill: string;
+  /** The step's two lists for these drafts and this checked box draft. */
+  groups(options: {
+    answers: ReadonlyArray<TitleAnswer | undefined>;
+    listingShortName?: string;
+  }): { variationGroups: VariationGroup[]; titleGroups: TitleGroup[] };
+  /** Cards beyond the ones listed, and the line that says so. */
+  more?: { count: number; line: string };
+  /**
+   * Names the step's controls apart from another step's on the same screen
+   * (one per parallel in the dialog): "Title for Gold Refractor #12 …".
+   */
+  scope?: string;
 }

@@ -3416,3 +3416,49 @@ describe("NEO-500: the pick-order seed is locked like the other testing seeds", 
     expect(await written(t)).toBe(0);
   });
 });
+
+/**
+ * NEO-535 — the Card titles dialog for a parallel's cards
+ * (`parallelCopyTitles.ts`). Both public functions are operator tooling:
+ * `requireAdmin` first, then the row must resolve as a buildable parallel.
+ * The box continuation is internal. Behaviour is pinned in
+ * `parallelCopyTitles.test.ts`.
+ */
+describe("NEO-535: the parallel Card titles functions are admin-gated", () => {
+  test("failingTitles and saveTitleFixes call requireAdmin before reading the row; the rewrite is internal", () => {
+    const src = readFileSync(join(__dirname, "parallelCopyTitles.ts"), "utf8");
+    expect(src).toContain("export const failingTitles = query({");
+    expect(src).toContain("export const saveTitleFixes = mutation({");
+    expect(src).toContain("export const rewriteFailingTitlesPage = internalMutation({");
+    for (const name of ["failingTitles", "saveTitleFixes"]) {
+      const body = src.slice(src.indexOf(`export const ${name} =`));
+      const guard = body.indexOf("await requireAdmin(ctx)");
+      expect(guard).toBeGreaterThan(-1);
+      expect(guard).toBeLessThan(body.indexOf("requireBuildableParallel(ctx"));
+    }
+  });
+
+  test("an anonymous call is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.query(api.parallelCopyTitles.failingTitles, { parallelId: id }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(
+      t.mutation(api.parallelCopyTitles.saveTitleFixes, { parallelId: id, cards: [] }),
+    ).rejects.toThrow(/not authenticated/i);
+  });
+
+  test("a signed-in non-admin is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.parallelCopyTitles.failingTitles, { parallelId: id }),
+    ).rejects.toThrow(/admin access required/i);
+    await expect(
+      t
+        .withIdentity(SIGNED_IN)
+        .mutation(api.parallelCopyTitles.saveTitleFixes, { parallelId: id, cards: [] }),
+    ).rejects.toThrow(/admin access required/i);
+  });
+});

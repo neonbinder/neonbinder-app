@@ -2,6 +2,7 @@ import {
   type ReactNode,
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
   type RefObject,
@@ -23,6 +24,7 @@ import {
   SleeveStrip,
   pulseText,
 } from "../modules/RunLedger";
+import { ParallelTitlesDoor } from "./ParallelTitlesDialog";
 
 // NEO-325 — the ledger pieces moved to `modules/RunLedger` on their second
 // use; re-exported so every existing import of them from here keeps working.
@@ -172,6 +174,12 @@ export type ParallelBuildResult = {
     unlinked: SideCardLists;
     ambiguous: SideCardLists;
   };
+  /**
+   * NEO-535 — copies born with a title that still fails (over 80, or short a
+   * first name, with no hand edit on the source to carry): the Card titles
+   * dialog's count.
+   */
+  titlesToFix?: number;
 };
 
 /**
@@ -274,6 +282,40 @@ export const REBUILD_CONFIRM_LABEL = "Replace the cards";
 export const REBUILD_BUSY_LABEL = "Rebuilding…";
 export const SEE_CARDS_LABEL = "See which cards";
 
+/** NEO-535 — the built line's clause for copies whose titles need a fix. */
+export function titlesToFixText(count: number): string {
+  return `${count} ${count === 1 ? "title needs" : "titles need"} a fix`;
+}
+
+/** NEO-535 — the ticker's Card titles button (the checklist's reads "Fix card titles"). */
+export function fixRunTitlesLabel(count: number): string {
+  return `Fix ${count} card ${count === 1 ? "title" : "titles"}`;
+}
+
+/** NEO-535 — the end-of-run sentence's tail when copies' titles need a fix. */
+export function runTitlesAnnouncement(count: number): string {
+  return count === 1
+    ? "1 card title needs a fix."
+    : `${count} card titles need a fix.`;
+}
+
+/** NEO-535 — the built parallels whose copies' titles need a fix, and how many in all. */
+export function runTitlesToFix(run: Pick<ParallelRun, "entries">): {
+  parallels: Array<{ id: Id<"selectorOptions">; value: string }>;
+  total: number;
+} {
+  const parallels: Array<{ id: Id<"selectorOptions">; value: string }> = [];
+  let total = 0;
+  for (const entry of run.entries) {
+    const count =
+      entry.line.kind === "built" ? (entry.line.result.titlesToFix ?? 0) : 0;
+    if (count <= 0) continue;
+    parallels.push({ id: entry.id, value: entry.value });
+    total += count;
+  }
+  return { parallels, total };
+}
+
 /** The heading's id, for a held control's `aria-describedby` on the source. */
 export const PARALLEL_BUILD_HEADING_ID = "parallel-build-heading";
 /** A ledger line's id, for a held control's `aria-describedby` on that parallel. */
@@ -335,6 +377,9 @@ export function builtText(
     parts.push(
       `${result.skippedChangedSource} skipped — ${source} changed them mid-build`,
     );
+  }
+  if ((result.titlesToFix ?? 0) > 0) {
+    parts.push(titlesToFixText(result.titlesToFix ?? 0));
   }
   for (const side of SIDES) {
     const k = result.stillListedNotRelinked?.[side] ?? 0;
@@ -939,7 +984,12 @@ function useRunnerCore(defaultClient: BuildClient | null): ParallelBuildRunner {
         };
         // The heading as a sentence — the full stop keeps it a different
         // string from the heading itself, for the same reason as the start.
-        done.announcement = `${panelHeading(done)}.`;
+        // NEO-535 — and the titles left to fix, which the Card titles button
+        // under the ledger opens.
+        const titles = runTitlesToFix(done).total;
+        done.announcement = titles > 0
+          ? `${panelHeading(done)}. ${runTitlesAnnouncement(titles)}`
+          : `${panelHeading(done)}.`;
         return done;
       });
       return null;
@@ -1026,6 +1076,19 @@ export default function ParallelBuildPanel({
   const live = run.phase === "running" || run.phase === "stopping";
   const stopping = run.phase === "stopping";
   const scrolls = run.entries.length > SCROLL_AFTER;
+  // NEO-535 — once the run has ended, the parallels whose copies' titles need
+  // a fix get the Card titles button. It opens on its own once when the run
+  // ends while the operator is here (keyed by the run, so a remount or a
+  // left-behind pickup never reopens it); a run picked up after leaving gets
+  // the button only.
+  const { parallels: titleParallels, total: titleTotal } = useMemo(
+    () => runTitlesToFix(run),
+    [run],
+  );
+  const titlesAutoOpenKey =
+    run.phase === "finished" || run.phase === "stopped"
+      ? `parallel-run:${run.waitKey ?? run.startedFrom}`
+      : undefined;
 
   /**
    * a11y (WCAG 2.4.3) — Stop unmounts when the run ends. If it had focus the
@@ -1236,6 +1299,16 @@ export default function ParallelBuildPanel({
 
       {run.truncated && (
         <p className="mt-2 text-xs">{truncatedText(run.entries.length)}</p>
+      )}
+
+      {!live && titleParallels.length > 0 && (
+        <div className="mt-2">
+          <ParallelTitlesDoor
+            parallels={titleParallels}
+            label={fixRunTitlesLabel(titleTotal)}
+            autoOpenKey={titlesAutoOpenKey}
+          />
+        </div>
       )}
 
       {waitingSlot}
