@@ -11,9 +11,14 @@ export const PROJECT_IGNORE = {
   // NEO-453, TEMPORARY, Jason 2026-11-06: eBay's sandbox refuses every publish
   // (400 / 25002) for any seller on our keyset, so this spec cannot pass. Restore
   // it, its entry in SELLER_SPECS and its seller tag as soon as publish works.
-  e2e: ["collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts"],
+  e2e: [
+    "collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts",
+    // NEO-453, TEMPORARY, same cause: its step is a publish ("1 listed"). Restore it with the spec above.
+    "collection/inventory-ebay-sandbox-listing-title-over-80-lists-once-shortened.spec.ts",
+  ],
   "e2e-mobile": [
     "collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts",
+    "collection/inventory-ebay-sandbox-listing-title-over-80-lists-once-shortened.spec.ts",
     // NEO-389: waits 1.6-4.7 min on the heavy preprocess model's cold start,
     // the longest spec in the suite. The notice and pairing it then checks
     // render the same on a phone, and preprocess-crop-matrix covers the
@@ -49,4 +54,6 @@ export const SELLER_TAG = "@marketplace-seller";
 export const SELLER_SPECS = [
   "collection/inventory-bsc-listing-2024-topps-chrome-future-stars.spec.ts",
   "collection/inventory-bsc-listing-2026-bowman-chrome-prefix.spec.ts",
+  // NEO-535: the eBay hold (a title over 80 characters) and its re-queue; needs no publish.
+  "collection/inventory-ebay-sandbox-listing-title-over-80-is-held-then-requeued.spec.ts",
 ];
