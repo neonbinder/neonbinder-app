@@ -312,4 +312,25 @@ describe("parallelAfterInsert (NEO-535: the insert's words said once)", () => {
       ]).listingShortName,
     ).toBe("Bowman Anime Red Refractors");
   });
+
+  test("a parallel that is all insert words leaves a stored box unchanged", () => {
+    const facts = titleChainFacts([
+      row("parallel", "Anime"),
+      row("insert", "Anime"),
+      row("variantType", "Inserts"),
+      row("setName", "Bowman", { listingShortName: "Bowman Anime" }),
+    ]);
+    expect(facts.listingShortName).toBe("Bowman Anime");
+  });
+
+  test("an insert that is not a role leaves the parallel appended whole", () => {
+    const facts = titleChainFacts([
+      row("parallel", "Anime Red Refractors"),
+      row("insert", "Anime"),
+      row("variantType", "Parallels"),
+      row("setName", "Bowman", { listingShortName: "Bowman" }),
+    ]);
+    expect(facts.insertIsRole).toBeUndefined();
+    expect(facts.listingShortName).toBe("Bowman Anime Red Refractors");
+  });
 });
