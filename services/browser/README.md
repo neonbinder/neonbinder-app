@@ -122,8 +122,11 @@ body is `{ error, error_class, diagnostic? }`, with no credential material.
   sign-in and the API at the standing fake BSC (`services/fake-bsc`):
   `<FAKE>/identity/...` and `<FAKE>/api/...`. Every request to it carries
   `x-nb-fake-bsc-key` (`NEONBINDER_FAKE_BSC_KEY`) and, over https, this
-  service's Google ID token in `X-Serverless-Authorization`. **A process with
-  the fake URL set and `ENVIRONMENT=prod` refuses to boot.** `GET /health`
+  service's Google ID token in `X-Serverless-Authorization` and again, bare,
+  in `x-nb-fake-id-token` (the fake verifies its signature itself). The URL
+  must be the fake's own `neonbinder-fake-bsc-*.run.app` origin (or
+  loopback); anything else refuses to boot. **A process with the fake URL set
+  and `ENVIRONMENT=prod` refuses to boot.** `GET /health`
   reports `bscTarget: "real" | "fake"`.
 - **429 breaker.** A 429 from BSC stops every BSC call from this process for its
   `Retry-After` (default 60 s, 1 s to 15 min); callers see a synthetic 429 with
@@ -136,7 +139,9 @@ body is `{ error, error_class, diagnostic? }`, with no credential material.
   fake's local recorder.
 - **`POST /probe/bsc`** (`src/routes/bsc-probe.ts`): a fresh sign-in plus
   pinned catalogue and seller reads, returning statuses, parser verdicts and
-  value-free shapes, never values. In prod it ignores the body and signs in
+  value-free shapes, never values. Each shape lists only the paths NB's
+  parsers read (`SHAPE_PATHS`); every other key is dropped, because the prod
+  probe's shapes end up in a public drift artifact. In prod it ignores the body and signs in
   with the canary account; on a fake revision it uses the body's fake
   credentials. One call a minute; honours the BSC pause flag. Contract:
   `services/fake-bsc/CONTRACT.md`, "Probe, drift and ops wiring"; verdict:

@@ -10,11 +10,15 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
-import { createRequire } from "node:module";
+import { createRequire, stripTypeScriptTypes } from "node:module";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, dirname } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const require = createRequire(import.meta.url);
 const express = require("express");
-const { createBscProbeRouter, FAKE_PROBE_USERNAME, PINNED_READS } = require("../dist/routes/bsc-probe");
+const { createBscProbeRouter, FAKE_PROBE_USERNAME, PINNED_READS, SHAPE_PATHS } = require("../dist/routes/bsc-probe");
 const { resetBscBreaker } = require("../dist/bsc-fetch");
 
 const SELLER_ID = "SELLERID-VALUE-9f8e";
@@ -141,6 +145,108 @@ describe("POST /probe/bsc", () => {
     assert.equal(logs.length, 1);
     assert.equal(logs[0].msg, "bsc_probe");
     assert.equal(logs[0].outcome, "ok");
+  });
+
+  it("reports only the parser-read paths: planted usernames, emails and hex keys never leave", async () => {
+    // Data-shaped keys that the {*} rule alone would let through (short,
+    // identifier-like) or collapse but still report, at several depths.
+    const PLANTED = [
+      "collector_joe",
+      "jdoe1987",
+      "buyer_jane",
+      "a1b2c3d4",
+      "deadbeefcafe",
+      "jane.doe@example.com",
+      "bob@example.org",
+      "cardshop_mike",
+      "Store Value",
+      "Secret Buyer Name",
+    ];
+    answers["marketplace/user/profile"] = () => ({
+      sellerProfile: {
+        sellerId: SELLER_ID,
+        sellerStoreName: "Store Value",
+        sellerEmailId: "jane.doe@example.com",
+        followers: { collector_joe: { since: 1 }, a1b2c3d4: 2 },
+      },
+      jdoe1987: { email: "bob@example.org" },
+    });
+    answers["seller/bulk-upload/results"] = () => [
+      {
+        card: { id: "card-1", cardNo: "1", buyer_jane: true },
+        cardId: "card-1",
+        condition: "near_mint",
+        availableQuantity: 1,
+        price: "1.00",
+        watchers: { deadbeefcafe: 1, collector_joe: { name: "Secret Buyer Name" } },
+      },
+    ];
+    answers["seller/order/history"] = () => ({
+      totalElements: 1,
+      results: [
+        {
+          orderId: "o-1",
+          orderNo: "1001",
+          orderStatus: "paid",
+          orderDate: "2026-11-01",
+          buyerName: "Secret Buyer Name",
+          buyer_jane: { email: "jane.doe@example.com" },
+          "jane.doe@example.com": 1,
+        },
+      ],
+      buyers: { jdoe1987: 1 },
+    });
+    answers["marketplace/card/96f9a87adeb7d02c275e117ef10d569c/card-listing"] = () => ({
+      id: "96f9a87adeb7d02c275e117ef10d569c",
+      teamName: "Halifax",
+      listings: [{ sellerStoreName: "Store Value", sellerId: SELLER_ID }],
+      sellers: { cardshop_mike: 3 },
+    });
+    answers["search/bulk-upload/results"] = () => [{ id: "card-1", setName: "S", cardshop_mike: 1 }];
+    answers["search/bulk-upload/filters"] = () => ({
+      aggregations: {
+        setName: [{ label: "L", slug: "s", count: 1, collector_joe: "x" }],
+        sellers: [{ label: "cardshop_mike", slug: "cardshop_mike" }],
+      },
+      buyer_jane: 1,
+    });
+    const { router } = prodRouter();
+    const r = await call(router);
+    assert.equal(r.body.outcome, "ok", r.body.detail);
+
+    const everything = JSON.stringify(r.body) + JSON.stringify(logs);
+    for (const v of PLANTED) assert.ok(!everything.includes(v), `leaked ${v}`);
+    assert.ok(!everything.includes("{*}"), "no collapsed data key is reported at all");
+
+    assert.deepEqual(r.body.shapes["marketplace/user/profile"], {
+      $: "object",
+      sellerProfile: "object",
+      "sellerProfile.sellerId": "string",
+      "sellerProfile.sellerStoreName": "string",
+    });
+    assert.deepEqual(r.body.shapes["seller/order/history"], {
+      $: "object",
+      totalElements: "number",
+      results: "array",
+      "results[]": "object",
+      "results[].orderId": "string",
+      "results[].orderNo": "string",
+      "results[].orderStatus": "string",
+      "results[].orderDate": "string",
+    });
+    // Every reported path is an allowlisted one or an ancestor of one.
+    const byTemplate = Object.fromEntries(PINNED_READS.map((p) => [p.template, p.shapePaths]));
+    for (const [template, shape] of Object.entries(r.body.shapes)) {
+      const allowed = new Set(["$"]);
+      for (const path of byTemplate[template]) {
+        let q = path;
+        while (q) {
+          allowed.add(q);
+          q = q.endsWith("[]") ? q.slice(0, -2) : q.includes(".") ? q.slice(0, q.lastIndexOf(".")) : "";
+        }
+      }
+      for (const path of Object.keys(shape)) assert.ok(allowed.has(path), `${template}: ${path} is not allowlisted`);
+    }
   });
 
   it("refuses a real-BSC probe outside prod and calls nobody", async () => {
@@ -296,5 +402,62 @@ describe("POST /probe/bsc", () => {
       );
       assert.equal(r.body.outcome, "ok");
     });
+  });
+});
+
+// The probe's allowlists must name the same paths the fake compares, or the
+// daily drift check either misses drift or reports allowlist noise as drift.
+describe("SHAPE_PATHS parity with the fake's comparison lists", () => {
+  const FAKE_SRC = join(dirname(fileURLToPath(import.meta.url)), "../../fake-bsc/src");
+  let tmp;
+  let sanitise;
+  const specPaths = (spec, path) => {
+    switch (spec.kind) {
+      case "leaf":
+        return [path];
+      case "object":
+        return Object.entries(spec.fields).flatMap(([k, v]) => specPaths(v, path ? `${path}.${k}` : k));
+      case "array":
+        return specPaths(spec.items, `${path}[]`);
+      case "oneOf":
+        return spec.options.flatMap((o) => specPaths(o, path));
+      default:
+        throw new Error(`unknown spec kind ${spec.kind}`);
+    }
+  };
+  // Leaf paths only: drop any path that is an ancestor of another.
+  const leaves = (paths) => {
+    const set = [...new Set(paths)];
+    return set.filter((p) => !set.some((q) => q !== p && (q.startsWith(`${p}.`) || q.startsWith(`${p}[]`)))).sort();
+  };
+
+  it("catalogue reads match services/fake-bsc/src/sanitise.ts SPECS", async () => {
+    tmp = mkdtempSync(join(tmpdir(), "fake-bsc-sanitise-"));
+    try {
+      writeFileSync(join(tmp, "sanitise.mjs"), stripTypeScriptTypes(readFileSync(join(FAKE_SRC, "sanitise.ts"), "utf8")));
+      sanitise = await import(pathToFileURL(join(tmp, "sanitise.mjs")).href);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+    assert.deepEqual(leaves(SHAPE_PATHS.filters), leaves(specPaths(sanitise.SPECS.filters, "")));
+    assert.deepEqual(leaves(SHAPE_PATHS.results), leaves(specPaths(sanitise.SPECS.results, "")));
+    assert.deepEqual(leaves(SHAPE_PATHS.cardListing), leaves(specPaths(sanitise.SPECS.cardListing, "")));
+  });
+
+  it("seller reads match services/fake-bsc/src/drift.ts READ_PATHS", () => {
+    const src = readFileSync(join(FAKE_SRC, "drift.ts"), "utf8");
+    const list = (name) => {
+      const m = new RegExp(`\\n\\s*${name}:\\s*\\[((?:\\s*"[^"]*"\\s*,?)*)\\s*\\]`).exec(src);
+      assert.ok(m, `READ_PATHS.${name} not found in drift.ts`);
+      return [...m[1].matchAll(/"([^"]*)"/g)].map((x) => x[1]).filter((p) => p !== "");
+    };
+    assert.deepEqual(leaves(SHAPE_PATHS.profile), leaves(list("profile")));
+    assert.deepEqual(leaves(SHAPE_PATHS.orderHistory), leaves(list("orderHistory")));
+    // The probe also accepts BSC's {results: [...]} wrapping of the sheet; the
+    // fake compares the bare-array form.
+    assert.deepEqual(
+      leaves(SHAPE_PATHS.sellerSheet.filter((p) => p.startsWith("[]"))),
+      leaves(list("sheet")),
+    );
   });
 });

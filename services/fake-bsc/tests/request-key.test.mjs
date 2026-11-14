@@ -39,8 +39,24 @@ describe("requestKey", () => {
 describe("shapes", () => {
   it("records key paths and types, never values", () => {
     const sh = shape.shapeOf({ objectKey: "/prod/x.jpg", rows: [{ q: 1 }, { q: null }], "someone@example.com": 1 });
-    assert.deepEqual(sh, { "": ["object"], objectKey: ["string"], rows: ["array"], "rows[]": ["object"], "rows[].q": ["null", "number"] });
+    assert.deepEqual(sh, { "": ["object"], "*": ["number"], objectKey: ["string"], rows: ["array"], "rows[]": ["object"], "rows[].q": ["null", "number"] });
     assert.ok(!JSON.stringify(sh).includes("prod"));
+    assert.ok(!JSON.stringify(sh).includes("someone"));
+  });
+
+  it("collapses id-like keys to `*`, so a key that is really a value is never stored", () => {
+    const ids = ["5f3a9c0e1b2d3e4f5a6b7c8d", "deadbeefcafe", "DEADBEEF", "123e4567-e89b-12d3-a456-426614174000", "2024", "user123456", "a1b2c3d4", "x".repeat(41), "someone@example.com", "Ken Griffey Jr."];
+    const value = { byId: Object.fromEntries(ids.map((k, i) => [k, { price: i % 2 ? 1 : "1" }])), cardNo: "1", line1: "x", sellerImgFront: "y" };
+    const sh = shape.shapeOf(value);
+    assert.deepEqual(Object.keys(sh).sort(), ["", "byId", "byId.*", "byId.*.price", "cardNo", "line1", "sellerImgFront"]);
+    assert.deepEqual(sh["byId.*.price"], ["number", "string"]);
+    for (const k of ids) assert.ok(!JSON.stringify(sh).includes(k), k);
+    for (const k of ["cardNo", "playerAttributeDesc", "sellerImgFront", "line1", "img12", "_id", "abcdef"]) assert.equal(shape.isFieldName(k), true, k);
+  });
+
+  it("collapses id-like segments of an uploaded shape too, merging their types", () => {
+    const sh = shape.readShape({ "listings.deadbeefcafe.price": ["string"], "listings.a1b2c3d4.price": ["number"], "listings.*.sku": ["null"], "listings.user123456": ["object"] });
+    assert.deepEqual(sh, { "listings.*": ["object"], "listings.*.price": ["number", "string"], "listings.*.sku": ["null"] });
   });
 
   it("validates an untrusted shape", () => {

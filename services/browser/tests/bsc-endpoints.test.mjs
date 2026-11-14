@@ -20,7 +20,7 @@ const endpoints = require("../dist/bsc-endpoints");
 const bscFetchMod = require("../dist/bsc-fetch");
 const shape = require("../dist/bsc-shape");
 
-const FAKE = "https://fake-bsc-abc123-uc.a.run.app";
+const FAKE = "https://neonbinder-fake-bsc-abc123-uc.a.run.app";
 const bscFetch = (...a) => bscFetchMod.bscFetch(...a);
 
 describe("resolveBscEndpoints", () => {
@@ -50,6 +50,44 @@ describe("resolveBscEndpoints", () => {
     assert.equal(endpoints.resolveBscEndpoints({ NEONBINDER_FAKE_BSC_URL: "http://localhost:8099" }).target, "fake");
     assert.throws(() => endpoints.resolveBscEndpoints({ NEONBINDER_FAKE_BSC_URL: "http://fake.example.com" }), /https/);
     assert.throws(() => endpoints.resolveBscEndpoints({ NEONBINDER_FAKE_BSC_URL: "not a url" }), /valid URL/);
+  });
+
+  it("pins the fake to the neonbinder-fake-bsc Cloud Run host (or loopback)", () => {
+    for (const ok of [
+      "https://neonbinder-fake-bsc-abc123-uc.a.run.app",
+      "https://neonbinder-fake-bsc-123456789012.us-central1.run.app",
+      "https://localhost:8443",
+      "http://[::1]:8099",
+    ]) {
+      assert.equal(endpoints.resolveBscEndpoints({ NEONBINDER_FAKE_BSC_URL: ok }).target, "fake", ok);
+    }
+    for (const bad of [
+      "https://fake.example.com",
+      "https://some-other-service-abc123-uc.a.run.app",
+      "https://neonbinder-browser-abc123-uc.a.run.app",
+      "https://neonbinder-fake-bsc-abc123-uc.a.run.app.evil.example",
+      "https://neonbinder-fake-bsc.evil.example/x.run.app",
+      "https://evil.example/neonbinder-fake-bsc-x.run.app",
+      "https://neonbinder-fake-bsc-abc123-uc.a.run.app:8443",
+      "https://user:pw@neonbinder-fake-bsc-abc123-uc.a.run.app",
+      "http://neonbinder-fake-bsc-abc123-uc.a.run.app",
+      "https://xneonbinder-fake-bsc-abc123-uc.a.run.app",
+      "https://pr-12---neonbinder-fake-bsc-abc123-uc.a.run.app",
+    ]) {
+      assert.throws(() => endpoints.resolveBscEndpoints({ NEONBINDER_FAKE_BSC_URL: bad }), /neonbinder-fake-bsc|valid URL/, bad);
+      assert.throws(() => endpoints.assertBscTargetAllowed({ NEONBINDER_FAKE_BSC_URL: bad, ENVIRONMENT: "dev" }), undefined, bad);
+    }
+  });
+
+  it("isFakeUrl is true only for the configured, pinned fake origin", () => {
+    const e = endpoints.resolveBscEndpoints({ NEONBINDER_FAKE_BSC_URL: FAKE });
+    assert.equal(endpoints.isFakeUrl(`${FAKE}/api/x`, e), true);
+    assert.equal(endpoints.isFakeUrl("https://neonbinder-fake-bsc-other-uc.a.run.app/api/x", e), false);
+    assert.equal(endpoints.isFakeUrl("https://evil.example/api/x", e), false);
+    // A hand-built endpoints object pointing elsewhere is not trusted either.
+    const forged = { ...e, fakeOrigin: "https://evil.example" };
+    assert.equal(endpoints.isFakeUrl("https://evil.example/api/x", forged), false);
+    assert.equal(endpoints.isFakeUrl("not a url", e), false);
   });
 
   it("never names the configured URL in an error", () => {
@@ -107,7 +145,11 @@ describe("fakeBscCallerHeaders", () => {
         return "id-token-1";
       },
     });
-    assert.deepEqual(h, { "x-nb-fake-bsc-key": "caller-key", "X-Serverless-Authorization": "Bearer id-token-1" });
+    assert.deepEqual(h, {
+      "x-nb-fake-bsc-key": "caller-key",
+      "X-Serverless-Authorization": "Bearer id-token-1",
+      "x-nb-fake-id-token": "id-token-1",
+    });
     assert.deepEqual(audiences, [FAKE]);
   });
 
@@ -154,9 +196,11 @@ describe("bscFetch", () => {
     await bscFetch("https://api-prod.buysportscards.com/marketplace/user/profile", {}, opts);
     assert.equal(calls[0].headers.get("x-nb-fake-bsc-key"), "caller-key");
     assert.equal(calls[0].headers.get("x-serverless-authorization"), "Bearer idt");
+    assert.equal(calls[0].headers.get("x-nb-fake-id-token"), "idt");
     assert.equal(calls[0].headers.get("authorization"), "Bearer bsc", "the BSC bearer passes through");
     assert.equal(calls[1].headers.get("x-nb-fake-bsc-key"), null, "real BSC never gets the key");
     assert.equal(calls[1].headers.get("x-serverless-authorization"), null);
+    assert.equal(calls[1].headers.get("x-nb-fake-id-token"), null);
   });
 
   it("opens a process-wide breaker on a real 429 for its Retry-After and sends nothing meanwhile", async () => {

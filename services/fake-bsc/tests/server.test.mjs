@@ -45,7 +45,7 @@ describe("auth", () => {
   it("refuses a missing or wrong caller key", async () => {
     let res = await fetch(`${fake.base}/healthz`);
     assert.equal(res.status, 401);
-    res = await fetch(`${fake.base}/healthz`, { headers: { "x-nb-fake-bsc-key": "nope".repeat(10), "X-Serverless-Authorization": `Bearer ${idToken(CALLER)}` } });
+    res = await fetch(`${fake.base}/healthz`, { headers: { "x-nb-fake-bsc-key": "nope".repeat(10), "x-nb-fake-id-token": idToken(CALLER) } });
     assert.equal(res.status, 401);
   });
 
@@ -57,12 +57,13 @@ describe("auth", () => {
       `Bearer ${idToken(CALLER, { aud: "https://other.run.app" })}`,
       `Bearer ${idToken(CALLER, { iss: "https://evil.example" })}`,
       `Bearer ${idToken(CALLER, { verified: false })}`,
-      // Unsigned (as Cloud Run forwards it) is refused off Cloud Run.
+      // Unsigned (the shape Cloud Run forwards in X-Serverless-Authorization).
       `Bearer ${idToken(CALLER, { sig: "" })}`,
+      idToken(CALLER, { sig: "" }).replace(/\.$/, ""),
       "Bearer not-a-jwt",
     ];
     for (const h of cases) {
-      const res = await fetch(`${fake.base}/healthz`, { headers: { "x-nb-fake-bsc-key": CALLER_KEY, ...(h ? { "X-Serverless-Authorization": h } : {}) } });
+      const res = await fetch(`${fake.base}/healthz`, { headers: { "x-nb-fake-bsc-key": CALLER_KEY, ...(h ? { "x-nb-fake-id-token": h } : {}) } });
       assert.equal(res.status, 401, String(h));
     }
   });
@@ -99,19 +100,43 @@ describe("auth", () => {
 });
 
 describe("cloud run identity", () => {
-  it("accepts an unsigned token only on Cloud Run, with the claims checked", async () => {
+  // As deployed: K_SERVICE set. IAM is the outer layer, but the fake never
+  // trusts X-Serverless-Authorization (its signature is stripped, so its
+  // claims are forgeable if IAM is ever loosened).
+  let fake;
+  before(async () => (fake = await startFake({ configOver: { K_SERVICE: "fake-bsc", FAKE_BSC_BUCKET: "b" } })));
+  after(() => fake.close());
+  const health = (headers) => fetch(`${fake.base}/healthz`, { headers: { "x-nb-fake-bsc-key": CALLER_KEY, ...headers } });
+
+  it("refuses a forged unsigned token in either header", async () => {
+    const forged = idToken(CALLER, { sig: "" });
+    assert.equal((await health({ "X-Serverless-Authorization": `Bearer ${forged}` })).status, 401);
+    assert.equal((await health({ "x-nb-fake-id-token": forged })).status, 401);
+    assert.equal((await health({ "x-nb-fake-id-token": forged.replace(/\.$/, "") })).status, 401);
+  });
+
+  it("refuses a call with no x-nb-fake-id-token, whatever X-Serverless-Authorization says", async () => {
+    assert.equal((await health({ "X-Serverless-Authorization": `Bearer ${idToken(CALLER)}` })).status, 401);
+  });
+
+  it("takes the caller only from the verified x-nb-fake-id-token", async () => {
+    // A stranger's verified token with an allowed caller's unsigned header: refused.
+    const r = await health({ "x-nb-fake-id-token": idToken(STRANGER), "X-Serverless-Authorization": `Bearer ${idToken(CALLER, { sig: "" })}` });
+    assert.equal(r.status, 403);
+    assert.equal((await health({ "x-nb-fake-id-token": `Bearer ${idToken(CALLER)}` })).status, 200);
+  });
+
+  it("verifies every token against the audience, and has none to verify without one", async () => {
     const { callerIdentity } = require("../dist/src/auth.js");
-    const never = async () => {
-      throw new Error("must not verify an unsigned token");
+    let asked = null;
+    const spy = async (token, aud) => {
+      asked = aud;
+      return token.endsWith(".valid") ? JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8")) : null;
     };
-    const unsigned = `Bearer ${idToken(CALLER, { sig: "" })}`;
-    assert.deepEqual(await callerIdentity(unsigned, { audience: AUDIENCE, onCloudRun: true }, never), { ok: true, email: CALLER });
-    assert.deepEqual(await callerIdentity(unsigned, { audience: null, onCloudRun: true }, never), { ok: true, email: CALLER });
-    assert.equal((await callerIdentity(unsigned, { audience: AUDIENCE, onCloudRun: false }, never)).ok, false);
-    const expired = `Bearer ${idToken(CALLER, { sig: "", exp: 5 })}`;
-    assert.equal((await callerIdentity(expired, { audience: null, onCloudRun: true }, never)).ok, false);
-    // A signed token always needs an audience to verify against.
-    assert.equal((await callerIdentity(`Bearer ${idToken(CALLER)}`, { audience: null, onCloudRun: true }, async () => ({}))).ok, false);
+    assert.deepEqual(await callerIdentity(idToken(CALLER), { audience: AUDIENCE }, spy), { ok: true, email: CALLER });
+    assert.equal(asked, AUDIENCE);
+    assert.equal((await callerIdentity(idToken(CALLER), { audience: null }, spy)).reason, "no_audience_configured");
+    assert.equal((await callerIdentity(idToken(CALLER, { sig: "" }), { audience: AUDIENCE }, spy)).reason, "malformed_id_token");
   });
 });
 
@@ -129,8 +154,14 @@ describe("config fails closed", () => {
     assert.throws(() => readConfig({ ...base, FAKE_BSC_CALLER_KEY: "short" }));
     assert.throws(() => readConfig({ ...base, FAKE_BSC_ADMIN_KEY: CALLER_KEY }));
     assert.throws(() => readConfig({ ...base, FAKE_BSC_ALLOWED_CALLERS: "" }));
-    assert.throws(() => readConfig({ ...base, K_SERVICE: "fake-bsc" }), /BUCKET/);
+    assert.throws(() => readConfig({ ...base, K_SERVICE: "fake-bsc", FAKE_BSC_AUDIENCE: AUDIENCE }), /BUCKET/);
     assert.throws(() => readConfig({ ...base, FAKE_BSC_ADMIN_CALLERS: STRANGER }));
+  });
+  it("requires FAKE_BSC_AUDIENCE as an origin, on Cloud Run too", () => {
+    assert.throws(() => readConfig({ ...base, K_SERVICE: "fake-bsc", FAKE_BSC_BUCKET: "b" }), /AUDIENCE/);
+    assert.throws(() => readConfig(base), /AUDIENCE/);
+    assert.throws(() => readConfig({ ...base, FAKE_BSC_AUDIENCE: "https://x.run.app/api" }), /origin/);
+    assert.equal(readConfig({ ...base, K_SERVICE: "fake-bsc", FAKE_BSC_BUCKET: "b", FAKE_BSC_AUDIENCE: AUDIENCE }).audience, AUDIENCE);
   });
   it("allows the bypass locally", () => {
     const c = readConfig({ ...base, FAKE_BSC_ALLOWED_CALLERS: "", FAKE_BSC_LOCAL_DEV_BYPASS: "1" });
@@ -454,6 +485,47 @@ describe("faults and resets", () => {
     await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/card/:id/card-listing", cardId: "stallme" }, kind: "503" }]);
     assert.equal((await fake.call("GET", "/api/marketplace/card/stallme/card-listing")).status, 503);
     assert.equal((await fake.call("GET", "/api/marketplace/card/other/card-listing")).status, 501);
+  });
+
+  it("caps hangs at 2 minutes and 4 held sockets per scope; past that, 503 at once", async () => {
+    const { HANG_CAP_MS, MAX_HUNG_PER_SCOPE } = require("../dist/src/faults.js");
+    assert.equal(HANG_CAP_MS, 2 * 60 * 1000);
+    assert.equal(MAX_HUNG_PER_SCOPE, 4);
+    await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/user/profile" }, kind: "hang" }]);
+    const ctl = new AbortController();
+    const held = Array.from({ length: 4 }, () =>
+      fetch(`${fake.base}/api/marketplace/user/profile`, { headers: fake.headers(CALLER, { bsc: BSC }), signal: ctl.signal }).catch(() => "aborted"),
+    );
+    // Let the four reach the fault before the fifth.
+    await new Promise((r) => setTimeout(r, 100));
+    const fifth = await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC });
+    assert.equal(fifth.status, 503);
+    // Another scope still gets its own hang (it is not refused at once).
+    await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/user/profile" }, kind: "hang" }], "other-slug-w1");
+    await assert.rejects(
+      fetch(`${fake.base}/api/marketplace/user/profile`, { headers: fake.headers(CALLER, { bsc: "tok-other-slug-w1" }), signal: AbortSignal.timeout(150) }),
+    );
+    ctl.abort();
+    assert.deepEqual(await Promise.all(held), ["aborted", "aborted", "aborted", "aborted"]);
+    // Freed: the next one hangs again rather than answering 503.
+    await new Promise((r) => setTimeout(r, 100));
+    await assert.rejects(
+      fetch(`${fake.base}/api/marketplace/user/profile`, { headers: fake.headers(CALLER, { bsc: BSC }), signal: AbortSignal.timeout(150) }),
+    );
+  });
+
+  it("limits request bodies to what NB's BSC traffic needs", async () => {
+    const { PUT_BODY_LIMIT, API_BODY_LIMIT, PHOTO_BODY_LIMIT } = require("../dist/src/routes/api.js");
+    assert.deepEqual([PUT_BODY_LIMIT, API_BODY_LIMIT, PHOTO_BODY_LIMIT], [2 * 1024 * 1024, 64 * 1024, 4 * 1024 * 1024]);
+    const big = { filters: { sport: ["x".repeat(70 * 1024)] } };
+    assert.equal((await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body: big })).status, 413);
+    // 100 rows of ~15 KB (the most NB's sheet parser passes) fit a PUT.
+    const sellerId = (await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC })).body.sellerProfile.sellerId;
+    const listings = Array.from({ length: 100 }, (_, i) => ({ cardId: `c${i}`, condition: "near_mint", availableQuantity: 1, price: 1, sellerSku: null, pad: "p".repeat(15_000) }));
+    const put = await fake.call("PUT", "/api/seller/bulk-upload", { bsc: BSC, body: { sellerId, listings } });
+    assert.notEqual(put.status, 413);
+    const tooBig = await fake.call("PUT", "/api/seller/bulk-upload", { bsc: BSC, body: { sellerId, listings: listings.map((l) => ({ ...l, pad: "p".repeat(25_000) })) } });
+    assert.equal(tooBig.status, 413);
   });
 
   it("x-nb-fake-ns ending in '-' stalls only card-scoped rules under that prefix", async () => {

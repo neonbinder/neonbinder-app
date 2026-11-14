@@ -24,7 +24,8 @@ import { listingKey, newProductId, MAX_LISTINGS_PER_NAMESPACE, type Listing, typ
 export const DEFAULT_IMG_FRONT = "/Images/DefaultFront.gif";
 export const DEFAULT_IMG_BACK = "/Images/DefaultBack.gif";
 export const BSC_PUT_MAX_ROWS = 100;
-export const MAX_PHOTO_BYTES = 15 * 1024 * 1024;
+/** NB sends photos of at most 3 MB (copyPhotos.ts); 4 MB leaves room for multipart framing. */
+export const MAX_PHOTO_BYTES = 4 * 1024 * 1024;
 
 const CARD_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const IMG_RE = /^[A-Za-z0-9._\-/]{1,300}$/;

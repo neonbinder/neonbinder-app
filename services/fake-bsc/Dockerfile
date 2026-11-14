@@ -7,10 +7,11 @@ FROM node:22-slim AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
-COPY tsconfig.json ./
+COPY tsconfig.json tsconfig.server.json ./
 COPY src ./src
-COPY recorder ./recorder
-RUN npm run build && npm prune --omit=dev
+# The server only. The recorder (recorder/) runs on a person's machine and
+# signs in to real BSC; it is never built into or shipped in this image.
+RUN npm run build:server && npm prune --omit=dev
 
 FROM node:22-slim
 ENV NODE_ENV=production

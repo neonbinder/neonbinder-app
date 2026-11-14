@@ -11,6 +11,7 @@
 import { canonicalRequest, requestKey, type CanonicalRequest } from "../src/requestKey";
 import { SANITISE_ALLOWLIST_VERSION, catalogueEndpointFor, sanitiseCatalogue } from "../src/sanitise";
 import type { MissEntry } from "./fake-client";
+import { replayRefusal } from "./replay-allowlist";
 
 export const MAX_REQUESTS_PER_SESSION = 300;
 export const MIN_INTERVAL_MS = 1000;
@@ -35,7 +36,8 @@ export type StopReason =
   | "bad_body"
   | "upload_refused"
   | "token_expiring"
-  | "interrupted";
+  | "interrupted"
+  | "declined";
 
 export interface RecordDeps {
   prefix: string;
@@ -54,6 +56,14 @@ export interface RecordDeps {
   pollMs?: number;
   /** True once the operator interrupted (Ctrl-C). */
   stopped?: () => boolean;
+  /**
+   * Asked once, with the to-do count, before the first request goes to BSC.
+   * Missing or false: nothing is sent ("declined"). The CLI answers it with
+   * an interactive "yes" on the terminal, or `--yes`.
+   */
+  confirm?: (todo: number) => Promise<boolean>;
+  /** Replay misses with no namespace and no prefix too (`--include-anon`). Off by default. */
+  includeAnon?: boolean;
   report?: (line: string) => void;
 }
 
@@ -63,19 +73,79 @@ export interface RecordResult {
   stopReason: StopReason;
   /** Misses the fake has no model for: method + template, for a human. */
   needsModel: string[];
+  /** Misses refused by the replay allowlist: `<reason> <endpoint> <key prefix>`, never a value. */
+  refused: string[];
+  /** Anonymous misses left alone (no `--include-anon`). */
+  anonSkipped: number;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
-/** The miss's request, only if it is a catalogue request whose key recomputes. */
-export function fetchableRequest(m: MissEntry): CanonicalRequest | null {
-  if (m.kind !== "catalogue" || !m.request) return null;
+/** Why a miss may not be replayed, or its request. Reasons never carry a value. */
+export function replayable(m: MissEntry): { ok: true; req: CanonicalRequest } | { ok: false; reason: string } {
+  if (m.kind !== "catalogue" || !m.request) return { ok: false, reason: "not_a_catalogue_miss" };
   const r = m.request;
-  if (typeof r.method !== "string" || typeof r.path !== "string") return null;
-  const req = canonicalRequest({ method: r.method, path: r.path, query: Array.isArray(r.query) ? r.query : [], body: r.body });
-  if (!catalogueEndpointFor(req.method, req.path)) return null;
-  if (requestKey(req) !== m.key) return null;
-  return req;
+  if (typeof r.method !== "string" || typeof r.path !== "string") return { ok: false, reason: "malformed" };
+  let req: CanonicalRequest;
+  try {
+    req = canonicalRequest({ method: r.method, path: r.path, query: Array.isArray(r.query) ? r.query : [], body: r.body });
+  } catch {
+    return { ok: false, reason: "malformed" };
+  }
+  if (!catalogueEndpointFor(req.method, req.path)) return { ok: false, reason: "not_a_catalogue_request" };
+  if (requestKey(req) !== m.key) return { ok: false, reason: "key_mismatch" };
+  const refusal = replayRefusal(req);
+  if (refusal) return { ok: false, reason: refusal };
+  return { ok: true, req };
+}
+
+/** The miss's request, only if it may be replayed. */
+export function fetchableRequest(m: MissEntry): CanonicalRequest | null {
+  const r = replayable(m);
+  return r.ok ? r.req : null;
+}
+
+/** A miss is anonymous when it names neither a namespace nor a deployment prefix. */
+export function isAnonymous(m: MissEntry): boolean {
+  return m.ns === null && !m.prefix;
+}
+
+/** A label safe to print: only fixed words and hex, never text from the miss. */
+function label(m: MissEntry, reason: string): string {
+  const endpoint = m.request && typeof m.request.method === "string" && typeof m.request.path === "string" ? catalogueEndpointFor(m.request.method, m.request.path.replace(/^\/+/, "")) : null;
+  const key = typeof m.key === "string" && /^[0-9a-f]{12}/.test(m.key) ? m.key.slice(0, 12) : "?";
+  return `${reason} ${endpoint ?? (m.kind === "needs-model" ? "needs-model" : "other")} ${key}`;
+}
+
+export interface MissPlan {
+  todo: Array<{ key: string; req: CanonicalRequest }>;
+  refused: Array<{ key: string; label: string }>;
+  needsModel: string[];
+  anonSkipped: number;
+}
+
+/** Sorts a miss list into what may be sent, what is refused and what is left alone. */
+export function planMisses(misses: MissEntry[], opts: { includeAnon?: boolean; done?: ReadonlySet<string> } = {}): MissPlan {
+  const plan: MissPlan = { todo: [], refused: [], needsModel: [], anonSkipped: 0 };
+  const seen = new Set<string>();
+  for (const m of misses) {
+    if (opts.done?.has(m.key) || seen.has(m.key)) continue;
+    seen.add(m.key);
+    if (m.kind === "needs-model") {
+      const p = typeof m.path === "string" && /^[A-Za-z0-9_:/.-]{1,200}$/.test(m.path) ? m.path : "?";
+      const meth = typeof m.method === "string" && /^[A-Z]{1,10}$/.test(m.method) ? m.method : "?";
+      plan.needsModel.push(`${meth} ${p}`);
+      continue;
+    }
+    if (isAnonymous(m) && !opts.includeAnon) {
+      plan.anonSkipped += 1;
+      continue;
+    }
+    const r = replayable(m);
+    if (r.ok) plan.todo.push({ key: m.key, req: r.req });
+    else plan.refused.push({ key: m.key, label: label(m, r.reason) });
+  }
+  return plan;
 }
 
 export async function runRecordSession(deps: RecordDeps): Promise<RecordResult> {
@@ -89,28 +159,37 @@ export async function runRecordSession(deps: RecordDeps): Promise<RecordResult> 
 
   const done = new Set<string>();
   const needsModel = new Set<string>();
+  const refused = new Set<string>();
+  const anonKeys = new Set<string>();
+  let confirmed = false;
   let sent = 0;
   let recorded = 0;
   let lastSentAt = -Infinity;
-  const finish = (stopReason: StopReason): RecordResult => ({ sent, recorded, stopReason, needsModel: [...needsModel].sort() });
+  const finish = (stopReason: StopReason): RecordResult => ({
+    sent,
+    recorded,
+    stopReason,
+    needsModel: [...needsModel].sort(),
+    refused: [...refused].sort(),
+    anonSkipped: anonKeys.size,
+  });
 
   for (;;) {
     if (stopped()) return finish("interrupted");
     const misses = await deps.fake.misses(deps.prefix);
-    const todo: Array<{ key: string; req: CanonicalRequest }> = [];
-    for (const m of misses) {
-      if (m.kind === "needs-model") {
-        needsModel.add(`${m.method} ${m.path}`);
-        continue;
-      }
-      if (done.has(m.key)) continue;
-      const req = fetchableRequest(m);
-      if (!req) {
-        needsModel.add(`${m.method} ${m.path} (not a fetchable catalogue request)`);
-        done.add(m.key);
-        continue;
-      }
-      todo.push({ key: m.key, req });
+    const plan = planMisses(misses, { includeAnon: deps.includeAnon, done });
+    for (const n of plan.needsModel) needsModel.add(n);
+    for (const r of plan.refused) {
+      refused.add(r.label);
+      done.add(r.key);
+    }
+    for (const m of misses) if (isAnonymous(m) && !deps.includeAnon && m.kind !== "needs-model") anonKeys.add(m.key);
+    const todo = plan.todo;
+
+    if (!confirmed && todo.length > 0) {
+      report(`${todo.length} request(s) to send to real BSC now (at most ${max} this session)`);
+      if (!deps.confirm || !(await deps.confirm(todo.length))) return finish("declined");
+      confirmed = true;
     }
 
     for (const { key, req } of todo) {

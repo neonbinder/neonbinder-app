@@ -1,12 +1,15 @@
 /**
- * The recorder's client for the fake, as the loader SA: a Google ID token in
- * `X-Serverless-Authorization` (ADC, impersonating the loader SA), the
- * caller key, and the admin key for uploads.
+ * The recorder's client for the fake, as the loader SA: a Google ID token
+ * (ADC, impersonating the loader SA) in `X-Serverless-Authorization` for
+ * Cloud Run IAM and again in `x-nb-fake-id-token` for the fake's own check,
+ * the caller key, and the admin key for uploads.
  */
-import { GoogleAuth } from "google-auth-library";
+import { GoogleAuth, Impersonated } from "google-auth-library";
 
 export interface MissEntry {
   ns: string | null;
+  /** Set when the miss came from a deployment prefix (the background lane). */
+  prefix?: string;
   key: string;
   kind: "catalogue" | "needs-model";
   method: string;
@@ -25,11 +28,24 @@ export interface FakeClientOptions {
   fetchImpl?: typeof fetch;
 }
 
-export function adcIdTokenMinter(audience: string): () => Promise<string> {
-  const auth = new GoogleAuth();
+/** What `adcIdTokenMinter` needs of GoogleAuth (injectable for tests). */
+export interface IdTokenAuth {
+  getClient(): Promise<unknown>;
+  getIdTokenClient(audience: string): Promise<{ idTokenProvider: { fetchIdToken(audience: string): Promise<string> } }>;
+}
+
+/**
+ * Mints an ID token for the fake from ADC. Impersonated ADC (the loader SA,
+ * as the README sets it up) leaves `email` out of the token unless asked, and
+ * the fake's caller allowlist needs it: `includeEmail: true`. A service
+ * account key or the metadata server include it already.
+ */
+export function adcIdTokenMinter(audience: string, auth: IdTokenAuth = new GoogleAuth()): () => Promise<string> {
   return async () => {
-    const client = await auth.getIdTokenClient(audience);
-    return client.idTokenProvider.fetchIdToken(audience);
+    const client = await auth.getClient();
+    if (client instanceof Impersonated) return client.fetchIdToken(audience, { includeEmail: true });
+    const idClient = await auth.getIdTokenClient(audience);
+    return idClient.idTokenProvider.fetchIdToken(audience);
   };
 }
 
@@ -54,7 +70,11 @@ export class FakeClient {
   private async headers(admin: boolean): Promise<Record<string, string>> {
     const h: Record<string, string> = { "x-nb-fake-bsc-key": this.opts.callerKey, accept: "application/json" };
     if (admin) h["x-nb-fake-bsc-admin-key"] = this.opts.adminKey;
-    if (this.opts.idToken) h["X-Serverless-Authorization"] = `Bearer ${await this.opts.idToken()}`;
+    if (this.opts.idToken) {
+      const t = await this.opts.idToken();
+      h["X-Serverless-Authorization"] = `Bearer ${t}`;
+      h["x-nb-fake-id-token"] = t;
+    }
     return h;
   }
 

@@ -4,21 +4,27 @@
 // the save the cards BSC did not answer wait in the background queue for
 // another try instead of being put to the operator.
 //
-// HOW THE STALL IS MADE (D7, Jason 2026-11-10). A test-only switch on the
-// deployment: it works only where TESTING_RESET_SECRET is set AND the env flag
-// NEONBINDER_TEST_BSC_STALL_CARD_IDS is set. The flag holds a comma list of BSC
-// card ids; each is treated as an immediate stall (a timeout, never a 429).
-// DEVOPS SETS THIS ON THE PR'S PREVIEW, to exactly these three ids, which are
-// cards #1, #2 and #3 of Hockey 1995 Halifax Mooseheads QMJHL on BSC
-// (read from BSC's storefront search, 2026-11-10; each is the card's own id):
+// HOW THE STALL IS MADE (NEO-552; it was a deployment switch, D7, Jason 2026-11-10).
+// BuySportsCards is the fake (services/fake-bsc), so a spec asks it to stall:
+// `bscFake.setFaults` puts a `hang` rule on `GET marketplace/card/:id/card-listing`
+// for each of three BSC card ids, on THIS worker's fake account (support/bscFake.ts).
+// The fake never answers those three; NeonBinder's own 5 s timeout ends each call,
+// and one retry follows. The ids are cards #1, #2 and #3 of Hockey 1995 Halifax
+// Mooseheads QMJHL on BSC (read from BSC's storefront search, 2026-11-10; each is the
+// card's own id):
 //
 //   STALL_IDS: 96f9a87adeb7d02c275e117ef10d569c,9dba15716322d30fc94e4bd96034e4bf,adf14c41cda48abecf2b69b0faa399ae
 //
-// A deployment without the flag answers every card, so the spec goes RED at the
-// "23 need you" assert, by name: that is the switch being unset, not a product bug.
+// Six timeouts in a row are a run of failures to Convex's DEPLOYMENT-WIDE BSC call
+// gate (convex/bscCallGate.ts: five open it), which would stop every shard's
+// BuySportsCards calls for its window. That is why this spec carries `@bsc-breaker`:
+// CI runs it alone, after every shard, and the `bscFake` fixture clears the rules and
+// the gate when the test ends, red or green. No deployment setting is needed any
+// more; a spec that cannot place its rules fails at that step, by name.
 //
 // THE PUBLISHER'S CHECKLIST (Jason, 2026-11-10: prefer prebuilt checklists over
-// live calls while BSC is unstable, keeping a small live read as the coverage).
+// live calls, keeping a small live read as the coverage; since NEO-552 the reason is
+// smaller recordings and faster specs, not BSC's mood).
 // The spec uploads fixtures/checklists/1995-hockey-halifax-mooseheads-qmjhl-base-
 // five-live.csv: the set's own BSC answers for 21 of its 26 cards, with cards
 // #1, #2, #3, #24 and #25 left OUT. So BSC is asked per card for exactly five:
@@ -28,9 +34,10 @@
 
 // WHAT IT PROVES, IN ORDER:
 //   1. The fetch lands within 7 s of our own time plus any seconds the screen
-//      says it is "Waiting on BuySportsCards..." (`expectAfterMarketplace`). A
-//      stall that were retried card by card would blow the 7 s; a stall is
-//      instant, so the only time left is ours. The result line then says the
+//      says it is "Waiting on BuySportsCards..." (`expectAfterMarketplace`). The
+//      three hung cards hold the screen for about ten seconds (NeonBinder's 5 s
+//      timeout, a short pause, one retry), all of it BSC's: a stall retried card
+//      by card would blow the budget with our own time. The result line then says the
 //      checklist supplied the teams of 21 cards ("Teams from your checklist").
 //   2. Every name is skipped, so the wizard's "Cards with no team" step lists the
 //      whole set (it cannot tell a stalled card from an answered one whose team
@@ -58,6 +65,7 @@
 // checklist), so a re-run on the same seed fails at "No cards in this checklist
 // yet." by name. Every name is skipped: no player and no team is minted.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { editCardButton } from "../../support/cards";
 import { bscLookupOutcome, expectAfterMarketplace } from "../../support/marketplace-wait";
 import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
@@ -72,13 +80,15 @@ import {
 const SET = "Halifax Mooseheads QMJHL";
 /** The set's card count on BSC. */
 const CARDS = 26;
-/** How many of them the preview's stall switch swallows (the ids in the header). */
-const STALLED = 3;
+/** The BSC card ids the fake never answers (cards #1-#3, the ids in the header). */
+const STALL_IDS = ["96f9a87adeb7d02c275e117ef10d569c", "9dba15716322d30fc94e4bd96034e4bf", "adf14c41cda48abecf2b69b0faa399ae"] as const;
+/** How many of them the fake swallows. */
+const STALLED = STALL_IDS.length;
 
 test(
   "Checklist fetch — a BSC stall on some cards ends within one wave: the fetch lands and the unanswered cards wait in the background queue, not in the operator's count (NEO-487)",
-  { tag: ["@set-selector"] },
-  async ({ page, signIn, env }) => {
+  { tag: ["@set-selector", "@bsc-breaker"] },
+  async ({ page, signIn, env, bscFake }) => {
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
     await openOneMarketplaceSetBase(page, env, { set: SET });
@@ -87,6 +97,8 @@ test(
 
     // ── 1. The fetch, with the trimmed checklist: BSC is asked per card for five only ──
     const facts = await usePublishersChecklist(page, CHECKLISTS.halifaxMooseheads1995FiveLive);
+    // The fake never answers the three stalled cards (its rules last 10 minutes at most, and teardown drops them).
+    await bscFake.setFaults(STALL_IDS.map((cardId) => bscFault.hangs(BSC_PATH.cardListing, { cardId, ttlS: 600 })));
     await syncChecklistButton(page).click();
     await expectAfterMarketplace(page, page.getByText(new RegExp(`Kept all ${CARDS} cards from BSC`)), {
       platform: "BuySportsCards",
@@ -113,11 +125,11 @@ test(
     // The set's cards are on screen, so what follows is read off a live checklist.
     await expect(editCardButton(page, "1")).toBeVisible();
     // The queue's own words: the status line names the cards that wait, and says it is not the operator's yet.
-    // No line at all means the stall switch is unset (every card answered): red, by name.
+    // No line at all means no card was left unanswered (the fake's rules did not hold): red, by name.
     const lookupStatus = page.getByRole("status").filter({ hasText: /^Still looking up teams for [0-9]+ cards?\./ });
     await expect(
       lookupStatus,
-      "no 'Still looking up teams' line: the deployment's NEONBINDER_TEST_BSC_STALL_CARD_IDS is unset or lists other ids, so the three stalled cards were never queued",
+      "no 'Still looking up teams' line: the fake BSC answered the three stalled cards (their hang rules did not hold), so none was queued",
     ).toBeVisible();
     // NEO-489 (Jason, 2026-11-11: a BSC 429 or an open cooldown on a live card is a pass). The three
     // stalled cards always wait. The two live lookups (#24, #25) wait too when BSC rate-limits them

@@ -2,8 +2,9 @@
 /**
  * The fake-BSC recorder. Run by a person, on their own machine, never in CI.
  *
- *   bw get item <id> | node dist/recorder/cli.js record --fake <url> --prefix <p> [--watch]
+ *   bw get item <id> | node dist/recorder/cli.js record --fake <url> --prefix <p> [--watch] [--max N] [--include-anon] [--yes]
  *   bw get item <id> | node dist/recorder/cli.js capture-write --fake <url> --request put.json [--file img.jpg] --yes
+ *   bw get item <id> | node dist/recorder/cli.js undo-write --request put.json --yes
  *
  * BSC credentials come from stdin or a prompt only. The fake's caller and
  * admin keys come from FAKE_BSC_CALLER_KEY / FAKE_BSC_ADMIN_KEY in this
@@ -14,8 +15,9 @@
 import { readCredentials } from "./credentials";
 import { FakeClient, adcIdTokenMinter, isLoopback } from "./fake-client";
 import { loadBrowserModules } from "./bsc";
-import { bscCaller, runRecordSession } from "./record";
-import { describeWrite, loadWriteRequest, runCaptureWrite } from "./capture-write";
+import { MAX_REQUESTS_PER_SESSION, bscCaller, planMisses, runRecordSession } from "./record";
+import { buildUndoRequest, describeUndo, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite } from "./capture-write";
+import { askOnTerminal } from "./confirm";
 
 const FORBIDDEN_FLAGS = new Set(["--password", "--username", "--user", "--pass", "--credentials"]);
 
@@ -44,6 +46,16 @@ function str(flags: Map<string, string | true>, name: string): string | undefine
   return typeof v === "string" ? v : undefined;
 }
 
+/**
+ * `--max N`: a positive whole number, clamped to the session cap. Anything
+ * else is an error, never a silently uncapped session.
+ */
+export function readMax(value: string | true | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || !/^[1-9][0-9]{0,8}$/.test(value)) throw new Error("--max must be a positive whole number");
+  return Math.min(Number(value), MAX_REQUESTS_PER_SESSION);
+}
+
 function fakeClient(flags: Map<string, string | true>): FakeClient {
   const url = str(flags, "--fake");
   if (!url) throw new Error("--fake <url> is required");
@@ -61,7 +73,26 @@ const say = (line: string) => process.stderr.write(`${line}\n`);
 async function record(flags: Map<string, string | true>): Promise<number> {
   const prefix = str(flags, "--prefix");
   if (!prefix || prefix.length < 3) throw new Error("--prefix <convexSlug-> is required (at least 3 characters)");
+  const max = readMax(flags.get("--max"));
+  const includeAnon = flags.get("--include-anon") === true;
+  const watch = flags.get("--watch") === true;
   const fake = fakeClient(flags);
+
+  // Plan first, before any credential is read or BSC is contacted.
+  const plan = planMisses(await fake.misses(prefix), { includeAnon });
+  for (const r of plan.refused) say(`refused (never sent): ${r.label}`);
+  if (plan.anonSkipped) say(`${plan.anonSkipped} anonymous miss(es) left alone (--include-anon to replay them)`);
+  const cap = max ?? MAX_REQUESTS_PER_SESSION;
+  say(`${plan.todo.length} request(s) to send to real BSC${watch ? ", then more as misses arrive" : ""} (at most ${cap} this session)`);
+  if (plan.todo.length === 0 && !watch) {
+    say("nothing to send");
+    return 0;
+  }
+  if (flags.get("--yes") !== true && !(await askOnTerminal("Send them to real BSC under your account? Type yes: "))) {
+    say("not confirmed; nothing sent");
+    return 0;
+  }
+
   const browser = loadBrowserModules(str(flags, "--browser-dist"));
   const creds = await readCredentials(process.stdin, process.stderr);
   const tokens = await browser.signIn(creds.username, creds.password);
@@ -72,19 +103,22 @@ async function record(flags: Map<string, string | true>): Promise<number> {
     interrupted = true;
     say("stopping after the current request");
   });
-  const max = str(flags, "--max");
   const result = await runRecordSession({
     prefix,
-    watch: flags.get("--watch") === true,
+    watch,
     fake,
     bsc: bscCaller({ apiBase: browser.apiBase, token: tokens.token, headers: (t) => browser.apiHeaders(t) }),
     tokenExpiresAt: tokens.expiresAt,
-    ...(max ? { maxRequests: Number(max) } : {}),
+    ...(max !== undefined ? { maxRequests: max } : {}),
+    includeAnon,
+    // Confirmed above, for this session.
+    confirm: async () => true,
     stopped: () => interrupted,
     report: say,
   });
   say(`sent ${result.sent}, recorded ${result.recorded}, stopped: ${result.stopReason}`);
   for (const n of result.needsModel) say(`needs a fake model: ${n}`);
+  for (const r of result.refused) say(`refused (never sent): ${r}`);
   return result.stopReason === "done" || result.stopReason === "interrupted" || result.stopReason === "cap" ? 0 : 2;
 }
 
@@ -115,14 +149,52 @@ async function captureWrite(flags: Map<string, string | true>): Promise<number> 
   }
   say(`BSC answered ${r.status}; ${r.paths} shape path(s) stored; fake verdict: ${r.verdict}`);
   for (const p of r.driftPaths) say(`  differs: ${p}`);
+  if (buildUndoRequest(request)) {
+    say("THIS WAS A REAL WRITE on the signed-in BSC account. To take the listing(s) down again:");
+    say(`  <same stdin> | node dist/recorder/cli.js undo-write --request ${requestFile}   (dry run; add --yes to send)`);
+  } else {
+    say("THIS WAS A REAL PHOTO UPLOAD on the signed-in BSC account; there is no API undo (README, \"Undoing a capture\").");
+  }
   return r.verdict === "ok" ? 0 : 3;
+}
+
+async function undoWrite(flags: Map<string, string | true>): Promise<number> {
+  const requestFile = str(flags, "--request");
+  if (!requestFile) throw new Error("--request <file.json> is required (the file capture-write sent)");
+  const request = await loadWriteRequest(requestFile, str(flags, "--file"));
+  const undo = buildUndoRequest(request);
+  if (!undo) {
+    say("nothing to undo through the API: a photo upload cannot be removed this way (README, \"Undoing a capture\")");
+    return 1;
+  }
+  say(`would send exactly one write: ${describeUndo(undo)}`);
+  if (flags.get("--yes") !== true) {
+    say("dry run: add --yes to send it");
+    return 0;
+  }
+  const browser = loadBrowserModules(str(flags, "--browser-dist"));
+  const creds = await readCredentials(process.stdin, process.stderr);
+  const tokens = await browser.signIn(creds.username, creds.password);
+  creds.password = "";
+  const r = await runUndoWrite({ request, apiBase: browser.apiBase, token: tokens.token, headers: (t, o) => browser.apiHeaders(t, o) });
+  if (!r.ok) {
+    say(`undo failed: ${r.reason}`);
+    return 2;
+  }
+  say(`BSC answered ${r.status}`);
+  return r.status >= 200 && r.status < 300 ? 0 : 2;
 }
 
 async function main(argv: string[]): Promise<number> {
   const { command, flags } = parseArgs(argv);
   if (command === "record") return record(flags);
   if (command === "capture-write") return captureWrite(flags);
-  say("usage: cli.js record --fake <url> --prefix <p> [--watch] [--max N] | capture-write --fake <url> --request <file> [--file <img>] [--yes]");
+  if (command === "undo-write") return undoWrite(flags);
+  say(
+    "usage: cli.js record --fake <url> --prefix <p> [--watch] [--max N] [--include-anon] [--yes]\n" +
+      "     | capture-write --fake <url> --request <file> [--file <img>] [--yes]\n" +
+      "     | undo-write --request <file> [--yes]",
+  );
   return 1;
 }
 

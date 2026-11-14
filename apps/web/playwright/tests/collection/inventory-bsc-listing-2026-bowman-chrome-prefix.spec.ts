@@ -1,3 +1,8 @@
+// NEO-552: BuySportsCards is the fake (services/fake-bsc), one account per test user, so
+// this spec is no longer a "marketplace seller" spec: it needs no shared seller, no CI
+// queue and no worker of its own, and runs in the ordinary shards. "Real BSC" in the
+// comments below means the fake's seller account; the first press's seller-account wait
+// is made likelier with a held profile read (below).
 // NEO-458 (R1): a collector's card of a parallel whose BuySportsCards numbers
 // carry a prefix (2026 Bowman Chrome, BSC's `BCV-26`) lists on Sync, and is NOT
 // held back as "numbers this card differently". The flow, as the user lives it:
@@ -46,8 +51,7 @@
 // R7/R7a. Football -> 2026 -> Bowman is a registered real set (SET-REGISTRY.md):
 // this spec is the SOLE writer of its rows (it builds them, in-flow, through the
 // Set Builder) and of its BuySportsCards quantities. It is built by the spec, not
-// the seed, so the seller jobs' start-clean pass skips it when absent
-// (`SELLER_SPEC_SETS`, `builtBySpec`). The BSC rows end at 0 and the sign-in is
+// the seed (`SELLER_SPEC_SETS`, `builtBySpec`). The BSC rows end at 0 and the sign-in is
 // saved again, on a pass by the steps and the hook, on a failure by the hook on a
 // second page. The NB tree stays (a rerun on the same seed finds it, and the
 // build steps below adopt what is there, asserting the same end state).
@@ -76,6 +80,7 @@ import {
   syncRun,
   walkForCleanup,
 } from "../../support/collection";
+import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { bscReadCeiling, expectAfterMarketplace } from "../../support/marketplace-wait";
@@ -411,8 +416,8 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
 
 test(
   "Inventory: Sync lists a card of a parallel whose BuySportsCards numbers carry a prefix (2026 Bowman Chrome, BCV-) and holds nothing back",
-  { tag: ["@collection", "@marketplace-seller"] },
-  async ({ page, signIn, env, isMobile }) => {
+  { tag: ["@collection"] },
+  async ({ page, signIn, env, isMobile, bscFake }) => {
     // The hook's record of how far this run got starts empty.
     written.box = undefined;
     written.started = false;
@@ -430,6 +435,15 @@ test(
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
     await buildFixture(page, env);
+
+    // NEO-552: BuySportsCards is the fake, which answers the seller profile at once, so the first
+    // press would never meet NeonBinder still waiting to hear the seller account (NEO-483). Hold the
+    // profile read for 15 s (under NeonBinder's 20 s read timeout, so it lands rather than fails):
+    // a read that starts at the seed or at the first press then takes that long, and when the press
+    // beats it the Sync status wait line is up and `expectRunOrSellerWait` checks it (a `seller-wait`
+    // annotation says which order ran). A rule whose delay is shorter than the caller's timeout is no
+    // failure, so this spec stays in the ordinary shards. Teardown drops the rule.
+    await bscFake.setFaults([bscFault.slow(BSC_PATH.profile, 15_000, { ttlS: 1800 })]);
 
     // --- 2. A box to stock, and every other box in-person BEFORE syncing starts ---
     // A full page load, so the launch gate (cold app + Clerk handshake) applies.
@@ -612,7 +626,7 @@ test(
     // first (NEO-433): the poll already took the cards off and the press, a full
     // read, sent nothing. Accepted limit (Jason, NEO-433): a takedown that sent
     // nothing cannot tell the poll from anything else having zeroed them on the
-    // shared seller account; CI runs the seller specs one at a time.
+    // fake seller account (the worker's own, NEO-552), so the poll is the only other writer.
     if (await takeDown.last.getByRole("listitem", { name: `${SEND}, done`, exact: true }).isVisible()) {
       await expect(takenLine).toBeVisible();
       await expect(takeDown.confirmLanded()).toBeVisible();

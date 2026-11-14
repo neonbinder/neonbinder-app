@@ -7,7 +7,7 @@ import type { FakeConfig } from "./config";
 import type { Catalogue } from "./catalogue";
 import type { Captures } from "./captures";
 import { requireAdmin, requireCaller, type IdTokenVerifier } from "./auth";
-import { HANG_CAP_MS, ruleMatches, type FaultRule, type FaultTarget } from "./faults";
+import { HANG_CAP_MS, MAX_HUNG_PER_SCOPE, ruleMatches, type FaultRule, type FaultTarget } from "./faults";
 import { cardIdOf, templatesFor } from "./paths";
 import { normalisePath } from "./requestKey";
 import { SANITISE_ALLOWLIST_VERSION } from "./sanitise";
@@ -99,6 +99,9 @@ export function createApp(deps: AppDeps): express.Express {
     }),
   );
 
+  /** Hung sockets per scope, so a fault cannot pin more than a few. */
+  const hung = new Map<string, number>();
+
   const faults = (area: "api" | "identity") => async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const path = normalisePath(req.path);
     const target: FaultTarget = {
@@ -139,9 +142,22 @@ export function createApp(deps: AppDeps): express.Express {
         next();
         return;
       case "hang": {
+        const scopeKey = scope === null ? "anon" : "ns" in scope ? `ns:${scope.ns}` : `prefix:${scope.prefix}`;
+        const held = hung.get(scopeKey) ?? 0;
+        if (held >= MAX_HUNG_PER_SCOPE) {
+          log("fault_hang_refused", { held });
+          res.status(503).json({ message: "Service Unavailable" });
+          return;
+        }
+        hung.set(scopeKey, held + 1);
         const timer = setTimeout(() => req.socket.destroy(), HANG_CAP_MS);
         timer.unref();
-        res.on("close", () => clearTimeout(timer));
+        res.on("close", () => {
+          clearTimeout(timer);
+          const n = (hung.get(scopeKey) ?? 1) - 1;
+          if (n <= 0) hung.delete(scopeKey);
+          else hung.set(scopeKey, n);
+        });
         return;
       }
       case "reset":

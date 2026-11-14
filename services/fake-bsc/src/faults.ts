@@ -21,8 +21,14 @@ export const DEFAULT_FAULT_TTL_S = 600;
 export const MAX_FAULT_TTL_S = 3600;
 export const MAX_RULES_PER_NAMESPACE = 50;
 export const MAX_DELAY_MS = 120_000;
-/** A hang is cut after this, so a client with no timeout cannot pin a socket forever. */
-export const HANG_CAP_MS = 10 * 60 * 1000;
+/**
+ * A hang is cut after this, so a client with no timeout cannot pin a socket
+ * for long. Two minutes is past every NB timeout a hang is meant to trip
+ * (BSC calls time out at 30-60 s).
+ */
+export const HANG_CAP_MS = 2 * 60 * 1000;
+/** Sockets one scope (namespace, prefix or anonymous) may hold hung at once; past it, 503 at once. */
+export const MAX_HUNG_PER_SCOPE = 4;
 
 const METHODS = new Set(["GET", "POST", "PUT", "DELETE", "PATCH", "*"]);
 const TEMPLATE_RE = /^[A-Za-z0-9_.:\-/]{1,200}\*?$/;

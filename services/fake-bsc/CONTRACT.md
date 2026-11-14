@@ -19,7 +19,8 @@ first, then in code.
 1. Cloud Run IAM: no `allUsers`. Invokers are the dev Convex SA, the dev browser
    runtime SA, the dev CI deployer SA and `fake-bsc-loader`. Because the BSC
    API uses `Authorization: Bearer <bsc token>`, callers send their Google ID
-   token in `X-Serverless-Authorization`.
+   token in `X-Serverless-Authorization` (for IAM), and the same signed
+   token again, bare, in `x-nb-fake-id-token` (for rule 4).
 2. The caller secret in the header `x-nb-fake-bsc-key` on every request
    (env `FAKE_BSC_CALLER_KEY` on the fake).
 3. Admin endpoints (`/__fake/recordings`, `/__fake/drift-compare`,
@@ -31,8 +32,12 @@ first, then in code.
    Convex can report its own preview's misses. Misses hold only catalogue
    request keys and bodies, which are public; a non-catalogue miss holds only
    its method and path template.
-4. The fake checks the caller email against `FAKE_BSC_ALLOWED_CALLERS`, so a
-   loosened IAM binding still fails closed.
+4. The fake verifies the signature of the token in `x-nb-fake-id-token`
+   itself (google-auth-library, audience `FAKE_BSC_AUDIENCE`) and checks
+   that verified email against `FAKE_BSC_ALLOWED_CALLERS`, so a loosened IAM
+   binding (or an `allUsers` grant) still fails closed. It never reads
+   `X-Serverless-Authorization`: Cloud Run strips its signature, so its
+   claims are forgeable the moment IAM stops checking it.
 
 ## Paths
 
@@ -83,7 +88,14 @@ first, then in code.
 `POST /__fake/faults {ns, rules:[{match:{method, pathTemplate, cardId?},
 kind: "429"|"503"|"delay"|"hang"|"reset", delayMs?, retryAfterS?, times?,
 ttlS?}]}`. Default TTL 10 minutes. Replaces
-`NEONBINDER_TEST_BSC_STALL_CARD_IDS`.
+`NEONBINDER_TEST_BSC_STALL_CARD_IDS`. A `hang` holds the socket for at most
+2 minutes, and one scope (namespace, prefix, or no namespace) holds at most
+4 hung sockets at once: a fifth matching request answers 503 at once.
+
+Request bodies are limited to what NB's BSC traffic needs: 2 MB for
+`PUT seller/bulk-upload` (100 rows of at most 16 KB, `bscSheetPlan.ts`),
+64 KB for every other JSON body, 4 MB for the photo upload (photos are at most
+3 MB, `copyPhotos.ts`); 413 past them.
 
 ## Recorder (`services/fake-bsc/recorder/`)
 
@@ -93,8 +105,24 @@ ttlS?}]}`. Default TTL 10 minutes. Replaces
 - To-do list: `GET /__fake/misses?prefix=` as the loader SA. Only the three
   catalogue endpoints are fetched; anything else is listed as "needs a fake
   model".
+- The miss list is written by any caller-key holder, so before anything is
+  sent each miss passes a request-side allowlist (`recorder/replay-allowlist.ts`):
+  filters `{filters}` and results `{filters, condition?, page?, size?, sort?}`
+  only, `filters` holding only `sport|year|setName|variant|variantName` as
+  1-50 slugs (`^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$`), `condition` `"all"`,
+  `sort` `"default"`, `page` 0-100, `size` 1-5000, at most 4 KB; no query
+  string on any of them; card-listing ids hex only (8-64). A refused miss is
+  never sent and is reported by reason, endpoint and key prefix, never value.
+- Anonymous misses (no namespace and no prefix) are left alone unless
+  `--include-anon`.
+- Before any credential is read or BSC contacted, it prints the to-do count
+  and needs the word `yes` typed on the terminal, or `--yes`.
+- `--max N` takes a positive whole number only, clamped to 300; anything else
+  is an error.
 - At most 1 request a second, 300 per session, and it stops on the first 429,
   5xx, timeout or 401 with no retry.
+- It reaches the fake as the loader SA through impersonated ADC, minting its
+  ID token with `includeEmail` so rule 4 sees the SA's email.
 - Uploads with `POST /__fake/recordings`; auto-promoted.
 - `--watch --prefix` long-polls the miss list during a local E2E run.
 
@@ -108,13 +136,27 @@ response's status and shape (key paths and types, no values) through
 `POST /__fake/write-captures`, and the fake's synthesis is checked against
 that shape in its tests. This happens before the PR is pushed to CI.
 
+The write is real: a PUT makes or changes a listing on the account that
+signed in, a photo upload stores a real image. `recorder undo-write --request
+<the same file>` sends the one undo BSC allows for a PUT, the same rows at
+`availableQuantity: 0` (a second real write: dry run unless `--yes`). A row
+that was an existing listing before the capture is taken down, not restored.
+A photo upload has no API undo (README, "Undoing a capture").
+
 ## App seams
 
 - Convex: `apps/web/convex/lib/bscHttp.ts` exports `bscApiBase(env)` and
   `bscFetch()`. It returns the fake base only when
   `NEONBINDER_BSC_API_BASE` is set AND `TESTING_RESET_SECRET` is set AND the
-  URL is https on `*.run.app`; otherwise the real host. Fake mode adds
-  `x-nb-fake-bsc-key` from `NEONBINDER_FAKE_BSC_KEY` and the Google ID token.
+  URL is the fake's root origin, https, on the fake's own Cloud Run service
+  (host starts `neonbinder-fake-bsc-`, ends `.run.app`; a tagged revision or
+  any other service is refused); otherwise the real host. A test deployment
+  whose URL or key fails these checks is misconfigured and sends nothing.
+  Fake mode adds `x-nb-fake-bsc-key` from `NEONBINDER_FAKE_BSC_KEY` and the
+  Google ID token twice: `X-Serverless-Authorization: Bearer <token>` (for
+  Cloud Run IAM) and the same signed token bare in `x-nb-fake-id-token`, whose
+  signature the fake verifies itself. Both `bscFetch` and the `__fake/`
+  control calls send them.
   No other file may name a BSC host.
 - Browser service: `services/browser/src/bsc-endpoints.ts` resolves the API
   base and identity authority from `NEONBINDER_FAKE_BSC_URL`. If that is set
@@ -124,9 +166,14 @@ that shape in its tests. This happens before the PR is pushed to CI.
   `<FAKE>/api`; the B2C `redirect_uri` stays the real SPA's (never fetched;
   the fake echoes whatever the authorize carried). Every request to the fake
   (identity and API) goes through `src/bsc-fetch.ts`, which adds
-  `x-nb-fake-bsc-key` from `NEONBINDER_FAKE_BSC_KEY` and, on https only,
-  `X-Serverless-Authorization: Bearer <ID token>` (runtime SA via ADC,
-  audience = the fake's origin). Plain http is allowed only on loopback.
+  `x-nb-fake-bsc-key` from `NEONBINDER_FAKE_BSC_KEY` and, on https only, the
+  runtime SA's Google ID token (ADC, audience = the fake's origin) twice:
+  `X-Serverless-Authorization: Bearer <token>` and bare in
+  `x-nb-fake-id-token`. The URL must be https on the fake's own Cloud Run
+  host (`neonbinder-fake-bsc-*.run.app`, default port, no tag URL, no
+  userinfo); http or https on loopback is allowed for local runs and tests.
+  Anything else refuses to boot, and `bscFetch` adds the fake headers only to
+  that pinned origin.
   `bscFetch` also holds a 429 breaker: process-wide against real BSC, per
   credential key against the fake.
 
@@ -323,14 +370,17 @@ host itself. It never bundles or copies the browser source.
 
 - Cloud Run verifies `X-Serverless-Authorization` and removes the token's
   signature before the container sees it ("This removes the signature before
-  passing the token to the user container"). The fake therefore:
-  - with a signed token (three non-empty parts): verifies it itself with
-    google-auth-library against `FAKE_BSC_AUDIENCE`;
-  - with an unsigned token: accepts it only when `K_SERVICE` is set (Cloud
-    Run already verified it, audience included), and still checks `iss`,
-    `exp`, `email_verified` and, when `FAKE_BSC_AUDIENCE` is set, `aud`;
-  - anything else is 401. `FAKE_BSC_AUDIENCE` (the service URL) is optional
-    on Cloud Run and required for a signed token (local runs).
+  passing the token to the user container"), so the fake never reads that
+  header. Its identity comes only from `x-nb-fake-id-token` (a bare JWT;
+  `Bearer <jwt>` is accepted too), which Cloud Run passes through untouched:
+  - the token must have a signature, and the fake verifies it with
+    google-auth-library against `FAKE_BSC_AUDIENCE` (the fake's origin, e.g.
+    `https://<service>.run.app`), on Cloud Run and off it;
+  - then `iss`, `exp`, `aud`, `email_verified` and `email` are checked;
+  - anything else (missing header, unsigned or forged token, wrong audience)
+    is 401; a verified email not on `FAKE_BSC_ALLOWED_CALLERS` is 403.
+- `FAKE_BSC_AUDIENCE` is required (boot refuses without it) unless
+  `FAKE_BSC_LOCAL_DEV_BYPASS` is on, and must be an origin.
 - The fake refuses to boot when `ENVIRONMENT=prod`.
 - Not yet confirmed on a deployed revision: that `Authorization` (the BSC
   token) reaches the container untouched when `X-Serverless-Authorization`
@@ -390,9 +440,15 @@ Built in `services/browser/src/routes/bsc-probe.ts`.
     filters status when all pass), and `detail` names the step.
   - `shapes` maps the endpoint's path template (the keys listed above) to
     `{<key.path>: <type>}`: paths without the `$.` root (`results[].orderId`;
-    the root is `$`), arrays collapsed to `[]`, id-like or non-identifier map
-    keys collapsed to `{*}`, unions as `number|null`. Key paths and types only,
-    never values. Sign-in shapes are NOT in `shapes` (the fake's identity is
+    the root is `$`), arrays collapsed to `[]`, unions as `number|null`. Key
+    paths and types only, never values. As built: each read reports ONLY an
+    allowlist of the paths NB's parsers read, plus their ancestors
+    (`SHAPE_PATHS` in `bsc-probe.ts`: the catalogue lists equal `sanitise.ts`
+    SPECS, the seller lists equal `drift.ts` READ_PATHS, the sheet also in its
+    `{results: [...]}` form; a browser test checks the parity). Every other
+    key, at any depth, is dropped unseen, so no `{*}` path is ever reported
+    and a map keyed by a username, email or id cannot reach the public drift
+    artifact. A change to either list must change the other. Sign-in shapes are NOT in `shapes` (the fake's identity is
     synthesised); they appear only as step verdicts.
   - `requests` maps each catalogue template to its canonical request
     `{method, path, query, body}` (keys sorted recursively), the input to
@@ -433,7 +489,8 @@ Built in `services/browser/src/routes/bsc-probe.ts`.
 also keys the identity's sealed tokens, so it must be stable across
 revisions),
 `FAKE_BSC_ALLOWED_CALLERS`, `FAKE_BSC_ADMIN_CALLERS` (comma-separated SA
-emails), `FAKE_BSC_BUCKET` (recordings bucket name), `ENVIRONMENT`. Listens on
+emails), `FAKE_BSC_BUCKET` (recordings bucket name), `FAKE_BSC_AUDIENCE`
+(the service's own origin; required), `ENVIRONMENT`. Listens on
 `PORT` (8080). `GET /healthz` needs the ID token and caller key like the rest.
 
 ### Convex internal action for CI

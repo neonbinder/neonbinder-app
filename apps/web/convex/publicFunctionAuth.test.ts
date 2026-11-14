@@ -3432,7 +3432,8 @@ describe("NEO-500: the pick-order seed is locked like the other testing seeds", 
 
 /**
  * NEO-552 — the fake BuySportsCards test controls (`testing.setMyBscFaults`,
- * `testing.addMyBscOrder`) and `testing.resetMyTestState`, now an action so
+ * `testing.addMyBscOrder`, and their teardowns `testing.clearMyBscFaults`,
+ * `testing.clearBscCallGate`) and `testing.resetMyTestState`, now an action so
  * the caller's fake namespace is cleared before it returns. Public because the
  * E2E pages call them as the signed-in suite account, so they carry the
  * testing seeds' locks: refused to an anonymous caller, refused where
@@ -3447,6 +3448,8 @@ describe("NEO-552: the fake BSC test controls are locked like the other testing 
   const cases: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
     ["testing.setMyBscFaults", (t) => t.action(api.testing.setMyBscFaults, { rules })],
     ["testing.addMyBscOrder", (t) => t.action(api.testing.addMyBscOrder, { order })],
+    ["testing.clearMyBscFaults", (t) => t.action(api.testing.clearMyBscFaults, {})],
+    ["testing.clearBscCallGate", (t) => t.action(api.testing.clearBscCallGate, {})],
     ["testing.resetMyTestState", (t) => t.action(api.testing.resetMyTestState, {})],
   ];
 
@@ -3464,7 +3467,7 @@ describe("NEO-552: the fake BSC test controls are locked like the other testing 
     await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/not enabled/);
   });
 
-  test.each(cases.slice(0, 2))("%s refuses a deployment on the real BuySportsCards", async (_name, call) => {
+  test.each(cases.slice(0, 4))("%s refuses a deployment on the real BuySportsCards", async (_name, call) => {
     vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
     vi.stubEnv("NEONBINDER_BSC_API_BASE", "");
     await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/real BuySportsCards/);

@@ -221,9 +221,9 @@ jobs:
           FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
         run: |
           set -euo pipefail
-          re='^https://[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
-          if [[ -z "${FAKE_BSC_URL:-}" ]] || [[ ! "${FAKE_BSC_URL%/}" =~ $re ]]; then
-            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL must be set to the fake BSC's https *.run.app origin (NEO-552)."
+          re='^https://neonbinder-fake-bsc-[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          if [[ -z "${FAKE_BSC_URL:-}" ]] || [[ ! "${FAKE_BSC_URL%/}" =~ $re ]] || [[ "${FAKE_BSC_URL%/}" == *---* ]]; then
+            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path (NEO-552)."
             exit 1
           fi
           version=$(bash .github/scripts/resolve-secret-version.sh fake-bsc-caller-key neonbinder-dev)

@@ -29,7 +29,9 @@ export function controlRouter(deps: ControlDeps): Router {
   const { catalogue, captures, state, now, requireAdmin } = deps;
   const router = express.Router();
   const small = express.json({ limit: "1mb" });
-  const large = express.json({ limit: "40mb" });
+  // Recordings: one sanitised 5000-row results answer is a few MB; the
+  // recorder uploads one at a time.
+  const large = express.json({ limit: "8mb" });
 
   // ── Run-scoped (rules 1 and 2) ─────────────────────────────────────────
 

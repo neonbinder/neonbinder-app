@@ -74,7 +74,7 @@ export async function startFake({ store = new MemoryStore(), configOver = {}, no
   const base = `http://127.0.0.1:${server.address().port}`;
   const headers = (email = CALLER, { admin = false, bsc } = {}) => ({
     "x-nb-fake-bsc-key": CALLER_KEY,
-    "X-Serverless-Authorization": `Bearer ${idToken(email)}`,
+    "x-nb-fake-id-token": idToken(email),
     ...(admin ? { "x-nb-fake-bsc-admin-key": ADMIN_KEY } : {}),
     ...(bsc ? { authorization: `Bearer ${bsc}` } : {}),
   });

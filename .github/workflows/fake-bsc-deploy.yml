@@ -88,6 +88,27 @@ jobs:
           docker push "$IMAGE:latest"
           bash "$GITHUB_WORKSPACE/.github/scripts/image-push-report.sh" "$IMAGE:$SHA"
 
+      # NEO-552 S1(b): the fake must never be public. Fail if any role is held
+      # by allUsers or allAuthenticatedUsers, or if Cloud Run's invoker IAM
+      # check is disabled. Runs before the image moves, so a loosened service
+      # never takes a new revision.
+      - name: Assert the fake's IAM is locked down
+        run: |
+          set -euo pipefail
+          policy=$(gcloud run services get-iam-policy "$SERVICE" --region "$REGION" --project "$PROJECT" --format=json)
+          public=$(jq -r '[(.bindings // [])[] | select(any(.members[]?; . == "allUsers" or . == "allAuthenticatedUsers")) | .role] | join(",")' <<<"$policy")
+          if [ -n "$public" ]; then
+            echo "::error::the fake BSC grants a role to allUsers/allAuthenticatedUsers ($public)"
+            exit 1
+          fi
+          disabled=$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" \
+            --format='value(metadata.annotations."run.googleapis.com/invoker-iam-disabled")')
+          if [ "$disabled" = "true" ] || [ "$disabled" = "True" ]; then
+            echo "::error::the fake BSC has the invoker IAM check disabled"
+            exit 1
+          fi
+          echo "IAM ok: no public bindings, invoker check enabled"
+
       - name: Move the service to the new image
         env:
           SHA: ${{ github.sha }}
@@ -98,8 +119,9 @@ jobs:
             --region "$REGION" --project "$PROJECT"
 
       # The service is IAM-gated and the app wants its own key, so the smoke
-      # sends a Google ID token in X-Serverless-Authorization (the fake's
-      # contract) and the caller key.
+      # sends a Google ID token in X-Serverless-Authorization and again in
+      # x-nb-fake-id-token (the fake verifies the signed token itself against
+      # FAKE_BSC_AUDIENCE) and the caller key.
       - id: url
         name: Capture the service URL (token audience)
         run: |
@@ -129,6 +151,7 @@ jobs:
           for attempt in $(seq 1 12); do
             code=$(curl -sS -o "$RUNNER_TEMP/healthz.json" -w '%{http_code}' --max-time 30 \
               -H "X-Serverless-Authorization: Bearer $ID_TOKEN" \
+              -H "x-nb-fake-id-token: $ID_TOKEN" \
               -H "x-nb-fake-bsc-key: $key" "$URL/healthz" || echo 000)
             if [ "$code" = "200" ]; then
               echo "fake BSC healthy after $attempt attempt(s)"

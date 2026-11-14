@@ -9,7 +9,10 @@ export interface FakeConfig {
   adminKey: string;
   allowedCallers: ReadonlySet<string>;
   adminCallers: ReadonlySet<string>;
-  /** The service URL an ID token's `aud` must name. Needed for signed tokens. */
+  /**
+   * The service origin an ID token's `aud` must name. Required unless the
+   * local bypass is on (then the ID token is not read at all).
+   */
   audience: string | null;
   /** Skips the ID-token check (keys still required). Never on Cloud Run. */
   localDevBypass: boolean;
@@ -55,9 +58,11 @@ export function readConfig(env: NodeJS.ProcessEnv = process.env): FakeConfig {
     }
   }
 
-  // Optional on Cloud Run (it checks the audience before the token arrives);
-  // without it a signed token, i.e. any call off Cloud Run, is refused.
+  // Every caller's ID token is verified here against this audience (the
+  // fake's own origin), on Cloud Run too: required unless bypassing.
   const audience = env.FAKE_BSC_AUDIENCE?.trim() || null;
+  if (!audience && !localDevBypass) throw new ConfigError("FAKE_BSC_AUDIENCE is required (the fake's origin, the ID token audience)");
+  if (audience && !/^https?:\/\/[^/\s]+\/?$/.test(audience)) throw new ConfigError("FAKE_BSC_AUDIENCE must be an origin (https://host)");
 
   let store: FakeConfig["store"];
   if (env.FAKE_BSC_BUCKET) store = { kind: "gcs", bucket: env.FAKE_BSC_BUCKET };

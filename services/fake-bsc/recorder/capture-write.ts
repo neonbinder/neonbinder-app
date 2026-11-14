@@ -3,6 +3,12 @@
  * write to real BSC, and upload only its status and shape (key paths and
  * types, no values). No retry, whatever the answer. Without `--yes` it only
  * describes what it would send.
+ *
+ * The write is REAL: a PUT creates or changes a listing on the account that
+ * signed in, a photo upload stores a real image. `undo-write` sends the one
+ * follow-up BSC allows, a quantity-0 PUT of the same rows (itself a second
+ * real write, also behind `--yes`). A photo upload has no undo through the
+ * API (README, "Undoing a capture").
  */
 import { readFile } from "node:fs/promises";
 import path from "node:path";
@@ -72,7 +78,10 @@ export type CaptureResult =
   | { ok: true; status: number; paths: number; verdict: string; driftPaths: string[] }
   | { ok: false; reason: "timeout" | "network" | "upload_refused" };
 
-export async function runCaptureWrite(deps: CaptureDeps): Promise<CaptureResult> {
+type SendResult = { ok: true; status: number; parsed: unknown } | { ok: false; reason: "timeout" | "network" };
+
+/** Exactly one send of a write. No retry on any answer. */
+async function sendOnce(deps: Pick<CaptureDeps, "request" | "apiBase" | "token" | "headers" | "fetchImpl" | "timeoutMs">): Promise<SendResult> {
   const f = deps.fetchImpl ?? fetch;
   const req = deps.request;
   let body: BodyInit;
@@ -87,12 +96,8 @@ export async function runCaptureWrite(deps: CaptureDeps): Promise<CaptureResult>
     headers = deps.headers(deps.token);
   }
   const signal = AbortSignal.timeout(deps.timeoutMs ?? 60_000);
-  let status: number;
-  let shape: Shape;
   try {
-    // Exactly one send. No retry on any answer.
     const res = await f(`${deps.apiBase}/${req.path}`, { method: req.method, headers, body, signal, redirect: "error" });
-    status = res.status;
     const text = await res.text();
     let parsed: unknown = null;
     try {
@@ -100,19 +105,58 @@ export async function runCaptureWrite(deps: CaptureDeps): Promise<CaptureResult>
     } catch {
       parsed = null; // a non-JSON answer is captured as shape-less
     }
-    shape = shapeOf(parsed);
+    return { ok: true, status: res.status, parsed };
   } catch {
     return { ok: false, reason: signal.aborted ? "timeout" : "network" };
   }
+}
+
+export async function runCaptureWrite(deps: CaptureDeps): Promise<CaptureResult> {
+  const sent = await sendOnce(deps);
+  if (!sent.ok) return sent;
+  const shape: Shape = shapeOf(sent.parsed);
   try {
     const verdict = await deps.fake.uploadCapture({
-      endpoint: req.endpoint,
-      status,
+      endpoint: deps.request.endpoint,
+      status: sent.status,
       shape,
       capturedAt: new Date((deps.now ?? Date.now)()).toISOString(),
     });
-    return { ok: true, status, paths: Object.keys(shape).length, verdict: verdict.verdict, driftPaths: verdict.paths ?? [] };
+    return { ok: true, status: sent.status, paths: Object.keys(shape).length, verdict: verdict.verdict, driftPaths: verdict.paths ?? [] };
   } catch {
     return { ok: false, reason: "upload_refused" };
   }
+}
+
+/**
+ * The follow-up that undoes a captured PUT: the same rows with
+ * `availableQuantity: 0`, which takes those listings down. Null for a photo
+ * upload (no API undo) or a PUT with no rows. Caution: a row that was an
+ * existing listing before the capture is taken down too, not restored to its
+ * earlier quantity.
+ */
+export function buildUndoRequest(req: WriteRequest): WriteRequest | null {
+  if (req.endpoint !== "PUT seller/bulk-upload") return null;
+  const body = req.json;
+  if (!body || typeof body !== "object" || Array.isArray(body)) return null;
+  const b = body as Record<string, unknown>;
+  if (!Array.isArray(b.listings) || b.listings.length === 0) return null;
+  const listings = b.listings.map((row) => (row && typeof row === "object" && !Array.isArray(row) ? { ...(row as Record<string, unknown>), availableQuantity: 0 } : row));
+  return { ...req, json: { ...b, listings } };
+}
+
+/** What `undo-write` would send, with no values: card ids are counted, not printed. */
+export function describeUndo(req: WriteRequest): string {
+  const rows = ((req.json as Record<string, unknown>).listings as unknown[]).length;
+  return `${req.method} ${req.path}: ${rows} listing row(s) set to quantity 0 (a second real write)`;
+}
+
+export type UndoResult = { ok: true; status: number } | { ok: false; reason: "timeout" | "network" | "nothing_to_undo" };
+
+/** Sends the undo once. Uploads nothing to the fake. */
+export async function runUndoWrite(deps: Omit<CaptureDeps, "fake" | "now">): Promise<UndoResult> {
+  const undo = buildUndoRequest(deps.request);
+  if (!undo) return { ok: false, reason: "nothing_to_undo" };
+  const sent = await sendOnce({ ...deps, request: undo });
+  return sent.ok ? { ok: true, status: sent.status } : sent;
 }

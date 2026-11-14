@@ -18,6 +18,7 @@ import { api, internal } from "./_generated/api";
 import { internalAction } from "./_generated/server";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
+import { resolveBscTarget } from "./lib/bscHttp";
 import {
   FAKE_BSC_PASSWORD,
   MAX_FAKE_BSC_FAULT_RULES,
@@ -35,7 +36,8 @@ const CLOUD_URL = "https://happy-otter-123.convex.cloud";
 const PREFIX = "happy-otter-123-";
 const FAKE_ENV = {
   TESTING_RESET_SECRET: "test-enabled",
-  NEONBINDER_BSC_API_BASE: "https://fake-bsc-abc123-uc.a.run.app",
+  // The fake's pinned host shape (`lib/bscHttp.ts`): first label `neonbinder-fake-bsc-…`, ending `.run.app`.
+  NEONBINDER_BSC_API_BASE: "https://neonbinder-fake-bsc-abc123-uc.a.run.app",
   NEONBINDER_FAKE_BSC_KEY: "caller-key",
   CONVEX_CLOUD_URL: CLOUD_URL,
 };
@@ -126,6 +128,8 @@ describe("the fake account of a test user", () => {
 
   test("fake mode needs the fake's URL and the testing flag; a broken fake setting still counts as fake", () => {
     expect(fakeBscMode({})).toBe(false);
+    // The fixture is a well-formed fake, not a misconfigured one passing as fake.
+    expect(resolveBscTarget(FAKE_ENV).mode).toBe("fake");
     expect(fakeBscMode(FAKE_ENV)).toBe(true);
     // Production: no testing flag, so the URL is ignored.
     expect(fakeBscMode({ ...FAKE_ENV, TESTING_RESET_SECRET: undefined })).toBe(false);
@@ -236,6 +240,31 @@ describe("seedMyTestCredentials on the fake", () => {
 
     expect(result.seeded).toEqual([{ site: "buysportscards", stored: true }]);
     expect(logins[0].body.username).toBe(fakeBscUsernameFor(USER_B, CLOUD_URL));
+  });
+
+  test("a misconfigured fake target still never seeds the real DEV_BSC_* account", async () => {
+    useFakeEnv();
+    // Not the pinned neonbinder-fake-bsc-* host: the target is misconfigured, not real.
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://fake-bsc-abc123-uc.a.run.app");
+    vi.stubEnv("DEV_BSC_USERNAME", "real-account@example.com");
+    vi.stubEnv("DEV_BSC_PASSWORD", "real-password");
+    expect(resolveBscTarget(process.env).mode).toBe("misconfigured");
+    const logins: Login[] = [];
+    stubBrowser(logins);
+    const t = convexTest(schema, modules);
+
+    await t
+      .withIdentity({ subject: USER_A })
+      .action(api.testing.seedMyTestCredentials, { sites: ["buysportscards"] })
+      .catch(() => undefined);
+
+    // The seed does sign in (through the browser service), and only as the fake account.
+    expect(logins).toHaveLength(1);
+    expect(JSON.stringify(logins)).not.toContain("real-");
+    for (const login of logins) {
+      expect(login.body.username).toBe(fakeBscUsernameFor(USER_A, CLOUD_URL));
+      expect(login.body.password).toBe(FAKE_BSC_PASSWORD);
+    }
   });
 
   test("off the fake, the BSC seed is exactly as before: DEV_BSC_* or skipped", async () => {
@@ -357,6 +386,79 @@ describe("addMyBscOrder", () => {
     const t = convexTest(schema, modules);
     await expect(t.withIdentity({ subject: USER_A }).action(api.testing.addMyBscOrder, { order: bad })).rejects.toThrow();
     expect(calls).toEqual([]);
+  });
+});
+
+describe("clearMyBscFaults", () => {
+  test("sends the caller's own namespace an empty rule list, and nothing else", async () => {
+    useFakeEnv();
+    const t = convexTest(schema, modules);
+    expect(await t.withIdentity({ subject: USER_B }).action(api.testing.clearMyBscFaults, {})).toEqual({ cleared: true });
+    expect(calls).toEqual([{ fn: "setFaults", args: { ns: fakeBscNamespaceFor(USER_B, CLOUD_URL), rules: [] } }]);
+  });
+
+  test("throws when the fake does not answer, so a spec's teardown goes red", async () => {
+    useFakeEnv();
+    nextResult = FAILED;
+    const t = convexTest(schema, modules);
+    await expect(t.withIdentity({ subject: USER_A }).action(api.testing.clearMyBscFaults, {})).rejects.toThrow(
+      /did not clear the fault rules/,
+    );
+  });
+
+  test("refuses off a testing deployment, an anonymous caller, and a deployment on the real BSC", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.withIdentity({ subject: USER_A }).action(api.testing.clearMyBscFaults, {})).rejects.toThrow(/not enabled/);
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    await expect(t.action(api.testing.clearMyBscFaults, {})).rejects.toThrow(/Not authenticated/);
+    await expect(t.withIdentity({ subject: USER_A }).action(api.testing.clearMyBscFaults, {})).rejects.toThrow(
+      /real BuySportsCards/,
+    );
+    expect(calls).toEqual([]);
+  });
+});
+
+describe("clearBscCallGate", () => {
+  const gateRows = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => ctx.db.query("marketplaceCallGates").collect());
+  const openGate = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceCallGates", {
+        platform: "bsc",
+        scope: "deployment",
+        tokens: 0,
+        refilledAt: Date.now(),
+        openUntil: Date.now() + 60_000,
+        openCause: "429",
+        streak: 1,
+        lastOpenedAt: Date.now(),
+        consecutiveFailures: 0,
+        lastFailureAt: 0,
+        updatedAt: Date.now(),
+      });
+    });
+
+  test("clears the deployment's gate for a signed-in caller on the fake", async () => {
+    useFakeEnv();
+    const t = convexTest(schema, modules);
+    await openGate(t);
+    expect(await gateRows(t)).toHaveLength(1);
+    expect(await t.withIdentity({ subject: USER_A }).action(api.testing.clearBscCallGate, {})).toEqual({ deleted: 1 });
+    expect(await gateRows(t)).toHaveLength(0);
+    // The gate is not the fake's: nothing is sent to it.
+    expect(calls).toEqual([]);
+  });
+
+  test("refuses off a testing deployment, an anonymous caller, and a deployment on the real BSC, and leaves the gate", async () => {
+    const t = convexTest(schema, modules);
+    await openGate(t);
+    await expect(t.withIdentity({ subject: USER_A }).action(api.testing.clearBscCallGate, {})).rejects.toThrow(/not enabled/);
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    await expect(t.action(api.testing.clearBscCallGate, {})).rejects.toThrow(/Not authenticated/);
+    await expect(t.withIdentity({ subject: USER_A }).action(api.testing.clearBscCallGate, {})).rejects.toThrow(
+      /real BuySportsCards/,
+    );
+    expect(await gateRows(t)).toHaveLength(1);
   });
 });
 

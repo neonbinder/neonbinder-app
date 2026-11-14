@@ -16,7 +16,9 @@ import { GoogleAuth } from "google-auth-library";
  * In fake mode every request to the fake also carries this service's Google
  * ID token in `X-Serverless-Authorization` (audience = the fake's origin), so
  * Cloud Run IAM in front of the fake can admit it while the BSC-style
- * `Authorization: Bearer <bsc token>` header passes through untouched.
+ * `Authorization: Bearer <bsc token>` header passes through untouched, and
+ * again, bare, in `x-nb-fake-id-token` for the fake's own signature check.
+ * The fake URL is pinned to the fake's Cloud Run host (or loopback).
  *
  * PROD NEVER TALKS TO THE FAKE. `assertBscTargetAllowed` refuses to boot a
  * process with the fake URL set while ENVIRONMENT=prod, and
@@ -33,6 +35,20 @@ export const FAKE_BSC_KEY_ENV = "NEONBINDER_FAKE_BSC_KEY";
 export const FAKE_BSC_KEY_HEADER = "x-nb-fake-bsc-key";
 /** Header Cloud Run reads the invoker's Google ID token from when Authorization is taken. */
 export const SERVERLESS_AUTH_HEADER = "X-Serverless-Authorization";
+/**
+ * The same Google ID token again, for the fake's own signature check
+ * (independent of Cloud Run IAM; Cloud Run strips nothing from it). Bare
+ * token, no `Bearer ` prefix.
+ */
+export const FAKE_ID_TOKEN_HEADER = "x-nb-fake-id-token";
+/**
+ * The fake's Cloud Run service name. A fake URL must be this service's
+ * `*.run.app` host (either Cloud Run URL form; a tagged revision's `tag---`
+ * URL is refused, as in Convex's bscHttp.ts), or loopback
+ * for a fake run on the laptop and in tests.
+ */
+export const FAKE_BSC_SERVICE_NAME = "neonbinder-fake-bsc";
+const FAKE_HOST_RE = /^neonbinder-fake-bsc-[a-z0-9-]+(?:\.[a-z0-9-]+)*\.run\.app$/;
 
 /** The real BSC hosts. Public, not secrets. */
 const REAL_IDENTITY_ORIGIN = "https://identity.buysportscards.com";
@@ -90,9 +106,25 @@ function isLoopbackHost(hostname: string): boolean {
 }
 
 /**
- * Parse and check the fake URL. https anywhere; plain http only on loopback
- * (a fake run on the laptop). Anything else is a misconfiguration and throws:
- * a typo must never fall back to real BSC silently.
+ * True for a URL this service may treat as the fake: https on the fake's own
+ * Cloud Run host (`neonbinder-fake-bsc-*.run.app`, default port, no
+ * credentials in the URL), or http/https on loopback (a fake on the laptop,
+ * and the tests). Pinning the host means a mistyped or hostile
+ * NEONBINDER_FAKE_BSC_URL cannot route the caller key and an ID token to some
+ * other service.
+ */
+function isAllowedFakeUrl(parsed: URL): boolean {
+  if (parsed.username || parsed.password) return false;
+  if (isLoopbackHost(parsed.hostname)) {
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  }
+  return parsed.protocol === "https:" && parsed.port === "" && FAKE_HOST_RE.test(parsed.hostname);
+}
+
+/**
+ * Parse and check the fake URL (see isAllowedFakeUrl). Anything else is a
+ * misconfiguration and throws: a typo must never fall back to real BSC
+ * silently, nor send the fake's credentials somewhere else.
  *
  * The error message never contains the URL itself (an internal address).
  */
@@ -103,10 +135,10 @@ function parseFakeOrigin(raw: string): string {
   } catch {
     throw new Error(`${FAKE_BSC_URL_ENV} is not a valid URL`);
   }
-  const httpsOk = parsed.protocol === "https:";
-  const loopbackHttpOk = parsed.protocol === "http:" && isLoopbackHost(parsed.hostname);
-  if (!httpsOk && !loopbackHttpOk) {
-    throw new Error(`${FAKE_BSC_URL_ENV} must be https (http only on localhost)`);
+  if (!isAllowedFakeUrl(parsed)) {
+    throw new Error(
+      `${FAKE_BSC_URL_ENV} must be the ${FAKE_BSC_SERVICE_NAME} Cloud Run https *.run.app origin (or http on localhost)`,
+    );
   }
   return parsed.origin;
 }
@@ -256,15 +288,21 @@ export async function fakeBscCallerHeaders(
       if (!deps.mintIdToken) idTokenCache.set(audience, { token, mintedAt: now });
     }
     headers[SERVERLESS_AUTH_HEADER] = `Bearer ${token}`;
+    headers[FAKE_ID_TOKEN_HEADER] = token;
   }
   return headers;
 }
 
-/** True when `url` points at the fake this process is configured for. */
+/**
+ * True when `url` points at the fake this process is configured for, and that
+ * fake is on an allowed host (isAllowedFakeUrl). Only then does bscFetch add
+ * the caller key and ID token.
+ */
 export function isFakeUrl(url: string | URL, endpoints: BscEndpoints): boolean {
   if (endpoints.target !== "fake" || !endpoints.fakeOrigin) return false;
   try {
-    return new URL(String(url)).origin === endpoints.fakeOrigin;
+    const parsed = new URL(String(url));
+    return parsed.origin === endpoints.fakeOrigin && isAllowedFakeUrl(parsed);
   } catch {
     return false;
   }

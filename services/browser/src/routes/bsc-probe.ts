@@ -89,7 +89,79 @@ interface PinnedRead {
   catalogue: boolean;
   /** Mirrors what the production parser needs from the body. */
   accept: (body: unknown) => boolean;
+  /** The ONLY paths reported in `shapes` (see SHAPE_PATHS). */
+  shapePaths: readonly string[];
 }
+
+const facetPaths = (facet: string): string[] => [
+  `aggregations.${facet}[].label`,
+  `aggregations.${facet}[].slug`,
+  `aggregations.${facet}[].count`,
+  `aggregations.${facet}[].active`,
+];
+const sheetRowPaths = (row: string): string[] => [
+  `${row}.card.id`,
+  `${row}.card.cardNo`,
+  `${row}.cardId`,
+  `${row}.condition`,
+  `${row}.availableQuantity`,
+  `${row}.price`,
+  `${row}.productType`,
+  `${row}.sellerSku`,
+  `${row}.sellerImgFront`,
+  `${row}.sellerImgBack`,
+  `${row}.productId`,
+];
+
+/**
+ * SECURITY: the paths each pinned read may report in `shapes`, and nothing
+ * else. The prod probe's shapes are uploaded by the drift workflow as a
+ * public artifact, and a seller answer can carry maps keyed by buyer
+ * usernames, emails or ids that the `{*}` rule does not catch. So every read
+ * reports exactly the fields NB's parsers read (plus their ancestors); any
+ * other key is dropped unseen. These match the fake's comparison lists
+ * (services/fake-bsc/src/sanitise.ts SPECS for the catalogue, drift.ts
+ * READ_PATHS for the seller reads); tests/bsc-probe-route.test.mjs checks
+ * the parity.
+ *
+ *   filters       fetchBscSelectorOptions: aggregations[facet][] label, slug,
+ *                 count, active, for the facets in convex/bscFacets.ts.
+ *   results       fetchBscChecklist's row map plus the row's ordering keys.
+ *   card-listing  fetchBscCardTeamNameAttempt: id, teamName, playerAttribute.
+ *   profile       sellerProfile.sellerId / sellerStoreName (bsc-adapter,
+ *                 bscSeller.fetchBscSellerId).
+ *   seller sheet  lib/bscSheetPlan.narrowBscSheetRow, bare array or {results}.
+ *   order history lib/bscOrders.parseBscOrderHistoryPage.
+ */
+export const SHAPE_PATHS = Object.freeze({
+  filters: Object.freeze(["sport", "year", "setName", "variant", "variantName"].flatMap(facetPaths)),
+  results: Object.freeze(
+    [
+      "id",
+      "setName",
+      "players",
+      "cardNo",
+      "cardNumber",
+      "number",
+      "playerAttribute",
+      "playerAttribute[]",
+      "playerAttributeDesc",
+      "cardNoOrder",
+      "cardNoSequence",
+      "cardNoSort",
+    ].map((f) => `[].${f}`),
+  ),
+  cardListing: Object.freeze(["id", "teamName", "playerAttribute", "playerAttribute[]"]),
+  profile: Object.freeze(["sellerProfile.sellerId", "sellerProfile.sellerStoreName"]),
+  sellerSheet: Object.freeze([...sheetRowPaths("[]"), ...sheetRowPaths("results[]")]),
+  orderHistory: Object.freeze([
+    "totalElements",
+    "results[].orderId",
+    "results[].orderNo",
+    "results[].orderStatus",
+    "results[].orderDate",
+  ]),
+});
 
 /**
  * The pinned reads, in order. Request bodies are byte-for-byte what Convex
@@ -99,6 +171,7 @@ interface PinnedRead {
 export const PINNED_READS: readonly PinnedRead[] = Object.freeze([
   {
     step: "catalogue_filters",
+    shapePaths: SHAPE_PATHS.filters,
     template: "search/bulk-upload/filters",
     method: "POST",
     path: "search/bulk-upload/filters",
@@ -115,6 +188,7 @@ export const PINNED_READS: readonly PinnedRead[] = Object.freeze([
   },
   {
     step: "catalogue_results",
+    shapePaths: SHAPE_PATHS.results,
     template: "search/bulk-upload/results",
     method: "POST",
     path: "search/bulk-upload/results",
@@ -125,6 +199,7 @@ export const PINNED_READS: readonly PinnedRead[] = Object.freeze([
   },
   {
     step: "card_listing",
+    shapePaths: SHAPE_PATHS.cardListing,
     template: "marketplace/card/:id/card-listing",
     method: "GET",
     path: `marketplace/card/${PINNED_CARD_ID}/card-listing`,
@@ -133,6 +208,7 @@ export const PINNED_READS: readonly PinnedRead[] = Object.freeze([
   },
   {
     step: "seller_profile",
+    shapePaths: SHAPE_PATHS.profile,
     template: "marketplace/user/profile",
     method: "GET",
     path: "marketplace/user/profile",
@@ -141,6 +217,7 @@ export const PINNED_READS: readonly PinnedRead[] = Object.freeze([
   },
   {
     step: "seller_sheet",
+    shapePaths: SHAPE_PATHS.sellerSheet,
     template: "seller/bulk-upload/results",
     method: "POST",
     path: "seller/bulk-upload/results",
@@ -159,6 +236,7 @@ export const PINNED_READS: readonly PinnedRead[] = Object.freeze([
   },
   {
     step: "order_history",
+    shapePaths: SHAPE_PATHS.orderHistory,
     template: "seller/order/history",
     method: "POST",
     path: "seller/order/history",
@@ -413,7 +491,7 @@ export function createBscProbeRouter(deps: BscProbeDeps = {}): Router {
                 jsonOk = false;
               }
               if (jsonOk) {
-                body.shapes[read.template] = shapeMap(json);
+                body.shapes[read.template] = shapeMap(json, { allow: read.shapePaths });
                 parsed = read.accept(json);
               }
             }

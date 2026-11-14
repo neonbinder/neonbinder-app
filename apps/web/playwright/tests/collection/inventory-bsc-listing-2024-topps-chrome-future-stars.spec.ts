@@ -1,3 +1,9 @@
+// NEO-552: BuySportsCards is the fake (services/fake-bsc), one account per test user, so
+// this spec is no longer a "marketplace seller" spec: it needs no shared seller, no CI
+// queue and no worker of its own, and runs in the ordinary shards. "Real BSC" in the
+// comments below means the fake's seller account. The sale of a card, the sheet and the
+// PUT are the fake's synthesis; the first press's seller-account wait is made likelier
+// with a held profile read (below).
 // NEO-370 Rev 4 (R1): a collector's boxes reach BuySportsCards when they Sync,
 // and a box set to in-person takes them off again. The flow, as the user lives
 // it:
@@ -168,6 +174,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
 import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, expectRunOrSellerWait, followRunToRest, goViaShell, intakeDropzone, inventoryTabs, nameOf, ordinaryBaseRows, pickIntakeSet, putOtherBoxesInPerson, quantityField, queueSettled, shortNameOf, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
+import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { bscReadCeiling } from "../../support/marketplace-wait";
@@ -447,8 +454,8 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
 
 test(
   "Inventory: Sync lists a box's 2024 Topps Chrome Future Stars cards on BuySportsCards and an in-person box takes them off",
-  { tag: ["@collection", "@marketplace-seller"] },
-  async ({ page, signIn, env, isMobile }) => {
+  { tag: ["@collection"] },
+  async ({ page, signIn, env, isMobile, bscFake }) => {
     // The hook's record of how far this run got starts empty.
     written.box = undefined;
     written.cards = undefined;
@@ -475,6 +482,15 @@ test(
     await page.getByLabel("Display Name").fill(collector);
     await page.getByRole("button", { name: "Save Public Profile" }).click();
     await expect(page.getByText(/^Profile saved/)).toBeVisible();
+
+    // NEO-552: BuySportsCards is the fake, which answers the seller profile at once, so the first
+    // press would never meet NeonBinder still waiting to hear the seller account (NEO-483). Hold the
+    // profile read for 15 s (under NeonBinder's 20 s read timeout, so it lands rather than fails):
+    // a read that starts at the seed or at the first press then takes that long, and when the press
+    // beats it the Sync status wait line is up and `expectRunOrSellerWait` checks it (a `seller-wait`
+    // annotation says which order ran). A rule whose delay is shorter than the caller's timeout is no
+    // failure, so this spec stays in the ordinary shards. Teardown drops the rule.
+    await bscFake.setFaults([bscFault.slow(BSC_PATH.profile, 15_000, { ttlS: 1800 })]);
 
     // --- 0. A box to stock, and every other box in-person BEFORE syncing starts -----------
     // A full page load, so the launch gate (cold app + Clerk handshake) applies.
@@ -989,9 +1005,8 @@ test(
     // to send"), a run that sent nothing is "Gathering data" then "Nothing new to
     // send". Accepted limit (Jason, NEO-433): a takedown that sent nothing cannot
     // tell the poll taking the cards down first from anything else having zeroed
-    // them on the seller account. CI's seller queue runs these specs one at a
-    // time, so the poll is the only other writer there; locally, do not run this
-    // spec while another session uses the shared seller. The line is this run's
+    // them on the seller account. The account is the worker's own fake BSC
+    // account (NEO-552), so the poll is the only other writer. The line is this run's
     // count, so it says "2 taken to 0" only when this run sent them; a full read
     // that found nothing to zero reads "0 listed".
     const tookDown = await takeDown.last.getByRole("listitem", { name: `${SEND}, done`, exact: true }).isVisible();

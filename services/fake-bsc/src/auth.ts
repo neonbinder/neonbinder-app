@@ -3,8 +3,12 @@
  *
  *   1. Cloud Run IAM (outside this process).
  *   2. `x-nb-fake-bsc-key` equals FAKE_BSC_CALLER_KEY.
- *   3. The caller's Google identity, from the ID token in
- *      `X-Serverless-Authorization`, is on FAKE_BSC_ALLOWED_CALLERS.
+ *   3. The caller's Google identity is on FAKE_BSC_ALLOWED_CALLERS. It comes
+ *      only from the signed Google ID token in `x-nb-fake-id-token`, whose
+ *      signature this process verifies itself (audience FAKE_BSC_AUDIENCE).
+ *      `X-Serverless-Authorization` is Cloud Run IAM's (rule 1) and is never
+ *      read here: Cloud Run strips its signature, so its claims could be
+ *      forged the day IAM stops checking it.
  *   4. Admin endpoints also need `x-nb-fake-bsc-admin-key` and a caller on
  *      FAKE_BSC_ADMIN_CALLERS.
  *
@@ -48,52 +52,35 @@ export function keysEqual(given: unknown, expected: string): boolean {
   return timingSafeEqual(a, b);
 }
 
-function decodePayload(part: string): IdTokenClaims | null {
-  try {
-    const json = Buffer.from(part, "base64url").toString("utf8");
-    const v: unknown = JSON.parse(json);
-    return v && typeof v === "object" ? (v as IdTokenClaims) : null;
-  } catch {
-    return null;
-  }
-}
-
 export type IdentityOutcome = { ok: true; email: string } | { ok: false; reason: string };
 
+/** The header carrying the caller's signed Google ID token (Cloud Run leaves it alone). */
+export const ID_TOKEN_HEADER = "x-nb-fake-id-token";
+
 /**
- * The caller's verified email. A signed token is verified here; an unsigned
- * one (Cloud Run removed the signature after verifying it) is accepted only
- * on Cloud Run. Either way the claims are checked.
+ * The caller's verified email, from the signed ID token in
+ * `x-nb-fake-id-token` (a bare JWT, or `Bearer <jwt>`). The signature is
+ * always verified here against FAKE_BSC_AUDIENCE; an unsigned token is
+ * refused wherever the process runs. The claims are checked again after.
  */
 export async function callerIdentity(
   header: string | undefined,
-  config: Pick<FakeConfig, "audience" | "onCloudRun">,
+  config: Pick<FakeConfig, "audience">,
   verify: IdTokenVerifier,
   now: number = Date.now(),
 ): Promise<IdentityOutcome> {
   if (!header) return { ok: false, reason: "no_id_token" };
-  const m = /^Bearer\s+([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)(?:\.([A-Za-z0-9_-]*))?$/.exec(header.trim());
+  if (header.length > 8192) return { ok: false, reason: "malformed_id_token" };
+  const m = /^(?:Bearer\s+)?([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]+)$/.exec(header.trim());
   if (!m) return { ok: false, reason: "malformed_id_token" };
-  const [, head, payload, sig] = m;
-  let claims: IdTokenClaims | null;
-  if (sig) {
-    if (!config.audience) return { ok: false, reason: "no_audience_configured" };
-    claims = await verify(`${head}.${payload}.${sig}`, config.audience);
-    if (!claims) return { ok: false, reason: "id_token_not_verified" };
-  } else {
-    if (!config.onCloudRun) return { ok: false, reason: "unsigned_id_token_off_cloud_run" };
-    claims = decodePayload(payload);
-    if (!claims) return { ok: false, reason: "malformed_id_token" };
-  }
+  if (!config.audience) return { ok: false, reason: "no_audience_configured" };
+  const claims = await verify(`${m[1]}.${m[2]}.${m[3]}`, config.audience);
+  if (!claims) return { ok: false, reason: "id_token_not_verified" };
   if (typeof claims.iss !== "string" || !GOOGLE_ISSUERS.has(claims.iss)) return { ok: false, reason: "bad_issuer" };
   if (typeof claims.exp !== "number" || claims.exp * 1000 <= now) return { ok: false, reason: "expired" };
-  // Unsigned on Cloud Run: Cloud Run already checked the audience. Checked
-  // again whenever one is configured.
-  if (config.audience) {
-    const auds = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
-    const wanted = config.audience.replace(/\/+$/, "");
-    if (!auds.some((a) => typeof a === "string" && a.replace(/\/+$/, "") === wanted)) return { ok: false, reason: "bad_audience" };
-  }
+  const auds = Array.isArray(claims.aud) ? claims.aud : [claims.aud];
+  const wanted = config.audience.replace(/\/+$/, "");
+  if (!auds.some((a) => typeof a === "string" && a.replace(/\/+$/, "") === wanted)) return { ok: false, reason: "bad_audience" };
   if (claims.email_verified !== true) return { ok: false, reason: "email_not_verified" };
   if (typeof claims.email !== "string" || claims.email.length > 320) return { ok: false, reason: "no_email" };
   return { ok: true, email: claims.email.toLowerCase() };
@@ -120,7 +107,7 @@ export function requireCaller(config: FakeConfig, verify: IdTokenVerifier) {
       next();
       return;
     }
-    const id = await callerIdentity(req.get("x-serverless-authorization"), config, verify);
+    const id = await callerIdentity(req.get(ID_TOKEN_HEADER), config, verify);
     if (!id.ok) {
       log("auth_refused", { reason: id.reason, path: req.path });
       res.status(401).json({ error: "unauthorised" });

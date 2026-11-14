@@ -71,7 +71,7 @@ async function startFake(identity) {
   const seen = [];
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, "http://x");
-    seen.push({ path: url.pathname, key: req.headers["x-nb-fake-bsc-key"] ?? null, serverless: req.headers["x-serverless-authorization"] ?? null });
+    seen.push({ path: url.pathname, key: req.headers["x-nb-fake-bsc-key"] ?? null, serverless: req.headers["x-serverless-authorization"] ?? null, idToken: req.headers["x-nb-fake-id-token"] ?? null });
     if (url.pathname.startsWith("/identity/")) {
       req.url = req.url.slice("/identity".length);
       identity.handle(req, res);
@@ -187,6 +187,7 @@ describe("browser sign-in against the fake BSC identity (contract)", () => {
     for (const r of fake.seen) {
       assert.equal(r.key, CALLER_KEY, r.path);
       assert.equal(r.serverless, null, r.path);
+      assert.equal(r.idToken, null, r.path);
     }
   });
 

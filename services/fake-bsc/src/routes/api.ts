@@ -22,6 +22,10 @@ export interface NamespaceResolver {
 
 export const UNRECORDED_HEADER = "x-nb-fake";
 
+export const PUT_BODY_LIMIT = 2 * 1024 * 1024;
+export const API_BODY_LIMIT = 64 * 1024;
+export const PHOTO_BODY_LIMIT = 4 * 1024 * 1024;
+
 export function bearerToken(req: Request): string | null {
   const h = req.get("authorization");
   if (!h) return null;
@@ -65,8 +69,13 @@ export function nearMiss(
 export function apiRouter(deps: { catalogue: Catalogue; state: StateStore; ns: NamespaceResolver; now: () => number }): Router {
   const { catalogue, state, now } = deps;
   const router = express.Router();
-  router.use(express.json({ limit: "8mb" }));
-  router.use(express.raw({ type: "multipart/form-data", limit: "16mb" }));
+  // Body limits from what NB's own BSC traffic needs (bscSheetPlan.ts,
+  // copyPhotos.ts): a PUT is at most 100 rows of at most 16 KB each; every
+  // other JSON body is a small request; a photo is at most 3 MB plus framing.
+  const putJson = express.json({ limit: PUT_BODY_LIMIT });
+  const smallJson = express.json({ limit: API_BODY_LIMIT });
+  router.use((req, res, next) => (req.method === "PUT" && normalisePath(req.path) === "seller/bulk-upload" ? putJson : smallJson)(req, res, next));
+  router.use(express.raw({ type: "multipart/form-data", limit: PHOTO_BODY_LIMIT }));
 
   const unrecorded = (res: Response, key: string): void => {
     res.status(501).set(UNRECORDED_HEADER, "unrecorded").json({ error: "unrecorded", key });

@@ -18,6 +18,16 @@ import crypto from "node:crypto";
  *     reads `…: truncated`).
  *
  * `hash` is a short sha256 of the lines, for a one-glance comparison.
+ *
+ * ALLOWLIST (`opts.allow`). The probe's shapes leave the process (the prod
+ * probe's are uploaded by the drift workflow as a public artifact), and the
+ * `{*}` rule alone does not make a seller answer safe: a map keyed by a buyer
+ * username or a short hex id passes as an identifier. With an allowlist, only
+ * the listed paths (in `shapeMap`'s dialect: `""` or `$` for the root, `a.b`,
+ * `[]`, `results[].orderId`) and their ancestors are walked and reported;
+ * every other key, at any depth, is dropped without being descended into. A
+ * `{*}` segment never matches an allowlist, so a data-shaped key never
+ * appears.
  */
 
 const MAX_DEPTH = 12;
@@ -48,7 +58,40 @@ function keySegment(key: string): string {
   return key;
 }
 
-export function shapeSignature(value: unknown): ShapeSignature {
+export interface ShapeOptions {
+  /** Report only these paths (shapeMap dialect) and their ancestors. */
+  allow?: readonly string[];
+}
+
+/** shapeMap dialect ("", "$", "a.b", "[]", "x[].y") to the internal "$..." form. */
+function internalPath(p: string): string {
+  if (p === "" || p === "$") return "$";
+  if (p.startsWith("$.") || p.startsWith("$[")) return p;
+  return p.startsWith("[") ? `$${p}` : `$.${p}`;
+}
+
+function parentPath(p: string): string | null {
+  if (p === "$") return null;
+  if (p.endsWith("[]")) return p.slice(0, -2);
+  const i = p.lastIndexOf(".");
+  return i <= 0 ? "$" : p.slice(0, i);
+}
+
+/** The allowlist as internal paths, closed under ancestors. */
+function allowSet(allow: readonly string[]): Set<string> {
+  const out = new Set<string>();
+  for (const raw of allow) {
+    let p: string | null = internalPath(raw);
+    while (p !== null && !out.has(p)) {
+      out.add(p);
+      p = parentPath(p);
+    }
+  }
+  return out;
+}
+
+export function shapeSignature(value: unknown, opts: ShapeOptions = {}): ShapeSignature {
+  const allowed = opts.allow ? allowSet(opts.allow) : null;
   const types = new Map<string, Set<string>>();
   let truncated = false;
 
@@ -67,6 +110,7 @@ export function shapeSignature(value: unknown): ShapeSignature {
   };
 
   const walk = (node: unknown, path: string, depth: number): void => {
+    if (allowed && !allowed.has(path)) return;
     const t = typeOf(node);
     if (!note(path, t)) return;
     if (depth >= MAX_DEPTH) return;
@@ -110,9 +154,9 @@ export function canonicalJson(value: unknown): unknown {
  * Paths drop the `$.` root prefix (`results[].orderId`); the root itself is
  * `$`. A truncated signature carries `…: "truncated"`.
  */
-export function shapeMap(value: unknown): Record<string, string> {
+export function shapeMap(value: unknown, opts: ShapeOptions = {}): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const line of shapeSignature(value).lines) {
+  for (const line of shapeSignature(value, opts).lines) {
     const sep = line.lastIndexOf(": ");
     const path = line.slice(0, sep);
     const type = line.slice(sep + 2);

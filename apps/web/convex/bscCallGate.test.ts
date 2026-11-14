@@ -115,7 +115,7 @@ describe("the bucket (real BSC: 60 a minute, burst 10)", () => {
   });
 
   test("a fake deployment gets the faster bucket", async () => {
-    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://fake-bsc-0000.a.run.app");
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
     vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "k");
     vi.stubEnv("TESTING_RESET_SECRET", "armed");
     const t = convexTest(schema, modules);

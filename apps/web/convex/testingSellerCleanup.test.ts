@@ -431,7 +431,7 @@ describe("a paused marketplace", () => {
 
 describe("NEO-552: a deployment on the fake BuySportsCards", () => {
   test("never signs in to or reads BSC, needs no BSC credentials, and still clears eBay", async () => {
-    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://fake-bsc-abc123-uc.a.run.app");
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-abc123-uc.a.run.app");
     vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
     vi.stubEnv("DEV_BSC_USERNAME", "");
     vi.stubEnv("DEV_BSC_PASSWORD", "");

@@ -26,7 +26,7 @@ const CLOUD_URL = "https://happy-otter-123.convex.cloud";
 const SUBJECT = "user_2abcDEFghi";
 
 function armFake() {
-  vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://fake-bsc-0000.a.run.app");
+  vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
   vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
   vi.stubEnv("TESTING_RESET_SECRET", "armed");
   vi.stubEnv("CONVEX_CLOUD_URL", CLOUD_URL);

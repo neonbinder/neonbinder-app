@@ -149,10 +149,10 @@ jobs:
           ID_TOKEN: ${{ steps.token.outputs.id_token }}
         run: |
           set -uo pipefail
-          re='^https://[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          re='^https://neonbinder-fake-bsc-[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
           base="${FAKE_URL%/}"
-          if [[ ! "$base" =~ $re ]]; then
-            echo "outcome=bad_fake_url" >> "$GITHUB_OUTPUT"; exit 0
+          if [[ ! "$base" =~ $re ]] || [[ "$base" == *---* ]]; then
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path"; echo "outcome=bad_fake_url" >> "$GITHUB_OUTPUT"; exit 0
           fi
           caller=$(gcloud secrets versions access latest --secret=fake-bsc-caller-key --project=neonbinder-dev) || { echo "outcome=key_unreadable" >> "$GITHUB_OUTPUT"; exit 0; }
           admin=$(gcloud secrets versions access latest --secret=fake-bsc-admin-key --project=neonbinder-dev) || { echo "outcome=key_unreadable" >> "$GITHUB_OUTPUT"; exit 0; }
@@ -161,6 +161,7 @@ jobs:
           code=$(curl -sS --max-time 60 -o "$out" -w '%{http_code}' -X POST \
             -H "Content-Type: application/json" \
             -H "X-Serverless-Authorization: Bearer $ID_TOKEN" \
+            -H "x-nb-fake-id-token: $ID_TOKEN" \
             -H "x-nb-fake-bsc-key: $caller" \
             -H "x-nb-fake-bsc-admin-key: $admin" \
             --data-binary "@$RUNNER_TEMP/shapes/shapes.json" \
@@ -189,7 +190,8 @@ jobs:
           sparse-checkout: .github/scripts
 
       # bsc_unavailable fails only on the second consecutive day, so read the
-      # newest earlier completed run's recorded outcome (a tiny artifact every
+      # newest earlier completed SCHEDULED run's recorded outcome (--event schedule:
+      # a dispatched or forked run must not feed the leniency) (a tiny artifact every
       # run uploads below). Unreadable or missing means "unknown", which is the
       # lenient answer.
       - id: prev
@@ -200,7 +202,7 @@ jobs:
         run: |
           set -uo pipefail
           prev=""
-          for rid in $(gh run list --workflow bsc-drift.yml --status completed --limit 10 \
+          for rid in $(gh run list --workflow bsc-drift.yml --status completed --limit 10 --event schedule \
                          --json databaseId --jq '.[].databaseId' 2>/dev/null); do
             [ "$rid" = "$CURRENT" ] && continue
             d="$RUNNER_TEMP/prev-$rid"

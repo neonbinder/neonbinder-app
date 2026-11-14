@@ -595,6 +595,42 @@ export const addMyBscOrder = action({
 });
 
 /**
+ * Drop every fault rule on the caller's fake BSC account, and nothing else
+ * (listings, photos and orders stay). The E2E suite's teardown for the rules
+ * `setMyBscFaults` set; a spec's own `finally` cannot rely on the rules' TTL,
+ * because a later spec on the same worker would meet whatever is left of it.
+ */
+export const clearMyBscFaults = action({
+  args: {},
+  returns: v.object({ cleared: v.boolean() }),
+  handler: async (ctx) => {
+    const ns = await callerFakeBscNamespace(ctx);
+    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.setFaults, { ns, rules: [] });
+    requireFakeBscDone(done, "clear the fault rules");
+    return { cleared: true };
+  },
+});
+
+/**
+ * Clear this deployment's BSC call gate (`bscCallGate`: the breaker and its
+ * failure run), so a spec that opened it, with a 429 or a run of 5xx or
+ * timeouts, leaves it closed. The gate is DEPLOYMENT-WIDE, not per user: it is
+ * the one control here that reaches past the caller, which is why only specs
+ * tagged `@bsc-breaker` (run alone, after every shard) may move it. Same locks
+ * as the other controls: a testing deployment, a signed-in caller, the fake.
+ */
+export const clearBscCallGate = action({
+  args: {},
+  returns: v.object({ deleted: v.number() }),
+  // Annotated: without it the action's type loops back through `internal` (TS7022).
+  handler: async (ctx): Promise<{ deleted: number }> => {
+    await callerFakeBscNamespace(ctx);
+    const cleared: { deleted: number } = await ctx.runMutation(internal.bscCallGate.clearForTesting, {});
+    return cleared;
+  },
+});
+
+/**
  * NEO-552 — the scripted reset's fake BSC step (`e2e-baseline.sh reset`):
  * clears every namespace this deployment owns on the fake (`<slug>-`), so
  * a new pass starts with no listings, photos, orders or faults from the last.

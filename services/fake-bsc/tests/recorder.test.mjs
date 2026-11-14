@@ -48,7 +48,8 @@ function clock() {
   return c;
 }
 
-const base = (c, over = {}) => ({ prefix: "happy-cat-123-", watch: false, tokenExpiresAt: c.t + 3600_000, now: c.now, sleep: c.sleep, ...over });
+const base = (c, over = {}) => ({ prefix: "happy-cat-123-", watch: false, tokenExpiresAt: c.t + 3600_000, now: c.now, sleep: c.sleep, confirm: async () => true, ...over });
+const CARD = "5f3a9c0e1b2d3e4f5a6b7c8d";
 
 describe("record session", () => {
   it("fetches only catalogue misses, at most one a second, and sanitises before upload", async () => {
@@ -101,7 +102,7 @@ describe("record session", () => {
 
   it("records a 404 card-listing as a 404 with no body", async () => {
     const c = clock();
-    const fake = fakeStub([[{ ...miss("GET", "marketplace/card/c1/card-listing"), request: { method: "GET", path: "marketplace/card/c1/card-listing", query: [] } }]]);
+    const fake = fakeStub([[{ ...miss("GET", `marketplace/card/${CARD}/card-listing`), request: { method: "GET", path: `marketplace/card/${CARD}/card-listing`, query: [] } }]]);
     const r = await runRecordSession({ ...base(c), fake, bsc: async () => ({ kind: "response", status: 404, body: null }) });
     assert.equal(r.recorded, 1);
     assert.deepEqual(fake.uploads[0].response, { status: 404, body: null });
@@ -119,7 +120,8 @@ describe("record session", () => {
   });
 
   it("refuses a miss whose request is not a catalogue read or whose key does not recompute", async () => {
-    assert.equal(fetchableRequest({ ...miss("POST", FILTERS_PATH, {}), key: "0".repeat(64) }), null);
+    assert.equal(fetchableRequest({ ...miss("POST", FILTERS_PATH, { filters: {} }), key: "0".repeat(64) }), null);
+    assert.ok(fetchableRequest(miss("POST", FILTERS_PATH, { filters: {} })));
     const put = miss("PUT", "seller/bulk-upload", { sellerId: "x", listings: [] });
     assert.equal(fetchableRequest(put), null);
     const c = clock();
@@ -128,19 +130,19 @@ describe("record session", () => {
     const r = await runRecordSession({ ...base(c), fake, bsc: async () => (calls++, { kind: "response", status: 200, body: {} }) });
     assert.equal(calls, 0);
     assert.equal(r.sent, 0);
-    assert.equal(r.needsModel.length, 1);
+    assert.deepEqual(r.refused.map((l) => l.split(" ")[0]), ["not_a_catalogue_request"]);
   });
 
   it("stops before sending with a token about to expire", async () => {
     const c = clock();
-    const fake = fakeStub([[miss("POST", FILTERS_PATH, {})]]);
+    const fake = fakeStub([[miss("POST", FILTERS_PATH, { filters: {} })]]);
     const r = await runRecordSession({ ...base(c, { tokenExpiresAt: c.t + 60_000 }), fake, bsc: async () => assert.fail("must not send") });
     assert.equal(r.stopReason, "token_expiring");
   });
 
   it("stops when the fake refuses an upload", async () => {
     const c = clock();
-    const fake = { misses: async () => [miss("POST", FILTERS_PATH, {})], uploadRecording: async () => { throw new Error("400"); } };
+    const fake = { misses: async () => [miss("POST", FILTERS_PATH, { filters: {} })], uploadRecording: async () => { throw new Error("400"); } };
     const r = await runRecordSession({ ...base(c), fake, bsc: async () => ({ kind: "response", status: 200, body: { aggregations: {} } }) });
     assert.equal(r.stopReason, "upload_refused");
   });
@@ -305,5 +307,163 @@ describe("capture-write", () => {
     });
     assert.equal(sends, 1);
     assert.equal(r.status, 500);
+  });
+});
+
+describe("--max (S2)", () => {
+  const { readMax } = require("../dist/recorder/cli.js");
+  it("accepts only a positive whole number, clamped to the session cap", () => {
+    assert.equal(readMax(undefined), undefined);
+    assert.equal(readMax("5"), 5);
+    assert.equal(readMax("300"), MAX_REQUESTS_PER_SESSION);
+    assert.equal(readMax("100000"), MAX_REQUESTS_PER_SESSION);
+    for (const bad of ["abc", "0", "-5", "1.5", "1e3", "", " 5", "5x", "NaN", "Infinity", true]) {
+      assert.throws(() => readMax(bad), /positive whole number/, String(bad));
+    }
+  });
+  it("parses `--max abc` into an error, never an uncapped session", () => {
+    const { flags } = parseArgs(["record", "--max", "abc"]);
+    assert.throws(() => readMax(flags.get("--max")));
+    assert.throws(() => readMax(parseArgs(["record", "--max"]).flags.get("--max")));
+  });
+});
+
+describe("replay allowlist (S3)", () => {
+  const { replayRefusal } = require("../dist/recorder/replay-allowlist.js");
+  const { replayable, planMisses } = require("../dist/recorder/record.js");
+  const req = (method, p, body, query) => canonicalRequest({ method, path: p, body, query });
+
+  it("passes NB's own catalogue requests", () => {
+    assert.equal(replayRefusal(req("POST", FILTERS_PATH, { filters: {} })), null);
+    assert.equal(replayRefusal(req("POST", FILTERS_PATH, { filters: { sport: ["baseball"], year: ["1996"] } })), null);
+    assert.equal(replayRefusal(req("POST", RESULTS_PATH, resultsBody({ sport: ["baseball"], setName: ["topps-chrome"], variantName: ["gold-refractor"] }))), null);
+    assert.equal(replayRefusal(req("GET", `marketplace/card/${CARD}/card-listing`)), null);
+  });
+
+  it("refuses anything wider, with a reason and no value", () => {
+    const cases = [
+      [req("POST", FILTERS_PATH, {}), "filters_missing"],
+      [req("POST", FILTERS_PATH, { filters: {}, condition: "all" }), "body_unknown_field"],
+      [req("POST", FILTERS_PATH, { filters: { seller: ["x"] } }), "filters_unknown_facet"],
+      [req("POST", FILTERS_PATH, { filters: { sport: [] } }), "filters_bad_list"],
+      [req("POST", FILTERS_PATH, { filters: { sport: "baseball" } }), "filters_bad_list"],
+      [req("POST", FILTERS_PATH, { filters: { sport: [{ $ne: 1 }] } }), "filters_bad_value"],
+      [req("POST", FILTERS_PATH, { filters: { sport: ["a@b.com"] } }), "filters_bad_value"],
+      [req("POST", FILTERS_PATH, { filters: { sport: ["base ball"] } }), "filters_bad_value"],
+      [req("POST", FILTERS_PATH, { filters: { sport: ["x".repeat(101)] } }), "filters_bad_value"],
+      [req("POST", FILTERS_PATH, { filters: { sport: Array.from({ length: 51 }, (_, i) => `s${i}`) } }), "filters_bad_list"],
+      [req("POST", FILTERS_PATH, { filters: { sport: Array.from({ length: 50 }, () => "x".repeat(99)) } }), "body_too_large"],
+      [req("POST", FILTERS_PATH, { filters: {} }, "sellerId=1"), "query_string"],
+      [req("POST", RESULTS_PATH, { ...resultsBody({}), condition: "near_mint" }), "bad_condition"],
+      [req("POST", RESULTS_PATH, { ...resultsBody({}), sort: "price" }), "bad_sort"],
+      [req("POST", RESULTS_PATH, { ...resultsBody({}), page: 101 }), "bad_page"],
+      [req("POST", RESULTS_PATH, { ...resultsBody({}), size: 5001 }), "bad_size"],
+      [req("POST", RESULTS_PATH, { ...resultsBody({}), size: 1.5 }), "bad_size"],
+      [req("POST", RESULTS_PATH, { ...resultsBody({}), sellerId: "x" }), "body_unknown_field"],
+      [req("POST", RESULTS_PATH, [1]), "body_not_an_object"],
+      [req("GET", "marketplace/card/not-hex-id/card-listing"), "card_id_not_hex"],
+      [req("GET", "marketplace/card/c1/card-listing"), "card_id_not_hex"],
+      [req("GET", `marketplace/card/${CARD}/card-listing`, undefined, "x=1"), "query_string"],
+      [req("POST", "seller/bulk-upload/results", { filters: {} }), "not_a_catalogue_request"],
+    ];
+    for (const [r, reason] of cases) assert.equal(replayRefusal(r), reason, JSON.stringify(r));
+  });
+
+  it("refused and anonymous misses are never sent; labels carry no value", async () => {
+    const evil = miss("POST", FILTERS_PATH, { filters: { sport: ["someone@example.com"] } });
+    const anon = { ...miss("POST", FILTERS_PATH, { filters: { sport: ["anon"] } }), ns: null };
+    const lane = { ...miss("POST", FILTERS_PATH, { filters: { sport: ["lane"] } }), ns: null, prefix: "happy-cat-" };
+    const good = miss("POST", FILTERS_PATH, { filters: { sport: ["baseball"] } });
+    assert.equal(replayable(evil).reason, "filters_bad_value");
+    const c = clock();
+    const fake = fakeStub([[evil, anon, lane, good]]);
+    const sent = [];
+    const r = await runRecordSession({ ...base(c), fake, bsc: async (q) => (sent.push(q.body.filters.sport[0]), { kind: "response", status: 200, body: { aggregations: {} } }) });
+    assert.deepEqual(sent, ["lane", "baseball"]);
+    assert.equal(r.anonSkipped, 1);
+    assert.equal(r.refused.length, 1);
+    assert.match(r.refused[0], /^filters_bad_value filters [0-9a-f]{12}$/);
+    assert.ok(!JSON.stringify(r).includes("someone"));
+    const withAnon = planMisses([anon, good], { includeAnon: true });
+    assert.equal(withAnon.todo.length, 2);
+  });
+
+  it("asks once, with the count, before the first send; no answer or no means nothing is sent", async () => {
+    for (const confirm of [undefined, async () => false]) {
+      const c = clock();
+      const r = await runRecordSession({ ...base(c, { confirm }), fake: fakeStub([[miss("POST", FILTERS_PATH, { filters: {} })]]), bsc: async () => assert.fail("must not send") });
+      assert.equal(r.stopReason, "declined");
+      assert.equal(r.sent, 0);
+    }
+    const asked = [];
+    const c = clock();
+    const r = await runRecordSession({
+      ...base(c, { confirm: async (n) => (asked.push(n), true) }),
+      fake: fakeStub([[miss("POST", FILTERS_PATH, { filters: { sport: ["a"] } }), miss("POST", FILTERS_PATH, { filters: { sport: ["b"] } })]]),
+      bsc: async () => ({ kind: "response", status: 200, body: { aggregations: {} } }),
+    });
+    assert.deepEqual(asked, [2]);
+    assert.equal(r.sent, 2);
+  });
+
+  it("confirms only on the word yes", async () => {
+    const { askYes } = require("../dist/recorder/confirm.js");
+    const { PassThrough } = await import("node:stream");
+    for (const [answer, want] of [["yes\n", true], ["YES\n", true], ["y\n", false], ["\n", false], ["", false]]) {
+      const out = new PassThrough();
+      const got = await askYes(Readable.from([answer]), out, "go? ");
+      assert.equal(got, want, JSON.stringify(answer));
+    }
+  });
+});
+
+describe("fake client identity", () => {
+  it("sends the ID token in both headers", async () => {
+    const seen = [];
+    const client = new FakeClient({
+      baseUrl: "https://fake.example.run.app",
+      callerKey: CALLER_KEY,
+      adminKey: ADMIN_KEY,
+      idToken: async () => "h.p.s",
+      fetchImpl: async (_u, init) => (seen.push(init.headers), new Response(JSON.stringify({ misses: [] }), { status: 200 })),
+    });
+    await client.misses("abc-");
+    assert.equal(seen[0]["x-nb-fake-id-token"], "h.p.s");
+    assert.equal(seen[0]["X-Serverless-Authorization"], "Bearer h.p.s");
+  });
+
+  it("asks impersonated ADC for a token that carries the email", async () => {
+    const { adcIdTokenMinter } = require("../dist/recorder/fake-client.js");
+    const { Impersonated } = require("google-auth-library");
+    const imp = new Impersonated({ targetPrincipal: "loader@example.iam.gserviceaccount.com" });
+    const calls = [];
+    imp.fetchIdToken = async (aud, opts) => (calls.push([aud, opts]), "tok");
+    const mint = adcIdTokenMinter("https://fake.example.run.app", { getClient: async () => imp, getIdTokenClient: async () => assert.fail("not this path") });
+    assert.equal(await mint(), "tok");
+    assert.deepEqual(calls, [["https://fake.example.run.app", { includeEmail: true }]]);
+    const other = adcIdTokenMinter("https://a.run.app", { getClient: async () => ({}), getIdTokenClient: async () => ({ idTokenProvider: { fetchIdToken: async (a) => `sa:${a}` } }) });
+    assert.equal(await other(), "sa:https://a.run.app");
+  });
+});
+
+describe("undo-write", () => {
+  const { buildUndoRequest, describeUndo, runUndoWrite } = require("../dist/recorder/capture-write.js");
+  const put = { endpoint: "PUT seller/bulk-upload", method: "PUT", path: "seller/bulk-upload", json: { sellerId: "s", listings: [{ cardId: "c", condition: "near_mint", availableQuantity: 3, price: 1 }] } };
+
+  it("builds a quantity-0 PUT of the same rows, and nothing for a photo", () => {
+    const undo = buildUndoRequest(put);
+    assert.deepEqual(undo.json, { sellerId: "s", listings: [{ cardId: "c", condition: "near_mint", availableQuantity: 0, price: 1 }] });
+    assert.equal(put.json.listings[0].availableQuantity, 3, "the original request is untouched");
+    assert.match(describeUndo(undo), /1 listing row\(s\) set to quantity 0 \(a second real write\)/);
+    assert.equal(buildUndoRequest({ endpoint: "POST common/card/undefined/product/undefined/attachment", method: "POST", path: "x", file: { bytes: Buffer.alloc(1), fileName: "a.jpg", contentType: "image/jpeg" } }), null);
+    assert.equal(buildUndoRequest({ ...put, json: { sellerId: "s", listings: [] } }), null);
+  });
+
+  it("sends the undo exactly once", async () => {
+    const bodies = [];
+    const r = await runUndoWrite({ request: put, apiBase: "https://bsc.invalid", token: "t", headers: () => ({}), fetchImpl: async (_u, init) => (bodies.push(JSON.parse(init.body)), new Response("[]", { status: 200 })) });
+    assert.deepEqual(r, { ok: true, status: 200 });
+    assert.equal(bodies.length, 1);
+    assert.equal(bodies[0].listings[0].availableQuantity, 0);
   });
 });

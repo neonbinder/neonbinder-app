@@ -14,6 +14,7 @@ import {
   FAKE_BSC_KEY_ENV,
   FAKE_BSC_KEY_HEADER,
   FAKE_BSC_NS_HEADER,
+  FAKE_BSC_SIGNED_ID_TOKEN_HEADER,
   __resetBscIdTokenCache,
   actionBscIdTokenSource,
   bscApiBase,
@@ -28,7 +29,7 @@ import {
   type BscGrant,
 } from "./bscHttp";
 
-const FAKE_ROOT = "https://fake-bsc-0000.a.run.app";
+const FAKE_ROOT = "https://neonbinder-fake-bsc-0000-uc.a.run.app";
 const FAKE_ENV = {
   [BSC_API_BASE_ENV]: FAKE_ROOT,
   [FAKE_BSC_KEY_ENV]: "caller-key",
@@ -108,17 +109,29 @@ describe("resolveBscTarget", () => {
 
   test.each([
     ["not a URL", "nonsense"],
-    ["http", "http://fake-bsc-0000.a.run.app"],
-    ["credentials", "https://u:p@fake-bsc-0000.a.run.app"],
-    ["a port", "https://fake-bsc-0000.a.run.app:8443"],
+    ["http", "http://neonbinder-fake-bsc-0000-uc.a.run.app"],
+    ["credentials", "https://u:p@neonbinder-fake-bsc-0000-uc.a.run.app"],
+    ["a port", "https://neonbinder-fake-bsc-0000-uc.a.run.app:8443"],
     ["another host", "https://fake.example.com"],
     ["a look-alike host", "https://run.app.example.com"],
+    ["another run.app service", "https://fake-bsc-0000-uc.a.run.app"],
+    ["another service with the name inside", "https://evil-neonbinder-fake-bsc-0000-uc.a.run.app"],
+    ["a tagged revision", "https://pr-1---neonbinder-fake-bsc-0000-uc.a.run.app"],
+    ["the name on a non-run.app domain", "https://neonbinder-fake-bsc-0000.example.com"],
+    ["the name as a subdomain elsewhere", "https://neonbinder-fake-bsc-0000.run.app.example.com"],
     ["a path", `${FAKE_ROOT}/api`],
     ["a query", `${FAKE_ROOT}/?x=1`],
   ])("a test deployment with %s is misconfigured: nothing is sent, not even to the real host", (_what, url) => {
     const env = { ...FAKE_ENV, [BSC_API_BASE_ENV]: url };
     expect(resolveBscTarget(env).mode).toBe("misconfigured");
     expect(() => bscApiBase(env)).toThrow(BscConfigError);
+  });
+
+  test.each([
+    ["the hashed service URL", "https://neonbinder-fake-bsc-abc123xyz-uc.a.run.app"],
+    ["the regional service URL", "https://neonbinder-fake-bsc-123456789012.us-central1.run.app"],
+  ])("%s of the fake's own service is accepted", (_what, url) => {
+    expect(resolveBscTarget({ ...FAKE_ENV, [BSC_API_BASE_ENV]: url }).mode).toBe("fake");
   });
 
   test("a test deployment with no caller key is misconfigured", () => {
@@ -159,6 +172,7 @@ describe("bscFetch", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0].url).toBe(`${bscApiBase(REAL_ENV)}/marketplace/card/1/card-listing`);
     expect(sent[0].init).toBe(init);
+    expect(new Headers(sent[0].init.headers).has(FAKE_BSC_SIGNED_ID_TOKEN_HEADER)).toBe(false);
     expect(idToken).not.toHaveBeenCalled();
     expect(acquires).toEqual([1]);
   });
@@ -175,6 +189,8 @@ describe("bscFetch", () => {
     const h = headersOf(sent[0]);
     expect(h.get(FAKE_BSC_KEY_HEADER)).toBe("caller-key");
     expect(h.get(FAKE_BSC_ID_TOKEN_HEADER)).toBe("Bearer id-token");
+    // The same signed token, bare, for the fake to verify itself.
+    expect(h.get(FAKE_BSC_SIGNED_ID_TOKEN_HEADER)).toBe("id-token");
     expect(h.get("authorization")).toBe("Bearer bsc-token");
     expect(sent[0].init.redirect).toBe("error");
     expect(idToken).toHaveBeenCalledWith(FAKE_ROOT);
@@ -322,6 +338,8 @@ describe("fakeBscControlFetch", () => {
     await fakeBscControlFetch("__fake/misses?prefix=slug-", { method: "GET" }, { idToken, env: FAKE_ENV });
     expect(sent[0].url).toBe(`${FAKE_ROOT}/__fake/misses?prefix=slug-`);
     expect(headersOf(sent[0]).get(FAKE_BSC_KEY_HEADER)).toBe("caller-key");
+    expect(headersOf(sent[0]).get(FAKE_BSC_ID_TOKEN_HEADER)).toBe("Bearer id-token");
+    expect(headersOf(sent[0]).get(FAKE_BSC_SIGNED_ID_TOKEN_HEADER)).toBe("id-token");
   });
 
   test("only __fake/ paths", async () => {

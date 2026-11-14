@@ -50,29 +50,62 @@ function visit(v: unknown, path: string, acc: Map<string, Set<ShapeType>>, depth
     for (const item of v as unknown[]) visit(item, `${path}[]`, acc, depth + 1);
   } else if (t === "object") {
     for (const [k, child] of Object.entries(v as Record<string, unknown>)) {
-      if (!SAFE_KEY_RE.test(k)) continue; // a key that is itself data (an id, an email) is not shape
-      visit(child, path === "" ? k : `${path}.${k}`, acc, depth + 1);
+      // A key that is itself data (an id, a uuid, an email, a year) is
+      // recorded as `*`, never as itself: sibling id keys collapse into one.
+      const seg = keySegment(k);
+      visit(child, path === "" ? seg : `${path}.${seg}`, acc, depth + 1);
     }
   }
 }
 
-/** Keys that look like field names. A key that does not is a value and is not recorded. */
-const SAFE_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+/** The segment an id-like map key collapses to. */
+export const ID_KEY_SEGMENT = "*";
 
-const PATH_RE = /^(?:[A-Za-z_][A-Za-z0-9_]{0,63}|\[\])?(?:(?:\.[A-Za-z_][A-Za-z0-9_]{0,63})|\[\])*$/;
+/**
+ * A fixed field name: letters and underscores, digits only as a short
+ * trailing index (`line1`, `img12`), at most 40 characters, and not a run of
+ * hex. Everything else (`5f3a9c0e…`, `deadbeefcafe`, a uuid, `2024`,
+ * `user123456`, `a1b2c3d4`, an email) is a value used as a key.
+ */
+const FIELD_NAME_RE = /^[A-Za-z_][A-Za-z_]{0,37}[0-9]{0,2}$/;
+const HEX_RUN_RE = /^[0-9a-f]{8,}$/i;
 
-/** Validates an untrusted shape (from a capture upload or a drift probe). */
+export function isFieldName(key: string): boolean {
+  return FIELD_NAME_RE.test(key) && !HEX_RUN_RE.test(key);
+}
+
+export function keySegment(key: string): string {
+  return isFieldName(key) ? key : ID_KEY_SEGMENT;
+}
+
+const PATH_RE = /^(?:[A-Za-z_][A-Za-z0-9_]{0,63}|\*|\[\])?(?:(?:\.(?:[A-Za-z_][A-Za-z0-9_]{0,63}|\*))|\[\])*$/;
+
+/** Rewrites every id-like segment of a path to `*`. */
+function collapsePath(path: string): string {
+  return path.replace(/(^|\.)([A-Za-z_][A-Za-z0-9_]*)/g, (_m, dot: string, seg: string) => dot + keySegment(seg));
+}
+
+/**
+ * Validates an untrusted shape (from a capture upload or a drift probe). An
+ * id-like segment is collapsed to `*` (types merged), so a stored shape never
+ * holds a key that is really a value, whoever built it.
+ */
 export function readShape(value: unknown): Shape | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const entries = Object.entries(value as Record<string, unknown>);
   if (entries.length > MAX_SHAPE_PATHS) return null;
-  const out: Shape = {};
+  const acc = new Map<string, Set<ShapeType>>();
   for (const [path, types] of entries) {
     if (path.length > MAX_SHAPE_PATH_LENGTH || !PATH_RE.test(path)) return null;
     if (!Array.isArray(types) || types.length === 0 || types.length > SHAPE_TYPES.length) return null;
     if (!types.every((t) => (SHAPE_TYPES as readonly unknown[]).includes(t))) return null;
-    out[path] = [...new Set(types as ShapeType[])].sort();
+    const p = collapsePath(path);
+    let set = acc.get(p);
+    if (!set) acc.set(p, (set = new Set()));
+    for (const t of types as ShapeType[]) set.add(t);
   }
+  const out: Shape = {};
+  for (const k of [...acc.keys()].sort()) out[k] = [...acc.get(k)!].sort();
   return out;
 }
 

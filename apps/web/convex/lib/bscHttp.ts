@@ -45,6 +45,12 @@ const TEST_DEPLOYMENT_ENV = "TESTING_RESET_SECRET";
 
 export const FAKE_BSC_KEY_HEADER = "x-nb-fake-bsc-key";
 export const FAKE_BSC_ID_TOKEN_HEADER = "X-Serverless-Authorization";
+/**
+ * The same signed ID token again, bare (no `Bearer`). Cloud Run strips the
+ * signature from what it passes on in `X-Serverless-Authorization`, so the
+ * fake verifies the signature of this copy itself.
+ */
+export const FAKE_BSC_SIGNED_ID_TOKEN_HEADER = "x-nb-fake-id-token";
 
 /**
  * Fake mode only: the run a call with no BSC token belongs to (CONTRACT.md,
@@ -76,8 +82,14 @@ export type BscTarget =
   | { mode: "fake"; origin: string; apiBase: string; callerKey: string }
   | { mode: "misconfigured"; reason: string };
 
-/** A Cloud Run service host: one or more DNS labels, then `run.app`. */
-const RUN_APP_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+run\.app$/;
+/**
+ * The fake's own Cloud Run service host, and no other: the service name
+ * `neonbinder-fake-bsc-` starts the first label (so a tagged revision
+ * `pr-N---…` or any other service is refused), then DNS labels, then
+ * `run.app`. The first label stays within 63 characters.
+ */
+const FAKE_BSC_HOST =
+  /^neonbinder-fake-bsc-(?:[a-z0-9-]{0,42}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.run\.app$/;
 
 /** Where this deployment's BSC calls go. Pure; reads only `env`. */
 export function resolveBscTarget(env: BscEnv = process.env): BscTarget {
@@ -101,8 +113,11 @@ export function resolveBscTarget(env: BscEnv = process.env): BscTarget {
       reason: `${BSC_API_BASE_ENV} must not carry credentials or a port`,
     };
   }
-  if (!RUN_APP_HOST.test(url.hostname)) {
-    return { mode: "misconfigured", reason: `${BSC_API_BASE_ENV} must be a *.run.app host` };
+  if (!FAKE_BSC_HOST.test(url.hostname)) {
+    return {
+      mode: "misconfigured",
+      reason: `${BSC_API_BASE_ENV} must be the neonbinder-fake-bsc-*.run.app service`,
+    };
   }
   if (url.pathname !== "/" || url.search || url.hash) {
     return {
@@ -283,6 +298,7 @@ async function fakeInit(
   const headers = new Headers(init.headers);
   headers.set(FAKE_BSC_KEY_HEADER, target.callerKey);
   headers.set(FAKE_BSC_ID_TOKEN_HEADER, `Bearer ${token}`);
+  headers.set(FAKE_BSC_SIGNED_ID_TOKEN_HEADER, token);
   // A request with a BSC token is namespaced by the token; only a tokenless
   // one (card-listing) names its run, and only in a form the fake reads.
   if (fakeNs !== undefined && !headers.has("authorization") && FAKE_NS_VALUE.test(fakeNs)) {
