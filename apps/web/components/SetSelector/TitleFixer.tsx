@@ -3,6 +3,7 @@ import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { Input } from "../primitives/Input";
+import { Textarea } from "../primitives/Textarea";
 import NeonButton from "../modules/NeonButton";
 import { attentionItemLabel } from "./card-attention";
 import {
@@ -14,6 +15,7 @@ import {
   titleLengthState,
 } from "./TitleLengthMeter";
 import { useTitlePreview } from "./useTitlePreview";
+import { oneLine } from "./card-titles";
 import {
   goToSetNameInTitles,
   useSetNameInTitlesReachable,
@@ -81,7 +83,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
   const [variation, setVariation] = useState(row.cardVariation ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const titleRef = useRef<HTMLInputElement>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
   const uid = useId();
   const titleAlertId = `${uid}-title-limit`;
   const variationAlertId = `${uid}-variation-limit`;
@@ -193,13 +195,17 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             </button>
           </span>
         </div>
-        <Input
+        {/* NEO-535: the drawer's title field shape — wraps and grows with
+            its text (two lines to start), so a long title is in view whole on
+            a phone. Enter still saves, and a pasted line break reads as a
+            space: a title is one line. */}
+        <Textarea
           bare
           ref={titleRef}
-          type="text"
+          rows={2}
           value={title}
           onChange={(e) => {
-            setTitle(e.target.value);
+            setTitle(oneLine(e.target.value));
             preview.cancelConfirm();
           }}
           onKeyDown={(e) => {
@@ -209,7 +215,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           }}
           // No maxLength: a pasted over-length title must stay visible to be
           // fixable. See the same note in CardDetailPanel.
-          className={`w-full p-1.5 text-sm ${busy ? "opacity-60" : ""}`}
+          className={`block w-full resize-none p-1.5 text-sm [field-sizing:content] ${busy ? "opacity-60" : ""}`}
           // Anchored to the card number so it cannot collide with the drawer's
           // own "Card title" field in a selector — Maestro's `id:` matcher
           // takes a regex, so `Card title for #.*` still targets it.

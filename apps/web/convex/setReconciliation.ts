@@ -81,6 +81,12 @@ import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
 // NEO-277: the set-level team a fresh child inherits from its parent.
 import { inheritedTeamIds } from "./lib/selectorTeams";
 import { newRowSubtreeCounts } from "./cardCounts";
+// NEO-535 — a modal title edit reaches the descriptions of the row's cards.
+import {
+  DESCRIBED_ROW_LEVELS,
+  refreshDescriptionsAfterRename,
+  subtreeMayHoldCards,
+} from "./cardDescriptionFanOut";
 import {
   assertSubVariantParent,
   variantTypeRenameCheck,
@@ -2550,13 +2556,33 @@ export const storeReconciledOptions = mutation({
     // SetSelector columns under Maestro's coordinate taps on a sync that
     // changed nothing.
     let patches = 0;
+    const renamedRows: Array<{
+      rowId: Id<"selectorOptions">;
+      before: { value: string };
+    }> = [];
     for (const w of working.values()) {
       const patch = pendingPatchFor(w);
       if (Object.keys(patch).length > 0) {
         await ctx.db.patch(w.row._id, { ...patch, lastUpdated: Date.now() });
         patches++;
+        // NEO-535 — a renamed set, insert or parallel that may hold cards.
+        if (
+          patch.value !== undefined &&
+          DESCRIBED_ROW_LEVELS.has(w.row.level) &&
+          (await subtreeMayHoldCards(ctx, w.row))
+        ) {
+          renamedRows.push({ rowId: w.row._id, before: { value: w.row.value } });
+        }
       }
     }
+    // NEO-535 — the renamed rows' cards whose description is still the
+    // builder's follow the new names. Scheduled, never inline: this call's
+    // transaction is already sized to its write budget.
+    await refreshDescriptionsAfterRename(
+      ctx,
+      { kind: "rows", rows: renamedRows },
+      { inline: false },
+    );
 
     // `children` is a set-UNION now: it never loses a child, so a row the
     // reconciler did not name keeps its place in the parent's cache.

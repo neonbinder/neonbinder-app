@@ -18,6 +18,7 @@ import { generateListingDescription } from "./features/generateListing";
 import { listingInputsForStoredCard } from "./storedCardTitle";
 import { applyBscAttributeFill } from "./cardChecklist";
 import { moveCards } from "./setShapeMove";
+import { rehomeSetRowsToBrand } from "./brandRehome";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 
 const modules = (import.meta as unknown as {
@@ -318,5 +319,294 @@ describe("the other fact writers", () => {
       index: 0,
     });
     expect(again.rewritten).toBe(0);
+  });
+});
+
+// ── NEO-535: renames that fan out to the cards beneath ───────────────────────
+
+/** Scheduled fan-out pages still waiting to run. */
+async function pendingFanOutPages(t: T): Promise<number> {
+  return t.run(async (ctx) =>
+    (await ctx.db.system.query("_scheduled_functions").collect()).filter(
+      (job) =>
+        job.name.includes("refreshRenamedCardDescriptions") && job.state.kind === "pending",
+    ).length,
+  );
+}
+
+/**
+ * `count` more cards of `playerId` on `rowId`, each carrying exactly the
+ * builder's description, linked like the fixture's (`cardPlayerLinks`).
+ */
+async function addDescribedCards(
+  t: T,
+  fx: Awaited<ReturnType<typeof seedCollectionCatalog>>,
+  rowId: Id<"selectorOptions">,
+  playerId: Id<"players">,
+  count: number,
+): Promise<CardId[]> {
+  return t.run(async (ctx) => {
+    const ids: CardId[] = [];
+    for (let i = 0; i < count; i++) {
+      const id = (await ctx.db.insert("cardChecklist", {
+        selectorOptionId: rowId,
+        cardNumber: `X-${i}`,
+        cardName: "Bulk card",
+        playerIds: [playerId],
+        playerLinks: [{ playerId, nameOnCard: "Bulk card" }],
+        teamOnCardIds: [fx.metsId],
+        listingTitle: `Bulk card ${i}`,
+        sportId: fx.sportId,
+        platformData: {},
+        sortOrder: 100 + i,
+        lastUpdated: 0,
+      } as never)) as CardId;
+      await ctx.db.insert("cardPlayerLinks", {
+        cardChecklistId: id,
+        playerId,
+        sportId: fx.sportId,
+      });
+      await ctx.db.insert("cardTeamLinks", { cardChecklistId: id, teamId: fx.metsId });
+      const card = (await ctx.db.get(id))!;
+      await ctx.db.patch(id, {
+        listingDescription: generateListingDescription(
+          (await listingInputsForStoredCard(ctx, card)).inputs,
+        ),
+      });
+      ids.push(id);
+    }
+    return ids;
+  });
+}
+
+describe("renames reach the descriptions of the cards beneath", () => {
+  test("a player rename: unedited descriptions follow, a hand-edited one stays, nothing is scheduled", async () => {
+    const { t, fx, asAdmin } = await setup();
+    await setDescription(t, fx.gold1, HAND_WRITTEN);
+    const futureStarBefore = await storedDescription(t, fx.futureStar);
+
+    await asAdmin.mutation(api.players.savePlayerFields, {
+      id: fx.goodenId,
+      name: "Dwight Eugene Gooden",
+    });
+
+    const gooden1 = await storedDescription(t, fx.gooden1);
+    expect(gooden1).toContain("Dwight Eugene Gooden");
+    expect(gooden1).toBe(await builderDescription(t, fx.gooden1));
+    expect(await storedDescription(t, fx.gold1)).toBe(HAND_WRITTEN);
+    // The fixture's title-shaped description is not the builder's either.
+    expect(await storedDescription(t, fx.futureStar)).toBe(futureStarBefore);
+    // Strawberry's card does not carry Gooden.
+    expect(await storedDescription(t, fx.strawberry2)).not.toContain("Gooden");
+    expect(await pendingFanOutPages(t)).toBe(0);
+  });
+
+  test("a team rename and a location edit both reach the description's team line", async () => {
+    const { t, fx, asAdmin } = await setup();
+    await setDescription(t, fx.gooden1, HAND_WRITTEN);
+
+    await asAdmin.mutation(api.teams.saveTeamFields, { id: fx.metsId, name: "Metropolitans" });
+    expect(await storedDescription(t, fx.strawberry2)).toContain("Team: New York Metropolitans.");
+    expect(await storedDescription(t, fx.gold1)).toContain("Team: New York Metropolitans.");
+
+    await asAdmin.mutation(api.teams.saveTeamFields, { id: fx.metsId, location: "Queens" });
+    expect(await storedDescription(t, fx.strawberry2)).toContain("Team: Queens Metropolitans.");
+    expect(await storedDescription(t, fx.strawberry2)).toBe(
+      await builderDescription(t, fx.strawberry2),
+    );
+    expect(await storedDescription(t, fx.gooden1)).toBe(HAND_WRITTEN);
+  });
+
+  test("a set rename reaches every card in its subtree; an insert rename reaches its own", async () => {
+    const { t, fx, asAdmin } = await setup();
+    await setDescription(t, fx.strawberry2, HAND_WRITTEN);
+
+    await asAdmin.mutation(api.selectorOptions.renameSelectorOption, {
+      id: fx.setId,
+      value: "Topps Chrome Sapphire",
+    });
+    expect(await storedDescription(t, fx.gooden1)).toContain("Topps Chrome Sapphire");
+    expect(await storedDescription(t, fx.gold1)).toContain("Topps Chrome Sapphire");
+    expect(await storedDescription(t, fx.strawberry2)).toBe(HAND_WRITTEN);
+
+    await asAdmin.mutation(api.selectorOptions.renameSelectorOption, {
+      id: fx.goldId,
+      value: "Gold Wave Refractor",
+    });
+    const gold1 = await storedDescription(t, fx.gold1);
+    expect(gold1).toContain("Gold Wave Refractor");
+    expect(gold1).toBe(await builderDescription(t, fx.gold1));
+    expect(await pendingFanOutPages(t)).toBe(0);
+  });
+
+  test("a player with more cards than a page: the first page inline, the rest on the chain", async () => {
+    vi.useFakeTimers();
+    const { t, fx, asAdmin } = await setup();
+    const extra = await addDescribedCards(t, fx, fx.baseId, fx.strawberryId, 150);
+    const handEdited = extra[120];
+    await setDescription(t, handEdited, HAND_WRITTEN);
+
+    await asAdmin.mutation(api.players.savePlayerFields, {
+      id: fx.strawberryId,
+      name: "Darryl Eugene Strawberry",
+    });
+    expect(await pendingFanOutPages(t)).toBe(1);
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    for (const id of [fx.strawberry2, ...extra]) {
+      if (id === handEdited) continue;
+      expect(await storedDescription(t, id)).toContain("Darryl Eugene Strawberry");
+    }
+    expect(await storedDescription(t, handEdited)).toBe(HAND_WRITTEN);
+    expect(await pendingFanOutPages(t)).toBe(0);
+  });
+
+  test("a team with more cards than a page: the chain picks up at the inline page's cursor", async () => {
+    vi.useFakeTimers();
+    const { t, fx, asAdmin } = await setup();
+    const extra = await addDescribedCards(t, fx, fx.baseId, fx.strawberryId, 220);
+
+    await asAdmin.mutation(api.teams.saveTeamFields, { id: fx.metsId, name: "Metropolitans" });
+    const pages = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("refreshRenamedCardDescriptions"),
+      ),
+    );
+    expect(pages).toHaveLength(1);
+    const state = (pages[0].args[0] as { state: { kind: string; after: unknown } }).state;
+    expect(state).toMatchObject({ kind: "links", after: { creationTime: expect.any(Number) } });
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    for (const id of [fx.strawberry2, fx.gold1, ...extra]) {
+      expect(await storedDescription(t, id)).toContain("Team: New York Metropolitans.");
+    }
+  });
+
+  test("a subtree with more cards than a page: the chain walks on from where the page stopped", async () => {
+    vi.useFakeTimers();
+    const { t, fx, asAdmin } = await setup();
+    const extra = await addDescribedCards(t, fx, fx.goldId, fx.strawberryId, 230);
+
+    await asAdmin.mutation(api.selectorOptions.renameSelectorOption, {
+      id: fx.goldId,
+      value: "Gold Wave Refractor",
+    });
+    // 231 cards on the row: 100 inline, then two pages.
+    const pages = await t.run(async (ctx) =>
+      (await ctx.db.system.query("_scheduled_functions").collect()).filter((job) =>
+        job.name.includes("refreshRenamedCardDescriptions"),
+      ),
+    );
+    expect(pages).toHaveLength(1);
+    const state = (pages[0].args[0] as { state: { kind: string; after?: number } }).state;
+    expect(state.kind).toBe("subtree");
+    expect(state.after).toBeTypeOf("number");
+
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    for (const id of [fx.gold1, ...extra]) {
+      expect(await storedDescription(t, id)).toContain("Gold Wave Refractor");
+    }
+  });
+
+  test("a re-run of a finished page writes nothing", async () => {
+    const { t, fx, asAdmin } = await setup();
+    await asAdmin.mutation(api.players.savePlayerFields, {
+      id: fx.goodenId,
+      name: "Dwight Eugene Gooden",
+    });
+    const again = await t.mutation(internal.cardDescriptionFanOut.refreshRenamedCardDescriptions, {
+      target: { kind: "player", playerId: fx.goodenId, before: { name: "Dwight Gooden" } },
+      state: { kind: "links", after: null },
+      pagesLeft: 10,
+    });
+    expect(again).toEqual({ rewritten: 0, done: true });
+  });
+
+  test("a set moved onto the year's Unknown brand stops naming its maker", async () => {
+    vi.useFakeTimers();
+    const { t, fx } = await setup();
+    const unknownId = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: "Unknown",
+        platformData: {},
+        parentId: fx.yearId,
+        children: [],
+        metadata: { isBrandUnknown: true },
+        lastUpdated: 0,
+      } as never);
+      const year = (await ctx.db.get(fx.yearId))!;
+      await ctx.db.patch(fx.yearId, { children: [...(year.children ?? []), id] });
+      await ctx.db.patch(fx.strawberry2, { features: { manufacturer: "Bowman" } });
+      return id;
+    });
+    await setDescription(t, fx.strawberry2, await builderDescription(t, fx.strawberry2));
+    expect(await storedDescription(t, fx.strawberry2)).toContain("Bowman Topps Chrome");
+
+    await t.run(async (ctx) => {
+      const set = (await ctx.db.get(fx.setId))!;
+      await rehomeSetRowsToBrand(ctx, {
+        rows: [set],
+        brandId: unknownId,
+        allowBrandUnknownTarget: true,
+        includeOperatorPlaced: true,
+      });
+    });
+    expect(await pendingFanOutPages(t)).toBe(1);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const after = await storedDescription(t, fx.strawberry2);
+    expect(after).not.toContain("Bowman");
+    expect(after).toBe(await builderDescription(t, fx.strawberry2));
+  });
+
+  test("a brand-to-brand move schedules nothing: no description names a move between brands", async () => {
+    const { t, fx } = await setup();
+    const bowmanId = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: "Bowman",
+        platformData: {},
+        parentId: fx.yearId,
+        children: [],
+        lastUpdated: 0,
+      } as never);
+      const year = (await ctx.db.get(fx.yearId))!;
+      await ctx.db.patch(fx.yearId, { children: [...(year.children ?? []), id] });
+      return id;
+    });
+    await t.run(async (ctx) => {
+      const set = (await ctx.db.get(fx.setId))!;
+      await rehomeSetRowsToBrand(ctx, {
+        rows: [set],
+        brandId: bowmanId,
+        includeOperatorPlaced: true,
+      });
+    });
+    expect(await pendingFanOutPages(t)).toBe(0);
+  });
+
+  test("the reconciliation modal's title edit reaches the renamed insert's cards", async () => {
+    vi.useFakeTimers();
+    const { t, fx, asAdmin } = await setup();
+    await setDescription(t, fx.futureStar, await builderDescription(t, fx.futureStar));
+
+    await asAdmin.mutation(api.setReconciliation.storeReconciledOptions, {
+      level: "insert",
+      parentId: fx.insertsTypeId,
+      reconciledItems: [
+        {
+          value: "Future Stars Rookies",
+          platformData: {},
+          existingId: fx.futureStarsId,
+          metadata: undefined,
+        },
+      ],
+    });
+    expect(await pendingFanOutPages(t)).toBe(1);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    const after = await storedDescription(t, fx.futureStar);
+    expect(after).toContain("Future Stars Rookies");
+    expect(after).toBe(await builderDescription(t, fx.futureStar));
   });
 });

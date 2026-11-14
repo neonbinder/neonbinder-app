@@ -80,7 +80,7 @@ const aspectOver = (length: number): AttentionItem =>
   }) as AttentionItem;
 
 const titleField = () =>
-  screen.getByLabelText("Card title for #300b") as HTMLInputElement;
+  screen.getByLabelText("Card title for #300b") as HTMLTextAreaElement;
 const saveButton = () => screen.getByRole("button", { name: /^Save/ });
 
 beforeEach(() => {
@@ -220,6 +220,28 @@ describe("TitleFixer (NEO-101)", () => {
 
     expect(mockUpdateCard).not.toHaveBeenCalled();
     expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it("NEO-535: the title is a wrapping field that grows, a pasted line break reads as a space, and Enter saves", async () => {
+    const { onSaved } = renderFixer([truncated()]);
+    const field = titleField();
+    expect(field.tagName).toBe("TEXTAREA");
+    expect(field.getAttribute("rows")).toBe("2");
+    expect(field.className).toContain("[field-sizing:content]");
+
+    fireEvent.change(field, { target: { value: "2024 Topps Chrome\nJulio Rodriguez #300b" } });
+    expect(field.value).toBe("2024 Topps Chrome Julio Rodriguez #300b");
+
+    await act(async () => {
+      fireEvent.keyDown(field, { key: "Enter" });
+    });
+    await waitFor(() =>
+      expect(mockUpdateCard).toHaveBeenCalledWith({
+        id: CARD_ID,
+        listingTitle: "2024 Topps Chrome Julio Rodriguez #300b",
+      }),
+    );
+    expect(onSaved).toHaveBeenCalledTimes(1);
   });
 
   it("shows the variation field only when the variation is what is over the limit", () => {

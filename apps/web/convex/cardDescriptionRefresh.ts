@@ -30,6 +30,10 @@
  *
  * Read-only: callers fold the answer into the patch they already write, so a
  * fact change and its description land in one write.
+ *
+ * A rename of a row many cards point at (a player, a team, a set, insert or
+ * parallel) is judged by `renamedListingDescription`, on the same rule, and
+ * driven over the cards by `cardDescriptionFanOut.ts`.
  */
 
 import type { QueryCtx } from "./_generated/server";
@@ -42,6 +46,7 @@ import {
   listingInputsForStoredCard,
   newStoredCardLookupCache,
   type StoredCardLookupCache,
+  type StoredCardReader,
 } from "./storedCardTitle";
 
 type CardDoc = Doc<"cardChecklist">;
@@ -89,7 +94,7 @@ function afterPatch(before: CardDoc, patch: Partial<CardDoc>): CardDoc {
 }
 
 async function descriptionFor(
-  ctx: { db: QueryCtx["db"] },
+  ctx: { db: StoredCardReader },
   card: CardDoc,
   cache: StoredCardLookupCache,
 ): Promise<{ description: string; resolved: boolean }> {
@@ -136,6 +141,70 @@ export async function regeneratedDescription(
   const stored = card.listingDescription?.trim() ?? "";
   if (stored && !readsAsGeneratedDescription(stored)) return undefined;
   const next = await descriptionFor(ctx, card, newStoredCardLookupCache());
+  if (!next.resolved || next.description === stored) return undefined;
+  return next.description;
+}
+
+/**
+ * NEO-535 — the rows a rename (or a re-parent) changed, as they read BEFORE
+ * it: keyed by row id, the old values of the fields that changed (a player's
+ * `name`; a team's `name` and `location`; a set, insert or parallel row's
+ * `value`, or its `parentId` after a brand move).
+ *
+ * The fan-out after a rename reads every card beneath it long after the
+ * rename committed, so "the card's facts before the change" cannot be read
+ * from the database any more. Laying these values over the reads rebuilds
+ * them: the card's own fields, and every other row, are as they are now.
+ */
+export type DescriptionOverlay = ReadonlyMap<string, Readonly<Record<string, unknown>>>;
+
+/** `db.get`, with `overlay`'s old values laid over the rows it names. */
+function overlaidReader(db: StoredCardReader, overlay: DescriptionOverlay): {
+  db: StoredCardReader;
+} {
+  const read = db.get as (...args: unknown[]) => Promise<Record<string, unknown> | null>;
+  const get = async (...args: unknown[]) => {
+    const doc = await read(...args);
+    if (!doc) return doc;
+    const before = overlay.get(String(doc._id));
+    return before ? { ...doc, ...before } : doc;
+  };
+  return { db: { get: get as StoredCardReader["get"] } };
+}
+
+/** The two lookup caches of one fan-out page: the old reads and the new. */
+export type RenameLookupCaches = {
+  before: StoredCardLookupCache;
+  after: StoredCardLookupCache;
+};
+
+export function newRenameLookupCaches(): RenameLookupCaches {
+  return { before: newStoredCardLookupCache(), after: newStoredCardLookupCache() };
+}
+
+/**
+ * The description a card should carry now that the rows in `overlay` were
+ * renamed, or `undefined` to leave it. The same rule as
+ * `refreshedListingDescription`: rebuilt only when the stored description is
+ * exactly the builder's for the card as it read before the rename (here, the
+ * card read through `overlay`), and only to a description whose facts fully
+ * resolve. No stored description: nothing is filled.
+ *
+ * Judged against the database as it is NOW, so a second rename in between
+ * (or one undone) converges: the card is rebuilt once, from the latest names,
+ * or left alone because its text no longer matches the older ones.
+ */
+export async function renamedListingDescription(
+  ctx: { db: StoredCardReader },
+  card: CardDoc,
+  overlay: DescriptionOverlay,
+  caches: RenameLookupCaches,
+): Promise<string | undefined> {
+  const stored = card.listingDescription?.trim();
+  if (!stored) return undefined;
+  const was = await descriptionFor(overlaidReader(ctx.db, overlay), card, caches.before);
+  if (was.description !== stored) return undefined;
+  const next = await descriptionFor(ctx, card, caches.after);
   if (!next.resolved || next.description === stored) return undefined;
   return next.description;
 }

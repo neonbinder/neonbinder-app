@@ -1,6 +1,6 @@
 ---
 name: reference-card-description-follows-facts
-description: NEO-535 — every card fact writer must fold refreshedListingDescription into its patch; the list of writers, the equality rule, and what is deliberately not covered
+description: NEO-535 — every card fact writer must fold refreshedListingDescription into its patch; the list of writers, the equality rule, the rename fan-out (overlay before-reads) and what is deliberately not covered
 metadata:
   type: reference
 ---
@@ -25,6 +25,29 @@ generator line shape) because a stale builder text from older facts is exactly
 what the operator wants rebuilt. Keep the line shapes in generateListing.ts beside
 the generator; a test runs generator output back through the check.
 
-Not covered on purpose (fan-out): player/team renames, set/insert/parallel
-renames, brand rehome. Raise before wiring any of them — they touch every card
-beneath and need a paged job.
+Renames that fan out (player, team name/location, set/insert/parallel value,
+reconciliation tier-0 title edit, brand rehome onto/off Unknown) go through
+`convex/cardDescriptionFanOut.ts`: `refreshDescriptionsAfterRename(ctx, target,
+{inline})`. "Before" is rebuilt by laying the OLD field values over `db.get`
+(`renamedListingDescription` + an overlay map) — the chain runs after the rename
+committed, so the old facts are not in the DB any more. Operator doors run the
+first page inline and hand the chain an index cursor (link pages via the link
+modules' own readers `cardPlayerLinkPage` / `cardTeamLinkPage` — the pin tests
+refuse any other module querying those tables — never `.paginate()`), so the
+common test case schedules nothing; budget-sized doors (reconciliation, rehome)
+schedule only, gated by `subtreeMayHoldCards` (count, else a bounded probe) so
+fixtures with empty rows schedule nothing. A re-run is idempotent: a rebuilt card
+no longer matches the old names.
+
+Deliberately NOT rebuilt: finalize's pending-name clear (it links no ids, so a
+rebuild could only DROP a name search still finds); sport/year/manufacturer
+renames (year/maker are card `features` snapshots; sport is one line over every
+card in the sport); variant type renames (kind-changing renames are refused).
+New description facts read through `listingInputsForStoredCard` must be reachable
+by `db.get` only (`StoredCardReader`), or the overlay cannot show them as before.
+
+**Import cycle trap.** players.ts / teams.ts now import the fan-out, so nothing on
+that path may import selectorOptions.ts at load: listingTitleContext → players →
+… → selectorOptions → listingTitleContext left `titleContextValidator` undefined
+("reading 'asOptional'" in 25 commit tests). `findAncestorLabels` moved into
+storedCardTitle.ts for that reason; see [[placeholder-module-cycle-tdz]].

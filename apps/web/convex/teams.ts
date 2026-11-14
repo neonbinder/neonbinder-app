@@ -46,6 +46,8 @@ import {
 } from "./lib/teamRow";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
+// NEO-535 — a rename reaches the descriptions of the team's cards.
+import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
 import { eraLabel, teamOptionLabel } from "../lib/teams/team-era";
 import { splitTeamName, teamFullName } from "../lib/teams/team-name";
 // NEO-330: the one definition of "this team matches what was typed", shared
@@ -1815,6 +1817,29 @@ export const saveTeamFields = mutation({
     }
 
     await ctx.db.patch(args.id, patch);
+    // NEO-535 — a card's description names its team by its full name
+    // ("San Diego Padres"), and collector search reads it. A name or location
+    // edit that changes the full name reaches the cards whose description is
+    // still the builder's; one an operator wrote is left alone. The first
+    // page here, any rest on a scheduled chain.
+    if (
+      typeof patch.name === "string" &&
+      teamFullName({ name: patch.name, location: patch.location as string | undefined }) !==
+        teamFullName(existing)
+    ) {
+      await refreshDescriptionsAfterRename(
+        ctx,
+        {
+          kind: "team",
+          teamId: args.id,
+          before: {
+            name: existing.name,
+            ...(existing.location !== undefined ? { location: existing.location } : {}),
+          },
+        },
+        { inline: true },
+      );
+    }
     return null;
   },
 });

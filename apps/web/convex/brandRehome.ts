@@ -73,6 +73,10 @@ import { SL_ALL_BRANDS_BRAND_ID } from "./slBrandAxis";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { inheritedTeamIds } from "./lib/selectorTeams";
 import { newRowSubtreeCounts, createCardCountLedger } from "./cardCounts";
+import {
+  refreshDescriptionsAfterRename,
+  subtreeMayHoldCards,
+} from "./cardDescriptionFanOut";
 
 /**
  * The "N sets moved out of Unknown" notice, one sentence for the two doors
@@ -326,6 +330,14 @@ export async function rehomeSetRowsToBrand(
 
   const now = Date.now();
   const movedIds: Id<"selectorOptions">[] = [];
+  const rowsById = new Map<string, Doc<"selectorOptions">>(
+    args.rows.map((row) => [row._id as string, row]),
+  );
+  const targetIsBrandUnknown = brand.metadata?.isBrandUnknown === true;
+  const describedMoves: Array<{
+    rowId: Id<"selectorOptions">;
+    before: { parentId: Id<"selectorOptions"> };
+  }> = [];
   const removedFrom = new Map<Id<"selectorOptions">, Set<Id<"selectorOptions">>>();
   // NEO-358 — a moved set takes its subtree card count with it: off the old
   // brand (and the year above, if it differs), onto the new one. Flushed
@@ -380,6 +392,19 @@ export async function rehomeSetRowsToBrand(
     for (const [fromId, ids] of removedFrom) {
       const from = await ctx.db.get(fromId);
       if (!from) continue;
+      // NEO-535 — a card's description names its maker only when the set
+      // sits under an identified brand (`manufacturerBrandUnknown`). A move
+      // onto or off the year's Unknown row flips that for every card beneath;
+      // a brand-to-brand move changes nothing a description says (the cards'
+      // maker is their own `features` snapshot, which a move does not touch).
+      if ((from.metadata?.isBrandUnknown === true) !== targetIsBrandUnknown) {
+        for (const id of ids) {
+          const moved = rowsById.get(id);
+          if (moved && (await subtreeMayHoldCards(ctx, moved))) {
+            describedMoves.push({ rowId: id, before: { parentId: fromId } });
+          }
+        }
+      }
       const next = (from.children ?? []).filter((id) => !ids.has(id));
       if (!valuesDeepEqual(from.children ?? [], next)) {
         await ctx.db.patch(fromId, { children: next, lastUpdated: now });
@@ -392,6 +417,14 @@ export async function rehomeSetRowsToBrand(
   }
 
   await countLedger.flush(ctx);
+  // NEO-535 — the moved sets' cards whose description is still the builder's
+  // follow the move. Scheduled, never inline: this transaction is sized for
+  // `REHOME_ROWS_PER_TRANSACTION` rows already.
+  await refreshDescriptionsAfterRename(
+    ctx,
+    { kind: "rows", rows: describedMoves },
+    { inline: false },
+  );
 
   if (clashes > 0) {
     // Counts only — a set name is operator content and the log is not the
