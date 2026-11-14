@@ -12,8 +12,9 @@ import { bscTarget } from "../bsc-endpoints";
  * apps/web/convex/credentials.ts.
  *
  * `bscTarget` (NEO-552) is "real" or "fake": which BuySportsCards this process
- * talks to. Additive and informational: Convex does not act on it, so it does
- * not bump CONTRACT_VERSION (README, "Release contract"). CI's
+ * talks to. Additive, so it does not bump CONTRACT_VERSION (README, "Release
+ * contract"). A fake-mode Convex deployment refuses every BSC credential call
+ * unless this says "fake" (credentials.ts `assertBrowserTalksToFakeBsc`). CI's
  * bsc-probe-verdict.sh fails a prod revision that says "fake" and a preview
  * that says "real"; an older service without the field reads as neither.
  *

@@ -23,6 +23,7 @@ import {
   FAKE_BSC_PASSWORD,
   MAX_FAKE_BSC_FAULT_RULES,
   convexSlugOf,
+  fakeBscCredentialKeyFor,
   fakeBscMode,
   fakeBscNamespaceFor,
   fakeBscPrefixFor,
@@ -193,7 +194,8 @@ describe("seedMyTestCredentials on the fake", () => {
       const u = String(url);
       const json = (body: unknown, status = 200) =>
         new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
-      if (u.endsWith("/health")) return json({ status: "ok", environment: "test", contractVersion: 1 });
+      // A fake-aware browser revision (NEO-552): a fake deployment refuses any other.
+      if (u.endsWith("/health")) return json({ status: "ok", environment: "test", contractVersion: 1, bscTarget: "fake" });
       if (u.includes("/metadata")) return json({ error: "Credentials not found" }, 404);
       if ((init?.method ?? "GET") === "POST" && u.includes("/login/")) {
         logins.push({ url: u, body: JSON.parse(String(init?.body)) });
@@ -225,6 +227,9 @@ describe("seedMyTestCredentials on the fake", () => {
     expect(logins[0].url).toContain("/login/bsc");
     expect(logins[0].body.username).toBe(fakeBscUsernameFor(USER_A, CLOUD_URL));
     expect(logins[0].body.password).toBe(FAKE_BSC_PASSWORD);
+    // Stored under this deployment's own key, not the bare per-user one.
+    expect(logins[0].body.key).toBe(fakeBscCredentialKeyFor(USER_A, CLOUD_URL));
+    expect(logins[0].body.key).toBe(`buysportscards-credentials-fake-${PREFIX}${USER_A}`);
     expect(JSON.stringify(logins)).not.toContain("real-");
   });
 

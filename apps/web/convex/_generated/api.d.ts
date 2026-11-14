@@ -108,6 +108,7 @@ import type * as lib_bscFakeIdToken from "../lib/bscFakeIdToken.js";
 import type * as lib_bscHttp from "../lib/bscHttp.js";
 import type * as lib_bscMoney from "../lib/bscMoney.js";
 import type * as lib_bscOrders from "../lib/bscOrders.js";
+import type * as lib_bscPacedCopy from "../lib/bscPacedCopy.js";
 import type * as lib_bscSheetPlan from "../lib/bscSheetPlan.js";
 import type * as lib_catalogView from "../lib/catalogView.js";
 import type * as lib_cloudRunAuth from "../lib/cloudRunAuth.js";
@@ -320,6 +321,7 @@ declare const fullApi: ApiFromModules<{
   "lib/bscHttp": typeof lib_bscHttp;
   "lib/bscMoney": typeof lib_bscMoney;
   "lib/bscOrders": typeof lib_bscOrders;
+  "lib/bscPacedCopy": typeof lib_bscPacedCopy;
   "lib/bscSheetPlan": typeof lib_bscSheetPlan;
   "lib/catalogView": typeof lib_catalogView;
   "lib/cloudRunAuth": typeof lib_cloudRunAuth;

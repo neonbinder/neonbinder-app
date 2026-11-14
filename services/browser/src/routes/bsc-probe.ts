@@ -1,5 +1,5 @@
 import { Request, Response, Router } from "express";
-import { BscTarget, bscApiHeaders, resolveBscEndpoints } from "../bsc-endpoints";
+import { BscTarget, bscApiHeaders, isFakeBscUsername, resolveBscEndpoints } from "../bsc-endpoints";
 import { BscFetchOptions, bscFetch } from "../bsc-fetch";
 import { canonicalJson, shapeMap } from "../bsc-shape";
 import {
@@ -401,6 +401,11 @@ export function createBscProbeRouter(deps: BscProbeDeps = {}): Router {
         }
         username = parsed.credentials?.username ?? FAKE_PROBE_USERNAME;
         password = parsed.credentials?.password ?? FAKE_PROBE_PASSWORD;
+        // NEO-552: only a fake account is ever sent to the fake. Not run.
+        if (!isFakeBscUsername(username)) {
+          res.status(400).json({ error: "The fake BSC accepts only fake accounts", bscTarget: target });
+          return;
+        }
       }
       if (!username || !password) {
         body.outcome = "signin_failed";

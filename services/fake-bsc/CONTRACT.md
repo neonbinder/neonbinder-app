@@ -66,6 +66,42 @@ first, then in code.
   (Convex `testing.resetMyTestState` per user, `e2e-baseline.sh reset` per
   deployment), so a reset that dropped tokens would turn the next BSC call
   into a 401 and a re-auth prompt. Only `/__fake/reset-all` may drop them.
+- **Saved sessions are per deployment too.** The browser service stores a
+  BSC session in Secret Manager under the key Convex names (`credKey`,
+  `apps/web/convex/credentials.ts`). In fake mode that key is
+  `buysportscards-credentials-fake-<convexSlug>-<clerkUserId>`
+  (`fakeBscCredentialKeyFor`, `apps/web/convex/testing.ts`), so deployments
+  sharing a Clerk test user keep separate sessions. On the real BSC
+  (production included) it stays the bare `buysportscards-credentials-<clerkUserId>`;
+  SportLots, eBay and EasyPost keys never change. The browser service treats
+  the key as opaque under its `KEY_PATTERN`, so this needs no contract bump.
+- **TTL.** The browser service gives a `-credentials-fake-` secret an absolute
+  `expireTime` of now + 72 h when it creates it and again on every write
+  (`updateSecret` with the `expire_time` mask, not `ttl`), the backstop for a
+  run that never cleans up (Secret Manager bills per active version, and
+  previews and worktrees are many).
+- **The browser service checks the key and the account.** Its
+  `validateKeyFormat` refuses a `-credentials-fake-` key on a real-mode
+  revision, or for any site but `buysportscards` (400, logged
+  `credential_key_refused`). On a fake revision, a BSC sign-in or
+  stored-session renewal whose username does not match
+  `^nb\+[a-z0-9-]{1,100}@fake\.invalid$` is refused (422,
+  `error_class: "invalid_credentials"`), so no real BSC account is ever sent
+  to the fake.
+- **Two guards.** (1) Convex, in fake mode, sends no BSC credential call
+  (`/login/bsc`, or any `/credentials/*` call naming a BSC key) unless the
+  browser service's cached `/health` reports `bscTarget: "fake"`; a revision
+  without the field is refused too, and the refusal logs
+  `fake_bsc_browser_not_fake`. (2) The namespace check: a stored session whose
+  username is not this deployment's own fake account is refused
+  (`fake_bsc_namespace_clash`); re-seeding the user repairs it.
+- **Cleanup.** After both E2E passes, `e2e.yml` (the `e2e` job, `if: always()`)
+  runs the internal action `credentials:deleteFakeBscSessionsFromCli` with the
+  preview deploy key. It deletes, through `DELETE /credentials/:key`, the fake
+  key of every user on the deployment, only keys with this deployment's own
+  `buysportscards-credentials-fake-<convexSlug>-` prefix, clears their BSC
+  flag, and reports counts. Outside fake mode it deletes nothing. A failure
+  only warns; the TTL removes what is left.
 
 ## Recorded vs synthesised
 
@@ -494,7 +530,9 @@ Built in `services/browser/src/routes/bsc-probe.ts`.
   Request bodies are exactly what Convex sends for the same call. It stops at
   the first `bsc_unavailable` read. Always HTTP 200 when it ran.
 - Not run: 409 (real target outside prod), 429 + `Retry-After` (at most one
-  probe a minute per process), 400 (half a credential pair on the fake).
+  probe a minute per process), 400 (half a credential pair on the fake), 400
+  "The fake BSC accepts only fake accounts" (a username on the fake that is not
+  `nb+<ns>@fake.invalid`).
 - Response: `{ bscTarget: "real"|"fake", outcome, signIn: {ok}, catalogue: {ok,
   status}, parser: {ok}, shapes, requests, steps, durationMs, detail? }`.
   - `outcome` is one of `ok`, `skipped_paused` (real target, BSC paused via

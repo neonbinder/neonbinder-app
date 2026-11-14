@@ -128,6 +128,29 @@ body is `{ error, error_class, diagnostic? }`, with no credential material.
   loopback); anything else refuses to boot. **A process with the fake URL set
   and `ENVIRONMENT=prod` refuses to boot.** `GET /health`
   reports `bscTarget: "real" | "fake"`.
+- **Per-deployment sessions.** A Convex deployment on the fake stores its BSC
+  session under `buysportscards-credentials-fake-<convexSlug>-<clerkUserId>`
+  instead of the bare per-user key, so two deployments that sign in the same
+  test user keep separate sessions. The key passes the ordinary key pattern
+  (no contract change), with two extra refusals, both a 400
+  (`Invalid credential key format`) before any Secret Manager call: the fake
+  form on any site but `buysportscards`, and any fake key while this process
+  talks to real BSC (so prod refuses them all). A fake key's secret is created
+  with an expiry 72 hours out (`FAKE_CREDENTIAL_TTL_MS`), and every write to it
+  moves the expiry to now + 72 h before adding the version, so a session in use
+  never expires mid-run and one left behind by a deleted preview or worktree is
+  deleted, versions and all, three days after its last write. The expiry is set
+  as `expire_time` (update mask `expire_time`), not `ttl`. A failed extension is
+  logged and never fails the write. Real keys never carry an expiry.
+- **Fake accounts only.** On the fake, a BSC sign-in or session renewal whose
+  username is not `nb+<namespace>@fake.invalid` (lowercase letters, digits and
+  hyphens; `nb+probe-ci@fake.invalid` is the CI probe's) is refused before any
+  network call: `/login/bsc` answers 422 `invalid_credentials` (transient or
+  stored credentials alike, so a real user's or the canary's session is never
+  sent to the fake), `bscPasswordSignIn` returns the same refusal, and
+  `/probe/bsc` answers 400. The rule follows each call's own target, so the
+  recorder's forced-real sign-in (`fetchOptions.env = {}`) is unaffected, and
+  nothing changes against real BSC.
 - **429 breaker.** A 429 from BSC stops every BSC call from this process for its
   `Retry-After` (default 60 s, 1 s to 15 min); callers see a synthetic 429 with
   `x-nb-bsc-breaker: open`. Against the fake it is scoped per credential key,

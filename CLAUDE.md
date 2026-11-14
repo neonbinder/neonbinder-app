@@ -317,10 +317,15 @@ What a per-worktree deployment does not separate or cover:
   the fake (NEO-552) with one account per test user, so BSC specs run on your own
   deployment.
 - **Saved marketplace logins.** The browser service keys them by Clerk user, not
-  by deployment. Locally, a worker with no `TEST_EMAIL_<n>` falls back to
-  `TEST_EMAIL`, so those workers are one user in every worktree. A reset stays on
-  your deployment, but saved logins are shared. Avoid any worker that has its own
-  `TEST_EMAIL_<n>` while CI is running, because CI signs in as those users.
+  by deployment, with one exception: on a deployment wired to the fake
+  BuySportsCards the BSC login is keyed by deployment AND user
+  (`buysportscards-credentials-fake-<slug>-<user>`, NEO-552), so BSC specs on
+  your deployment never share a session with CI or another worktree. SportLots
+  and eBay logins are still per user. Locally, a worker with no `TEST_EMAIL_<n>`
+  falls back to `TEST_EMAIL`, so those workers are one user in every worktree. A
+  reset stays on your deployment, but those saved logins are shared. Avoid any
+  worker that has its own `TEST_EMAIL_<n>` while CI is running, because CI signs
+  in as those users.
 - **PR service code.** The deployment calls the dev `services/browser` and
   `services/preprocess`. A spec covering a change there runs against the PR's
   preview after the first push.

@@ -5,8 +5,9 @@ metadata:
   type: reference
 ---
 
-- `agent-convex.sh` copies shared dev's env, so the worktree deployment starts with the CANONICAL browser
-  service URL (its 100%-traffic revision has no fake env, so a BSC sign-in through it would reach real BSC)
+- The per-worktree deployment script copies shared dev's env, so the worktree deployment starts with the CANONICAL browser
+  service URL (its 100%-traffic revision has no fake env; since the per-deployment login change a fake-mode
+  deployment refuses BSC credential calls through it with `fake_bsc_browser_not_fake`)
   and no fake settings. Set three names by hand, key piped from Secret Manager via stdin to
   `npx convex env set NAME`: `NEONBINDER_BSC_API_BASE` (bare fake origin), `NEONBINDER_FAKE_BSC_KEY`,
   and `NEONBINDER_BROWSER_URL` (the fake-aware TAGGED browser revision URL, `<tag>---neonbinder-browser-...`).
@@ -20,3 +21,10 @@ metadata:
 - With no recordings the misses arrive in LEVELS: setup dies on its first `search/bulk-upload/filters`
   read, so no results/card-listing read is ever asked for. Expect several record-and-rerun rounds.
 - Prefix is `<convexSlug>-` (the deployment name); the spec user's namespace adds a 12-hex user tag.
+- Record-and-rerun loop traps: (1) the per-user reset (setup's sign-in hop, bootstrap) clears the namespace's
+  miss list, so read `reportMisses` right after setup and BEFORE bootstrap; (2) setup is fresh-only and the
+  per-user reset keeps selectorOptions, so a setup that got past Manufacturers leaves a custom Topps and the next
+  run reds on "No manufacturers available" — re-run the per-worktree deployment script with `--seed` between rounds, then re-set the
+  three env names (the script's env copy puts the canonical browser URL back); (3) one setup round unlocks one
+  recording level (sports, years, manufacturers' sets, variant types, base results, base card-listing, insert
+  filters, insert results, parallel filters...), about 7 min with the re-seed.

@@ -194,6 +194,36 @@ export function bscTarget(env: Env = process.env): BscTarget {
   return fakeUrlFrom(env) ? "fake" : "real";
 }
 
+// --- Fake-mode account guard (NEO-552) ----------------------------------------
+
+/**
+ * The only sign-in names the fake BSC serves: `nb+<namespace>@fake.invalid`,
+ * the namespace lowercase letters, digits and hyphens (CONTRACT.md, "Accounts
+ * and per-run isolation"). `nb+probe-ci@fake.invalid` is the CI probe's.
+ */
+export const FAKE_BSC_USERNAME_RE = /^nb\+[a-z0-9-]{1,100}@fake\.invalid$/;
+
+/** Caller-facing error for a non-fake account on the fake. Fixed text, no value. */
+export const FAKE_ONLY_ACCOUNT_ERROR =
+  "Invalid credentials: this BSC target accepts only fake accounts";
+
+/** True for a username the fake BSC may be sent. */
+export function isFakeBscUsername(username: unknown): boolean {
+  return typeof username === "string" && FAKE_BSC_USERNAME_RE.test(username);
+}
+
+/**
+ * True when a sign-in or session renewal for `username` must be refused
+ * before any network call: the process talks to the fake and the account is
+ * not a fake one. Real credentials (a real user's, or the real canary's)
+ * never reach the fake. Against real BSC this is always false, so real-mode
+ * behaviour is unchanged. Uses bscTarget, which never throws and reads a
+ * misconfigured fake URL as "fake", so a bad config fails closed.
+ */
+export function refuseNonFakeAccount(username: unknown, env: Env = process.env): boolean {
+  return bscTarget(env) === "fake" && !isFakeBscUsername(username);
+}
+
 /**
  * The browser-mimicking header set BSC's API insists on (CloudFront rejects a
  * bare request as bot traffic), the same set Convex sends

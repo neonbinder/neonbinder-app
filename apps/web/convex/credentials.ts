@@ -17,7 +17,12 @@ import type { CredentialTestProperties } from "./observability";
 import { isPlatformPaused } from "./marketplacePause";
 import { ebayConfig, ebayConfigured } from "./lib/ebayEnv";
 import { withdrawOffer, type EbaySellerSession } from "./adapters/ebaySeller";
-import { fakeBscMode, fakeBscUsernameFor } from "./testing";
+import {
+  fakeBscCredentialKeyFor,
+  fakeBscCredentialKeyPrefixFor,
+  fakeBscMode,
+  fakeBscUsernameFor,
+} from "./testing";
 import {
   isAbortTimeout,
   logMarketplaceLimiter,
@@ -224,10 +229,17 @@ export class BrowserServiceOutdatedError extends Error {
  */
 function credentialFailureMessage(error: unknown, site: string): string {
   if (error instanceof BrowserServiceOutdatedError) return error.userMessage;
+  if (error instanceof FakeBscBrowserNotFakeError) return error.userMessage;
   return `Could not reach ${siteDisplayName(site)} to verify your credentials. Nothing was saved — please try again.`;
 }
 
-let cachedContract: { url: string; version: number; checkedAt: number } | null = null;
+/**
+ * The last `/health` answer: its contract version and (NEO-552) which
+ * BuySportsCards the service talks to. `bscTarget` is null when the service
+ * did not say (a revision predating the field) or said something unknown.
+ */
+let cachedContract: { url: string; version: number; bscTarget: "real" | "fake" | null; checkedAt: number } | null =
+  null;
 
 /** Reset the cached contract probe. Exported for tests. */
 export function __resetContractCache() {
@@ -281,17 +293,77 @@ async function assertBrowserContract(headers: Record<string, string>): Promise<v
       `Browser service health check failed (${response.status}) — refusing to send a request whose shape it may not support.`,
     );
   }
-  const body = (await response.json().catch(() => ({}))) as { contractVersion?: unknown };
+  const body = (await response.json().catch(() => ({}))) as { contractVersion?: unknown; bscTarget?: unknown };
 
   // A service predating NEO-143 does not report the field at all. Treat that as
   // version 0 — it is exactly the "old service" case this guard exists for, and
   // defaulting it to "probably fine" would defeat the entire mechanism.
   const version = typeof body.contractVersion === "number" ? body.contractVersion : 0;
-  cachedContract = { url, version, checkedAt: now };
+  // NEO-552: read by `assertBrowserTalksToFakeBsc`. A missing or unknown value
+  // is neither answer, so a fake deployment refuses it.
+  const bscTarget = body.bscTarget === "real" || body.bscTarget === "fake" ? body.bscTarget : null;
+  cachedContract = { url, version, bscTarget, checkedAt: now };
 
   if (version < REQUIRED_CONTRACT_VERSION) {
     throw new BrowserServiceOutdatedError(version, REQUIRED_CONTRACT_VERSION);
   }
+}
+
+/**
+ * NEO-552 — thrown when a deployment wired to the fake BSC is about to send a
+ * BuySportsCards credential call (`/login/bsc`, or any `/credentials/*` call
+ * naming a BSC key) to a browser service that does not say it talks to the
+ * fake. That service would sign in to (or store a session for) the real site
+ * under this deployment's fake key, so the request is never sent.
+ */
+export class FakeBscBrowserNotFakeError extends Error {
+  readonly userMessage =
+    "This test deployment's BuySportsCards connection is not set up for the test BuySportsCards. Nothing was changed.";
+
+  constructor(readonly reported: "real" | "fake" | null) {
+    super(
+      `This deployment uses the fake BuySportsCards but the browser service reports bscTarget=${reported ?? "missing"}. ` +
+        `Refusing to send a BuySportsCards credential call.`,
+    );
+    this.name = "FakeBscBrowserNotFakeError";
+  }
+}
+
+const BSC_KEY_MARK = "buysportscards-credentials-";
+
+/** Whether a browser-service request names a BSC credential (its path or body). */
+function namesBscCredential(path: string, body: unknown): boolean {
+  if (browserRouteOf(path) === "/login/bsc") return true;
+  if (path.includes(BSC_KEY_MARK)) return true;
+  return typeof body === "string" && body.includes(BSC_KEY_MARK);
+}
+
+/**
+ * NEO-552 — the env-mismatch guard on the Convex side. Outside fake mode, or
+ * for a request that names no BSC credential, it does nothing. In fake mode it
+ * refuses unless the cached `/health` answer for this browser URL says
+ * `bscTarget: "fake"`; a revision predating the field is refused too.
+ *
+ * It reads the probe `browserAuthHeaders` has just made or trusted (every
+ * caller computes the headers before the request is sent), so it adds no
+ * call of its own. Logs `fake_bsc_browser_not_fake` with the route and what
+ * the service reported, never a key.
+ */
+function assertBrowserTalksToFakeBsc(path: string, body: unknown, operation: string): void {
+  if (!fakeBscMode() || !namesBscCredential(path, body)) return;
+  const url = browserUrl();
+  const reported = cachedContract && cachedContract.url === url ? cachedContract.bscTarget : null;
+  if (reported === "fake") return;
+  console.error(
+    JSON.stringify({
+      msg: "fake_bsc_browser_not_fake",
+      platform: "buysportscards",
+      operation,
+      route: browserRouteOf(path),
+      reported: reported ?? "missing",
+    }),
+  );
+  throw new FakeBscBrowserNotFakeError(reported);
 }
 
 /**
@@ -320,6 +392,10 @@ export async function browserFetch(
   path: string,
   init: RequestInit,
 ): Promise<Response> {
+  // NEO-552: never send a BSC credential call from a fake deployment to a
+  // browser service that is not on the fake. Before the try: a refusal is
+  // not a timeout.
+  assertBrowserTalksToFakeBsc(path, init.body, "browserFetch");
   const startedAt = Date.now();
   try {
     return await fetch(`${browserUrl()}${path}`, {
@@ -344,8 +420,20 @@ export async function browserFetch(
   }
 }
 
-/** NEO-120: exported alongside {@link browserFetch}, same reasoning. */
+/**
+ * NEO-120: exported alongside {@link browserFetch}, same reasoning.
+ *
+ * NEO-552: the one place a browser-service key is named. On a deployment wired
+ * to the fake BSC (`fakeBscMode`), a BuySportsCards key carries the
+ * deployment's slug (`fakeBscCredentialKeyFor`), so deployments that share a
+ * Clerk test user keep separate sessions; it throws there without a
+ * `CONVEX_CLOUD_URL`. Every other site, and BSC on any deployment talking to
+ * the real site (production included), keeps the bare per-user key.
+ */
 export function credKey(site: string, userId: string) {
+  if (site === "buysportscards" && fakeBscMode()) {
+    return fakeBscCredentialKeyFor(userId, process.env.CONVEX_CLOUD_URL);
+  }
   return `${site}-credentials-${userId}`;
 }
 
@@ -686,6 +774,112 @@ export const removeTestCredentials = internalAction({
 });
 
 /**
+ * NEO-552 — the end-of-run cleanup of this deployment's fake BSC sessions.
+ * Each one is a Secret Manager secret (`buysportscards-credentials-fake-<slug>-<userId>`,
+ * see `credKey`), and Secret Manager bills per active version, so the E2E
+ * workflow calls this after both passes (`e2e.yml`, the `e2e` job) rather than
+ * leaving one secret per test user per preview. The browser service's 72 h
+ * TTL on fake keys is the backstop for a run that never gets here.
+ *
+ * For every user on this deployment (`testing.fakeBscCleanupUserIds`) it
+ * deletes that user's fake key through the browser service's existing
+ * `DELETE /credentials/:key` (a missing secret is already gone) and clears
+ * the user's BSC flag, under the credential lock. A key that is not exactly
+ * this deployment's own fake prefix plus a plain id (`[A-Za-z0-9_]+`) is never
+ * sent, and the key is URL-encoded into the path. Outside fake mode
+ * (production, or a deployment on the real BSC) it deletes nothing and says
+ * so: a bare key there is a real session.
+ *
+ * Internal: reached only by `convex run` with the deployment's deploy key, like
+ * the other CLI testing helpers. Reports counts, never ids or keys, and never
+ * throws for a failed delete (the workflow only warns).
+ */
+export const deleteFakeBscSessionsFromCli = internalAction({
+  args: {},
+  returns: v.union(
+    v.object({ fake: v.literal(false) }),
+    v.object({
+      fake: v.literal(true),
+      users: v.number(),
+      deleted: v.number(),
+      failed: v.number(),
+      truncated: v.boolean(),
+    }),
+  ),
+  handler: async (
+    ctx,
+  ): Promise<
+    { fake: false } | { fake: true; users: number; deleted: number; failed: number; truncated: boolean }
+  > => {
+    if (!process.env.TESTING_RESET_SECRET || !fakeBscMode()) {
+      console.log(JSON.stringify({ msg: "fake_bsc_session_cleanup", platform: "buysportscards", outcome: "not_fake" }));
+      return { fake: false };
+    }
+    const startedAt = Date.now();
+    // Throws without CONVEX_CLOUD_URL: with no slug there is no prefix that
+    // is provably this deployment's, so nothing is deleted.
+    const prefix = fakeBscCredentialKeyPrefixFor(process.env.CONVEX_CLOUD_URL);
+    const { userIds, truncated } = (await ctx.runQuery(internal.testing.fakeBscCleanupUserIds, {})) as {
+      userIds: string[];
+      truncated: boolean;
+    };
+    // The WHOLE key must be this deployment's prefix plus a plain id: a user
+    // id carrying `/`, `.` or `%` could otherwise walk the DELETE path onto
+    // another key (`a/../../credentials/<other>`). A non-match sends nothing.
+    const ownKey = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[A-Za-z0-9_]+$`);
+    let deleted = 0;
+    let failed = 0;
+    for (const userId of userIds) {
+      const key = credKey("buysportscards", userId);
+      if (!ownKey.test(key)) {
+        failed++;
+        continue;
+      }
+      const ok = await withCredentialLock<boolean>(
+        ctx,
+        userId,
+        "buysportscards",
+        "delete",
+        async () => {
+          try {
+            const response = await browserFetch(`/credentials/${encodeURIComponent(key)}`, {
+              method: "DELETE",
+              headers: await browserAuthHeaders(),
+            });
+            await response.body?.cancel().catch(() => undefined);
+            if (!response.ok && response.status !== 404) return false;
+          } catch {
+            return false;
+          }
+          await ctx.runMutation(internal.userProfile.removeSiteCredentialStatus, {
+            userId,
+            site: "buysportscards",
+          });
+          return true;
+        },
+        false,
+      );
+      if (ok) deleted++;
+      else failed++;
+    }
+    console.log(
+      JSON.stringify({
+        msg: "fake_bsc_session_cleanup",
+        platform: "buysportscards",
+        operation: "deleteFakeBscSessions",
+        outcome: failed === 0 ? "ok" : "partial",
+        users: userIds.length,
+        deleted,
+        failed,
+        truncated,
+        elapsedMs: Date.now() - startedAt,
+      }),
+    );
+    return { fake: true, users: userIds.length, deleted, failed, truncated };
+  },
+});
+
+/**
  * Get credential metadata for a site (no secrets — safe for frontend use).
  */
 export const getSiteCredentials = action({
@@ -765,18 +959,18 @@ const TOKEN_REFRESH_LEEWAY_MS = 5 * 60 * 1000;
  * NEO-552 — on a deployment wired to the fake BSC, every test user signs in
  * as `nb+<convexSlug>-<userTag>@fake.invalid`, and the fake keeps that run's
  * listings, orders and faults under the namespace in it. The browser service
- * stores one BSC session per Clerk user, not per deployment, so when two
- * deployments share a test user the later seed replaces the earlier one's
- * session, and the earlier run's BSC calls would silently land in the other
- * run's namespace.
+ * stores that session under a key that names this deployment too
+ * (`credKey` → `fakeBscCredentialKeyFor`), so another deployment's seed
+ * cannot replace it.
  *
- * So, in fake mode only, a BSC session is used only when its stored username
- * is this deployment's own (`fakeBscUsernameFor`). A clash refuses the token
+ * This guard is the backstop for the session still not being this
+ * deployment's: a key written by hand, an older seed, or a real BSC account.
+ * In fake mode only, a BSC session is used only when its stored username is
+ * this deployment's own (`fakeBscUsernameFor`). A mismatch refuses the token
  * (the caller sees "no credentials", as for any missing session) and logs
  * `fake_bsc_namespace_clash` naming both namespaces. Re-seeding the user on
  * this deployment (`testing.seedMyTestCredentials`, which compares the same
- * username) repairs it. It never re-seeds here: two runs sharing a user would
- * then take the session back and forth, each corrupting the other.
+ * username) repairs it. It never re-seeds here.
  *
  * A match is remembered per user for {@link FAKE_SESSION_CHECK_TTL_MS}, so
  * the extra metadata read costs one browser-service call per user per
@@ -830,7 +1024,7 @@ async function fakeBscSessionClash(site: string, userId: string): Promise<string
     fakeSessionCheckedAt.set(key, Date.now());
     return null;
   }
-  return `the stored BuySportsCards session belongs to namespace ${fakeNamespaceOf(stored)}, not this deployment's ${fakeNamespaceOf(expected)}: two deployments share this test user; re-seed it here`;
+  return `the stored BuySportsCards session belongs to namespace ${fakeNamespaceOf(stored)}, not this deployment's ${fakeNamespaceOf(expected)}; re-seed this test user here`;
 }
 
 /**
@@ -1557,14 +1751,20 @@ async function loginWithRetry(
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const attemptStartedAt = Date.now();
     try {
+      const headers = await browserAuthHeaders();
+      const body = JSON.stringify({
+        key,
+        ...(transient ?? {}),
+        ...(tokenRefused === true ? { tokenRefused: true } : {}),
+      });
+      // NEO-552: the login path calls `fetch` directly, so it carries the
+      // fake-BSC guard itself. Checked on the path only (the body holds the
+      // transient password and is never inspected or logged).
+      assertBrowserTalksToFakeBsc(new URL(loginUrl).pathname, key, label);
       const response = await fetch(loginUrl, {
         method: "POST",
-        headers: await browserAuthHeaders(),
-        body: JSON.stringify({
-          key,
-          ...(transient ?? {}),
-          ...(tokenRefused === true ? { tokenRefused: true } : {}),
-        }),
+        headers,
+        body,
         signal: AbortSignal.timeout(60_000),
       });
       if (response.status === 429) {
@@ -1639,6 +1839,8 @@ async function loginWithRetry(
       // Let it propagate to the action's catch, which renders the deploy-aware
       // message.
       if (e instanceof BrowserServiceOutdatedError) throw e;
+      // NEO-552: likewise a fake-BSC guard refusal: nothing was sent.
+      if (e instanceof FakeBscBrowserNotFakeError) throw e;
       // Network/timeout to the browser service — do not retry (avoid hammering).
       if (isAbortTimeout(e)) {
         // NEO-321 follow-up — our own 60s timer on the login call.

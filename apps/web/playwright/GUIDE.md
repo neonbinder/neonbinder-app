@@ -672,6 +672,18 @@ this before diagnosing anything that touches BSC:
   call gate, with the rest of the state. They keep the fake's catalogue misses
   (the recorder's to-do list): a miss leaves only once its recording is
   uploaded, so a reset between runs never loses one.
+- **The saved BSC sign-in is per deployment too.** The browser service stores
+  it under `buysportscards-credentials-fake-<slug>-<user>`, so a worktree
+  deployment, a PR preview and dev each keep their own session for the same
+  test user. The first time you pull this change into a worktree whose
+  deployment was seeded before it, **re-run the `bootstrap` project once**:
+  the old session sits under the bare per-user key, which the deployment no
+  longer reads, so BSC specs would find no sign-in until it re-seeds. A fake
+  deployment also refuses every BSC sign-in or session call to a browser
+  service whose `/health` does not report `bscTarget: "fake"`
+  (`fake_bsc_browser_not_fake` in the Convex logs); the shared dev browser
+  service must be a fake-aware revision. CI deletes the preview's sessions
+  after both passes; the browser service's 72 h expiry catches the rest.
 - **A spec makes BSC misbehave through `support/bscFake.ts`, and only there.**
   The `bscFake` fixture's `setFaults([...])` puts rules on the worker's own
   account (`bscFault.slow`, `.tooManyRequests`, `.unavailable`, `.hangs`,

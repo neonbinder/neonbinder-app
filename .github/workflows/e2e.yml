@@ -2885,6 +2885,51 @@ jobs:
             exit 1
           fi
 
+      # NEO-552: every test user's fake BSC session is a Secret Manager secret
+      # keyed by this preview (`buysportscards-credentials-fake-<slug>-<user>`),
+      # and Secret Manager bills per active version. Both passes are done here
+      # (this job needs every shard, seller and breaker job), so delete this
+      # preview's sessions now rather than leave them for the browser service's
+      # 72 h TTL. The action (credentials.ts) is internal, so only this deploy
+      # key reaches it; it deletes nothing outside fake mode and only keys with
+      # this deployment's own prefix. Cleanup never decides the verdict: it
+      # runs after it, warns on any failure and always exits 0.
+      - name: Delete this preview's fake BSC sessions
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        working-directory: ${{ github.workspace }}
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ] || [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::No Convex preview name or deploy key, so this preview's fake BSC sessions were left for the 72 h TTL."
+            exit 0
+          fi
+          if [ ! -d apps/web ]; then
+            echo "::warning::No checkout, so this preview's fake BSC sessions were left for the 72 h TTL."
+            exit 0
+          fi
+          cd apps/web
+          out="${RUNNER_TEMP}/fake-bsc-session-cleanup.json"
+          if ! npx --yes convex@1.39.1 run credentials:deleteFakeBscSessionsFromCli '{}' --deployment "$CONVEX_NAME" > "$out"; then
+            echo "::warning::Deleting this preview's fake BSC sessions failed (the reason is above); the 72 h TTL will remove them."
+            exit 0
+          fi
+          if [ "$(jq -r '.fake' "$out" 2>/dev/null)" != "true" ]; then
+            echo "The preview is not on the fake BSC; no sessions to delete."
+            exit 0
+          fi
+          summary=$(jq -r '"users=\(.users) deleted=\(.deleted) failed=\(.failed) truncated=\(.truncated)"' "$out" 2>/dev/null || echo "unreadable answer")
+          if [ "$(jq -r '.failed' "$out" 2>/dev/null)" != "0" ] || [ "$(jq -r '.truncated' "$out" 2>/dev/null)" != "false" ]; then
+            echo "::warning::Some fake BSC sessions were not deleted (${summary}); the 72 h TTL will remove them."
+          else
+            echo "Deleted this preview's fake BSC sessions (${summary})."
+          fi
+          exit 0
+
   report:
     # Publish even when the gate is red. Informational only: the `e2e` job is
     # the verdict, so this check publishes results without double-failing.

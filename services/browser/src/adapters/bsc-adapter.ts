@@ -8,7 +8,7 @@ import {
   summarizeFetchError,
 } from "./base-adapter";
 import { Credentials, SecretsManagerService } from "../services/secrets-manager";
-import { resolveBscEndpoints } from "../bsc-endpoints";
+import { FAKE_ONLY_ACCOUNT_ERROR, refuseNonFakeAccount, resolveBscEndpoints } from "../bsc-endpoints";
 import { bscFetch } from "../bsc-fetch";
 import {
   B2CCookieJar,
@@ -418,6 +418,9 @@ export class BSCAdapter extends BaseAdapter {
     // bootstraps a key that does not exist yet. The password is used here and
     // nowhere else, and persistTokens never writes it.
     if (transient) {
+      // NEO-552: on the fake, only a fake account signs in. Checked before
+      // any network call, so a real password never leaves this process.
+      if (refuseNonFakeAccount(transient.username)) return this.fakeOnlyRefusal();
       console.log(`[BSC Adapter] request supplied credentials; fresh sign-in for ${this.siteName}`);
       return this.passwordLogin(
         secretsManager,
@@ -429,6 +432,12 @@ export class BSCAdapter extends BaseAdapter {
     }
 
     const credentials = await secretsManager.getCredentials(key);
+
+    // NEO-552: the same guard for a stored session. On the fake, a secret
+    // holding a real account (a real user's session, or the real canary) is
+    // never validated, refreshed, re-authorized or signed in with: every one
+    // of those sends its token, cookie or password to the fake.
+    if (refuseNonFakeAccount(credentials.username)) return this.fakeOnlyRefusal();
 
     // --- Cache-hit path: validate the stored token, never touch a browser --
     //
@@ -672,6 +681,18 @@ export class BSCAdapter extends BaseAdapter {
       credentials.password,
       canary,
     );
+  }
+
+  /**
+   * NEO-552: the answer when a real account meets the fake. A caller-data
+   * problem, not an outage: `credentialRejected` makes it 422
+   * `invalid_credentials`, which never pages. Logs no username.
+   */
+  private fakeOnlyRefusal(): AdapterResponse {
+    console.warn(
+      JSON.stringify({ msg: "bsc_fake_account_refused", reason: "not_a_fake_account" }),
+    );
+    return { success: false, error: FAKE_ONLY_ACCOUNT_ERROR, credentialRejected: true };
   }
 
   /** True when the secret holds a refresh token that has not visibly expired. */

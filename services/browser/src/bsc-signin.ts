@@ -1,5 +1,10 @@
 import crypto from "node:crypto";
-import { BSC_B2C_CLIENT, resolveBscEndpoints } from "./bsc-endpoints";
+import {
+  BSC_B2C_CLIENT,
+  FAKE_ONLY_ACCOUNT_ERROR,
+  refuseNonFakeAccount,
+  resolveBscEndpoints,
+} from "./bsc-endpoints";
 import { BscFetchOptions, bscFetch } from "./bsc-fetch";
 import { ShapeSignature, shapeSignature } from "./bsc-shape";
 import { summarizeFetchError } from "./observability";
@@ -558,6 +563,13 @@ export async function bscPasswordSignIn(
   const { username, password, onStep } = input;
   const secrets: DiagnosticSecrets = { email: username, password };
   const fetchOptions: BscFetchOptions = { scope: username, ...input.fetchOptions };
+  // NEO-552, defence in depth behind the adapter and the probe: when THIS
+  // call resolves to the fake, a real account is refused before any network
+  // call. Keyed on the call's own env, so the recorder (fetchOptions.env = {},
+  // forced real) is never affected.
+  if (refuseNonFakeAccount(username, fetchOptions.env)) {
+    return { error: FAKE_ONLY_ACCOUNT_ERROR, credentialRejected: true };
+  }
   const authority = input.authority ?? resolveBscEndpoints(fetchOptions.env).authority;
   const stepTimeoutMs = input.stepTimeoutMs ?? BSC_B2C_STEP_TIMEOUT_MS;
   const jar = new B2CCookieJar();

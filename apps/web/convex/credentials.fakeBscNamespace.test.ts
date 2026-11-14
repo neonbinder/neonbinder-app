@@ -33,7 +33,7 @@ function stubBrowser(storedUsername: string | null) {
   vi.stubGlobal("fetch", (async (url: string | URL | Request) => {
     const u = String(url);
     if (u.endsWith("/health")) {
-      return json({ status: "ok", environment: "test", contractVersion: REQUIRED_CONTRACT_VERSION_FOR_TESTS });
+      return json({ status: "ok", environment: "test", contractVersion: REQUIRED_CONTRACT_VERSION_FOR_TESTS, bscTarget: "fake" });
     }
     if (u.endsWith("/metadata")) {
       asked.push("metadata");

@@ -23,7 +23,14 @@
 // - Deletes are strictly scoped to the three per-user tables via the by_user
 //   index. No bulk-wipe paths, no cross-user reach.
 
-import { mutation, action, internalAction, internalMutation, type MutationCtx } from "./_generated/server";
+import {
+  mutation,
+  action,
+  internalAction,
+  internalMutation,
+  internalQuery,
+  type MutationCtx,
+} from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
@@ -152,6 +159,34 @@ export function fakeBscNamespaceFor(userId: string, cloudUrl: string | undefined
 /** The test user's fake BSC sign-in, `nb+<namespace>@fake.invalid`. */
 export function fakeBscUsernameFor(userId: string, cloudUrl: string | undefined): string {
   return `nb+${fakeBscNamespaceFor(userId, cloudUrl)}@fake.invalid`;
+}
+
+/**
+ * Every browser-service key this deployment's fake BSC sessions are stored
+ * under starts with this: `buysportscards-credentials-fake-<convexSlug>-`.
+ * Throws without a usable `CONVEX_CLOUD_URL`, like {@link fakeBscPrefixFor}.
+ */
+export function fakeBscCredentialKeyPrefixFor(cloudUrl: string | undefined): string {
+  return `buysportscards-credentials-fake-${fakeBscPrefixFor(cloudUrl)}`;
+}
+
+/**
+ * NEO-552 — the browser service's Secret Manager key for a test user's fake
+ * BSC session: `buysportscards-credentials-fake-<convexSlug>-<clerkUserId>`.
+ *
+ * The bare key (`buysportscards-credentials-<clerkUserId>`) is per Clerk user,
+ * and Secret Manager is one store per GCP project, so every deployment that
+ * signs in the same test user would share one session and overwrite each
+ * other's. Putting the deployment's slug in the key gives each deployment its
+ * own. `credentials.credKey` is the only caller, and only in fake mode: a
+ * deployment on the real BSC keeps the bare key byte for byte.
+ *
+ * The browser service treats the key as opaque under its `KEY_PATTERN`
+ * (`^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$`): the slug is lowercase letters,
+ * digits and hyphens, and a Clerk id is letters, digits and underscores.
+ */
+export function fakeBscCredentialKeyFor(userId: string, cloudUrl: string | undefined): string {
+  return `${fakeBscCredentialKeyPrefixFor(cloudUrl)}${userId}`;
 }
 
 /**
@@ -654,6 +689,27 @@ export const resetFakeBscForDeploymentFromCli = internalAction({
     const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.resetPrefix, { prefix });
     requireFakeBscDone(done, "clear this deployment's accounts");
     return { fake: true, prefix };
+  },
+});
+
+/** How many users one fake-session cleanup reads (a preview has a dozen). */
+export const FAKE_BSC_CLEANUP_MAX_USERS = 200;
+
+/**
+ * NEO-552 — the users whose fake BSC sessions `credentials.deleteFakeBscSessionsFromCli`
+ * deletes: every `userProfiles` row on this deployment, with or without a
+ * saved BSC flag (a per-user reset can drop the flag while the session
+ * stays). Only ids leave this query. Bounded; `truncated` says more exist.
+ * Internal, and empty where the testing flag is unset (production).
+ */
+export const fakeBscCleanupUserIds = internalQuery({
+  args: {},
+  returns: v.object({ userIds: v.array(v.string()), truncated: v.boolean() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) return { userIds: [], truncated: false };
+    const rows = await ctx.db.query("userProfiles").take(FAKE_BSC_CLEANUP_MAX_USERS + 1);
+    const userIds = [...new Set(rows.slice(0, FAKE_BSC_CLEANUP_MAX_USERS).map((row) => row.userId))];
+    return { userIds, truncated: rows.length > FAKE_BSC_CLEANUP_MAX_USERS };
   },
 });
 
