@@ -47,11 +47,13 @@
 //     Remove.
 //
 // FIXTURE (SET-REGISTRY.md -> "Baseball -> 2026 -> Donruss"): Baseball > 2026 >
-// All Brands > Donruss (brand "Unknown") > Insert > Retro 1997 Donruss Signature
-// Series Autographs, BSC only (SportLots is paused), and, in PHASE C, the set's
-// Base, Parallel and Insert types (approved by Jason 2026-11-11, Q8/N4). SOLE
-// WRITER of the set; FRESH-ONLY (it commits in PHASE B and C), so a re-run fails
-// at "No cards in this checklist yet." by name: re-seed first. In PHASES A-B every player and
+// All Brands > Donruss (filed under the year's Donruss brand: since NEO-527 the
+// known-brands list mints it; it sat under Unknown before) > Insert > Retro 1997
+// Donruss Signature Series Autographs, BSC only (SportLots is paused), and, in
+// PHASE C, the set's Base, Parallel and Insert types (approved by Jason
+// 2026-11-11, Q8/N4). SOLE WRITER of the set; FRESH-ONLY (it commits in PHASE B
+// and C), so a re-run fails at "No cards in this checklist yet." by name:
+// re-seed first. In PHASES A-B every player and
 // club but Oakland A's is on the catalogue, so no player is minted; Oakland A's is the one name
 // the wizard looks up (a recorded no-match, answered at once), and that lookup queues in the
 // deployment-wide pool every shard shares, so the club step is waited for through
@@ -59,8 +61,8 @@
 // every name Unleashed's wizard asks, so it mints nothing either.
 //
 // Not a hand-rolled drill by choice (R9): the helpers drill a Base or a brand's
-// set; this set is an INSERT under the year's Unknown brand, reached through the
-// pinned All Brands view like the other one-marketplace real sets.
+// set; this set is an INSERT reached through the pinned All Brands view like the
+// other one-marketplace real sets, which lists it whatever brand files it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import type { Page } from "@playwright/test";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
@@ -217,7 +219,12 @@ test(
     await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2026", manufacturer: "All Brands" });
     await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible();
     await columnSearch(page, "Sets").fill("Donruss");
-    await columnOption(page, "Sets", "Donruss").click();
+    // The view reads each set's name, then its brand ("Donruss Donruss"); a bare
+    // "Donruss" text would also match the brand of "Donruss Elite" and the rest.
+    await page
+      .getByRole("listbox", { name: "Sets" })
+      .getByRole("option", { name: /^Donruss \S+$/ })
+      .click();
     await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
     await columnOption(page, "Variant Types", "Insert").click();
     await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: INSERT_FETCH });

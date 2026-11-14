@@ -21,7 +21,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { isNoClaimTeamText, isNoTeamText } from "../../lib/checklists/no-team";
 import { expectAfterMarketplace } from "./marketplace-wait";
 import type { FlowEnv } from "./env";
-import { columnOption, columnSearch, drillToColdManufacturer, openAttributesPanel } from "./set-builder";
+import { columnSearch, drillToColdManufacturer, escapeRe, openAttributesPanel } from "./set-builder";
 
 const DIRECTORY = fileURLToPath(new URL("../fixtures/checklists/", import.meta.url));
 
@@ -480,7 +480,13 @@ export async function removeSetChecklistUnderAllBrands(
 ): Promise<void> {
   await drillToColdManufacturer(page, env, { sport: "Baseball", year: target.year, manufacturer: "All Brands" });
   await columnSearch(page, "Sets").fill(target.set);
-  await columnOption(page, "Sets", target.set).click();
+  // NEO-527: the view reads each set's name, then the brand that files it ("Donruss Donruss"), and a
+  // set named like its own brand is matched by every sibling's brand text, so pick by the option's
+  // whole name: the set, then one word of brand.
+  await page
+    .getByRole("listbox", { name: "Sets" })
+    .getByRole("option", { name: new RegExp(`^${escapeRe(target.set)} \\S+$`) })
+    .click();
   await openAttributesPanel(page);
   const panel = setChecklistPanel(page);
   await panel.getByRole("button", { name: "Remove checklist" }).click();

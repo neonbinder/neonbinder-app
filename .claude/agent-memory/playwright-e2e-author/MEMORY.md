@@ -127,3 +127,4 @@
 - [Blocked parallel via a collector copy](patterns_blocked_parallel_via_a_collector_copy.md) — NEO-496: Have one built-parallel card; list/ledger strings; finally cleanup
 - [Failure PNG shows the finally end state](patterns_failure_screenshot_shows_the_finally_end_state.md) — self-cleaning specs: the screenshot is post-cleanup; read the blob error-context ARIA snapshot (NEO-481)
 - [List scroll vs page scroll in a viewport red](patterns_split_list_scroll_from_page_scroll_in_a_viewport_red.md) — read which scroll failed from the PNG; prod-build + main-snapshot probes rule out dev-only/branch height
+- [Brand-unknown row fixtures + All Brands option names](patterns_brand_unknown_row_fixtures_and_all_brands_option_names.md) — "<set> <brand>" option names need a regex; assert Unknown listed before drilling to it; host collector fixtures on Hockey 1995

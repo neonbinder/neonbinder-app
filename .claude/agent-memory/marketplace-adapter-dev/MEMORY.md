@@ -75,7 +75,7 @@
 - [settleOnFakeClock drifts on first import](reference_settle_on_fake_clock_drifts_on_first_import.md) — first adapter action in a file moves the fake clock ~26 s before its first read; warm with a throwaway item, reset to NOW
 - [Token leg is BSC wait time](reference_token_leg_is_bsc_wait_time.md) — wrap getBscToken/re-auth in whileWaitingOnBsc (one wait with the calls); recorder before the token read
 - [Checklist row field rides five hops](reference_checklist_row_field_rides_five_hops.md) — compare → apply → validator → Match Cards request → action args/answer fold; the link path drops unknown fields silently
-- [Wall-clock unit tests red under load](reference_wall_clock_unit_tests_red_under_load.md) — parser 2 MB bound and theme-allowlist scan time out at load ~30+; rerun alone, never raise the bound
+- [Wall-clock unit tests red under load](reference_wall_clock_unit_tests_red_under_load.md) — parser 2 MB bound, theme-allowlist scan, panelLink ↑↓ test time out at load ~30+; rerun alone, never raise the bound
 - [Scratch probe via a sibling test's header](reference_scratch_probe_via_sibling_test_header.md) — copy a test file's pre-describe header into convex/zz*.test.ts, probe, rm in the same call
 - [Id-less items in stores and commits](reference_id_less_items_in_stores_and_commits.md) — id-less store lines need a section-link identity; NNO cards match by number + folded name
 - [zsh file list runs nothing](reference_zsh_file_list_runs_nothing.md) — unquoted $LIST is one arg in zsh; vitest matches nothing and stays green; use xargs, check the file count
