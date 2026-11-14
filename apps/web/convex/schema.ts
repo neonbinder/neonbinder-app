@@ -1214,6 +1214,11 @@ export const bscCallSummaryFields = {
   }),
   /** At most five failure samples (`bscCallStats.record` caps it). */
   samples: v.array(bscCallSampleValidator),
+  /**
+   * NEO-552 — calls the BSC call gate refused, by reason (open, probing,
+   * throttled, gate_unavailable). Never sent, so in no other count.
+   */
+  refused: v.optional(v.record(v.string(), v.number())),
 };
 export const bscCallSummaryValidator = v.object(bscCallSummaryFields);
 

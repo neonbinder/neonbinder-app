@@ -2535,6 +2535,18 @@ jobs:
             echo "::warning::Reading the fake BSC's misses failed (the reason is above)."
             exit 0
           fi
+          # {ok:true, skipped, misses:[{method,path}]} or {ok:false, status?, error}.
+          # Non-failing either way, but an ok:false must not read as "0 misses".
+          if [ "$(jq -r '.ok' "$out" 2>/dev/null)" = "false" ]; then
+            err=$(jq -r '"status=\(.status // "n/a") error=\(.error // "unknown")"' "$out" 2>/dev/null | head -c 300)
+            echo "::warning::The fake BSC's misses could not be read: ${err}"
+            { echo "### Fake BSC misses for this preview"; echo "Could not be read: ${err}"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$(jq -r '.skipped // false' "$out" 2>/dev/null)" = "true" ]; then
+            echo "::notice::The fake BSC's misses were skipped for this preview (not applicable here)."
+            exit 0
+          fi
           count=$(jq -r '(.misses // []) | length' "$out" 2>/dev/null || echo "?")
           {
             echo "### Fake BSC misses for this preview"

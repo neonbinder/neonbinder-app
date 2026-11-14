@@ -261,6 +261,17 @@ describe("fetchBscCardTeamNames — failures", () => {
     expect(out.slice(0, WAVE).every((o) => o.success === false && o.skipped === undefined)).toBe(true);
     expect(out.slice(WAVE)).toEqual([SKIPPED("bsc-11"), SKIPPED("bsc-12")]);
     expect(await breaker(t)).toMatchObject({ openCause: "failures", streak: 1 });
+    // Telemetry: the refused retries were never sent, so they are counted by
+    // reason, never as a 429 or a failure.
+    const summaries = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .filter((line) => line.includes('"bsc_call_summary"'))
+      .map((line) => JSON.parse(line) as { calls: number; byStatus: Record<string, number>; refused?: Record<string, number> });
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].calls).toBe(WAVE);
+    expect(summaries[0].byStatus).toEqual({ "503": WAVE });
+    expect(summaries[0].refused?.open).toBeGreaterThan(0);
   });
 
   test("a few failing cards among answers keep the lookup going: the answers end the failure run", async () => {

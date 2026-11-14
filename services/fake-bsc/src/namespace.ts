@@ -47,3 +47,17 @@ export function readSelector(body: unknown): NamespaceSelector | null {
   }
   return null;
 }
+
+/**
+ * The `x-nb-fake-ns` header on a request with no BSC token (CONTRACT.md,
+ * "Module seams"). A value ending in `-` is a deployment prefix (the
+ * background team lane, which has no user); any other value is one namespace.
+ * Strict: the whole value must match the namespace pattern, and a prefix must
+ * be at least 3 characters, like a `{prefix}` selector. Anything else is null,
+ * read as no header.
+ */
+export function readHeaderScope(value: unknown): { ns: string } | { prefix: string } | null {
+  if (!isNamespace(value)) return null;
+  if (value.endsWith("-")) return value.length >= 3 ? { prefix: value } : null;
+  return { ns: value };
+}

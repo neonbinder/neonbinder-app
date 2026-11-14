@@ -57,6 +57,11 @@ export const MAX_NAMESPACES = 2000;
 export const MAX_LISTINGS_PER_NAMESPACE = 20_000;
 export const MAX_ORDERS_PER_NAMESPACE = 500;
 export const MAX_MISSES_PER_NAMESPACE = 500;
+/** Deployment prefixes holding misses from the background lane (`x-nb-fake-ns: <slug>-`). */
+export const MAX_PREFIX_MISS_LISTS = 200;
+
+/** Who a miss belongs to: one namespace, a deployment prefix, or nobody (no token, no header). */
+export type MissOwner = { ns: string } | { prefix: string } | null;
 
 export function listingKey(cardId: string, condition: string): string {
   return `${cardId}|${condition}`;
@@ -74,6 +79,8 @@ export class StateStore {
   private readonly spaces = new Map<string, NamespaceState>();
   /** Misses from requests with no namespace (a card-listing with no BSC token). */
   private readonly anonMisses = new Map<string, Miss>();
+  /** Misses from requests scoped by a deployment prefix, keyed by that prefix. */
+  private readonly prefixMisses = new Map<string, Map<string, Miss>>();
 
   constructor(private readonly now: () => number = Date.now) {}
 
@@ -111,8 +118,14 @@ export class StateStore {
     if (oldest) this.spaces.delete(oldest.ns);
   }
 
-  /** Clears run state for the selected namespaces. Returns how many. */
+  /**
+   * Clears run state for the selected namespaces, and a prefix selector also
+   * clears the prefix miss lists inside it. Returns how many namespaces.
+   */
   reset(sel: NamespaceSelector): number {
+    if (sel.prefix !== undefined) {
+      for (const p of [...this.prefixMisses.keys()]) if (p.startsWith(sel.prefix)) this.prefixMisses.delete(p);
+    } else if (sel.ns === undefined) this.prefixMisses.clear();
     let n = 0;
     for (const ns of [...this.spaces.keys()]) {
       if (matchesSelector(ns, sel)) {
@@ -127,6 +140,7 @@ export class StateStore {
     const n = this.spaces.size;
     this.spaces.clear();
     this.anonMisses.clear();
+    this.prefixMisses.clear();
     return n;
   }
 
@@ -138,18 +152,23 @@ export class StateStore {
     return s.faults;
   }
 
-  /** Every namespace's live rules that name a card id: for anonymous card-listing calls. */
-  cardScopedFaults(): FaultRule[] {
+  /**
+   * The live rules that name a card id, for card-listing calls with no BSC
+   * token: every namespace's, or only those under `prefix` (the background
+   * lane's `x-nb-fake-ns: <slug>-`).
+   */
+  cardScopedFaults(prefix?: string): FaultRule[] {
     const out: FaultRule[] = [];
     for (const s of this.spaces.values()) {
+      if (prefix !== undefined && !s.ns.startsWith(prefix)) continue;
       s.faults = pruneRules(s.faults, this.now());
       for (const r of s.faults) if (r.match.cardId !== undefined) out.push(r);
     }
     return out;
   }
 
-  recordMiss(ns: string | null, miss: Omit<Miss, "count" | "firstSeen" | "lastSeen">): Miss {
-    const map = ns === null ? this.anonMisses : this.get(ns).misses;
+  recordMiss(owner: MissOwner, miss: Omit<Miss, "count" | "firstSeen" | "lastSeen">): Miss {
+    const map = owner === null ? this.anonMisses : "ns" in owner ? this.get(owner.ns).misses : this.prefixList(owner.prefix);
     const at = new Date(this.now()).toISOString();
     const prev = map.get(miss.key);
     if (prev) {
@@ -167,18 +186,42 @@ export class StateStore {
     return m;
   }
 
+  private prefixList(prefix: string): Map<string, Miss> {
+    let map = this.prefixMisses.get(prefix);
+    if (!map) {
+      if (this.prefixMisses.size >= MAX_PREFIX_MISS_LISTS) {
+        const first = this.prefixMisses.keys().next().value;
+        if (first !== undefined) this.prefixMisses.delete(first);
+      }
+      map = new Map();
+      this.prefixMisses.set(prefix, map);
+    }
+    return map;
+  }
+
   /** Drops a miss everywhere once it has been recorded. */
   clearMiss(key: string): void {
     this.anonMisses.delete(key);
+    for (const m of this.prefixMisses.values()) m.delete(key);
     for (const s of this.spaces.values()) s.misses.delete(key);
   }
 
-  /** Misses for the selected namespaces, plus the anonymous ones. */
-  listMisses(sel: NamespaceSelector): Array<Miss & { ns: string | null }> {
-    const out: Array<Miss & { ns: string | null }> = [];
+  /**
+   * Misses for the selected namespaces, the prefix lists that overlap the
+   * selection (a namespace or prefix under the list's prefix, or a list
+   * inside the selected prefix), plus the anonymous ones.
+   */
+  listMisses(sel: NamespaceSelector): Array<Miss & { ns: string | null; prefix?: string }> {
+    const out: Array<Miss & { ns: string | null; prefix?: string }> = [];
     for (const s of this.spaces.values()) {
       if (!matchesSelector(s.ns, sel)) continue;
       for (const m of s.misses.values()) out.push({ ...m, ns: s.ns });
+    }
+    for (const [prefix, map] of this.prefixMisses) {
+      const overlaps =
+        sel.ns !== undefined ? sel.ns.startsWith(prefix) : sel.prefix !== undefined ? prefix.startsWith(sel.prefix) || sel.prefix.startsWith(prefix) : true;
+      if (!overlaps) continue;
+      for (const m of map.values()) out.push({ ...m, ns: null, prefix });
     }
     for (const m of this.anonMisses.values()) out.push({ ...m, ns: null });
     return out.sort((a, b) => (a.firstSeen < b.firstSeen ? -1 : a.firstSeen > b.firstSeen ? 1 : 0));

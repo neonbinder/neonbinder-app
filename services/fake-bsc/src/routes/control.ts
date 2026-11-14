@@ -101,6 +101,7 @@ export function controlRouter(deps: ControlDeps): Router {
     }
     const misses = state.listMisses(sel).map((m) => ({
       ns: m.ns,
+      ...(m.prefix !== undefined ? { prefix: m.prefix } : {}),
       key: m.key,
       kind: m.kind,
       method: m.method,

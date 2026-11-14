@@ -10,10 +10,10 @@ import type { Catalogue } from "../catalogue";
 import { canonicalRequest, diffRequestPaths, normalisePath, requestKey, type CanonicalRequest } from "../requestKey";
 import { catalogueEndpointFor, type CatalogueEndpoint } from "../sanitise";
 import { ATTACHMENT_RE, ORDER_DETAIL_RE, templatesFor } from "../paths";
-import type { StateStore } from "../state";
+import type { MissOwner, StateStore } from "../state";
 import { applyPhotoUpload, applyPut, catalogueRequestFor, profileAnswer, readSheetRequest, synthSheet } from "../synth/sheet";
 import { orderDetail, orderHistory } from "../synth/orders";
-import { isNamespace } from "../namespace";
+import { readHeaderScope } from "../namespace";
 
 export interface NamespaceResolver {
   /** The namespace of the request's BSC bearer token, or null. */
@@ -29,10 +29,17 @@ export function bearerToken(req: Request): string | null {
   return m ? m[1] : null;
 }
 
-/** The namespace for a request with no BSC token: the optional `x-nb-fake-ns` header. */
-export function headerNamespace(req: Request): string | null {
-  const v = req.get("x-nb-fake-ns");
-  return isNamespace(v) ? v : null;
+/**
+ * The scope of a request with no BSC token: the optional `x-nb-fake-ns`
+ * header, one namespace or (ending in `-`) a deployment prefix.
+ */
+export function headerScope(req: Request): { ns: string } | { prefix: string } | null {
+  return readHeaderScope(req.get("x-nb-fake-ns"));
+}
+
+/** Who a miss belongs to: the token's namespace, else the header's scope, else nobody. */
+function missOwner(tokenNs: string | null, req: Request): MissOwner {
+  return tokenNs !== null ? { ns: tokenNs } : headerScope(req);
 }
 
 function queryString(req: Request): string {
@@ -65,9 +72,9 @@ export function apiRouter(deps: { catalogue: Catalogue; state: StateStore; ns: N
     res.status(501).set(UNRECORDED_HEADER, "unrecorded").json({ error: "unrecorded", key });
   };
 
-  const missCatalogue = (res: Response, ns: string | null, endpoint: CatalogueEndpoint, req: CanonicalRequest): void => {
+  const missCatalogue = (res: Response, owner: MissOwner, endpoint: CatalogueEndpoint, req: CanonicalRequest): void => {
     const key = requestKey(req);
-    state.recordMiss(ns, {
+    state.recordMiss(owner, {
       key,
       kind: "catalogue",
       method: req.method,
@@ -91,12 +98,17 @@ export function apiRouter(deps: { catalogue: Catalogue; state: StateStore; ns: N
     const endpoint = catalogueEndpointFor(method, path);
     if (endpoint) {
       // card-listing is public on BSC; the others need a signed-in caller.
-      const ns = endpoint === "cardListing" ? tokenNs ?? headerNamespace(req) : needNs();
-      if (endpoint !== "cardListing" && ns === null) return;
+      let owner: MissOwner;
+      if (endpoint === "cardListing") owner = missOwner(tokenNs, req);
+      else {
+        const ns = needNs();
+        if (ns === null) return;
+        owner = { ns };
+      }
       const creq = canonicalRequest({ method, path, query: queryString(req), body: method === "GET" ? undefined : req.body });
       const rec = catalogue.get(requestKey(creq));
       if (!rec) {
-        missCatalogue(res, ns, endpoint, creq);
+        missCatalogue(res, owner, endpoint, creq);
         return;
       }
       if (rec.response.status === 200) res.status(200).json(rec.response.body);
@@ -122,7 +134,7 @@ export function apiRouter(deps: { catalogue: Catalogue; state: StateStore; ns: N
       const creq = catalogueRequestFor(sheet.filters);
       const rec = catalogue.resultsFor(sheet.filters);
       if (!rec) {
-        missCatalogue(res, ns, "results", creq);
+        missCatalogue(res, { ns }, "results", creq);
         return;
       }
       const rows = Array.isArray(rec.response.body) ? rec.response.body : [];
@@ -167,7 +179,7 @@ export function apiRouter(deps: { catalogue: Catalogue; state: StateStore; ns: N
     // unknown request may be anything, so none of it is stored.
     const template = templatesFor(path)[0].slice(0, 200);
     const key = createHash("sha256").update(`${method}\n${template}`).digest("hex");
-    state.recordMiss(tokenNs ?? headerNamespace(req), { key, kind: "needs-model", method, path: template });
+    state.recordMiss(missOwner(tokenNs, req), { key, kind: "needs-model", method, path: template });
     unrecorded(res, key);
   });
 

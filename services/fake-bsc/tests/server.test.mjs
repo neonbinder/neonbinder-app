@@ -23,6 +23,7 @@ const { requestKey } = require("../dist/src/requestKey.js");
 const { sanitiseCatalogue, SANITISE_ALLOWLIST_VERSION } = require("../dist/src/sanitise.js");
 const { checkCapture, synthesisedWrite } = require("../dist/src/captures.js");
 const { shapeOf } = require("../dist/src/shape.js");
+const { readHeaderScope } = require("../dist/src/namespace.js");
 
 const NS = "happy-cat-123-w0";
 const BSC = `tok-${NS}`;
@@ -453,6 +454,55 @@ describe("faults and resets", () => {
     await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/card/:id/card-listing", cardId: "stallme" }, kind: "503" }]);
     assert.equal((await fake.call("GET", "/api/marketplace/card/stallme/card-listing")).status, 503);
     assert.equal((await fake.call("GET", "/api/marketplace/card/other/card-listing")).status, 501);
+  });
+
+  it("x-nb-fake-ns ending in '-' stalls only card-scoped rules under that prefix", async () => {
+    const card = { method: "GET", pathTemplate: "marketplace/card/:id/card-listing" };
+    await setFaults([{ match: { ...card, cardId: "mine" }, kind: "503" }]);
+    // Another deployment's run stalls a different card, and a non-card rule.
+    await setFaults([{ match: { ...card, cardId: "theirs" }, kind: "429" }, { match: card, kind: "429" }], "other-slug-w1");
+    const lane = { extra: { "x-nb-fake-ns": "happy-cat-" } };
+    assert.equal((await fake.call("GET", "/api/marketplace/card/mine/card-listing", lane)).status, 503);
+    // Not under the prefix, and no card id in the rule: neither applies.
+    assert.equal((await fake.call("GET", "/api/marketplace/card/theirs/card-listing", lane)).status, 501);
+    assert.equal((await fake.call("GET", "/api/marketplace/card/plain/card-listing", lane)).status, 501);
+    // The same rule read as an exact namespace would never fire.
+    assert.equal((await fake.call("GET", "/api/marketplace/card/mine/card-listing", { extra: { "x-nb-fake-ns": "happy-cat-123-w9" } })).status, 501);
+    // An exact namespace header still gets every rule of that namespace.
+    assert.equal((await fake.call("GET", "/api/marketplace/card/plain/card-listing", { extra: { "x-nb-fake-ns": "other-slug-w1" } })).status, 429);
+  });
+
+  it("records a prefix-scoped miss under the prefix, and a reset of the prefix clears it", async () => {
+    const lane = { extra: { "x-nb-fake-ns": "happy-cat-" } };
+    await fake.call("GET", "/api/marketplace/card/c7/card-listing", lane);
+    await fake.call("GET", "/api/marketplace/card/c8/card-listing", { extra: { "x-nb-fake-ns": "other-slug-" } });
+    const mine = (await fake.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses;
+    assert.deepEqual(mine.map((m) => [m.ns, m.prefix, m.path]), [[null, "happy-cat-", "marketplace/card/c7/card-listing"]]);
+    assert.ok(mine[0].request, "a prefix miss carries the request the recorder fetches");
+    // A namespace under the prefix sees it; a wider prefix selection does too.
+    assert.equal((await fake.call("GET", `/__fake/misses?ns=${NS}`)).body.misses.length, 1);
+    assert.equal((await fake.call("GET", "/__fake/misses?prefix=happy-cat-123-")).body.misses.length, 1);
+    assert.equal((await fake.call("GET", "/__fake/misses?prefix=zzz-")).body.misses.length, 0);
+    // An exact-namespace reset leaves the deployment's list; a prefix reset clears it.
+    await fake.call("POST", "/__fake/reset", { body: { ns: NS } });
+    assert.equal((await fake.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses.length, 1);
+    await fake.call("POST", "/__fake/reset", { body: { prefix: "happy-cat-" } });
+    assert.equal((await fake.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses.length, 0);
+    assert.equal((await fake.call("GET", "/__fake/misses?prefix=other-slug-")).body.misses.length, 1);
+  });
+
+  it("reads x-nb-fake-ns strictly: a malformed value is no header", async () => {
+    assert.deepEqual(readHeaderScope("happy-cat-"), { prefix: "happy-cat-" });
+    assert.deepEqual(readHeaderScope("happy-cat-123-w0"), { ns: "happy-cat-123-w0" });
+    for (const bad of ["", "-", "a-", "Happy-cat-", "-cat-", "happy_cat-", "happy cat-", "a".repeat(101), "happy-cat-\n", undefined, 7]) {
+      assert.equal(readHeaderScope(bad), null, JSON.stringify(bad));
+    }
+    await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/card/:id/card-listing", cardId: "c1" }, kind: "503" }]);
+    // Malformed: read as no header, so the unscoped (every namespace) rule set applies.
+    assert.equal((await fake.call("GET", "/api/marketplace/card/c1/card-listing", { extra: { "x-nb-fake-ns": "Happy-Cat-" } })).status, 503);
+    await fake.call("GET", "/api/marketplace/card/c2/card-listing", { extra: { "x-nb-fake-ns": "happy_cat-" } });
+    const misses = (await fake.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses;
+    assert.deepEqual(misses.map((m) => [m.ns, m.prefix]), [[null, undefined]]);
   });
 
   it("matches the photo upload by Convex's literal template", async () => {

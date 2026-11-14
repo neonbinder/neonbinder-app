@@ -12,7 +12,7 @@ import { cardIdOf, templatesFor } from "./paths";
 import { normalisePath } from "./requestKey";
 import { SANITISE_ALLOWLIST_VERSION } from "./sanitise";
 import type { StateStore } from "./state";
-import { apiRouter, bearerToken, headerNamespace } from "./routes/api";
+import { apiRouter, bearerToken, headerScope } from "./routes/api";
 import { controlRouter } from "./routes/control";
 import type { NamespaceSelector } from "./namespace";
 import { log } from "./log";
@@ -106,8 +106,17 @@ export function createApp(deps: AppDeps): express.Express {
       templates: area === "api" ? templatesFor(path) : [`identity/${path}`],
       cardId: area === "api" ? cardIdOf(path) : null,
     };
-    const ns = tokenNs(req) ?? headerNamespace(req);
-    const rules: FaultRule[] = ns !== null ? state.faultsFor(ns) : target.cardId !== null ? state.cardScopedFaults() : [];
+    // A BSC token names one namespace; without one, `x-nb-fake-ns` names a
+    // namespace or a deployment prefix (card-scoped rules under it); with
+    // neither, a card id meets every namespace's card-scoped rules.
+    const ns = tokenNs(req);
+    const scope = ns !== null ? { ns } : headerScope(req);
+    const rules: FaultRule[] =
+      scope !== null && "ns" in scope
+        ? state.faultsFor(scope.ns)
+        : target.cardId === null
+          ? []
+          : state.cardScopedFaults(scope?.prefix);
     const t = now();
     const rule = rules.find((r) => ruleMatches(r, target, t));
     if (!rule) {

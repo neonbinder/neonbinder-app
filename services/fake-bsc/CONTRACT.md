@@ -244,11 +244,18 @@ on a request with no BSC token: the caller's namespace
 (`fakeBscNamespaceFor`) when the action runs as a signed-in user (a fetch-time
 team lookup), else the deployment prefix `<convexSlug>-`
 (`fakeBscPrefixFor`), for the background team lane, which has no user. Both
-match `^[a-z0-9][a-z0-9-]{0,99}$`. **Server side (open):** a value ending in
+match `^[a-z0-9][a-z0-9-]{0,99}$`. **Server side (done):** a value ending in
 `-` is a prefix, not a namespace: its faults are the card-scoped rules of
-every namespace under that prefix, and its misses are recorded under the
-prefix (a `?prefix=` miss read includes them). Read as an exact namespace, a
-prefix would match no namespace's faults.
+every namespace under that prefix (rules without a `cardId` never apply), and
+its misses are recorded under the prefix. A miss read includes a prefix's list
+when the selection overlaps it (`?ns=` under the prefix, or a `?prefix=`
+inside it or containing it); such an entry carries `ns: null` and
+`prefix: "<prefix>"`. `POST /__fake/reset {prefix}` clears the prefix lists
+inside the selection; `{ns}` leaves them. The value is read strictly
+(`readHeaderScope` in `src/namespace.ts`): the whole value must match the
+pattern above and a prefix must be at least 3 characters, like a `{prefix}`
+selector; anything else is read as no header. A BSC token always wins over the
+header.
 
 ### Test controls from Convex (`apps/web/convex/testing.ts` → `fakeBsc.ts`)
 
