@@ -544,7 +544,7 @@ describe("faults and resets", () => {
     assert.equal((await fake.call("GET", "/api/marketplace/card/plain/card-listing", { extra: { "x-nb-fake-ns": "other-slug-w1" } })).status, 429);
   });
 
-  it("records a prefix-scoped miss under the prefix, and a reset of the prefix clears it", async () => {
+  it("records a prefix-scoped miss under the prefix, and a reset of the prefix keeps it", async () => {
     const lane = { extra: { "x-nb-fake-ns": "happy-cat-" } };
     await fake.call("GET", "/api/marketplace/card/c7/card-listing", lane);
     await fake.call("GET", "/api/marketplace/card/c8/card-listing", { extra: { "x-nb-fake-ns": "other-slug-" } });
@@ -555,12 +555,45 @@ describe("faults and resets", () => {
     assert.equal((await fake.call("GET", `/__fake/misses?ns=${NS}`)).body.misses.length, 1);
     assert.equal((await fake.call("GET", "/__fake/misses?prefix=happy-cat-123-")).body.misses.length, 1);
     assert.equal((await fake.call("GET", "/__fake/misses?prefix=zzz-")).body.misses.length, 0);
-    // An exact-namespace reset leaves the deployment's list; a prefix reset clears it.
+    // Neither reset drops a catalogue miss: it is the recorder's to-do list
+    // and leaves only when its recording is stored.
     await fake.call("POST", "/__fake/reset", { body: { ns: NS } });
     assert.equal((await fake.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses.length, 1);
     await fake.call("POST", "/__fake/reset", { body: { prefix: "happy-cat-" } });
-    assert.equal((await fake.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses.length, 0);
+    assert.deepEqual((await fake.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses.map((m) => [m.ns, m.prefix, m.path]), [[null, "happy-cat-", "marketplace/card/c7/card-listing"]]);
     assert.equal((await fake.call("GET", "/__fake/misses?prefix=other-slug-")).body.misses.length, 1);
+  });
+
+  it("a reset keeps catalogue misses (namespace and prefix lists) and drops needs-model ones; a stored recording clears them", async () => {
+    const lane = { extra: { "x-nb-fake-ns": "happy-cat-" } };
+    const body = { filters: { sport: ["baseball"], variant: ["parallel"] } };
+    assert.equal((await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body })).status, 501);
+    assert.equal((await fake.call("GET", "/api/marketplace/card/c9/card-listing", lane)).status, 501);
+    await fake.call("POST", "/api/seller/x", { bsc: BSC, body: {} });
+    await fake.call("GET", "/api/seller/y", lane);
+    const before = (await fake.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses;
+    assert.deepEqual(before.map((m) => m.kind).sort(), ["catalogue", "catalogue", "needs-model", "needs-model"]);
+    for (const sel of [{ prefix: "happy-cat-" }, { ns: NS }, { prefix: "happy-cat-" }]) {
+      assert.equal((await fake.call("POST", "/__fake/reset", { body: sel })).status, 200);
+      const left = (await fake.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses;
+      assert.deepEqual(left.map((m) => [m.ns, m.prefix ?? null, m.kind, m.path]).sort(), [
+        [NS, null, "catalogue", FILTERS_PATH],
+        [null, "happy-cat-", "catalogue", "marketplace/card/c9/card-listing"],
+      ].sort(), JSON.stringify(sel));
+      // The kept entry still carries the request the recorder fetches.
+      assert.deepEqual(left.find((m) => m.ns === NS).request.body, body);
+    }
+    // Run state still went: the namespace's faults and listings are clear.
+    assert.equal((await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC })).status, 200);
+    // The miss leaves once its recording is stored, and only then.
+    const answer = { aggregations: { year: [{ label: "1996", slug: "1996", count: 4, active: false }] } };
+    const up = await fake.call("POST", "/__fake/recordings", { email: LOADER, admin: true, body: { recordings: [recording(FILTERS_PATH, "POST", body, answer)] } });
+    assert.equal(up.status, 200, JSON.stringify(up.body));
+    const after = (await fake.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses;
+    assert.deepEqual(after.map((m) => m.path), ["marketplace/card/c9/card-listing"]);
+    // reset-all (admin) still drops everything.
+    await fake.call("POST", "/__fake/reset-all", { email: LOADER, admin: true, body: {} });
+    assert.equal((await fake.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses.length, 0);
   });
 
   it("reads x-nb-fake-ns strictly: a malformed value is no header", async () => {

@@ -634,6 +634,8 @@ export const clearBscCallGate = action({
  * NEO-552 — the scripted reset's fake BSC step (`e2e-baseline.sh reset`):
  * clears every namespace this deployment owns on the fake (`<slug>-`), so
  * a new pass starts with no listings, photos, orders or faults from the last.
+ * The fake keeps the catalogue misses (the recorder's to-do list) until they
+ * are recorded.
  * Internal: reached only by `convex run` with deploy credentials, so the fake's
  * keys stay on the deployment and never touch the runner. A deployment that
  * talks to the real BSC has nothing to clear and says so.

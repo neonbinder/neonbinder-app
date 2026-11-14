@@ -16,6 +16,8 @@ const { parseArgs } = require("../dist/recorder/cli.js");
 const { FakeClient } = require("../dist/recorder/fake-client.js");
 const { runCaptureWrite, loadWriteRequest, describeWrite } = require("../dist/recorder/capture-write.js");
 const { requestKey, canonicalRequest } = require("../dist/src/requestKey.js");
+const { runRefreshGrant, bscSession, loadBrowserModules, defaultBrowserDist } = require("../dist/recorder/bsc.js");
+import { existsSync } from "node:fs";
 
 const NS = "happy-cat-123-w0";
 
@@ -138,6 +140,108 @@ describe("record session", () => {
     const fake = fakeStub([[miss("POST", FILTERS_PATH, { filters: {} })]]);
     const r = await runRecordSession({ ...base(c, { tokenExpiresAt: c.t + 60_000 }), fake, bsc: async () => assert.fail("must not send") });
     assert.equal(r.stopReason, "token_expiring");
+    assert.equal(r.left, 1);
+    assert.equal(r.renewals, 0);
+  });
+
+  it("renews the token once when it nears expiry, paced at 1 a second and outside the cap, then carries on", async () => {
+    const c = clock();
+    const m = (s) => miss("POST", FILTERS_PATH, { filters: { sport: [s] } });
+    const fake = fakeStub([[m("a"), m("b"), m("c")]]);
+    const events = [];
+    let renews = 0;
+    const r = await runRecordSession({
+      // Checked before each read: at t and t+50 ms the token has 2 min left; at
+      // t+1050 ms it is inside the margin, so: renew (t+2 s), then read (t+3 s).
+      ...base(c, { tokenExpiresAt: c.t + 2 * 60_000 + 1040 }),
+      maxRequests: 3,
+      fake,
+      bsc: async () => {
+        events.push(["bsc", c.t]);
+        c.t += 50;
+        return { kind: "response", status: 200, body: { aggregations: {} } };
+      },
+      renewToken: async () => {
+        renews += 1;
+        events.push(["renew", c.t]);
+        c.t += 200;
+        return { ok: true, expiresAt: c.t + 3600_000 };
+      },
+    });
+    assert.equal(r.stopReason, "done", JSON.stringify(r));
+    assert.equal(renews, 1, "exactly one refresh");
+    assert.equal(r.renewals, 1);
+    // The refresh counts against nothing: all three catalogue reads still went, under a cap of 3.
+    assert.equal(r.sent, 3);
+    assert.equal(r.recorded, 3);
+    assert.equal(r.left, 0);
+    assert.deepEqual(events.map(([k]) => k), ["bsc", "bsc", "renew", "bsc"]);
+    for (let i = 1; i < events.length; i++) assert.ok(events[i][1] - events[i - 1][1] >= 1000, `paced: ${JSON.stringify(events)}`);
+  });
+
+  it("renews before the first send when the token is already inside the margin", async () => {
+    const c = clock();
+    const fake = fakeStub([[miss("POST", FILTERS_PATH, { filters: { sport: ["a"] } })]]);
+    const order = [];
+    const r = await runRecordSession({
+      ...base(c, { tokenExpiresAt: c.t + 60_000 }),
+      fake,
+      bsc: async () => (order.push(["bsc", c.t]), { kind: "response", status: 200, body: { aggregations: {} } }),
+      renewToken: async () => (order.push(["renew", c.t]), { ok: true, expiresAt: c.t + 3600_000 }),
+    });
+    assert.equal(r.stopReason, "done");
+    assert.deepEqual(order.map(([k]) => k), ["renew", "bsc"]);
+    assert.ok(order[1][1] - order[0][1] >= 1000, "the read after a refresh waits its second");
+    assert.equal(r.sent, 1);
+  });
+
+  it("a failed renewal stops cleanly: one attempt, nothing more sent, the reason reported", async () => {
+    for (const reason of ["refused", "rate_limited", "server_error", "timeout", "network", "no_refresh_token", "refresh_expired"]) {
+      const c = clock();
+      const fake = fakeStub([[miss("POST", FILTERS_PATH, { filters: { sport: ["a"] } }), miss("POST", FILTERS_PATH, { filters: { sport: ["b"] } })]]);
+      let renews = 0;
+      const r = await runRecordSession({
+        ...base(c, { tokenExpiresAt: c.t + 60_000 }),
+        fake,
+        bsc: async () => assert.fail("must not send"),
+        renewToken: async () => (renews++, { ok: false, reason }),
+      });
+      assert.equal(r.stopReason, "refresh_failed", reason);
+      assert.equal(r.refreshFailure, reason);
+      assert.equal(renews, 1, "never retried");
+      assert.equal(r.sent, 0);
+      assert.equal(r.left, 2);
+      assert.equal(fake.uploads.length, 0);
+    }
+  });
+
+  it("a renewal that comes back short-lived stops rather than renewing again", async () => {
+    const c = clock();
+    const fake = fakeStub([[miss("POST", FILTERS_PATH, { filters: {} })]]);
+    let renews = 0;
+    const r = await runRecordSession({
+      ...base(c, { tokenExpiresAt: c.t + 60_000 }),
+      fake,
+      bsc: async () => assert.fail("must not send"),
+      renewToken: async () => (renews++, { ok: true, expiresAt: c.t + 30_000 }),
+    });
+    assert.equal(r.stopReason, "token_expiring");
+    assert.equal(renews, 1);
+  });
+
+  it("Ctrl-C between the refresh and the read sends nothing more", async () => {
+    const c = clock();
+    const fake = fakeStub([[miss("POST", FILTERS_PATH, { filters: {} })]]);
+    let interrupted = false;
+    const r = await runRecordSession({
+      ...base(c, { tokenExpiresAt: c.t + 60_000 }),
+      fake,
+      stopped: () => interrupted,
+      bsc: async () => assert.fail("must not send"),
+      renewToken: async () => ((interrupted = true), { ok: true, expiresAt: c.t + 3600_000 }),
+    });
+    assert.equal(r.stopReason, "interrupted");
+    assert.equal(r.left, 1);
   });
 
   it("stops when the fake refuses an upload", async () => {
@@ -193,6 +297,131 @@ describe("bscCaller", () => {
   });
 });
 
+describe("BSC session renewal (refresh grant)", () => {
+  it("keeps only the token fields from services/browser's grant", async () => {
+    const r = await runRefreshGrant(async () => ({ ok: true, tokens: { token: "at-new", expiresAt: 5_000_000, refreshToken: "rt-rotated", refreshExpiresAt: 9_000_000, ssoCookies: { x: "y" } } }));
+    assert.deepEqual(r, { ok: true, tokens: { token: "at-new", expiresAt: 5_000_000, refreshToken: "rt-rotated", refreshExpiresAt: 9_000_000 } });
+  });
+
+  it("maps every failure to a fixed reason, once, with no token or text in it", async () => {
+    const named = (name, message) => Object.assign(new Error(message), { name });
+    for (const [grant, reason] of [
+      [async () => ({ ok: false, status: 400, reason: "refused", reauthRequired: true }), "refused"],
+      [async () => ({ ok: false, status: 429, reason: "rate_limited", reauthRequired: false }), "rate_limited"],
+      [async () => ({ ok: false, status: 503, reason: "server_error", reauthRequired: false }), "server_error"],
+      [async () => ({ ok: false, status: 302, reason: "unexpected_status", reauthRequired: false }), "unexpected_status"],
+      [async () => ({ ok: false, status: 200, reason: "no_access_token", reauthRequired: false }), "bad_body"],
+      [async () => ({ ok: true, tokens: { expiresAt: 1 } }), "bad_body"],
+      [async () => { throw named("TimeoutError", "rt-secret timed out"); }, "timeout"],
+      [async () => { throw named("SyntaxError", "rt-secret is not JSON"); }, "bad_body"],
+      [async () => { throw new TypeError("fetch failed rt-secret"); }, "network"],
+    ]) {
+      let n = 0;
+      const r = await runRefreshGrant(async () => (n++, grant()));
+      assert.deepEqual(r, { ok: false, reason });
+      assert.equal(n, 1, `${reason}: never retried`);
+      assert.ok(!JSON.stringify(r).includes("rt-secret"), "no token or text in the outcome");
+    }
+  });
+
+  it("a session swaps in the renewed token and the rotated refresh token", async () => {
+    const presented = [];
+    let n = 0;
+    const session = bscSession({ token: "at-1", expiresAt: 100, refreshToken: "rt-1", refreshExpiresAt: 10_000 }, async (rt) => {
+      presented.push(rt);
+      n += 1;
+      return { ok: true, tokens: { token: `at-${n + 1}`, expiresAt: 100 + n, ...(n === 1 ? { refreshToken: "rt-2", refreshExpiresAt: 10_000 } : {}) } };
+    }, () => 50);
+    assert.equal(session.token(), "at-1");
+    assert.deepEqual(await session.renew(), { ok: true, expiresAt: 101 });
+    assert.equal(session.token(), "at-2");
+    assert.equal(session.expiresAt(), 101);
+    // No rotation in the answer: the last refresh token is kept.
+    assert.deepEqual(await session.renew(), { ok: true, expiresAt: 102 });
+    await session.renew();
+    assert.deepEqual(presented, ["rt-1", "rt-2", "rt-2"]);
+  });
+
+  it("a session without a live refresh token fails without a request; a failed grant keeps the old token", async () => {
+    const never = async () => assert.fail("must not refresh");
+    assert.deepEqual(await bscSession({ token: "t", expiresAt: 1 }, never).renew(), { ok: false, reason: "no_refresh_token" });
+    assert.deepEqual(await bscSession({ token: "t", expiresAt: 1, refreshToken: "r", refreshExpiresAt: 10 }, never, () => 10).renew(), { ok: false, reason: "refresh_expired" });
+    const s = bscSession({ token: "t", expiresAt: 1, refreshToken: "r" }, async () => ({ ok: false, reason: "refused" }));
+    assert.deepEqual(await s.renew(), { ok: false, reason: "refused" });
+    assert.equal(s.token(), "t");
+  });
+
+  it("bscCaller sends whatever token the session holds now", async () => {
+    let token = "at-1";
+    const seen = [];
+    const call = bscCaller({ apiBase: "https://bsc.invalid", token: () => token, headers: (t) => ({ authorization: `Bearer ${t}` }), fetchImpl: async (_u, init) => (seen.push(init.headers.authorization), new Response("{}", { status: 200 })) });
+    await call(canonicalRequest({ method: "POST", path: FILTERS_PATH, body: { filters: {} } }));
+    token = "at-2";
+    await call(canonicalRequest({ method: "POST", path: FILTERS_PATH, body: { filters: {} } }));
+    assert.deepEqual(seen, ["Bearer at-1", "Bearer at-2"]);
+  });
+
+  it("loadBrowserModules refreshes through services/browser's bscRefreshGrant, forced to the real target", async () => {
+    // Stub modules in place of services/browser/dist: nothing reaches BSC.
+    const dir = await mkdtemp(path.join(tmpdir(), "fake-browser-dist-"));
+    try {
+      await writeFile(path.join(dir, "bsc-signin.js"), `
+        exports.calls = [];
+        exports.bscPasswordSignIn = async () => ({ tokens: { token: "at", expiresAt: 1, refreshToken: "rt", refreshExpiresAt: 2, ssoCookies: { x: "y" } } });
+        exports.bscRefreshGrant = async (input) => { exports.calls.push(input); return { ok: true, tokens: { token: "at-new", expiresAt: 42, refreshToken: "rt-new", ssoCookies: { x: "y" } } }; };`);
+      await writeFile(path.join(dir, "bsc-endpoints.js"), `
+        exports.resolveBscEndpoints = (env) => (env && Object.keys(env).length === 0 ? { target: "real", apiBase: "https://api.invalid" } : { target: "fake" });
+        exports.bscApiHeaders = (t) => ({ authorization: "Bearer " + t });`);
+      const mods = loadBrowserModules(dir);
+      assert.deepEqual(await mods.signIn("u", "p"), { token: "at", expiresAt: 1, refreshToken: "rt", refreshExpiresAt: 2 });
+      assert.deepEqual(await mods.refresh("rt"), { ok: true, tokens: { token: "at-new", expiresAt: 42, refreshToken: "rt-new" } });
+      const { calls } = require(path.join(dir, "bsc-signin.js"));
+      assert.deepEqual(calls, [{ refreshToken: "rt", fetchOptions: { env: {} } }]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a services/browser dist without bscRefreshGrant", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "old-browser-dist-"));
+    try {
+      await writeFile(path.join(dir, "bsc-signin.js"), "exports.bscPasswordSignIn = async () => ({});");
+      await writeFile(path.join(dir, "bsc-endpoints.js"), "exports.resolveBscEndpoints = () => ({ target: 'real' }); exports.bscApiHeaders = () => ({});");
+      assert.throws(() => loadBrowserModules(dir), /bscRefreshGrant/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Against the built services/browser (fetch stubbed): skipped where it is not
+  // built, e.g. this package's own CI job, which builds fake-bsc only.
+  it("the built services/browser grant goes to the real authority with the refresh body", { skip: !existsSync(path.join(defaultBrowserDist(), "bsc-signin.js")) && "services/browser is not built" }, async () => {
+    const realFetch = globalThis.fetch;
+    const realLog = console.log;
+    const calls = [];
+    console.log = () => {};
+    globalThis.fetch = async (url, init) => {
+      calls.push({ url: String(url), body: String(init.body) });
+      return new Response(JSON.stringify({ access_token: "at-new", expires_in: 3600, refresh_token: "rt-new" }), { status: 200 });
+    };
+    try {
+      const r = await loadBrowserModules().refresh("rt-old");
+      assert.equal(r.ok, true);
+      assert.equal(r.tokens.token, "at-new");
+      assert.equal(r.tokens.refreshToken, "rt-new");
+      assert.equal(calls.length, 1);
+      assert.match(calls[0].url, /^https:\/\/[^/]+\/.+\/oauth2\/v2\.0\/token$/);
+      assert.ok(!calls[0].url.includes("127.0.0.1") && !calls[0].url.includes("fake"), "the real authority, never a fake");
+      const body = new URLSearchParams(calls[0].body);
+      assert.equal(body.get("grant_type"), "refresh_token");
+      assert.equal(body.get("refresh_token"), "rt-old");
+    } finally {
+      globalThis.fetch = realFetch;
+      console.log = realLog;
+    }
+  });
+});
+
 describe("credentials", () => {
   it("reads a Bitwarden item, a plain object, or two lines", () => {
     assert.deepEqual(parseCredentials(JSON.stringify({ name: "BSC", login: { username: "u@x.co", password: "p w" } })), { username: "u@x.co", password: "p w" });
@@ -244,6 +473,60 @@ describe("recorder end to end against the in-process fake (BSC mocked)", () => {
     assert.equal(again.body[0].players, "Ken Griffey Jr.");
     assert.equal(again.body[0].sellerId, undefined);
     assert.equal(again.body[0].seller, undefined);
+  });
+
+  it("a confirmed miss that is never sent stays on the fake's miss list, through a reset, until it is recorded", async () => {
+    const client = new FakeClient({ baseUrl: fake.base, callerKey: CALLER_KEY, adminKey: ADMIN_KEY, idToken: async () => idToken(LOADER) });
+    const ok = async () => ({ kind: "response", status: 200, body: { aggregations: {} } });
+    const stops = [
+      ["token expiry", { tokenExpiresAt: 0 }, ok, "token_expiring", 0],
+      ["a failed refresh", { tokenExpiresAt: 0, renewToken: async () => ({ ok: false, reason: "refused" }) }, ok, "refresh_failed", 0],
+      ["Ctrl-C", { stoppedAfter: 1 }, ok, "interrupted", 1],
+      ["the cap", { maxRequests: 1 }, ok, "cap", 1],
+      ["a BSC 429", {}, async () => ({ kind: "response", status: 429, body: null }), "rate_limited", 0],
+    ];
+    for (const [i, [label, over, bsc, reason, recorded]] of stops.entries()) {
+      // Each stop on its own deployment prefix, so one case's leftovers stay out of the next.
+      const prefix = `case${i}-slug-`;
+      const ns = `${prefix}w0`;
+      const listed = async () => (await fake.call("GET", `/__fake/misses?prefix=${prefix}`)).body.misses.filter((m) => m.kind === "catalogue").map((m) => m.key).sort();
+      const keys = [];
+      // Catalogue keys are global: each case asks for its own facets.
+      for (const variant of [`parallel${i}`, `insert${i}`]) {
+        const body = { filters: { sport: ["baseball"], variant: [variant] } };
+        assert.equal((await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: `tok-${ns}`, body })).status, 501);
+        keys.push(requestKey(canonicalRequest({ method: "POST", path: FILTERS_PATH, body })));
+      }
+      const c = clock();
+      let sent = 0;
+      const { stoppedAfter, ...rest } = over;
+      const r = await runRecordSession({
+        ...base(c),
+        prefix,
+        ...rest,
+        // The operator confirmed both (the plan), so only the stop keeps them back.
+        confirmedKeys: new Set(keys),
+        confirm: async () => assert.fail("already confirmed"),
+        fake: client,
+        stopped: () => stoppedAfter !== undefined && sent >= stoppedAfter,
+        bsc: async (req) => (sent++, bsc(req)),
+      });
+      assert.equal(r.stopReason, reason, label);
+      assert.equal(r.recorded, recorded, label);
+      assert.equal(r.left, 2 - recorded, label);
+      // The first request is the one recorded (when any is); the rest stay listed.
+      const unsent = keys.slice(recorded).sort();
+      assert.deepEqual(await listed(), unsent, `${label}: unsent misses stay listed`);
+      // The next E2E seed's resets do not drop them either.
+      await fake.call("POST", "/__fake/reset", { body: { prefix } });
+      await fake.call("POST", "/__fake/reset", { body: { ns } });
+      assert.deepEqual(await listed(), unsent, `${label}: kept through a reset`);
+      // A later session picks them up, and only then does the list empty.
+      const again = await runRecordSession({ ...base(clock()), prefix, fake: client, bsc: ok });
+      assert.equal(again.recorded, unsent.length, label);
+      assert.equal(again.left, 0);
+      assert.deepEqual(await listed(), [], label);
+    }
   });
 
   it("is refused by the fake when it skips sanitising (the server re-applies the allowlist)", async () => {

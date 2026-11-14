@@ -411,6 +411,109 @@ export async function exchangeAuthCode(
   return tokens;
 }
 
+/** Why a refresh grant failed: fixed words, never a token or B2C's text. */
+export type BscRefreshFailure =
+  | "refused"
+  | "rate_limited"
+  | "server_error"
+  | "unexpected_status"
+  | "no_access_token";
+
+export type BscRefreshGrantResult =
+  | { ok: true; tokens: BscTokenSet }
+  | {
+      ok: false;
+      /** HTTP status of the token endpoint's answer. */
+      status: number;
+      reason: BscRefreshFailure;
+      /**
+       * True only when B2C refused the grant itself (a 4xx other than 429):
+       * expired, revoked, already rotated, or another client's. Only a fresh
+       * sign-in fixes that. A 429, a 5xx or a missing access token is BSC
+       * being unwell and must stay pageable, never "sign in again" (NEO-278).
+       */
+      reauthRequired: boolean;
+    };
+
+/**
+ * One B2C refresh grant: a stored refresh token for a fresh access token
+ * (NEO-141's replacement for keeping the password). Shared by the BSC adapter
+ * and the fake-BSC recorder (NEO-552), which loads it from dist.
+ *
+ * The body is exactly what BSC's public B2C client accepts: client_id,
+ * grant_type, refresh_token, scope. No client secret (public client), no PKCE
+ * verifier (that belongs to the auth-code grant only). Sent once, never
+ * retried. A throw from the request (network, timeout) propagates.
+ *
+ * THE RESPONSE ROTATES THE REFRESH TOKEN. B2C returns a new refresh_token
+ * and invalidates the one presented, so the caller must keep the new one
+ * before relying on the new access token.
+ *
+ * SECURITY: neither the presented nor the returned refresh token is ever
+ * logged; only the HTTP status and B2C's short `error` code.
+ */
+export async function bscRefreshGrant(
+  input: BscB2CRequestOptions & { refreshToken: string },
+): Promise<BscRefreshGrantResult> {
+  const authority = input.authority ?? resolveBscEndpoints(input.fetchOptions?.env).authority;
+  console.log(`[BSC Adapter] B2C refresh grant: POST /token`);
+  const response = await bscFetch(
+    `${authority}/oauth2/v2.0/token`,
+    {
+      method: "POST",
+      headers: {
+        "User-Agent": BSC_UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: BSC_B2C_CLIENT.clientId,
+        grant_type: "refresh_token",
+        refresh_token: input.refreshToken,
+        scope: BSC_B2C_CLIENT.scope,
+      }).toString(),
+      signal: AbortSignal.timeout(input.stepTimeoutMs ?? BSC_B2C_STEP_TIMEOUT_MS),
+    },
+    input.fetchOptions,
+  );
+
+  if (!response.ok) {
+    let errorCode = "(unparseable)";
+    try {
+      errorCode = ((await response.json()) as { error?: string }).error ?? "(none)";
+    } catch {
+      /* ignore — never surface the raw body */
+    }
+    // NEO-278: 429 is carved out of the 4xx bucket: it is B2C throttling us,
+    // not a verdict on the grant.
+    const reauthRequired =
+      response.status >= 400 && response.status < 500 && response.status !== 429;
+    console.warn(
+      `[BSC Adapter] B2C refresh grant failed (status=${response.status}, ` +
+        `error=${errorCode}, reauth_required=${reauthRequired}).`,
+    );
+    const reason: BscRefreshFailure =
+      response.status === 429
+        ? "rate_limited"
+        : reauthRequired
+          ? "refused"
+          : response.status >= 500
+            ? "server_error"
+            : "unexpected_status";
+    return { ok: false, status: response.status, reason, reauthRequired };
+  }
+
+  const tokens = toTokenSet((await response.json()) as BscTokenResponse);
+  if (!tokens) {
+    console.warn(`[BSC Adapter] B2C refresh grant returned no access_token.`);
+    return { ok: false, status: response.status, reason: "no_access_token", reauthRequired: false };
+  }
+  console.log(
+    `[BSC Adapter] B2C refresh grant succeeded ` +
+      `(rotated_refresh_token=${!!tokens.refreshToken}).`,
+  );
+  return { ok: true, tokens };
+}
+
 export interface BscPasswordSignInInput {
   username: string;
   password: string;

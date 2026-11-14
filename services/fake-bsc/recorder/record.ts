@@ -5,6 +5,18 @@
  * first 429, 5xx, timeout, network error or 401/403, with no retry. Every
  * answer is sanitised with the shared allowlist before it is uploaded.
  *
+ * The recorder never removes anything from the fake's miss list: a miss
+ * leaves it only when the fake stores its recording (`POST
+ * /__fake/recordings` clears that key). A miss confirmed but not sent (the
+ * session stopped first: Ctrl-C, the cap, a BSC stop, a session that could
+ * not be renewed) stays listed for the next session, and the result counts
+ * it in `left`.
+ *
+ * When the BSC access token nears expiry the session renews it with the
+ * sign-in's refresh token (`renewToken`: one grant each time, paced like any
+ * request but outside the catalogue cap). A failed renewal stops the session;
+ * it is never retried.
+ *
  * Every dependency is injected so the loop is unit-tested against a mocked
  * BSC; nothing here reaches the network on its own.
  */
@@ -16,8 +28,25 @@ import { replayRefusal } from "./replay-allowlist";
 export const MAX_REQUESTS_PER_SESSION = 300;
 export const MIN_INTERVAL_MS = 1000;
 export const BSC_TIMEOUT_MS = 30_000;
-/** Stop rather than send with a token this close to expiry (a 401 would stop us anyway). */
+/** Renew (or stop) rather than send with a token this close to expiry (a 401 would stop us anyway). */
 export const TOKEN_MARGIN_MS = 2 * 60 * 1000;
+
+/**
+ * Why a renewal failed: fixed words only, never a token, a body or B2C's
+ * own text. `refused` is B2C refusing the grant (only a new sign-in helps).
+ */
+export type RenewFailure =
+  | "no_refresh_token"
+  | "refresh_expired"
+  | "refused"
+  | "rate_limited"
+  | "server_error"
+  | "unexpected_status"
+  | "timeout"
+  | "network"
+  | "bad_body";
+
+export type RenewResult = { ok: true; expiresAt: number } | { ok: false; reason: RenewFailure };
 
 export type BscAnswer =
   | { kind: "response"; status: number; body: unknown }
@@ -36,6 +65,7 @@ export type StopReason =
   | "bad_body"
   | "upload_refused"
   | "token_expiring"
+  | "refresh_failed"
   | "interrupted"
   | "declined";
 
@@ -48,7 +78,15 @@ export interface RecordDeps {
   };
   /** One catalogue request to real BSC. Must not retry. */
   bsc(req: CanonicalRequest): Promise<BscAnswer>;
+  /** Expiry (epoch ms) of the token `bsc` sends at the start of the session. */
   tokenExpiresAt: number;
+  /**
+   * Renews the token `bsc` sends (one B2C refresh grant, no retry) and gives
+   * its new expiry. Called once each time the token nears expiry; a failure
+   * stops the session ("refresh_failed"). Missing: the session stops at
+   * expiry ("token_expiring").
+   */
+  renewToken?: () => Promise<RenewResult>;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   maxRequests?: number;
@@ -80,6 +118,16 @@ export interface RecordResult {
   refused: string[];
   /** Anonymous misses left alone (no `--include-anon`). */
   anonSkipped: number;
+  /**
+   * Requests the session meant to send that were not recorded when it
+   * stopped (including one sent but not recorded). Each is still on the
+   * fake's miss list for the next session.
+   */
+  left: number;
+  /** Times the BSC session was renewed with the refresh token. */
+  renewals: number;
+  /** Why the renewal failed, when stopReason is "refresh_failed". */
+  refreshFailure?: RenewFailure;
 }
 
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
@@ -182,7 +230,12 @@ export async function runRecordSession(deps: RecordDeps): Promise<RecordResult> 
   const confirmed = new Set<string>(deps.confirmedKeys ?? []);
   let sent = 0;
   let recorded = 0;
+  let renewals = 0;
+  let refreshFailure: RenewFailure | undefined;
+  let tokenExpiresAt = deps.tokenExpiresAt;
   let lastSentAt = -Infinity;
+  /** This pass's requests: whatever of them is not in `done` at a stop is still listed on the fake. */
+  let todo: MissPlan["todo"] = [];
   const finish = (stopReason: StopReason): RecordResult => ({
     sent,
     recorded,
@@ -190,7 +243,16 @@ export async function runRecordSession(deps: RecordDeps): Promise<RecordResult> 
     needsModel: [...needsModel].sort(),
     refused: [...refused].sort(),
     anonSkipped: anonKeys.size,
+    left: todo.filter((t) => !done.has(t.key)).length,
+    renewals,
+    ...(refreshFailure ? { refreshFailure } : {}),
   });
+  /** Waits out the 1 request/second pacing, then marks a request as going now. */
+  const pace = async (): Promise<void> => {
+    const wait = lastSentAt + interval - now();
+    if (wait > 0) await sleep(wait);
+    lastSentAt = now();
+  };
 
   for (;;) {
     if (stopped()) return finish("interrupted");
@@ -202,7 +264,7 @@ export async function runRecordSession(deps: RecordDeps): Promise<RecordResult> 
       done.add(r.key);
     }
     for (const m of misses) if (isAnonymous(m) && !deps.includeAnon && m.kind !== "needs-model") anonKeys.add(m.key);
-    const todo = plan.todo;
+    todo = plan.todo;
 
     // Nothing goes out that the operator has not seen: a request missing
     // from the confirmed set (added since the plan, or by --watch) is asked
@@ -217,10 +279,25 @@ export async function runRecordSession(deps: RecordDeps): Promise<RecordResult> 
     for (const { key, req } of todo) {
       if (stopped()) return finish("interrupted");
       if (sent >= max) return finish("cap");
-      if (deps.tokenExpiresAt - now() < TOKEN_MARGIN_MS) return finish("token_expiring");
-      const wait = lastSentAt + interval - now();
-      if (wait > 0) await sleep(wait);
-      lastSentAt = now();
+      if (tokenExpiresAt - now() < TOKEN_MARGIN_MS) {
+        if (!deps.renewToken) return finish("token_expiring");
+        // One refresh grant: paced like a request, outside the catalogue cap.
+        await pace();
+        if (stopped()) return finish("interrupted");
+        const startedRenew = now();
+        const renewed = await deps.renewToken();
+        if (!renewed.ok) {
+          refreshFailure = renewed.reason;
+          return finish("refresh_failed");
+        }
+        report(`BSC session renewed with the refresh token ${now() - startedRenew}ms`);
+        renewals += 1;
+        tokenExpiresAt = renewed.expiresAt;
+        // A renewal that leaves the token as short-lived is not tried again.
+        if (tokenExpiresAt - now() < TOKEN_MARGIN_MS) return finish("token_expiring");
+        if (stopped()) return finish("interrupted");
+      }
+      await pace();
       sent += 1;
       const endpoint = catalogueEndpointFor(req.method, req.path)!;
       const started = now();
@@ -268,7 +345,8 @@ export async function runRecordSession(deps: RecordDeps): Promise<RecordResult> 
  */
 export function bscCaller(opts: {
   apiBase: string;
-  token: string;
+  /** The BSC access token, or a getter for the current one (it changes when the session is renewed). */
+  token: string | (() => string);
   headers: (token: string) => Record<string, string>;
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
@@ -283,7 +361,7 @@ export function bscCaller(opts: {
     try {
       const res = await f(url, {
         method: req.method,
-        headers: endpoint === "cardListing" ? { Accept: "application/json" } : opts.headers(opts.token),
+        headers: endpoint === "cardListing" ? { Accept: "application/json" } : opts.headers(typeof opts.token === "function" ? opts.token() : opts.token),
         body: req.method === "GET" || req.body === undefined ? undefined : JSON.stringify(req.body),
         signal,
         redirect: "error",

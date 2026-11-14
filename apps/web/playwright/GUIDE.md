@@ -669,7 +669,9 @@ this before diagnosing anything that touches BSC:
   password (`fake-bsc-password`; `wrong-password` is its rejected-credentials
   answer, which `credentials-lifecycle` uses). The scripted reset
   (`e2e-baseline.sh reset`) and `resetMyTestState` clear the accounts, and the
-  call gate, with the rest of the state.
+  call gate, with the rest of the state. They keep the fake's catalogue misses
+  (the recorder's to-do list): a miss leaves only once its recording is
+  uploaded, so a reset between runs never loses one.
 - **A spec makes BSC misbehave through `support/bscFake.ts`, and only there.**
   The `bscFake` fixture's `setFaults([...])` puts rules on the worker's own
   account (`bscFault.slow`, `.tooManyRequests`, `.unavailable`, `.hangs`,

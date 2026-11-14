@@ -67,6 +67,16 @@ export function listingKey(cardId: string, condition: string): string {
   return `${cardId}|${condition}`;
 }
 
+/**
+ * The catalogue misses of a list: the recorder's to-do list, which a reset
+ * keeps (a catalogue miss leaves only when its recording is stored).
+ */
+function catalogueMisses(map: Map<string, Miss>): Map<string, Miss> {
+  const out = new Map<string, Miss>();
+  for (const [k, m] of map) if (m.kind === "catalogue") out.set(k, m);
+  return out;
+}
+
 function hash8(s: string): string {
   return createHash("sha256").update(s).digest("hex").slice(0, 12);
 }
@@ -119,17 +129,32 @@ export class StateStore {
   }
 
   /**
-   * Clears run state for the selected namespaces, and a prefix selector also
-   * clears the prefix miss lists inside it. Returns how many namespaces.
+   * Clears run state for the selected namespaces (listings, photos, orders,
+   * faults, needs-model misses), and a prefix selector also clears the
+   * needs-model entries of the prefix miss lists inside it. Returns how many
+   * namespaces.
+   *
+   * Catalogue misses survive a reset: they are the recorder's to-do list, a
+   * reset runs before every E2E seed, and a miss confirmed but not yet
+   * recorded must still be listed for the next recorder session. They leave
+   * only through `clearMiss` (a stored recording), `resetAll`, the list caps
+   * or a restart. They change no answer the fake gives, so keeping them
+   * breaks no run's isolation.
    */
   reset(sel: NamespaceSelector): number {
-    if (sel.prefix !== undefined) {
-      for (const p of [...this.prefixMisses.keys()]) if (p.startsWith(sel.prefix)) this.prefixMisses.delete(p);
-    } else if (sel.ns === undefined) this.prefixMisses.clear();
+    const prefixInside = (p: string) => (sel.prefix !== undefined ? p.startsWith(sel.prefix) : sel.ns === undefined);
+    for (const [p, map] of [...this.prefixMisses]) {
+      if (!prefixInside(p)) continue;
+      const kept = catalogueMisses(map);
+      if (kept.size > 0) this.prefixMisses.set(p, kept);
+      else this.prefixMisses.delete(p);
+    }
     let n = 0;
-    for (const ns of [...this.spaces.keys()]) {
+    for (const [ns, s] of [...this.spaces]) {
       if (matchesSelector(ns, sel)) {
+        const kept = catalogueMisses(s.misses);
         this.spaces.delete(ns);
+        if (kept.size > 0) this.get(ns).misses = kept;
         n += 1;
       }
     }

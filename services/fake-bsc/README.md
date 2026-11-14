@@ -101,6 +101,16 @@ and lands on the namespace's miss list with the nearest recorded request's
 differing paths (`nearMiss.diffPaths`, never values). Anything the fake has no
 model for is listed as `needs-model` with its method and path template only.
 
+A catalogue miss stays listed until its recording is uploaded: `/__fake/reset`
+(which runs before every E2E seed) clears listings, photos, orders, faults and
+`needs-model` misses, but keeps catalogue misses, because they are the
+recorder's to-do list and change no answer. Only an upload, `/__fake/reset-all`,
+the list caps or a restart of the fake's instance remove one.
+
+The miss list lives only in memory and the service scales to zero, so a restart
+(an idle scale-down or a deploy) empties it. That is accepted: run the specs
+again to list the misses, then record them.
+
 ## First rollout
 
 Order matters. Until recordings exist, the dev and preview probes and every E2E
@@ -170,13 +180,23 @@ FAKE_BSC_ADMIN_KEY="$(gcloud secrets versions access latest --secret=<admin-key 
   hidden. `--password` and friends are refused. Tokens stay in memory.
 - `--watch` keeps polling the miss list (every 3 s) while a local E2E run
   produces misses, and records each one once. Ctrl-C stops after the request
-  in flight. A session also stops when the BSC token has under 2 minutes left;
-  run it again.
+  in flight.
+- When the BSC access token has under 2 minutes left, the session renews it
+  with the refresh token from the sign-in: one B2C refresh grant each time,
+  paced like any request (one a second) but not counted in the cap, never
+  retried. If it fails (or the sign-in gave no refresh token) the session
+  stops and says why (`could not renew the BSC session (<reason>)`); run it
+  again.
+- The recorder never removes anything from the miss list. A request you
+  confirmed that was not recorded when the session stopped (Ctrl-C, the cap,
+  a BSC stop, a failed renewal) stays listed, and the last lines say how many:
+  run the recorder again, no E2E run needed.
 - `--max N` lowers the per-session cap: a positive whole number, clamped to
   300. Anything else (`--max abc`) is an error.
-- Exit status: 0 on done, cap or Ctrl-C; 2 when it stopped on a BSC answer;
-  1 on a usage or sign-in error. The last lines list any `needs a fake model`
-  misses for a developer to model in `src/synth/`.
+- Exit status: 0 on done, cap or Ctrl-C; 2 when it stopped on a BSC answer
+  or could not renew the session; 1 on a usage or sign-in error. The last
+  lines list any `needs a fake model` misses for a developer to model in
+  `src/synth/`.
 
 The fake promotes each upload at once (a new manifest version; earlier
 manifests stay under `manifests/` and in the bucket's object versions).

@@ -354,8 +354,9 @@ const bscReportValidator = v.object({
     v.literal("paused"),
     v.literal("sellerIdStalled"),
     // NEO-552: this deployment's BSC is the fake, whose per-run namespaces
-    // `/__fake/reset` clears: there is no shared BSC seller, so nothing is
-    // signed in to or read.
+    // `/__fake/reset` clears (run state; it keeps catalogue misses for the
+    // recorder): there is no shared BSC seller, so nothing is signed in to or
+    // read.
     v.literal("fakeBsc"),
   ),
   rows: v.number(),
@@ -698,8 +699,9 @@ export const clearSellerAccounts = internalAction({
       ? { report: { outcome: "paused", items: 0, withdrawn: 0, deleted: 0 } satisfies EbayReport, error: null }
       : await runSide<EbayReport>(ctx, "ebay", "ebay", () => clearEbay(ctx));
     // NEO-552: on the fake there is no shared BSC seller to clear (each run's
-    // namespace is reset by `/__fake/reset`), so the BSC side signs in to
-    // nothing. Off the fake it is unchanged.
+    // namespace is reset by `/__fake/reset`, which keeps only catalogue misses
+    // for the recorder), so the BSC side signs in to nothing. Off the fake it
+    // is unchanged.
     const bscSkipped = bscPaused ? "paused" : fakeBscMode() ? "fakeBsc" : null;
     const bsc = bscSkipped
       ? {

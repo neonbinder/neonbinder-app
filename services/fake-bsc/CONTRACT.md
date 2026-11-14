@@ -56,8 +56,12 @@ first, then in code.
   synthesised per namespace. All write state (listings, photos, orders,
   faults) is in memory per namespace.
 - `POST /__fake/reset {ns}` or `{prefix}` clears state: listings, photos,
-  orders, faults and misses. It never drops the namespace's tokens or
-  sessions. The E2E seed reuses a stored BSC session that is still renewable
+  orders, faults and `needs-model` misses. It keeps catalogue misses: they are
+  the recorder's to-do list, change no answer, and leave only when their
+  recording is stored (`POST /__fake/recordings`), on `/__fake/reset-all`,
+  past the list caps, or when the instance restarts (accepted: the list is in
+  memory only; the specs list them again). It never drops the
+  namespace's tokens or sessions. The E2E seed reuses a stored BSC session that is still renewable
   rather than signing in again, and both resets run just before that seed
   (Convex `testing.resetMyTestState` per user, `e2e-baseline.sh reset` per
   deployment), so a reset that dropped tokens would turn the next BSC call
@@ -81,7 +85,8 @@ first, then in code.
   names only. The server re-applies it on upload. Each recording carries the
   allowlist version; bumping it turns older recordings back into misses.
 - An unrecorded request answers 501 with header `x-nb-fake: unrecorded` and is
-  added to the namespace's miss list. Never forwarded anywhere.
+  added to the namespace's miss list. Never forwarded anywhere. It stays
+  listed until its recording is stored (see the reset above).
 
 ## Faults
 
@@ -128,6 +133,21 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
   is an error.
 - At most 1 request a second, 300 per session, and it stops on the first 429,
   5xx, timeout or 401 with no retry.
+- It never removes a miss: a miss leaves the list only when its upload is
+  stored. A confirmed miss the session did not record (Ctrl-C, the cap, a BSC
+  stop, a failed renewal) stays listed for the next session, which the
+  recorder reports as a count.
+- When the BSC access token has under 2 minutes left it renews the session
+  with the sign-in's refresh token through `services/browser`'s
+  `bscRefreshGrant` (the one B2C refresh grant, shared with the BSC adapter:
+  `client_id`, `grant_type=refresh_token`, `refresh_token`, `scope`), forced
+  to real BSC. One grant each time the token nears expiry,
+  paced inside the 1 request/second limit but not counted in the 300, never
+  retried; the rotated refresh token is kept in memory. A failed grant (or no
+  refresh token) stops the session with a fixed reason (`refused`,
+  `rate_limited`, `server_error`, `timeout`, `network`, `bad_body`,
+  `no_refresh_token`, `refresh_expired`, `unexpected_status`), never a token
+  or B2C text.
 - It reaches the fake as the loader SA through impersonated ADC, minting its
   ID token with `includeEmail` so rule 4 sees the SA's email.
 - Uploads with `POST /__fake/recordings`; auto-promoted.
@@ -315,8 +335,9 @@ every namespace under that prefix (rules without a `cardId` never apply), and
 its misses are recorded under the prefix. A miss read includes a prefix's list
 when the selection overlaps it (`?ns=` under the prefix, or a `?prefix=`
 inside it or containing it); such an entry carries `ns: null` and
-`prefix: "<prefix>"`. `POST /__fake/reset {prefix}` clears the prefix lists
-inside the selection; `{ns}` leaves them. The value is read strictly
+`prefix: "<prefix>"`. `POST /__fake/reset {prefix}` clears the `needs-model`
+entries of the prefix lists inside the selection (catalogue entries stay, as
+above); `{ns}` leaves them. The value is read strictly
 (`readHeaderScope` in `src/namespace.ts`): the whole value must match the
 pattern above and a prefix must be at least 3 characters, like a `{prefix}`
 selector; anything else is read as no header. A BSC token always wins over the
@@ -374,11 +395,24 @@ export async function bscPasswordSignIn(input: {
   stepTimeoutMs?: number;
 }): Promise<{ tokens: BscTokenSet } | { error: string; diagnostic?: LoginDiagnostic; credentialRejected?: boolean }>;
 // BscTokenSet: { token, expiresAt /* epoch ms */, refreshToken?, refreshExpiresAt?, ssoCookies?, ssoExpiresAt? }
+
+// One B2C refresh grant, shared with BscAdapter.refreshAccessToken. Sent once;
+// a network failure or timeout throws. Logs status and B2C's error code only.
+export async function bscRefreshGrant(input: {
+  refreshToken: string;
+  authority?: string;              // default: resolveBscEndpoints(fetchOptions.env).authority
+  fetchOptions?: BscFetchOptions;
+  stepTimeoutMs?: number;
+}): Promise<
+  | { ok: true; tokens: BscTokenSet }
+  | { ok: false; status: number; reason: "refused" | "rate_limited" | "server_error" | "unexpected_status" | "no_access_token"; reauthRequired: boolean }
+>;
 ```
 
 The recorder loads the compiled modules at run time from
-`services/browser/dist/` (`bsc-signin.js`, and `bsc-endpoints.js` for
-`resolveBscEndpoints` and `bscApiHeaders`), so `services/browser` must be
+`services/browser/dist/` (`bsc-signin.js` for `bscPasswordSignIn` and
+`bscRefreshGrant`; `bsc-endpoints.js` for `resolveBscEndpoints` and
+`bscApiHeaders`), so `services/browser` must be
 built first (`npm ci && npm run build` there). It passes
 `fetchOptions: {env: {}}` and the real endpoints, so a fake URL in the
 operator's shell can never redirect a recording, and it never names a BSC

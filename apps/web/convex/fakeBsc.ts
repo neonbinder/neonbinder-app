@@ -178,7 +178,11 @@ export const idToken = internalAction({
   },
 });
 
-/** Clears one namespace's state (listings, photos, orders, faults, misses). */
+/**
+ * Clears one namespace's state (listings, photos, orders, faults, needs-model
+ * misses). The fake keeps its catalogue misses, the recorder's to-do list,
+ * until they are recorded.
+ */
 export const resetNamespace = internalAction({
   args: { ns: v.string() },
   returns: controlResult,
@@ -188,7 +192,10 @@ export const resetNamespace = internalAction({
   },
 });
 
-/** Clears every namespace under `prefix`: this deployment's own (`<slug>-`) or narrower. */
+/**
+ * Clears every namespace under `prefix`: this deployment's own (`<slug>-`) or
+ * narrower. Catalogue misses stay listed until recorded, as above.
+ */
 export const resetPrefix = internalAction({
   args: { prefix: v.string() },
   returns: controlResult,

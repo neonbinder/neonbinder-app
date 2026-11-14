@@ -8,23 +8,22 @@ import {
   summarizeFetchError,
 } from "./base-adapter";
 import { Credentials, SecretsManagerService } from "../services/secrets-manager";
-import { BSC_B2C_CLIENT, resolveBscEndpoints } from "../bsc-endpoints";
+import { resolveBscEndpoints } from "../bsc-endpoints";
 import { bscFetch } from "../bsc-fetch";
 import {
   B2CCookieJar,
   BSC_B2C_STEP_TIMEOUT_MS,
   BSC_UA,
-  BscTokenResponse,
   BscTokenSet,
   attachSsoCookies,
   bscPasswordSignIn,
+  bscRefreshGrant,
   buildAuthorizeRequest,
   cookieHeader,
   exchangeAuthCode,
   extractAuthCode,
   extractAuthError,
   parseB2CSettings,
-  toTokenSet,
 } from "../bsc-signin";
 
 interface BscSellerProfile {
@@ -299,11 +298,9 @@ export class BSCAdapter extends BaseAdapter {
 
   /**
    * Exchange a stored refresh token for a fresh access token — the NEO-141
-   * replacement for "keep the user's password and re-login".
-   *
-   * The grant body is exactly what BSC's public B2C client accepts: client_id,
-   * grant_type, refresh_token, scope. No client secret (public client), no
-   * PKCE verifier (that belongs to the auth-code grant only).
+   * replacement for "keep the user's password and re-login". The grant itself
+   * (body, logging, status classification) is `bscRefreshGrant`, shared with
+   * the fake-BSC recorder.
    *
    * THE RESPONSE ROTATES THE REFRESH TOKEN. B2C returns a new refresh_token
    * and invalidates the one presented, so the caller MUST durably persist the
@@ -312,7 +309,9 @@ export class BSCAdapter extends BaseAdapter {
    * @returns the new token set, or a failure that says whether it is the
    *   user's problem (`reauthRequired`: the grant was refused, so the chain is
    *   broken and only a fresh sign-in can fix it) or ours (an unreachable or
-   *   misbehaving token endpoint, which must stay pageable).
+   *   misbehaving token endpoint, which must stay pageable). A 5xx or a 429
+   *   must NOT be reported as reauth_required, or a BSC outage would present
+   *   to every user as "your session expired, sign in again" (NEO-278).
    *
    * SECURITY: neither the presented nor the returned refresh token is ever
    * logged; only the HTTP status and B2C's short `error` code.
@@ -320,67 +319,12 @@ export class BSCAdapter extends BaseAdapter {
   private async refreshAccessToken(
     refreshToken: string,
   ): Promise<{ tokens: BscTokenSet } | { error: string; reauthRequired: boolean }> {
-    console.log(`[BSC Adapter] B2C refresh grant: POST /token`);
-    const response = await bscFetch(
-      `${resolveBscEndpoints().authority}/oauth2/v2.0/token`,
-      {
-        method: "POST",
-        headers: {
-          "User-Agent": BSC_UA,
-          "Content-Type": "application/x-www-form-urlencoded",
-        },
-        body: new URLSearchParams({
-          client_id: BSC_B2C_CLIENT.clientId,
-          grant_type: "refresh_token",
-          refresh_token: refreshToken,
-          scope: BSC_B2C_CLIENT.scope,
-        }).toString(),
-        signal: AbortSignal.timeout(BSC_B2C_STEP_TIMEOUT_MS),
-      },
-      { scope: this.breakerScope },
-    );
-
-    if (!response.ok) {
-      let errorCode = "(unparseable)";
-      try {
-        errorCode = ((await response.json()) as { error?: string }).error ?? "(none)";
-      } catch {
-        /* ignore — never surface the raw body */
-      }
-      // A 4xx here is B2C saying the grant itself is no good: expired,
-      // revoked, already-rotated, or issued to a different client. Nothing we
-      // can retry our way out of — the user must sign in again.
-      //
-      // A 5xx / anything else is BSC being unwell. That must NOT be reported
-      // as reauth_required, or a BSC outage would present to every user as
-      // "your session expired, sign in again" and never page anyone.
-      //
-      // NEO-278: 429 is carved out of the 4xx bucket even though it is
-      // numerically a 4xx. It says nothing about the grant's validity — it is
-      // B2C throttling us — so it belongs with "BSC being unwell": pageable,
-      // never reported as "sign in again".
-      const reauthRequired =
-        response.status >= 400 && response.status < 500 && response.status !== 429;
-      console.warn(
-        `[BSC Adapter] B2C refresh grant failed (status=${response.status}, ` +
-          `error=${errorCode}, reauth_required=${reauthRequired}).`,
-      );
-      return {
-        error: reauthRequired ? REAUTH_REQUIRED_ERROR : `Authentication failed`,
-        reauthRequired,
-      };
-    }
-
-    const tokens = toTokenSet((await response.json()) as BscTokenResponse);
-    if (!tokens) {
-      console.warn(`[BSC Adapter] B2C refresh grant returned no access_token.`);
-      return { error: `Authentication failed`, reauthRequired: false };
-    }
-    console.log(
-      `[BSC Adapter] B2C refresh grant succeeded ` +
-        `(rotated_refresh_token=${!!tokens.refreshToken}).`,
-    );
-    return { tokens };
+    const r = await bscRefreshGrant({ refreshToken, fetchOptions: { scope: this.breakerScope } });
+    if (r.ok) return { tokens: r.tokens };
+    return {
+      error: r.reauthRequired ? REAUTH_REQUIRED_ERROR : `Authentication failed`,
+      reauthRequired: r.reauthRequired,
+    };
   }
 
   /**

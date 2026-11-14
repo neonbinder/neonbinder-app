@@ -14,7 +14,7 @@
  */
 import { readCredentials } from "./credentials";
 import { FakeClient, adcIdTokenMinter, isLoopback } from "./fake-client";
-import { loadBrowserModules } from "./bsc";
+import { bscSession, loadBrowserModules } from "./bsc";
 import { MAX_REQUESTS_PER_SESSION, bscCaller, describeRequest, planMisses, runRecordSession } from "./record";
 import { buildUndoRequest, describeUndo, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite } from "./capture-write";
 import { askOnTerminal } from "./confirm";
@@ -103,7 +103,7 @@ async function record(flags: Map<string, string | true>): Promise<number> {
 
   const browser = loadBrowserModules(str(flags, "--browser-dist"));
   const creds = await readCredentials(process.stdin, process.stderr);
-  const tokens = await browser.signIn(creds.username, creds.password);
+  const session = bscSession(await browser.signIn(creds.username, creds.password), (rt) => browser.refresh(rt));
   creds.password = "";
   say("signed in to BSC; walking the miss list");
   let interrupted = false;
@@ -115,8 +115,9 @@ async function record(flags: Map<string, string | true>): Promise<number> {
     prefix,
     watch,
     fake,
-    bsc: bscCaller({ apiBase: browser.apiBase, token: tokens.token, headers: (t) => browser.apiHeaders(t) }),
-    tokenExpiresAt: tokens.expiresAt,
+    bsc: bscCaller({ apiBase: browser.apiBase, token: () => session.token(), headers: (t) => browser.apiHeaders(t) }),
+    tokenExpiresAt: session.expiresAt(),
+    renewToken: () => session.renew(),
     ...(max !== undefined ? { maxRequests: max } : {}),
     includeAnon,
     // Only the keys shown above are confirmed; anything else is asked again.
@@ -125,7 +126,10 @@ async function record(flags: Map<string, string | true>): Promise<number> {
     stopped: () => interrupted,
     report: say,
   });
-  say(`sent ${result.sent}, recorded ${result.recorded}, stopped: ${result.stopReason}`);
+  say(`sent ${result.sent}, recorded ${result.recorded}, stopped: ${result.stopReason}${result.renewals ? ` (session renewed ${result.renewals}x)` : ""}`);
+  if (result.stopReason === "refresh_failed") say(`could not renew the BSC session (${result.refreshFailure ?? "unknown"}); nothing more was sent`);
+  if (result.stopReason === "token_expiring") say("the BSC session is about to expire and could not be renewed; nothing more was sent");
+  if (result.left > 0) say(`${result.left} request(s) not recorded; they stay on the fake's miss list: run the recorder again`);
   for (const n of result.needsModel) say(`needs a fake model: ${n}`);
   for (const r of result.refused) say(`refused (never sent): ${r}`);
   return ["done", "interrupted", "cap", "declined"].includes(result.stopReason) ? 0 : 2;
