@@ -30,6 +30,7 @@ vi.mock("convex/react", () => ({
 
 import NoTeamCardsControl, {
   NO_TEAM_CONFIRM_LABEL,
+  NO_TEAM_CONFIRM_LABEL_ONE,
   NO_TEAM_COUNT_FAILED_TEXT,
   NO_TEAM_DISMISS_LABEL,
   NO_TEAM_RECOUNT_LABEL,
@@ -41,7 +42,9 @@ import NoTeamCardsControl, {
   failNoTeamRun,
   keptReasonLines,
   noTeamConfirmCopy,
+  noTeamConfirmLabel,
   noTeamHeading,
+  noTeamLineShown,
   noTeamLineText,
   noTeamCountResultText,
   offerLabel,
@@ -165,6 +168,57 @@ describe("No Team run — words", () => {
       "2 cards never got an answer from the team check. Pick those yourself under Attention on their checklist.",
       "1 checklist under this one has a team of its own and is left out.",
     ]);
+  });
+});
+
+describe("No Team confirm — the yes matches the count", () => {
+  it("one card is 'it', more are 'them'", () => {
+    expect(noTeamConfirmLabel(1)).toBe("Yes, mark it No Team");
+    expect(NO_TEAM_CONFIRM_LABEL_ONE).toBe("Yes, mark it No Team");
+    expect(noTeamConfirmLabel(2)).toBe("Yes, mark them No Team");
+    expect(NO_TEAM_CONFIRM_LABEL).toBe("Yes, mark them No Team");
+  });
+});
+
+describe("No Team run — variant-type parents with no cards of their own", () => {
+  const withInsertType = () =>
+    view({
+      targets: [
+        { _id: sid("t-ins"), name: "Insert", toStamp: 0, level: "variantType" },
+        { _id: sid("t-gold"), name: "Gold", toStamp: 2, level: "insert", cardCount: 2 },
+      ],
+      toStamp: 2,
+    });
+
+  it("are walked but not drawn, and not counted in the heading", () => {
+    const run = startNoTeamRun(withInsertType());
+    expect(run.lines).toHaveLength(2);
+    expect(run.lines.map(noTeamLineShown)).toEqual([false, true]);
+    expect(noTeamHeading(run)).toBe("Marking teamless cards No Team: checklist 1 of 1");
+  });
+
+  it("a variant type with cards of its own (Base) is drawn", () => {
+    const run = startNoTeamRun(
+      view({
+        targets: [
+          { _id: sid("t-base"), name: "Base", toStamp: 0, level: "variantType", cardCount: 4 },
+          { _id: sid("t-promo"), name: "Promo", toStamp: 1, level: "variantType" },
+        ],
+      }),
+    );
+    expect(run.lines.map(noTeamLineShown)).toEqual([true, true]);
+  });
+
+  it("a quiet line shows up once it meets a card, or where the run failed", () => {
+    let run = startNoTeamRun(withInsertType());
+    run = applyNoTeamPage(
+      run,
+      page({ targetId: sid("t-ins"), targetCount: 2, scanned: 1, kept: { ...KEPT0, hasTeam: 1 }, cursor: "c1" }),
+    );
+    expect(noTeamLineShown(run.lines[0])).toBe(true);
+    const failed = failNoTeamRun(startNoTeamRun(withInsertType()), "Nope.");
+    expect(failed.lines[0].kind).toBe("failed");
+    expect(noTeamLineShown(failed.lines[0])).toBe(true);
   });
 });
 
@@ -359,6 +413,42 @@ describe("NoTeamCardsControl", () => {
         screen.getByRole("button", { name: "Mark 5 teamless cards No Team" }),
       ),
     );
+  });
+
+  it("one card: the yes says 'it'; opening the confirm tells the panel (its toast comes down)", async () => {
+    mockQuery.mockResolvedValue(
+      view({ targets: [{ _id: sid("t-base"), name: "Base", toStamp: 1 }], toStamp: 1 }),
+    );
+    const onConfirmOpen = vi.fn();
+    renderControl({ onConfirmOpen });
+    fireEvent.click(await screen.findByRole("button", { name: "Mark 1 teamless card No Team" }));
+    expect(onConfirmOpen).toHaveBeenCalledTimes(1);
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByRole("button", { name: "Yes, mark it No Team" })).toBeTruthy();
+    expect(within(dialog).queryByRole("button", { name: "Yes, mark them No Team" })).toBeNull();
+  });
+
+  it("the ledger leaves out a variant type with no cards of its own ('Insert — no cards yet')", async () => {
+    mockQuery.mockResolvedValue(
+      view({
+        targets: [
+          { _id: sid("t-ins"), name: "Insert", toStamp: 0, level: "variantType" },
+          { _id: sid("t-gold"), name: "Gold", toStamp: 2, level: "insert", cardCount: 2 },
+        ],
+        toStamp: 2,
+      }),
+    );
+    mockMutation
+      .mockResolvedValueOnce(page({ targetId: sid("t-ins"), scanned: 0, cursor: "c1" }))
+      .mockResolvedValueOnce(page({ targetId: sid("t-gold"), targetIndex: 1, scanned: 2, stamped: 2, cursor: null }));
+    renderControl();
+    fireEvent.click(await screen.findByRole("button", { name: "Mark 2 teamless cards No Team" }));
+    mockQuery.mockResolvedValue(view({ toStamp: 0 }));
+    fireEvent.click(screen.getByRole("button", { name: NO_TEAM_CONFIRM_LABEL }));
+    const ledger = await screen.findByRole("region", { name: "Marked 2 cards No Team" });
+    expect(within(ledger).getByText("Gold — marked 2 cards No Team")).toBeTruthy();
+    expect(within(ledger).queryByText(/^Insert —/)).toBeNull();
+    expect(within(ledger).getAllByRole("listitem")).toHaveLength(1);
   });
 
   it("Yes runs the pages until the cursor is null, shows the ledger, then counts again", async () => {

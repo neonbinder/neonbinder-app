@@ -445,6 +445,17 @@ export default function SetAttributesPanel({
   const showToast = (message: string) => raiseToast("status", message, 6000);
 
   /**
+   * NEO-556 — take the confirmation down early, when the operator has moved
+   * on to the next step it pointed at (the "Mark N teamless cards" confirm
+   * opening under it). A failure stays: it is news still to act on.
+   */
+  const dismissStatusToast = () => {
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = null;
+    setToast(null);
+  };
+
+  /**
    * NEO-412 — "Saving {label}…" while a write is in flight. It never dismisses
    * itself: the save's own "Saved"/"Cleared"/"Failed" replaces it, so the
    * panel never says Saved before the server has the value.
@@ -956,6 +967,9 @@ export default function SetAttributesPanel({
           isNoTeam={noTeamDefault}
           teamCascadeStartedAt={row.teamCascadeStartedAt}
           expanded={expanded}
+          // The No Team finish toast has done its job once the Mark confirm
+          // opens; it must not sit over the dialog for the rest of its 6s.
+          onConfirmOpen={dismissStatusToast}
           onDismissed={() => {
             if (!expanded) {
               expandToggleRef.current?.focus({ preventScroll: true });
@@ -1792,9 +1806,12 @@ export const NO_TEAM_SAVED_TOAST = "Saved No Team · teamless new cards get it";
 /**
  * NEO-556 — the line when a No Team save's cascade finishes. No Team reaches
  * the checklists beneath, never a card, so "Team applied to cards" would
- * claim what did not happen.
+ * claim what did not happen. Names the row's level ("under this set"), the
+ * noun its confirm's title uses, rather than a bare "under it".
  */
-export const NO_TEAM_APPLIED_TOAST = "No Team applied to the checklists under it";
+export function noTeamAppliedToast(levelLabel: string): string {
+  return `No Team applied to the checklists under this ${levelLabel.toLowerCase()}`;
+}
 /** NEO-556 — the toast after No Team is withdrawn (the row goes back to unset). */
 export const NO_TEAM_CLEARED_TOAST = "Cleared No Team · cards unchanged";
 
@@ -1809,8 +1826,8 @@ export const NO_TEAM_CLEARED_TOAST = "Cleared No Team · cards unchanged";
  * teamless cards already here are the next step (`NoTeamCardsControl`).
  *
  *   title: "Set this set to No Team?"
- *   body:  "New cards with nothing naming a team get No Team. 3 checklists under it switch
- *           to No Team too. 28 cards keep Durham Bulls. Cards already here
+ *   body:  "New cards with nothing naming a team get No Team. 3 checklists
+ *           under this set switch to No Team too. 28 cards keep Durham Bulls. Cards already here
  *           stay as they are; you can mark the teamless ones next."
  */
 export function setNoTeamConfirmCopy({
@@ -1827,7 +1844,7 @@ export function setNoTeamConfirmCopy({
   const parts = ["New cards with nothing naming a team get No Team."];
   if (preview.nodesFollowing > 0) {
     parts.push(
-      `${plural(preview.nodesFollowing, "checklist", "checklists")} under it switch${preview.nodesFollowing === 1 ? "es" : ""} to No Team too.`,
+      `${plural(preview.nodesFollowing, "checklist", "checklists")} under this ${noun} switch${preview.nodesFollowing === 1 ? "es" : ""} to No Team too.`,
     );
   }
   if (preview.cardsCarryingCurrent > 0 && currentTeamNames) {
@@ -1843,8 +1860,15 @@ export function setNoTeamConfirmCopy({
  * The visible hint under the picker, keyed on the level because the set is
  * where a collector meets this (a team issue, a police set, a college set, a
  * stadium giveaway) and a variant beneath it only needs the mechanism.
+ *
+ * NEO-556: with No Team on (stored or pending, as the toggle shows it) the
+ * hint says what that answer does and how to undo it, at every level, rather
+ * than offering the choice already made.
  */
-export function teamHintCopy(level: Level): string {
+export function teamHintCopy(level: Level, noTeam = false): string {
+  if (noTeam) {
+    return "No Team: new cards with nothing naming a team get it. Pick a team to replace it.";
+  }
   if (level === "setName") {
     return "Team issues, police sets, college sets, stadium giveaways: pick the team once and every card in this set gets it. Cards with no team at all? Choose No Team.";
   }
@@ -2030,7 +2054,7 @@ function SetTeamRow({
       // NEO-556: a No Team save's cascade moved checklists, not cards; its
       // finish line says so rather than replacing the No Team toast with a
       // claim about cards.
-      onSaved(noTeam ? NO_TEAM_APPLIED_TOAST : "Team applied to cards");
+      onSaved(noTeam ? noTeamAppliedToast(LEVEL_LABEL[level]) : "Team applied to cards");
     }
     // `onSaved` is a fresh closure per parent render; the transition is what
     // this effect is about.
@@ -2302,6 +2326,11 @@ function SetTeamRow({
   };
 
   const showPendingActions = pendingEmpty && !inFlight;
+  // What the No Team toggle shows: a pending team pick over a stored No Team
+  // shows it off; a pending No Team shows it on. The hint follows it.
+  const noTeamShown = inFlight
+    ? noTeam
+    : (pendingNoTeam ?? (pending !== null && pending.length > 0 ? false : noTeam));
 
   return (
     <div
@@ -2324,11 +2353,7 @@ function SetTeamRow({
         value={inFlight ? teamIds : (pending ?? teamIds)}
         onChange={(next) => void handleChange(next)}
         noTeam={{
-          // A pending team pick over a stored No Team shows it off; a
-          // pending No Team shows it on.
-          value: inFlight
-            ? noTeam
-            : (pendingNoTeam ?? (pending !== null && pending.length > 0 ? false : noTeam)),
+          value: noTeamShown,
           onChange: (next) => void handleNoTeam(next),
           label: NO_TEAM_LABELS.everyCard,
         }}
@@ -2379,7 +2404,7 @@ function SetTeamRow({
           before the pick, not discoverable after it. gray-400 on this
           ground clears 4.5:1 (the pair every sub-line in this panel uses). */}
       <p id={hintId} className="text-xs text-ink-3">
-        {teamHintCopy(level)}
+        {teamHintCopy(level, noTeamShown)}
       </p>
       {confirm && (
         <ConfirmDialog
@@ -2399,6 +2424,10 @@ function SetTeamRow({
                 ? "Saving…"
                 : "Applying…"
           }
+          // Only a clear takes something away (pink yes, cyan Cancel). An
+          // apply or a No Team adds an answer: the green yes beside a pink
+          // Cancel, the same pair NoTeamCardsControl's confirm shows.
+          confirmVariant={confirm.kind === "clear" ? "negative" : "primary"}
           busy={busy}
           onConfirm={() => {
             if (busy) return;

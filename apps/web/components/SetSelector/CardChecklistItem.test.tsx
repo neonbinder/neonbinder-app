@@ -876,6 +876,20 @@ describe("CardChecklistItem — NEO-556 No Team", () => {
     expect(subtitleOf(container)).toBe("No Team · /99");
   });
 
+  it("'No Team' wears the toggle's hidden none-sign, so it never reads as a team's name", () => {
+    const { container } = renderItem({
+      card: makeCard({ teamNoneConfirmedAt: 1, printRun: 99 }),
+    });
+    const line = container.querySelector(".truncate.min-h-\\[1rem\\]")!;
+    const marked = Array.from(line.querySelectorAll("span")).find((el) => el.textContent === "No Team");
+    expect(marked).toBeTruthy();
+    expect(marked!.className).toContain("text-ink-3");
+    const glyph = marked!.querySelector("svg");
+    expect(glyph?.getAttribute("aria-hidden")).toBe("true");
+    // Only the answer is marked; the print run beside it stays plain text.
+    expect(line.querySelectorAll("svg")).toHaveLength(1);
+  });
+
   it("an unanswered card stays blank: no answer is not No Team", () => {
     const { container } = renderItem({ card: makeCard({ printRun: 99 }) });
     expect(subtitleOf(container)).toBe("/99");

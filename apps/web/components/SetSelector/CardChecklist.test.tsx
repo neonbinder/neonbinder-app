@@ -6836,7 +6836,7 @@ describe("CardChecklist — NEO-556 quick-add No Team", () => {
     beforeEach(() => {
       state.variantRow = { value: "Test Set", noTeamDefault: { setAt: 1, setByUserId: "u" } };
     });
-    const fromSet = () => screen.queryByText("From the set. Pick a team to change it.");
+    const fromSet = () => screen.queryByText("From the set. Pick a team, or press No Team to turn it off.");
 
     it("starts pressed, says it came from the set, and saves No Team", async () => {
       renderChecklist();
@@ -6901,7 +6901,7 @@ describe("CardChecklist — NEO-556 quick-add No Team", () => {
   it("with no No Team on the checklist, an untouched toggle sends nothing about No Team", async () => {
     renderChecklist();
     openAddForm();
-    expect(screen.queryByText("From the set. Pick a team to change it.")).toBeNull();
+    expect(screen.queryByText("From the set. Pick a team, or press No Team to turn it off.")).toBeNull();
     fillCardNumber("614");
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Submit new card"));

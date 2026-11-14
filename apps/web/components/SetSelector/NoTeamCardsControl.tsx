@@ -42,7 +42,15 @@ type ReasonCounts = Record<NoTeamKeepReason, number>;
 
 /** `noTeamTargets`, as this control reads it. */
 export type NoTeamTargetsView = {
-  targets: Array<{ _id: Id<"selectorOptions">; name: string; toStamp: number }>;
+  targets: Array<{
+    _id: Id<"selectorOptions">;
+    name: string;
+    toStamp: number;
+    /** The row's level; the server always sends it (optional for fixtures). */
+    level?: "variantType" | "insert" | "parallel";
+    /** Home cards on the row; absent = never counted. */
+    cardCount?: number;
+  }>;
   toStamp: number;
   kept: ReasonCounts;
   rowsWithOtherDefault: number;
@@ -74,6 +82,12 @@ export type NoTeamLine = {
   kind: RunLineKind;
   counts: NoTeamLineCounts;
   error?: string;
+  /**
+   * A variant-type row with nothing counted on it ("Insert", whose cards live
+   * on the inserts beneath). The run still walks it, but its line is drawn
+   * only if it turns out to hold a card or fails (`noTeamLineShown`).
+   */
+  quiet?: boolean;
 };
 
 export type NoTeamRun = {
@@ -122,7 +136,14 @@ export function noTeamCountResultText(view: Pick<NoTeamTargetsView, "toStamp" | 
 /** Says what the offer does, and that nothing moves until it is pressed. */
 export const NO_TEAM_OFFER_HINT =
   "Teamless new cards get No Team on their own. Cards already here change only when you mark them.";
+/** The confirm's yes, for more than one card. */
 export const NO_TEAM_CONFIRM_LABEL = "Yes, mark them No Team";
+/** The confirm's yes, for exactly one card. */
+export const NO_TEAM_CONFIRM_LABEL_ONE = "Yes, mark it No Team";
+/** The confirm's yes, matched to the count its title gives. */
+export function noTeamConfirmLabel(toStamp: number): string {
+  return toStamp === 1 ? NO_TEAM_CONFIRM_LABEL_ONE : NO_TEAM_CONFIRM_LABEL;
+}
 export const NO_TEAM_COUNTING_TEXT = "Counting cards…";
 /** The count could not be read (the server's sentence shows beside it); asks once more. */
 export const NO_TEAM_RECOUNT_LABEL = "Count teamless cards again";
@@ -259,8 +280,9 @@ function stampedTotal(run: NoTeamRun): { stamped: number; scanned: number } {
 /** The ledger's heading: where the run is, then how it ended. */
 export function noTeamHeading(run: NoTeamRun): string {
   const { stamped, scanned } = stampedTotal(run);
-  const n = run.lines.length;
-  const done = run.lines.filter((l) => l.kind === "built" || l.kind === "skipped").length;
+  const shown = run.lines.filter(noTeamLineShown);
+  const n = shown.length;
+  const done = shown.filter((l) => l.kind === "built" || l.kind === "skipped").length;
   if (run.phase === "running") {
     return `Marking teamless cards No Team: checklist ${count(Math.min(done + 1, n))} of ${count(n)}`;
   }
@@ -286,6 +308,25 @@ export function noTeamErrorText(error: unknown): string {
 // The run, as pure steps (tested directly)
 // ---------------------------------------------------------------------------
 
+/**
+ * A variant-type parent that holds no cards by design: no card counted on it
+ * and none to mark. Its line would only ever say "Insert — no cards yet",
+ * which reads as a checklist missing its cards.
+ */
+function holdsNoCardsByDesign(t: NoTeamTargetsView["targets"][number]): boolean {
+  return t.level === "variantType" && t.toStamp === 0 && !((t.cardCount ?? 0) > 0);
+}
+
+/**
+ * Whether a ledger line is drawn (and counted in the heading and the pulse).
+ * A quiet line shows up once it has met a card, or when it is where the run
+ * failed or stopped partway, so nothing the operator must see is hidden.
+ */
+export function noTeamLineShown(line: NoTeamLine): boolean {
+  if (!line.quiet) return true;
+  return line.counts.scanned > 0 || line.kind === "failed" || line.kind === "unfinished";
+}
+
 export function startNoTeamRun(view: Pick<NoTeamTargetsView, "targets" | "walkTruncated">): NoTeamRun {
   return {
     lines: view.targets.map((t, i) => ({
@@ -293,6 +334,7 @@ export function startNoTeamRun(view: Pick<NoTeamTargetsView, "targets" | "walkTr
       name: t.name,
       kind: i === 0 ? "building" : "waiting",
       counts: ZERO,
+      ...(holdsNoCardsByDesign(t) ? { quiet: true } : {}),
     })),
     phase: "running",
     walkTruncated: view.walkTruncated,
@@ -332,11 +374,13 @@ export function applyNoTeamPage(run: NoTeamRun, page: NoTeamPageView): NoTeamRun
       : line;
   });
   const next: NoTeamRun = { ...run, lines, phase: last ? "done" : "running" };
-  const isDone = (l: NoTeamLine) => l.kind === "built" || l.kind === "skipped";
+  const isDone = (l: NoTeamLine) => noTeamLineShown(l) && (l.kind === "built" || l.kind === "skipped");
   const doneCount = lines.filter(isDone).length;
   const before = run.lines.filter(isDone).length;
   if (last) next.announcement = noTeamHeading(next);
-  else if (doneCount !== before) next.announcement = pulseText(doneCount, lines.length);
+  else if (doneCount !== before) {
+    next.announcement = pulseText(doneCount, lines.filter(noTeamLineShown).length);
+  }
   return next;
 }
 
@@ -388,6 +432,7 @@ export default function NoTeamCardsControl({
   isNoTeam,
   teamCascadeStartedAt,
   expanded,
+  onConfirmOpen,
   onDismissed,
 }: {
   /** The row the Attributes panel is on (a set, variant type, insert or parallel). */
@@ -398,6 +443,11 @@ export default function NoTeamCardsControl({
   teamCascadeStartedAt: number | undefined;
   /** The panel is open: the offer shows only then, a run's ledger always. */
   expanded: boolean;
+  /**
+   * The confirm is opening: the panel takes down its own toast (the No Team
+   * finish line) so it does not sit over the dialog.
+   */
+  onConfirmOpen?: () => void;
   /**
    * Dismiss pressed: the ledger, and the focus in it, are about to go. The
    * panel puts focus somewhere of its own (the Team row's No Team toggle, or
@@ -535,9 +585,12 @@ export default function NoTeamCardsControl({
   const showOffer =
     expanded && isNoTeam && !running && asking === null && view !== null && view.toStamp > 0;
 
+  // NEO-556: variant-type parents with no cards of their own are walked but
+  // not drawn (`noTeamLineShown`).
+  const shownLines = run ? run.lines.filter(noTeamLineShown) : [];
   const ledgerList = run && (
     <ul className="space-y-0.5">
-      {run.lines.map((line) => (
+      {shownLines.map((line) => (
         <li key={line.id} className="leading-5">
           <div className="flex items-start gap-1.5 py-0.5">
             <RunGlyph kind={line.kind} />
@@ -563,7 +616,10 @@ export default function NoTeamCardsControl({
                 size={BUTTON_SIZE}
                 outline
                 aria-describedby={hintId}
-                onClick={() => setAsking(view)}
+                onClick={() => {
+                  onConfirmOpen?.();
+                  setAsking(view);
+                }}
               >
                 {offerLabel(view.toStamp, view.countTruncated)}
               </NeonButton>
@@ -607,7 +663,7 @@ export default function NoTeamCardsControl({
         <ConfirmDialog
           title={noTeamConfirmCopy(asking).title}
           description={noTeamConfirmCopy(asking).description}
-          confirmLabel={NO_TEAM_CONFIRM_LABEL}
+          confirmLabel={noTeamConfirmLabel(asking.toStamp)}
           // Applying, not taking away: the green yes beside a pink Cancel.
           confirmVariant="primary"
           busyLabel="Starting…"
@@ -677,10 +733,10 @@ export default function NoTeamCardsControl({
             )}
           </div>
           <SleeveStrip
-            items={run.lines.map((line) => ({ key: line.id, kind: line.kind, title: noTeamLineText(line) }))}
+            items={shownLines.map((line) => ({ key: line.id, kind: line.kind, title: noTeamLineText(line) }))}
           />
           <div className="mt-2 text-xs">
-            {run.lines.length > SCROLL_AFTER ? (
+            {shownLines.length > SCROLL_AFTER ? (
               <div
                 role="group"
                 aria-label="Checklists in the No Team run"

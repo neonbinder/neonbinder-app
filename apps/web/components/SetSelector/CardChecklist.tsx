@@ -670,7 +670,8 @@ const NO_HAYSTACK: CardSearchHaystack = {
  * because this checklist's Team is No Team, not because the operator pressed
  * it.
  */
-export const QUICK_ADD_NO_TEAM_FROM_SET_HINT = "From the set. Pick a team to change it.";
+export const QUICK_ADD_NO_TEAM_FROM_SET_HINT =
+  "From the set. Pick a team, or press No Team to turn it off.";
 
 function needsYouLabel(count: number): string {
   return count === 1 ? "1 needs you" : `${count} need you`;

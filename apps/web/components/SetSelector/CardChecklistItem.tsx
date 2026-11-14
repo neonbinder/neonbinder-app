@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { NoSymbolIcon } from "@heroicons/react/16/solid";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "../../lib/errors/user-facing-message";
@@ -282,11 +283,15 @@ export default function CardChecklistItem({
   // NEO-556 — a card confirmed teamless says so where its team would be, so
   // "No Team" (an answer) reads apart from a blank line (no answer yet). Only
   // with no team linked or typed: picking one retires the stamp server-side.
+  // Drawn with the picker toggle's slashed circle (below, `noTeamPartAt`) so
+  // it never reads as a team called "No Team".
+  let noTeamPartAt = -1;
   if (
     card.teamNoneConfirmedAt !== undefined &&
     (card.teamOnCardIds?.length ?? 0) === 0 &&
     (card.pendingTeamNames?.length ?? 0) === 0
   ) {
+    noTeamPartAt = subParts.length;
     subParts.push(NO_TEAM_TEXT);
   }
   if (card.printRun) subParts.push(`/${card.printRun}`);
@@ -437,7 +442,25 @@ export default function CardChecklistItem({
           className="text-xs text-ink-3 truncate min-h-[1rem]"
           aria-hidden={subParts.length === 0 ? true : undefined}
         >
-          {subParts.join(" · ")}
+          {subParts.map((part, i) => (
+            <Fragment key={i}>
+              {i > 0 && " · "}
+              {i === noTeamPartAt ? (
+                // NEO-556: the answer "no team", not a team's name — the
+                // toggle's "none" sign before the word, in the line's quiet
+                // ink. The glyph is decoration; the words carry it.
+                <span className="whitespace-nowrap text-ink-3">
+                  <NoSymbolIcon
+                    aria-hidden="true"
+                    className="mr-0.5 inline-block size-3 align-[-2px]"
+                  />
+                  {part}
+                </span>
+              ) : (
+                part
+              )}
+            </Fragment>
+          ))}
         </div>
       </div>
       {/* Attribute badges */}

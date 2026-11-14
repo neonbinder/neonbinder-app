@@ -303,11 +303,13 @@ vi.mock("./NoTeamCardsControl", () => ({
     selectorOptionId,
     isNoTeam,
     expanded,
+    onConfirmOpen,
     onDismissed,
   }: {
     selectorOptionId: string;
     isNoTeam: boolean;
     expanded: boolean;
+    onConfirmOpen?: () => void;
     onDismissed: () => void;
   }) =>
     !isNoTeam ? null : (
@@ -319,6 +321,9 @@ vi.mock("./NoTeamCardsControl", () => ({
     >
       <button type="button" onClick={onDismissed}>
         Stub No Team dismiss
+      </button>
+      <button type="button" onClick={() => onConfirmOpen?.()}>
+        Stub No Team mark offer
       </button>
     </div>
     ),
@@ -367,13 +372,14 @@ vi.mock("./EveryCardPlayerControl", () => ({
 // ---------------------------------------------------------------------------
 
 import SetAttributesPanel, {
-  NO_TEAM_APPLIED_TOAST,
+  noTeamAppliedToast,
   NO_TEAM_CLEARED_TOAST,
   NO_TEAM_SAVED_TOAST,
   SET_TEAM_PICKER_LABELS,
   setNoTeamConfirmCopy,
   teamCascadeConfirmCopy,
   teamClearConfirmCopy,
+  teamHintCopy,
   teamSavedToast,
 } from "./SetAttributesPanel";
 import { DEFAULT_TEAM_PICKER_LABELS } from "./TeamPicker";
@@ -2814,6 +2820,13 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
     expect(screen.getByTestId("team-picker-value").textContent).toBe(
       "team-bulls",
     );
+    // Applying adds an answer: green yes, pink Cancel (NEO-556).
+    expect(
+      within(dialog).getByRole("button", { name: "Yes, apply" }).style.getPropertyValue("--nb-fill"),
+    ).toBe("var(--neon-green)");
+    expect(
+      within(dialog).getByRole("button", { name: "Cancel" }).style.getPropertyValue("--nb-fill"),
+    ).toBe("var(--neon-pink)");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Yes, apply" }));
 
@@ -2936,6 +2949,13 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
         ),
       ).toBeTruthy();
       expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+      // A clear takes away: it keeps the pink yes beside a cyan Cancel.
+      expect(
+        within(dialog).getByRole("button", { name: "Yes, clear" }).style.getPropertyValue("--nb-fill"),
+      ).toBe("var(--neon-pink)");
+      expect(
+        within(dialog).getByRole("button", { name: "Cancel" }).style.getPropertyValue("--nb-fill"),
+      ).toBe("var(--neon-blue)");
 
       fireEvent.click(
         within(dialog).getByRole("button", { name: "Yes, clear" }),
@@ -4109,10 +4129,15 @@ describe("SetAttributesPanel — No Team (NEO-556)", () => {
 
     const dialog = await screen.findByRole("dialog");
     expect(within(dialog).getByText("Set this set to No Team?")).toBeTruthy();
-    expect(within(dialog).getByText(/3 checklists under it switch to No Team too\./)).toBeTruthy();
+    expect(within(dialog).getByText(/3 checklists under this set switch to No Team too\./)).toBeTruthy();
     // Pending while the question is open: the toggle already reads pressed.
     expect(toggle().getAttribute("aria-pressed")).toBe("true");
     expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+    // Setting an answer, not taking one away: the green yes beside a pink
+    // Cancel, as the Mark confirm that follows it shows.
+    const fill = (el: HTMLElement) => el.style.getPropertyValue("--nb-fill");
+    expect(fill(within(dialog).getByRole("button", { name: "Yes, set No Team" }))).toBe("var(--neon-green)");
+    expect(fill(within(dialog).getByRole("button", { name: "Cancel" }))).toBe("var(--neon-pink)");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Yes, set No Team" }));
     await waitFor(() => {
@@ -4332,8 +4357,35 @@ describe("SetAttributesPanel — No Team (NEO-556)", () => {
     const { rerender } = renderPanel();
     currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
     rerender(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} />);
-    expect(await screen.findByText(NO_TEAM_APPLIED_TOAST)).toBeTruthy();
+    expect(await screen.findByText("No Team applied to the checklists under this set")).toBeTruthy();
+    expect(noTeamAppliedToast("Insert")).toBe("No Team applied to the checklists under this insert");
+  });
+
+  it("the finish toast comes down when the Mark confirm opens, rather than sitting over it", async () => {
+    currentRow = makeRow({
+      level: "setName",
+      noTeamDefault: NO_TEAM,
+      teamCascadeStartedAt: Date.now() - 5_000,
+    });
+    const { rerender } = renderPanel();
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    rerender(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} />);
+    const finish = "No Team applied to the checklists under this set";
+    expect(await screen.findByText(finish)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Stub No Team mark offer" }));
+    await waitFor(() => expect(screen.queryByText(finish)).toBeNull());
     expect(screen.queryByText("Team applied to cards")).toBeNull();
+  });
+});
+
+describe("teamHintCopy with No Team on (NEO-556)", () => {
+  it("says what No Team does and how to replace it, at every level", () => {
+    const on = "No Team: new cards with nothing naming a team get it. Pick a team to replace it.";
+    expect(teamHintCopy("setName", true)).toBe(on);
+    expect(teamHintCopy("insert", true)).toBe(on);
+    expect(teamHintCopy("insert")).toBe(
+      "Every card in this insert gets this team. Pick it once, or choose No Team.",
+    );
   });
 });
 
@@ -4348,7 +4400,7 @@ describe("setNoTeamConfirmCopy (NEO-556)", () => {
     ).toEqual({
       title: "Set this set to No Team?",
       description:
-        "New cards with nothing naming a team get No Team. 1 checklist under it switches to No Team too. 1 card keeps Durham Bulls. Cards already here stay as they are; you can mark the teamless ones next.",
+        "New cards with nothing naming a team get No Team. 1 checklist under this set switches to No Team too. 1 card keeps Durham Bulls. Cards already here stay as they are; you can mark the teamless ones next.",
     });
   });
 

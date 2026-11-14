@@ -657,7 +657,7 @@ export default function TeamPicker({
           // control's boundary, and `dark:border-gray-600` measures 2.35:1 on
           // the dark surface — under the 3:1 floor. gray-500 is 3.67:1 there
           // and the light-theme gray-400 already passes.
-          className="px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2"
+          className="px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2 [@media(pointer:coarse)]:min-h-11"
         >
           {/* The visible text IS the accessible name, plus the "+": an
               instance that renames the trigger renames what people see, so
@@ -945,7 +945,9 @@ export default function TeamPicker({
           check after the word and semibold type (SC 1.4.1, the state is
           never the tint alone).
 
-          `min-h-6`: the 24px target floor (SC 2.5.8) on a chip-sized face.
+          `min-h-6`: the 24px target floor (SC 2.5.8) on a chip-sized face;
+          on a touch screen (`pointer: coarse`) it grows to the 44px finger
+          target, as "+ Add team" beside it does.
           `aria-describedby` follows "+ Add team"'s: the caller's hint says
           what the answer reaches, for this control as much as the trigger.
 
@@ -962,7 +964,7 @@ export default function TeamPicker({
             if (disabled) return;
             noTeam.onChange(!noTeamOn);
           }}
-          className={`inline-flex min-h-6 items-center gap-1 px-2 py-0.5 text-xs rounded-full border focus-outline disabled:cursor-not-allowed disabled:opacity-50 ${
+          className={`inline-flex min-h-6 [@media(pointer:coarse)]:min-h-11 items-center gap-1 px-2 py-0.5 text-xs rounded-full border focus-outline disabled:cursor-not-allowed disabled:opacity-50 ${
             noTeamOn
               ? "bg-chip border-selection text-ink font-semibold"
               : "border-control text-ink-2 hover:border-neon-green-text"
