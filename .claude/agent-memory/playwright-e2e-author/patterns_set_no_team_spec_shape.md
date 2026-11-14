@@ -15,3 +15,5 @@ metadata:
 - Seed `setup` can fail on a per-worktree deployment at the live BSC variant-types sync; hand-made-set specs only need `bootstrap`, so run them `--no-deps` after it.
 
 Related: [[patterns-per-worker-data-isolation]]
+
+Not reachable on a hand-made (no marketplace id) set, so no local live proof: the unreviewed-name fixer (a typed pending team/player name is born only by an undecided wizard row at a fetch commit; quick-add never sends names), a parallel "Build from Base" (a parallel with no ids is skipped), a fetch/commit or publisher-checklist upload ("No marketplace ids on this path"), the wizard teams step and its set-team hint (needs a fetch and 8+ teamless cards). Clearing No Team on a set patches only that row: rows beneath keep it, so assert the flip on the checklist row where the card is born. A finished run on a small set cannot be caught mid-run (one page of ~200 cards), so no running/stopped ledger axe.

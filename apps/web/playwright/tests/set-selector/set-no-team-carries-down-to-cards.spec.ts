@@ -109,13 +109,18 @@ test(
     const confirm = page.getByRole("dialog", { name: "Set this set to No Team?" });
     await expect(confirm).toBeVisible();
     await expect(confirm.getByText("New cards with nothing naming a team get No Team.")).toBeVisible();
+    await expect(confirm.getByText(/checklists? under this set switch(es)? to No Team too\./)).toBeVisible();
     await expectAccessible(page, { within: confirm, label: "Set this set to No Team confirm" });
     await confirm.getByRole("button", { name: "Yes, set No Team" }).click();
     // The save's own toast ("Saved No Team · teamless new cards get it") is replaced within
     // a frame or two by the cascade's finish line, as the team path's is (set-team-carries-down),
     // so the finish line is what a user is left to read.
-    await expect(page.getByText("No Team applied to the checklists under it")).toBeVisible();
+    await expect(page.getByText("No Team applied to the checklists under this set")).toBeVisible();
     await expect(setToggle(true)).toBeVisible();
+    // The Team row's hint now says what the answer does, not the choice already made.
+    await expect(
+      panel.getByText("No Team: new cards with nothing naming a team get it. Pick a team to replace it."),
+    ).toBeVisible();
     await expectAccessible(page, { label: "Set attributes panel with the set at No Team" });
 
     // ── STEP 3: the follow-up offer counts ONE teamless card (the teamed one is
@@ -123,6 +128,8 @@ test(
     const offer = page.getByRole("button", { name: "Mark 1 teamless card No Team" });
     await expect(offer).toBeVisible();
     await offer.click();
+    // Pressing the offer retires the finish toast that was still up.
+    await expect(page.getByText("No Team applied to the checklists under this set")).toBeHidden();
     const mark = page.getByRole("dialog", { name: "Mark 1 card No Team?" });
     await expect(mark).toBeVisible();
     await expect(mark.getByRole("group", { name: "Cards left as they are" })).toBeVisible();
@@ -131,12 +138,14 @@ test(
     ).toBeVisible();
     await expect(mark.getByText("1 card has a team, and keeps it.")).toBeVisible();
     await expectAccessible(page, { within: mark, label: "Mark teamless cards No Team confirm" });
-    await mark.getByRole("button", { name: "Yes, mark them No Team" }).click();
+    await mark.getByRole("button", { name: "Yes, mark it No Team" }).click();
 
     // ── STEP 4: the run's ledger ends on what it did, per checklist.
     const ledger = page.getByRole("region", { name: "Marked 1 card No Team" });
     await expect(ledger).toBeVisible();
     await expect(ledger.getByText("Base — marked 1 card No Team, left 1 as it is", { exact: true })).toBeVisible();
+    // A checklist with no cards makes no ledger line.
+    await expect(ledger.getByText("Insert — no cards yet")).toHaveCount(0);
     await expectAccessible(page, { within: ledger, label: "No Team run ledger, finished" });
     await ledger.getByRole("button", { name: "Dismiss the No Team run" }).click();
     await expect(ledger).toBeHidden();
@@ -160,7 +169,7 @@ test(
       playerName: `NoTeamCharlie${T}`,
       beforeSubmit: async () => {
         await expect(newCardToggle(true)).toBeVisible();
-        await expect(page.getByText("From the set. Pick a team to change it.")).toBeVisible();
+        await expect(page.getByText("From the set. Pick a team, or press No Team to turn it off.")).toBeVisible();
         await expectAccessible(page, { label: "Add card form under a No Team set" });
       },
     });
@@ -174,7 +183,7 @@ test(
       beforeSubmit: async () => {
         await newCardToggle(true).click();
         await expect(newCardToggle(false)).toBeVisible();
-        await expect(page.getByText("From the set. Pick a team to change it.")).toBeHidden();
+        await expect(page.getByText("From the set. Pick a team, or press No Team to turn it off.")).toBeHidden();
       },
     });
     await expect(badge(NUMBERS.optedOut)).toBeVisible();
