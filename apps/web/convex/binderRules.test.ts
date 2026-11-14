@@ -13,7 +13,7 @@ import schema, { collectionRuleValidator } from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 import type { Id } from "./_generated/dataModel";
 import { FactReader, MAX_MATCH_CARDS, binderNeeds } from "./binderRules";
-import { CatalogReader, setLabel } from "./lib/catalogView";
+import { CatalogReader } from "./lib/catalogView";
 import { setCardSecondaryPlayers } from "./cardSecondaryPlayers";
 
 const modules = (import.meta as unknown as {
@@ -88,10 +88,10 @@ describe("a smart binder's rule", () => {
     expect(row?.slot).toBe(0);
   });
 
-  test("names a set exactly as the rule picker does, never with the brand put in front again", async () => {
+  test('names a set as its cards\' titles do: brand once, never "Topps Topps Chrome"', async () => {
     const s = await setup();
     // A set whose name doesn't carry its brand, beside the fixture's
-    // "Topps Chrome": the brand is never added to either.
+    // "Topps Chrome": the brand is put in front once, never twice (NEO-527).
     const cosmicId = await s.t.run(async (ctx) => {
       const id = await ctx.db.insert("selectorOptions", {
         level: "setName",
@@ -115,13 +115,7 @@ describe("a smart binder's rule", () => {
     const listed = (await s.me.query(api.collectionContainers.list, {})).find((c) => c._id === id)!;
     const named = Object.fromEntries((listed.ruleNames ?? []).map((n) => [n.id, n.name]));
     expect(named[s.fx.setId]).toBe("2024 Topps Chrome");
-    expect(named[cosmicId]).toBe("2024 Cosmic");
-    // The picker's chip wording: the suggestion's set ref through the same label.
-    for (const [setId, q] of [[s.fx.setId, "2024 Topps Chrome"], [cosmicId, "2024 Cosmic"]] as const) {
-      const suggested = (await s.me.query(api.collectionCatalog.suggest, { q })).sets.find((x) => x._id === setId);
-      expect(suggested).toBeDefined();
-      expect(named[setId]).toBe(setLabel(suggested!));
-    }
+    expect(named[cosmicId]).toBe("2024 Topps Cosmic");
   });
 
   test("refuses a rule with nothing to include, a wrong kind of id, and Main", async () => {
@@ -639,6 +633,60 @@ describe("brandsOfSport", () => {
     expect(brands).toHaveLength(1);
     expect(brands[0].name).toBe("Topps");
     expect([...brands[0].ids].sort()).toEqual([s.fx.toppsId, s.fx.topps86Id].sort());
+  });
+});
+
+/**
+ * NEO-527 (Jason, 2026-11-12: "a user should never see unknown outside of the
+ * admin screen") — the year's brand-unknown row, by its flag and never its
+ * name, is not a brand a rule can pick, and a set rule's words leave it out.
+ */
+describe("NEO-527: the brand-unknown row in the rule builder", () => {
+  async function withUnknownBrand(s: S) {
+    return s.t.run(async (ctx) => {
+      const unknownId = await ctx.db.insert("selectorOptions", {
+        level: "manufacturer",
+        value: "Unknown",
+        platformData: {},
+        isCustom: false,
+        children: [],
+        parentId: s.fx.yearId,
+        lastUpdated: 1,
+        hasCards: true,
+        metadata: { isBrandUnknown: true },
+      } as never);
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Bowman",
+        platformData: {},
+        isCustom: false,
+        children: [],
+        parentId: unknownId,
+        lastUpdated: 1,
+      } as never);
+      return { unknownId, setId };
+    });
+  }
+
+  test("brandsOfSport never offers it", async () => {
+    const s = await setup();
+    await withUnknownBrand(s);
+    const brands = await s.me.query(api.binderRules.brandsOfSport, { sportId: s.fx.sportId });
+    expect(brands.map((b) => b.name)).toEqual(["Topps"]);
+  });
+
+  test("a set rule names the set without it; a real brand's set keeps its brand", async () => {
+    const s = await setup();
+    const { setId } = await withUnknownBrand(s);
+    const id = await smartBinder(s, {
+      version: 1,
+      match: "any",
+      terms: [{ test: { kind: "set", setIds: [setId, s.fx.setId] } }],
+    });
+    const listed = (await s.me.query(api.collectionContainers.list, {})).find((c) => c._id === id)!;
+    expect(listed.ruleNames).toContainEqual({ id: setId, name: "2024 Bowman" });
+    expect(listed.ruleNames).toContainEqual({ id: s.fx.setId, name: "2024 Topps Chrome" });
+    expect(JSON.stringify(listed.ruleNames)).not.toMatch(/unknown/i);
   });
 });
 

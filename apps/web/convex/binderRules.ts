@@ -37,7 +37,8 @@ import { cardSecondaryPlayerLinkPage } from "./cardSecondaryPlayers";
 import { cardIdsForTeam } from "./cardTeamLinks";
 import { COLLECTION_ERRORS, MAX_LINES_PER_CARD, copyOut, copyValidator, refuse } from "./collection";
 import { MAX_DRILL_ITEMS, MAX_VARIANT_CARDS, walkSetVariants } from "./collectionCatalog";
-import { CatalogReader, cardFeatures, catalogCardWithPathValidator, setLabel } from "./lib/catalogView";
+import { CatalogReader, cardFeatures, catalogCardWithPathValidator } from "./lib/catalogView";
+import { brandedSetLabel } from "./lib/listingLabels";
 import type { collectionRuleValidator } from "./schema";
 import { variantTypeKind } from "./variantRole";
 import { teamFullName } from "../lib/teams/team-name";
@@ -234,8 +235,8 @@ export const ruleNameValidator = v.object({ id: v.string(), name: v.string() });
 
 /**
  * What each id a rule names reads as, for the rule in words: a player's
- * name, a team's full name, a set as "2024 Topps Chrome" (`setLabel`, the
- * rule picker's own wording), a brand or sport row's value. An id that no longer resolves is left out (the words say
+ * name, a team's full name, a set as its cards' titles name it, "2024 Topps Chrome"
+ * (`brandedSetLabel`, NEO-527), a brand or sport row's value. An id that no longer resolves is left out (the words say
  * "a player that's gone").
  */
 export async function ruleNames(ctx: Ctx, rule: Rule): Promise<Array<typeof ruleNameValidator.type>> {
@@ -258,7 +259,12 @@ export async function ruleNames(ctx: Ctx, rule: Rule): Promise<Array<typeof rule
     if (!row) continue;
     if (row.level === "setName") {
       const set = await reader.setRef(row._id);
-      out.push({ id: raw, name: set ? setLabel(set) : row.value });
+      // NEO-527: named as its cards' titles name it (`brandedSetLabel`), so the
+      // year's brand-unknown row is left out and "Topps Topps Chrome" collapses.
+      out.push({ id: raw, name: set ? brandedSetLabel(set) : row.value });
+    } else if (row.level === "manufacturer" && row.metadata?.isBrandUnknown === true) {
+      // NEO-527: a rule naming it reads as one whose brand is gone.
+      continue;
     } else {
       out.push({ id: raw, name: row.value });
     }
@@ -1292,6 +1298,9 @@ export const brandsOfSport = query({
         .withIndex("by_level_and_parent", (q) => q.eq("level", "manufacturer").eq("parentId", year._id))
         .take(MAX_BRANDS_PER_YEAR);
       for (const brand of brands) {
+        // NEO-527: the year's brand-unknown row (by its flag, never its name)
+        // is not a brand a collector can pick.
+        if (brand.metadata?.isBrandUnknown === true) continue;
         const key = brand.value.trim().toLowerCase();
         const group = byName.get(key);
         if (group) group.ids.push(brand._id);

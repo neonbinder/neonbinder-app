@@ -125,3 +125,4 @@
 - [Cameo specs, sorted binder pages](patterns_cameo_specs_and_sorted_binder_pages.md) — NEO-528: cameo needs are catalogue-wide; page names; phone counts off the cover; hook page bringToFront
 - [Hand-made rows cannot reach the commit path](reference_hand_made_rows_cannot_reach_the_commit_path.md) — a no-ids fetch stops before reading a publisher's checklist; birth proofs on hand-made sets use quick-add or the parallel build
 - [Planted red for server-side behaviour](patterns_planted_red_for_server_side_behaviour.md) — no backend push: plant a wrong expectation, read the snapshot for the real value, hand the convex patch to the coordinator
+- [Brand-unknown row fixtures + All Brands option names](patterns_brand_unknown_row_fixtures_and_all_brands_option_names.md) — "<set> <brand>" option names need a regex; assert Unknown listed before drilling to it; host collector fixtures on Hockey 1995
