@@ -63,3 +63,4 @@
 - [Heavy cold-start notice is order-dependent](heavy-cold-start-notice-is-order-dependent.md) — warm heavy (~2 s post-#454) resolves before the seed redirect; NEO-481 edit warm-up is FAST-only
 - [Listing title is the collector search text](listing-title-is-the-collector-search-text.md) — search reads listingDescription (NEO-535); description carries every fact; ebayListingText refuses titles over 80
 - [Players have one display name field](players-have-one-display-name-field.md) — no first/last split; name-part rules are token rules over `name` (name-fragment.ts); family-name-first is the known miss
+- [Fresh-load stall: find the user's cached-hit batch](fresh-load-stall-check-for-the-users-cached-hit-batch.md) — no batch + healthy probe = page never subscribed; set-builder heading shows before its BSC sync ends
