@@ -2,7 +2,8 @@
 // R1: the ONE feature is that answer carrying down: saved on a set it reaches the
 // cards born beneath it, the cards already there come along only when the operator
 // says so (a run that leaves a card with a team alone), and the same answer is
-// one press in a card's drawer.
+// one press in a card's drawer, where pressing it again takes it off, as the quick-add
+// form's toggle (pressed from the set) can be un-pressed for one card.
 //
 // Per-worker, per-attempt hand-made set under E2E Test Sport <worker> > 2026 >
 // Topps (R7a; the prefix is in SET-REGISTRY.md). The set carries no marketplace
@@ -29,16 +30,17 @@ test(
       manufacturer: "Topps",
       set: SET,
     };
-    const NUMBERS = { bare: `781-${A}`, teamed: `782-${A}`, born: `783-${A}` };
+    const NUMBERS = { bare: `781-${A}`, teamed: `782-${A}`, born: `783-${A}`, optedOut: `784-${A}` };
 
     const panel = page.getByRole("region", { name: "Set attributes panel" });
     const edit = panel.getByRole("button", { name: "Edit attributes" });
     const hide = panel.getByRole("button", { name: "Hide attributes" });
     const cardName = page.getByRole("textbox", { name: "Card name" });
     const removeChip = page.getByRole("button", { name: `Remove team ${TEAM}` });
-    // A checklist row is one run of text: "#<number> <name> <team or No Team> ...".
-    const rowSays = (n: string, text: string | RegExp) =>
-      page.getByText(new RegExp(`#${n}.*${typeof text === "string" ? text : text.source}`));
+    // A checklist row is one run of text: "#<number> <name> <team or No Team> ...". The
+    // list's own text joins every row, so the match stops at the next row's "#": without
+    // that, "#782 ... No Team" is satisfied by card #783's sub-line.
+    const rowSays = (n: string, text: string) => page.getByText(new RegExp(`#${n}[^#]*${text}`));
     const badge = (n: string) =>
       page.getByRole("img", { name: new RegExp(`^Card ${n}(, .*)? needs attention: no team on this card yet$`) });
 
@@ -101,18 +103,18 @@ test(
     await openPanel();
     // A toggle's state is its role's "pressed", which a screen reader announces.
     const setToggle = (pressed: boolean) =>
-      panel.getByRole("button", { name: "No Team for every card here", pressed });
+      panel.getByRole("button", { name: "No Team for new cards here", pressed });
     await expect(setToggle(false)).toBeVisible();
     await setToggle(false).click();
     const confirm = page.getByRole("dialog", { name: "Set this set to No Team?" });
     await expect(confirm).toBeVisible();
-    await expect(confirm.getByText("Every new card here gets No Team.")).toBeVisible();
+    await expect(confirm.getByText("New cards with nothing naming a team get No Team.")).toBeVisible();
     await expectAccessible(page, { within: confirm, label: "Set this set to No Team confirm" });
     await confirm.getByRole("button", { name: "Yes, set No Team" }).click();
-    // The save's own toast ("Saved No Team · new cards here get No Team") is replaced within
+    // The save's own toast ("Saved No Team · teamless new cards get it") is replaced within
     // a frame or two by the cascade's finish line, as the team path's is (set-team-carries-down),
     // so the finish line is what a user is left to read.
-    await expect(page.getByText("Team applied to cards")).toBeVisible();
+    await expect(page.getByText("No Team applied to the checklists under it")).toBeVisible();
     await expect(setToggle(true)).toBeVisible();
     await expectAccessible(page, { label: "Set attributes panel with the set at No Team" });
 
@@ -124,6 +126,9 @@ test(
     const mark = page.getByRole("dialog", { name: "Mark 1 card No Team?" });
     await expect(mark).toBeVisible();
     await expect(mark.getByRole("group", { name: "Cards left as they are" })).toBeVisible();
+    await expect(
+      mark.getByText("Nothing on this card names a team, so it reads No Team from here on. No card gains or loses a team."),
+    ).toBeVisible();
     await expect(mark.getByText("1 card has a team, and keeps it.")).toBeVisible();
     await expectAccessible(page, { within: mark, label: "Mark teamless cards No Team confirm" });
     await mark.getByRole("button", { name: "Yes, mark them No Team" }).click();
@@ -147,12 +152,36 @@ test(
     await expect(rowSays("782", TEAM)).toBeVisible();
     await expect(rowSays("782", "No Team")).toBeHidden();
 
-    await addCardViaForm(page, { cardNumber: NUMBERS.born, playerName: `NoTeamCharlie${T}` });
+    // Under a No Team set the quick-add form's own toggle starts pressed, and says it is the set's answer.
+    const newCardToggle = (pressed: boolean) =>
+      page.getByRole("button", { name: "No Team for the new card", pressed });
+    await addCardViaForm(page, {
+      cardNumber: NUMBERS.born,
+      playerName: `NoTeamCharlie${T}`,
+      beforeSubmit: async () => {
+        await expect(newCardToggle(true)).toBeVisible();
+        await expect(page.getByText("From the set. Pick a team to change it.")).toBeVisible();
+        await expectAccessible(page, { label: "Add card form under a No Team set" });
+      },
+    });
     await expect(rowSays("783", "No Team")).toBeVisible();
     await expect(badge(NUMBERS.born)).toBeHidden();
 
+    // Un-pressing it adds the card WITHOUT No Team: it is teamless and badged, not No Team.
+    await addCardViaForm(page, {
+      cardNumber: NUMBERS.optedOut,
+      playerName: `NoTeamDelta${T}`,
+      beforeSubmit: async () => {
+        await newCardToggle(true).click();
+        await expect(newCardToggle(false)).toBeVisible();
+        await expect(page.getByText("From the set. Pick a team to change it.")).toBeHidden();
+      },
+    });
+    await expect(badge(NUMBERS.optedOut)).toBeVisible();
+    await expect(rowSays("784", "No Team")).toBeHidden();
+
     // ── STEP 6: the drawer. The teamed card takes No Team in one press (its team
-    // chip goes), then a team back.
+    // chip goes), pressing it again makes the card teamless (badged), then a team back.
     await page.getByRole("button", { name: new RegExp(`^Edit card ${NUMBERS.teamed}`) }).click();
     await expect(cardName).toBeVisible();
     await expect(removeChip).toBeVisible();
@@ -165,6 +194,16 @@ test(
     await expect(removeChip).toBeHidden();
     await expectAccessible(page, { label: "Card drawer with No Team on the card" });
 
+    await cardToggle(true).click();
+    await expect(page.getByText("Cleared No Team", { exact: true })).toBeVisible();
+    await expect(cardToggle(false)).toBeVisible();
+    await page.getByRole("button", { name: "Done editing card" }).click();
+    await expect(cardName).toBeHidden();
+    await expect(badge(NUMBERS.teamed)).toBeVisible();
+    await expect(rowSays("782", "No Team")).toBeHidden();
+
+    await page.getByRole("button", { name: new RegExp(`^Edit card ${NUMBERS.teamed}`) }).click();
+    await expect(cardName).toBeVisible();
     await page.getByRole("button", { name: "Add team" }).click();
     const searchTeams = page.getByRole("textbox", { name: "Search teams" });
     await searchTeams.fill(TEAM);
@@ -177,11 +216,13 @@ test(
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();
     await expect(rowSays("782", TEAM)).toBeVisible();
+    await expect(badge(NUMBERS.teamed)).toBeHidden();
 
-    // Cleanup: all three cards go, leaving the checklist empty.
+    // Cleanup: all four cards go, leaving the checklist empty.
     await deleteCard(page, NUMBERS.bare, `NoTeamAlpha${T}`);
     await deleteCard(page, NUMBERS.teamed, `NoTeamBravo${T}`);
     await deleteCard(page, NUMBERS.born, `NoTeamCharlie${T}`);
+    await deleteCard(page, NUMBERS.optedOut, `NoTeamDelta${T}`);
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
   },
 );

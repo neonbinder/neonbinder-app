@@ -6,6 +6,8 @@ metadata:
 ---
 
 - Toggles are `getByRole("button", { name, pressed })` (the role's own state), never an aria attribute read. Names: panel "No Team for every card here", drawer "No Team for this card", quick-add "No Team for the new card".
+- A checklist row's text run is matched by `#<n>[^#]*<text>`; a bare `#<n>.*<text>` is satisfied by a LATER row's text through the virtualized list container (a toBeHidden then reds, a toBeVisible passes falsely).
+- Drawer toggle un-presses (teamNone:false, toast "Cleared No Team") and quick-add under a No Team set starts pressed with hint "From the set. Pick a team to change it."; the set toggle is named "No Team for new cards here" and its cascade toast "No Team applied to the checklists under it".
 - The Attributes panel's save toast ("Saved No Team · new cards here get No Team") is REPLACED within a frame by the cascade finish line "Team applied to cards" (same as the team path); assert the finish line, not the save toast.
 - Mark-existing run: offer button "Mark N teamless card(s) No Team" appears only after the cascade clears (no recount branch seen); confirm dialog "Mark N card(s) No Team?" with group "Cards left as they are"; ledger is `region` named by its heading ("Marked 1 card No Team"), line text exact "Base - marked 1 card No Team, left 1 as it is", button "Dismiss the No Team run".
 - Prove "teamless" before the run with the missing-team badge (`img` "Card <n> needs attention: no team on this card yet") visible, and gone after.
