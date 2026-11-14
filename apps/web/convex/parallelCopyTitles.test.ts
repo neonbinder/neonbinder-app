@@ -6,7 +6,8 @@
  * The copies are made by the real build (`buildParallelChecklist`), so what
  * the dialog lists is exactly what a build leaves behind. The BSC adapter is
  * stubbed as in `parallelChecklistBuild.titles.test.ts`; eBay requeueing is
- * observed through a spy on `queueRetitledCardNow`.
+ * observed through a spy on `queueRetitledCardNow` (the save's inline path)
+ * and the `queueRetitledCard` rows the background chain schedules.
  *
  * Tree: sport → year → setName(Topps Chrome) → variantType "Inserts"
  *         → insert "Anime" → parallel "Kanji Orange Wave Refractor Sapphire Gold XYZW"
@@ -20,7 +21,12 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
 import { assessParallelCopyTitle, storedTitleFails } from "./features/carriedTitle";
 import { LISTING_TITLE_MAX } from "./features/listingLimits";
-import { FAILING_TITLES_SCAN, MAX_TITLE_FIXES } from "./parallelCopyTitles";
+import {
+  FAILING_TITLES_SCAN,
+  MAX_TITLE_FIXES,
+  REWRITE_TITLES_PAGE,
+  clampWantCards,
+} from "./parallelCopyTitles";
 import { insertTestCard } from "../lib/testing/card-row";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
@@ -46,6 +52,8 @@ const SENTINEL = 1_700_000_000_000;
 const PARALLEL = "Kanji Orange Wave Refractor Sapphire Gold XYZW";
 const SET_FACTS = { season: "2024", manufacturer: "Topps" };
 const BOX = "Anime Kanji XYZW";
+/** A chain run id (`metadata.listingShortNameSavedAt`) for tests that start a chain by hand. */
+const RUN = 1_800_000_000_000;
 
 type StubCard = { cardNumber: string; cardName: string; platformRef: string };
 
@@ -241,11 +249,31 @@ async function standardParallel(t: T) {
   return { ...ids, cards: await byNumber(t, ids.parallel) };
 }
 
-const failingTitles = (t: T, parallelId: Id<"selectorOptions">, cursor?: string) =>
+const failingTitles = (
+  t: T,
+  parallelId: Id<"selectorOptions">,
+  cursor?: string,
+  wantCards?: number,
+) =>
   t.withIdentity(ADMIN).query(api.parallelCopyTitles.failingTitles, {
     parallelId,
     ...(cursor ? { cursor } : {}),
+    ...(wantCards !== undefined ? { wantCards } : {}),
   });
+
+/** Card ids the background chain scheduled an eBay requeue for, in order. */
+const scheduledRequeues = async (t: T): Promise<string[]> => {
+  const rows = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+  return rows
+    .filter((r) => r.name.includes("queueRetitledCard"))
+    .map((r) => (r.args[0] as { cardId: string }).cardId);
+};
+
+/** Scheduled `rewriteFailingTitlesPage` runs, in order. */
+const scheduledChainPages = async (t: T) => {
+  const rows = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+  return rows.filter((r) => r.name.includes("rewriteFailingTitlesPage"));
+};
 
 const save = (
   t: T,
@@ -355,6 +383,34 @@ describe("failingTitles", () => {
     expect(second.cards.map((c) => c.cardNumber)).toEqual(["last"]);
     expect(second.cursor).toBeNull();
   }, 60_000);
+
+  test("wantCards caps the cards returned; at 0 the page is only counted", async () => {
+    const t = convexTest(schema, modules);
+    const { parallel } = await standardParallel(t);
+
+    const none = await failingTitles(t, parallel, undefined, 0);
+    expect(none.cards).toEqual([]);
+    expect(none.failingInPage).toBe(2);
+    expect(none.cursor).toBeNull();
+    expect(none.parallel._id).toBe(parallel);
+
+    expect((await failingTitles(t, parallel, undefined, 1)).cards.map((c) => c.cardNumber)).toEqual(["3"]);
+    // Out-of-range asks are clamped, never refused.
+    expect((await failingTitles(t, parallel, undefined, 10_000)).cards).toHaveLength(2);
+    expect((await failingTitles(t, parallel, undefined, -5)).cards).toEqual([]);
+    expect((await failingTitles(t, parallel, undefined, 1.9)).cards).toHaveLength(1);
+  });
+
+  test("clampWantCards keeps the ask a whole number in 0..MAX_TITLE_FIXES", () => {
+    expect(clampWantCards(undefined)).toBe(MAX_TITLE_FIXES);
+    expect(clampWantCards(Number.NaN)).toBe(MAX_TITLE_FIXES);
+    expect(clampWantCards(Number.POSITIVE_INFINITY)).toBe(MAX_TITLE_FIXES);
+    expect(clampWantCards(Number.NEGATIVE_INFINITY)).toBe(0);
+    expect(clampWantCards(-1)).toBe(0);
+    expect(clampWantCards(0)).toBe(0);
+    expect(clampWantCards(7.8)).toBe(7);
+    expect(clampWantCards(MAX_TITLE_FIXES + 1)).toBe(MAX_TITLE_FIXES);
+  });
 });
 
 describe("saveTitleFixes", () => {
@@ -375,13 +431,22 @@ describe("saveTitleFixes", () => {
     expect(requeued).toEqual([three._id]);
   });
 
-  test("an over-80, blank or multi-line title is refused before anything is written", async () => {
+  test("an over-80, blank, multi-line or invisibly marked title is refused before anything is written", async () => {
     const t = convexTest(schema, modules);
     const { parallel, cards } = await standardParallel(t);
     const three = cards.get("3")!;
     const four = cards.get("4")!;
 
-    for (const bad of ["x".repeat(LISTING_TITLE_MAX + 1), "   ", "two\nlines"]) {
+    for (const bad of [
+      "x".repeat(LISTING_TITLE_MAX + 1),
+      "   ",
+      "two\nlines",
+      // Invisible format characters (\p{Cf}): zero-width space, bidi
+      // override, word joiner (a leading BOM would be trimmed away first).
+      "Mike\u200BTrout #4",
+      "Mike Trout \u202E4#",
+      "Mike Trout\u2060 #4",
+    ]) {
       await expect(
         save(t, {
           parallelId: parallel,
@@ -466,7 +531,10 @@ describe("saveTitleFixes", () => {
     });
     expect(out).toEqual({ saved: 0, rewritten: 1, kept: 0, skipped: 0, stillFailing: 0 });
 
-    expect((await t.run((ctx) => ctx.db.get(parallel)))?.metadata?.listingShortName).toBe(BOX);
+    const saved = await t.run((ctx) => ctx.db.get(parallel));
+    expect(saved?.metadata?.listingShortName).toBe(BOX);
+    // The chain's run id, stored beside the box.
+    expect(typeof saved?.metadata?.listingShortNameSavedAt).toBe("number");
     expect((await t.run((ctx) => ctx.db.get(anime)))?.metadata?.listingShortName).toBeUndefined();
 
     await drainScheduled(t);
@@ -479,7 +547,9 @@ describe("saveTitleFixes", () => {
     // A card that fit is never touched.
     expect(after.get("1")!.listingTitle).toBe(one.listingTitle);
     expect(after.get("1")!.lastUpdated).toBe(one.lastUpdated);
-    expect(new Set(requeued)).toEqual(new Set([three.cardId, cards.get("4")!._id]));
+    // The save's own answer is queued inline; the chain's card is scheduled.
+    expect(requeued).toEqual([three.cardId]);
+    expect(await scheduledRequeues(t)).toEqual([cards.get("4")!._id]);
   });
 
   test("a kept title the server would not build with the box is skipped", async () => {
@@ -501,27 +571,147 @@ describe("rewriteFailingTitlesPage", () => {
   test("a rerun writes nothing", async () => {
     const t = convexTest(schema, modules);
     const { parallel } = await standardParallel(t);
-    await t.run((ctx) => ctx.db.patch(parallel, { metadata: { listingShortName: BOX } }));
+    await t.run((ctx) => ctx.db.patch(parallel, { metadata: { listingShortName: BOX, listingShortNameSavedAt: RUN } }));
 
-    const first = await t.mutation(internal.parallelCopyTitles.rewriteFailingTitlesPage, { parallelId: parallel, box: BOX });
+    const first = await t.mutation(internal.parallelCopyTitles.rewriteFailingTitlesPage, { parallelId: parallel, box: BOX, runId: RUN });
     expect(first).toEqual({ rewritten: 2, stopped: false, isDone: true });
     const snapshot = await cardsOn(t, parallel);
-    requeued.length = 0;
+    expect(await scheduledRequeues(t)).toHaveLength(2);
 
-    const second = await t.mutation(internal.parallelCopyTitles.rewriteFailingTitlesPage, { parallelId: parallel, box: BOX });
+    const second = await t.mutation(internal.parallelCopyTitles.rewriteFailingTitlesPage, { parallelId: parallel, box: BOX, runId: RUN });
     expect(second).toEqual({ rewritten: 0, stopped: false, isDone: true });
     expect(await cardsOn(t, parallel)).toEqual(snapshot);
+    // Nothing new queued, inline or scheduled.
     expect(requeued).toEqual([]);
+    expect(await scheduledRequeues(t)).toHaveLength(2);
+    await drainScheduled(t);
   });
+
+  test(`a page reads ${REWRITE_TITLES_PAGE} cards and schedules each changed card's requeue, never inline`, async () => {
+    expect(REWRITE_TITLES_PAGE).toBe(100);
+    const t = convexTest(schema, modules);
+    const { parallel } = await seed(t);
+    const total = REWRITE_TITLES_PAGE + 3;
+    await t.run(async (ctx) => {
+      await ctx.db.patch(parallel, { metadata: { listingShortName: BOX, listingShortNameSavedAt: RUN } });
+      for (let n = 0; n < total; n += 1) {
+        await insertTestCard(ctx, {
+          selectorOptionId: parallel,
+          cardNumber: String(n),
+          cardName: "Flagged",
+          platformData: {},
+          sortOrder: n,
+          lastUpdated: SENTINEL,
+          listingTitle: `Flagged #${n}`,
+          listingTitleTruncated: true,
+        });
+      }
+    });
+
+    const first = await t.mutation(internal.parallelCopyTitles.rewriteFailingTitlesPage, { parallelId: parallel, box: BOX, runId: RUN });
+    expect(first).toEqual({ rewritten: REWRITE_TITLES_PAGE, stopped: false, isDone: false });
+    expect(requeued).toEqual([]);
+    const queued = await scheduledRequeues(t);
+    expect(queued).toHaveLength(REWRITE_TITLES_PAGE);
+    expect(new Set(queued).size).toBe(REWRITE_TITLES_PAGE);
+    expect(await scheduledChainPages(t)).toHaveLength(1);
+
+    await drainScheduled(t);
+    expect(await scheduledRequeues(t)).toHaveLength(total);
+    expect(requeued).toEqual([]);
+  }, 60_000);
 
   test("a chain whose box is no longer the parallel's stops without writing", async () => {
     const t = convexTest(schema, modules);
     const { parallel } = await standardParallel(t);
-    await t.run((ctx) => ctx.db.patch(parallel, { metadata: { listingShortName: "A newer box" } }));
+    await t.run((ctx) => ctx.db.patch(parallel, { metadata: { listingShortName: "A newer box", listingShortNameSavedAt: RUN + 1 } }));
     const before = await cardsOn(t, parallel);
 
-    const out = await t.mutation(internal.parallelCopyTitles.rewriteFailingTitlesPage, { parallelId: parallel, box: BOX });
+    const out = await t.mutation(internal.parallelCopyTitles.rewriteFailingTitlesPage, { parallelId: parallel, box: BOX, runId: RUN });
     expect(out).toEqual({ rewritten: 0, stopped: true, isDone: true });
     expect(await cardsOn(t, parallel)).toEqual(before);
+  });
+
+  test("a chain whose run id is no longer stored stops, even when its box is back", async () => {
+    const t = convexTest(schema, modules);
+    const { parallel } = await standardParallel(t);
+    await t.run((ctx) =>
+      ctx.db.patch(parallel, { metadata: { listingShortName: BOX, listingShortNameSavedAt: RUN + 1 } }),
+    );
+    const before = await cardsOn(t, parallel);
+    const out = await t.mutation(internal.parallelCopyTitles.rewriteFailingTitlesPage, {
+      parallelId: parallel,
+      box: BOX,
+      runId: RUN,
+    });
+    expect(out).toEqual({ rewritten: 0, stopped: true, isDone: true });
+    expect(await cardsOn(t, parallel)).toEqual(before);
+  });
+
+  test("saving A, then B, then A again leaves exactly one live chain", async () => {
+    const t = convexTest(schema, modules);
+    const { parallel } = await standardParallel(t);
+    const before = await cardsOn(t, parallel);
+    // Hold the scheduler so the three chains can be inspected before any runs.
+    vi.useFakeTimers();
+    try {
+      for (const box of [BOX, "Another box", BOX]) {
+        await save(t, { parallelId: parallel, listingShortName: box, cards: [] });
+      }
+      const row = await t.run((ctx) => ctx.db.get(parallel));
+      const chains = (await scheduledChainPages(t)).map(
+        (r) => r.args[0] as { parallelId: Id<"selectorOptions">; box: string; runId: number },
+      );
+      expect(chains.map((c) => c.box)).toEqual([BOX, "Another box", BOX]);
+      // Three saves, three distinct run ids, the last one stored beside the box.
+      expect(new Set(chains.map((c) => c.runId)).size).toBe(3);
+      expect(row?.metadata?.listingShortName).toBe(BOX);
+      expect(row?.metadata?.listingShortNameSavedAt).toBe(chains[2].runId);
+
+      // Run each chain's first page as the scheduler would: only the last is live.
+      const outs = [];
+      for (const chain of chains) {
+        outs.push(await t.mutation(internal.parallelCopyTitles.rewriteFailingTitlesPage, chain));
+      }
+      expect(outs.map((o) => o.stopped)).toEqual([true, true, false]);
+      expect(outs.map((o) => o.rewritten)).toEqual([0, 0, 2]);
+      expect(await cardsOn(t, parallel)).not.toEqual(before);
+      // Only the live chain queued its cards for eBay.
+      expect(await scheduledRequeues(t)).toHaveLength(2);
+
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the attributes panel's short-name write keeps the stamp: it starts no chain, and a box it changes stops the live one", async () => {
+    const t = convexTest(schema, modules);
+    const { parallel } = await standardParallel(t);
+    vi.useFakeTimers();
+    try {
+      await save(t, { parallelId: parallel, listingShortName: BOX, cards: [] });
+      const [chain] = (await scheduledChainPages(t)).map(
+        (r) => r.args[0] as { parallelId: Id<"selectorOptions">; box: string; runId: number },
+      );
+      const panel = (listingShortName: string) =>
+        t
+          .withIdentity(ADMIN)
+          .mutation(api.selectorOptions.setSelectorOptionListingShortName, { id: parallel, listingShortName });
+
+      await panel("Panel box");
+      expect((await t.run((ctx) => ctx.db.get(parallel)))?.metadata?.listingShortNameSavedAt).toBe(chain.runId);
+      expect((await t.mutation(internal.parallelCopyTitles.rewriteFailingTitlesPage, chain)).stopped).toBe(true);
+
+      // The panel puts the dialog's box back: the one chain for it may finish.
+      await panel(BOX);
+      expect((await scheduledChainPages(t))).toHaveLength(1);
+      const out = await t.mutation(internal.parallelCopyTitles.rewriteFailingTitlesPage, chain);
+      expect(out).toEqual({ rewritten: 2, stopped: false, isDone: true });
+
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

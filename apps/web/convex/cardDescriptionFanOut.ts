@@ -285,28 +285,62 @@ async function subtreePage(
 const CARD_PROBE_ROWS = 50;
 
 /**
+ * Probe reads one TRANSACTION may spend across every `subtreeMayHoldCards`
+ * call. The doors that ask run it per row inside a transaction already sized
+ * to its row cap (a brand re-home moves up to 500 sets, and its callers loop
+ * over several brands), so a per-call cap alone multiplies by the row count.
+ * Once spent, every answer is "maybe" and the scheduled chain, which pays in
+ * its own transactions, finds out.
+ */
+export const CARD_PROBE_READS_PER_TRANSACTION = 200;
+
+/** What is left of a transaction's probe reads. */
+export type CardProbeBudget = { left: number };
+
+const probeBudgets = new WeakMap<object, CardProbeBudget>();
+
+/**
+ * The transaction's one probe budget. Keyed on `ctx.db`, the object one
+ * function execution passes everywhere, so every caller in the transaction
+ * draws on the same budget without threading it through.
+ */
+export function cardProbeBudgetFor(ctx: { db: object }): CardProbeBudget {
+  let budget = probeBudgets.get(ctx.db);
+  if (!budget) {
+    budget = { left: CARD_PROBE_READS_PER_TRANSACTION };
+    probeBudgets.set(ctx.db, budget);
+  }
+  return budget;
+}
+
+/**
  * Could any card sit in `row`'s subtree? The doors that only SCHEDULE the
  * fan-out ask first, so a rename of an empty row schedules nothing.
  * `subtreeCardCount` answers when it is set (NEO-358 keeps it from the set
- * down); a row it was never counted on is probed, one `.first()` per row,
- * and past `CARD_PROBE_ROWS` rows the answer is "maybe".
+ * down); a row it was never counted on is probed, one `.first()` and one
+ * `get` per row, and the answer is "maybe" past `CARD_PROBE_ROWS` rows or once
+ * the transaction's `budget` is spent.
  */
 export async function subtreeMayHoldCards(
   ctx: MutationCtx,
   row: Pick<Doc<"selectorOptions">, "_id" | "subtreeCardCount">,
+  budget: CardProbeBudget = cardProbeBudgetFor(ctx),
 ): Promise<boolean> {
   if (row.subtreeCardCount !== undefined) return row.subtreeCardCount > 0;
   const stack: Array<Id<"selectorOptions">> = [row._id];
   let probed = 0;
   while (stack.length > 0) {
-    if (probed >= CARD_PROBE_ROWS) return true;
+    if (probed >= CARD_PROBE_ROWS || budget.left <= 0) return true;
     const rowId = stack.pop()!;
     probed += 1;
+    budget.left -= 1;
     const card = await ctx.db
       .query("cardChecklist")
       .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", rowId))
       .first();
     if (card) return true;
+    if (budget.left <= 0) return true;
+    budget.left -= 1;
     const node = await ctx.db.get(rowId);
     stack.push(...(node?.children ?? []));
   }
@@ -323,6 +357,7 @@ function rebuilder(
   return async (card) => {
     const listingDescription = await renamedListingDescription(ctx, card, overlay, caches);
     if (listingDescription === undefined) return;
+    // No eBay requeue, on purpose: a 2,000-page chain must not queue per card; Sync carries it.
     await ctx.db.patch(card._id, { listingDescription });
     counts.rewritten += 1;
   };

@@ -324,8 +324,26 @@ export const selectorOptionMetadataFields = {
    * `""`, refuse control characters and cap at
    * `MAX_LISTING_SHORT_NAME_LENGTH`. Absent means "use the full names".
    * Existing titles are never rewritten when it changes (write-once titles).
+   * NEO-535 — one exception: a PARALLEL's Card titles dialog
+   * (`parallelCopyTitles.saveTitleFixes`) writes it on the parallel row and
+   * rewrites that parallel's still-failing cards with it; see the next field.
    */
   listingShortName: v.optional(v.string()),
+  /**
+   * NEO-535 — when the parallel Card titles dialog last saved
+   * `listingShortName` (ms since epoch), and so the run id of the background
+   * chain that save started (`parallelCopyTitles.rewriteFailingTitlesPage`).
+   * A chain runs only while this still holds its run id AND the box is still
+   * the one it writes with, so saving A, then B, then A again leaves one live
+   * chain, not two.
+   *
+   * Written only by `saveTitleFixes`, beside the box. Every other writer of
+   * `listingShortName` (the attributes panel, the wizard commit, the
+   * short-name backfill) spreads `metadata` and leaves it as it is: none of
+   * them starts a chain, and a box they change stops the live one by itself.
+   * Absent on every row the dialog never saved; no backfill.
+   */
+  listingShortNameSavedAt: v.optional(v.number()),
 };
 
 export const selectorOptionFields = {

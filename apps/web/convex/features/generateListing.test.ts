@@ -11,7 +11,7 @@ import {
   withoutFirstName,
   type ListingCardInputs,
 } from "./generateListing";
-import { LISTING_TITLE_MAX } from "./listingLimits";
+import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./listingLimits";
 
 describe("generateListingTitle", () => {
   test("full base card gets core tokens + RC", () => {
@@ -1459,5 +1459,14 @@ describe("NEO-535 readsAsGeneratedDescription", () => {
     expect(readsAsGeneratedDescription(`${generated}\n\nShips fast.`)).toBe(false);
     expect(readsAsGeneratedDescription(`Pulled this myself!\n${generated}`)).toBe(false);
     expect(readsAsGeneratedDescription("")).toBe(false);
+  });
+
+  test("text past the description cap is refused before any line is read", () => {
+    // Both read as the builder's shape; only the length tells them apart.
+    const atCap = `${"A".repeat(LISTING_DESCRIPTION_MAX - " card.".length)} card.`;
+    expect(atCap.length).toBe(LISTING_DESCRIPTION_MAX);
+    expect(readsAsGeneratedDescription(atCap)).toBe(true);
+    expect(readsAsGeneratedDescription(`A${atCap}`)).toBe(false);
+    expect(readsAsGeneratedDescription(`${"Rookie Card (RC).\n".repeat(100_000)}`)).toBe(false);
   });
 });

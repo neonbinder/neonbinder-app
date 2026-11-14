@@ -20,6 +20,9 @@
  *     the parallel row itself.
  *   - `rewriteFailingTitlesPage` (internal) — when the box changed, the
  *     parallel's other failing cards are rewritten with it, a page at a time.
+ *     One chain per save: the save stores its run id beside the box
+ *     (`metadata.listingShortNameSavedAt`), and a chain whose run id is no
+ *     longer stored stops.
  *
  * ## Safe to call
  *
@@ -64,8 +67,11 @@ import type { ListingCardInputs } from "./features/generateListing";
 export const FAILING_TITLES_SCAN = 300;
 /** Failing cards one `failingTitles` call returns, and one save may answer. */
 export const MAX_TITLE_FIXES = 50;
-/** Cards one `rewriteFailingTitlesPage` run reads. */
-export const REWRITE_TITLES_PAGE = 200;
+/**
+ * Cards one `rewriteFailingTitlesPage` run reads. Each card it retitles also
+ * schedules that card's eBay requeue, so the page bounds those too.
+ */
+export const REWRITE_TITLES_PAGE = 100;
 /** Source cards sharing one number read when looking for a copy's source. */
 const SOURCE_NUMBER_MATCHES = 20;
 
@@ -173,6 +179,12 @@ export const failingTitles = query({
     parallelId: v.id("selectorOptions"),
     /** The previous call's `cursor`; absent starts at the first card. */
     cursor: v.optional(v.string()),
+    /**
+     * Failing cards the caller still has room for, clamped to
+     * 0..`MAX_TITLE_FIXES` (absent is the cap). At 0 the page is only
+     * counted: no card's inputs or source are read.
+     */
+    wantCards: v.optional(v.number()),
   },
   returns: v.object({
     parallel: v.object({ _id: v.id("selectorOptions"), value: v.string() }),
@@ -208,9 +220,10 @@ export const failingTitles = query({
       )
       .paginate({ numItems: FAILING_TITLES_SCAN, cursor: args.cursor ?? null });
     const failing = page.page.filter(storedTitleFails);
+    const want = clampWantCards(args.wantCards);
     const cache = newStoredCardLookupCache();
     const cards = [];
-    for (const card of failing.slice(0, MAX_TITLE_FIXES)) {
+    for (const card of failing.slice(0, want)) {
       const { inputs, carriedRest } = await copyTitleInputs(ctx, source._id, card, cache);
       cards.push({
         cardId: card._id,
@@ -231,12 +244,22 @@ export const failingTitles = query({
   },
 });
 
-/** An operator's own title: trimmed, one line, not blank, within eBay's cap. */
+/** `failingTitles`' `wantCards`, as a whole number in 0..`MAX_TITLE_FIXES`. */
+export function clampWantCards(want: number | undefined): number {
+  if (want === undefined || Number.isNaN(want)) return MAX_TITLE_FIXES;
+  return Math.min(MAX_TITLE_FIXES, Math.max(0, Math.floor(want)));
+}
+
+/**
+ * An operator's own title: trimmed, one line, not blank, within eBay's cap,
+ * and free of control and invisible format characters (`\p{Cf}`: zero-width
+ * and bidi marks), the set the box's normaliser refuses too.
+ */
 function checkOwnTitle(raw: string): string {
   const title = raw.trim();
   if (!title) throw new ConvexError("Card titles: a title can't be blank.");
-  if (/[\p{Cc}\p{Zl}\p{Zp}]/u.test(title)) {
-    throw new ConvexError("Card titles: a title is one line, with no control characters.");
+  if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(title)) {
+    throw new ConvexError("Card titles: a title is one line, with no control or hidden characters.");
   }
   if (title.length > LISTING_TITLE_MAX) {
     throw new ConvexError(
@@ -246,19 +269,32 @@ function checkOwnTitle(raw: string): string {
   return title;
 }
 
+/**
+ * Store a card's new title. A changed title is new eBay item content (and the
+ * way out of an over-80 hold), so the card is queued for eBay: inline from the
+ * operator's save (at most `MAX_TITLE_FIXES` cards), scheduled per card from
+ * the background chain, so a chain page never pays for its cards' copies.
+ */
 async function writeTitle(
   ctx: MutationCtx,
   card: Doc<"cardChecklist">,
   title: string,
   truncated: true | undefined,
+  requeue: "inline" | "scheduled",
 ): Promise<void> {
   await ctx.db.patch(card._id, {
     listingTitle: title,
     listingTitleTruncated: truncated,
     lastUpdated: Date.now(),
   });
-  // A new title is new eBay item content (and the way out of an over-80 hold).
-  if (title !== card.listingTitle) await queueRetitledCardNow(ctx, card._id);
+  if (title === card.listingTitle) return;
+  if (requeue === "inline") {
+    await queueRetitledCardNow(ctx, card._id);
+  } else {
+    await ctx.scheduler.runAfter(0, internal.listingTitleRequeue.queueRetitledCard, {
+      cardId: card._id,
+    });
+  }
 }
 
 export const saveTitleFixes = mutation({
@@ -322,10 +358,20 @@ export const saveTitleFixes = mutation({
 
     const { parallel, source } = await requireBuildableParallel(ctx, args.parallelId);
     const boxChanged = box !== undefined && box !== parallel.metadata?.listingShortName;
+    // The run id of the chain this save starts, stored beside the box: the
+    // save's time, kept strictly past the last one so two saves can never
+    // share it.
+    let runId: number | undefined;
     if (boxChanged) {
+      const now = Date.now();
+      runId = Math.max(now, (parallel.metadata?.listingShortNameSavedAt ?? 0) + 1);
       await ctx.db.patch(parallel._id, {
-        metadata: { ...(parallel.metadata ?? {}), listingShortName: box },
-        lastUpdated: Date.now(),
+        metadata: {
+          ...(parallel.metadata ?? {}),
+          listingShortName: box,
+          listingShortNameSavedAt: runId,
+        },
+        lastUpdated: now,
       });
     }
 
@@ -342,7 +388,7 @@ export const saveTitleFixes = mutation({
         continue;
       }
       if ("own" in answer) {
-        await writeTitle(ctx, card, answer.own, undefined);
+        await writeTitle(ctx, card, answer.own, undefined, "inline");
         saved++;
         continue;
       }
@@ -366,7 +412,7 @@ export const saveTitleFixes = mutation({
       if (boxChanged) {
         const now = await copyTitleNow(ctx, source._id, card, cache);
         if (now.title === answer.kept) {
-          await writeTitle(ctx, card, now.title, undefined);
+          await writeTitle(ctx, card, now.title, undefined, "inline");
           rewritten++;
           if (now.title.length > LISTING_TITLE_MAX) stillFailing++;
           continue;
@@ -375,10 +421,11 @@ export const saveTitleFixes = mutation({
       skipped++;
     }
 
-    if (boxChanged) {
+    if (boxChanged && runId !== undefined) {
       await ctx.scheduler.runAfter(0, internal.parallelCopyTitles.rewriteFailingTitlesPage, {
         parallelId: parallel._id,
         box,
+        runId,
       });
     }
     // Counts only, never a title.
@@ -402,20 +449,28 @@ export const saveTitleFixes = mutation({
  * One page of the parallel's cards, after the box changed: each card that
  * still fails is retitled in the three-step order with the new box. A title
  * that comes out the same is left alone, so a rerun writes nothing. Stops as
- * soon as the parallel's box is no longer the one this chain started with (a
- * newer save started its own chain), or the row no longer resolves.
+ * soon as the parallel's box is no longer the one this chain writes with, or
+ * its `listingShortNameSavedAt` is no longer this chain's run id (a newer
+ * save started its own chain, even one that put the same box back), or the
+ * row no longer resolves.
  */
 export const rewriteFailingTitlesPage = internalMutation({
   args: {
     parallelId: v.id("selectorOptions"),
     /** The box text this chain writes with. */
     box: v.string(),
+    /** The `metadata.listingShortNameSavedAt` the save that started this chain wrote. */
+    runId: v.number(),
     cursor: v.optional(v.string()),
   },
   returns: v.object({ rewritten: v.number(), stopped: v.boolean(), isDone: v.boolean() }),
   handler: async (ctx, args) => {
     const parallel = await ctx.db.get(args.parallelId);
-    if (!parallel || parallel.metadata?.listingShortName !== args.box) {
+    if (
+      !parallel ||
+      parallel.metadata?.listingShortName !== args.box ||
+      parallel.metadata?.listingShortNameSavedAt !== args.runId
+    ) {
       return { rewritten: 0, stopped: true, isDone: true };
     }
     const resolved = await resolveBuildSource(ctx, parallel);
@@ -433,13 +488,14 @@ export const rewriteFailingTitlesPage = internalMutation({
       if (!storedTitleFails(card)) continue;
       const now = await copyTitleNow(ctx, resolved.source._id, card, cache);
       if (now.title === card.listingTitle) continue;
-      await writeTitle(ctx, card, now.title, truncatedFlagFor(now));
+      await writeTitle(ctx, card, now.title, truncatedFlagFor(now), "scheduled");
       rewritten++;
     }
     if (!page.isDone) {
       await ctx.scheduler.runAfter(0, internal.parallelCopyTitles.rewriteFailingTitlesPage, {
         parallelId: args.parallelId,
         box: args.box,
+        runId: args.runId,
         cursor: page.continueCursor,
       });
     }

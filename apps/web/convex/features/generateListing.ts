@@ -52,7 +52,7 @@
  * surnames, `/N`. Removing only the "#" is never reported as left out.
  */
 
-import { LISTING_TITLE_MAX } from "./listingLimits";
+import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./listingLimits";
 import { variantTypeKindFromTitle } from "../variantRole";
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
 import { roughlySays } from "../listingShortName";
@@ -1065,6 +1065,9 @@ const DESCRIPTION_OPENING_LINE = /^(?:.+ card|Card)(?:\.| #.+\.| of .+\.)$/;
  * must equal what the builder made from the card's facts before the change.
  */
 export function readsAsGeneratedDescription(text: string): boolean {
+  // Longer than any description a door accepts: not the builder's, and the
+  // regexes below never run over unbounded text.
+  if (text.length > LISTING_DESCRIPTION_MAX) return false;
   const lines = text.trim().split("\n");
   if (lines.length === 0 || !DESCRIPTION_OPENING_LINE.test(lines[0])) return false;
   return lines
