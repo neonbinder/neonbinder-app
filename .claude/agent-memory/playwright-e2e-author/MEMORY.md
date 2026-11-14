@@ -123,3 +123,4 @@
 - [Print emulation + rare-state axe](patterns_print_emulation_and_rare_state_axe.md) — NEO-500: print media keeps the phone viewport; vitest axe-core has no contrast; setup needs the reference bundle
 - [Sibling edits reload a local Vite run](patterns_sibling_edits_reload_a_local_vite_run.md) — one-off red on a step green on rerun: check Vite log for hmr/page reload at that time; eBay unmatched row names
 - [Failure PNG shows the finally end state](patterns_failure_screenshot_shows_the_finally_end_state.md) — self-cleaning specs: the screenshot is post-cleanup; read the blob error-context ARIA snapshot (NEO-481)
+- [Brand-unknown row fixtures + All Brands option names](patterns_brand_unknown_row_fixtures_and_all_brands_option_names.md) — "<set> <brand>" option names need a regex; assert Unknown listed before drilling to it; host collector fixtures on Hockey 1995
