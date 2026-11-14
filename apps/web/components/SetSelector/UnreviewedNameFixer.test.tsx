@@ -435,3 +435,70 @@ describe("UnreviewedNameFixer — NEO-331 the set context reaches its team picke
     expect((pickerArgs.at(-1) as { contextOptionId?: string }).contextOptionId).toBeUndefined();
   });
 });
+
+describe("UnreviewedNameFixer — NEO-556 No Team", () => {
+  const noTeam = () => screen.getByRole("button", { name: "No Team for this card" });
+  const hint = () => document.getElementById("attention-unreviewed-hint")?.textContent;
+
+  it("No Team answers a typed team name: one write with the request, no team half", async () => {
+    renderFixer(baseRow({ pendingPlayerNames: undefined, pendingTeamNames: ["Astross"] }));
+    expect(hint()).toBe("Link a team to clear this card.");
+
+    fireEvent.click(noTeam());
+    expect(noTeam().getAttribute("aria-pressed")).toBe("true");
+    expect(hint()).toBe("Marks this card No Team.");
+    await save();
+
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      playerIds: [],
+      pendingPlayerNames: [],
+      teamNone: true,
+    });
+    const args = mockUpdateCard.mock.calls[0][0];
+    expect(args).not.toHaveProperty("teamOnCardIds");
+    expect(args).not.toHaveProperty("pendingTeamNames");
+    expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it("with a player linked too, says both and still sends one write", async () => {
+    renderFixer(baseRow({ pendingTeamNames: ["Astross"] }));
+    pickPlayer("Yordan Alvarez");
+    fireEvent.click(noTeam());
+    expect(hint()).toBe("Links 1 player to this card and marks it No Team.");
+    await save();
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      playerIds: [ALVAREZ._id],
+      pendingPlayerNames: [],
+      teamNone: true,
+    });
+  });
+
+  it("does not answer the player side: a typed player name still needs a link", async () => {
+    renderFixer(baseRow({ pendingTeamNames: ["Astross"] }));
+    fireEvent.click(noTeam());
+    expect(hint()).toBe("Link a player to clear this card.");
+    await save();
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+  });
+
+  it("pressing No Team clears picked teams; picking a team turns it off", async () => {
+    renderFixer(baseRow({ pendingPlayerNames: undefined, pendingTeamNames: ["Astross"] }));
+    pickTeam("Houston Astros");
+    expect(screen.getByLabelText("Remove team Houston Astros")).toBeTruthy();
+    fireEvent.click(noTeam());
+    expect(screen.queryByLabelText("Remove team Houston Astros")).toBeNull();
+    pickTeam("Houston Astros");
+    expect(noTeam().getAttribute("aria-pressed")).toBe("false");
+    await save();
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      playerIds: [],
+      teamOnCardIds: [ASTROS._id],
+      pendingPlayerNames: [],
+      pendingTeamNames: [],
+    });
+  });
+});

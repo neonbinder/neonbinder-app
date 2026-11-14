@@ -40,7 +40,9 @@ import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
 import PromoteToSetControl from "./PromoteToSetControl";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
+import { NO_TEAM_LABELS, NO_TEAM_TEXT } from "./team-picker-labels";
 import EveryCardPlayerControl from "./EveryCardPlayerControl";
+import NoTeamCardsControl from "./NoTeamCardsControl";
 import {
   ALL_SIDES,
   joinLabels,
@@ -337,6 +339,10 @@ export default function SetAttributesPanel({
   const ancestorYear = chain.find((c) => c.level === "year")?.value;
   const features = row.features ?? {};
   const teamIds: Array<Id<"teams">> = row.teamIds ?? [];
+  // NEO-556 — the Team default's third state. A row never stores both (the
+  // one writer refuses it); one that somehow did reads as its teams, the
+  // server's own rule (`teamDefaultOf`: a value that names a team wins).
+  const noTeamDefault = teamIds.length === 0 && row.noTeamDefault !== undefined;
   const showTeamRow = TEAM_LEVELS.has(leafLevel);
   const showCardPrefixRow = showsCardPrefix(leafLevel, row.value);
   const cardNumberPrefix = row.metadata?.cardNumberPrefix;
@@ -738,6 +744,15 @@ export default function SetAttributesPanel({
             {!expanded && showTeamRow && teamIds.length > 0 && (
               <SetTeamLivery teamIds={teamIds} />
             )}
+            {/* NEO-556: a No Team row says so on the same bar, in the same
+                place and weight as a team's short name. */}
+            {!expanded && showTeamRow && noTeamDefault && (
+              <span className="ml-1.5 whitespace-nowrap">
+                <span aria-hidden="true">· </span>
+                <span className="sr-only">Team: </span>
+                <span className="font-semibold text-ink-2">{NO_TEAM_TEXT}</span>
+              </span>
+            )}
           </p>
         </div>
         {expanded ? (
@@ -909,6 +924,7 @@ export default function SetAttributesPanel({
               selectorOptionId={selectorOptionId}
               level={leafLevel}
               teamIds={teamIds}
+              noTeam={noTeamDefault}
               teamCascadeStartedAt={row.teamCascadeStartedAt}
               sportId={ancestorSportId}
               onSaved={showToast}
@@ -916,6 +932,29 @@ export default function SetAttributesPanel({
             />
           )}
         </>
+      )}
+
+      {/* NEO-556 — "Mark N teamless cards No Team": the follow-up to a No
+          Team row, directly under the Team row it follows from. Outside the
+          `expanded` branch for the reason NEO-528's control below is: a run's
+          ledger stays on screen when the panel is collapsed, until it is
+          dismissed. Keyed on the row so a count or a finished run never
+          carries over to the next one. */}
+      {showTeamRow && (
+        <NoTeamCardsControl
+          key={`no-team-cards-${selectorOptionId}`}
+          selectorOptionId={selectorOptionId}
+          isNoTeam={noTeamDefault}
+          teamCascadeStartedAt={row.teamCascadeStartedAt}
+          expanded={expanded}
+          onDismissed={() => {
+            if (expanded) {
+              document.querySelector<HTMLElement>(NO_TEAM_TOGGLE_SELECTOR)?.focus({ preventScroll: true });
+            } else {
+              expandToggleRef.current?.focus({ preventScroll: true });
+            }
+          }}
+        />
       )}
 
       {/* NEO-528 — "Player on every card": the stored player and cameos every
@@ -1731,6 +1770,52 @@ export function teamSavedToast(preview: TeamCascadePreview | null): string {
   return `Saved Team · applying to ${followingCards(preview)}`;
 }
 
+/** NEO-556 — the toast after No Team is saved. */
+export const NO_TEAM_SAVED_TOAST = "Saved No Team · new cards here get No Team";
+/** NEO-556 — the toast after No Team is withdrawn (the row goes back to unset). */
+export const NO_TEAM_CLEARED_TOAST = "Cleared No Team · cards unchanged";
+
+/**
+ * NEO-556 — the confirm before a row becomes No Team, asked only when the
+ * answer reaches past the row: checklists beneath that follow it (they were
+ * unset, or said what this row said), or cards still carrying the team being
+ * replaced. A row with neither is saved straight away.
+ *
+ * No Team never moves a card that already exists, so the body says what
+ * happens to new cards, what follows beneath, what stays, and that the
+ * teamless cards already here are the next step (`NoTeamCardsControl`).
+ *
+ *   title: "Set this set to No Team?"
+ *   body:  "Every new card here gets No Team. 3 checklists under it switch
+ *           to No Team too. 28 cards keep Durham Bulls. Cards already here
+ *           stay as they are; you can mark the teamless ones next."
+ */
+export function setNoTeamConfirmCopy({
+  levelLabel,
+  preview,
+  currentTeamNames,
+}: {
+  levelLabel: string;
+  preview: Pick<TeamCascadePreview, "nodesFollowing" | "cardsCarryingCurrent">;
+  /** The row's team being replaced, when it has one. */
+  currentTeamNames: string | null;
+}): { title: string; description: string } {
+  const noun = levelLabel.toLowerCase();
+  const parts = ["Every new card here gets No Team."];
+  if (preview.nodesFollowing > 0) {
+    parts.push(
+      `${plural(preview.nodesFollowing, "checklist", "checklists")} under it switch${preview.nodesFollowing === 1 ? "es" : ""} to No Team too.`,
+    );
+  }
+  if (preview.cardsCarryingCurrent > 0 && currentTeamNames) {
+    parts.push(
+      `${plural(preview.cardsCarryingCurrent, "card keeps", "cards keep")} ${currentTeamNames}.`,
+    );
+  }
+  parts.push("Cards already here stay as they are; you can mark the teamless ones next.");
+  return { title: `Set this ${noun} to No Team?`, description: parts.join(" ") };
+}
+
 /**
  * The visible hint under the picker, keyed on the level because the set is
  * where a collector meets this (a team issue, a police set, a college set, a
@@ -1738,9 +1823,9 @@ export function teamSavedToast(preview: TeamCascadePreview | null): string {
  */
 export function teamHintCopy(level: Level): string {
   if (level === "setName") {
-    return "Team issues, police sets, college sets, stadium giveaways: pick the team once and every card in this set gets it.";
+    return "Team issues, police sets, college sets, stadium giveaways: pick the team once and every card in this set gets it. Cards with no team at all? Choose No Team.";
   }
-  return `Every card in this ${LEVEL_LABEL[level].toLowerCase()} gets this team. Pick it once.`;
+  return `Every card in this ${LEVEL_LABEL[level].toLowerCase()} gets this team. Pick it once, or choose No Team.`;
 }
 
 /** Order-insensitive equality: the picker appends, the row stores a set. */
@@ -1781,6 +1866,8 @@ export const SET_TEAM_PICKER_LABELS: TeamPickerLabels = {
 
 /** The picker trigger inside the row, for parking focus after a decision. */
 const PICKER_TRIGGER_SELECTOR = `button[aria-label="${SET_TEAM_PICKER_LABELS.trigger}"]`;
+/** NEO-556 — the row's No Team toggle, for parking focus after a No Team decision. */
+const NO_TEAM_TOGGLE_SELECTOR = `button[aria-label="${NO_TEAM_LABELS.everyCard}"]`;
 
 /**
  * The Team row.
@@ -1837,6 +1924,7 @@ function SetTeamRow({
   selectorOptionId,
   level,
   teamIds,
+  noTeam,
   teamCascadeStartedAt,
   sportId,
   onSaved,
@@ -1846,6 +1934,8 @@ function SetTeamRow({
   level: Level;
   /** The row's stored value; `[]` when the field is absent. */
   teamIds: Array<Id<"teams">>;
+  /** NEO-556 — the row's stored value is No Team (`noTeamDefault`). */
+  noTeam: boolean;
   /** Set when a cascade is scheduled, cleared by its last chunk. */
   teamCascadeStartedAt: number | undefined;
   sportId: Id<"selectorOptions"> | undefined;
@@ -1872,11 +1962,17 @@ function SetTeamRow({
 
   /** The picker's value while a pick is being previewed or saved. */
   const [pending, setPending] = useState<Array<Id<"teams">> | null>(null);
+  /**
+   * NEO-556 — No Team pressed and being previewed or saved (`true`), or
+   * withdrawn on screen (`false`); `null` when the toggle shows what is
+   * stored. A pending team pick over a stored No Team shows it off.
+   */
+  const [pendingNoTeam, setPendingNoTeam] = useState<boolean | null>(null);
   /** The last chip was removed and the operator has not yet said which way. */
   const [pendingEmpty, setPendingEmpty] = useState(false);
   const [busy, setBusy] = useState(false);
   const [confirm, setConfirm] = useState<{
-    kind: "apply" | "clear";
+    kind: "apply" | "clear" | "noTeam";
     next: Array<Id<"teams">>;
     preview: TeamCascadePreview | null;
     title: string;
@@ -1920,18 +2016,36 @@ function SetTeamRow({
         ?.focus();
     }, 0);
   };
+  const focusNoTeamToggle = () => {
+    setTimeout(() => {
+      rowRef.current
+        ?.querySelector<HTMLElement>(NO_TEAM_TOGGLE_SELECTOR)
+        ?.focus();
+    }, 0);
+  };
 
   const save = async (
     next: Array<Id<"teams">>,
     preview: TeamCascadePreview | null,
+    asNoTeam = false,
   ) => {
     setBusy(true);
     try {
-      await setSelectorOptionTeams({ selectorOptionId, teamIds: next });
+      // Every key written out (never a conditional spread): a renamed server
+      // arg must fail to compile. `undefined` is dropped on the wire.
+      await setSelectorOptionTeams({
+        selectorOptionId,
+        teamIds: next,
+        noTeam: asNoTeam ? true : undefined,
+      });
       onSaved(
-        next.length === 0
-          ? "Cleared Team · cards unchanged"
-          : teamSavedToast(preview),
+        asNoTeam
+          ? NO_TEAM_SAVED_TOAST
+          : next.length === 0
+            ? noTeam
+              ? NO_TEAM_CLEARED_TOAST
+              : "Cleared Team · cards unchanged"
+            : teamSavedToast(preview),
       );
     } catch (e) {
       // Same rule as the feature rows: only a ConvexError's `data` is text a
@@ -1942,12 +2056,18 @@ function SetTeamRow({
     } finally {
       setBusy(false);
       setPending(null);
+      setPendingNoTeam(null);
       setPendingEmpty(false);
     }
   };
 
   const handleChange = async (next: Array<Id<"teams">>) => {
     if (busy || inFlight) return;
+    // NEO-556: a team picked over No Team (stored or pending) replaces it.
+    // From a stored No Team the ordinary path below is the right one: the
+    // server's preview compares against the stored No Team, so the teamless
+    // cards it would fill are the ones reported as following.
+    setPendingNoTeam(null);
     if (sameTeamIds(next, teamIds)) {
       // Includes re-adding the stored team from the pending-empty state:
       // that is "Keep", spelled with the picker.
@@ -2001,6 +2121,67 @@ function SetTeamRow({
         teamNames: names,
         levelLabel: LEVEL_LABEL[level],
         preview,
+      }),
+    });
+  };
+
+  /**
+   * NEO-556 — the No Team toggle. Pressed: preview the row as No Team, and
+   * ask only when the answer reaches past the row (`setNoTeamConfirmCopy`).
+   * Withdrawn from a stored No Team: saved straight away as a clear, which
+   * patches the row only, like clearing a team (rows beneath and cards keep
+   * what they have). Withdrawn from a pending No Team: the picker reads the
+   * row again.
+   */
+  const handleNoTeam = async (next: boolean) => {
+    if (busy || inFlight) return;
+    const seq = ++seqRef.current;
+    setPendingEmpty(false);
+    if (!next) {
+      setPending(null);
+      if (!noTeam) {
+        setPendingNoTeam(null);
+        return;
+      }
+      setPendingNoTeam(false);
+      await save([], null);
+      focusNoTeamToggle();
+      return;
+    }
+    if (noTeam) {
+      setPending(null);
+      setPendingNoTeam(null);
+      return;
+    }
+    setPending([]);
+    setPendingNoTeam(true);
+    let preview: TeamCascadePreview;
+    try {
+      preview = await convex.query(
+        api.selectorOptions.getSelectorOptionTeamCascadePreview,
+        { selectorOptionId, teamIds: [], noTeam: true },
+      );
+    } catch (e) {
+      if (seq !== seqRef.current) return;
+      setPending(null);
+      setPendingNoTeam(null);
+      onFailed(userFacingMessage(e, "Could not save Team"));
+      return;
+    }
+    if (seq !== seqRef.current) return;
+    if (preview.nodesFollowing === 0 && preview.cardsCarryingCurrent === 0) {
+      await save([], preview, true);
+      focusNoTeamToggle();
+      return;
+    }
+    setConfirm({
+      kind: "noTeam",
+      next: [],
+      preview,
+      ...setNoTeamConfirmCopy({
+        levelLabel: LEVEL_LABEL[level],
+        preview,
+        currentTeamNames: storedNames,
       }),
     });
   };
@@ -2070,6 +2251,15 @@ function SetTeamRow({
       <TeamPicker
         value={inFlight ? teamIds : (pending ?? teamIds)}
         onChange={(next) => void handleChange(next)}
+        noTeam={{
+          // A pending team pick over a stored No Team shows it off; a
+          // pending No Team shows it on.
+          value: inFlight
+            ? noTeam
+            : (pendingNoTeam ?? (pending !== null && pending.length > 0 ? false : noTeam)),
+          onChange: (next) => void handleNoTeam(next),
+          label: NO_TEAM_LABELS.everyCard,
+        }}
         sportId={sportId}
         disabled={busy || inFlight}
         labels={SET_TEAM_PICKER_LABELS}
@@ -2123,15 +2313,28 @@ function SetTeamRow({
         <ConfirmDialog
           title={confirm.title}
           description={confirm.description}
-          confirmLabel={confirm.kind === "clear" ? "Yes, clear" : "Yes, apply"}
-          busyLabel={confirm.kind === "clear" ? "Clearing…" : "Applying…"}
+          confirmLabel={
+            confirm.kind === "clear"
+              ? "Yes, clear"
+              : confirm.kind === "noTeam"
+                ? "Yes, set No Team"
+                : "Yes, apply"
+          }
+          busyLabel={
+            confirm.kind === "clear"
+              ? "Clearing…"
+              : confirm.kind === "noTeam"
+                ? "Saving…"
+                : "Applying…"
+          }
           busy={busy}
           onConfirm={() => {
             if (busy) return;
-            const { next, preview } = confirm;
-            void save(next, preview).finally(() => {
+            const { next, preview, kind } = confirm;
+            void save(next, preview, kind === "noTeam").finally(() => {
               setConfirm(null);
-              focusTrigger();
+              if (kind === "noTeam") focusNoTeamToggle();
+              else focusTrigger();
             });
           }}
           onCancel={() => {
@@ -2143,7 +2346,9 @@ function SetTeamRow({
               return;
             }
             setPending(null);
-            focusTrigger();
+            setPendingNoTeam(null);
+            if (confirm.kind === "noTeam") focusNoTeamToggle();
+            else focusTrigger();
           }}
         />
       )}

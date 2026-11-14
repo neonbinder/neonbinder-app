@@ -6,6 +6,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import PlayerPicker from "./PlayerPicker";
 import TeamPicker from "./TeamPicker";
+import { NO_TEAM_LABELS } from "./team-picker-labels";
 import { MAX_CARD_TEAMS } from "./card-attention";
 import {
   useAttentionContextOptionId,
@@ -74,6 +75,13 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
   const [teamIds, setTeamIds] = useState<Array<Id<"teams">>>(
     () => row.teamOnCardIds ?? [],
   );
+  /**
+   * NEO-556 — "No Team": the operator's answer that the card carries no team,
+   * which answers a typed team name as fully as linking one does (the server
+   * retires `pendingTeamNames` in the same patch that stamps the card).
+   * Picking a team turns it off; pressing it clears the picked teams.
+   */
+  const [teamNone, setTeamNone] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const firstControlRef = useRef<HTMLDivElement>(null);
@@ -122,6 +130,11 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
   const applyTeams = (next: Array<Id<"teams">>) => {
     if (next.length > MAX_CARD_TEAMS) return;
     setTeamIds(next);
+    if (next.length > 0) setTeamNone(false);
+  };
+  const applyNoTeam = (next: boolean) => {
+    setTeamNone(next);
+    if (next) setTeamIds([]);
   };
   const atCap = teamIds.length >= MAX_CARD_TEAMS;
 
@@ -146,7 +159,8 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
    * note on the button itself.
    */
   const playerSideOpen = unlinkedPlayerNames.length > 0 && playerIds.length === 0;
-  const teamSideOpen = unlinkedTeamNames.length > 0 && teamIds.length === 0;
+  const teamSideOpen =
+    unlinkedTeamNames.length > 0 && teamIds.length === 0 && !teamNone;
   const clearsCard = !playerSideOpen && !teamSideOpen;
 
   /**
@@ -167,7 +181,7 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
   const retiresNames =
     (playerIds.length > 0 && (row.pendingPlayerNames?.length ?? 0) > 0) ||
     (teamIds.length > 0 && (row.pendingTeamNames?.length ?? 0) > 0);
-  const canSave = clearsCard && (idsChanged || retiresNames) && !busy;
+  const canSave = clearsCard && (idsChanged || retiresNames || teamNone) && !busy;
 
   const save = async () => {
     if (!canSave) return;
@@ -196,13 +210,29 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
       // Read off the ROW, not off `unlinkedTeamNames`: that list is the
       // DISPLAY list and is empty for a card that already has a linked team,
       // which would turn "leave this side alone" into "clear it".
-      await updateCard({
-        id: row._id,
-        playerIds,
-        teamOnCardIds: teamIds,
-        pendingPlayerNames: playerIds.length > 0 ? [] : (row.pendingPlayerNames ?? []),
-        pendingTeamNames: teamIds.length > 0 ? [] : (row.pendingTeamNames ?? []),
-      });
+      //
+      // NEO-556 — "No Team" sends the request instead of the team half: the
+      // server empties `teamOnCardIds` and `pendingTeamNames` and stamps the
+      // card in one patch, and refuses the request beside a team or a name.
+      await updateCard(
+        teamNone
+          ? {
+              id: row._id,
+              playerIds,
+              pendingPlayerNames:
+                playerIds.length > 0 ? [] : (row.pendingPlayerNames ?? []),
+              teamNone: true,
+            }
+          : {
+              id: row._id,
+              playerIds,
+              teamOnCardIds: teamIds,
+              pendingPlayerNames:
+                playerIds.length > 0 ? [] : (row.pendingPlayerNames ?? []),
+              pendingTeamNames:
+                teamIds.length > 0 ? [] : (row.pendingTeamNames ?? []),
+            },
+      );
       onSaved();
     } catch (e) {
       // NEO-246: `updateCard` now REFUSES a bad `playerIds` write (an id that
@@ -230,12 +260,17 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
       ];
       return `Link ${missing.join(" and ")} to clear this card.`;
     }
-    if (!idsChanged && !retiresNames) {
+    if (!idsChanged && !retiresNames && !teamNone) {
       return "Nothing to change here — skip this card.";
     }
     const parts: string[] = [];
     if (playerIds.length > 0) {
       parts.push(`${playerIds.length} ${playerIds.length === 1 ? "player" : "players"}`);
+    }
+    if (teamNone) {
+      return parts.length > 0
+        ? `Links ${parts.join("")} to this card and marks it No Team.`
+        : "Marks this card No Team.";
     }
     if (teamIds.length > 0) {
       parts.push(`${teamIds.length} ${teamIds.length === 1 ? "team" : "teams"}`);
@@ -326,6 +361,11 @@ export default function UnreviewedNameFixer({ row, onSaved }: AttentionFixerProp
           sportId={sportId}
           contextOptionId={contextOptionId}
           disabled={busy}
+          noTeam={{
+            value: teamNone,
+            onChange: applyNoTeam,
+            label: NO_TEAM_LABELS.card,
+          }}
         />
         {atCap && (
           <p

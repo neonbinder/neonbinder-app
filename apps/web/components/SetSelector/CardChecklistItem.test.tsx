@@ -859,3 +859,42 @@ describe("CardChecklistItem — NEO-358 refused delete", () => {
     expect(mockDeleteCard).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("CardChecklistItem — NEO-556 No Team", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentTeamRows = undefined;
+  });
+
+  const subtitleOf = (container: HTMLElement) =>
+    container.querySelector(".truncate.min-h-\\[1rem\\]")?.textContent;
+
+  it("a card confirmed teamless reads 'No Team' where its team would be", () => {
+    const { container } = renderItem({
+      card: makeCard({ teamNoneConfirmedAt: 1, printRun: 99 }),
+    });
+    expect(subtitleOf(container)).toBe("No Team · /99");
+  });
+
+  it("an unanswered card stays blank: no answer is not No Team", () => {
+    const { container } = renderItem({ card: makeCard({ printRun: 99 }) });
+    expect(subtitleOf(container)).toBe("/99");
+  });
+
+  it("a linked or typed team wins over a stale stamp", () => {
+    currentTeamRows = [{ _id: "team-1", name: "Padres", location: "San Diego" }];
+    const linked = renderItem({
+      card: makeCard({
+        teamNoneConfirmedAt: 1,
+        teamOnCardIds: ["team-1" as unknown as Id<"teams">],
+      }),
+    });
+    expect(subtitleOf(linked.container)).toBe("San Diego Padres");
+    linked.unmount();
+    currentTeamRows = undefined;
+    const typed = renderItem({
+      card: makeCard({ teamNoneConfirmedAt: 1, pendingTeamNames: ["Yankees"] }),
+    });
+    expect(subtitleOf(typed.container)).toBe("Yankees (unconfirmed)");
+  });
+});

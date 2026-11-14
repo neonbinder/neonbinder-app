@@ -623,8 +623,9 @@ export default function EntityReviewWizard({
   onListingShortNameChange?: (value: string | undefined) => void;
   /**
    * NEO-335 Phase 2 (C7) — the node these cards save under already carries a
-   * set-level team (NEO-277). Without one, a long teams step hints at setting
-   * it in Set details instead of answering every card.
+   * set-level team (NEO-277), or NEO-556's set-level "No Team". Without
+   * either, a long teams step hints at setting one in Set details instead of
+   * answering every card.
    */
   hasSetTeam?: boolean;
   /**

@@ -2159,6 +2159,16 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(screen.queryByText(/Wizard summary/)).toBeNull();
     });
 
+    it("NEO-556: under a No Team node, new cards with nothing to look up commit straight through", async () => {
+      // SportLots-only cards: no BSC ref, so no lookup to wait on and no
+      // listing value; the commit stamps each one No Team.
+      state.variantRow = { value: "Test Set", noTeamDefault: { setAt: 1, setByUserId: "u" } };
+      const { rerender } = renderChecklist();
+      await syncTeamless(rerender);
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalled());
+      expect(screen.queryByText(/Wizard summary/)).toBeNull();
+    });
+
     it("under a set-level team, still asks about a re-synced EXISTING teamless row (the commit only defaults new rows)", async () => {
       state.variantRow = { value: "Test Set", teamIds: ["team-set"] };
       // Card 1 re-syncs a stored row with no team; card 2 is a new row.
@@ -4106,6 +4116,8 @@ describe("CardChecklist — NEO-208 quick-add Team picker", () => {
       "Card name",
       QA_TRIGGER,
       "Add team",
+      // NEO-556: the No Team toggle sits right after the team trigger.
+      "No Team for the new card",
       "Submit new card",
       "Cancel new card",
     ]);
@@ -6762,5 +6774,61 @@ describe("CardChecklist — stream readiness helpers", () => {
   it("teams: with no fence, every row must be ready", () => {
     expect(streamTeamsLanded(live({ ready: 2 }), { count: 3 })).toBe(false);
     expect(streamTeamsLanded(live({ ready: 3 }), { count: 3 })).toBe(true);
+  });
+});
+
+describe("CardChecklist — NEO-556 quick-add No Team", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.cards = [];
+    state.variantRow = { value: "Test Set" };
+    state.ancestorChain = twoSidedChain();
+    state.liveCandidates = null;
+    state.teams = [YANKEES, METS];
+    mockAddCustomCard.mockResolvedValue("new-card-1");
+  });
+
+  const noTeamToggle = () =>
+    screen.getByRole("button", { name: "No Team for the new card" });
+
+  it("sends teamNone, and no team ids, when No Team is pressed", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("601");
+    pickTeam("New York Yankees");
+    fireEvent.click(noTeamToggle());
+    expect(noTeamToggle().getAttribute("aria-pressed")).toBe("true");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args.teamNone).toBe(true);
+    expect(args).not.toHaveProperty("teamOnCardIds");
+  });
+
+  it("picking a team after No Team turns it off and sends the team alone", async () => {
+    renderChecklist();
+    openAddForm();
+    fillCardNumber("602");
+    fireEvent.click(noTeamToggle());
+    pickTeam("New York Mets");
+    expect(noTeamToggle().getAttribute("aria-pressed")).toBe("false");
+
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Submit new card"));
+    });
+    const args = mockAddCustomCard.mock.calls[0][0];
+    expect(args.teamOnCardIds).toEqual([METS._id]);
+    expect(args).not.toHaveProperty("teamNone");
+  });
+
+  it("does not carry No Team into the next card", async () => {
+    renderChecklist();
+    openAddForm();
+    fireEvent.click(noTeamToggle());
+    fireEvent.click(screen.getByLabelText("Cancel new card"));
+    openAddForm();
+    expect(noTeamToggle().getAttribute("aria-pressed")).toBe("false");
   });
 });

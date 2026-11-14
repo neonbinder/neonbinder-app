@@ -112,16 +112,29 @@ vi.mock("./TeamPicker", () => ({
     value,
     onChange,
     contextOptionId,
+    noTeam,
   }: {
     value: string[];
     onChange: (next: string[]) => void;
     contextOptionId?: string;
+    noTeam?: { value: boolean; onChange: (next: boolean) => void; label?: string };
   }) => (
     <div aria-label="Team picker (stub)" data-context-option-id={contextOptionId ?? ""}>
       <span>Teams: {value.join(",")}</span>
-      <button onClick={() => onChange([...value, "team-new"])}>
+      <button onClick={() => onChange(noTeam?.value ? ["team-new"] : [...value, "team-new"])}>
         Stub add team
       </button>
+      {/* NEO-556 — the real toggle's contract: press → onChange(!value). */}
+      {noTeam && (
+        <button
+          type="button"
+          aria-label={noTeam.label}
+          aria-pressed={noTeam.value}
+          onClick={() => noTeam.onChange(!noTeam.value)}
+        >
+          No Team
+        </button>
+      )}
     </div>
   ),
 }));
@@ -1519,5 +1532,72 @@ describe("CardDetailPanel — Also on this card (NEO-528)", () => {
     });
     await screen.findByRole("alert");
     expect(mockConvexMutation).not.toHaveBeenCalled();
+  });
+});
+
+describe("CardDetailPanel — No Team (NEO-556)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdateCard.mockResolvedValue(undefined);
+  });
+
+  const toggle = () => screen.getByRole("button", { name: "No Team for this card" });
+
+  it("offers No Team beside the picker, off for a card with no answer", () => {
+    renderPanel();
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("pressing it asks the server for the stamp alone, and says so", async () => {
+    renderPanel({ card: makeCard({ teamOnCardIds: ["team-1"] as unknown as Array<Id<"teams">> }) });
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, teamNone: true });
+    expect(await screen.findByText("Saved No Team")).toBeTruthy();
+  });
+
+  it("while the save is out, the toggle reads pressed and the chips are gone", async () => {
+    let resolve: () => void = () => {};
+    mockUpdateCard.mockImplementationOnce(() => new Promise<void>((r) => (resolve = r)));
+    renderPanel({ card: makeCard({ teamOnCardIds: ["team-1"] as unknown as Array<Id<"teams">> }) });
+    act(() => {
+      fireEvent.click(toggle());
+    });
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText("Teams:")).toBeTruthy();
+    await act(async () => resolve());
+  });
+
+  it("a stamped card shows it pressed; pressing again writes nothing and says how to change it", async () => {
+    renderPanel({ card: makeCard({ teamNoneConfirmedAt: 1 }) });
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(
+      await screen.findByText("No Team stays until you pick a team for this card."),
+    ).toBeTruthy();
+  });
+
+  it("picking a team on a stamped card saves just the team (the server retires the stamp)", async () => {
+    renderPanel({ card: makeCard({ teamNoneConfirmedAt: 1 }) });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stub add team" }));
+    });
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, teamOnCardIds: ["team-new"] });
+    expect(mockUpdateCard.mock.calls[0][0]).not.toHaveProperty("teamNone");
+  });
+
+  it("a refused No Team shows the server's sentence and the toggle settles back", async () => {
+    mockUpdateCard.mockRejectedValueOnce(new ConvexError("Pick No Team or a team, not both."));
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(toggle());
+    });
+    expect(await screen.findByText("Pick No Team or a team, not both.")).toBeTruthy();
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
   });
 });

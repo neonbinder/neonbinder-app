@@ -6,6 +6,7 @@ import { teamFullName } from "../../lib/teams/team-name";
 import type { Id } from "../../convex/_generated/dataModel";
 import CardAttentionBadge from "./CardAttentionBadge";
 import { deriveCardAttention } from "./card-attention";
+import { NO_TEAM_TEXT } from "./team-picker-labels";
 
 type CardChecklistItemProps = {
   card: {
@@ -277,6 +278,16 @@ export default function CardChecklistItem({
   // content that must not move a row.
   for (const pendingName of card.pendingTeamNames ?? []) {
     subParts.push(`${pendingName} (unconfirmed)`);
+  }
+  // NEO-556 — a card confirmed teamless says so where its team would be, so
+  // "No Team" (an answer) reads apart from a blank line (no answer yet). Only
+  // with no team linked or typed: picking one retires the stamp server-side.
+  if (
+    card.teamNoneConfirmedAt !== undefined &&
+    (card.teamOnCardIds?.length ?? 0) === 0 &&
+    (card.pendingTeamNames?.length ?? 0) === 0
+  ) {
+    subParts.push(NO_TEAM_TEXT);
   }
   if (card.printRun) subParts.push(`/${card.printRun}`);
   if (card.cardVariation) subParts.push(card.cardVariation);
