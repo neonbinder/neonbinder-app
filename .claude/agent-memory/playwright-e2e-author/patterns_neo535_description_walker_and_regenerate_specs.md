@@ -18,3 +18,9 @@ metadata:
 - Flow-changing plants (Escape skips confirm, Cancel closes, a refusal that never renders) go in their own hard runs, and a plant that suppresses a state masks any axe plant on that same state: give it its own run.
 - A server-side plant must change a value the spec reads. An argument that a fallback already supplies (`parallelName` vs `set.parallelLeafValue`) is redundant, so dropping it stays green; remove both. Always check the `convex dev --once` exit code on the plant AND the restore push.
 - A setup-project failure ("Couldn't sync years", a missing Years/Manufacturers option) after a reseed is the external BSC sync, not the plant: rerun that plan.
+
+## Capturing light/dark screenshots from existing specs
+
+- Do not write a capture spec: temporarily insert `await shot(page, "<name>")` before the `expectAccessible` call that already stands in the wanted state (or after a focus assertion), from a throwaway helper that sets the viewport (390 on the phone project, 1280 on desktop), runs `emulateMedia` light then dark, waits on `paintsLook`, screenshots, and restores the viewport. Remove the helper and restore the specs byte-exact afterwards (`git status` empty).
+- The phone project is a Pixel 7 (412 wide); a 390px capture needs `setViewportSize` in the helper.
+- Three one-off reds on a fresh rerun in the same session had three different mechanisms: a wizard loop that clicked "Add as New Player" while the wizard advanced by itself, the test page stuck on "[testing] Initializing...", and axe's `getAnimations()` settle never finishing; check each artifact before calling any of them a flake.
