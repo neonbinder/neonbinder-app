@@ -213,7 +213,8 @@ export function noTeamCardVerdict(
   card: NoTeamVerdictCard,
   opts: { ruledNotATeam?: boolean } = {},
 ): NoTeamCardVerdict {
-  if (card.teamNoneConfirmedAt !== undefined) {
+  // Truthiness, as `cardChecklist.ts` and `features/cardAttention.ts` read it.
+  if (card.teamNoneConfirmedAt) {
     return { verdict: "keep", reason: "alreadyNoTeam" };
   }
   if ((card.teamOnCardIds?.length ?? 0) > 0) {

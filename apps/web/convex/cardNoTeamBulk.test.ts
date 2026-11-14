@@ -17,7 +17,9 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { teamRowFields } from "./lib/teamRow";
 import { insertTestCard } from "../lib/testing/card-row";
 import {
+  MAX_NO_TEAM_WALK,
   NO_TEAM_CHECKLIST_CHANGED,
+  NO_TEAM_COUNT_CAP,
   NO_TEAM_NOT_SET,
   NO_TEAM_PAGE,
   NO_TEAM_SETTLING,
@@ -192,8 +194,111 @@ describe("noTeamTargets (NEO-556)", () => {
     });
     // The teamed variant type is left out; the empty one has nothing to walk.
     expect(got.rowsWithOtherDefault).toBe(1);
-    expect(got.truncated).toBe(false);
+    expect(got.walkTruncated).toBe(false);
+    expect(got.countTruncated).toBe(false);
   });
+
+  test("walkTruncated: rows past the walk cap are neither counted nor visited by the run", async () => {
+    const t = harness();
+    const fx = await seed(t);
+    // A No Team row with MAX_NO_TEAM_WALK empty children, then one holding a
+    // stampable card: the walk reads exactly the cap and stops before it.
+    const { holder, ids } = await t.run(async (ctx) => {
+      const holder = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Wide",
+        parentId: fx.setName,
+        platformData: {},
+        children: [],
+        lastUpdated: NOW,
+        noTeamDefault: NO_TEAM,
+      });
+      const ids: RowId[] = [];
+      for (let i = 0; i <= MAX_NO_TEAM_WALK; i++) {
+        ids.push(
+          await ctx.db.insert("selectorOptions", {
+            level: "insert",
+            value: `Wide ${i}`,
+            parentId: holder,
+            platformData: {},
+            children: [],
+            lastUpdated: NOW,
+            noTeamDefault: NO_TEAM,
+            ...(i < MAX_NO_TEAM_WALK ? { cardCount: 0 } : {}),
+          }),
+        );
+      }
+      await ctx.db.patch(holder, { children: ids });
+      return { holder, ids };
+    });
+    const pastCap = await card(t, ids[MAX_NO_TEAM_WALK]);
+    const got = await t.withIdentity(ADMIN).query(api.cardNoTeamBulk.noTeamTargets, {
+      selectorOptionId: holder,
+    });
+    expect(got.walkTruncated).toBe(true);
+    expect(got.countTruncated).toBe(false);
+    expect(got.toStamp).toBe(0);
+    await runAll(t, holder);
+    expect((await getCard(t, pastCap))!.teamNoneConfirmedAt).toBeUndefined();
+
+    // Exactly at the cap is not past it.
+    await t.run(async (ctx) => ctx.db.patch(holder, { children: ids.slice(0, MAX_NO_TEAM_WALK) }));
+    const atCap = await t.withIdentity(ADMIN).query(api.cardNoTeamBulk.noTeamTargets, {
+      selectorOptionId: holder,
+    });
+    expect(atCap.walkTruncated).toBe(false);
+  });
+
+  test("countTruncated: past the count cap the numbers are a floor, and the run still stamps every card", async () => {
+    const t = harness();
+    const fx = await seed(t);
+    await t.run(async (ctx) => {
+      for (let i = 0; i < NO_TEAM_COUNT_CAP; i++) {
+        await insertTestCard(ctx, {
+          selectorOptionId: fx.base,
+          cardNumber: `C${i}`,
+          cardName: `Count ${i}`,
+          platformData: {},
+          sortOrder: i,
+          lastUpdated: NOW,
+        });
+      }
+    });
+    const ask = () =>
+      t.withIdentity(ADMIN).query(api.cardNoTeamBulk.noTeamTargets, { selectorOptionId: fx.base });
+    // Exactly at the cap: every card counted, not a floor.
+    const atCap = await ask();
+    expect(atCap.countTruncated).toBe(false);
+    expect(atCap.walkTruncated).toBe(false);
+    expect(atCap.toStamp).toBe(NO_TEAM_COUNT_CAP);
+
+    // One past it, on a row the count never reaches.
+    const extra = await card(t, fx.insert);
+    const over = await ask();
+    expect(over.countTruncated).toBe(true);
+    expect(over.walkTruncated).toBe(false);
+    expect(over.toStamp).toBe(NO_TEAM_COUNT_CAP);
+    expect(over.targets.map((r) => [r._id, r.toStamp])).toEqual([
+      [fx.base, NO_TEAM_COUNT_CAP],
+      [fx.insert, 0],
+      [fx.parallel, 0],
+    ]);
+
+    // The run pages, so it is not bound by the count cap.
+    const pages: NoTeamPage[] = [];
+    let cursor: string | null = null;
+    for (let i = 0; i < 100; i++) {
+      const page: NoTeamPage = await t
+        .withIdentity(ADMIN)
+        .mutation(api.cardNoTeamBulk.applyNoTeamPage, { selectorOptionId: fx.base, cursor });
+      pages.push(page);
+      cursor = page.cursor;
+      if (cursor === null) break;
+    }
+    expect(cursor).toBeNull();
+    expect(pages.reduce((n, p) => n + p.stamped, 0)).toBe(NO_TEAM_COUNT_CAP + 1);
+    expect((await getCard(t, extra))!.teamNoneConfirmedAt).toBeDefined();
+  }, 60_000);
 
   test("a run from a row below the set covers that row and what sits beneath it", async () => {
     const t = harness();

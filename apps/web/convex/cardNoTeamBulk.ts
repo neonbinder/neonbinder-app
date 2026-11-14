@@ -66,12 +66,16 @@ type SelectorRow = Doc<"selectorOptions">;
  * treats as comfortable (`TEAM_CASCADE_CARD_PAGE` is the same 200).
  */
 export const NO_TEAM_PAGE = 200;
-/** Rows the walk down reads at most (card-holding or not); past it, `truncated`. */
+/**
+ * Rows the walk down reads at most (card-holding or not); past it,
+ * `walkTruncated`. The run walks the same way, so a row past this cap is
+ * neither counted nor ever visited by the run.
+ */
 export const MAX_NO_TEAM_WALK = 500;
 /**
  * Cards `noTeamTargets` reads before it stops counting. A confirm dialog wants
  * a number, not a walk of the catalogue; past this the counts are a floor
- * (`truncated`) and the run, which pages, still visits every card. The same
+ * (`countTruncated`) and the run, which pages, still visits every card. The same
  * 2,000 as the team cascade preview (`TEAM_CASCADE_PREVIEW_CARD_CAP`).
  */
 export const NO_TEAM_COUNT_CAP = 2000;
@@ -189,10 +193,10 @@ async function requireNoTeamRoot(
 export async function noTeamRunTargets(
   ctx: ReadCtx,
   root: SelectorRow,
-): Promise<{ targets: Target[]; rowsWithOtherDefault: number; truncated: boolean }> {
+): Promise<{ targets: Target[]; rowsWithOtherDefault: number; walkTruncated: boolean }> {
   const targets: Target[] = [];
   let rowsWithOtherDefault = 0;
-  let truncated = false;
+  let walkTruncated = false;
   let read = 0;
   const seen = new Set<string>([root._id as string]);
   const stack: Array<{ row: SelectorRow; depth: number }> = [{ row: root, depth: 0 }];
@@ -216,7 +220,7 @@ export async function noTeamRunTargets(
       if (seen.has(childId as string)) continue;
       seen.add(childId as string);
       if (read >= MAX_NO_TEAM_WALK) {
-        truncated = true;
+        walkTruncated = true;
         break;
       }
       read++;
@@ -225,7 +229,7 @@ export async function noTeamRunTargets(
     }
     for (let i = kids.length - 1; i >= 0; i--) stack.push({ row: kids[i], depth: depth + 1 });
   }
-  return { targets, rowsWithOtherDefault, truncated };
+  return { targets, rowsWithOtherDefault, walkTruncated };
 }
 
 /**
@@ -243,7 +247,7 @@ export const noTeamTargets = query({
     targets: v.array(
       v.object({
         ...targetValidator.fields,
-        /** Cards on this row the run would stamp (a floor when `truncated`). */
+        /** Cards on this row the run would stamp (a floor when `countTruncated`). */
         toStamp: v.number(),
       }),
     ),
@@ -253,30 +257,40 @@ export const noTeamTargets = query({
     kept: reasonCountsValidator,
     /** Card-holding rows beneath left out: their own team default is not No Team. */
     rowsWithOtherDefault: v.number(),
-    /** A cap was hit (the walk, or the card count); the numbers are a floor. */
-    truncated: v.boolean(),
+    /**
+     * The walk hit `MAX_NO_TEAM_WALK`: rows past it are left out of these
+     * numbers AND the run will not visit them.
+     */
+    walkTruncated: v.boolean(),
+    /**
+     * The count hit `NO_TEAM_COUNT_CAP`: the numbers are a floor, and the
+     * run, which pages, still visits every card on the listed rows.
+     */
+    countTruncated: v.boolean(),
   }),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
     const root = await requireNoTeamRoot(ctx, args.selectorOptionId);
     const walk = await noTeamRunTargets(ctx, root);
-    let truncated = walk.truncated;
+    let countTruncated = false;
     const kept = emptyReasonCounts();
     let toStamp = 0;
     let examined = 0;
     const targets: Array<Target & { toStamp: number }> = [];
     for (const target of walk.targets) {
       let rowStamp = 0;
-      const room = NO_TEAM_COUNT_CAP - examined;
-      if (room <= 0) {
-        truncated = true;
-      } else {
+      const room = Math.max(0, NO_TEAM_COUNT_CAP - examined);
+      // Once a card past the cap has been seen the numbers are a floor and
+      // nothing more is read. Until then a full count still asks each later
+      // row for one card (`take(room + 1)` is `take(1)` at room 0), so a cap
+      // reached exactly, with nothing beneath it, is not reported as a floor.
+      if (!(room === 0 && countTruncated)) {
         // One over the room, so "exactly at the cap" and "past it" differ.
         const cards = await ctx.db
           .query("cardChecklist")
           .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", target._id))
           .take(room + 1);
-        if (cards.length > room) truncated = true;
+        if (cards.length > room) countTruncated = true;
         for (const card of cards.slice(0, room)) {
           examined++;
           const verdict = verdictOf(card);
@@ -287,7 +301,14 @@ export const noTeamTargets = query({
       toStamp += rowStamp;
       targets.push({ ...target, toStamp: rowStamp });
     }
-    return { targets, toStamp, kept, rowsWithOtherDefault: walk.rowsWithOtherDefault, truncated };
+    return {
+      targets,
+      toStamp,
+      kept,
+      rowsWithOtherDefault: walk.rowsWithOtherDefault,
+      walkTruncated: walk.walkTruncated,
+      countTruncated,
+    };
   },
 });
 

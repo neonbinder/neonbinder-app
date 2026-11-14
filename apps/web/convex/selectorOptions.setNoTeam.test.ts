@@ -26,6 +26,7 @@ import schema from "./schema";
 import { Doc, Id } from "./_generated/dataModel";
 import { teamRowFields } from "./lib/teamRow";
 import { insertTestCard } from "../lib/testing/card-row";
+import { deriveCardAttention } from "./features/cardAttention";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import {
   CARD_NO_TEAM_WITH_TEAMS_REFUSAL,
@@ -437,7 +438,7 @@ describe("NEO-556 copy-down at node creation", () => {
 });
 
 describe("NEO-556 getAncestorChain", () => {
-  test("carries each row's No Team beside its teams", async () => {
+  test("carries each row's No Team beside its teams, as a flag", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const sportId = await seedSport(t);
@@ -445,8 +446,13 @@ describe("NEO-556 getAncestorChain", () => {
     const chain = await asAdmin.query(api.selectorOptions.getAncestorChain, { id: tree.variantTypeId });
     const leaf = chain[chain.length - 1];
     expect(leaf._id).toBe(tree.variantTypeId);
-    expect(leaf.noTeamDefault).toEqual(EARLIER_NO_TEAM);
-    expect(chain[0].noTeamDefault).toBeUndefined();
+    expect(leaf.noTeam).toBe(true);
+    expect(chain.slice(0, -1).map((r) => r.noTeam)).toEqual(chain.slice(0, -1).map(() => false));
+    // Who set it, and when, stay on the server.
+    for (const row of chain) {
+      expect(row).not.toHaveProperty("noTeamDefault");
+      expect(JSON.stringify(row)).not.toContain(EARLIER_NO_TEAM.setByUserId);
+    }
   });
 });
 
@@ -495,6 +501,43 @@ describe("NEO-556 addCustomCard", () => {
     expect((await getCard(t, picked))!.teamOnCardIds).toEqual([bulls]);
     expect((await getCard(t, typed))!.teamNoneConfirmedAt).toBeUndefined();
     expect((await getCard(t, typed))!.pendingTeamNames).toEqual(["Somewhere Else"]);
+  });
+
+  test("teamNone false under a No Team leaf: the card is born teamless and unstamped", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const tree = await seedTree(t, sportId, { variantType: { noTeamDefault: EARLIER_NO_TEAM } });
+
+    const id = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: tree.variantTypeId,
+      cardNumber: "1",
+      cardName: "Card 1",
+      teamNone: false,
+    });
+    const card = await getCard(t, id);
+    expect(card!.teamNoneConfirmedAt).toBeUndefined();
+    expect(card!.teamNoneConfirmedByUserId).toBeUndefined();
+    expect(card!.teamOnCardIds ?? []).toEqual([]);
+    expect(deriveCardAttention(card!).map((i) => i.kind)).toContain("missingTeam");
+  });
+
+  test("teamNone false never turns off a set-level TEAM: under a team leaf the card still takes it", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const bulls = await seedTeam(t, sportId, { location: "Durham", name: "Bulls" });
+    const tree = await seedTree(t, sportId, { variantType: { teamIds: [bulls] } });
+
+    const id = await asAdmin.mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: tree.variantTypeId,
+      cardNumber: "1",
+      cardName: "Card 1",
+      teamNone: false,
+    });
+    const card = await getCard(t, id);
+    expect(card!.teamOnCardIds).toEqual([bulls]);
+    expect(card!.teamNoneConfirmedAt).toBeUndefined();
   });
 
   test("an explicit teamNone beats the leaf's set team and is stamped", async () => {
@@ -701,6 +744,70 @@ describe("NEO-556 updateCard teamNone", () => {
     const teamed = await getCard(t, id);
     expect(teamed!.teamOnCardIds).toEqual([bulls]);
     expect(teamed!.teamNoneConfirmedAt).toBeUndefined();
+  });
+
+  test("teamNone false takes No Team back: both stamp fields cleared, the card teamless and asked again", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const tree = await seedTree(t, sportId);
+    const id = await seedCard(t, tree.variantTypeId, "1");
+    await asAdmin.mutation(api.selectorOptions.updateCard, { id, teamNone: true });
+    const stamped = await getCard(t, id);
+    expect(stamped!.teamNoneConfirmedByUserId).toBe(ADMIN_ID);
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, { id, teamNone: false });
+    const undone = await getCard(t, id);
+    expect(undone!.teamNoneConfirmedAt).toBeUndefined();
+    expect(undone!.teamNoneConfirmedByUserId).toBeUndefined();
+    expect(undone!.teamOnCardIds ?? []).toEqual([]);
+    expect(undone!.pendingTeamNames).toBeUndefined();
+    // Nothing else moved: the listing text never named "No Team".
+    expect(undone!.listingTitle).toBe(stamped!.listingTitle);
+    expect(undone!.listingDescription).toBe(stamped!.listingDescription);
+    expect(deriveCardAttention(undone!).map((i) => i.kind)).toContain("missingTeam");
+  });
+
+  test("teamNone false on a card that is not stamped writes nothing; absent leaves a stamp alone", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const tree = await seedTree(t, sportId);
+    const plain = await seedCard(t, tree.variantTypeId, "1");
+    const before = await getCard(t, plain);
+    await asAdmin.mutation(api.selectorOptions.updateCard, { id: plain, teamNone: false });
+    expect(await getCard(t, plain)).toEqual(before);
+
+    const stamped = await seedCard(t, tree.variantTypeId, "2", {
+      teamNoneConfirmedAt: 5,
+      teamNoneConfirmedByUserId: "admin_earlier",
+    });
+    await asAdmin.mutation(api.selectorOptions.updateCard, { id: stamped, cardName: "Renamed" });
+    const kept = await getCard(t, stamped);
+    expect(kept!.teamNoneConfirmedAt).toBe(5);
+    expect(kept!.teamNoneConfirmedByUserId).toBe("admin_earlier");
+  });
+
+  test("teamNone false beside a team is accepted: the team lands and the stamp goes", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const bulls = await seedTeam(t, sportId, { location: "Durham", name: "Bulls" });
+    const tree = await seedTree(t, sportId);
+    const id = await seedCard(t, tree.variantTypeId, "1", {
+      teamNoneConfirmedAt: 5,
+      teamNoneConfirmedByUserId: "admin_earlier",
+    });
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id,
+      teamNone: false,
+      teamOnCardIds: [bulls],
+    });
+    const card = await getCard(t, id);
+    expect(card!.teamOnCardIds).toEqual([bulls]);
+    expect(card!.teamNoneConfirmedAt).toBeUndefined();
+    expect(card!.teamNoneConfirmedByUserId).toBeUndefined();
+    expect(await teamLinkIds(t, id)).toEqual([bulls]);
   });
 });
 

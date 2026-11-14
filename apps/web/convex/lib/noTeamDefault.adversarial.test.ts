@@ -103,7 +103,11 @@ function oracle(
     outcome: "answered" | "gaveUp" | "checklist" | undefined;
   },
 ): "stamp" | NoTeamKeepReason {
-  if (c.noneConfirmed !== undefined) return "alreadyNoTeam";
+  // Truthiness, as the attention rule and the BSC lookup read the stamp
+  // (`features/cardAttention.ts`, `cardChecklist.ts`): a stamp at epoch 0 is
+  // read as unstamped everywhere, so the verdict reads it the same way rather
+  // than skip a card the rest of NB would ask about.
+  if (c.noneConfirmed) return "alreadyNoTeam";
   if (c.ids && c.ids.length > 0) return "hasTeam";
   if (c.pending && c.pending.length > 0) return "pendingName";
   const hintHasText = c.hint !== undefined && c.hint.replace(/[\s ﻿]/g, "") !== "";

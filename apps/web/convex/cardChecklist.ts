@@ -1365,10 +1365,8 @@ export const confirmCardNoTeam = mutation({
     }
     if (row.teamNoneConfirmedAt) return { confirmed: true, stamped: false };
 
-    await ctx.db.patch(row._id, {
-      teamNoneConfirmedAt: Date.now(),
-      teamNoneConfirmedByUserId: userId,
-    });
+    // NEO-556 — the one stamp builder every writer shares.
+    await ctx.db.patch(row._id, stampNoTeam(userId, Date.now()));
     return { confirmed: true, stamped: true };
   },
 });

@@ -120,7 +120,7 @@ describe("NEO-556 source pins", () => {
     }
   });
 
-  test("the only code that can create a teamNoneConfirmedAt value is stampNoTeam, confirmCardNoTeam and settleCardTeamAnswer", () => {
+  test("the only code that can create a teamNoneConfirmedAt value is stampNoTeam", () => {
     const fresh: string[] = [];
     for (const [path, text] of productSources) {
       for (const line of text.split("\n")) {
@@ -138,13 +138,10 @@ describe("NEO-556 source pins", () => {
     }
     expect(fresh.sort()).toEqual(
       [
-        // stampNoTeam itself: `{ teamNoneConfirmedAt: now, ... }`
+        // stampNoTeam itself: `{ teamNoneConfirmedAt: now, ... }`. NEO-102's
+        // confirmCardNoTeam and NEO-335's operator pre-save answer
+        // (settleCardTeamAnswer) both go through it since NEO-556.
         "./lib/selectorTeams.ts => now",
-        // NEO-102's confirmCardNoTeam (server clock + this admin)
-        "./cardChecklist.ts => Date.now()",
-        // NEO-335's operator pre-save answer; NOT via stampNoTeam (pre-existing),
-        // gated on `a.operatorUserId` inside settleCardTeamAnswer.
-        "./selectorOptions.ts => a.now",
       ].sort(),
     );
     // And the User-id half is never taken from an argument anywhere new.
@@ -157,12 +154,10 @@ describe("NEO-556 source pins", () => {
     );
     expect(userIdWrites.sort()).toEqual(
       [
-        "./cardChecklist.ts => teamNoneConfirmedByUserId: userId,",
         "./cardRowCreate.ts => ? { teamNoneConfirmedByUserId: carried.teamNoneConfirmedByUserId }",
         "./lib/selectorTeams.ts => ): { teamNoneConfirmedAt: number; teamNoneConfirmedByUserId: string } {",
         "./lib/selectorTeams.ts => return { teamNoneConfirmedAt: now, teamNoneConfirmedByUserId: userId };",
         "./parallelChecklistBuild.ts => teamNoneConfirmedByUserId:",
-        "./selectorOptions.ts => teamNoneConfirmedByUserId: a.operatorUserId,",
         "./selectorOptions.ts => teamNoneConfirmedByUserId: undefined,",
       ].sort(),
     );
@@ -405,9 +400,8 @@ describe("NEO-556 invariant 8 — the commit's insert branch, against the client
         wire.teams.some((x) => x.trim() !== "") ||
         ((wire as { teamLookup?: string }).teamLookup === "answered" && (wire.rawTeamName ?? "").trim() !== "");
       // An "answered" lookup with no BSC ref is a malformed claim (a lookup is
-      // BY ref); see the dedicated test below for what the server does with it.
-      const malformed = !wire.platformData.bsc && (wire as { teamLookup?: string }).teamLookup === "answered";
-      if (claimsTeam && !malformed) {
+      // BY ref), but it still names a team, so it is held back like any other.
+      if (claimsTeam) {
         expect(stamped, `a card that names a team was stamped: ${label}`).toBe(false);
       }
     }
@@ -418,15 +412,13 @@ describe("NEO-556 invariant 8 — the commit's insert branch, against the client
 });
 
 describe("NEO-556 invariant 8 — a malformed commit claim", () => {
-  // FAILING ON PURPOSE (adversarial finding, NEO-556): `settleCardTeamAnswer`
-  // returns before it keeps the "Listed as:" hint when the card has no BSC ref
-  // (`if (!a.hasBscRef || a.teamCheckDone) return`), so a wire card that says
-  // `teamLookup: "answered"` with a `rawTeamName` but NO bsc ref is stamped No
-  // Team under a No Team leaf although the listing named a team. The real SPA
-  // never sends this (an answered lookup is by BSC ref, and the wizard asks
-  // about the card), so it is a server-side guard gap against a malformed or
-  // hostile client rather than a user-reachable bug. Fix = verdict-gate on the
-  // raw name regardless of ref, or refuse `answered` without a ref.
+  // Adversarial finding, NEO-556 (fixed): `settleCardTeamAnswer` used to
+  // return before it kept the "Listed as:" hint when the card had no BSC ref,
+  // so a wire card saying `teamLookup: "answered"` with a `rawTeamName` but NO
+  // bsc ref was stamped No Team under a No Team leaf although the listing
+  // named a team. The real SPA never sends this (an answered lookup is by BSC
+  // ref), so it was a guard gap against a malformed or hostile client. The
+  // hint is now kept regardless of ref, and `noTeamCardVerdict` holds back.
   test("an 'answered' lookup carrying a listing team but no BSC ref is not stamped No Team", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
@@ -443,6 +435,10 @@ describe("NEO-556 invariant 8 — a malformed commit claim", () => {
         .collect(),
     ))[0];
     expect(row.teamNoneConfirmedAt).toBeUndefined();
+    // The listing's name is kept as the hint the operator is shown, never as
+    // a team.
+    expect(row.bscTeamName).toBe("Padres");
+    expect(row.teamOnCardIds ?? []).toEqual([]);
     await settle(t);
   });
 });
@@ -657,12 +653,22 @@ describe("NEO-556 updateCard teamNone — server-stamped only", () => {
     expect(card!.cardName).toBe("Renamed");
   });
 
-  test("false and absent stamp nothing", async () => {
+  test("false and absent never stamp; false un-confirms a stamped card, absent leaves it", async () => {
     const t = convexTest(schema, modules);
     const { id } = await plainCard(t);
     await t.withIdentity(ADMIN).mutation(api.selectorOptions.updateCard, { id, teamNone: false });
     await t.withIdentity(ADMIN).mutation(api.selectorOptions.updateCard, { id, cardName: "X" });
     expect((await getCard(t, id))!.teamNoneConfirmedAt).toBeUndefined();
+
+    await t.withIdentity(ADMIN).mutation(api.selectorOptions.updateCard, { id, teamNone: true });
+    await t.withIdentity(ADMIN_2).mutation(api.selectorOptions.updateCard, { id, cardName: "Y" });
+    expect((await getCard(t, id))!.teamNoneConfirmedByUserId).toBe(ADMIN.subject);
+
+    // Any admin may take it back; both halves go, never one.
+    await t.withIdentity(ADMIN_2).mutation(api.selectorOptions.updateCard, { id, teamNone: false });
+    const undone = await getCard(t, id);
+    expect(undone!.teamNoneConfirmedAt).toBeUndefined();
+    expect(undone!.teamNoneConfirmedByUserId).toBeUndefined();
   });
 
   test("explicitly empty teams and blank pending names are no team: accepted, and the stamp lands", async () => {

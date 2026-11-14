@@ -1032,8 +1032,12 @@ export const getAncestorChain = query({
       // NEO-277: the set-level team, so a caller holding the chain can show
       // where a card's default team comes from. Derived from the schema.
       teamIds: selectorOptionFields.teamIds,
-      // NEO-556: and the set-level "No Team", its third state.
-      noTeamDefault: selectorOptionFields.noTeamDefault,
+      // NEO-556: and the set-level "No Team", its third state, as a flag.
+      // True exactly when the server reads the row as No Team
+      // (`teamDefaultOf`: a row that somehow carries teams too reads as its
+      // teams). Never the stored `noTeamDefault` object: who set it and when
+      // stay on the server.
+      noTeam: v.boolean(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1059,7 +1063,7 @@ export const getAncestorChain = query({
       metadata?: Doc<"selectorOptions">["metadata"];
       features?: Record<string, string>;
       teamIds?: Array<Id<"teams">>;
-      noTeamDefault?: Doc<"selectorOptions">["noTeamDefault"];
+      noTeam: boolean;
     }> = [];
     let currentId: Id<"selectorOptions"> | undefined = args.id;
 
@@ -1076,7 +1080,7 @@ export const getAncestorChain = query({
         metadata: option.metadata,
         features: option.features,
         teamIds: option.teamIds,
-        noTeamDefault: option.noTeamDefault,
+        noTeam: teamDefaultOf(option).kind === "noTeam",
       });
       currentId = option.parentId;
     }
@@ -6090,8 +6094,11 @@ export const addCustomCard = mutation({
      * Stamped server-side (`teamNoneConfirmedAt` now, this admin), never a
      * client timestamp. The card's own answer, so it beats the leaf's
      * set-level team as a picker value does; refused beside a picked team
-     * or a typed name. Without it, a card under a No Team leaf is still born
-     * stamped (it has no listing and no lookup to wait on).
+     * or a typed name. Absent, a card under a No Team leaf is still born
+     * stamped (it has no listing and no lookup to wait on). `false` is the
+     * operator turning that off for this one card: it is born teamless and
+     * unstamped, so the missing-team item asks about it. `false` never
+     * touches a set-level TEAM: under a team leaf the card still takes it.
      */
     teamNone: v.optional(v.boolean()),
     /** NEO-367 — NB's own note about the card; see `normalizeCardNotes`. */
@@ -6113,6 +6120,7 @@ export const addCustomCard = mutation({
       MAX_PENDING_TEAM_NAMES,
     );
     const explicitTeamNone = args.teamNone === true;
+    const explicitNoStamp = args.teamNone === false;
     if (
       explicitTeamNone &&
       ((args.teamOnCardIds?.length ?? 0) > 0 || (typedTeamNames?.length ?? 0) > 0)
@@ -6215,10 +6223,12 @@ export const addCustomCard = mutation({
     // set-level No Team for a card that arrived with no team of its own. A
     // hand-added card has no listing and no BSC ref, so the verdict is
     // `stamp` whenever it has no team and no typed name; asked anyway, so
-    // this path and every other birth path apply one rule.
+    // this path and every other birth path apply one rule. `teamNone: false`
+    // opts this card out of the leaf's No Team.
     const bornNoTeam =
       explicitTeamNone ||
-      (teamDefaultOf(parentNode).kind === "noTeam" &&
+      (!explicitNoStamp &&
+        teamDefaultOf(parentNode).kind === "noTeam" &&
         noTeamCardVerdict({
           teamOnCardIds,
           pendingTeamNames,
@@ -6558,8 +6568,14 @@ export const updateCard = mutation({
      * `teamOnCardIds` (and its `cardTeamLinks`) and `pendingTeamNames`, and a
      * listing title or description nobody typed is regenerated without the
      * team. Refused beside a team (picked or typed). An existing
-     * confirmation keeps its original stamp. `false` and absent do nothing;
-     * giving the card a team is what retires the stamp.
+     * confirmation keeps its original stamp. Giving the card a team also
+     * retires the stamp (NEO-102, below).
+     *
+     * `false` UN-confirms: both stamp fields are cleared and the card is
+     * teamless again, so the missing-team item asks about it. Nothing else
+     * moves — its teams were already empty, and the listing text never named
+     * "No Team" — so there is no text to regenerate. A no-op on a card that
+     * is not stamped. Absent does nothing.
      */
     teamNone: v.optional(v.boolean()),
   },
@@ -6583,6 +6599,7 @@ export const updateCard = mutation({
       ...updates
     } = args;
     const teamNone = teamNoneArg === true;
+    const teamNoneUndone = teamNoneArg === false;
     if (
       teamNone &&
       ((args.teamOnCardIds?.length ?? 0) > 0 ||
@@ -6806,6 +6823,20 @@ export const updateCard = mutation({
           description: filtered.listingDescription as string | undefined,
         }),
       );
+    }
+
+    // NEO-556 — `teamNone: false`, the operator taking "No Team" back. Both
+    // stamp fields go together (`undefined` in a patch deletes a field);
+    // only when the card carries a stamp, so a no-op call writes nothing.
+    if (teamNoneUndone) {
+      const stored = await loadStoredCard();
+      if (
+        stored.teamNoneConfirmedAt !== undefined ||
+        stored.teamNoneConfirmedByUserId !== undefined
+      ) {
+        filtered.teamNoneConfirmedAt = undefined;
+        filtered.teamNoneConfirmedByUserId = undefined;
+      }
     }
 
     // NEO-102: giving this card a real team RETIRES the operator's "no team"
@@ -19900,8 +19931,8 @@ function settleCardTeamAnswer(a: {
   if (a.teamNone && !a.hasPendingTeam && a.operatorUserId) {
     return {
       fields: {
-        teamNoneConfirmedAt: a.now,
-        teamNoneConfirmedByUserId: a.operatorUserId,
+        // NEO-556 — the one stamp builder every writer shares.
+        ...stampNoTeam(a.operatorUserId, a.now),
         // NEO-489 — provenance: a checklist's "No Team" records the outcome
         // the checklist branch below would, beside the stamp it goes with
         // (never over an earlier check's outcome).
@@ -19915,7 +19946,23 @@ function settleCardTeamAnswer(a: {
       enqueue: false,
     };
   }
-  if (!a.hasBscRef || a.teamCheckDone) return { fields: {}, enqueue: false };
+  if (a.teamCheckDone) return { fields: {}, enqueue: false };
+  if (!a.hasBscRef) {
+    // NEO-556 (product invariant 8) — a card with no BSC ref has no lookup to
+    // record, but a listing team that reached commit still NAMES a team: keep
+    // it as the "Listed as:" hint, so the leaf's "No Team" (`noTeamCardVerdict`
+    // reads `bscTeamName`) holds back and the operator is asked. A lookup is
+    // by ref, so the real client never sends this pairing; a malformed one
+    // must not be stamped over the name it carried.
+    const hint =
+      a.teamLookup === "answered" && !a.hasPendingTeam
+        ? (a.bscTeamHint ?? "").trim()
+        : "";
+    return {
+      fields: hint ? { bscTeamName: hint.slice(0, MAX_BSC_TEAM_NAME_LENGTH) } : {},
+      enqueue: false,
+    };
+  }
   // PR 451 (NEO-478) — the publisher checklist answered this card at fetch:
   // it matched by number (exactly one on both sides) and its row named a team.
   // A row with a blank team cell is no claim and never sets "checklist" (B1);

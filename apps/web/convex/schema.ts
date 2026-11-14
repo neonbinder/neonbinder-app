@@ -1867,6 +1867,8 @@ export default defineSchema({
     // nothing in `convex/` has ever written or read a row in it — so there is
     // no document to point at, and every other audit column in this codebase
     // is the subject string.
+    // NEO-556: a background stamp (BSC's no-team answer, the parallel build,
+    // a commit with no operator) carries the No Team default-setter's id.
     teamNoneConfirmedByUserId: v.optional(v.string()),
     // De-duped union of BSC playerAttribute[] + BSC features[] + variant
     // metadata. Tokens: ["RC","AU","RELIC","SP","SSP","NUM",...]. Drives
