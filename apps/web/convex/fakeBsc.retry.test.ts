@@ -1,5 +1,5 @@
 /**
- * NEO-552 — the fake's control calls (`__fake/...`, `healthz`) survive a cold
+ * NEO-552 — the fake's control calls (`__fake/...`, including `__fake/health`) survive a cold
  * or still-loading fake: a 30 s timeout per attempt and ONE retry, only on a
  * network error or a 503 (including the fake's `x-nb-fake: loading`). Never
  * on a timeout, never more than once. `/api` calls go through `bscFetch` and

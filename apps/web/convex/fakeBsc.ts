@@ -308,7 +308,7 @@ export const reportMisses = internalAction({
   },
 });
 
-/** The write endpoints named in the fake's `/healthz`, narrowed: fixed vocabulary only. */
+/** The write endpoints named in the fake's `/__fake/health`, narrowed: fixed vocabulary only. */
 export function narrowMissingCaptures(body: unknown): string[] | null {
   const wc = typeof body === "object" && body !== null ? (body as { writeCaptures?: unknown }).writeCaptures : undefined;
   const missing = typeof wc === "object" && wc !== null ? (wc as { missing?: unknown }).missing : undefined;
@@ -328,7 +328,7 @@ type WriteCapturesResult =
 
 /**
  * Which BSC write endpoints the fake has no real capture for
- * (`/healthz` `writeCaptures.missing`; CONTRACT.md, "Write capture"). CI runs
+ * (`/__fake/health` `writeCaptures.missing`; CONTRACT.md, "Write capture"). CI runs
  * it with the preview deploy key before seeding (`npx convex run
  * fakeBsc:writeCaptureStatus`) and fails when `missing` is not empty. Skipped
  * outside fake mode. A health body without the field is an error, never "none missing".
@@ -339,7 +339,7 @@ export const writeCaptureStatus = internalAction({
   handler: async (): Promise<WriteCapturesResult> => {
     let res: Response | null;
     try {
-      res = await controlFetch("healthz", "healthz", () => ({ method: "GET" }));
+      res = await controlFetch("__fake/health", "health", () => ({ method: "GET" }));
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.name : "unknown" };
     }

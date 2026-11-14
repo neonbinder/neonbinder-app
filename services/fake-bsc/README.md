@@ -19,7 +19,7 @@ recorder (a person)      ──► <FAKE>/__fake/recordings     sanitised catalo
 | Path | What |
 |---|---|
 | `src/index.ts` | Boot: config, load recordings and write captures, listen. Logs one `boot` line (instance id, manifest version). |
-| `src/app.ts` | HTTP wiring: auth, faults, `/api`, `/identity`, `/__fake`, `/healthz`. |
+| `src/app.ts` | HTTP wiring: auth, faults, `/api`, `/identity`, `/__fake` (health at `/__fake/health`). |
 | `src/auth.ts`, `src/config.ts` | Caller key, admin key, ID-token identity. Fails closed. |
 | `src/requestKey.ts` | The one recording key: method + path + sorted query + canonical body, SHA-256. Shared with the recorder. |
 | `src/sanitise.ts` | Field allowlists for the three recorded endpoints, versioned. Shared with the recorder; re-applied on upload and on load. |
@@ -53,7 +53,7 @@ FAKE_BSC_ADMIN_KEY=<different 32+ chars> \
 FAKE_BSC_LOCAL_DEV_BYPASS=1 \
 FAKE_BSC_STORE_DIR=/tmp/fake-bsc-store \
 PORT=8787 npm start
-curl -s -H "x-nb-fake-bsc-key: <caller key>" http://127.0.0.1:8787/healthz
+curl -s -H "x-nb-fake-bsc-key: <caller key>" http://127.0.0.1:8787/__fake/health
 ```
 
 `FAKE_BSC_LOCAL_DEV_BYPASS=1` skips only the Google ID-token check (both keys

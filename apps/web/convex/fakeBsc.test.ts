@@ -139,12 +139,12 @@ describe("writeCaptureStatus in fake mode", () => {
     return { spy, result: convexTest(schema, modules).action(internal.fakeBsc.writeCaptureStatus, {}) };
   };
 
-  test("asks the fake's /healthz with the caller key and reports the missing endpoints", async () => {
+  test("asks the fake's /__fake/health with the caller key and reports the missing endpoints", async () => {
     const { spy, result } = run(() =>
       Response.json({ ok: true, writeCaptures: { missing: ["PUT seller/bulk-upload"] } }),
     );
     expect(await result).toEqual({ ok: true, skipped: false, missing: ["PUT seller/bulk-upload"] });
-    expect(String(spy.mock.calls[0][0])).toBe("https://neonbinder-fake-bsc-0000-uc.a.run.app/healthz");
+    expect(String(spy.mock.calls[0][0])).toBe("https://neonbinder-fake-bsc-0000-uc.a.run.app/__fake/health");
     expect(new Headers(spy.mock.calls[0][1]?.headers).get("x-nb-fake-bsc-key")).toBe("caller-key");
   });
 

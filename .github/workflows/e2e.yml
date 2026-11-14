@@ -660,7 +660,7 @@ jobs:
       # against the stored real captures, and pass without judging anything when
       # none is stored. So the seed asks the fake which write endpoints (the
       # listing PUT and the photo upload) still have no capture, through an
-      # internal Convex action on the preview (the fake's /healthz, caller auth
+      # internal Convex action on the preview (the fake's /__fake/health, caller auth
       # only, no admin key on this runner), and fails here, before any spec runs
       # against an unchecked fake.
       - name: Require a stored write capture for every write the specs drive
@@ -674,7 +674,7 @@ jobs:
           npx --yes convex@1.39.1 run fakeBsc:writeCaptureStatus '{}' --deployment "$CONVEX_NAME" > "$out"
           if [ "$(jq -r '.ok' "$out")" != "true" ]; then
             err=$(jq -r '"status=\(.status // "n/a") error=\(.error // "unknown")"' "$out" | head -c 300)
-            echo "::error::Could not read the fake BSC's write-capture status (${err}). An older fake without writeCaptures in /healthz needs redeploying."
+            echo "::error::Could not read the fake BSC's write-capture status (${err}). An older fake without writeCaptures in /__fake/health needs redeploying."
             exit 1
           fi
           if [ "$(jq -r '.skipped' "$out")" = "true" ]; then

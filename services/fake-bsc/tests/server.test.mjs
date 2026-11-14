@@ -43,9 +43,9 @@ describe("auth", () => {
   after(() => fake.close());
 
   it("refuses a missing or wrong caller key", async () => {
-    let res = await fetch(`${fake.base}/healthz`);
+    let res = await fetch(`${fake.base}/__fake/health`);
     assert.equal(res.status, 401);
-    res = await fetch(`${fake.base}/healthz`, { headers: { "x-nb-fake-bsc-key": "nope".repeat(10), "x-nb-fake-id-token": idToken(CALLER) } });
+    res = await fetch(`${fake.base}/__fake/health`, { headers: { "x-nb-fake-bsc-key": "nope".repeat(10), "x-nb-fake-id-token": idToken(CALLER) } });
     assert.equal(res.status, 401);
   });
 
@@ -63,18 +63,18 @@ describe("auth", () => {
       "Bearer not-a-jwt",
     ];
     for (const h of cases) {
-      const res = await fetch(`${fake.base}/healthz`, { headers: { "x-nb-fake-bsc-key": CALLER_KEY, ...(h ? { "x-nb-fake-id-token": h } : {}) } });
+      const res = await fetch(`${fake.base}/__fake/health`, { headers: { "x-nb-fake-bsc-key": CALLER_KEY, ...(h ? { "x-nb-fake-id-token": h } : {}) } });
       assert.equal(res.status, 401, String(h));
     }
   });
 
   it("refuses a verified caller who is not on the allowed list", async () => {
-    const r = await fake.call("GET", "/healthz", { email: STRANGER });
+    const r = await fake.call("GET", "/__fake/health", { email: STRANGER });
     assert.equal(r.status, 403);
   });
 
   it("answers health to an allowed caller", async () => {
-    const r = await fake.call("GET", "/healthz");
+    const r = await fake.call("GET", "/__fake/health");
     assert.equal(r.status, 200);
     assert.equal(r.body.instanceId, "test-instance");
     assert.equal(r.body.allowlistVersion, SANITISE_ALLOWLIST_VERSION);
@@ -106,7 +106,7 @@ describe("cloud run identity", () => {
   let fake;
   before(async () => (fake = await startFake({ configOver: { K_SERVICE: "fake-bsc", FAKE_BSC_BUCKET: "b" } })));
   after(() => fake.close());
-  const health = (headers) => fetch(`${fake.base}/healthz`, { headers: { "x-nb-fake-bsc-key": CALLER_KEY, ...headers } });
+  const health = (headers) => fetch(`${fake.base}/__fake/health`, { headers: { "x-nb-fake-bsc-key": CALLER_KEY, ...headers } });
 
   it("refuses a forged unsigned token in either header", async () => {
     const forged = idToken(CALLER, { sig: "" });
@@ -717,7 +717,7 @@ describe("cold start: listening before the recordings are in", () => {
 
   it("holds /api and the miss list until loaded, then answers them normally", async () => {
     const cold = await startCold();
-    assert.equal((await cold.call("GET", "/healthz")).body.loading, true);
+    assert.equal((await cold.call("GET", "/__fake/health")).body.loading, true);
     const settled = [];
     const track = (name, p) => p.then((r) => (settled.push(name), r));
     const held = [
@@ -735,7 +735,7 @@ describe("cold start: listening before the recordings are in", () => {
     assert.equal(misses.status, 200);
     // Read again: the held read may have run before the held filters call recorded its miss.
     assert.equal((await cold.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses.length, 1);
-    assert.equal((await cold.call("GET", "/healthz")).body.loading, false);
+    assert.equal((await cold.call("GET", "/__fake/health")).body.loading, false);
   });
 
   it("refuses admin uploads at once while loading; run controls work at once", async () => {
@@ -801,11 +801,11 @@ describe("write captures", () => {
     assert.equal((await fake.call("POST", "/__fake/write-captures", { body: { endpoint: "PUT seller/bulk-upload", status: 200, shape: {} } })).status, 403);
   });
 
-  it("reports the write endpoints with no capture on /healthz, until each has one", async () => {
+  it("reports the write endpoints with no capture on /__fake/health, until each has one", async () => {
     const fresh = await startFake();
     try {
       const both = ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"];
-      const before = (await fresh.call("GET", "/healthz")).body;
+      const before = (await fresh.call("GET", "/__fake/health")).body;
       assert.deepEqual(before.writeCaptures, { missing: both });
 
       await fresh.call("POST", "/__fake/write-captures", {
@@ -813,14 +813,14 @@ describe("write captures", () => {
         admin: true,
         body: { endpoint: "PUT seller/bulk-upload", status: 200, shape: shapeOf([{ productId: "p" }]) },
       });
-      assert.deepEqual((await fresh.call("GET", "/healthz")).body.writeCaptures, { missing: [both[1]] });
+      assert.deepEqual((await fresh.call("GET", "/__fake/health")).body.writeCaptures, { missing: [both[1]] });
 
       await fresh.call("POST", "/__fake/write-captures", {
         email: LOADER,
         admin: true,
         body: { endpoint: both[1], status: 200, shape: shapeOf({ objectKey: "x" }) },
       });
-      assert.deepEqual((await fresh.call("GET", "/healthz")).body.writeCaptures, { missing: [] });
+      assert.deepEqual((await fresh.call("GET", "/__fake/health")).body.writeCaptures, { missing: [] });
     } finally {
       await fresh.close();
     }

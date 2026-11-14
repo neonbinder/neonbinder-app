@@ -128,7 +128,8 @@ export function createApp(deps: AppDeps): express.Express {
     return t === null ? null : identity.namespaceForToken(t);
   };
 
-  app.get("/healthz", caller, (_req, res) => {
+  // Not `/healthz`: Cloud Run's frontend reserves that path (and any ending in `z`) and answers 404 itself.
+  app.get("/__fake/health", caller, (_req, res) => {
     res.json({
       ok: true,
       loading: isLoading(),

@@ -443,7 +443,7 @@ async function reportOutcome(
 }
 
 /**
- * A request to the fake's test-control API (`__fake/...`) or its `healthz`:
+ * A request to the fake's test-control API (`__fake/...`, health included):
  * reset, faults, orders, misses, write-capture status. Returns null, sending nothing, unless this deployment is in
  * fake mode. Never touches the breaker.
  */
@@ -456,8 +456,7 @@ export async function fakeBscControlFetch(
   if (target.mode === "real") return null;
   if (target.mode === "misconfigured") throw new BscConfigError(target.reason);
   const rel = normaliseBscPath(path);
-  // `healthz` is the fake's caller-authenticated health route (not under `__fake/`).
-  if (!rel.startsWith("__fake/") && rel !== "healthz") throw new TypeError("fake-BSC control path refused");
+  if (!rel.startsWith("__fake/")) throw new TypeError("fake-BSC control path refused");
   return await fetch(`${target.origin}/${rel}`, await fakeInit(target, init, opts.idToken));
 }
 

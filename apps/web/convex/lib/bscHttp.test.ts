@@ -417,12 +417,12 @@ describe("fakeBscControlFetch", () => {
     expect(headersOf(sent[0]).get(FAKE_BSC_SIGNED_ID_TOKEN_HEADER)).toBe("id-token");
   });
 
-  test("healthz is allowed (caller auth, the fake's origin), nothing near it is", async () => {
+  test("__fake/health is allowed (caller auth, the fake's origin); the bare reserved path is not", async () => {
     const sent = stubFetch();
-    await fakeBscControlFetch("healthz", { method: "GET" }, { idToken, env: FAKE_ENV });
-    expect(sent[0].url).toBe(`${FAKE_ROOT}/healthz`);
+    await fakeBscControlFetch("__fake/health", { method: "GET" }, { idToken, env: FAKE_ENV });
+    expect(sent[0].url).toBe(`${FAKE_ROOT}/__fake/health`);
     expect(headersOf(sent[0]).get(FAKE_BSC_KEY_HEADER)).toBe("caller-key");
-    for (const path of ["healthz/extra", "healthzz", "api/healthz"]) {
+    for (const path of ["healthz", "healthz/extra", "api/healthz"]) {
       await expect(fakeBscControlFetch(path, { method: "GET" }, { idToken, env: FAKE_ENV })).rejects.toThrow(TypeError);
     }
     expect(sent).toHaveLength(1);

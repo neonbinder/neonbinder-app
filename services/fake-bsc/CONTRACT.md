@@ -44,7 +44,7 @@ first, then in code.
 - BSC API, mirroring `api-prod` paths: `<FAKE>/api/<same path>`.
 - BSC identity (Azure B2C), mirroring the real path shape:
   `<FAKE>/identity/<same path as the identity host>`.
-- Test control: `<FAKE>/__fake/...`. Health: `<FAKE>/healthz`.
+- Test control: `<FAKE>/__fake/...`. Health: `<FAKE>/__fake/health` (never `/healthz`: Cloud Run reserves paths ending in `z` and answers 404 before the container sees them).
 
 ## Accounts and per-run isolation
 
@@ -215,7 +215,7 @@ As built (`apps/web/convex/bscCallGate.ts`, policy in
   lease. A probe that ends with nothing to report (a neutral answer, or a
   throw before it was sent) hands its lease back at once; no token is
   refunded.
-- Control calls (`__fake/...`, `healthz`) are not gated: a 30 s timeout per
+- Control calls (`__fake/...`, including `__fake/health`) are not gated: a 30 s timeout per
   attempt and one retry on a network error or a 503 (honouring Retry-After,
   at most 5 s), never on a timeout. `/api` calls are never retried there.
 - A refusal sends nothing: `bscFetch` answers 429 with `Retry-After` and
@@ -406,7 +406,7 @@ host itself. It never bundles or copies the browser source.
   one checked. The first deploy must confirm it (a profile read through the
   fake proves it).
 - Cold start: the server listens before it loads the recordings and write
-  captures from the store (`/healthz` `loading: true` until they are in).
+  captures from the store (`/__fake/health` `loading: true` until they are in).
   Meanwhile `/api/*` and `GET /__fake/misses` are HELD, after auth, until the
   load finishes, and then answered normally: a 503 on `/api` would count
   against Convex's BSC call gate, and recording loads take seconds. Only a
@@ -417,7 +417,7 @@ host itself. It never bundles or copies the browser source.
   and the identity endpoints work at once. A load failure exits the process.
 - `FAKE_BSC_LOCAL_DEV_BYPASS=1` skips the ID-token check only (keys are
   still required); the server refuses to boot with it when `K_SERVICE` is set.
-- `/healthz` needs the ID token and caller key like the rest (Cloud Run's
+- `/__fake/health` needs the ID token and caller key like the rest (Cloud Run's
   default TCP startup probe needs no route). It answers `{ok, loading,
   instanceId, revision, manifestVersion, allowlistVersion, recordings, writeCaptures:
   {missing: [<write endpoint>, ...]}}`. `missing` lists the write endpoints
@@ -528,7 +528,7 @@ revisions),
 `FAKE_BSC_ALLOWED_CALLERS`, `FAKE_BSC_ADMIN_CALLERS` (comma-separated SA
 emails), `FAKE_BSC_BUCKET` (recordings bucket name), `FAKE_BSC_AUDIENCE`
 (the service's own origin; required), `ENVIRONMENT`. Listens on
-`PORT` (8080). `GET /healthz` needs the ID token and caller key like the rest.
+`PORT` (8080). `GET /__fake/health` needs the ID token and caller key like the rest.
 
 ### Convex internal action for CI
 
@@ -539,13 +539,13 @@ mode), or `{ok: false, status?, error}` when the fake could not be read.
 CI calls it with the preview deploy key so no admin key is on the runner.
 
 `fakeBsc:writeCaptureStatus` (internal action, no args) reads the fake's
-`/healthz` (caller auth only) and returns `{ok: true, skipped, missing:
+`/__fake/health` (caller auth only) and returns `{ok: true, skipped, missing:
 [<write endpoint>]}` (`skipped: true` outside fake mode), or `{ok: false,
 status?, error}`, which includes a health answer with no `writeCaptures` field
 (an older fake: never read as "none missing"). The E2E `seed` job runs it
 before seeding and fails with an `::error::` naming `recorder capture-write`
 when `missing` is not empty. The Convex control fetch (`fakeBscControlFetch`)
-therefore also accepts the path `healthz`, besides `__fake/...`.
+therefore needs no special case: the health route is under `__fake/...`.
 Resolved (coordinator, 2026-11-14): `GET /__fake/misses?prefix=` needs only
 rules 1 and 2 (see "Who may call it").
 
