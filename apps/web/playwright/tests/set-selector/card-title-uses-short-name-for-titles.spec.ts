@@ -72,6 +72,7 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { drillToCustom, escapeRe, setBuilderReady } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
 import { goViaShell } from "../../support/collection";
+import { tidyUpName } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
 const SET_LEN = 21;
@@ -219,6 +220,80 @@ test(
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
 
+    // ── STEP 4b: the walker's "Trim Set name in titles" pointer ──
+    // The over-cap card is flagged, and the attention walker (opened by hand
+    // from the pill) offers the row-wide fix beside its own field: a door to
+    // the row's "Set name in titles". It closes the walker and puts focus ON
+    // that box; typed text it would drop is asked about first.
+    const setNameInTitles = page.getByRole("textbox", { name: "Value for Set name in titles" });
+    const pill = page.getByRole("button", { name: "1 needs you", exact: true });
+    const fixer = page.getByRole("dialog", {
+      name: tidyUpName({ year: "2024", set, variant: LONG_INSERT }),
+      exact: true,
+    });
+    const fixerTitle = fixer.getByRole("textbox", { name: `Card title for #${NUM_C}` });
+    const trim = fixer.getByRole("button", { name: "Trim Set name in titles", exact: true });
+    const tooLong = fixer.getByText("Too long to list as-is. Trim it here, or shorten the set name for the whole row.");
+    const fitsNow = fixer.getByText("Fits now. Enter saves it.", { exact: true });
+    const toss = page.getByRole("dialog", { name: "Toss what you typed?", exact: true });
+    await expect(pill).toBeVisible();
+    await pill.click();
+    await expect(fixer).toBeVisible();
+    // The card links a player with a career and no team, so the walker asks
+    // that first (a team step ranks ahead of the title step) and, with the
+    // card answered, ends the sitting. The card has none: record it, close
+    // the walker, and open it again for the title step.
+    const noTeam = fixer.getByRole("button", { name: "No team on this card", exact: true });
+    await expect(noTeam).toBeVisible();
+    await noTeam.click();
+    await expect(fixer.getByText(/All clear/)).toBeVisible();
+    await fixer.getByRole("button", { name: /Done \(Esc\)/ }).click();
+    await expect(fixer).toBeHidden();
+    await expect(pill).toBeVisible();
+    await pill.click();
+    await expect(fixerTitle).toHaveValue(titleCOver);
+    await expect(tooLong).toBeVisible();
+    await expect(trim).toBeVisible();
+    await expectAccessible(page, { within: fixer, label: "Attention walker, title over 80 with the Trim Set name door" });
+
+    // A title typed down under the cap says so, and the door goes (it shows
+    // only while the title is over).
+    await fixerTitle.fill(`${PLAYER} #${NUM_C} short enough`);
+    await expect(fitsNow).toBeVisible();
+    await expect(tooLong).toHaveCount(0);
+    await expect(trim).toHaveCount(0);
+
+    // Typed past the cap again: the door is back, and with typing to lose it
+    // asks first. Cancel keeps the typing; the confirm is itself a state.
+    const typedOver = `${titleCOver} typed`;
+    await fixerTitle.fill(typedOver);
+    await expect(tooLong).toBeVisible();
+    await trim.click();
+    await expect(toss).toBeVisible();
+    await expect(toss.getByRole("button", { name: "Toss it and go", exact: true })).toBeVisible();
+    await expectAccessible(page, { within: toss, label: "Toss what you typed confirm" });
+    await toss.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(toss).toBeHidden();
+    await expect(fixer).toBeVisible();
+    await expect(fixerTitle).toHaveValue(typedOver);
+
+    // Toss it and go: the walker closes and the box takes focus.
+    await trim.click();
+    await toss.getByRole("button", { name: "Toss it and go", exact: true }).click();
+    await expect(fixer).toBeHidden();
+    await expect(setNameInTitles).toBeFocused();
+
+    // Untouched, the door goes straight there with no question. Reopened, the
+    // walker starts again from the stored title, and focus leaves the box for
+    // the dialog first, so the second arrival is its own.
+    await pill.click();
+    await expect(fixerTitle).toHaveValue(titleCOver);
+    await expect(setNameInTitles).not.toBeFocused();
+    await trim.click();
+    await expect(fixer).toBeHidden();
+    await expect(toss).toHaveCount(0);
+    await expect(setNameInTitles).toBeFocused();
+
     // ── STEP 5: "Set name in titles" on the long insert's row ──
     await expect(page.getByRole("heading", { name: `Attributes for ${LONG_INSERT}` })).toBeVisible();
     const editAttributes = page.getByRole("button", { name: "Edit attributes" });
@@ -227,7 +302,6 @@ test(
     await expect(editAttributes.or(hideAttributes)).toBeVisible();
     if (await editAttributes.isVisible()) await editAttributes.click();
     await expect(hideAttributes).toBeVisible();
-    const setNameInTitles = page.getByRole("textbox", { name: "Value for Set name in titles" });
     // Nothing stored: the placeholder is the description this row's cards get.
     await expect(setNameInTitles).toHaveValue("");
     await expect(setNameInTitles).toHaveAttribute("placeholder", `2024 Topps ${set} ${LONG_INSERT}`);

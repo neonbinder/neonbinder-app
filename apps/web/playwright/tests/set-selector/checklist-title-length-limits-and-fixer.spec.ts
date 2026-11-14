@@ -6,7 +6,7 @@ import { tidyUpName } from "../../support/wizard";
 test(
   "Listing length limits — an over-long card title is refused, and an over-long variation is walked to a fix",
   { tag: ["@set-selector"] },
-  async ({ page, signIn, env }) => {
+  async ({ page, signIn, env, isMobile }) => {
     const id = env.ATTEMPT_ID;
     const num = `101-${id}`;
     const team = `TLF${env.ATTEMPT_TOKEN}`;
@@ -79,13 +79,78 @@ test(
     await expect(cardTitle).toHaveValue(generated);
     await expect(shorten).toBeHidden();
 
-    // ── An over-long variation is saved, but flagged ──
+    // ── NEO-535: the title is ONE line in a wrapping field ──
+    // A line break typed or pasted reads as a space, Enter still saves (it is
+    // not a new line here), and the field wraps: on a phone an 80-character
+    // title takes two lines or more, so none of it is cut off. (On a desktop
+    // drawer 80 characters fit on one line, so its height proves nothing there.)
+    const eighty = "Wrap check title ".repeat(5).slice(0, 80);
+    expect(eighty).toHaveLength(80);
+    await cardTitle.fill(eighty.replace(" Wrap", "\nWrap"));
+    await expect(cardTitle).toHaveValue(eighty);
+    if (isMobile) {
+      const titleBox = await cardTitle.boundingBox();
+      const nameBox = await cardName.boundingBox();
+      if (!titleBox || !nameBox) throw new Error("the title and the card name fields must be measurable");
+      expect(titleBox.height, "the title field wraps: taller than the one-line Card name input").toBeGreaterThan(
+        nameBox.height * 1.3,
+      );
+    }
+    await cardTitle.press("Enter");
+    await expect(page.getByText(/Saved Card title/)).toBeVisible();
+    await expect(cardTitle).toHaveValue(eighty);
+
+    // ── NEO-535: Regenerate rebuilds the Description too, when it reads as the
+    // builder's own ──
+    // The facts already moved the builder's text along with every edit, so a
+    // STALE builder text is made by hand here: the card's own description with
+    // one fact line it does not have (a Rookie line). It still reads as the
+    // builder's, so Regenerate rebuilds it (and says so); a description an
+    // operator wrote in their own words is left alone.
+    const description = drawer.getByRole("textbox", { name: "Card description", exact: true });
+    const builtDescription = await description.inputValue();
+    expect(builtDescription).toContain(`#${num}`);
+    await description.fill(`${builtDescription}\nRookie Card (RC).`);
+    await cardName.click(); // leaving the field saves it
+    await expect(page.getByText(/Saved Card description/)).toBeVisible();
+    await regenerate.click();
+    await expect(cardTitle).toHaveValue(generated);
+    await expect(description).toHaveValue(builtDescription);
+    await expect(page.getByText(/Description rebuilt/).first()).toBeVisible();
+    await expectAccessible(page, { within: drawer, label: "Card detail drawer, description rebuilt" });
+
+    const handWritten = `Typed by hand for ${id}: not the builder's words.`;
+    await description.fill(handWritten);
+    await cardName.click();
+    await expect(page.getByText(/Saved Card description/)).toBeVisible();
+    await regenerate.click();
+    // The next write the drawer makes (below) is queued behind Regenerate's
+    // own, so once "Saved Variation" shows, a rebuild would have landed.
     const variation = page.getByRole("textbox", { name: "Card variation", exact: true });
+
+    // ── An over-long variation is saved, but flagged ──
     await variation.fill(variationText);
     await expect(page.getByText(/a marketplace that caps this field will reject the value/)).toBeVisible();
     await expectAccessible(page, { within: drawer, label: "Card detail drawer, over-long variation warned" });
     await variation.press("Enter");
     await expect(page.getByText(/Saved Variation/)).toBeVisible();
+    await expect(description).toHaveValue(handWritten);
+    await expect(page.getByText(/Description rebuilt/)).toHaveCount(0);
+    await page.getByRole("button", { name: "Done editing card" }).click();
+    await expect(cardName).toBeHidden();
+
+    // ── NEO-535: a freshly opened card says what its title left out, and what
+    // it was built from, with no Regenerate press ──
+    await edit.click();
+    await expect(cardName).toBeVisible();
+    await expect(drawer.getByText(`Left out to fit: ${variationText}`)).toBeVisible();
+    const builtFrom = drawer.getByRole("list", { name: "Title built from" });
+    await expect(builtFrom.getByRole("listitem").filter({ hasText: `#${num}` })).toBeVisible();
+    await expect(builtFrom.getByRole("listitem").filter({ hasText: team })).toBeVisible();
+    // A plain card names no autograph, short print or parallel: none of those
+    // is a chip (a chip would claim a fact the card does not have).
+    await expect(builtFrom.getByRole("listitem").filter({ hasText: /^(Auto|Short print|Parallel)/ })).toHaveCount(0);
+    await expectAccessible(page, { within: drawer, label: "Card detail drawer, opened with what the title left out" });
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardName).toBeHidden();
 
@@ -126,7 +191,9 @@ test(
     await expect(fixerLeftOut).toHaveText(`Left out to fit: ${variationText}`);
     await expectAccessible(page, { within: fixer, label: "Attention walker, variation left out of the title" });
     const rebuilt = await fixerTitle.inputValue();
-    await fixerTitle.fill(`${rebuilt} ${variationText}`);
+    // A line break typed or pasted reads as a space (one line, NEO-535).
+    await fixerTitle.fill(`${rebuilt}\n${variationText}`);
+    await expect(fixerTitle).toHaveValue(`${rebuilt} ${variationText}`);
     await expect(fixerLeftOut).toHaveCount(0);
     await fixerRegenerate.click();
     await expect(fixer.getByText("Regenerate again to replace the title you have typed.")).toBeVisible();
