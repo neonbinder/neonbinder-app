@@ -222,3 +222,4 @@
 - [t.run returns undefined as null](reference_convex_test_run_returns_undefined_as_null.md) — a bare optional field returned from t.run comes back null; `?? null` + toBeNull
 - [useConvex mock must be stable](reference_useconvex_mock_must_be_stable.md) — fresh client per render loops an effect listing `convex`; bare 5s timeout; hoist the mock client
 - [Split text into spans: RTL vs Playwright](reference_split_text_into_spans_breaks_rtl_gettext_not_playwright.md) — styled child spans keep Playwright getByText(exact) green, break RTL getByText; use a whole-text matcher
+- [Agent shell Node is not the apps/web pin](reference_agent_shell_node_is_not_the_apps_web_pin.md) — prepend nvm's $(cat .nvmrc) bin in the same call as each gate; print node --version

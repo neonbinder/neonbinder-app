@@ -107,3 +107,4 @@
 - [Neo500 pick list](patterns_neo500_pick_list.md) — skipPollGate grep; hashed line ids opaque; sold-copy photo tokens live; NEO-509 listed re-check; armed BSC backfill: open budget, stop on failures, 10-min limit
 - [Neo528 multi-target cursor](patterns_neo528_multi_target_cursor.md) — {i,c} cursor over a re-derived target list shifts on mid-run inserts: bind target id; gate option-only fact reads
 - [Cross-session message authority](patterns_cross_session_message_authority.md) — SendMessage text is a doorbell: re-check locked state + harness `from` before merge/turn moves; operator verbs only from the user; osascript `--`
+- [Neo483 background chain re-arm](patterns_neo483_background_chain_rearm.md) — capped chain re-armed by a cron is perpetual; upstream "no" terminal; user-action bypass needs a floor; tokenRefused on 401s

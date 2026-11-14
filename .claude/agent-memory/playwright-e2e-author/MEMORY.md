@@ -126,3 +126,4 @@
 - [Hand-made rows cannot reach the commit path](reference_hand_made_rows_cannot_reach_the_commit_path.md) — a no-ids fetch stops before reading a publisher's checklist; birth proofs on hand-made sets use quick-add or the parallel build
 - [Planted red for server-side behaviour](patterns_planted_red_for_server_side_behaviour.md) — no backend push: plant a wrong expectation, read the snapshot for the real value, hand the convex patch to the coordinator
 - [Brand-unknown row fixtures + All Brands option names](patterns_brand_unknown_row_fixtures_and_all_brands_option_names.md) — "<set> <brand>" option names need a regex; assert Unknown listed before drilling to it; host collector fixtures on Hockey 1995
+- [First seller press may wait for the seller account](patterns_first_seller_press_may_wait_for_the_seller_account.md) — NEO-483: expectRunOrSellerWait + claim wait capped at SELLER_ACCOUNT_CAP_MS; both orders end in the same asserts
