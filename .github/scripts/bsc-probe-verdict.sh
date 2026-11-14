@@ -53,7 +53,17 @@ case "$outcome" in
       || emit inconsistent_probe "outcome is ok but signIn, catalogue or parser is not"
     emit ok ""
     ;;
-  skipped_paused|signin_failed|bsc_unavailable|catalogue_non_2xx|parser_rejected)
+  catalogue_non_2xx)
+    # On the fake, a 501 on every failing read means "no recording yet", not a
+    # broken fake: say so and name the fix. Still a failure.
+    if [ "$expect" = "fake" ] && jq -e '
+        [(.steps // [])[] | select((.status // 0) >= 300 or (.failure // null) != null)] as $bad
+        | ($bad | length) > 0 and ($bad | all(.status == 501))' "$probe" >/dev/null 2>&1; then
+      emit catalogue_non_2xx "every failing read is a 501 'unrecorded' from the fake: its catalogue has no recording for the probe's pinned requests. Run the recorder against the fake (the probe-ci namespace misses are the to-do list); see services/fake-bsc/README.md, First rollout."
+    fi
+    emit "$outcome" "$(jq -r '.detail // "no detail"' "$probe" | head -c 300)"
+    ;;
+  skipped_paused|signin_failed|bsc_unavailable|parser_rejected)
     emit "$outcome" "$(jq -r '.detail // "no detail"' "$probe" | head -c 300)"
     ;;
   *) emit unknown_outcome "outcome='$outcome'" ;;

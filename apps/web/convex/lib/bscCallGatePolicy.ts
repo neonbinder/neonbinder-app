@@ -25,7 +25,9 @@
  *  - **Token bucket** (a debt bucket): `tokens` refill at the tuning's rate up
  *    to `burst`; a grant of n takes n, and a negative balance is a wait the
  *    caller sleeps before sending. A wait past `MAX_WAIT_MS` is refused
- *    ("throttled") and nothing is taken.
+ *    ("throttled") and nothing is taken. Against the fake there is no bucket
+ *    at all (Jason, NEO-552): no wait and no "throttled", ever; the breaker
+ *    and the probe work exactly as against BuySportsCards.
  *
  * Healthy path cost: one write per acquire (the bucket), and no outcome write
  * on a success unless the grant says `reportOutcome` (recovering).
@@ -109,12 +111,18 @@ export function failureWindowMs(streak: number): number {
 
 // ── The bucket and the probe ────────────────────────────────────────────────
 
-/** Calls per minute and the most that may go at once. */
-export type BscGateTuning = { perMinute: number; burst: number };
+/**
+ * Calls per minute and the most that may go at once, or no bucket at all
+ * (`unlimited`): never a wait, never "throttled".
+ */
+export type BscGateTuning = { perMinute: number; burst: number } | { unlimited: true };
 /** BuySportsCards itself. No env override (a deliberate choice). */
 export const REAL_BSC_TUNING: BscGateTuning = { perMinute: 60, burst: 10 };
-/** The fake: faster, still bounded. */
-export const FAKE_BSC_TUNING: BscGateTuning = { perMinute: 600, burst: 20 };
+/**
+ * The fake is our own server: no rate cap (Jason, NEO-552). Only the breaker
+ * applies, which the `@bsc-breaker` specs drive.
+ */
+export const FAKE_BSC_TUNING: BscGateTuning = { unlimited: true };
 
 /** The longest a grant may make its caller wait; longer is "throttled". */
 export const MAX_WAIT_MS = 15_000;
@@ -140,12 +148,14 @@ export type BscGateState = {
   consecutiveFailures: number;
   lastFailureAt: number;
   probeLeaseUntil?: number;
+  /** The `grantedAt` of the probe holding the lease, so only it can release it. */
+  probeGrantedAt?: number;
 };
 
 /** A fresh gate: a full bucket, closed. */
 export function initialGateState(now: number, tuning: BscGateTuning): BscGateState {
   return {
-    tokens: tuning.burst,
+    tokens: "unlimited" in tuning ? 0 : tuning.burst,
     refilledAt: now,
     openUntil: 0,
     streak: 0,
@@ -183,7 +193,8 @@ export type AcquireDecision =
       /** Report a success (the gate is recovering); otherwise only failures. */
       reportOutcome: boolean;
       probe: boolean;
-      next: BscGateState;
+      /** The row to store, or null to write nothing (a grant with no bucket). */
+      next: BscGateState | null;
     }
   | { ok: false; reason: BscGateRefusalReason; retryAt: number };
 
@@ -205,6 +216,23 @@ export function decideAcquire(
     return { ok: false, reason: "probing", retryAt: s.probeLeaseUntil };
   }
   const want = halfOpen ? 1 : clampAcquireCount(count);
+  if ("unlimited" in tuning) {
+    // No bucket: only a probe's lease is worth storing; a healthy grant
+    // writes nothing (8 shards share this one row).
+    const reportOutcome = halfOpen || s.streak > 0 || s.consecutiveFailures > 0;
+    if (!halfOpen) {
+      return { ok: true, granted: want, waitMs: 0, grantedAt: now, reportOutcome, probe: false, next: null };
+    }
+    return {
+      ok: true,
+      granted: 1,
+      waitMs: 0,
+      grantedAt: now,
+      reportOutcome,
+      probe: true,
+      next: { ...s, probeLeaseUntil: now + PROBE_LEASE_MS, probeGrantedAt: now },
+    };
+  }
   const maxWait = Math.min(Math.max(Number.isFinite(maxWaitMs) ? maxWaitMs : 0, 0), MAX_WAIT_MS);
   const ratePerMs = tuning.perMinute / 60_000;
   const elapsed = Math.max(0, now - s.refilledAt);
@@ -213,8 +241,13 @@ export function decideAcquire(
   const waitMs = after < 0 ? Math.ceil(-after / ratePerMs) : 0;
   if (waitMs > maxWait) return { ok: false, reason: "throttled", retryAt: now + waitMs };
   const next: BscGateState = { ...s, tokens: after, refilledAt: now };
-  if (halfOpen) next.probeLeaseUntil = now + waitMs + PROBE_LEASE_MS;
-  else delete next.probeLeaseUntil;
+  if (halfOpen) {
+    next.probeLeaseUntil = now + waitMs + PROBE_LEASE_MS;
+    next.probeGrantedAt = now;
+  } else {
+    delete next.probeLeaseUntil;
+    delete next.probeGrantedAt;
+  }
   return {
     ok: true,
     granted: want,
@@ -307,7 +340,33 @@ export function decideOutcome(
 function withoutLease(s: BscGateState): BscGateState {
   const copy = { ...s };
   delete copy.probeLeaseUntil;
+  delete copy.probeGrantedAt;
   return copy;
+}
+
+/**
+ * A probe that ended with no outcome to report (the fake's 501 unrecorded,
+ * or a throw before anything was sent) hands its lease back, so the next
+ * caller probes at once instead of waiting out the lease. Only the probe
+ * that holds the lease can release it; nothing else (no token) is refunded.
+ */
+export function decideReleaseProbe(stored: BscGateState | null, grantedAt: number): BscGateState | null {
+  if (!stored || stored.probeLeaseUntil === undefined || stored.probeGrantedAt !== grantedAt) return null;
+  return withoutLease(stored);
+}
+
+/**
+ * NEO-552 — the re-check after a grant's wait. A probe's own lease is not a
+ * reason to refuse it (it IS the lease holder), so a probe is blocked only by
+ * a window opened meanwhile; any other grant by anything that blocks.
+ */
+export function blockedAfterWait(
+  s: BscGateState | null,
+  now: number,
+  probe: boolean,
+): number | null {
+  if (!probe) return blockedUntil(s, now);
+  return s && s.openUntil > now ? s.openUntil : null;
 }
 
 /** Until when the gate blocks every caller, or null when a call may be asked. */
@@ -339,8 +398,9 @@ export type BscAnswerClass =
 /**
  * Classifies an answer. A non-429 4xx is BSC answering (a success to the gate:
  * its edge is not blocking us), except a 403 on a catalogue read, which is
- * CloudFront refusing. The fake's 501 `x-nb-fake: unrecorded` is neither: the
- * fake answered for a missing recording, not for BSC.
+ * CloudFront refusing. The fake's 501 `x-nb-fake: unrecorded` and 503
+ * `x-nb-fake: loading` are neither: the fake answered for itself (a missing
+ * recording, or recordings still loading), not for BSC.
  */
 export function classifyBscAnswer(
   status: number,
@@ -353,6 +413,9 @@ export function classifyBscAnswer(
     return retryAfterMs !== undefined ? { kind: "rateLimited", retryAfterMs } : { kind: "rateLimited" };
   }
   if (status === 501 && header("x-nb-fake") === "unrecorded") return { kind: "neutral" };
+  // The fake still loading its recordings (it held the request first): the
+  // fake answering for itself, not BSC failing.
+  if (status === 503 && header("x-nb-fake") === "loading") return { kind: "neutral" };
   if (status >= 500) return { kind: "failure" };
   if (status === 403 && BSC_CATALOGUE_PATH_TEMPLATES.has(pathTemplate)) return { kind: "failure" };
   return { kind: "success" };

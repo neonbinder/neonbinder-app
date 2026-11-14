@@ -15,7 +15,7 @@
 import { readCredentials } from "./credentials";
 import { FakeClient, adcIdTokenMinter, isLoopback } from "./fake-client";
 import { loadBrowserModules } from "./bsc";
-import { MAX_REQUESTS_PER_SESSION, bscCaller, planMisses, runRecordSession } from "./record";
+import { MAX_REQUESTS_PER_SESSION, bscCaller, describeRequest, planMisses, runRecordSession } from "./record";
 import { buildUndoRequest, describeUndo, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite } from "./capture-write";
 import { askOnTerminal } from "./confirm";
 
@@ -83,12 +83,20 @@ async function record(flags: Map<string, string | true>): Promise<number> {
   for (const r of plan.refused) say(`refused (never sent): ${r.label}`);
   if (plan.anonSkipped) say(`${plan.anonSkipped} anonymous miss(es) left alone (--include-anon to replay them)`);
   const cap = max ?? MAX_REQUESTS_PER_SESSION;
-  say(`${plan.todo.length} request(s) to send to real BSC${watch ? ", then more as misses arrive" : ""} (at most ${cap} this session)`);
+  const yes = flags.get("--yes") === true;
+  // Shows every request, then asks. Used for the plan below and again, inside
+  // the session, for anything not in the confirmed set (new misses, --watch).
+  const confirm = async (items: string[]): Promise<boolean> => {
+    for (const line of items) say(`  ${line}`);
+    if (yes) return true;
+    return askOnTerminal(`Send ${items.length === 1 ? "this" : `these ${items.length}`} to real BSC under your account? Type yes: `);
+  };
+  say(`${plan.todo.length} request(s) to send to real BSC${watch ? ", then more as misses arrive (each new batch asked again)" : ""} (at most ${cap} this session):`);
   if (plan.todo.length === 0 && !watch) {
     say("nothing to send");
     return 0;
   }
-  if (flags.get("--yes") !== true && !(await askOnTerminal("Send them to real BSC under your account? Type yes: "))) {
+  if (plan.todo.length > 0 && !(await confirm(plan.todo.map((t) => describeRequest(t.req))))) {
     say("not confirmed; nothing sent");
     return 0;
   }
@@ -111,15 +119,16 @@ async function record(flags: Map<string, string | true>): Promise<number> {
     tokenExpiresAt: tokens.expiresAt,
     ...(max !== undefined ? { maxRequests: max } : {}),
     includeAnon,
-    // Confirmed above, for this session.
-    confirm: async () => true,
+    // Only the keys shown above are confirmed; anything else is asked again.
+    confirmedKeys: new Set(plan.todo.map((t) => t.key)),
+    confirm,
     stopped: () => interrupted,
     report: say,
   });
   say(`sent ${result.sent}, recorded ${result.recorded}, stopped: ${result.stopReason}`);
   for (const n of result.needsModel) say(`needs a fake model: ${n}`);
   for (const r of result.refused) say(`refused (never sent): ${r}`);
-  return result.stopReason === "done" || result.stopReason === "interrupted" || result.stopReason === "cap" ? 0 : 2;
+  return ["done", "interrupted", "cap", "declined"].includes(result.stopReason) ? 0 : 2;
 }
 
 async function captureWrite(flags: Map<string, string | true>): Promise<number> {

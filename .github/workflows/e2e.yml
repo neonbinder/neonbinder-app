@@ -656,6 +656,38 @@ jobs:
           PROBE_ID_TOKEN: ${{ steps.browser-token.outputs.id_token }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" fake --health-only
 
+      # NEO-552: the fake's own tests judge its synthesised write answers
+      # against the stored real captures, and pass without judging anything when
+      # none is stored. So the seed asks the fake which write endpoints (the
+      # listing PUT and the photo upload) still have no capture, through an
+      # internal Convex action on the preview (the fake's /healthz, caller auth
+      # only, no admin key on this runner), and fails here, before any spec runs
+      # against an unchecked fake.
+      - name: Require a stored write capture for every write the specs drive
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/fake-bsc-write-captures.json"
+          npx --yes convex@1.39.1 run fakeBsc:writeCaptureStatus '{}' --deployment "$CONVEX_NAME" > "$out"
+          if [ "$(jq -r '.ok' "$out")" != "true" ]; then
+            err=$(jq -r '"status=\(.status // "n/a") error=\(.error // "unknown")"' "$out" | head -c 300)
+            echo "::error::Could not read the fake BSC's write-capture status (${err}). An older fake without writeCaptures in /healthz needs redeploying."
+            exit 1
+          fi
+          if [ "$(jq -r '.skipped' "$out")" = "true" ]; then
+            echo "::error::The Convex preview is not in fake-BSC mode, so write captures cannot be checked."
+            exit 1
+          fi
+          missing=$(jq -r '.missing | join(", ")' "$out")
+          if [ -n "$missing" ]; then
+            echo "::error::The fake BSC has no stored write capture for: ${missing}. Run 'recorder capture-write' for each (services/fake-bsc/README.md) before pushing, so its synthesised answers are checked against the real ones."
+            exit 1
+          fi
+          echo "Fake BSC holds a write capture for every write endpoint."
+
       - name: Download reference-seed bundle
         env:
           REFERENCE_SEED_URI: ${{ vars.NEONBINDER_REFERENCE_SEED_URI }}

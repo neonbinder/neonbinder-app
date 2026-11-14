@@ -893,9 +893,9 @@ review batch, which the next fetch by the same account RESUMES (`N of M
 reviewed`), so discard it before re-running locally. CI does not retry flows
 (`MAESTRO_FLOW_RETRIES` defaults to 1) and reseeds every run.
 
-**Remaining spares** (same shape, untouched): `Dayton Bombers ECHL`, `Dunkin
+**Remaining spares** (same shape, untouched): `Dunkin
 Donuts Portland Pirates AHL`, `Halifax Mooseheads QMJHL`. Swapping one in needs
-Jason's approval and a probe like the one above. NEO-552 PROPOSES `Dayton Bombers ECHL` for `checklist-fetch-bsc-429-cooldown-holds-the-cards-back-and-queues-them` (see "Two new committing specs" below); until Jason approves it, it stays a spare.
+Jason's approval and a probe like the one above. `Dayton Bombers ECHL` is taken by `checklist-fetch-bsc-429-cooldown-holds-the-cards-back-and-queues-them` (NEO-552; Jason approved it on 2026-11-14; see "Two new committing specs" below), so it is no longer a spare.
 
 ### The three COMMITTING entity-review fixtures — one set per flow (NEO-248) — RETIRED by NEO-330
 
@@ -3320,7 +3320,7 @@ the upload (not BSC) supplied the teams.
   its point is the format question, which comes from BSC's checklist tags, not
   from the file.
 
-### Two new committing specs, one set each: PROPOSED, need Jason's approval
+### Two new committing specs, one set each (Dayton Bombers ECHL approved by Jason 2026-11-14; Oklahoma City Blazers CHL still PROPOSED)
 
 Both use a BSC-only set that is already a registered spare in "The 1995
 minor-league hockey wizard fixtures" (or one next to it); neither adds a
@@ -3332,7 +3332,7 @@ pass); every name is skipped, so no player or team is minted.
 |---|---|---|---|
 | `checklist-published-upload-skips-bsc-and-asks-on-disagreement` (NEO-478) | Hockey > 1995 > Unknown (All Brands) > **Oklahoma City Blazers CHL** > Base | 18 (numbered 1-18, one club) | sole writer; commits after asking on two disagreements; card #6's repeated number is looked up on BSC (D2) |
 | `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards` (NEO-487) | Hockey > 1995 > Unknown (All Brands) > **Halifax Mooseheads QMJHL** > Base (a spare listed above) | 26 (cards 1-25 and one `NNO`) | sole writer; hangs the three card ids in the spec's header on the fake BSC through `bscFake` (NEO-552); `@bsc-breaker`, so it runs alone after the shards |
-| `checklist-fetch-bsc-429-cooldown-holds-the-cards-back-and-queues-them` (NEO-552) | Hockey > 1995 > Unknown (All Brands) > **Dayton Bombers ECHL** > Base (a spare listed above) | 32 (numbered) | **PROPOSED, needs Jason's approval (R7a)**. Sole writer; fresh-only; every card-listing request answered 429 by the fake, no publisher's checklist uploaded (no recording is read); `@bsc-breaker`, so it runs alone after the shards |
+| `checklist-fetch-bsc-429-cooldown-holds-the-cards-back-and-queues-them` (NEO-552) | Hockey > 1995 > Unknown (All Brands) > **Dayton Bombers ECHL** > Base (a spare listed above) | 32 (numbered) | **Approved by Jason, 2026-11-14 (R7a)**. Sole writer is this spec; fresh-only; the first 10 card-listing requests (one lookup wave) answered 429 by the fake, then the rule is spent, so a card asked after the 429 would be answered from its recording and lower the queued count; no publisher's checklist uploaded; needs all 32 card-listing answers recorded; `@bsc-breaker`, so it runs alone after the shards |
 
 Oklahoma City Blazers CHL is not one of the listed spares: it is proposed as a
 new set (numbered 1-18, so the paste can repeat and misspell numbers). A

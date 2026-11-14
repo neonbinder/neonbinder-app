@@ -27,8 +27,20 @@ export const MAX_DELAY_MS = 120_000;
  * (BSC calls time out at 30-60 s).
  */
 export const HANG_CAP_MS = 2 * 60 * 1000;
-/** Sockets one scope (namespace, prefix or anonymous) may hold hung at once; past it, 503 at once. */
+/** Sockets one scope (namespace, prefix or anonymous) may hold in a `hang` at once; past it, 503 at once. */
 export const MAX_HUNG_PER_SCOPE = 4;
+/**
+ * Sockets one scope may hold in a `delay` at once. `bscFault.slow` delays
+ * card-listing in waves of 10 per namespace, and a 503 there counts as a BSC
+ * failure in the Convex gate, so this sits well above a wave.
+ */
+export const MAX_DELAYED_PER_SCOPE = 24;
+/**
+ * Sockets the whole process may hold in a `hang` or a `delay` at once. A
+ * caller-key holder picks its own scope (the faults body's `ns`, the
+ * `x-nb-fake-ns` header), so the per-scope caps alone bound nothing.
+ */
+export const MAX_HELD_SOCKETS = 64;
 
 const METHODS = new Set(["GET", "POST", "PUT", "DELETE", "PATCH", "*"]);
 const TEMPLATE_RE = /^[A-Za-z0-9_.:\-/]{1,200}\*?$/;

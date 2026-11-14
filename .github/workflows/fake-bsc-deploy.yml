@@ -122,12 +122,21 @@ jobs:
       # sends a Google ID token in X-Serverless-Authorization and again in
       # x-nb-fake-id-token (the fake verifies the signed token itself against
       # FAKE_BSC_AUDIENCE) and the caller key.
+      # The audience (and smoke target) is EXACTLY vars.NEONBINDER_FAKE_BSC_URL,
+      # the deterministic origin Terraform also sets as FAKE_BSC_AUDIENCE. Never
+      # `describe ... status.url`: that is the hash-style URL, a different string.
       - id: url
-        name: Capture the service URL (token audience)
+        name: Take the fake's URL (token audience) from the repo variable
+        env:
+          FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
         run: |
           set -euo pipefail
-          url=$(gcloud run services describe "$SERVICE" --region "$REGION" --project "$PROJECT" --format='value(status.url)')
-          [ -n "$url" ] || { echo "::error::no service URL"; exit 1; }
+          re='^https://neonbinder-fake-bsc-[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          url="${FAKE_BSC_URL%/}"
+          if [[ ! "$url" =~ $re ]] || [[ "$url" == *---* ]]; then
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path"
+            exit 1
+          fi
           echo "url=$url" >> "$GITHUB_OUTPUT"
 
       - id: token

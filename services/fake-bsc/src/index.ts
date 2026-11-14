@@ -1,6 +1,6 @@
 /**
- * Boot: read config (fail closed), load recordings and write captures into
- * memory, then listen. The boot line carries the instance id and manifest
+ * Boot: read config (fail closed), listen, then load recordings and write
+ * captures into memory (the app answers "loading" until they are in). The boot line carries the instance id and manifest
  * version, so a mid-run restart (which drops all run state) is visible in
  * the logs.
  */
@@ -49,15 +49,16 @@ async function main(): Promise<void> {
   const instanceId = randomUUID();
   const started = Date.now();
   const catalogue = new Catalogue(store);
-  const { loaded, skipped } = await catalogue.load();
   const captures = new Captures(store);
-  const captureCount = await captures.load();
-  for (const c of captures.list()) {
-    const v = checkCapture(c);
-    if (v.verdict !== "ok") log("write_capture_mismatch", { endpoint: c.endpoint, paths: v.paths.length });
-  }
-
   const identity = loadIdentity(identityModule);
+
+  // Listen first: loading every recording from the bucket can outlast a
+  // caller's timeout on a cold start. Until it is done, /api and the miss
+  // list are held (up to 25 s) and admin uploads answer 503
+  // `x-nb-fake: loading`; reset, faults and orders work at once.
+  let loading = true;
+  let markLoaded: () => void = () => undefined;
+  const loadDone = new Promise<void>((r) => (markLoaded = r));
   const app = createApp({
     config,
     catalogue,
@@ -66,21 +67,44 @@ async function main(): Promise<void> {
     identity,
     verifyIdToken: googleIdTokenVerifier(),
     instanceId,
+    loading: () => loading,
+    loaded: loadDone,
   });
 
-  app.listen(config.port, () => {
-    log("boot", {
-      instanceId,
-      revision: config.revision,
-      store: store.describe(),
-      manifestVersion: catalogue.manifestVersion,
-      allowlistVersion: SANITISE_ALLOWLIST_VERSION,
-      recordings: loaded,
-      recordingsSkipped: skipped,
-      writeCaptures: captureCount,
-      localDevBypass: config.localDevBypass,
-      ms: Date.now() - started,
+  await new Promise<void>((resolve) => {
+    app.listen(config.port, () => {
+      log("listening", { instanceId, revision: config.revision, ms: Date.now() - started });
+      resolve();
     });
+  });
+
+  const { loaded, skipped } = await catalogue.load();
+  const captureCount = await captures.load();
+  for (const c of captures.list()) {
+    const v = checkCapture(c);
+    if (v.verdict !== "ok") log("write_capture_mismatch", { endpoint: c.endpoint, paths: v.paths.length });
+  }
+
+  const capturesMissing = captures.missing();
+  if (capturesMissing.length > 0) {
+    // Endpoint names are fixed vocabulary; no ids or bodies.
+    log("write_captures_missing", { endpoints: capturesMissing.join(", "), fix: "recorder capture-write" });
+  }
+
+  loading = false;
+  markLoaded();
+  log("boot", {
+    instanceId,
+    revision: config.revision,
+    store: store.describe(),
+    manifestVersion: catalogue.manifestVersion,
+    allowlistVersion: SANITISE_ALLOWLIST_VERSION,
+    recordings: loaded,
+    recordingsSkipped: skipped,
+    writeCaptures: captureCount,
+    writeCapturesMissing: capturesMissing.length,
+    localDevBypass: config.localDevBypass,
+    ms: Date.now() - started,
   });
 }
 

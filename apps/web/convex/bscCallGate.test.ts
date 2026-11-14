@@ -9,7 +9,7 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
-import { bscCallGateFor } from "./bscCallGate";
+import { bscCallGateFor, bscGateClock } from "./bscCallGate";
 import {
   FAILURE_BASE_MS,
   FAILURE_RUN_IDLE_RESET_MS,
@@ -114,15 +114,36 @@ describe("the bucket (real BSC: 60 a minute, burst 10)", () => {
     expect(await acquire(t, -3)).toMatchObject({ ok: true, granted: 1 });
   });
 
-  test("a fake deployment gets the faster bucket", async () => {
+  const armFake = () => {
     vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
     vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "k");
     vi.stubEnv("TESTING_RESET_SECRET", "armed");
+  };
+
+  test("a fake deployment has no bucket: 50 waves at once, none waits, none is throttled, nothing is written", async () => {
+    armFake();
     const t = convexTest(schema, modules);
-    await acquire(t, 10);
-    await acquire(t, 10);
-    // Burst 20, then ten a second.
-    expect(await acquire(t, 10)).toMatchObject({ ok: true, waitMs: 1_000 });
+    const grants = await Promise.all(Array.from({ length: 50 }, () => acquire(t, 10, 0)));
+    for (const g of grants) expect(g).toMatchObject({ ok: true, granted: 10, waitMs: 0, probe: false });
+    // A healthy grant against the fake writes nothing (eight shards share this row).
+    expect(await rows(t)).toHaveLength(0);
+  });
+
+  test("a fake deployment still has the breaker: a 429 opens it, and half-open grants one probe with no wait", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    const until = await open429(t);
+    expect(await acquire(t, 10)).toMatchObject({ ok: false, reason: "open" });
+    vi.setSystemTime(until);
+    expect(await acquire(t, 10)).toMatchObject({ ok: true, granted: 1, waitMs: 0, probe: true });
+    expect(await acquire(t, 10)).toMatchObject({ ok: false, reason: "probing" });
+  });
+
+  test("a fake deployment's breaker opens on a run of 5xx too", async () => {
+    armFake();
+    const t = convexTest(schema, modules);
+    for (let i = 0; i < 5; i += 1) await record(t, NOW, "failure");
+    expect(await acquire(t, 1)).toMatchObject({ ok: false, reason: "open" });
   });
 
   test("two racing first acquires leave one row", async () => {
@@ -278,6 +299,82 @@ describe("bscCallGateFor + bscFetch", () => {
     env: {},
   });
 
+  test("a half-open probe that has to wait for a token is not refused by its own lease", async () => {
+    const t = convexTest(schema, modules);
+    const until = await open429(t);
+    vi.setSystemTime(until);
+    // An empty bucket: the probe's one token is six seconds away.
+    await t.run(async (ctx) => {
+      const r = (await ctx.db.query("marketplaceCallGates").first())!;
+      await ctx.db.patch(r._id, { tokens: -5, refilledAt: until });
+    });
+    const sleep = vi.spyOn(bscGateClock, "sleep").mockImplementation(async (ms: number) => {
+      advance(ms);
+    });
+
+    const got = await bound(t).acquire(10);
+
+    expect(sleep).toHaveBeenCalledWith(6_000);
+    expect(got).toMatchObject({ ok: true, granted: 1, grant: { probe: true } });
+    // Everyone else is still held off by that lease.
+    expect(await acquire(t, 1)).toMatchObject({ ok: false, reason: "probing" });
+  });
+
+  test("a probe still blocked after its wait by a window opened meanwhile is refused", async () => {
+    const t = convexTest(schema, modules);
+    const until = await open429(t);
+    vi.setSystemTime(until);
+    await t.run(async (ctx) => {
+      const r = (await ctx.db.query("marketplaceCallGates").first())!;
+      await ctx.db.patch(r._id, { tokens: -5, refilledAt: until });
+    });
+    vi.spyOn(bscGateClock, "sleep").mockImplementation(async (ms: number) => {
+      advance(ms);
+      // Another caller's 429 (a call granted before the window) re-opens it.
+      await t.run(async (ctx) => {
+        const r = (await ctx.db.query("marketplaceCallGates").first())!;
+        await ctx.db.patch(r._id, { openUntil: Date.now() + 30_000 });
+      });
+    });
+
+    expect(await bound(t).acquire(1)).toMatchObject({ ok: false, reason: "open" });
+  });
+
+  test("a probe answered 501 unrecorded hands its lease back: the next caller probes at once", async () => {
+    const t = convexTest(schema, modules);
+    const until = await open429(t);
+    vi.setSystemTime(until);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response("", { status: 501, headers: { "x-nb-fake": "unrecorded" } })),
+    );
+
+    await bscFetch("marketplace/card/1/card-listing", {}, opts(t));
+
+    const r = await row(t);
+    expect(r.probeLeaseUntil).toBeUndefined();
+    expect(r.probeGrantedAt).toBeUndefined();
+    expect(r).toMatchObject({ streak: 1, consecutiveFailures: 0 });
+    expect(await acquire(t, 1)).toMatchObject({ ok: true, probe: true });
+  });
+
+  test("only the grant holding the lease can release it", async () => {
+    const t = convexTest(schema, modules);
+    const until = await open429(t);
+    vi.setSystemTime(until);
+    const probe = await acquire(t, 1);
+    if (!probe.ok) throw new Error("grant");
+    const before = await row(t);
+
+    await t.mutation(internal.bscCallGate.releaseProbe, { grantedAt: probe.grantedAt - 1 });
+    expect(await row(t)).toEqual(before);
+
+    await t.mutation(internal.bscCallGate.releaseProbe, { grantedAt: probe.grantedAt });
+    expect((await row(t)).probeLeaseUntil).toBeUndefined();
+    // The bucket is not refunded.
+    expect((await row(t)).tokens).toBe(before.tokens);
+  });
+
   test("the fake's 501 unrecorded is not counted as a failure", async () => {
     const t = convexTest(schema, modules);
     vi.stubGlobal(
@@ -332,5 +429,64 @@ describe("clearForTesting", () => {
     await open429(t);
     expect(await t.mutation(internal.bscCallGate.clearForTesting, {})).toEqual({ deleted: 1 });
     expect(await rows(t)).toHaveLength(0);
+  });
+});
+
+describe("gate log lines carry a fixed field set (no ids, no payloads)", () => {
+  /** The parsed JSON lines the console spy saw for one message name. */
+  const logged = (spy: "warn" | "log", msg: string) =>
+    vi
+      .mocked(console[spy])
+      .mock.calls.map((c) => JSON.parse(String(c[0])) as Record<string, unknown>)
+      .filter((line) => line.msg === msg);
+
+  test("bsc_gate_opened is exactly {msg, platform, operation, cause, streak, ms}", async () => {
+    const t = convexTest(schema, modules);
+    const g = await acquire(t, 1);
+    if (!g.ok) throw new Error("grant");
+    await record(t, g.grantedAt, "rateLimited", 60_000);
+
+    const lines = logged("warn", "bsc_gate_opened");
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toEqual({
+      msg: "bsc_gate_opened",
+      platform: "bsc",
+      operation: "recordOutcome",
+      cause: "429",
+      streak: 1,
+      ms: 60_000,
+    });
+  });
+
+  test("bsc_gate_closed is exactly {msg, platform, operation}", async () => {
+    const t = convexTest(schema, modules);
+    const until = await open429(t);
+    vi.setSystemTime(until);
+    const probe = await acquire(t, 1);
+    if (!probe.ok) throw new Error("grant");
+    await record(t, probe.grantedAt, "success");
+
+    const lines = logged("log", "bsc_gate_closed");
+    expect(lines).toEqual([{ msg: "bsc_gate_closed", platform: "bsc", operation: "recordOutcome" }]);
+  });
+
+  test("bsc_gate_unavailable carries the error name only, never its message", async () => {
+    const gate = bscCallGateFor({
+      runMutation: (async () => {
+        throw new RangeError("secret detail: row 123 for user abc");
+      }) as never,
+      runQuery: (async () => {
+        throw new Error("down");
+      }) as never,
+    });
+    await gate.acquire(1);
+    await gate.blockedUntil();
+
+    const lines = logged("warn", "bsc_gate_unavailable");
+    expect(lines).toEqual([
+      { msg: "bsc_gate_unavailable", platform: "bsc", operation: "acquire", error: "RangeError" },
+      { msg: "bsc_gate_unavailable", platform: "bsc", operation: "state", error: "Error" },
+    ]);
+    expect(JSON.stringify(lines)).not.toContain("secret detail");
   });
 });

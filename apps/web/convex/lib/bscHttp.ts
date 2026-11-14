@@ -207,6 +207,12 @@ export interface BscCallGate {
   /** Reports one call's outcome (may throw; `bscFetch` swallows it). */
   record(grant: BscGrant, outcome: BscGateOutcome, retryAfterMs?: number): Promise<void>;
   /**
+   * Hands back a probe grant's lease when the call reported nothing (a
+   * neutral answer, or a throw before it was sent). A no-op for any other
+   * grant. May throw; `bscFetch` swallows it.
+   */
+  release(grant: BscGrant): Promise<void>;
+  /**
    * Whether a success under `grant` is worth reporting: the grant says the
    * gate is recovering, or this caller has reported a failure since its last
    * reported success (so a success ends the failure run it fed). Otherwise a
@@ -347,28 +353,57 @@ export async function bscFetch(
     }
     grant = acquired.grant;
   }
-  const sendInit = target.mode === "fake" ? await fakeInit(target, init, opts.idToken, opts.fakeNs) : init;
-  let res: Response;
+  // A probe that ends without an outcome (a neutral answer, or a throw
+  // before anything was sent, such as an ID-token mint failure) must hand
+  // its lease back, or every caller waits the lease out for nothing.
+  let reported = false;
+  const report = async (outcome: BscGateOutcome, retryAfterMs?: number): Promise<void> => {
+    reported = true;
+    await reportOutcome(opts.gate, grant, opts.pathTemplate, outcome, retryAfterMs);
+  };
   try {
-    res = await fetch(url, sendInit);
-  } catch (err) {
-    await reportOutcome(opts.gate, grant, opts.pathTemplate, "failure");
-    throw err;
+    const sendInit =
+      target.mode === "fake" ? await fakeInit(target, init, opts.idToken, opts.fakeNs) : init;
+    let res: Response;
+    try {
+      res = await fetch(url, sendInit);
+    } catch (err) {
+      await report("failure");
+      throw err;
+    }
+    const answer = classifyBscAnswer(
+      res.status,
+      (name) => res.headers.get(name),
+      opts.pathTemplate,
+      Date.now(),
+    );
+    if (answer.kind === "rateLimited") {
+      await report("rateLimited", answer.retryAfterMs);
+    } else if (answer.kind === "failure") {
+      await report("failure");
+    } else if (answer.kind === "success" && opts.gate.wantsSuccess(grant)) {
+      await report("success");
+    }
+    return res;
+  } finally {
+    if (!reported && grant.probe) await releaseProbe(opts.gate, grant, opts.pathTemplate);
   }
-  const answer = classifyBscAnswer(
-    res.status,
-    (name) => res.headers.get(name),
-    opts.pathTemplate,
-    Date.now(),
-  );
-  if (answer.kind === "rateLimited") {
-    await reportOutcome(opts.gate, grant, opts.pathTemplate, "rateLimited", answer.retryAfterMs);
-  } else if (answer.kind === "failure") {
-    await reportOutcome(opts.gate, grant, opts.pathTemplate, "failure");
-  } else if (answer.kind === "success" && opts.gate.wantsSuccess(grant)) {
-    await reportOutcome(opts.gate, grant, opts.pathTemplate, "success");
+}
+
+/** A gate that cannot release must never fail the call; the lease then expires on its own. */
+async function releaseProbe(gate: BscCallGate, grant: BscGrant, pathTemplate: string): Promise<void> {
+  try {
+    await gate.release(grant);
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        msg: "bsc_gate_release_failed",
+        platform: "bsc",
+        operation: pathTemplate,
+        error: error instanceof Error ? error.name : "unknown",
+      }),
+    );
   }
-  return res;
 }
 
 /** Platform, operation and timing only. */
@@ -408,8 +443,8 @@ async function reportOutcome(
 }
 
 /**
- * A request to the fake's test-control API (`__fake/...`): reset, faults,
- * orders, misses. Returns null, sending nothing, unless this deployment is in
+ * A request to the fake's test-control API (`__fake/...`) or its `healthz`:
+ * reset, faults, orders, misses, write-capture status. Returns null, sending nothing, unless this deployment is in
  * fake mode. Never touches the breaker.
  */
 export async function fakeBscControlFetch(
@@ -421,7 +456,8 @@ export async function fakeBscControlFetch(
   if (target.mode === "real") return null;
   if (target.mode === "misconfigured") throw new BscConfigError(target.reason);
   const rel = normaliseBscPath(path);
-  if (!rel.startsWith("__fake/")) throw new TypeError("fake-BSC control path refused");
+  // `healthz` is the fake's caller-authenticated health route (not under `__fake/`).
+  if (!rel.startsWith("__fake/") && rel !== "healthz") throw new TypeError("fake-BSC control path refused");
   return await fetch(`${target.origin}/${rel}`, await fakeInit(target, init, opts.idToken));
 }
 

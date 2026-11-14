@@ -6,18 +6,30 @@
 // yet."), none of them put to the operator.
 //
 // HOW THE 429 IS MADE. BuySportsCards is the fake (services/fake-bsc), so a spec asks
-// it to misbehave: `bscFake.setFaults` puts a 429 with a Retry-After on every
-// `GET marketplace/card/:id/card-listing` for THIS worker's fake account (support/
-// bscFake.ts). The product honours the Retry-After, opens its call gate and sends
-// nothing more. That gate is DEPLOYMENT-WIDE (convex/bscCallGate.ts), which is why
-// this spec carries `@bsc-breaker`: CI runs it alone, after every shard, and the
-// `bscFake` fixture clears the rules and the gate when the test ends, red or green.
-// It replaces the real-BSC 429 branches the live suite could only hit by luck.
+// it to misbehave: `bscFake.setFaults` puts a 429 with a Retry-After on the first
+// `WAVE` (10) `GET marketplace/card/:id/card-listing` requests for THIS worker's fake
+// account (support/bscFake.ts), then the rule is spent and the fake answers as recorded.
+// The lookup asks BSC in waves of 10 at once (BSC_TEAM_LOOKUP_CONCURRENCY,
+// convex/adapters/buysportscards.ts), so the first wave is the 10 the rule covers. The
+// product honours the Retry-After, opens its call gate and sends nothing more. That gate is
+// DEPLOYMENT-WIDE (convex/bscCallGate.ts), which is why this spec carries `@bsc-breaker`:
+// CI runs it alone, after every shard, and the `bscFake` fixture clears the rules and the
+// gate when the test ends, red or green. It replaces the real-BSC 429 branches the live
+// suite could only hit by luck.
+//
+// WHY THE RULE IS NOT UNLIMITED (audit, NEO-552). An unlimited 429 would answer an extra
+// ask with another 429, and the count below would read 32 either way. With the rule spent
+// after the first wave, a card asked after the 429 is answered from its recording, becomes
+// an answered card and drops the queued count below 32 (and shows "N need you"): that is
+// how "asks BSC for no further card" is proved. It needs the set's card-listing answers
+// recorded (the recorder run for this set covers all 32 cards); an extra ask for a card
+// with no recording would be a failed lookup, queue like the rest, and show only as a
+// miss in the fake's report. If the product's wave size changes, this spec goes red on
+// the count by its number: update `WAVE` with it.
 //
 // NO PUBLISHER'S CHECKLIST (GUIDE, "Checklist first"). The reason to upload one is
-// fewer BSC calls and smaller recordings. Here every card-listing request is answered
-// 429 by the fault before any recording is looked up, so no recording is read or
-// needed; and the point is the per-card lookup, which a checklist file would skip.
+// fewer BSC calls and smaller recordings. Here the point is the per-card lookup, which a
+// checklist file would skip.
 //
 // WHAT IT PROVES, IN ORDER:
 //   1. The fetch's "Kept all N cards from BSC" line lands within 7 s of our own time
@@ -27,13 +39,13 @@
 //      is listed there: not one has a BSC pre-fill to confirm).
 //   3. After the save the checklist's status line names ALL of the set's cards as
 //      waiting in the queue, in the product's words, and the amber "N need you" pill
-//      is absent: nothing is the operator's yet. With the rule unlimited, a card that
-//      had been asked after the 429 would have been 429'd too, so the count is the
-//      product's own stop, not the fake running out of answers. Axe runs on the saved
+//      is absent: nothing is the operator's yet. The rule covers only the first wave, so
+//      a card asked after the 429 would have been answered and the count would read
+//      less than all 32: the count is the product's own stop. Axe runs on the saved
 //      checklist with the status line showing.
 //
-// FIXTURE (SET-REGISTRY.md -> "Hockey -> 1995 -> Dayton Bombers ECHL"; PROPOSED, a
-// registered spare: taking it needs Jason's approval, R7a): SOLE WRITER of that set
+// FIXTURE (SET-REGISTRY.md -> "Hockey -> 1995 -> Dayton Bombers ECHL"; approved by
+// Jason on 2026-11-14, R7a): SOLE WRITER of that set
 // (BSC only, 32 numbered cards, reached through the All Brands view); FRESH-ONLY (it
 // commits the checklist), so a re-run on the same seed fails at "No cards in this
 // checklist yet." by name. Every name is skipped: no player and no team is minted.
@@ -47,6 +59,8 @@ import { advanceToSave, confirmSaveButton, openOneMarketplaceSetBase, reviewWiza
 const SET = "Dayton Bombers ECHL";
 /** The set's card count on BSC (SET-REGISTRY.md measurement). */
 const CARDS = 32;
+/** The team lookup's wave size (BSC_TEAM_LOOKUP_CONCURRENCY): the 429s cover exactly the first wave. */
+const WAVE = 10;
 /** Long enough that the window outlasts the spec: the lane must not get a turn before the assert. */
 const RETRY_AFTER_S = 90;
 
@@ -61,7 +75,7 @@ test(
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
 
     // ── 1. BSC pushes back on every team lookup; the fetch meets the cooldown ──
-    await bscFake.setFaults([bscFault.tooManyRequests(BSC_PATH.cardListing, { retryAfterS: RETRY_AFTER_S, ttlS: 600 })]);
+    await bscFake.setFaults([bscFault.tooManyRequests(BSC_PATH.cardListing, { retryAfterS: RETRY_AFTER_S, times: WAVE, ttlS: 600 })]);
     await syncChecklistButton(page).click();
     await expectAfterMarketplace(page, page.getByText(new RegExp(`Kept all ${CARDS} cards from BSC`)), {
       platform: "BuySportsCards",
@@ -91,9 +105,11 @@ test(
     await expect(editCardButton(page, "1")).toBeVisible();
     // The queue's own words (a status line; its number moves at most every 5 s, so the first value
     // after the save is the full count). All CARDS: the 429 ended the lookup before any card was
-    // answered, and nothing it owed was guessed.
+    // answered, and nothing it owed was guessed. The rule was spent after the first wave, so a
+    // card asked afterwards would have been answered and this count would be lower.
     await expect(
       page.getByRole("status").filter({ hasText: new RegExp(`^Still looking up teams for ${CARDS} cards\\. Nothing for you to do yet\\.`) }),
+      `the status line does not say all ${CARDS} cards wait: BSC was asked for a card after the 429 (the rule covers only the first ${WAVE} requests)`,
     ).toBeVisible();
     // Nothing is the operator's yet: the "N need you" pill is rendered only while some card needs them.
     await expect(page.getByRole("button", { name: /need[s]? you$/ })).toHaveCount(0);

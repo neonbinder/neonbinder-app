@@ -171,3 +171,38 @@ test("probe verdict: the failing-outcome list names skipped_paused once", () => 
   assert.ok(line, "case line present");
   assert.equal(line.split("skipped_paused").length - 1, 1);
 });
+
+test("fake: a catalogue failure that is only 501 unrecorded names the recorder, still fails", () => {
+  const body = {
+    ...OK_PROBE("fake"),
+    outcome: "catalogue_non_2xx",
+    catalogue: { ok: false, status: 501 },
+    steps: [
+      { step: "sign_in.token", status: 200, ms: 5, parsed: true },
+      { step: "read.filters", status: 501, ms: 4, parsed: false },
+    ],
+  };
+  const r = probe("fake", { bscTarget: "fake" }, body);
+  assert.equal(r.status, 1);
+  assert.equal(r.outcome, "catalogue_non_2xx");
+  assert.match(r.err, /recorder/);
+});
+
+test("fake: a catalogue failure with any non-501 step stays generic", () => {
+  const body = {
+    ...OK_PROBE("fake"),
+    outcome: "catalogue_non_2xx",
+    steps: [
+      { step: "read.filters", status: 501 },
+      { step: "read.results", status: 500 },
+    ],
+  };
+  const r = probe("fake", { bscTarget: "fake" }, body);
+  assert.equal(r.status, 1);
+  assert.doesNotMatch(r.err, /recorder/);
+});
+
+test("real: a 501 pattern never gets the recorder hint", () => {
+  const body = { ...OK_PROBE("real"), outcome: "catalogue_non_2xx", steps: [{ step: "read.filters", status: 501 }] };
+  assert.doesNotMatch(probe("real", { bscTarget: "real" }, body).err, /recorder/);
+});

@@ -89,8 +89,12 @@ first, then in code.
 kind: "429"|"503"|"delay"|"hang"|"reset", delayMs?, retryAfterS?, times?,
 ttlS?}]}`. Default TTL 10 minutes. Replaces
 `NEONBINDER_TEST_BSC_STALL_CARD_IDS`. A `hang` holds the socket for at most
-2 minutes, and one scope (namespace, prefix, or no namespace) holds at most
-4 hung sockets at once: a fifth matching request answers 503 at once.
+2 minutes. Held sockets are capped per scope (namespace, prefix, or no
+namespace): 4 in a `hang`, 24 in a `delay` (`bscFault.slow` delays
+card-listing in waves of 10 per namespace, and a 503 there would count as a
+BSC failure). Hangs and delays together are capped at 64 for the whole
+process, since a caller picks its own scope. Past any cap the request answers
+503 at once.
 
 Request bodies are limited to what NB's BSC traffic needs: 2 MB for
 `PUT seller/bulk-upload` (100 rows of at most 16 KB, `bscSheetPlan.ts`),
@@ -115,8 +119,11 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
   never sent and is reported by reason, endpoint and key prefix, never value.
 - Anonymous misses (no namespace and no prefix) are left alone unless
   `--include-anon`.
-- Before any credential is read or BSC contacted, it prints the to-do count
-  and needs the word `yes` typed on the terminal, or `--yes`.
+- Before any credential is read or BSC contacted, it prints every request it
+  will send (endpoint and facet slugs, or the hex card id) and needs the word
+  `yes` typed on the terminal, or `--yes`. Only those keys are confirmed: a
+  miss that appears later (between the plan and the session, or under
+  `--watch`) is shown and asked about again, batch by batch, before it goes.
 - `--max N` takes a positive whole number only, clamped to 300; anything else
   is an error.
 - At most 1 request a second, 300 per session, and it stops on the first 429,
@@ -182,24 +189,35 @@ A photo upload has no API undo (README, "Undoing a capture").
 Every BSC API call from Convex goes through `bscFetch`. It checks one
 deployment-wide breaker before each call. It opens the breaker on any 429
 (honouring `Retry-After`) or on a run of 5xx or timeouts on any endpoint, and
-enforces a per-deployment token bucket. A 429 is never retried.
+enforces a per-deployment token bucket against BuySportsCards (none against
+the fake). A 429 is never retried.
 
 As built (`apps/web/convex/bscCallGate.ts`, policy in
 `convex/lib/bscCallGatePolicy.ts`, one `marketplaceCallGates` row):
 
-- Bucket: 60 a minute, burst 10 against BuySportsCards; 600 a minute, burst
-  20 against the fake. A wave acquires up to 10 at once; a wait over 15 s is
-  refused (`throttled`) and writes nothing.
+- Bucket: 60 a minute, burst 10 against BuySportsCards. **None against the
+  fake** (Jason): no wait and no `throttled` refusal, ever, and a healthy
+  grant writes nothing; only the breaker below applies. A wave (the
+  fetch-time team lookup) acquires once per wave of up to 10; every other
+  call acquires one. Against BuySportsCards a wait over 15 s is refused
+  (`throttled`) and writes nothing.
 - 429 ladder unchanged from PR 451 (15 s doubling to 120 s, or Retry-After up
   to 10 min; streak resets after 15 min). Failure ladder: 5 failures in a run
   (a run resets after 5 min idle) open it for 30 s doubling to 300 s.
 - Failures: 5xx, timeouts, network errors, and a 403 on the three catalogue
-  reads (filters, results, card-listing). Not failures: other 4xx, and the
-  fake's 501 `x-nb-fake: unrecorded`.
+  reads (filters, results, card-listing). Not failures: other 4xx, the
+  fake's 501 `x-nb-fake: unrecorded`, and its 503 `x-nb-fake: loading`.
 - Half-open: after a window, one probe is granted, under a lease of 120 s
   (longer than the longest per-attempt timeout, the seller sheet's 90 s);
   everyone else is refused `probing`. The probe's success closes it; its
-  failure re-opens it, escalated.
+  failure re-opens it, escalated. A probe that waited for a token is checked
+  after the wait only against a window opened meanwhile, never its own
+  lease. A probe that ends with nothing to report (a neutral answer, or a
+  throw before it was sent) hands its lease back at once; no token is
+  refunded.
+- Control calls (`__fake/...`, `healthz`) are not gated: a 30 s timeout per
+  attempt and one retry on a network error or a 503 (honouring Retry-After,
+  at most 5 s), never on a timeout. `/api` calls are never retried there.
 - A refusal sends nothing: `bscFetch` answers 429 with `Retry-After` and
   `x-nb-bsc-breaker: open|probing|throttled`, or 503 with
   `x-nb-bsc-breaker: gate_unavailable` when the gate itself cannot be read
@@ -387,11 +405,25 @@ host itself. It never bundles or copies the browser source.
   is also sent. The doc says only that `X-Serverless-Authorization` is the
   one checked. The first deploy must confirm it (a profile read through the
   fake proves it).
+- Cold start: the server listens before it loads the recordings and write
+  captures from the store (`/healthz` `loading: true` until they are in).
+  Meanwhile `/api/*` and `GET /__fake/misses` are HELD, after auth, until the
+  load finishes, and then answered normally: a 503 on `/api` would count
+  against Convex's BSC call gate, and recording loads take seconds. Only a
+  hold past 25 s answers 503 with `x-nb-fake: loading` and `Retry-After: 2`.
+  The admin uploads that read the loaded state (`/__fake/recordings`,
+  `/__fake/write-captures`, `/__fake/drift-compare`) answer that 503 at once.
+  `/__fake/reset`, `/__fake/reset-all`, `/__fake/faults`, `/__fake/orders`
+  and the identity endpoints work at once. A load failure exits the process.
 - `FAKE_BSC_LOCAL_DEV_BYPASS=1` skips the ID-token check only (keys are
   still required); the server refuses to boot with it when `K_SERVICE` is set.
 - `/healthz` needs the ID token and caller key like the rest (Cloud Run's
-  default TCP startup probe needs no route). It answers `{ok, instanceId,
-  revision, manifestVersion, allowlistVersion, recordings}`.
+  default TCP startup probe needs no route). It answers `{ok, loading,
+  instanceId, revision, manifestVersion, allowlistVersion, recordings, writeCaptures:
+  {missing: [<write endpoint>, ...]}}`. `missing` lists the write endpoints
+  (`PUT seller/bulk-upload`, the photo-upload POST) that have no stored
+  capture; the boot also logs `write_captures_missing`. The E2E seed fails on
+  a non-empty list (see "Convex internal action for CI").
 
 ## Storage layout (bucket or local directory)
 
@@ -482,6 +514,11 @@ Built in `services/browser/src/routes/bsc-probe.ts`.
   `[]`, `{*}`, `a|b` unions) is read as described above; a `{*}` path is
   ignored. A path missing from the probe is drift only when its parent is
   present, and never for an array's items.
+- The seller sheet has two root forms, both read by NB (`bscSeller.ts`
+  `fetchBscSellerSheet`: a bare array, or `{results: [...]}`). A probe of the
+  wrapped form is unwrapped (`results` → root, `results[]…` → `[]…`) before
+  it is compared, so either form is `ok` and drift paths are named in the
+  bare form. An object root without a `results` array is drift.
 
 ### Fake service environment (set by Terraform)
 
@@ -500,5 +537,23 @@ emails), `FAKE_BSC_BUCKET` (recordings bucket name), `FAKE_BSC_AUDIENCE`
 namespace prefix, read from the fake (`skipped: true`, no misses, outside fake
 mode), or `{ok: false, status?, error}` when the fake could not be read.
 CI calls it with the preview deploy key so no admin key is on the runner.
+
+`fakeBsc:writeCaptureStatus` (internal action, no args) reads the fake's
+`/healthz` (caller auth only) and returns `{ok: true, skipped, missing:
+[<write endpoint>]}` (`skipped: true` outside fake mode), or `{ok: false,
+status?, error}`, which includes a health answer with no `writeCaptures` field
+(an older fake: never read as "none missing"). The E2E `seed` job runs it
+before seeding and fails with an `::error::` naming `recorder capture-write`
+when `missing` is not empty. The Convex control fetch (`fakeBscControlFetch`)
+therefore also accepts the path `healthz`, besides `__fake/...`.
 Resolved (coordinator, 2026-11-14): `GET /__fake/misses?prefix=` needs only
 rules 1 and 2 (see "Who may call it").
+
+### First rollout order
+
+See `README.md`, "First rollout". In short: Terraform apply (dev); seed the two
+keys and set `NEONBINDER_FAKE_BSC_URL` and `FAKE_BSC_DEPLOY_ENABLED`; dispatch
+the fake deploy; deploy a fake-aware browser revision (tagged, no traffic);
+point a worktree Convex at it; run setup and the BSC specs and load the misses;
+record the `probe-ci` pinned reads and the write captures; only then push the
+PR. Until recordings exist every probe and E2E BSC call answers 501.

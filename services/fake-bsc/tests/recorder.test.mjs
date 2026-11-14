@@ -330,7 +330,7 @@ describe("--max (S2)", () => {
 
 describe("replay allowlist (S3)", () => {
   const { replayRefusal } = require("../dist/recorder/replay-allowlist.js");
-  const { replayable, planMisses } = require("../dist/recorder/record.js");
+  const { replayable, planMisses, describeRequest } = require("../dist/recorder/record.js");
   const req = (method, p, body, query) => canonicalRequest({ method, path: p, body, query });
 
   it("passes NB's own catalogue requests", () => {
@@ -398,12 +398,49 @@ describe("replay allowlist (S3)", () => {
     const asked = [];
     const c = clock();
     const r = await runRecordSession({
-      ...base(c, { confirm: async (n) => (asked.push(n), true) }),
-      fake: fakeStub([[miss("POST", FILTERS_PATH, { filters: { sport: ["a"] } }), miss("POST", FILTERS_PATH, { filters: { sport: ["b"] } })]]),
+      ...base(c, { confirm: async (items) => (asked.push(items), true) }),
+      fake: fakeStub([[miss("POST", FILTERS_PATH, { filters: { sport: ["a"], year: ["1996"] } }), miss("GET", `marketplace/card/${CARD}/card-listing`)]]),
       bsc: async () => ({ kind: "response", status: 200, body: { aggregations: {} } }),
     });
-    assert.deepEqual(asked, [2]);
+    assert.deepEqual(asked, [["filters sport=a year=1996", `cardListing ${CARD}`]]);
     assert.equal(r.sent, 2);
+  });
+
+  it("asks again for any miss outside the confirmed plan, and for every new --watch batch", async () => {
+    const a = miss("POST", FILTERS_PATH, { filters: { sport: ["a"] } });
+    const b = miss("POST", FILTERS_PATH, { filters: { sport: ["b"] } });
+    const late = miss("POST", RESULTS_PATH, resultsBody({ sport: ["late"] }));
+    const sent = [];
+    const bsc = async (q) => (sent.push(describeRequest(q)), { kind: "response", status: 200, body: q.path === RESULTS_PATH ? [] : { aggregations: {} } });
+
+    // The plan confirmed only `a`; `b` arrived between the plan and the session.
+    let c = clock();
+    const asked = [];
+    let r = await runRecordSession({ ...base(c, { confirmedKeys: new Set([a.key]), confirm: async (items) => (asked.push(items), true) }), fake: fakeStub([[a, b]]), bsc });
+    assert.deepEqual(asked, [["filters sport=b"]]);
+    assert.equal(r.sent, 2);
+
+    // Declining the newcomer sends nothing of that pass, the confirmed one included.
+    c = clock();
+    sent.length = 0;
+    r = await runRecordSession({ ...base(c, { confirmedKeys: new Set([a.key]), confirm: async () => false }), fake: fakeStub([[a, b]]), bsc });
+    assert.equal(r.stopReason, "declined");
+    assert.deepEqual(sent, []);
+
+    // --watch: each new batch is asked about before it goes out.
+    c = clock();
+    sent.length = 0;
+    const batches = [];
+    let polls = 0;
+    const fake = fakeStub([[a], [a, b], [a, b, late], [a, b, late]]);
+    r = await runRecordSession({
+      ...base(c, { watch: true, pollMs: 3000, confirmedKeys: new Set([a.key]), confirm: async (items) => (batches.push([...items]), true) }),
+      fake: { ...fake, misses: async (p) => (polls++, fake.misses(p)) },
+      stopped: () => polls >= 4,
+      bsc,
+    });
+    assert.deepEqual(batches, [["filters sport=b"], ["results sport=late"]]);
+    assert.deepEqual(sent, ["filters sport=a", "filters sport=b", "results sport=late"]);
   });
 
   it("confirms only on the word yes", async () => {

@@ -8,7 +8,12 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
-import { isOwnNamespace, isOwnPrefix, narrowMisses } from "./fakeBsc";
+import { isOwnNamespace, isOwnPrefix, narrowMisses, narrowMissingCaptures } from "./fakeBsc";
+
+vi.mock("./lib/bscFakeIdToken", () => ({
+  nodeBscIdToken: async () => "stub-id-token",
+  idTokenExpiresAt: (_token: string, fallback: number) => fallback,
+}));
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -89,6 +94,7 @@ describe("outside fake mode", () => {
     expect(await t.action(internal.fakeBsc.setFaults, { ns, rules: [] })).toEqual({ ok: true, skipped: true });
     expect(await t.action(internal.fakeBsc.misses, { ns })).toEqual({ ok: true, skipped: true, misses: [] });
     expect(await t.action(internal.fakeBsc.reportMisses, {})).toEqual({ ok: true, skipped: true, misses: [] });
+    expect(await t.action(internal.fakeBsc.writeCaptureStatus, {})).toEqual({ ok: true, skipped: true, missing: [] });
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -99,5 +105,61 @@ describe("outside fake mode", () => {
       ok: false,
     });
     expect(await t.action(internal.fakeBsc.resetPrefix, { prefix: "other-" })).toMatchObject({ ok: false });
+  });
+});
+
+describe("narrowMissingCaptures", () => {
+  test("keeps endpoint names; drops anything else", () => {
+    expect(
+      narrowMissingCaptures({
+        writeCaptures: { missing: ["PUT seller/bulk-upload", 5, "not an endpoint", "POST common/card/undefined/product/undefined/attachment"] },
+      }),
+    ).toEqual(["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"]);
+  });
+
+  test("a health body without the field is unreadable (null), never 'none missing'", () => {
+    expect(narrowMissingCaptures({ ok: true })).toBeNull();
+    expect(narrowMissingCaptures({ writeCaptures: {} })).toBeNull();
+    expect(narrowMissingCaptures({ writeCaptures: { missing: "x" } })).toBeNull();
+    expect(narrowMissingCaptures(null)).toBeNull();
+  });
+});
+
+describe("writeCaptureStatus in fake mode", () => {
+  const arm = () => {
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+    vi.stubEnv("TESTING_RESET_SECRET", "armed");
+    vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+  };
+  const run = (answer: () => Response | Promise<Response>) => {
+    arm();
+    const spy = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => answer());
+    vi.stubGlobal("fetch", spy);
+    return { spy, result: convexTest(schema, modules).action(internal.fakeBsc.writeCaptureStatus, {}) };
+  };
+
+  test("asks the fake's /healthz with the caller key and reports the missing endpoints", async () => {
+    const { spy, result } = run(() =>
+      Response.json({ ok: true, writeCaptures: { missing: ["PUT seller/bulk-upload"] } }),
+    );
+    expect(await result).toEqual({ ok: true, skipped: false, missing: ["PUT seller/bulk-upload"] });
+    expect(String(spy.mock.calls[0][0])).toBe("https://neonbinder-fake-bsc-0000-uc.a.run.app/healthz");
+    expect(new Headers(spy.mock.calls[0][1]?.headers).get("x-nb-fake-bsc-key")).toBe("caller-key");
+  });
+
+  test("reports none missing as an empty list", async () => {
+    const { result } = run(() => Response.json({ ok: true, writeCaptures: { missing: [] } }));
+    expect(await result).toEqual({ ok: true, skipped: false, missing: [] });
+  });
+
+  test("an older fake with no field is an error, not 'none missing'", async () => {
+    const { result } = run(() => Response.json({ ok: true }));
+    expect(await result).toEqual({ ok: false, error: "health answer has no writeCaptures" });
+  });
+
+  test("a refused health call is an error with its status", async () => {
+    const { result } = run(() => new Response("", { status: 403 }));
+    expect(await result).toEqual({ ok: false, status: 403, error: "http" });
   });
 });

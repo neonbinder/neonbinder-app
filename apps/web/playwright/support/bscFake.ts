@@ -23,8 +23,8 @@
  * is not a teardown: the next spec on the worker would meet what is left of it.
  * A teardown that cannot clear fails the test, by name.
  *
- * THE CALL GATE IS DEPLOYMENT-WIDE. Convex keeps ONE breaker and token bucket
- * per deployment (`convex/bscCallGate.ts`). A 429 opens it at once, and five
+ * THE CALL GATE IS DEPLOYMENT-WIDE. Convex keeps ONE breaker per deployment
+ * (`convex/bscCallGate.ts`; its token bucket is not applied against the fake, so there is no rate cap). A 429 opens it at once, and five
  * consecutive 5xx, timeouts or dropped connections open it too; while it is
  * open EVERY shard's BSC calls are refused. So a rule of kind `429`, `503`,
  * `hang` or `reset` is allowed only in a spec tagged `@bsc-breaker` (listed in
@@ -148,8 +148,8 @@ export interface BscOrder {
 }
 
 const STATUS = /^\[testing-bsc-fake\] /;
-const DONE = /^\[testing-bsc-fake\] (Fault rules set|Order added|Cleared)/;
-const FAILED = /^\[testing-bsc-fake\] (Error:|Give exactly|\?(rules|order|clear)=|Testing mode)/;
+export const DONE = /^\[testing-bsc-fake\] (Fault rules set|Order added|Cleared)/;
+export const FAILED = /^\[testing-bsc-fake\] (Error:|Give exactly|\?(rules|order|clear)=|Testing mode)/;
 
 /**
  * The control a spec drives through the `bscFake` fixture. One per test, bound

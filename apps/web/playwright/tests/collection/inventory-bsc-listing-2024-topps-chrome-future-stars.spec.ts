@@ -484,13 +484,22 @@ test(
     await expect(page.getByText(/^Profile saved/)).toBeVisible();
 
     // NEO-552: BuySportsCards is the fake, which answers the seller profile at once, so the first
-    // press would never meet NeonBinder still waiting to hear the seller account (NEO-483). Hold the
-    // profile read for 15 s (under NeonBinder's 20 s read timeout, so it lands rather than fails):
-    // a read that starts at the seed or at the first press then takes that long, and when the press
-    // beats it the Sync status wait line is up and `expectRunOrSellerWait` checks it (a `seller-wait`
-    // annotation says which order ran). A rule whose delay is shorter than the caller's timeout is no
-    // failure, so this spec stays in the ordinary shards. Teardown drops the rule.
-    await bscFake.setFaults([bscFault.slow(BSC_PATH.profile, 15_000, { ttlS: 1800 })]);
+    // press would rarely meet NeonBinder still waiting to hear the seller account (NEO-483). Hold the
+    // profile read for 15 s, for the first three reads only (`times: 3`), so later reads are not each
+    // held. The rule is set BEFORE the listing sign-in is saved on purpose: the sign-in's own profile
+    // read gives up after 5 s and tries twice, so those two reads time out (they take two of the three),
+    // the save stores no seller account, and the next read, the background one, is the third: held 15 s
+    // (under NeonBinder's 20 s read timeout, so it lands rather than fails). Set after the save the rule
+    // would never be used, because the sign-in would already have stored the account; `times: 1` would
+    // let the sign-in's second try answer at once with the same result.
+    // This makes the seller-account wait LIKELIER at the first press, not certain: that background read
+    // is armed 30 s after the save (0 s when a press finds no account) and the spec runs for a while
+    // before it presses, so the read may have landed first. Both orders stay legal, `expectRunOrSellerWait`
+    // reports which one ran (a `seller-wait` annotation), and everything after is asserted the same.
+    // This spec does NOT prove the wait copy; checklist-fetch-bounds-a-bsc-stall asserts it.
+    // A delay under the caller's own timeout is no failure to the call gate, so the spec stays in
+    // the ordinary shards. Teardown drops the rule.
+    await bscFake.setFaults([bscFault.slow(BSC_PATH.profile, 15_000, { times: 3, ttlS: 1800 })]);
 
     // --- 0. A box to stock, and every other box in-person BEFORE syncing starts -----------
     // A full page load, so the launch gate (cold app + Clerk handshake) applies.

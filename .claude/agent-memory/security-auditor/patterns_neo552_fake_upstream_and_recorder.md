@@ -15,4 +15,7 @@ Durable audit rules:
 4. **Probe "shapes only" outputs still leak data-as-keys.** A key filter of `^[A-Za-z_][A-Za-z0-9_$-]*$` passes a username or a hex id starting a-f. Seller/buyer endpoint shapes that go to a public GitHub artifact should be cut to the paths the parser reads (the comparator ignores the rest anyway).
 5. **Two sides must agree on the base-URL form** (root vs `/api`): a gate that refuses a path fails closed, which is safe but breaks every call; check the workflow that writes the env against the resolver.
 
+6. **A per-scope resource cap is only a cap when the caller cannot choose the scope.** The fake's hang cap (N held sockets per namespace) is bypassed by any caller that can open more namespaces; pair it with a process-wide ceiling.
+7. **"Confirm, then refetch" is a TOCTOU.** A recorder that confirms on one read of the to-do list and then re-reads it inside the session sends whatever was added in between (and, in watch mode, everything later) without a second look; the allowlist is the real bound, the prompt only covers the first snapshot. Pass the confirmed plan in, or re-confirm when the set grows.
+
 Related: [[patterns-cross-run-artifacts]], [[patterns-neo355-reverse-oidc-tokeninfo]], [[patterns-unauthenticated-probe-functions]].

@@ -56,6 +56,7 @@ function stubFetch(answer: () => Response = () => new Response("{}", { status: 2
 function recordingGate(overrides: Partial<BscCallGate> = {}) {
   const outcomes: Array<{ outcome: string; retryAfterMs?: number }> = [];
   const acquires: number[] = [];
+  const releases: BscGrant[] = [];
   const grant: BscGrant = { grantedAt: 1, reportOutcome: false, probe: false };
   const gate: BscCallGate = {
     async acquire(count) {
@@ -65,13 +66,16 @@ function recordingGate(overrides: Partial<BscCallGate> = {}) {
     async record(_grant, outcome, retryAfterMs) {
       outcomes.push({ outcome, ...(retryAfterMs !== undefined ? { retryAfterMs } : {}) });
     },
+    async release(g) {
+      releases.push(g);
+    },
     wantsSuccess: (g) => g.reportOutcome,
     async blockedUntil() {
       return null;
     },
     ...overrides,
   };
-  return { gate, outcomes, acquires };
+  return { gate, outcomes, acquires, releases };
 }
 
 const idToken = vi.fn(async (_audience: string) => "id-token");
@@ -314,6 +318,77 @@ describe("bscFetch", () => {
   });
 });
 
+describe("bscFetch: a probe with nothing to report hands its lease back", () => {
+  const PROBE: BscGrant = { grantedAt: 7, reportOutcome: true, probe: true };
+
+  test("the fake's 501 unrecorded releases the probe and reports nothing", async () => {
+    const { gate, outcomes, releases } = recordingGate();
+    stubFetch(() => new Response("", { status: 501, headers: { "x-nb-fake": "unrecorded" } }));
+    await bscFetch("a", {}, { idToken, pathTemplate: CARD_LISTING, gate, env: FAKE_ENV, grant: PROBE });
+    expect(outcomes).toEqual([]);
+    expect(releases).toEqual([PROBE]);
+  });
+
+  test("the fake's 503 loading is neutral too: no failure, and the probe is released", async () => {
+    const { gate, outcomes, releases } = recordingGate();
+    stubFetch(() => new Response("", { status: 503, headers: { "x-nb-fake": "loading", "Retry-After": "2" } }));
+    const res = await bscFetch("a", {}, { idToken, pathTemplate: CARD_LISTING, gate, env: FAKE_ENV, grant: PROBE });
+    expect(res.status).toBe(503);
+    expect(outcomes).toEqual([]);
+    expect(releases).toEqual([PROBE]);
+  });
+
+  test("a 503 without the fake's loading marker is still a failure", async () => {
+    const { gate, outcomes } = recordingGate();
+    stubFetch(() => new Response("", { status: 503, headers: { "x-nb-fake": "other" } }));
+    await bscFetch("a", {}, { idToken, pathTemplate: CARD_LISTING, gate, env: FAKE_ENV });
+    expect(outcomes).toEqual([{ outcome: "failure" }]);
+  });
+
+  test("a throw before sending (the ID token cannot be minted) releases the probe", async () => {
+    const { gate, outcomes, releases } = recordingGate();
+    const sent = stubFetch();
+    const failingMint = async (): Promise<string> => {
+      throw new Error("no token");
+    };
+    await expect(
+      bscFetch("a", {}, { idToken: failingMint, pathTemplate: CARD_LISTING, gate, env: FAKE_ENV, grant: PROBE }),
+    ).rejects.toThrow("no token");
+    expect(sent).toEqual([]);
+    expect(outcomes).toEqual([]);
+    expect(releases).toEqual([PROBE]);
+  });
+
+  test("a probe that reported (success, 429, failure, thrown fetch) is not released", async () => {
+    const { gate, releases } = recordingGate();
+    const opts = { idToken, pathTemplate: CARD_LISTING, gate, env: REAL_ENV, grant: PROBE };
+    stubFetch(() => new Response("{}", { status: 200 }));
+    await bscFetch("a", {}, opts);
+    stubFetch(() => new Response("", { status: 429 }));
+    await bscFetch("a", {}, opts);
+    stubFetch(() => new Response("", { status: 503 }));
+    await bscFetch("a", {}, opts);
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new TypeError("network"); }));
+    await expect(bscFetch("a", {}, opts)).rejects.toThrow("network");
+    expect(releases).toEqual([]);
+  });
+
+  test("an ordinary grant is never released, and a release that throws never fails the call", async () => {
+    const plain = recordingGate();
+    stubFetch(() => new Response("", { status: 501, headers: { "x-nb-fake": "unrecorded" } }));
+    await bscFetch("a", {}, { idToken, pathTemplate: CARD_LISTING, gate: plain.gate, env: FAKE_ENV });
+    expect(plain.releases).toEqual([]);
+
+    const broken = recordingGate({
+      async release() {
+        throw new Error("down");
+      },
+    });
+    const res = await bscFetch("a", {}, { idToken, pathTemplate: CARD_LISTING, gate: broken.gate, env: FAKE_ENV, grant: PROBE });
+    expect(res.status).toBe(501);
+  });
+});
+
 describe("bscGateRefusalResponse", () => {
   test("never answers a Retry-After below one second", () => {
     const res = bscGateRefusalResponse({ ok: false, reason: "probing", retryAt: 0 }, 10_000);
@@ -340,6 +415,17 @@ describe("fakeBscControlFetch", () => {
     expect(headersOf(sent[0]).get(FAKE_BSC_KEY_HEADER)).toBe("caller-key");
     expect(headersOf(sent[0]).get(FAKE_BSC_ID_TOKEN_HEADER)).toBe("Bearer id-token");
     expect(headersOf(sent[0]).get(FAKE_BSC_SIGNED_ID_TOKEN_HEADER)).toBe("id-token");
+  });
+
+  test("healthz is allowed (caller auth, the fake's origin), nothing near it is", async () => {
+    const sent = stubFetch();
+    await fakeBscControlFetch("healthz", { method: "GET" }, { idToken, env: FAKE_ENV });
+    expect(sent[0].url).toBe(`${FAKE_ROOT}/healthz`);
+    expect(headersOf(sent[0]).get(FAKE_BSC_KEY_HEADER)).toBe("caller-key");
+    for (const path of ["healthz/extra", "healthzz", "api/healthz"]) {
+      await expect(fakeBscControlFetch(path, { method: "GET" }, { idToken, env: FAKE_ENV })).rejects.toThrow(TypeError);
+    }
+    expect(sent).toHaveLength(1);
   });
 
   test("only __fake/ paths", async () => {

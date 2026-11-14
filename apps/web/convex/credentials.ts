@@ -17,6 +17,7 @@ import type { CredentialTestProperties } from "./observability";
 import { isPlatformPaused } from "./marketplacePause";
 import { ebayConfig, ebayConfigured } from "./lib/ebayEnv";
 import { withdrawOffer, type EbaySellerSession } from "./adapters/ebaySeller";
+import { fakeBscMode, fakeBscUsernameFor } from "./testing";
 import {
   isAbortTimeout,
   logMarketplaceLimiter,
@@ -761,6 +762,78 @@ export const getSiteCredentials = action({
 const TOKEN_REFRESH_LEEWAY_MS = 5 * 60 * 1000;
 
 /**
+ * NEO-552 — on a deployment wired to the fake BSC, every test user signs in
+ * as `nb+<convexSlug>-<userTag>@fake.invalid`, and the fake keeps that run's
+ * listings, orders and faults under the namespace in it. The browser service
+ * stores one BSC session per Clerk user, not per deployment, so when two
+ * deployments share a test user the later seed replaces the earlier one's
+ * session, and the earlier run's BSC calls would silently land in the other
+ * run's namespace.
+ *
+ * So, in fake mode only, a BSC session is used only when its stored username
+ * is this deployment's own (`fakeBscUsernameFor`). A clash refuses the token
+ * (the caller sees "no credentials", as for any missing session) and logs
+ * `fake_bsc_namespace_clash` naming both namespaces. Re-seeding the user on
+ * this deployment (`testing.seedMyTestCredentials`, which compares the same
+ * username) repairs it. It never re-seeds here: two runs sharing a user would
+ * then take the session back and forth, each corrupting the other.
+ *
+ * A match is remembered per user for {@link FAKE_SESSION_CHECK_TTL_MS}, so
+ * the extra metadata read costs one browser-service call per user per
+ * window, not one per BSC call.
+ */
+const FAKE_SESSION_CHECK_TTL_MS = 2 * 60_000;
+const fakeSessionCheckedAt = new Map<string, number>();
+
+/** Tests only: the match cache otherwise leaks across cases. */
+export function __resetFakeBscSessionCheck(): void {
+  fakeSessionCheckedAt.clear();
+}
+
+/** The namespace part of a fake sign-in (`nb+<ns>@fake.invalid`), for the log. */
+function fakeNamespaceOf(username: string): string {
+  const m = /^nb\+([a-z0-9-]{1,100})@fake\.invalid$/i.exec(username.trim());
+  return m ? m[1].toLowerCase() : "not-a-fake-account";
+}
+
+/**
+ * Null when the stored BSC session may be used on this deployment, else why
+ * not. Outside fake mode, or for another site, always null. An unreadable
+ * answer is not a clash (the token read then fails or succeeds on its own).
+ */
+async function fakeBscSessionClash(site: string, userId: string): Promise<string | null> {
+  if (site !== "buysportscards" || !fakeBscMode()) return null;
+  const key = credKey(site, userId);
+  const checkedAt = fakeSessionCheckedAt.get(key);
+  if (checkedAt !== undefined && Date.now() - checkedAt < FAKE_SESSION_CHECK_TTL_MS) return null;
+  let expected: string;
+  try {
+    expected = fakeBscUsernameFor(userId, process.env.CONVEX_CLOUD_URL);
+  } catch {
+    // No deployment slug: this deployment cannot name its own namespace, so
+    // no session can be proven its own. Fail closed.
+    return "this deployment has no CONVEX_CLOUD_URL to name its fake namespace";
+  }
+  const response = await browserFetch(`/credentials/${key}/metadata`, {
+    method: "GET",
+    headers: await browserAuthHeaders(),
+  });
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  const data = (await response.json().catch(() => null)) as { username?: unknown } | null;
+  const stored = typeof data?.username === "string" ? data.username : null;
+  if (stored === null) return null;
+  const norm = (value: string) => value.trim().toLowerCase();
+  if (norm(stored) === norm(expected)) {
+    fakeSessionCheckedAt.set(key, Date.now());
+    return null;
+  }
+  return `the stored BuySportsCards session belongs to namespace ${fakeNamespaceOf(stored)}, not this deployment's ${fakeNamespaceOf(expected)}: two deployments share this test user; re-seed it here`;
+}
+
+/**
  * Read the raw token + expiresAt from the browser service's secret store.
  * Internal helper for getSiteToken — does NOT trigger refresh.
  *
@@ -1032,6 +1105,14 @@ async function siteTokenFor(
   if (args.site === "ebay" && !ebayConfigured()) return null;
 
   try {
+    // NEO-552 — fake mode: never use another deployment's BSC session.
+    const clash = await fakeBscSessionClash(args.site, userId);
+    if (clash !== null) {
+      console.error(
+        JSON.stringify({ msg: "fake_bsc_namespace_clash", site: args.site, operation: "getSiteToken", reason: clash }),
+      );
+      return null;
+    }
     const cached = await readCachedToken(args.site, userId);
 
     if (cached === "not_found") {

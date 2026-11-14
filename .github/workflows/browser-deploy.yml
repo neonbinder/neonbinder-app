@@ -318,11 +318,26 @@ jobs:
           id_token_include_email: true
       # NEO-552: dev's BSC is the fake. Signs in with the fake's constant
       # credentials and asserts /health says bscTarget=fake. SportLots is real.
-      - name: BSC probe against the dev tagged URL (fake)
+      #
+      # A WARNING here, never a failure: this probe only proves our code against
+      # a test double (the PR preview probe already proved that before merge),
+      # and a broken or empty fake must never stop a production promotion. The
+      # real gate is the prod probe against real BSC below.
+      - id: dev-bsc-probe
+        name: BSC probe against the dev tagged URL (fake, warning only)
+        continue-on-error: true
         env:
           TARGET_URL: ${{ needs.deploy-dev.outputs.tagged_url }}
           PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" fake
+      - name: Report a failed fake-BSC probe as a warning
+        if: steps.dev-bsc-probe.outcome == 'failure'
+        run: |
+          echo "::warning::The dev fake-BSC probe failed (see the step above). Not blocking the release: it only exercises the test fake. Check the fake's recordings and health."
+          {
+            echo "### Dev fake-BSC probe failed (warning only)"
+            echo "The release continues; the prod probe against real BSC is the gate. Check the fake BSC's recordings and health (services/fake-bsc/README.md)."
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Run SportLots login suite against dev tagged URL
         working-directory: services/browser
         env:

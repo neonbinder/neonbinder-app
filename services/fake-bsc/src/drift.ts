@@ -166,6 +166,27 @@ function synthShape(which: Synth): Shape {
   }
 }
 
+/**
+ * The seller sheet's two root forms. bscSeller.ts `fetchBscSellerSheet`
+ * reads a bare array, or `{results: [...]}` "in case the seller route wraps
+ * it", and the probe may report either. Both are one answer to NB, so a
+ * wrapped probe is unwrapped to the bare form (`results` → root,
+ * `results[]...` → `[]...`) before it is compared; nothing else in a wrapped
+ * root is read by NB.
+ */
+export function unwrapSheetRoot(probe: Shape): Shape {
+  const root = probe[""] ?? [];
+  if (!root.includes("object") || !(probe["results"] ?? []).includes("array")) return probe;
+  const out: Shape = {};
+  for (const [p, ts] of Object.entries(probe)) {
+    if (p === "results") out[""] = ts;
+    else if (p.startsWith("results[]")) out[p.slice("results".length)] = ts;
+  }
+  // A root seen as both forms keeps its array side.
+  if (root.includes("array")) for (const [p, ts] of Object.entries(probe)) if (p.startsWith("[]") && !out[p]) out[p] = ts;
+  return out;
+}
+
 function readQuery(v: unknown): string | QueryPairs | Record<string, unknown> | undefined {
   if (typeof v === "string" || Array.isArray(v)) return v as string | QueryPairs;
   if (v && typeof v === "object") return v as Record<string, unknown>;
@@ -192,7 +213,8 @@ export function compareDrift(input: unknown, catalogue: Catalogue): { ok: true; 
     }
     if (target.kind === "synth") {
       const read = READ_PATHS[target.which];
-      const paths = compare(probe, synthShape(target.which), (p) => read.includes(p));
+      const asServed = target.which === "sheet" ? unwrapSheetRoot(probe) : probe;
+      const paths = compare(asServed, synthShape(target.which), (p) => read.includes(p));
       results.push({ endpoint: name, verdict: paths.length ? "shape_drift" : "ok", paths });
       continue;
     }

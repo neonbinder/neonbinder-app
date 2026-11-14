@@ -101,6 +101,26 @@ and lands on the namespace's miss list with the nearest recorded request's
 differing paths (`nearMiss.diffPaths`, never values). Anything the fake has no
 model for is listed as `needs-model` with its method and path template only.
 
+## First rollout
+
+Order matters. Until recordings exist, the dev and preview probes and every E2E
+BSC call answer 501 (unrecorded), so the first PR must not be pushed before
+step 7.
+
+1. Terraform: PR to `develop` in the infrastructure repo, then apply dev.
+2. Seed one version each of the two Secret Manager keys (`fake-bsc-caller-key`,
+   `fake-bsc-admin-key`) with random strings. Set the repo variables
+   `NEONBINDER_FAKE_BSC_URL` (the Terraform `fake_bsc_url` output) and
+   `FAKE_BSC_DEPLOY_ENABLED=true`.
+3. `workflow_dispatch` the "Fake BSC deploy" workflow from the branch.
+4. Deploy a fake-aware browser revision to the dev service (tagged, no traffic).
+5. Point a worktree Convex deployment at the fake.
+6. Run `setup` plus the BSC specs locally; the recorder loads their misses
+   (`--watch --prefix` during the run).
+7. Record the probe's pinned reads (the `probe-ci` namespace misses) and the
+   write captures (`recorder capture-write`, then `undo-write`).
+8. Only then push the PR.
+
 ## Recording the catalogue
 
 Only a person runs the recorder, on their own machine; never CI. It fetches
@@ -117,8 +137,10 @@ recorder trusts none of it: each miss must pass the request allowlist in
 only, no query string, hex card ids, 4 KB at most) or it is refused and
 reported by reason, never sent. Misses with no namespace and no prefix are
 skipped unless `--include-anon`. Before it reads a credential or contacts
-BSC, it prints how many requests it will send and waits for you to type
-`yes` on the terminal (`--yes` skips the question).
+BSC, it prints every request it will send (endpoint and facet slugs, or the
+card id) and waits for you to type `yes` on the terminal (`--yes` skips the
+question). A miss that turns up later, including each new `--watch` batch, is
+shown and asked about again before it is sent.
 
 Prerequisites:
 

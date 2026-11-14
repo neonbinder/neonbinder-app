@@ -4354,7 +4354,9 @@ export default defineSchema({
    *    (a 429, or a run of failures); `streak` counts openings with no success
    *    between them; `lastOpenedAt` is when the latest opened.
    *  - `consecutiveFailures` / `lastFailureAt`: the failure run.
-   *  - `probeLeaseUntil`: while half-open, the one probe's lease.
+   *  - `probeLeaseUntil` / `probeGrantedAt`: while half-open, the one
+   *    probe's lease and the grant that holds it (only that grant may hand it
+   *    back early).
    */
   marketplaceCallGates: defineTable({
     platform: v.literal("bsc"),
@@ -4368,6 +4370,7 @@ export default defineSchema({
     consecutiveFailures: v.number(),
     lastFailureAt: v.number(),
     probeLeaseUntil: v.optional(v.number()),
+    probeGrantedAt: v.optional(v.number()),
     updatedAt: v.number(),
   }).index("by_platform_scope", ["platform", "scope"]),
 

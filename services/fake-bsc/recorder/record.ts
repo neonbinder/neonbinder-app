@@ -57,11 +57,14 @@ export interface RecordDeps {
   /** True once the operator interrupted (Ctrl-C). */
   stopped?: () => boolean;
   /**
-   * Asked once, with the to-do count, before the first request goes to BSC.
-   * Missing or false: nothing is sent ("declined"). The CLI answers it with
-   * an interactive "yes" on the terminal, or `--yes`.
+   * Asked before any request not yet confirmed goes to BSC, with one line per
+   * new request (`describeRequest`). In `--watch` every new batch is asked
+   * again. Missing or false: nothing is sent ("declined"). The CLI answers it
+   * with an interactive "yes" on the terminal, or `--yes`.
    */
-  confirm?: (todo: number) => Promise<boolean>;
+  confirm?: (items: string[]) => Promise<boolean>;
+  /** Keys the operator already confirmed (the CLI's plan, shown before sign-in). */
+  confirmedKeys?: ReadonlySet<string>;
   /** Replay misses with no namespace and no prefix too (`--include-anon`). Off by default. */
   includeAnon?: boolean;
   report?: (line: string) => void;
@@ -103,6 +106,21 @@ export function replayable(m: MissEntry): { ok: true; req: CanonicalRequest } | 
 export function fetchableRequest(m: MissEntry): CanonicalRequest | null {
   const r = replayable(m);
   return r.ok ? r.req : null;
+}
+
+/**
+ * One line for the operator, per request: the endpoint and the facet slugs,
+ * or the card id. Only for requests that passed the allowlist, so every
+ * printed value is a slug or hex (no control characters reach the terminal).
+ */
+export function describeRequest(req: CanonicalRequest): string {
+  const endpoint = catalogueEndpointFor(req.method, req.path);
+  if (endpoint === "cardListing") return `cardListing ${req.path.split("/")[2]}`;
+  const body = (req.body ?? {}) as { filters?: Record<string, string[]> };
+  const facets = Object.entries(body.filters ?? {})
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => `${k}=${v.join(",")}`);
+  return `${endpoint ?? "?"} ${facets.length ? facets.join(" ") : "(no filters)"}`;
 }
 
 /** A miss is anonymous when it names neither a namespace nor a deployment prefix. */
@@ -161,7 +179,7 @@ export async function runRecordSession(deps: RecordDeps): Promise<RecordResult> 
   const needsModel = new Set<string>();
   const refused = new Set<string>();
   const anonKeys = new Set<string>();
-  let confirmed = false;
+  const confirmed = new Set<string>(deps.confirmedKeys ?? []);
   let sent = 0;
   let recorded = 0;
   let lastSentAt = -Infinity;
@@ -186,10 +204,14 @@ export async function runRecordSession(deps: RecordDeps): Promise<RecordResult> 
     for (const m of misses) if (isAnonymous(m) && !deps.includeAnon && m.kind !== "needs-model") anonKeys.add(m.key);
     const todo = plan.todo;
 
-    if (!confirmed && todo.length > 0) {
-      report(`${todo.length} request(s) to send to real BSC now (at most ${max} this session)`);
-      if (!deps.confirm || !(await deps.confirm(todo.length))) return finish("declined");
-      confirmed = true;
+    // Nothing goes out that the operator has not seen: a request missing
+    // from the confirmed set (added since the plan, or by --watch) is asked
+    // about again, as a batch, before anything in this pass is sent.
+    const fresh = todo.filter((t) => !confirmed.has(t.key));
+    if (fresh.length > 0) {
+      report(`${fresh.length} new request(s) to send to real BSC (at most ${max} this session):`);
+      if (!deps.confirm || !(await deps.confirm(fresh.map((t) => describeRequest(t.req))))) return finish("declined");
+      for (const t of fresh) confirmed.add(t.key);
     }
 
     for (const { key, req } of todo) {

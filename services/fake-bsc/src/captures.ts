@@ -105,4 +105,13 @@ export class Captures {
   list(): WriteCapture[] {
     return [...this.latest.values()];
   }
+
+  /**
+   * The write endpoints the specs drive that have no stored capture. Empty
+   * once `recorder capture-write` has run for each. Without a capture the
+   * fake's synthesised write answer is checked against nothing.
+   */
+  missing(): WriteEndpoint[] {
+    return (Object.keys(WRITE_ENDPOINTS) as WriteEndpoint[]).filter((e) => !this.latest.has(e));
+  }
 }

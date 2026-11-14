@@ -33,8 +33,10 @@
 //
 
 // WHAT IT PROVES, IN ORDER:
-//   1. The fetch lands within 7 s of our own time plus any seconds the screen
-//      says it is "Waiting on BuySportsCards..." (`expectAfterMarketplace`). The
+//   1. The screen says "Waiting on BuySportsCards..." after the Sync click (asserted,
+//      axe runs while it shows) and the line is gone once the fetch lands. The fetch
+//      lands within 7 s of our own time plus any seconds that line is up
+//      (`expectAfterMarketplace`). The
 //      three hung cards hold the screen for about ten seconds (NeonBinder's 5 s
 //      timeout, a short pause, one retry), all of it BSC's: a stall retried card
 //      by card would blow the budget with our own time. The result line then says the
@@ -67,7 +69,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { editCardButton } from "../../support/cards";
-import { bscLookupOutcome, expectAfterMarketplace } from "../../support/marketplace-wait";
+import { bscLookupOutcome, expectAfterMarketplace, waitingOn } from "../../support/marketplace-wait";
 import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
 import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
@@ -100,10 +102,17 @@ test(
     // The fake never answers the three stalled cards (its rules last 10 minutes at most, and teardown drops them).
     await bscFake.setFaults(STALL_IDS.map((cardId) => bscFault.hangs(BSC_PATH.cardListing, { cardId, ttlS: 600 })));
     await syncChecklistButton(page).click();
+    // The three hung cards hold the screen for about ten seconds (a 5 s timeout, a pause, one retry), so
+    // the product's own wait line is on screen for certain: this is the live proof of the wait copy.
+    // The line mounts after 1.5 s of waiting, within the 7 s budget.
+    await expect(waitingOn(page, "BuySportsCards")).toBeVisible();
+    await expectAccessible(page, { label: "Checklist fetch waiting on BuySportsCards during a stall" });
     await expectAfterMarketplace(page, page.getByText(new RegExp(`Kept all ${CARDS} cards from BSC`)), {
       platform: "BuySportsCards",
       what: "the fetch's kept-cards line",
     });
+    // The fetch landed, so the wait line is gone (a positive, the kept-cards line, came first).
+    await expect(waitingOn(page, "BuySportsCards")).toHaveCount(0);
     await expectTeamsFromChecklist(page, facts);
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();

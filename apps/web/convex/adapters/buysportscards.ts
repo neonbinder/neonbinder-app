@@ -71,7 +71,8 @@ import {
   logMarketplaceLimiter,
   type FetchFailure,
 } from "../lib/marketplaceFetchFailure";
-import { bscFetch, bscHeaders, type BscCallGate, type BscGrant } from "../lib/bscHttp";
+import { bscFetch, bscHeaders, isBscBreakerRefusal, type BscCallGate, type BscGrant } from "../lib/bscHttp";
+import { bscPacedCatalogueMessage, pacedRetryAfterS } from "../lib/bscPacedCopy";
 // NEO-552 — every BSC call goes through `bscFetch` and the deployment-wide
 // call gate (breaker + token bucket); fake mode carries a Google ID token.
 import { bscCallGateFor } from "../bscCallGate";
@@ -599,8 +600,11 @@ export const fetchBscSelectorOptions = action({
             break;
           }
 
-          // Non-ok: decide retry vs. permanent failure by status.
-          const retryableStatus = resp.status >= 500;
+          // Non-ok: decide retry vs. permanent failure by status. NEO-552:
+          // our own call gate's refusal (a 503 when the gate itself could not
+          // be read) is never retried: BSC was not asked, and asking the gate
+          // again inside 1.5 s gets the same answer.
+          const retryableStatus = resp.status >= 500 && !isBscBreakerRefusal(resp);
           if (!retryableStatus) {
             // Any 4xx, 429 included (NEO-552) — won't improve on retry. Keep
             // the response and break so the non-ok handler below records it.
@@ -661,6 +665,32 @@ export const fetchBscSelectorOptions = action({
 
       // After the loop `response` is always set: either a 2xx (success) or a
       // permanent non-retryable status that broke out early.
+      if (response && isBscBreakerRefusal(response)) {
+        // NEO-552: NB's own call gate held this back, unsent. Say so in NB's
+        // words (the dialog shows `message` as written), never "BSC API 429".
+        await response.text().catch(() => "");
+        await recordAdapterCall(ctx, {
+          requestId,
+          operation: "fetchBscSelectorOptions",
+          platform: "bsc",
+          level: args.level,
+          parentSport: args.parentFilters.sport,
+          parentYear: args.parentFilters.year,
+          parentSetName: args.parentFilters.setName,
+          duration_ms: Date.now() - start,
+          token_ms: tokenMs,
+          filters_call_ms: filtersCallMs,
+          success: false,
+          stage: "marketplace_fetch",
+          attempt,
+          error_class: "paced",
+        });
+        return {
+          success: false,
+          options: [],
+          message: bscPacedCatalogueMessage(pacedRetryAfterS(response.headers)),
+        };
+      }
       if (!response || !response.ok) {
         const status = response?.status ?? statusCode;
         const errText = response ? await response.text().catch(() => "") : "";
@@ -1576,6 +1606,20 @@ async function bscChecklistWithSession(
       }
     }
 
+    if (isBscBreakerRefusal(response)) {
+      // NEO-552: NB's own call gate held this back, unsent. Its own kind, so
+      // the operator reads that we are pacing ourselves, not that BSC failed.
+      await response.text().catch(() => "");
+      return {
+        ok: false,
+        message: bscPacedCatalogueMessage(pacedRetryAfterS(response.headers)),
+        failure: {
+          kind: "paced",
+          timedOut: false,
+          ...(reauthAttempted ? { reauthAttempted: true } : {}),
+        },
+      };
+    }
     if (!response.ok) {
       await response.text().catch(() => "");
       // A second 401, after a re-auth that said it worked, is still BSC

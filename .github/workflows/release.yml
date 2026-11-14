@@ -171,9 +171,10 @@ jobs:
 
   # NEO-552: the fake BuySportsCards (dev only) deploys FIRST. The dev browser
   # service and every preview point at it, so it must serve the new shape
-  # before the browser lane's dev probe talks to it. A failed or cancelled fake
-  # deploy stops the browser and web lanes below; a skipped one (nothing under
-  # services/fake-bsc changed) does not.
+  # before the browser lane's dev probe talks to it. Ordering only: a dev-only
+  # test double must NEVER gate a production release, so the browser and web
+  # lanes run whatever this job's result. A failed fake deploy still turns the
+  # run red and `notify` still reports it (it is in notify's needs).
   fake-bsc:
     name: Fake BSC (dev)
     needs: [changes, preflight]
@@ -194,8 +195,6 @@ jobs:
       && needs.changes.outputs.browser == 'true'
       && needs.changes.result == 'success'
       && needs.preflight.result == 'success'
-      && needs.fake-bsc.result != 'failure'
-      && needs.fake-bsc.result != 'cancelled'
     uses: ./.github/workflows/browser-deploy.yml
     secrets: inherit
     permissions:
@@ -235,8 +234,6 @@ jobs:
       always()
       && needs.changes.result == 'success'
       && needs.preflight.result == 'success'
-      && needs.fake-bsc.result != 'failure'
-      && needs.fake-bsc.result != 'cancelled'
       && needs.browser.result != 'failure'
       && needs.browser.result != 'cancelled'
       && needs.preprocess.result != 'failure'

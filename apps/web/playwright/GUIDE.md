@@ -683,7 +683,7 @@ this before diagnosing anything that touches BSC:
   injects one must be the only user of the cards it names. Never write a spec
   that waits for BSC to be slow, and never add a deployment switch for a fault.
 - **Convex has ONE BSC call gate per deployment** (`convex/bscCallGate.ts`: a
-  breaker and a token bucket). A 429 opens it at once (honouring `Retry-After`);
+  breaker, plus a token bucket that is not applied against the fake, so there is no rate cap). A 429 opens it at once (honouring `Retry-After`);
   five consecutive 5xx, timeouts or dropped connections open it too; while it is
   open every caller on the deployment is refused without a request. So a fault of
   kind `429`, `503`, `hang` or `reset` stops every shard's BSC calls. **Such a
@@ -714,9 +714,13 @@ this before diagnosing anything that touches BSC:
   account in the background and holds a run until it lands (see "The seller
   account" below). The fake answers the profile at once, so a seller spec that
   wants to meet the wait holds the read with `bscFault.slow(BSC_PATH.profile, ...)`
-  (shorter than the 20 s read timeout), as the two BSC listing specs do. The wait
-  is made likelier, not guaranteed: both orders stay legal and end in the same
-  hard asserts.
+  (shorter than the 20 s read timeout, `times: 3` and set BEFORE the sign-in is saved,
+  because the sign-in's own two 5 s reads are the first two), as the two BSC listing
+  specs do. The wait is made likelier, not guaranteed (the background read is armed
+  30 s after the save and those specs press minutes later): both orders stay legal and
+  end in the same hard asserts. The wait copy itself ("Waiting on BuySportsCards"
+  while a call is outstanding) is proved deterministically by the stall spec, whose
+  hung lookups hold the screen for about ten seconds.
 
 **A listing-on BSC seed is one store (NEO-483).** `/testing/seed-credentials?sites=buysportscards&listing=on`
 (`saveBscSignIn(page, { listing: true })`) saves the sign-in once and returns:

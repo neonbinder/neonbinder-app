@@ -16,7 +16,7 @@
  */
 import { v } from "convex/values";
 import { internalAction } from "./_generated/server";
-import { fakeBscControlFetch, resolveBscTarget } from "./lib/bscHttp";
+import { BscConfigError, fakeBscControlFetch, resolveBscTarget } from "./lib/bscHttp";
 import {
   fakeBscFaultRuleValidator,
   fakeBscOrderValidator,
@@ -24,8 +24,71 @@ import {
 } from "./testing";
 import { idTokenExpiresAt, nodeBscIdToken } from "./lib/bscFakeIdToken";
 
-/** Per control call: the fake is in-memory and answers at once. */
-const CONTROL_TIMEOUT_MS = 10_000;
+/**
+ * Per control attempt. The fake answers at once once warm, but a cold start
+ * (a new instance, recordings still loading) can take most of this.
+ */
+export const CONTROL_TIMEOUT_MS = 30_000;
+/** One retry, on a network error or a 503 (a cold or loading fake); never on a timeout. */
+const CONTROL_ATTEMPTS = 2;
+/** The pause before the retry: the fake's Retry-After, within these bounds. */
+const CONTROL_RETRY_DEFAULT_MS = 1_000;
+const CONTROL_RETRY_MAX_MS = 5_000;
+
+/** How the control retry pauses; a test replaces `sleep`. */
+export const fakeBscControlClock = {
+  sleep: (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms)),
+};
+
+/** A throw worth one retry: not our own refusal, not the per-attempt timeout. */
+function retryableThrow(error: unknown): boolean {
+  if (error instanceof BscConfigError) return false;
+  const name = error instanceof Error ? error.name : "";
+  return name !== "TimeoutError" && name !== "AbortError";
+}
+
+function retryPauseMs(res: Response | null): number {
+  const raw = res?.headers.get("retry-after");
+  const seconds = raw !== null && raw !== undefined ? Number(raw) : NaN;
+  if (!Number.isFinite(seconds) || seconds < 0) return CONTROL_RETRY_DEFAULT_MS;
+  return Math.min(seconds * 1000, CONTROL_RETRY_MAX_MS);
+}
+
+/**
+ * A control call to the fake (`__fake/...`, never `/api`, which goes
+ * through `bscFetch` and the gate): at most two attempts, the second only
+ * after a network error or a 503. Null outside fake mode, sending nothing.
+ * Throws what the last attempt threw. Logs route, status and timing only.
+ */
+async function controlFetch(path: string, route: string, init: () => RequestInit): Promise<Response | null> {
+  for (let attempt = 1; ; attempt += 1) {
+    const startedAt = Date.now();
+    let res: Response | null;
+    try {
+      res = await fakeBscControlFetch(
+        path,
+        { ...init(), signal: AbortSignal.timeout(CONTROL_TIMEOUT_MS) },
+        { idToken: nodeBscIdToken },
+      );
+    } catch (error) {
+      logControl(route, startedAt, undefined, error, attempt);
+      if (attempt < CONTROL_ATTEMPTS && retryableThrow(error)) {
+        await fakeBscControlClock.sleep(CONTROL_RETRY_DEFAULT_MS);
+        continue;
+      }
+      throw error;
+    }
+    if (res === null) return null;
+    logControl(route, startedAt, res.status, undefined, attempt);
+    if (res.status === 503 && attempt < CONTROL_ATTEMPTS) {
+      const pause = retryPauseMs(res);
+      await res.body?.cancel().catch(() => undefined);
+      await fakeBscControlClock.sleep(pause);
+      continue;
+    }
+    return res;
+  }
+}
 /** The most miss entries returned; the fake's list can be long. */
 const MAX_MISSES = 500;
 
@@ -61,35 +124,29 @@ type ControlResult =
 
 /** POSTs `body` to `__fake/<route>`; no-op outside fake mode. Logs route, status and timing only. */
 async function control(route: string, body: unknown): Promise<ControlResult> {
-  const startedAt = Date.now();
+  const payload = JSON.stringify(body);
   let res: Response | null;
   try {
-    res = await fakeBscControlFetch(
-      `__fake/${route}`,
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(CONTROL_TIMEOUT_MS),
-      },
-      { idToken: nodeBscIdToken },
-    );
+    res = await controlFetch(`__fake/${route}`, route, () => ({
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: payload,
+    }));
   } catch (error) {
-    logControl(route, startedAt, undefined, error);
     return { ok: false, error: error instanceof Error ? error.name : "unknown" };
   }
   if (res === null) return { ok: true, skipped: true };
   await res.body?.cancel().catch(() => undefined);
-  logControl(route, startedAt, res.status);
   return res.ok ? { ok: true, skipped: false } : { ok: false, status: res.status, error: "http" };
 }
 
-function logControl(route: string, startedAt: number, status?: number, error?: unknown): void {
+function logControl(route: string, startedAt: number, status?: number, error?: unknown, attempt = 1): void {
   console.log(
     JSON.stringify({
       msg: "fake_bsc_control",
       platform: "bsc",
       operation: route,
+      attempt,
       ...(status !== undefined ? { status } : {}),
       ...(error !== undefined ? { error: error instanceof Error ? error.name : "unknown" } : {}),
       ms: Date.now() - startedAt,
@@ -209,20 +266,13 @@ type MissesResult =
 
 /** GETs `__fake/misses?<query>`; skipped outside fake mode. Caller auth only (no admin key). */
 async function fetchMisses(query: string): Promise<MissesResult> {
-  const startedAt = Date.now();
   let res: Response | null;
   try {
-    res = await fakeBscControlFetch(
-      `__fake/misses?${query}`,
-      { method: "GET", signal: AbortSignal.timeout(CONTROL_TIMEOUT_MS) },
-      { idToken: nodeBscIdToken },
-    );
+    res = await controlFetch(`__fake/misses?${query}`, "misses", () => ({ method: "GET" }));
   } catch (error) {
-    logControl("misses", startedAt, undefined, error);
     return { ok: false, error: error instanceof Error ? error.name : "unknown" };
   }
   if (res === null) return { ok: true, skipped: true, misses: [] };
-  logControl("misses", startedAt, res.status);
   if (!res.ok) {
     await res.body?.cancel().catch(() => undefined);
     return { ok: false, status: res.status, error: "http" };
@@ -255,5 +305,51 @@ export const reportMisses = internalAction({
     const prefix = ownPrefix();
     if (prefix === null) return { ok: false, error: "prefix refused" };
     return await fetchMisses(`prefix=${encodeURIComponent(prefix)}`);
+  },
+});
+
+/** The write endpoints named in the fake's `/healthz`, narrowed: fixed vocabulary only. */
+export function narrowMissingCaptures(body: unknown): string[] | null {
+  const wc = typeof body === "object" && body !== null ? (body as { writeCaptures?: unknown }).writeCaptures : undefined;
+  const missing = typeof wc === "object" && wc !== null ? (wc as { missing?: unknown }).missing : undefined;
+  if (!Array.isArray(missing)) return null;
+  return missing
+    .filter((m): m is string => typeof m === "string" && /^[A-Z]{3,7} [A-Za-z0-9/_.:-]{1,128}$/.test(m))
+    .slice(0, 20);
+}
+
+const writeCapturesResult = v.union(
+  v.object({ ok: v.literal(true), skipped: v.boolean(), missing: v.array(v.string()) }),
+  v.object({ ok: v.literal(false), status: v.optional(v.number()), error: v.string() }),
+);
+type WriteCapturesResult =
+  | { ok: true; skipped: boolean; missing: string[] }
+  | { ok: false; status?: number; error: string };
+
+/**
+ * Which BSC write endpoints the fake has no real capture for
+ * (`/healthz` `writeCaptures.missing`; CONTRACT.md, "Write capture"). CI runs
+ * it with the preview deploy key before seeding (`npx convex run
+ * fakeBsc:writeCaptureStatus`) and fails when `missing` is not empty. Skipped
+ * outside fake mode. A health body without the field is an error, never "none missing".
+ */
+export const writeCaptureStatus = internalAction({
+  args: {},
+  returns: writeCapturesResult,
+  handler: async (): Promise<WriteCapturesResult> => {
+    let res: Response | null;
+    try {
+      res = await controlFetch("healthz", "healthz", () => ({ method: "GET" }));
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.name : "unknown" };
+    }
+    if (res === null) return { ok: true, skipped: true, missing: [] };
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => undefined);
+      return { ok: false, status: res.status, error: "http" };
+    }
+    const missing = narrowMissingCaptures(await res.json().catch(() => null));
+    if (missing === null) return { ok: false, error: "health answer has no writeCaptures" };
+    return { ok: true, skipped: false, missing };
   },
 });

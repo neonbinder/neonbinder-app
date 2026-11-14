@@ -3245,6 +3245,7 @@ describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () =
     ["bscCallGate.ts", "acquire", "internalMutation"],
     ["bscCallGate.ts", "recordOutcome", "internalMutation"],
     ["bscCallGate.ts", "state", "internalQuery"],
+    ["bscCallGate.ts", "releaseProbe", "internalMutation"],
     ["bscCallGate.ts", "clearForTesting", "internalMutation"],
     // NEO-552 — the fake BSC's controls and its ID token.
     ["fakeBsc.ts", "idToken", "internalAction"],
@@ -3254,6 +3255,7 @@ describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () =
     ["fakeBsc.ts", "addOrder", "internalAction"],
     ["fakeBsc.ts", "misses", "internalAction"],
     ["fakeBsc.ts", "reportMisses", "internalAction"],
+    ["fakeBsc.ts", "writeCaptureStatus", "internalAction"],
     ["bscTeamPool.ts", "enqueueBscTeamChecks", "internalMutation"],
     ["bscTeamPool.ts", "cancelAllBscTeamChecks", "internalMutation"],
     ["checklistCandidates.ts", "resolveChecklistTeamTexts", "internalQuery"],

@@ -604,6 +604,175 @@ describe("faults and resets", () => {
   });
 });
 
+describe("process-wide cap on held sockets", () => {
+  // `delay` waits on a gate the test opens, so delayed sockets stay held.
+  let fake;
+  let gates;
+  before(async () => {
+    gates = [];
+    fake = await startFake({ sleep: () => new Promise((r) => gates.push(r)) });
+  });
+  after(() => fake.close());
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+  const profile = (bsc, signal) =>
+    fetch(`${fake.base}/api/marketplace/user/profile`, { headers: fake.headers(CALLER, { bsc }), signal }).then(
+      (r) => r.status,
+      () => "aborted",
+    );
+
+  const match = { method: "GET", pathTemplate: "marketplace/user/profile" };
+  const setRule = (ns, kind) =>
+    fake.call("POST", "/__fake/faults", { body: { ns, rules: [{ match, kind, ...(kind === "delay" ? { delayMs: 1000 } : {}) }] } });
+  const settle = async (want) => {
+    for (let i = 0; i < 50 && gates.length < want; i++) await wait(20);
+    assert.equal(gates.length, want);
+  };
+
+  it("caps: 4 hangs and 24 delays per scope, 64 held in all", () => {
+    const { MAX_HUNG_PER_SCOPE, MAX_DELAYED_PER_SCOPE, MAX_HELD_SOCKETS } = require("../dist/src/faults.js");
+    assert.deepEqual([MAX_HUNG_PER_SCOPE, MAX_DELAYED_PER_SCOPE, MAX_HELD_SOCKETS], [4, 24, 64]);
+  });
+
+  it("lets a wave of 10 delays in one namespace through (bscFault.slow), and refuses the 25th", async () => {
+    await setRule("slow-wave-w1", "delay");
+    const wave = Array.from({ length: 10 }, () => profile("tok-slow-wave-w1"));
+    await settle(10);
+    for (const g of gates.splice(0)) g();
+    assert.deepEqual(await Promise.all(wave), Array(10).fill(200));
+    const held = Array.from({ length: 24 }, () => profile("tok-slow-wave-w1"));
+    await settle(24);
+    assert.equal(await profile("tok-slow-wave-w1"), 503);
+    for (const g of gates.splice(0)) g();
+    assert.deepEqual(await Promise.all(held), Array(24).fill(200));
+  });
+
+  it("holds at most 64 hung or delayed sockets in all, whatever scopes a caller picks", async () => {
+    // 24 + 24 + 12 delays and 4 hangs: 64 held across four scopes.
+    for (const ns of ["cap-scope-w1", "cap-scope-w2", "cap-scope-w3"]) await setRule(ns, "delay");
+    await setRule("cap-scope-w4", "hang");
+    await setRule("cap-scope-w5", "delay");
+    await setRule("cap-scope-w6", "hang");
+    const ctl = new AbortController();
+    const delayed = [];
+    for (const [ns, n] of [["cap-scope-w1", 24], ["cap-scope-w2", 24], ["cap-scope-w3", 12]]) for (let k = 0; k < n; k++) delayed.push(profile(`tok-${ns}`));
+    const hung = Array.from({ length: 4 }, () => profile("tok-cap-scope-w4", ctl.signal));
+    await settle(60);
+    await wait(100);
+    // Fresh scopes, each under its own per-scope cap, are refused: the process is full.
+    assert.equal(await profile("tok-cap-scope-w5"), 503);
+    assert.equal(await profile("tok-cap-scope-w6"), 503);
+    // A delay finishing frees its socket for the next one.
+    gates.shift()();
+    await settle(59);
+    const next = profile("tok-cap-scope-w5");
+    await settle(60);
+    assert.equal(await profile("tok-cap-scope-w5"), 503);
+    ctl.abort();
+    for (const g of gates.splice(0)) g();
+    assert.equal(await next, 200);
+    assert.ok((await Promise.all(delayed)).every((r) => r === 200), "the delays answered");
+    assert.ok((await Promise.all(hung)).every((r) => r === "aborted"), "the hangs never answered");
+  });
+});
+
+describe("cold start: listening before the recordings are in", () => {
+  // Built by hand (not startFake) to control the loading flag and its promise.
+  const servers = [];
+  const startCold = async ({ loadWaitMs } = {}) => {
+    const h = await import("./helpers.mjs");
+    h.setLogSink(() => {});
+    const cold = { loading: true };
+    cold.loaded = new Promise((r) => (cold.finish = () => ((cold.loading = false), r())));
+    const app = h.createApp({
+      config: h.testConfig(),
+      catalogue: new h.Catalogue(new h.MemoryStore()),
+      captures: new h.Captures(new h.MemoryStore()),
+      state: new h.StateStore(),
+      identity: h.stubIdentity(),
+      verifyIdToken: h.stubVerifier,
+      instanceId: "cold",
+      loading: () => cold.loading,
+      loaded: cold.loaded,
+      ...(loadWaitMs !== undefined ? { loadWaitMs } : {}),
+    });
+    const server = await new Promise((resolve) => {
+      const s = app.listen(0, "127.0.0.1", () => resolve(s));
+    });
+    servers.push(server);
+    const base = `http://127.0.0.1:${server.address().port}`;
+    cold.call = async (method, p, { body, admin = false, bsc } = {}) => {
+      const headers = { "x-nb-fake-bsc-key": CALLER_KEY, "x-nb-fake-id-token": idToken(admin ? LOADER : CALLER) };
+      if (admin) headers["x-nb-fake-bsc-admin-key"] = ADMIN_KEY;
+      if (bsc) headers.authorization = `Bearer ${bsc}`;
+      if (body !== undefined) headers["content-type"] = "application/json";
+      const r = await fetch(`${base}${p}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
+      const text = await r.text();
+      return { status: r.status, headers: r.headers, body: text ? JSON.parse(text) : null };
+    };
+    cold.base = base;
+    return cold;
+  };
+  after(() => Promise.all(servers.map((s) => new Promise((r) => s.close(r)))));
+  const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  it("holds /api and the miss list until loaded, then answers them normally", async () => {
+    const cold = await startCold();
+    assert.equal((await cold.call("GET", "/healthz")).body.loading, true);
+    const settled = [];
+    const track = (name, p) => p.then((r) => (settled.push(name), r));
+    const held = [
+      track("profile", cold.call("GET", "/api/marketplace/user/profile", { bsc: BSC })),
+      track("filters", cold.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body: { filters: {} } })),
+      track("misses", cold.call("GET", "/__fake/misses?prefix=happy-cat-")),
+    ];
+    await wait(200);
+    assert.deepEqual(settled, [], "nothing answers while loading");
+    cold.finish();
+    const [profile, filters, misses] = await Promise.all(held);
+    assert.equal(profile.status, 200);
+    assert.equal(filters.status, 501, "an unrecorded catalogue request is a miss, not a loading 503");
+    assert.equal(filters.headers.get("x-nb-fake"), "unrecorded");
+    assert.equal(misses.status, 200);
+    // Read again: the held read may have run before the held filters call recorded its miss.
+    assert.equal((await cold.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses.length, 1);
+    assert.equal((await cold.call("GET", "/healthz")).body.loading, false);
+  });
+
+  it("refuses admin uploads at once while loading; run controls work at once", async () => {
+    const cold = await startCold();
+    for (const [p, body] of [
+      ["/__fake/recordings", { recordings: [] }],
+      ["/__fake/write-captures", {}],
+      ["/__fake/drift-compare", { shapes: {} }],
+    ]) {
+      const r = await cold.call("POST", p, { admin: true, body });
+      assert.equal(r.status, 503, p);
+      assert.equal(r.headers.get("x-nb-fake"), "loading", p);
+      assert.equal(r.headers.get("retry-after"), "2", p);
+    }
+    assert.equal((await cold.call("POST", "/__fake/reset", { body: { prefix: "happy-cat-" } })).status, 200);
+    assert.equal((await cold.call("POST", "/__fake/faults", { body: { ns: NS, rules: [{ match: { method: "GET", pathTemplate: "x" }, kind: "429" }] } })).status, 200);
+    assert.equal((await cold.call("POST", "/__fake/orders", { body: { ns: NS, order: { items: [{ cardId: "c1", condition: "near_mint", quantity: 1 }] } } })).status, 200);
+    // Auth still comes first: no key, no hold.
+    assert.equal((await fetch(`${cold.base}/api/marketplace/user/profile`)).status, 401);
+    cold.finish();
+  });
+
+  it("answers 503 loading only after the hold runs out", async () => {
+    const { LOAD_WAIT_MS } = require("../dist/src/app.js");
+    assert.equal(LOAD_WAIT_MS, 25_000);
+    const cold = await startCold({ loadWaitMs: 150 });
+    const started = Date.now();
+    const r = await cold.call("GET", "/api/marketplace/user/profile", { bsc: BSC });
+    assert.ok(Date.now() - started >= 140, "held for the wait first");
+    assert.equal(r.status, 503);
+    assert.equal(r.headers.get("x-nb-fake"), "loading");
+    assert.equal(r.headers.get("retry-after"), "2");
+    assert.equal((await cold.call("GET", "/__fake/misses?prefix=happy-cat-")).status, 503);
+    cold.finish();
+  });
+});
+
 describe("write captures", () => {
   let fake;
   before(async () => (fake = await startFake()));
@@ -630,6 +799,37 @@ describe("write captures", () => {
     assert.equal((await fake.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint: "DELETE everything", status: 200, shape: {} } })).status, 400);
     assert.equal((await fake.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint: "PUT seller/bulk-upload", status: 200, shape: { objectKey: "a value" } } })).status, 400);
     assert.equal((await fake.call("POST", "/__fake/write-captures", { body: { endpoint: "PUT seller/bulk-upload", status: 200, shape: {} } })).status, 403);
+  });
+
+  it("reports the write endpoints with no capture on /healthz, until each has one", async () => {
+    const fresh = await startFake();
+    try {
+      const both = ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"];
+      const before = (await fresh.call("GET", "/healthz")).body;
+      assert.deepEqual(before.writeCaptures, { missing: both });
+
+      await fresh.call("POST", "/__fake/write-captures", {
+        email: LOADER,
+        admin: true,
+        body: { endpoint: "PUT seller/bulk-upload", status: 200, shape: shapeOf([{ productId: "p" }]) },
+      });
+      assert.deepEqual((await fresh.call("GET", "/healthz")).body.writeCaptures, { missing: [both[1]] });
+
+      await fresh.call("POST", "/__fake/write-captures", {
+        email: LOADER,
+        admin: true,
+        body: { endpoint: both[1], status: 200, shape: shapeOf({ objectKey: "x" }) },
+      });
+      assert.deepEqual((await fresh.call("GET", "/healthz")).body.writeCaptures, { missing: [] });
+    } finally {
+      await fresh.close();
+    }
+  });
+
+  it("holds a stored capture for BOTH write endpoints the specs drive (a missing one is not a pass)", async () => {
+    // The test below judges only the captures that exist, so with none stored
+    // it passes without judging anything. This is the explicit check.
+    assert.deepEqual(fake.captures.missing(), [], `no stored capture for: ${fake.captures.missing().join(", ")}; run \`recorder capture-write\``);
   });
 
   it("synthesis matches the latest stored capture for every write endpoint that has one", async () => {
@@ -739,6 +939,15 @@ describe("drift-compare", () => {
     delete moved["[].card.id"];
     const r = await probe({ "seller/bulk-upload/results": moved });
     assert.deepEqual(r.body.endpoints[0].paths, ["[].availableQuantity", "[].card.id"]);
+    // The wrapped root form `{results: [...]}`, which NB also reads: no drift.
+    const wrap = (shape) => Object.fromEntries([["$", "object"], ...Object.entries(shape).map(([p, t]) => [p === "$" ? "results" : `results${p}`, t])]);
+    const wrapped = await probe({ "seller/bulk-upload/results": wrap(sheet) });
+    assert.equal(wrapped.body.outcome, "ok", JSON.stringify(wrapped.body));
+    // ...and a real change inside the wrapped form is still drift, named in the bare form.
+    const wrappedMoved = await probe({ "seller/bulk-upload/results": wrap(moved) });
+    assert.deepEqual(wrappedMoved.body.endpoints[0].paths, ["[].availableQuantity", "[].card.id"]);
+    // An object root with no results array is a shape NB cannot read: drift.
+    assert.equal((await probe({ "seller/bulk-upload/results": { $: "object", rows: "array" } })).body.outcome, "shape_drift");
     // An empty order history (no items to describe) is not drift.
     assert.equal((await probe({ "seller/order/history": { $: "object", totalElements: "number", results: "array" } })).body.outcome, "ok");
     assert.equal((await probe({ "seller/order/history": { $: "object", totalElements: "string", results: "array" } })).body.outcome, "shape_drift");

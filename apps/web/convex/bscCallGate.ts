@@ -24,9 +24,11 @@ import { internal } from "./_generated/api";
 import {
   FAKE_BSC_TUNING,
   REAL_BSC_TUNING,
+  blockedAfterWait,
   blockedUntil,
   decideAcquire,
   decideOutcome,
+  decideReleaseProbe,
   type BscGateState,
   type BscGateTuning,
 } from "./lib/bscCallGatePolicy";
@@ -60,6 +62,7 @@ function toState(row: Doc<"marketplaceCallGates">): BscGateState {
     consecutiveFailures: row.consecutiveFailures,
     lastFailureAt: row.lastFailureAt,
     ...(row.probeLeaseUntil !== undefined ? { probeLeaseUntil: row.probeLeaseUntil } : {}),
+    ...(row.probeGrantedAt !== undefined ? { probeGrantedAt: row.probeGrantedAt } : {}),
   };
 }
 
@@ -84,18 +87,20 @@ async function writeRow(
     consecutiveFailures: next.consecutiveFailures,
     lastFailureAt: next.lastFailureAt,
     probeLeaseUntil: next.probeLeaseUntil,
+    probeGrantedAt: next.probeGrantedAt,
     updatedAt: now,
   };
   if (row) {
     await ctx.db.patch(row._id, fields);
   } else {
-    const { openCause, probeLeaseUntil, ...rest } = fields;
+    const { openCause, probeLeaseUntil, probeGrantedAt, ...rest } = fields;
     await ctx.db.insert("marketplaceCallGates", {
       platform: PLATFORM,
       scope: SCOPE,
       ...rest,
       ...(openCause !== undefined ? { openCause } : {}),
       ...(probeLeaseUntil !== undefined ? { probeLeaseUntil } : {}),
+      ...(probeGrantedAt !== undefined ? { probeGrantedAt } : {}),
     });
   }
 }
@@ -133,7 +138,7 @@ export const acquire = internalMutation({
     if (!decision.ok) {
       return { ok: false as const, reason: decision.reason, retryAt: decision.retryAt };
     }
-    await writeRow(ctx, row, decision.next, now);
+    if (decision.next) await writeRow(ctx, row, decision.next, now);
     if (decision.probe) {
       // Platform, operation and timing only.
       console.log(
@@ -193,13 +198,37 @@ export const recordOutcome = internalMutation({
   },
 });
 
-/** Until when no BSC call may be asked (an open window or a live probe), or null. */
+/**
+ * Until when no BSC call may be asked (an open window or a live probe), or
+ * null. `probe: true` is the re-check of a probe that slept on its grant: its
+ * own lease does not block it, only a window opened meanwhile.
+ */
 export const state = internalQuery({
-  args: {},
+  args: { probe: v.optional(v.boolean()) },
   returns: v.object({ blockedUntil: v.union(v.number(), v.null()) }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const row = await readRow(ctx);
-    return { blockedUntil: blockedUntil(row ? toState(row) : null, Date.now()) };
+    const s = row ? toState(row) : null;
+    const now = Date.now();
+    return { blockedUntil: args.probe ? blockedAfterWait(s, now, true) : blockedUntil(s, now) };
+  },
+});
+
+/**
+ * Hands back a probe's lease when the probe ended with nothing to report (a
+ * neutral answer, or a throw before it was sent). Only the grant holding the
+ * lease can; anything else writes nothing.
+ */
+export const releaseProbe = internalMutation({
+  args: { grantedAt: v.number() },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const row = await readRow(ctx);
+    const next = decideReleaseProbe(row ? toState(row) : null, args.grantedAt);
+    if (!next || !row) return null;
+    await writeRow(ctx, row, next, Date.now());
+    console.log(JSON.stringify({ msg: "bsc_gate_probe_released", platform: PLATFORM, operation: "releaseProbe" }));
+    return null;
   },
 });
 
@@ -257,7 +286,8 @@ export function bscCallGateFor(ctx: Pick<ActionCtx, "runMutation" | "runQuery">)
       if (decision.waitMs > 0) {
         await bscGateClock.sleep(decision.waitMs);
         try {
-          const now = await ctx.runQuery(internal.bscCallGate.state, {});
+          // A probe is never refused by its own lease, only by a new window.
+          const now = await ctx.runQuery(internal.bscCallGate.state, decision.probe ? { probe: true } : {});
           if (now?.blockedUntil === undefined) throw new TypeError("unreadable gate state");
           if (now.blockedUntil !== null) {
             return { ok: false, reason: "open", retryAt: now.blockedUntil };
@@ -284,6 +314,10 @@ export function bscCallGateFor(ctx: Pick<ActionCtx, "runMutation" | "runQuery">)
         outcome,
         ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
       });
+    },
+    async release(grant) {
+      if (!grant.probe) return;
+      await ctx.runMutation(internal.bscCallGate.releaseProbe, { grantedAt: grant.grantedAt });
     },
     async blockedUntil() {
       try {

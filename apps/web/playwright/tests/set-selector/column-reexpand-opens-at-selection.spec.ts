@@ -26,7 +26,8 @@ test(
     // click is the one that syncs Racing's years, the wait line is up and `expectAfterBscSync`
     // measures it (a `marketplace-wait` annotation says how long). When an earlier spec on the pass
     // already synced them, no call is made and the rule is never used. Either way the assertions are
-    // unchanged. Teardown drops the rule.
+    // unchanged. This is incidental coverage of the wait line, NOT its proof: the stall spec
+    // (checklist-fetch-bounds-a-bsc-stall...) asserts the "Waiting on BuySportsCards" copy. Teardown drops the rule.
     await bscFake.setFaults([bscFault.slow(BSC_PATH.filters, 4_000, { times: 1, ttlS: 300 })]);
     await columnSearch(page, "Sports").fill("Racing");
     await columnOption(page, "Sports", "Racing").click();

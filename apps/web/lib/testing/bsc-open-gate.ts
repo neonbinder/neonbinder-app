@@ -24,6 +24,7 @@ export function openBscCallGate(): BscCallGate {
       grant: { grantedAt: Date.now(), reportOutcome: false, probe: false },
     }),
     record: async () => {},
+    release: async () => {},
     wantsSuccess: () => false,
     blockedUntil: async () => null,
   };
