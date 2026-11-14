@@ -50,6 +50,12 @@ import {
 } from "./selectorSyncMatch";
 import { MAX_YEAR_SET_ROWS } from "./setFromMarketplace";
 import { variantTypeKind } from "./variantRole";
+import {
+  sameTeamDefault,
+  teamDefaultFields,
+  teamDefaultOf,
+  type NoTeamDefault,
+} from "./lib/selectorTeams";
 import { compareCardNumbers } from "../lib/cards/card-number";
 // NEO-358 — a moved card's counts move with it, and so do its collectors'
 // copies (their denormalised `variantId` / `setId`).
@@ -290,7 +296,12 @@ const OWN_LEVEL_FEATURE_KEYS = ["cardType", "parallelName"];
 export type SourceData = {
   cardNumberPrefix?: string;
   features: Record<string, string>;
+  /**
+   * The team default the rows carried (NEO-277 teams, or NEO-556 No Team) —
+   * at most one of the two, as `teamDefaultFields` spells it.
+   */
   teamIds?: Array<Id<"teams">>;
+  noTeamDefault?: NoTeamDefault;
   /** A "no" to an upstream rename suggestion is on one of the rows. */
   declined: boolean;
 };
@@ -303,12 +314,11 @@ export function sourceDataOf(set: Row, base: Row): SourceData {
   for (const key of OWN_LEVEL_FEATURE_KEYS) delete features[key];
   const cardNumberPrefix =
     base.metadata?.cardNumberPrefix ?? set.metadata?.cardNumberPrefix;
-  const teamIds =
-    base.teamIds && base.teamIds.length > 0
-      ? base.teamIds
-      : set.teamIds && set.teamIds.length > 0
-        ? set.teamIds
-        : undefined;
+  // The Base's own default wins over the set's, as for every field here;
+  // NEO-556 — a No Team default is a default like a team is.
+  const baseDefault = teamDefaultOf(base);
+  const teamDefault =
+    baseDefault.kind !== "unset" ? baseDefault : teamDefaultOf(set);
   const declined = [set, base].some(
     (r) =>
       r.declinedUpstreamLabels?.bsc !== undefined ||
@@ -317,7 +327,7 @@ export function sourceDataOf(set: Row, base: Row): SourceData {
   return {
     ...(cardNumberPrefix !== undefined ? { cardNumberPrefix } : {}),
     features,
-    ...(teamIds ? { teamIds } : {}),
+    ...teamDefaultFields(teamDefault),
     declined,
   };
 }
@@ -331,14 +341,13 @@ export function sourceDataOfRow(row: Row): SourceData {
   const features: Record<string, string> = { ...(row.features ?? {}) };
   for (const key of OWN_LEVEL_FEATURE_KEYS) delete features[key];
   const cardNumberPrefix = row.metadata?.cardNumberPrefix;
-  const teamIds = row.teamIds && row.teamIds.length > 0 ? row.teamIds : undefined;
   const declined =
     row.declinedUpstreamLabels?.bsc !== undefined ||
     row.declinedUpstreamLabels?.sportlots !== undefined;
   return {
     ...(cardNumberPrefix !== undefined ? { cardNumberPrefix } : {}),
     features,
-    ...(teamIds ? { teamIds } : {}),
+    ...teamDefaultFields(teamDefaultOf(row)),
     declined,
   };
 }
@@ -369,7 +378,7 @@ export function lossOnto(data: SourceData, dest: Row | null): ConversionLoss {
   if (dest === null) {
     return { cardPrefix: false, featureKeys: [], team: false, dismissedNames: data.declined };
   }
-  const destTeams = new Set<string>(dest.teamIds ?? []);
+  const sourceDefault = teamDefaultOf(data);
   return {
     cardPrefix:
       data.cardNumberPrefix !== undefined &&
@@ -378,9 +387,8 @@ export function lossOnto(data: SourceData, dest: Row | null): ConversionLoss {
       .filter((k) => dest.features?.[k] !== data.features[k])
       .sort(),
     team:
-      data.teamIds !== undefined &&
-      (data.teamIds.length !== destTeams.size ||
-        data.teamIds.some((id) => !destTeams.has(id))),
+      sourceDefault.kind !== "unset" &&
+      !sameTeamDefault(sourceDefault, teamDefaultOf(dest)),
     dismissedNames: data.declined,
   };
 }

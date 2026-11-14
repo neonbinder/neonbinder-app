@@ -172,6 +172,30 @@ export function descriptionIsGenerated(
 }
 
 /**
+ * NEO-556 — the description `card` should carry once its OTHER content
+ * becomes `next` (its teams emptied by "No Team"), when the stored one is
+ * still the generator's: rebuilt from `next` with the card's own cameos.
+ * `undefined` when a person typed it, or when nothing would change. The
+ * cameos are read here, by their owner, so a caller refreshing a card's text
+ * never names the field (`cardSecondaryPlayers.pin.test.ts`).
+ */
+export async function refreshedGeneratedDescription(
+  ctx: ReadCtx,
+  card: CardRow,
+  next: CardRow,
+  cache?: StoredCardReadCache,
+): Promise<string | undefined> {
+  const cameoNames = await cameoNamesFor(ctx, card.secondaryPlayerIds, cache);
+  const before = await titleForStoredCard(ctx, card, cache);
+  if (!descriptionIsGenerated(card.listingDescription, before.inputs, cameoNames)) {
+    return undefined;
+  }
+  const after = await titleForStoredCard(ctx, next, cache);
+  const description = generateListingDescription(after.inputs, { cameoNames });
+  return description === card.listingDescription ? undefined : description;
+}
+
+/**
  * Set one card's also-pictured players to `requested` (see
  * `planSecondaryPlayerIds`), and its index rows with it. A player that no
  * longer exists is refused, or with `dropMissing` left out (a copy or a bulk

@@ -557,6 +557,34 @@ export const selectorOptionFields = {
    */
   teamCascadeStartedAt: v.optional(v.number()),
   /**
+   * NEO-556 — "No Team": the operator said the cards beneath this row carry
+   * no team, as a set-level answer. The third state of the team default:
+   * ABSENT with no `teamIds` is "no set-level team" (unset), `teamIds` is a
+   * team, this is "No Team". Never stored beside `teamIds`: the one writer
+   * (`setSelectorOptionTeams`) removes either when it writes the other, and
+   * every copy-down goes through `inheritedTeamDefault`, which returns one or
+   * the other, never both.
+   *
+   * `setAt` / `setByUserId` are server-stamped (the time and `requireAdmin`'s
+   * subject), never client arguments, because the value is what lets a
+   * background path stamp a card `teamNoneConfirmedByUserId` on the
+   * operator's behalf. A copy-down keeps the original stamp: it is the same
+   * decision, made once, by that person.
+   *
+   * Reaches rows and cards exactly as `teamIds` does (copy-down at creation,
+   * the NEO-24 edit cascade for NODES), with one difference: a No Team value
+   * never touches an EXISTING card. A new card under a No Team leaf is born
+   * stamped `teamNoneConfirmedAt` when `noTeamCardVerdict` says so (it never
+   * is when a listing names a team, or a BSC lookup is still outstanding —
+   * product invariant 8); existing cards are stamped only by the operator's
+   * explicit run (`cardNoTeamBulk`). A card's own "No team" claim from a
+   * checklist does NOT beat a set team X (NEO-556 Q3): `defaultTeamOnCardIds`
+   * is unchanged. No index, no backfill: absent is what every row said.
+   */
+  noTeamDefault: v.optional(
+    v.object({ setAt: v.number(), setByUserId: v.string() }),
+  ),
+  /**
    * NEO-528 round 3 — "Player on every card": the player every NEW card
    * beneath this row is born with, when it arrives with no player of its own
    * (no resolved player and no name waiting for review).
@@ -1810,7 +1838,12 @@ export default defineSchema({
     // Set ONLY by an operator action: `cardChecklist.confirmCardNoTeam`, or
     // (NEO-335) the operator answering "No team on this card" in the wizard
     // before save, which `commitCardChecklist` writes for a card that ends the
-    // commit with no team. Always server-stamped — the time is the server's
+    // commit with no team; or (NEO-556) the operator's set-level "No Team"
+    // (`selectorOptions.noTeamDefault`) — at card birth, through the
+    // `teamNone` arg of `updateCard` / `addCustomCard`, or the operator's
+    // explicit run, every one gated by `noTeamCardVerdict`. A background path
+    // that stamps from the set-level answer records that answer's
+    // `setByUserId`. Always server-stamped — the time is the server's
     // and the user id is `requireAdmin`'s; no client-supplied argument
     // anywhere on either path carries a timestamp, because a forgeable one is
     // operator-review suppression the client can mint for itself. CLEARED the
