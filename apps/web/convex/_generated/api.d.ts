@@ -55,6 +55,7 @@ import type * as bscTeamPool from "../bscTeamPool.js";
 import type * as bulkLoad from "../bulkLoad.js";
 import type * as cardChecklist from "../cardChecklist.js";
 import type * as cardCounts from "../cardCounts.js";
+import type * as cardNoTeamBulk from "../cardNoTeamBulk.js";
 import type * as cardNotes from "../cardNotes.js";
 import type * as cardNumberPrefix from "../cardNumberPrefix.js";
 import type * as cardPlayerLinks from "../cardPlayerLinks.js";
@@ -267,6 +268,7 @@ declare const fullApi: ApiFromModules<{
   bulkLoad: typeof bulkLoad;
   cardChecklist: typeof cardChecklist;
   cardCounts: typeof cardCounts;
+  cardNoTeamBulk: typeof cardNoTeamBulk;
   cardNotes: typeof cardNotes;
   cardNumberPrefix: typeof cardNumberPrefix;
   cardPlayerLinks: typeof cardPlayerLinks;

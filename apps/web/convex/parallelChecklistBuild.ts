@@ -111,7 +111,12 @@ import {
   type CardRowSetContext,
 } from "./cardRowCreate";
 import { effectiveCardPlayerDefaults, newSelectorRowCache } from "./cardPlayersBulk";
-import { defaultTeamOnCardIds, inheritedTeamIds } from "./lib/selectorTeams";
+import {
+  defaultTeamOnCardIds,
+  noTeamCardVerdict,
+  stampNoTeam,
+  teamDefaultOf,
+} from "./lib/selectorTeams";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
   cardKey,
@@ -1702,7 +1707,16 @@ export const insertParallelCardsPage = internalMutation({
     // (`teamIds`, copied down at its creation) goes on a copy that arrives
     // with no team of its own, as it does on a card the commit inserts. Read
     // and named once per page.
-    const parallelTeamIds = inheritedTeamIds(parallel);
+    //
+    // NEO-556 — or the parallel's "No Team" (`noTeamDefault`, copied down the
+    // same way): a copy that would be born with no team and no ruling is
+    // stamped "carries no team" when `noTeamCardVerdict` says so, credited to
+    // whoever set the No Team (a background path acting on that answer).
+    const parallelDefault = teamDefaultOf(parallel);
+    const parallelTeamIds =
+      parallelDefault.kind === "teams" ? parallelDefault.teamIds : undefined;
+    const parallelNoTeam =
+      parallelDefault.kind === "noTeam" ? parallelDefault.noTeamDefault : undefined;
     const parallelTeamNames = await namesOf(parallelTeamIds, teamName, readTeamName);
 
     const created: Array<{ from: Id<"cardChecklist">; to: Id<"cardChecklist"> }> = [];
@@ -1783,6 +1797,26 @@ export const insertParallelCardsPage = internalMutation({
           : { ids: undefined, defaulted: false };
       const teamOnCardIds = teamDefault.defaulted ? teamDefault.ids : source.teamOnCardIds;
       const teamNames = teamDefault.defaulted ? parallelTeamNames : sourceTeamNames;
+      // NEO-556 — under the parallel's No Team, asked of the copy as it will
+      // be born: its teams and pending names, the lookup bookkeeping it
+      // carries from its source, and ITS OWN BSC link. A listing that names a
+      // team, or a BSC lookup still to run on the copy, holds the stamp back
+      // (product invariant 8); `applyBscTeamResolution` stamps it once BSC
+      // answers with no team. A source the operator ruled teamless already
+      // carries its own stamp (below), so it reads `alreadyNoTeam`.
+      const copyNoTeamStamp =
+        parallelNoTeam &&
+        noTeamCardVerdict({
+          teamOnCardIds,
+          pendingTeamNames: source.pendingTeamNames,
+          teamNoneConfirmedAt: source.teamNoneConfirmedAt,
+          bscTeamName: source.bscTeamName,
+          teamCheckDoneAt: source.teamCheckDoneAt,
+          teamCheckOutcome: source.teamCheckOutcome,
+          platformData: copy.bsc ? { bsc: { ref: copy.bsc.ref } } : {},
+        }).verdict === "stamp"
+          ? stampNoTeam(parallelNoTeam.setByUserId, Date.now())
+          : undefined;
 
       const newId = await insertCardRow(
         ctx,
@@ -1829,8 +1863,10 @@ export const insertParallelCardsPage = internalMutation({
             // NEO-345 — the stamp's reason travels with the stamp.
             teamCheckOutcome: source.teamCheckOutcome,
             bscTeamName: source.bscTeamName,
-            teamNoneConfirmedAt: source.teamNoneConfirmedAt,
-            teamNoneConfirmedByUserId: source.teamNoneConfirmedByUserId,
+            teamNoneConfirmedAt:
+              copyNoTeamStamp?.teamNoneConfirmedAt ?? source.teamNoneConfirmedAt,
+            teamNoneConfirmedByUserId:
+              copyNoTeamStamp?.teamNoneConfirmedByUserId ?? source.teamNoneConfirmedByUserId,
             ...variation,
           },
         },
