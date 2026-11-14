@@ -55,7 +55,7 @@
 import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./listingLimits";
 import { variantTypeKindFromTitle } from "../variantRole";
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
-import { parallelAfterInsert, roughlySays } from "../listingShortName";
+import { parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
 
 export type ListingCardInputs = {
   cardNumber: string;
@@ -986,7 +986,6 @@ function descriptionSetLabel(inputs: ListingCardInputs): string {
  */
 export function generateListingDescription(inputs: ListingCardInputs): string {
   const lines: string[] = [];
-  const setLabel = descriptionSetLabel(inputs) || null;
   const cardNumber = inputs.cardNumber?.trim();
   const number = cardNumber ? `#${cardNumber}` : "";
   const players = distinctNames(inputs.playerNames);
@@ -997,7 +996,19 @@ export function generateListingDescription(inputs: ListingCardInputs): string {
   // that IS the variation is stated once, as the variation.
   const parallelIsVariation =
     !!parallel && parallel.toLowerCase() === variation?.toLowerCase();
-  const variant = parallel && !parallelIsVariation ? ` ${parallel}` : "";
+  const insert = inputs.insertName?.trim();
+  // A parallel whose name opens with the insert's whole name ("Anime Red
+  // Refractors" under "Anime") already says the insert, so the opening line
+  // names it once: the parallel's full name stands where the insert's would.
+  // Names that only share leading words ("Gold Refractor" under "Gold
+  // Prospects") both stay whole. The Insert and Parallel lines are unchanged.
+  const parallelSaysInsert =
+    !!parallel && !parallelIsVariation && parallelOpensWithInsert(parallel, insert);
+  const setLabel =
+    (parallelSaysInsert
+      ? descriptionSetLabel({ ...inputs, insertName: parallel })
+      : descriptionSetLabel(inputs)) || null;
+  const variant = parallel && !parallelIsVariation && !parallelSaysInsert ? ` ${parallel}` : "";
 
   const who = players.join(" & ");
   const numbered = number ? ` ${number}` : "";
@@ -1011,7 +1022,6 @@ export function generateListingDescription(inputs: ListingCardInputs): string {
     lines.push(`Card${numbered}.`);
   }
 
-  const insert = inputs.insertName?.trim();
   if (insert) lines.push(`Insert: ${insert}.`);
   if (parallel && !parallelIsVariation) lines.push(`Parallel: ${parallel}.`);
   if (variation) {

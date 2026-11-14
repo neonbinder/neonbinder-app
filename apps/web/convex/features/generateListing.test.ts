@@ -1506,6 +1506,48 @@ describe("NEO-535 — a parallel's leading insert words are said once", () => {
     expect(titleDescription({ ...BOWMAN, parallelName: "Anime" })).toBe("2026 Bowman Anime");
   });
 
+  test("the long description keeps the parallel's full name and says the insert once", () => {
+    const lines = generateListingDescription(BOWMAN).split("\n");
+    expect(lines[0]).toBe("2026 Bowman Anime Red Refractors card of Takashi Murakami, #BA-3.");
+    expect(lines).toContain("Insert: Anime.");
+    expect(lines).toContain("Parallel: Anime Red Refractors.");
+  });
+
+  test("a parallel named exactly as its insert opens the description once", () => {
+    const lines = generateListingDescription({ ...BOWMAN, parallelName: "Anime" }).split("\n");
+    expect(lines[0]).toBe("2026 Bowman Anime card of Takashi Murakami, #BA-3.");
+    expect(lines).toContain("Insert: Anime.");
+    expect(lines).toContain("Parallel: Anime.");
+  });
+
+  test("a parallel that only shares a leading word keeps both names whole", () => {
+    const lines = generateListingDescription({
+      ...BOWMAN,
+      insertName: "Gold Prospects",
+      parallelName: "Gold Refractor",
+    }).split("\n");
+    expect(lines[0]).toBe(
+      "2026 Bowman Gold Prospects Gold Refractor card of Takashi Murakami, #BA-3.",
+    );
+    expect(lines).toContain("Insert: Gold Prospects.");
+    expect(lines).toContain("Parallel: Gold Refractor.");
+  });
+
+  test("the long description keeps TRItanium's full parallel name too", () => {
+    const text = generateListingDescription({
+      ...BOWMAN,
+      year: "2025",
+      manufacturer: "Topps",
+      setName: "Topps Chrome",
+      insertName: "TRItanium Prismatic White",
+      parallelName: "TRItanium Red Flood",
+    });
+    expect(text.split("\n")[0]).toBe(
+      "2025 Topps Chrome TRItanium Prismatic White TRItanium Red Flood card of Takashi Murakami, #BA-3.",
+    );
+    expect(text).toContain("Parallel: TRItanium Red Flood.");
+  });
+
   test("a parallel that shares no leading word is untouched", () => {
     expect(titleDescription({ ...BOWMAN, parallelName: "Red Refractors" })).toBe(
       "2026 Bowman Anime Red Refractors",

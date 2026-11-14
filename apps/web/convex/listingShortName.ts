@@ -242,6 +242,28 @@ export function roughlySays(text: string, name: string): boolean {
  * parallel append (`titleChainFacts`) both apply, so every title path agrees.
  */
 export function parallelAfterInsert(parallel: string, insert: string | undefined): string {
+  const { words, shared } = leadingInsertWords(parallel, insert);
+  return words.slice(shared).join(" ");
+}
+
+/**
+ * NEO-535 — does the parallel's name open with the insert's WHOLE name, word
+ * for word and folded as `parallelAfterInsert` folds? "Anime Red Refractors"
+ * under "Anime" does, and so does "Anime" under "Anime"; "Gold Refractor"
+ * under "Gold Prospects" only shares a leading word, so it does not. The
+ * description's opening line names such an insert once, through the
+ * parallel's full name.
+ */
+export function parallelOpensWithInsert(parallel: string, insert: string | undefined): boolean {
+  const { shared, insertLength } = leadingInsertWords(parallel, insert);
+  return insertLength > 0 && shared === insertLength;
+}
+
+/** The parallel's words, and how many of them lead with the insert's words. */
+function leadingInsertWords(
+  parallel: string,
+  insert: string | undefined,
+): { words: string[]; shared: number; insertLength: number } {
   const words = parallel.trim().split(/\s+/).filter(Boolean);
   const insertWords = (insert ?? "").trim().split(/\s+/).filter(Boolean).map(foldWord);
   let shared = 0;
@@ -253,7 +275,7 @@ export function parallelAfterInsert(parallel: string, insert: string | undefined
   ) {
     shared += 1;
   }
-  return words.slice(shared).join(" ");
+  return { words, shared, insertLength: insertWords.length };
 }
 
 /** `text` then `name`, unless `text` already says it (`roughlySays`). */
