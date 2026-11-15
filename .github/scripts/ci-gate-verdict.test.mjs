@@ -17,6 +17,7 @@ const GREEN = {
   R_WEB_UNIT: "success",
   R_BROWSER_TEST: "skipped",
   R_PREPROCESS_TEST: "skipped",
+  R_FAKE_BSC_TEST: "skipped",
   R_SCRIPTS_TEST: "skipped",
   R_SCANNER_TEST: "skipped",
   R_SCANNER_BUILD: "skipped",
@@ -99,7 +100,7 @@ test("full: preprocess unchanged tolerates skip, rejects failure", () => {
 
 test("full: any area or wiring job failing fails the gate", () => {
   for (const k of [
-    "R_WEB_LINT", "R_WEB_TYPECHECK", "R_WEB_UNIT", "R_BROWSER_TEST", "R_PREPROCESS_TEST",
+    "R_WEB_LINT", "R_WEB_TYPECHECK", "R_WEB_UNIT", "R_BROWSER_TEST", "R_PREPROCESS_TEST", "R_FAKE_BSC_TEST",
     "R_SCRIPTS_TEST", "R_SCANNER_TEST", "R_SCANNER_BUILD", "R_CROP_MATRIX", "R_WIRE",
     "R_WIRE_PREPROCESS", "R_WIRE_CAPACITY", "R_WEB_PREVIEW",
   ]) {
@@ -132,7 +133,7 @@ test("cheap: every heavy job may be skipped", () => {
 });
 
 test("cheap: a cheap job still has to pass", () => {
-  for (const k of ["R_WEB_LINT", "R_WEB_TYPECHECK", "R_WEB_UNIT", "R_BROWSER_TEST", "R_SCRIPTS_TEST"]) {
+  for (const k of ["R_WEB_LINT", "R_WEB_TYPECHECK", "R_WEB_UNIT", "R_BROWSER_TEST", "R_FAKE_BSC_TEST", "R_SCRIPTS_TEST"]) {
     assert.equal(run({ ...CHEAP, [k]: "failure" }).status, 1, k);
   }
 });

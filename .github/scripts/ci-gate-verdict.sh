@@ -18,7 +18,7 @@
 # that RAN must still succeed.
 #
 # Environment: EVENT_NAME, FULL, R_CHANGES, R_WEB_LINT, R_WEB_TYPECHECK,
-# R_WEB_UNIT, R_BROWSER_TEST, R_PREPROCESS_TEST, R_SCRIPTS_TEST,
+# R_WEB_UNIT, R_BROWSER_TEST, R_PREPROCESS_TEST, R_FAKE_BSC_TEST, R_SCRIPTS_TEST,
 # R_SCANNER_TEST, R_SCANNER_BUILD, R_CROP_MATRIX, R_MASK_PARITY,
 # R_PREPROCESS_CHANGED, R_WIRE, R_WIRE_PREPROCESS, R_WIRE_CAPACITY,
 # R_WEB_PREVIEW, R_E2E, R_DEPS_ONLY, R_HYGIENE, R_CAPACITY_PARITY.
@@ -32,6 +32,7 @@ R_WEB_TYPECHECK="${R_WEB_TYPECHECK:-}"
 R_WEB_UNIT="${R_WEB_UNIT:-}"
 R_BROWSER_TEST="${R_BROWSER_TEST:-}"
 R_PREPROCESS_TEST="${R_PREPROCESS_TEST:-}"
+R_FAKE_BSC_TEST="${R_FAKE_BSC_TEST:-}"
 R_SCRIPTS_TEST="${R_SCRIPTS_TEST:-}"
 R_SCANNER_TEST="${R_SCANNER_TEST:-}"
 R_SCANNER_BUILD="${R_SCANNER_BUILD:-}"
@@ -53,7 +54,7 @@ if [ "$EVENT_NAME" = "pull_request" ] && [ "$FULL" = "false" ]; then
 fi
 
 echo "mode=$([ "$cheap" = true ] && echo cheap || echo full) event=$EVENT_NAME full=$FULL"
-echo "hygiene=$R_HYGIENE capacity-parity=$R_CAPACITY_PARITY changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST scripts-test=$R_SCRIPTS_TEST scanner-test=$R_SCANNER_TEST scanner-build=$R_SCANNER_BUILD crop-matrix=$R_CROP_MATRIX mask-parity=$R_MASK_PARITY wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS wire-preprocess-capacity=$R_WIRE_CAPACITY e2e=$R_E2E deps_only=$R_DEPS_ONLY"
+echo "hygiene=$R_HYGIENE capacity-parity=$R_CAPACITY_PARITY changes=$R_CHANGES web-lint=$R_WEB_LINT web-typecheck=$R_WEB_TYPECHECK web-unit=$R_WEB_UNIT browser-test=$R_BROWSER_TEST preprocess-test=$R_PREPROCESS_TEST fake-bsc-test=$R_FAKE_BSC_TEST scripts-test=$R_SCRIPTS_TEST scanner-test=$R_SCANNER_TEST scanner-build=$R_SCANNER_BUILD crop-matrix=$R_CROP_MATRIX mask-parity=$R_MASK_PARITY wire-browser-url=$R_WIRE wire-preprocess-url=$R_WIRE_PREPROCESS wire-preprocess-capacity=$R_WIRE_CAPACITY e2e=$R_E2E deps_only=$R_DEPS_ONLY"
 
 fail=0
 
@@ -110,7 +111,7 @@ fi
 # it is `skipped` exactly when deps_only skips E2E (or a cheap run), and any
 # OTHER reason it fails to succeed already reds the gate through the e2e rule,
 # since e2e `needs:` it.
-for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-typecheck=$R_WEB_TYPECHECK" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "scripts-test=$R_SCRIPTS_TEST" "scanner-test=$R_SCANNER_TEST" "scanner-build=$R_SCANNER_BUILD" "preprocess-crop-matrix=$R_CROP_MATRIX" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS" "wire-preprocess-capacity=$R_WIRE_CAPACITY"; do
+for kv in "web-preview=$R_WEB_PREVIEW" "web-lint=$R_WEB_LINT" "web-typecheck=$R_WEB_TYPECHECK" "web-unit=$R_WEB_UNIT" "browser-test=$R_BROWSER_TEST" "preprocess-test=$R_PREPROCESS_TEST" "fake-bsc-test=$R_FAKE_BSC_TEST" "scripts-test=$R_SCRIPTS_TEST" "scanner-test=$R_SCANNER_TEST" "scanner-build=$R_SCANNER_BUILD" "preprocess-crop-matrix=$R_CROP_MATRIX" "wire-browser-url=$R_WIRE" "wire-preprocess-url=$R_WIRE_PREPROCESS" "wire-preprocess-capacity=$R_WIRE_CAPACITY"; do
   r="${kv#*=}"
   case "$r" in
     success|skipped) ;;

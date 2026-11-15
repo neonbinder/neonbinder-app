@@ -104,6 +104,7 @@ export function capSummary(s: BscCallSummary): BscCallSummary {
       sum: count(s.lat.sum),
       buckets: normaliseBuckets(s.lat.buckets),
     },
+    refused: s.refused === undefined ? undefined : capCounts(s.refused),
     samples: s.samples.slice(0, MAX_SAMPLES).map((x) =>
       omitUndefined({
         ...x,

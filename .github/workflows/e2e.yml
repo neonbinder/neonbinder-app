@@ -103,6 +103,14 @@ permissions:
 #                  seller-desktop starts beside the desktop shards and
 #                  seed-mobile needs it (its reset would wipe the preview it
 #                  runs on); seller-mobile starts beside the mobile shards.
+#   breaker-desktop / breaker-mobile (NEO-552)
+#                → the BSC breaker specs (project-scope.mjs BREAKER_SPECS, tag
+#                  @bsc-breaker), which no shard runs: a spec that makes the
+#                  fake BuySportsCards answer 429, 5xx or nothing opens Convex's
+#                  DEPLOYMENT-WIDE BSC call gate for every shard. They run alone,
+#                  after every shard and seller job of their pass, as worker 8;
+#                  seed-mobile needs breaker-desktop (its reset would wipe the
+#                  preview the job runs on). The spec clears the gate itself.
 #   e2e          → the single ruleset-gated verdict (job id and name are
 #                  load-bearing: pr-pipeline.yml's `e2e` job and ci-gate read
 #                  it). Merges every pass's report and is green iff all five
@@ -136,6 +144,7 @@ permissions:
 # pw-report-seed-a<attempt>, pw-report-desktop-<i>-a<attempt>,
 # pw-report-seed-mobile-a<attempt>, pw-report-mobile-<i>-a<attempt>,
 # pw-report-seller-desktop-a<attempt>, pw-report-seller-mobile-a<attempt>,
+# pw-report-breaker-desktop-a<attempt>, pw-report-breaker-mobile-a<attempt>,
 # pw-merged (unsuffixed; the report job keeps each name's latest attempt)
 # (+ convex-logs-*-a<attempt> on the first shard of each pass and each seed).
 
@@ -488,31 +497,46 @@ jobs:
       # no longer depends on query.wikidata.org's health. Read back like the
       # NEONBINDER_BROWSER_URL wiring in pr-pipeline.yml — a silent no-op here would
       # otherwise pass and just seed slow/flaky instead of failing loudly.
-      # PR 451 (D7): the test-only BSC stall switch for
-      # checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards.spec.ts. Literal
-      # public BSC catalogue card ids, not secrets. Honoured by the lookup
-      # boundary only when `TESTING_RESET_SECRET` is also set (prod has none),
-      # and it fakes a retryable timeout, never a 429. Written on THIS PR's
-      # Convex preview (`CONVEX_NAME` is guarded against prod in `setup`),
-      # every run, before the reset (the reset clears data, not env).
-      - name: Set NEONBINDER_TEST_BSC_STALL_CARD_IDS on the Convex preview
+      # NEO-552: every BuySportsCards call from this PR's Convex preview goes to
+      # the standing fake BSC (a dev Cloud Run service), never to the real site.
+      # This replaces the old NEONBINDER_TEST_BSC_STALL_CARD_IDS stall switch:
+      # the stall specs now arm a fault on the fake (POST /__fake/faults).
+      # `bscFetch` (convex/lib/bscHttp.ts) honours NEONBINDER_BSC_API_BASE only
+      # when TESTING_RESET_SECRET is also set and the URL is https on *.run.app,
+      # so a stray value on a non-preview deployment is inert. Written every run
+      # (a branch-reused preview keeps old env, NEO-184) and read back so a silent
+      # no-op fails here instead of letting a run reach the real BSC. The caller
+      # key is set later, in "Set the fake BSC caller key", once the deployer's
+      # GCP credentials exist (it is read from Secret Manager, never a GH secret).
+      - name: Point the Convex preview at the fake BSC
         working-directory: apps/web
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-          STALL_IDS: 96f9a87adeb7d02c275e117ef10d569c,9dba15716322d30fc94e4bd96034e4bf,adf14c41cda48abecf2b69b0faa399ae
+          FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
         run: |
           set -euo pipefail
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_TEST_BSC_STALL_CARD_IDS "$STALL_IDS" --deployment "$CONVEX_NAME"
-          got=$(npx --yes convex@1.39.1 env get NEONBINDER_TEST_BSC_STALL_CARD_IDS --deployment "$CONVEX_NAME")
-          if [ "$got" != "$STALL_IDS" ]; then
-            echo "::error::read-back mismatch for NEONBINDER_TEST_BSC_STALL_CARD_IDS"; exit 1
+          if [ -z "${FAKE_BSC_URL:-}" ]; then
+            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL must be set. The E2E never falls back to the real BuySportsCards (NEO-552)."
+            exit 1
           fi
-          echo "Convex preview NEONBINDER_TEST_BSC_STALL_CARD_IDS set (3 ids)"
+          re='^https://neonbinder-fake-bsc-[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          base="${FAKE_BSC_URL%/}"
+          if [[ "$base" == *$'\n'* ]] || [[ ! "$base" =~ $re ]] || [[ "$base" == *---* ]]; then
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path"
+            exit 1
+          fi
+          # The bare ROOT origin: Convex's resolveBscTarget appends /api itself.
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_BSC_API_BASE "$base" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_BSC_API_BASE --deployment "$CONVEX_NAME")
+          if [ "$got" != "$base" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_BSC_API_BASE"; exit 1
+          fi
+          echo "Convex preview NEONBINDER_BSC_API_BASE set to the fake (read-back ok)"
 
       - name: Set NEONBINDER_ENRICHMENT_FIXTURES on the Convex preview
         working-directory: apps/web
@@ -567,6 +591,102 @@ jobs:
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # NEO-552: the caller key for the fake lives in ONE place, Secret Manager.
+      # The dev deployer (already authenticated here) can read it. Masked, set on
+      # the Convex preview and read back; never echoed.
+      - name: Set the fake BSC caller key on the Convex preview
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          key=$(gcloud secrets versions access latest --secret=fake-bsc-caller-key --project=neonbinder-dev)
+          if [ -z "$key" ]; then echo "::error::fake-bsc-caller-key is empty"; exit 1; fi
+          echo "::add-mask::${key}"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_FAKE_BSC_KEY "$key" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_FAKE_BSC_KEY --deployment "$CONVEX_NAME")
+          if [ "$got" != "$key" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_FAKE_BSC_KEY"; exit 1
+          fi
+          echo "Convex preview NEONBINDER_FAKE_BSC_KEY set (read-back ok)"
+
+      # NEO-552: prove the browser service this run talks to is wired to the
+      # FAKE BSC before anything signs in. The Convex preview's
+      # NEONBINDER_BROWSER_URL (the PR's own pr-<N> preview, or canonical dev)
+      # is read back from the preview, and its /health must say
+      # bscTarget=fake. A browser revision without NEONBINDER_FAKE_BSC_URL
+      # would sign in to the real BuySportsCards, so this fails the run here.
+      # The token audience is the BASE service URL, never the tagged host.
+      # Runs before the bundle download, which drops the GCP credentials.
+      # (Once per run: the mobile pass uses the same preview and browser.)
+      - name: Resolve the browser service this run uses
+        id: browser-target
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          url=$(npx --yes convex@1.39.1 env get NEONBINDER_BROWSER_URL --deployment "$CONVEX_NAME")
+          re='^https://([a-z0-9-]+---)?neonbinder-browser-[a-z0-9]+-uc\.a\.run\.app$'
+          if [[ "$url" == *$'\n'* ]] || [[ ! "$url" =~ $re ]]; then
+            echo "::error::the Convex preview's NEONBINDER_BROWSER_URL is not a dev browser Cloud Run URL"
+            exit 1
+          fi
+          base=$(gcloud run services describe neonbinder-browser \
+            --region=us-central1 --project=neonbinder-dev --format='value(status.url)')
+          if [ -z "$base" ]; then echo "::error::could not resolve the browser base URL"; exit 1; fi
+          echo "target_url=$url" >> "$GITHUB_OUTPUT"
+          echo "base_url=$base" >> "$GITHUB_OUTPUT"
+
+      - id: browser-token
+        uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
+          token_format: id_token
+          id_token_audience: ${{ steps.browser-target.outputs.base_url }}
+          id_token_include_email: true
+
+      - name: Assert the browser service talks to the fake BSC
+        env:
+          TARGET_URL: ${{ steps.browser-target.outputs.target_url }}
+          PROBE_ID_TOKEN: ${{ steps.browser-token.outputs.id_token }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" fake --health-only
+
+      # NEO-552: the fake's own tests judge its synthesised write answers
+      # against the stored real captures, and pass without judging anything when
+      # none is stored. So the seed asks the fake which write endpoints (the
+      # listing PUT and the photo upload) still have no capture, through an
+      # internal Convex action on the preview (the fake's /__fake/health, caller auth
+      # only, no admin key on this runner), and fails here, before any spec runs
+      # against an unchecked fake.
+      - name: Require a stored write capture for every write the specs drive
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          out="${RUNNER_TEMP}/fake-bsc-write-captures.json"
+          npx --yes convex@1.39.1 run fakeBsc:writeCaptureStatus '{}' --deployment "$CONVEX_NAME" > "$out"
+          if [ "$(jq -r '.ok' "$out")" != "true" ]; then
+            err=$(jq -r '"status=\(.status // "n/a") error=\(.error // "unknown")"' "$out" | head -c 300)
+            echo "::error::Could not read the fake BSC's write-capture status (${err}). An older fake without writeCaptures in /__fake/health needs redeploying."
+            exit 1
+          fi
+          if [ "$(jq -r '.skipped' "$out")" = "true" ]; then
+            echo "::error::The Convex preview is not in fake-BSC mode, so write captures cannot be checked."
+            exit 1
+          fi
+          missing=$(jq -r '.missing | join(", ")' "$out")
+          if [ -n "$missing" ]; then
+            echo "::error::The fake BSC has no stored write capture for: ${missing}. Run 'recorder capture-write' for each (services/fake-bsc/README.md) before pushing, so its synthesised answers are checked against the real ones."
+            exit 1
+          fi
+          echo "Fake BSC holds a write capture for every write endpoint."
 
       - name: Download reference-seed bundle
         env:
@@ -1109,9 +1229,9 @@ jobs:
   seller-desktop:
     # NEO-415: the marketplace-seller specs (playwright/project-scope.mjs
     # SELLER_SPECS: the BuySportsCards and eBay sandbox listing specs) on the
-    # desktop project. Every PR's CI shares ONE BuySportsCards test seller and
-    # ONE eBay sandbox seller, so two PRs running these at once clobber each
-    # other; sharding cannot fix that. No shard runs them (shard-plan.mjs
+    # desktop project. NEO-552: BuySportsCards is the fake now (a namespace per
+    # run), so only the ONE eBay sandbox seller is still shared; two PRs running
+    # these at once clobber each other on eBay, and sharding cannot fix that. No shard runs them (shard-plan.mjs
     # leaves them out); this job does, and only after it has had its turn in a
     # repo-wide queue (the seller-queue step).
     #
@@ -1139,8 +1259,28 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
+      # NEO-552: BuySportsCards is the fake, so the BSC listing specs left the seller
+      # list and run in the shards. Until the eBay sandbox spec is restored the list
+      # is empty; then this job installs nothing, queues for nothing and succeeds
+      # (the gate requires every seller job to succeed). The list is read here, once,
+      # and every later step is conditional on it.
+      - name: List the seller specs
+        id: sellers
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --seller)
+          if [ -z "$files" ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No marketplace seller specs are listed (project-scope.mjs SELLER_SPECS): nothing to queue for or run."
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+            echo "Seller specs:"; echo "$files"
+          fi
+
       - run: npm ci
+        if: ${{ steps.sellers.outputs.any == 'true' }}
       - run: npx playwright install chromium
+        if: ${{ steps.sellers.outputs.any == 'true' }}
 
       # The queue (logic and trust rules: .github/scripts/seller-queue.sh).
       # A GitHub `concurrency` group cannot do this: with cancel-in-progress
@@ -1154,17 +1294,19 @@ jobs:
       # The literal name is defined in .github/scripts/seller-queue.sh (STEP_NAME);
       # keep them identical (seller-queue.test.mjs checks).
       - name: Wait for the seller queue
+        if: ${{ steps.sellers.outputs.any == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           SELLER_QUEUE_MAX_MIN: "60"
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/seller-queue.sh"
 
-      # NEO-445: a run that died mid-spec leaves listings on the shared sellers,
+      # NEO-445: a run that died mid-spec leaves listings on the shared seller,
       # and no later run can end them through the product (an eBay SKU names a
-      # per-deployment card). So the accounts are cleared here, inside this job's
-      # turn and before any spec: every published eBay offer ended, and every
-      # BuySportsCards row of the sets the specs list set to 0. A cleanup that
+      # per-deployment card). So the account is cleared here, inside this job's
+      # turn and before any spec: every published eBay offer ended. (NEO-552: the
+      # BuySportsCards zeroing is gone with the shared BSC seller; the fake keeps
+      # listings per run namespace. The action must skip BSC.) A cleanup that
       # cannot finish fails the job instead of running specs on a dirty account.
       # Never in the seed: seeds run outside the queue. The action
       # (convex/testingSellerCleanup.ts) is internal, so only this deploy key
@@ -1172,6 +1314,7 @@ jobs:
       # marketplace. `convex run` prints the function's logs (counts and
       # outcomes, no tokens) to stderr, so they read in this step.
       - name: Clear the seller accounts for the specs
+        if: ${{ steps.sellers.outputs.any == 'true' }}
         # It holds the queue; a hang must not hold every other PR's.
         timeout-minutes: 12
         env:
@@ -1189,13 +1332,12 @@ jobs:
             echo "::error::Clearing the seller accounts failed (the reason is above), so the seller specs did not run. Re-run the workflow."
             exit 1
           fi
-          twins=$(jq -r '.bsc.twinKeysRemaining // 0' "$out")
-          if [ "$twins" != "0" ]; then
-            # Both copies are at 0, but the listing planner refuses any pair shown twice.
-            echo "::warning::BuySportsCards still shows $twins card/condition pairs twice, at 0. A spec listing one of them reads it as held back."
-          fi
+          # NEO-552: BuySportsCards is the fake now, one namespace per run, so there
+          # is no shared BSC seller to clear and no twin-key warning to print.
+          # Only the eBay sandbox seller is shared.
 
       - name: Start Convex log capture (seller desktop)
+        if: ${{ steps.sellers.outputs.any == 'true' }}
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
@@ -1214,6 +1356,7 @@ jobs:
           echo "CONVEX_LOGS_SELLER_PID=$!" >> "$GITHUB_ENV"
 
       - name: Run the marketplace seller specs (desktop)
+        if: ${{ steps.sellers.outputs.any == 'true' }}
         # The specs take minutes; a hang must not hold every other PR's queue.
         timeout-minutes: 25
         env:
@@ -1243,7 +1386,7 @@ jobs:
           exit "${code:-0}"
 
       - name: Stop Convex log capture (seller desktop)
-        if: always()
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_SELLER_PID:-}" ]; then
@@ -1281,7 +1424,7 @@ jobs:
           fi
 
       - name: Upload Convex log capture (seller desktop)
-        if: always()
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: convex-logs-seller-desktop-a${{ github.run_attempt }}
@@ -1290,10 +1433,154 @@ jobs:
           retention-days: 14
 
       - name: Upload seller report
-        if: always()
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pw-report-seller-desktop-a${{ github.run_attempt }}
+          # Same paths and the same published-content rule as the shard reports.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  breaker-desktop:
+    # NEO-552: the BSC breaker specs (playwright/project-scope.mjs BREAKER_SPECS,
+    # tag @bsc-breaker) on the desktop project, ALONE. BuySportsCards is the fake and
+    # every test user has an account of their own, but Convex keeps ONE call gate
+    # per deployment (convex/bscCallGate.ts): a spec that injects a 429, or a run of
+    # 5xx, hangs or dropped connections, opens it for every shard on this preview
+    # until its window passes. So these specs are planned in no shard and run here,
+    # after every shard and seller job of the pass has finished, and the spec's own
+    # teardown (the bscFake fixture) clears the rules and the gate. The gate (`e2e`)
+    # still requires each to pass on both projects.
+    #
+    # Ordering inside one PR: starts when every desktop shard and the seller job have finished (a red among them does not stop it), and seed-mobile waits for it, because seed-mobile's reset wipes the preview it runs on.
+    needs: [setup, seed, shard-desktop, seller-desktop]
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed.result == 'success' }}
+    name: BSC breaker specs (desktop)
+    runs-on: ubuntu-latest
+    # install ~3 min + bootstrap + the specs (step-bounded) + teardown.
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npx playwright install chromium
+
+      - name: Start Convex log capture (breaker desktop)
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the breaker desktop job."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-breaker-desktop.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-desktop.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_BREAKER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Run the BSC breaker specs (desktop)
+        # Two or three specs, a few minutes each; a hang must not hold the pass.
+        timeout-minutes: 25
+        env:
+          CI: "true"
+          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Worker 8: no shard uses it (shards are 0-7) and the seller job, the only other
+          # user, has finished (this job needs it). The `bootstrap` project dependency
+          # seeds the account first, as for a shard.
+          WORKER_INDEX: "8"
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          PW_REPORT_DIR: playwright/report
+          PROJECT: e2e
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --breaker)
+          if [ -z "$files" ]; then
+            # No file arguments would run the WHOLE suite; refuse.
+            echo "::error::The BSC breaker spec list is empty."
+            exit 1
+          fi
+          echo "Breaker job runs --project=$PROJECT:"; echo "$files"
+          start=$(date +%s)
+          # shellcheck disable=SC2086 # one path per line, no spaces
+          npx playwright test "--project=$PROJECT" $files || code=$?
+          echo "Breaker specs ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
+          exit "${code:-0}"
+
+      - name: Stop Convex log capture (breaker desktop)
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_BREAKER_PID:-}" ]; then
+            kill "${CONVEX_LOGS_BREAKER_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_BREAKER_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-breaker-desktop.raw.jsonl"
+          OUT_FILE="convex-logs-breaker-desktop.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            # Same filter as the shards' capture (keep ERROR/WARN and our
+            # structured lines, every completion's timing; drop INFO chatter).
+            jq -c '
+                ((.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  )))
+                as $keep
+                | if .kind == "Completion" then
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-desktop-jq.stderr.log" || true
+            gzip -f "$OUT_FILE" || true
+          else
+            echo "No Convex logs captured for the breaker desktop job."
+          fi
+
+      - name: Upload Convex log capture (breaker desktop)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-logs-breaker-desktop-a${{ github.run_attempt }}
+          path: apps/web/convex-logs-breaker-desktop.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload breaker report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pw-report-breaker-desktop-a${{ github.run_attempt }}
           # Same paths and the same published-content rule as the shard reports.
           path: |
             apps/web/playwright/report/
@@ -1307,7 +1594,7 @@ jobs:
     # starts the mobile pass on a fresh baseline. Strictly after every
     # desktop shard (the reset wipes the shared preview), and independent of
     # their verdict so a red desktop pass still yields mobile results.
-    needs: [setup, seed, shard-desktop, seller-desktop]
+    needs: [setup, seed, shard-desktop, seller-desktop, breaker-desktop]
     if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed.result == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -1401,31 +1688,46 @@ jobs:
             echo "- Convex preview \`NEONBINDER_PAUSED_PLATFORMS\` = \`${got:-<unset>}\`";
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # PR 451 (D7): the test-only BSC stall switch for
-      # checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards.spec.ts. Literal
-      # public BSC catalogue card ids, not secrets. Honoured by the lookup
-      # boundary only when `TESTING_RESET_SECRET` is also set (prod has none),
-      # and it fakes a retryable timeout, never a 429. Written on THIS PR's
-      # Convex preview (`CONVEX_NAME` is guarded against prod in `setup`),
-      # every run, before the reset (the reset clears data, not env).
-      - name: Set NEONBINDER_TEST_BSC_STALL_CARD_IDS on the Convex preview
+      # NEO-552: every BuySportsCards call from this PR's Convex preview goes to
+      # the standing fake BSC (a dev Cloud Run service), never to the real site.
+      # This replaces the old NEONBINDER_TEST_BSC_STALL_CARD_IDS stall switch:
+      # the stall specs now arm a fault on the fake (POST /__fake/faults).
+      # `bscFetch` (convex/lib/bscHttp.ts) honours NEONBINDER_BSC_API_BASE only
+      # when TESTING_RESET_SECRET is also set and the URL is https on *.run.app,
+      # so a stray value on a non-preview deployment is inert. Written every run
+      # (a branch-reused preview keeps old env, NEO-184) and read back so a silent
+      # no-op fails here instead of letting a run reach the real BSC. The caller
+      # key is set later, in "Set the fake BSC caller key", once the deployer's
+      # GCP credentials exist (it is read from Secret Manager, never a GH secret).
+      - name: Point the Convex preview at the fake BSC
         working-directory: apps/web
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-          STALL_IDS: 96f9a87adeb7d02c275e117ef10d569c,9dba15716322d30fc94e4bd96034e4bf,adf14c41cda48abecf2b69b0faa399ae
+          FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
         run: |
           set -euo pipefail
           if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
             echo "::error::CONVEX_PREVIEW_DEPLOY_KEY is not set. Add a Convex *preview* deploy key for the monorepo project as a repo secret."
             exit 1
           fi
-          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_TEST_BSC_STALL_CARD_IDS "$STALL_IDS" --deployment "$CONVEX_NAME"
-          got=$(npx --yes convex@1.39.1 env get NEONBINDER_TEST_BSC_STALL_CARD_IDS --deployment "$CONVEX_NAME")
-          if [ "$got" != "$STALL_IDS" ]; then
-            echo "::error::read-back mismatch for NEONBINDER_TEST_BSC_STALL_CARD_IDS"; exit 1
+          if [ -z "${FAKE_BSC_URL:-}" ]; then
+            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL must be set. The E2E never falls back to the real BuySportsCards (NEO-552)."
+            exit 1
           fi
-          echo "Convex preview NEONBINDER_TEST_BSC_STALL_CARD_IDS set (3 ids)"
+          re='^https://neonbinder-fake-bsc-[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          base="${FAKE_BSC_URL%/}"
+          if [[ "$base" == *$'\n'* ]] || [[ ! "$base" =~ $re ]] || [[ "$base" == *---* ]]; then
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path"
+            exit 1
+          fi
+          # The bare ROOT origin: Convex's resolveBscTarget appends /api itself.
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_BSC_API_BASE "$base" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_BSC_API_BASE --deployment "$CONVEX_NAME")
+          if [ "$got" != "$base" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_BSC_API_BASE"; exit 1
+          fi
+          echo "Convex preview NEONBINDER_BSC_API_BASE set to the fake (read-back ok)"
 
       - name: Set NEONBINDER_ENRICHMENT_FIXTURES on the Convex preview
         working-directory: apps/web
@@ -1502,6 +1804,26 @@ jobs:
           service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_DEPLOYER_DEV }}
 
       - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      # NEO-552: the caller key for the fake lives in ONE place, Secret Manager.
+      # The dev deployer (already authenticated here) can read it. Masked, set on
+      # the Convex preview and read back; never echoed.
+      - name: Set the fake BSC caller key on the Convex preview
+        working-directory: apps/web
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -euo pipefail
+          key=$(gcloud secrets versions access latest --secret=fake-bsc-caller-key --project=neonbinder-dev)
+          if [ -z "$key" ]; then echo "::error::fake-bsc-caller-key is empty"; exit 1; fi
+          echo "::add-mask::${key}"
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" env set NEONBINDER_FAKE_BSC_KEY "$key" --deployment "$CONVEX_NAME"
+          got=$(npx --yes convex@1.39.1 env get NEONBINDER_FAKE_BSC_KEY --deployment "$CONVEX_NAME")
+          if [ "$got" != "$key" ]; then
+            echo "::error::read-back mismatch for NEONBINDER_FAKE_BSC_KEY"; exit 1
+          fi
+          echo "Convex preview NEONBINDER_FAKE_BSC_KEY set (read-back ok)"
 
       - name: Download reference-seed bundle
         env:
@@ -1993,9 +2315,9 @@ jobs:
   seller-mobile:
     # NEO-415: the marketplace-seller specs (playwright/project-scope.mjs
     # SELLER_SPECS: the BuySportsCards and eBay sandbox listing specs) on the
-    # mobile project. Every PR's CI shares ONE BuySportsCards test seller and
-    # ONE eBay sandbox seller, so two PRs running these at once clobber each
-    # other; sharding cannot fix that. No shard runs them (shard-plan.mjs
+    # mobile project. NEO-552: BuySportsCards is the fake now (a namespace per
+    # run), so only the ONE eBay sandbox seller is still shared; two PRs running
+    # these at once clobber each other on eBay, and sharding cannot fix that. No shard runs them (shard-plan.mjs
     # leaves them out); this job does, and only after it has had its turn in a
     # repo-wide queue (the seller-queue step).
     #
@@ -2023,8 +2345,28 @@ jobs:
           cache: npm
           cache-dependency-path: apps/web/package-lock.json
 
+      # NEO-552: BuySportsCards is the fake, so the BSC listing specs left the seller
+      # list and run in the shards. Until the eBay sandbox spec is restored the list
+      # is empty; then this job installs nothing, queues for nothing and succeeds
+      # (the gate requires every seller job to succeed). The list is read here, once,
+      # and every later step is conditional on it.
+      - name: List the seller specs
+        id: sellers
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --seller)
+          if [ -z "$files" ]; then
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No marketplace seller specs are listed (project-scope.mjs SELLER_SPECS): nothing to queue for or run."
+          else
+            echo "any=true" >> "$GITHUB_OUTPUT"
+            echo "Seller specs:"; echo "$files"
+          fi
+
       - run: npm ci
+        if: ${{ steps.sellers.outputs.any == 'true' }}
       - run: npx playwright install chromium
+        if: ${{ steps.sellers.outputs.any == 'true' }}
 
       # The queue (logic and trust rules: .github/scripts/seller-queue.sh).
       # A GitHub `concurrency` group cannot do this: with cancel-in-progress
@@ -2038,17 +2380,19 @@ jobs:
       # The literal name is defined in .github/scripts/seller-queue.sh (STEP_NAME);
       # keep them identical (seller-queue.test.mjs checks).
       - name: Wait for the seller queue
+        if: ${{ steps.sellers.outputs.any == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
           SELLER_QUEUE_MAX_MIN: "60"
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/seller-queue.sh"
 
-      # NEO-445: a run that died mid-spec leaves listings on the shared sellers,
+      # NEO-445: a run that died mid-spec leaves listings on the shared seller,
       # and no later run can end them through the product (an eBay SKU names a
-      # per-deployment card). So the accounts are cleared here, inside this job's
-      # turn and before any spec: every published eBay offer ended, and every
-      # BuySportsCards row of the sets the specs list set to 0. A cleanup that
+      # per-deployment card). So the account is cleared here, inside this job's
+      # turn and before any spec: every published eBay offer ended. (NEO-552: the
+      # BuySportsCards zeroing is gone with the shared BSC seller; the fake keeps
+      # listings per run namespace. The action must skip BSC.) A cleanup that
       # cannot finish fails the job instead of running specs on a dirty account.
       # Never in the seed: seeds run outside the queue. The action
       # (convex/testingSellerCleanup.ts) is internal, so only this deploy key
@@ -2056,6 +2400,7 @@ jobs:
       # marketplace. `convex run` prints the function's logs (counts and
       # outcomes, no tokens) to stderr, so they read in this step.
       - name: Clear the seller accounts for the specs
+        if: ${{ steps.sellers.outputs.any == 'true' }}
         # It holds the queue; a hang must not hold every other PR's.
         timeout-minutes: 12
         env:
@@ -2073,13 +2418,12 @@ jobs:
             echo "::error::Clearing the seller accounts failed (the reason is above), so the seller specs did not run. Re-run the workflow."
             exit 1
           fi
-          twins=$(jq -r '.bsc.twinKeysRemaining // 0' "$out")
-          if [ "$twins" != "0" ]; then
-            # Both copies are at 0, but the listing planner refuses any pair shown twice.
-            echo "::warning::BuySportsCards still shows $twins card/condition pairs twice, at 0. A spec listing one of them reads it as held back."
-          fi
+          # NEO-552: BuySportsCards is the fake now, one namespace per run, so there
+          # is no shared BSC seller to clear and no twin-key warning to print.
+          # Only the eBay sandbox seller is shared.
 
       - name: Start Convex log capture (seller mobile)
+        if: ${{ steps.sellers.outputs.any == 'true' }}
         env:
           CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
           CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
@@ -2098,6 +2442,7 @@ jobs:
           echo "CONVEX_LOGS_SELLER_PID=$!" >> "$GITHUB_ENV"
 
       - name: Run the marketplace seller specs (mobile)
+        if: ${{ steps.sellers.outputs.any == 'true' }}
         # The specs take minutes; a hang must not hold every other PR's queue.
         timeout-minutes: 25
         env:
@@ -2127,7 +2472,7 @@ jobs:
           exit "${code:-0}"
 
       - name: Stop Convex log capture (seller mobile)
-        if: always()
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_SELLER_PID:-}" ]; then
@@ -2165,7 +2510,7 @@ jobs:
           fi
 
       - name: Upload Convex log capture (seller mobile)
-        if: always()
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: convex-logs-seller-mobile-a${{ github.run_attempt }}
@@ -2174,10 +2519,154 @@ jobs:
           retention-days: 14
 
       - name: Upload seller report
-        if: always()
+        if: ${{ always() && steps.sellers.outputs.any == 'true' }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pw-report-seller-mobile-a${{ github.run_attempt }}
+          # Same paths and the same published-content rule as the shard reports.
+          path: |
+            apps/web/playwright/report/
+            apps/web/playwright/results/**/*.png
+          if-no-files-found: ignore
+          retention-days: 14
+
+  breaker-mobile:
+    # NEO-552: the BSC breaker specs (playwright/project-scope.mjs BREAKER_SPECS,
+    # tag @bsc-breaker) on the mobile project, ALONE. BuySportsCards is the fake and
+    # every test user has an account of their own, but Convex keeps ONE call gate
+    # per deployment (convex/bscCallGate.ts): a spec that injects a 429, or a run of
+    # 5xx, hangs or dropped connections, opens it for every shard on this preview
+    # until its window passes. So these specs are planned in no shard and run here,
+    # after every shard and seller job of the pass has finished, and the spec's own
+    # teardown (the bscFake fixture) clears the rules and the gate. The gate (`e2e`)
+    # still requires each to pass on both projects.
+    #
+    # Ordering inside one PR: starts when every mobile shard and the seller job have finished (a red among them does not stop it); nothing waits on it but the `e2e` gate.
+    needs: [setup, seed-mobile, shard-mobile, seller-mobile]
+    if: ${{ !cancelled() && needs.setup.result == 'success' && needs.seed-mobile.result == 'success' }}
+    name: BSC breaker specs (mobile)
+    runs-on: ubuntu-latest
+    # install ~3 min + bootstrap + the specs (step-bounded) + teardown.
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: apps/web/.nvmrc
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+
+      - run: npm ci
+      - run: npx playwright install chromium
+
+      - name: Start Convex log capture (breaker mobile)
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          "$GITHUB_WORKSPACE/.github/scripts/convex-env-retry.sh" --version
+          if [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::CONVEX_PREVIEW_DEPLOY_KEY not set — skipping Convex log capture for the breaker mobile job."
+            exit 0
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-breaker-mobile.raw.jsonl"
+          rm -f "$RAW_LOG_FILE"
+          nohup npx --yes convex@1.39.1 logs --deployment "$CONVEX_NAME" --jsonl \
+            > "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-mobile.stderr.log" &
+          disown
+          echo "CONVEX_LOGS_BREAKER_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Run the BSC breaker specs (mobile)
+        # Two or three specs, a few minutes each; a hang must not hold the pass.
+        timeout-minutes: 25
+        env:
+          CI: "true"
+          APP_URL: http://localhost:3000
+          PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
+          # Worker 8: no shard uses it (shards are 0-7) and the seller job, the only other
+          # user, has finished (this job needs it). The `bootstrap` project dependency
+          # seeds the account first, as for a shard.
+          WORKER_INDEX: "8"
+          PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
+          PW_REPORT_DIR: playwright/report
+          PROJECT: e2e-mobile
+        run: |
+          set -euo pipefail
+          files=$(node playwright/shard-plan.mjs --breaker)
+          if [ -z "$files" ]; then
+            # No file arguments would run the WHOLE suite; refuse.
+            echo "::error::The BSC breaker spec list is empty."
+            exit 1
+          fi
+          echo "Breaker job runs --project=$PROJECT:"; echo "$files"
+          start=$(date +%s)
+          # shellcheck disable=SC2086 # one path per line, no spaces
+          npx playwright test "--project=$PROJECT" $files || code=$?
+          echo "Breaker specs ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
+          exit "${code:-0}"
+
+      - name: Stop Convex log capture (breaker mobile)
+        if: always()
+        run: |
+          set -uo pipefail
+          if [ -n "${CONVEX_LOGS_BREAKER_PID:-}" ]; then
+            kill "${CONVEX_LOGS_BREAKER_PID}" 2>/dev/null || true
+            wait "${CONVEX_LOGS_BREAKER_PID}" 2>/dev/null || true
+          fi
+          RAW_LOG_FILE="${RUNNER_TEMP}/convex-logs-breaker-mobile.raw.jsonl"
+          OUT_FILE="convex-logs-breaker-mobile.jsonl"
+          if [ -s "$RAW_LOG_FILE" ]; then
+            # Same filter as the shards' capture (keep ERROR/WARN and our
+            # structured lines, every completion's timing; drop INFO chatter).
+            jq -c '
+                ((.logLines // [])
+                | map(select(
+                    .level == "ERROR" or .level == "WARN"
+                    or ((.messages // []) | join(" ") | test("\"msg\""))
+                  )))
+                as $keep
+                | if .kind == "Completion" then
+                    {identifier, udfType, timestamp, executionTimestamp,
+                     executionTime, userExecutionTime, requestId, executionId,
+                     parentExecutionId, cachedResult, willRetry, occInfo, kind, error,
+                     readDocs: .usageStats.databaseReadDocuments,
+                     readBytes: .usageStats.databaseReadBytes,
+                     writeDocs: .usageStats.databaseWriteDocuments,
+                     logLines: $keep}
+                  else
+                    select((.error != null) or ($keep | length) > 0)
+                    | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
+                  end
+              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-mobile-jq.stderr.log" || true
+            gzip -f "$OUT_FILE" || true
+          else
+            echo "No Convex logs captured for the breaker mobile job."
+          fi
+
+      - name: Upload Convex log capture (breaker mobile)
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: convex-logs-breaker-mobile-a${{ github.run_attempt }}
+          path: apps/web/convex-logs-breaker-mobile.jsonl.gz
+          if-no-files-found: ignore
+          retention-days: 14
+
+      - name: Upload breaker report
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: pw-report-breaker-mobile-a${{ github.run_attempt }}
           # Same paths and the same published-content rule as the shard reports.
           path: |
             apps/web/playwright/report/
@@ -2196,7 +2685,7 @@ jobs:
   #     project (desktop and mobile) — so a shard, or one project's half of
   #     it, that died before reporting cannot pass by omission.
   e2e:
-    needs: [setup, seed, shard-desktop, seller-desktop, seed-mobile, shard-mobile, seller-mobile]
+    needs: [setup, seed, shard-desktop, seller-desktop, breaker-desktop, seed-mobile, shard-mobile, seller-mobile, breaker-mobile]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -2218,8 +2707,10 @@ jobs:
           R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
           R_SELLER_DESKTOP: ${{ needs.seller-desktop.result }}
           R_SELLER_MOBILE: ${{ needs.seller-mobile.result }}
+          R_BREAKER_DESKTOP: ${{ needs.breaker-desktop.result }}
+          R_BREAKER_MOBILE: ${{ needs.breaker-mobile.result }}
         run: |
-          echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP seller-desktop=$R_SELLER_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE seller-mobile=$R_SELLER_MOBILE"
+          echo "jobs: setup=$R_SETUP seed=$R_SEED shard-desktop=$R_SHARD_DESKTOP seller-desktop=$R_SELLER_DESKTOP breaker-desktop=$R_BREAKER_DESKTOP seed-mobile=$R_SEED_MOBILE shard-mobile=$R_SHARD_MOBILE seller-mobile=$R_SELLER_MOBILE breaker-mobile=$R_BREAKER_MOBILE"
           if [ "$R_SETUP" != "success" ] || [ "$R_SEED" != "success" ] || [ "$R_SEED_MOBILE" != "success" ]; then
             echo "::error::setup or a seed did not succeed (setup=$R_SETUP seed=$R_SEED seed-mobile=$R_SEED_MOBILE)"
             # Record, don't exit: the reports still merge and publish so a red
@@ -2289,9 +2780,10 @@ jobs:
           # (NEO-389).
           node playwright/shard-plan.mjs --projects > projects.txt
           while read -r proj; do
-            # Shards plan everything but the marketplace-seller specs (NEO-415),
-            # which the seller-<pass> jobs run; both sets are required here.
-            { node playwright/shard-plan.mjs 1 1 --project "$proj"; node playwright/shard-plan.mjs --seller; } \
+            # Shards plan everything but the marketplace-seller specs (NEO-415) and the
+            # BSC breaker specs (NEO-552), which the seller-<pass> and breaker-<pass>
+            # jobs run; all three sets are required here.
+            { node playwright/shard-plan.mjs 1 1 --project "$proj"; node playwright/shard-plan.mjs --seller; node playwright/shard-plan.mjs --breaker; } \
               | sed 's#^playwright/tests/##' | sort -u > "planned-${proj}.txt"
             if [ ! -s "planned-${proj}.txt" ]; then
               echo "::error::The shard planner lists no specs for ${proj}."
@@ -2373,6 +2865,8 @@ jobs:
           R_SHARD_MOBILE: ${{ needs.shard-mobile.result }}
           R_SELLER_DESKTOP: ${{ needs.seller-desktop.result }}
           R_SELLER_MOBILE: ${{ needs.seller-mobile.result }}
+          R_BREAKER_DESKTOP: ${{ needs.breaker-desktop.result }}
+          R_BREAKER_MOBILE: ${{ needs.breaker-mobile.result }}
         run: |
           if [ "${UPSTREAM_FAILED:-0}" = "1" ]; then
             echo "::error::Upstream verdict: setup or a seed did not succeed (see the Upstream jobs step)"
@@ -2386,6 +2880,55 @@ jobs:
             echo "::error::a marketplace seller job did not succeed (desktop=$R_SELLER_DESKTOP mobile=$R_SELLER_MOBILE)"
             exit 1
           fi
+          if [ "$R_BREAKER_DESKTOP" != "success" ] || [ "$R_BREAKER_MOBILE" != "success" ]; then
+            echo "::error::a BSC breaker job did not succeed (desktop=$R_BREAKER_DESKTOP mobile=$R_BREAKER_MOBILE)"
+            exit 1
+          fi
+
+      # NEO-552: every test user's fake BSC session is a Secret Manager secret
+      # keyed by this preview (`buysportscards-credentials-fake-<slug>-<user>`),
+      # and Secret Manager bills per active version. Both passes are done here
+      # (this job needs every shard, seller and breaker job), so delete this
+      # preview's sessions now rather than leave them for the browser service's
+      # 72 h TTL. The action (credentials.ts) is internal, so only this deploy
+      # key reaches it; it deletes nothing outside fake mode and only keys with
+      # this deployment's own prefix. Cleanup never decides the verdict: it
+      # runs after it, warns on any failure and always exits 0.
+      - name: Delete this preview's fake BSC sessions
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 5
+        working-directory: ${{ github.workspace }}
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ] || [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::No Convex preview name or deploy key, so this preview's fake BSC sessions were left for the 72 h TTL."
+            exit 0
+          fi
+          if [ ! -d apps/web ]; then
+            echo "::warning::No checkout, so this preview's fake BSC sessions were left for the 72 h TTL."
+            exit 0
+          fi
+          cd apps/web
+          out="${RUNNER_TEMP}/fake-bsc-session-cleanup.json"
+          if ! npx --yes convex@1.39.1 run credentials:deleteFakeBscSessionsFromCli '{}' --deployment "$CONVEX_NAME" > "$out"; then
+            echo "::warning::Deleting this preview's fake BSC sessions failed (the reason is above); the 72 h TTL will remove them."
+            exit 0
+          fi
+          if [ "$(jq -r '.fake' "$out" 2>/dev/null)" != "true" ]; then
+            echo "The preview is not on the fake BSC; no sessions to delete."
+            exit 0
+          fi
+          summary=$(jq -r '"users=\(.users) deleted=\(.deleted) failed=\(.failed) truncated=\(.truncated)"' "$out" 2>/dev/null || echo "unreadable answer")
+          if [ "$(jq -r '.failed' "$out" 2>/dev/null)" != "0" ] || [ "$(jq -r '.truncated' "$out" 2>/dev/null)" != "false" ]; then
+            echo "::warning::Some fake BSC sessions were not deleted (${summary}); the 72 h TTL will remove them."
+          else
+            echo "Deleted this preview's fake BSC sessions (${summary})."
+          fi
+          exit 0
 
   report:
     # Publish even when the gate is red. Informational only: the `e2e` job is
@@ -2428,6 +2971,54 @@ jobs:
             exit 0
           fi
           "$GITHUB_WORKSPACE/.github/scripts/enrichment-fixture-coverage.sh"
+
+      # NEO-552: what this run asked the fake BSC for that it had no recording
+      # of (it answers 501 and keeps a miss list per preview). Printed so the
+      # recorder's to-do list is in the run log. It goes through an internal
+      # Convex action on the preview, so the fake's admin key never reaches
+      # this runner. Non-failing: a miss already failed its own spec.
+      - name: Print the fake BSC's misses for this preview
+        working-directory: apps/web
+        continue-on-error: true
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_PREVIEW_DEPLOY_KEY }}
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
+        run: |
+          set -uo pipefail
+          if [ -z "${CONVEX_NAME:-}" ] || [ -z "${CONVEX_DEPLOY_KEY:-}" ]; then
+            echo "::warning::No Convex preview name or deploy key; cannot read the fake BSC's misses."
+            exit 0
+          fi
+          out="${RUNNER_TEMP}/fake-bsc-misses.json"
+          if ! npx --yes convex@1.39.1 run fakeBsc:reportMisses '{}' --deployment "$CONVEX_NAME" > "$out"; then
+            echo "::warning::Reading the fake BSC's misses failed (the reason is above)."
+            exit 0
+          fi
+          # {ok:true, skipped, misses:[{method,path}]} or {ok:false, status?, error}.
+          # Non-failing either way, but an ok:false must not read as "0 misses".
+          if [ "$(jq -r '.ok' "$out" 2>/dev/null)" = "false" ]; then
+            err=$(jq -r '"status=\(.status // "n/a") error=\(.error // "unknown")"' "$out" 2>/dev/null | head -c 300)
+            echo "::warning::The fake BSC's misses could not be read: ${err}"
+            { echo "### Fake BSC misses for this preview"; echo "Could not be read: ${err}"; } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          if [ "$(jq -r '.skipped // false' "$out" 2>/dev/null)" = "true" ]; then
+            echo "::notice::The fake BSC's misses were skipped for this preview (not applicable here)."
+            exit 0
+          fi
+          count=$(jq -r '(.misses // []) | length' "$out" 2>/dev/null || echo "?")
+          {
+            echo "### Fake BSC misses for this preview"
+            if [ "$count" = "0" ]; then
+              echo "None: every catalogue read was recorded."
+            else
+              echo "${count} unrecorded request(s). Run the recorder (--watch or --prefix) to load them:"
+              echo
+              echo '```json'
+              jq -c '.misses[]' "$out" 2>/dev/null | head -n 100
+              echo '```'
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Download merged report
         continue-on-error: true

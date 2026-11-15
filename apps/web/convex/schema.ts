@@ -1214,6 +1214,11 @@ export const bscCallSummaryFields = {
   }),
   /** At most five failure samples (`bscCallStats.record` caps it). */
   samples: v.array(bscCallSampleValidator),
+  /**
+   * NEO-552 — calls the BSC call gate refused, by reason (open, probing,
+   * throttled, gate_unavailable). Never sent, so in no other count.
+   */
+  refused: v.optional(v.record(v.string(), v.number())),
 };
 export const bscCallSummaryValidator = v.object(bscCallSummaryFields);
 
@@ -4306,6 +4311,11 @@ export default defineSchema({
   }).index("by_owner_and_run", ["ownerId", "runKey"]),
 
   /**
+   * RETIRED (NEO-552): nothing reads or writes this table any more; the BSC
+   * call gate (`marketplaceCallGates` below) replaced it. The definition stays
+   * so rows already stored still validate, and the Set Builder reset still
+   * drains it. What it did:
+   *
    * PR 451 (NEO-487) — a deployment-wide pause on one BSC endpoint after it
    * answered 429. BSC's edge blocks per IP and every Convex deployment egresses
    * from shared IPs, so one caller's 429 is everyone's: the fetch-time lookup
@@ -4313,7 +4323,7 @@ export default defineSchema({
    * call while `until` is in the future.
    *
    * One row per (platform, endpoint), written only on a 429
-   * (`marketplaceCooldowns.record429`) and on the first success after one:
+   * (the former `marketplaceCooldowns.record429`) and on the first success after one:
    * zero writes on the healthy path.
    * `streak` counts 429 windows in a row (15 s doubling to 120 s, or BSC's
    * Retry-After when longer, up to 10 min); it resets to 0 on the first
@@ -4329,6 +4339,40 @@ export default defineSchema({
     streak: v.number(),
     updatedAt: v.number(),
   }).index("by_platform_endpoint", ["platform", "endpoint"]),
+
+  /**
+   * NEO-552 — the deployment-wide BSC call gate: the breaker and token bucket
+   * every BuySportsCards call passes through (`bscFetch`, `bscCallGate.ts`;
+   * policy in `lib/bscCallGatePolicy.ts`). It replaces `marketplaceCooldowns`,
+   * which nothing reads or writes any more (its definition stays until prod
+   * holds no rows).
+   *
+   * One row per (platform, scope). No ids, no user data: counters and times.
+   *  - `tokens` / `refilledAt`: a debt bucket (may go negative: that is a wait
+   *    the caller sleeps), refilled at the tuning's rate up to its burst.
+   *  - `openUntil`: no call before it. `openCause` says which ladder opened it
+   *    (a 429, or a run of failures); `streak` counts openings with no success
+   *    between them; `lastOpenedAt` is when the latest opened.
+   *  - `consecutiveFailures` / `lastFailureAt`: the failure run.
+   *  - `probeLeaseUntil` / `probeGrantedAt`: while half-open, the one
+   *    probe's lease and the grant that holds it (only that grant may hand it
+   *    back early).
+   */
+  marketplaceCallGates: defineTable({
+    platform: v.literal("bsc"),
+    scope: v.literal("deployment"),
+    tokens: v.number(),
+    refilledAt: v.number(),
+    openUntil: v.number(),
+    openCause: v.optional(v.union(v.literal("429"), v.literal("failures"))),
+    streak: v.number(),
+    lastOpenedAt: v.number(),
+    consecutiveFailures: v.number(),
+    lastFailureAt: v.number(),
+    probeLeaseUntil: v.optional(v.number()),
+    probeGrantedAt: v.optional(v.number()),
+    updatedAt: v.number(),
+  }).index("by_platform_scope", ["platform", "scope"]),
 
   /**
    * ── NEO-358: a collector's places to keep cards ───────────────────────────
