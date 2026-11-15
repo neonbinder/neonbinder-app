@@ -117,9 +117,25 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/** The keys a request file may carry, per kind; anything else is refused, never ignored. */
+const PUT_KEYS = ["method", "path", "listing"] as const;
+const PHOTO_KEYS = ["method", "path"] as const;
+const LISTING_KEYS = ["cardId", "filters", "condition", "quantity", "price", "sellerSku"] as const;
+
+/** Throws naming the first key outside `allowed` (a key name, never a value). */
+function refuseUnknownKeys(o: Record<string, unknown>, allowed: readonly string[], where: string): void {
+  for (const k of Object.keys(o)) {
+    if (!allowed.includes(k)) {
+      const name = /^[A-Za-z0-9_-]{1,40}$/.test(k) ? `"${k}"` : "a key";
+      throw new Error(`${where} may hold only ${allowed.join(", ")}: ${name} is not accepted`);
+    }
+  }
+}
+
 /** Reads and checks a listing intent; throws with what is wrong, never with a value. */
 export function readListingIntent(v: unknown): ListingIntent {
   if (!isRecord(v)) throw new Error("a PUT needs a `listing` object: {cardId, filters, condition, price, sellerSku}");
+  refuseUnknownKeys(v, LISTING_KEYS, "listing");
   const { cardId, filters, condition, quantity, price, sellerSku } = v;
   if (typeof cardId !== "string" || cardId.length > MAX_CARD_ID || !/^[A-Za-z0-9_-]+$/.test(cardId)) {
     throw new Error("listing.cardId must be a BSC card id (letters, digits, - and _, at most 64)");
@@ -165,25 +181,102 @@ export async function loadWriteRequest(requestFile: string, imageFile?: string):
   } catch {
     throw new Error("--request must be a JSON file: {method, path, listing?}");
   }
-  const s = (spec ?? {}) as Record<string, unknown>;
+  if (!isRecord(spec)) throw new Error("--request must be a JSON object: {method, path, listing?}");
+  const s = spec;
   if (typeof s.method !== "string" || typeof s.path !== "string") throw new Error("--request needs method and path");
   const method = s.method.toUpperCase();
   const p = normalisePath(s.path);
   const endpoint = writeEndpointFor(method, p);
   if (!endpoint) throw new Error("--request is not a known BSC write endpoint (PUT seller/bulk-upload, POST the photo attachment)");
   if (endpoint === "POST common/card/undefined/product/undefined/attachment") {
+    refuseUnknownKeys(s, PHOTO_KEYS, "a photo request");
     if (p !== PHOTO_PATH) throw new Error(`a photo upload goes to ${PHOTO_PATH} exactly`);
     if (!imageFile) throw new Error("a photo upload needs --file <image>");
     const ext = path.extname(imageFile).toLowerCase();
     const contentType = CONTENT_TYPES[ext];
     if (!contentType) throw new Error("--file must be a .jpg, .png, .gif or .webp image");
+    const bytes = await readFile(imageFile);
+    const meta = imageMetadataProblem(bytes, contentType);
+    if (meta) throw new Error(`--file: ${meta}`);
     // The file's own name never reaches BSC.
-    return { endpoint, method, path: p, file: { bytes: await readFile(imageFile), fileName: `capture${ext}`, contentType } };
+    return { endpoint, method, path: p, file: { bytes, fileName: `capture${ext}`, contentType } };
   }
   if (s.body !== undefined) {
     throw new Error("a PUT request names the listing, not a body: {method, path, listing: {cardId, filters, condition, price, sellerSku}} (README, capture-write)");
   }
+  refuseUnknownKeys(s, PUT_KEYS, "a PUT request");
   return { endpoint, method, path: p, intent: readListingIntent(s.listing) };
+}
+
+// ── Photo metadata ─────────────────────────────────────────────────────────
+
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const EXIF_ID = Buffer.from("Exif\0\0", "latin1");
+
+/**
+ * Why an image must not be uploaded, or null: its bytes are not the format
+ * its extension names, it carries Exif (location, camera, owner), or its
+ * structure cannot be walked to check. JPEG: an APP1 segment starting
+ * `Exif\0\0`. PNG: an `eXIf` chunk. WebP: an `EXIF` chunk. GIF has no Exif.
+ * BSC keeps an upload and the API cannot remove it, so anything unsure is
+ * refused.
+ */
+export function imageMetadataProblem(bytes: Buffer, contentType: string): string | null {
+  const unreadable = "its structure could not be read to check for Exif; use a synthetic image";
+  if (contentType === "image/jpeg") {
+    if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) return "the file is not a JPEG";
+    let i = 2;
+    while (i + 4 <= bytes.length) {
+      if (bytes[i] !== 0xff) return unreadable;
+      const marker = bytes[i + 1];
+      if (marker === 0xd9 || marker === 0xda) return null; // end of image, or start of scan: no more metadata segments
+      if (marker === 0xff) {
+        i += 1; // fill byte
+        continue;
+      }
+      if ((marker >= 0xd0 && marker <= 0xd7) || marker === 0x01) {
+        i += 2; // a marker with no length
+        continue;
+      }
+      const len = bytes.readUInt16BE(i + 2);
+      if (len < 2 || i + 2 + len > bytes.length) return unreadable;
+      if (marker === 0xe1 && len >= 2 + EXIF_ID.length && bytes.subarray(i + 4, i + 4 + EXIF_ID.length).equals(EXIF_ID)) {
+        return "the JPEG carries Exif (an APP1 segment); strip it or use a synthetic image";
+      }
+      i += 2 + len;
+    }
+    return unreadable;
+  }
+  if (contentType === "image/png") {
+    if (bytes.length < 8 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) return "the file is not a PNG";
+    let i = 8;
+    while (i + 12 <= bytes.length) {
+      const len = bytes.readUInt32BE(i);
+      const type = bytes.subarray(i + 4, i + 8).toString("latin1");
+      if (i + 12 + len > bytes.length) return unreadable;
+      if (type === "eXIf") return "the PNG carries Exif (an eXIf chunk); strip it or use a synthetic image";
+      if (type === "IEND") return null;
+      i += 12 + len;
+    }
+    return unreadable;
+  }
+  if (contentType === "image/webp") {
+    if (bytes.length < 12 || bytes.subarray(0, 4).toString("latin1") !== "RIFF" || bytes.subarray(8, 12).toString("latin1") !== "WEBP") return "the file is not a WebP";
+    let i = 12;
+    while (i + 8 <= bytes.length) {
+      const type = bytes.subarray(i, i + 4).toString("latin1");
+      const len = bytes.readUInt32LE(i + 4);
+      if (i + 8 + len > bytes.length) return unreadable;
+      if (type === "EXIF") return "the WebP carries Exif (an EXIF chunk); strip it or use a synthetic image";
+      i += 8 + len + (len % 2);
+    }
+    return i === bytes.length ? null : unreadable;
+  }
+  if (contentType === "image/gif") {
+    const head = bytes.subarray(0, 6).toString("latin1");
+    return head === "GIF87a" || head === "GIF89a" ? null : "the file is not a GIF";
+  }
+  return "unsupported image type";
 }
 
 // ── The plan (dry run) ─────────────────────────────────────────────────────
@@ -194,6 +287,7 @@ export function describeWrite(req: WriteRequest): string[] {
   return [
     `GET ${PROFILE_PATH}: the seller id (read)`,
     `POST ${SHEET_PATH}: the ${req.intent?.condition ?? "?"} seller sheet for the set (read); stops here unless it holds exactly one row for the card, unlisted`,
+    `POST ${SHEET_PATH}: the same sheet again, just before the write (read); stops here if the card's row changed`,
     `${req.method} ${req.path}: 1 listing row, quantity ${CAPTURE_QUANTITY} (REAL WRITE)`,
   ];
 }
@@ -403,7 +497,23 @@ export type CaptureResult =
   | { ok: true; sent: number; writeSent: true; status: number; paths: number; verdict: string; driftPaths: string[]; shape: Shape }
   | { ok: false; sent: number; writeSent: true; reason: "timeout" | "network" | "too_large" | "upload_refused" }
   | { ok: false; sent: number; writeSent: false; reason: "read_refused"; refusal: ReadRefusal }
-  | { ok: false; sent: number; writeSent: false; reason: "already_listed" };
+  | { ok: false; sent: number; writeSent: false; reason: "already_listed" }
+  | { ok: false; sent: number; writeSent: false; reason: "sheet_changed" };
+
+/**
+ * True when two reads of the card's row agree on what the capture checks:
+ * quantity, SKU, price and images. Not `productId`: an unlisted row is a
+ * template that BSC re-mints on every read.
+ */
+function sameRow(a: CardSheetRow, b: CardSheetRow): boolean {
+  return (
+    a.quantity === b.quantity &&
+    a.sellerSku === b.sellerSku &&
+    String(a.raw.price) === String(b.raw.price) &&
+    a.raw.sellerImgFront === b.raw.sellerImgFront &&
+    a.raw.sellerImgBack === b.raw.sellerImgBack
+  );
+}
 
 export async function runCaptureWrite(deps: CaptureDeps): Promise<CaptureResult> {
   const req = deps.request;
@@ -421,10 +531,17 @@ export async function runCaptureWrite(deps: CaptureDeps): Promise<CaptureResult>
     const sheet = await readCardSheetRow(deps, req.intent);
     if (!sheet.ok) return { ok: false, sent, writeSent: false, reason: "read_refused", refusal: sheet.refusal };
     if (sheet.row.quantity > 0) return { ok: false, sent, writeSent: false, reason: "already_listed" };
+    // The guard is read-then-write: NB (or anyone) could list this card in the
+    // gap. One more read just before the PUT narrows that gap; the PUT is
+    // built from it, as NB builds from its latest read.
+    sent += 1;
+    const again = await readCardSheetRow(deps, req.intent);
+    if (!again.ok) return { ok: false, sent, writeSent: false, reason: "read_refused", refusal: again.refusal };
+    if (again.row.quantity > 0 || !sameRow(sheet.row, again.row)) return { ok: false, sent, writeSent: false, reason: "sheet_changed" };
     sent += 1;
     write = await sendOnce(
       deps,
-      { method: req.method, path: req.path, json: buildListingPut(seller.sellerId, sheet.row, req.intent) },
+      { method: req.method, path: req.path, json: buildListingPut(seller.sellerId, again.row, req.intent) },
       { timeoutMs: TIMEOUT_MS.put, maxBytes: MAX_BYTES.put },
     );
   }

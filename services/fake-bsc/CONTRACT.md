@@ -195,8 +195,9 @@ Seller writes get no real test before prod. Instead, whenever a PR adds or
 changes a BSC write (listing PUT, photo upload, any new write), Jason performs
 that write once locally against real BSC and the recorder captures it:
 `recorder capture-write`. It sends exactly one write request (a listing PUT
-is built as NB builds it, from one seller-profile read and one seller-sheet
-read in the same session, refused if the card is already listed; one copy
+is built as NB builds it, from one seller-profile read and two seller-sheet
+reads in the same session, refused if the card is already listed or its row
+changed between the reads; the request file's keys are a fixed list; one copy
 at $500 or more under an `NBCAPTURE-` SKU NB never reads as its own), stores only the
 response's status and shape (key paths and types, no values) through
 `POST /__fake/write-captures`, and the fake's synthesis is checked against

@@ -240,20 +240,31 @@ FAKE_BSC_CALLER_KEY=... FAKE_BSC_ADMIN_KEY=... \
   `apps/web/convex/lib/listingSku.ts`) is refused, and NB can never read a
   capture SKU as its own, so an account later connected to NB never takes the
   capture for an NB listing.
-- After sign-in it sends three requests, each once, never retried:
+- The request file may hold only `method`, `path` and `listing`, and
+  `listing` only `cardId`, `filters`, `condition`, `quantity`, `price` and
+  `sellerSku`. Any other key (a `body`, `headers`, a `sellerId`) is refused,
+  never ignored.
+- After sign-in it sends four requests, each once, never retried:
   1. `GET marketplace/user/profile` for the seller id (as NB's
      `fetchBscSellerId` reads it);
   2. `POST seller/bulk-upload/results` for that condition and set (the read
      NB's listing sync makes), taking the card's row;
-  3. the PUT: `{sellerId, listings: [{...that row, condition,
+  3. the same sheet read again, just before the write;
+  4. the PUT: `{sellerId, listings: [{...the latest row, condition,
      availableQuantity, price, sellerSku}]}`, the row NB's `planBscSheet`
      builds. No photo keys are set.
 - It stops before the PUT, writing nothing, when the profile has no seller
   id, when the sheet does not hold exactly one readable row for the card (a
-  row over NB's 16 KB row limit is refused, as NB drops it), or when the card
-  is **already listed** in that condition (so the undo can never take down a
-  listing that was there before). Every answer is read with a byte cap, as
-  NB reads it.
+  row over NB's 16 KB row limit is refused, as NB drops it), when the card is
+  **already listed** in that condition, or when the card's row changed
+  between the two sheet reads (its quantity, SKU, price or images). Every
+  answer is read with a byte cap, as NB reads it.
+- The already-listed guard is a **read-then-write check**, not a lock:
+  NeonBinder's own listing sync, or anyone signed in to the account, could
+  list the same card and condition between the read and the PUT. The second
+  read narrows that gap but cannot close it, and the undo would then take
+  that listing down. So **pick a card NB has never listed on that account**,
+  and do not run a capture while NB may be pushing listings to it.
 - It prints counts, statuses and reasons only, never the seller id or a row
   value, and uploads only the PUT answer's status and shape. After the upload
   it prints that stored shape, one key path and its types per line (no
@@ -266,8 +277,12 @@ FAKE_BSC_CALLER_KEY=... FAKE_BSC_ADMIN_KEY=... \
 For the photo upload use `{"method":"POST","path":"common/card/undefined/product/undefined/attachment"}`
 (that literal path, nothing else) and `--file <image>`: that one request.
 **Use a synthetic image, or one with its EXIF stripped** (no location, camera
-or owner data): BSC keeps it and there is no API undo. The file is always
-sent as `capture<ext>`, never under its own name. Either way it uploads
+or owner data): BSC keeps it and there is no API undo. The tool refuses a
+JPEG with an Exif APP1 segment, a PNG with an `eXIf` chunk, a WebP with an
+`EXIF` chunk, a file whose bytes are not the format its extension names,
+and one whose structure it cannot walk; a request file for a photo may hold
+only `method` and `path`. The file is always sent as `capture<ext>`, never
+under its own name. Either way it uploads
 only the status and the shape (key paths and types, no values) to
 `/__fake/write-captures`. The fake answers whether its synthesis fits
 (`ok` or `shape_drift` with the differing paths); fix `src/synth/sheet.ts`
@@ -290,6 +305,10 @@ sh -c 'bw get item <bitwarden item id> | node dist/recorder/cli.js undo-write --
 It writes nothing when the card is not listed in that condition (already
 down), or when the listing's SKU is not the request's `NBCAPTURE-` SKU (not
 the capture's listing: take it down by hand if it should go).
+
+The undone row is left at quantity 0 still carrying the capture's
+`NBCAPTURE-` SKU and price; NB's planner rewrites both the next time NB
+lists that card on the account.
 
 After its PUT it reads the sheet once (no retry) and says what it found:
 `down`; down but carrying another SKU; **still listed**; listed under another

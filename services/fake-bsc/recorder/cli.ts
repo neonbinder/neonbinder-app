@@ -151,6 +151,8 @@ export function captureOutcomeLines(r: CaptureResult, requestFile: string, listi
     return [`nothing written: ${describeRefusal(r.refusal)} (${r.sent} read(s) sent)`];
   } else if (r.reason === "already_listed") {
     return [`nothing written: the card is already listed in that condition; capture with a card this account does not list (${r.sent} read(s) sent)`];
+  } else if (r.reason === "sheet_changed") {
+    return [`nothing written: the card's row changed between the two sheet reads (something else is writing to it); pick a card nothing lists on this account (${r.sent} read(s) sent)`];
   } else if (r.reason === "upload_refused") {
     lines.push(`the write was sent (${r.sent} request(s) sent), but the fake refused its shape; nothing stored`);
   } else {
