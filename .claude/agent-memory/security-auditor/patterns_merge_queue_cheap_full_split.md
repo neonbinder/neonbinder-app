@@ -35,3 +35,5 @@ Review rules from NEO-546 (GitHub merge queue behind a repo variable; the PR run
 - "Any commit after the audit round gets a delta audit" collides with the turn's own main merge. Say which merges count: a clean main merge does not; a hand-resolved conflict does, and its resolution is exactly where workflow/.claude/ drift hides.
 
 Related: [[patterns-preview-cleanup-blast-radius]], [[patterns-cross-run-artifacts]], [[patterns-ci-cross-run-queue]].
+
+- **Two dequeue vocabularies (D0, 2026-11-14/15).** The GraphQL timeline `RemovedFromMergeQueueEvent.reason` is lowercase (`failed_checks`, `manual`, `merged`); the `pull_request: dequeued` webhook is uppercase (`CI_FAILURE`, `MERGE`). A case-insensitive allowlist stays safe only while anchored `^(...)$` and ANDed with the actor check. A "skip teardown" reason is safe only while the `closed` teardown is unconditional (`always()` plus `action == 'closed'`), independent of the gate.
