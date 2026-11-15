@@ -19,6 +19,8 @@ test("BSC and SportLots credentials pass a live test", { tag: ["@credentials", "
   await expect(testButton).toBeVisible({ timeout: LIVE });
   await testButton.click();
   // Either success shape (NEO-483): the store name confirmed, or BSC's profile too slow to say.
+  // The fake BuySportsCards (NEO-552) answers its profile at once, so it is the confirmed shape
+  // here; the helper accepts the other too.
   await expectBscTestSuccess(page, LIVE);
   await expectAccessible(page, { label: "Profile, BuySportsCards credentials, tested" });
 

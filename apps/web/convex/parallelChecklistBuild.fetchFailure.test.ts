@@ -15,7 +15,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { blockedSideFailed } from "./parallelChecklistBuild";
+import { blockedSideFailed, sideMissingFromRun } from "./parallelChecklistBuild";
 import type { FetchFailure } from "./lib/marketplaceFetchFailure";
 import { insertTestCard } from "../lib/testing/card-row";
 
@@ -218,6 +218,7 @@ describe("blockedSideFailed — the operator's sentence per failure kind (DRAFT 
     ["signed_out", "BSC signed us out, so nothing changed — try again in a bit"],
     ["no_sign_in", "we couldn't sign in to BSC, so nothing changed — try again in a bit"],
     ["refused", "BSC didn't answer, so nothing changed — try again in a bit"],
+    ["paced", "we're pacing our calls to BSC, so nothing changed — try again in a bit"],
     ["unknown", "BSC didn't answer, so nothing changed — try again in a bit"],
   ] as const)("%s", (kind, sentence) => {
     expect(blockedSideFailed("bsc", kind)).toBe(sentence);
@@ -233,10 +234,19 @@ describe("blockedSideFailed — the operator's sentence per failure kind (DRAFT 
   });
 
   test("no sentence carries a status code, URL or marketplace message", () => {
-    for (const kind of ["timeout", "http_error", "signed_out", "no_sign_in"] as const) {
+    for (const kind of ["timeout", "http_error", "signed_out", "no_sign_in", "paced"] as const) {
       const s = blockedSideFailed("bsc", kind);
       expect(s).not.toMatch(/\d{3}|https?:|api|token|cookie|session/i);
     }
+  });
+
+  test("NEO-552: a paced side never blames the marketplace or names our own gate", () => {
+    for (const s of [blockedSideFailed("bsc", "paced"), sideMissingFromRun("bsc", "paced")]) {
+      expect(s).not.toMatch(/error|answer|didn't|gate|breaker|thrott|rate.?limit/i);
+    }
+    expect(sideMissingFromRun("bsc", "paced")).toBe(
+      "We're pacing our calls to BSC, so its cards are missing from this run.",
+    );
   });
 });
 

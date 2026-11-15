@@ -29,10 +29,11 @@
  */
 import { convexTest } from "convex-test";
 import { getFunctionName } from "convex/server";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, onTestFinished, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
+import { openBscGate, skipBscGateWaits } from "../lib/testing/bsc-gate-stub";
 import {
   bscSheetSteps,
   BSC_SHEET_RETRY_PAUSES_MS,
@@ -2752,7 +2753,8 @@ describe("NEO-475: a sheet read BSC answers 503", () => {
       const status = statuses.shift() ?? 200;
       return status === 200 ? Response.json([]) : new Response("", { status });
     }) as typeof fetch);
-    const ctx = { runQuery: vi.fn(), runMutation: vi.fn(), runAction: vi.fn() } as unknown as DrainCtx;
+    // NEO-552: an always-open call gate, so both reads reach the stubbed fetch.
+    const ctx = { runAction: vi.fn(), ...openBscGate().ctx } as unknown as DrainCtx;
     const session: BscSellerSession = { ownerId: OWNER, token: "tok", reauthAttempted: false, dead: false };
 
     vi.useFakeTimers({ toFake: ["setTimeout"] });
@@ -3340,6 +3342,9 @@ describe("NEO-481: a photo refresh reaches a BSC row that already shows a seller
   });
 
   test("past the per-variant upload cap, the flagged rows not reached stay queued and the rest clear", async () => {
+    // NEO-552: more BSC calls than the call gate's burst of 10; its waits
+    // move the clock instead of sleeping.
+    onTestFinished(skipBscGateWaits());
     const s = await setup();
     const n = MAX_PHOTO_UPLOADS_PER_VARIANT / 2 + 1; // two sides each: one card over the cap
     const v = await seedVariant(s.t, {

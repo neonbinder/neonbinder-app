@@ -13,6 +13,10 @@
  *            returns once the browser is on its way to <R>. The caller then
  *            asserts the destination's heading (the launch gate).
  *
+ *   bscFake — the worker's fake BuySportsCards account (NEO-552, ./bscFake.ts):
+ *            `setFaults` / `addOrder` / `clear`. Teardown clears the rules (and
+ *            the deployment's BSC call gate when a rule could have opened it).
+ *
  * Plus `expectAccessible(page, { within?, label? })`, the axe check (below),
  * and Playwright's own `isMobile` fixture for the rare genuine layout branch.
  *
@@ -23,6 +27,7 @@
  */
 import { test as base, expect, type Page } from "@playwright/test";
 import { checkAccessibility, type AccessibleOptions } from "./a11y";
+import { BscFake } from "./bscFake";
 import { makeEnv, type FlowEnv } from "./env";
 
 export type SignIn = (
@@ -44,7 +49,7 @@ export function signInUrl(redirect: string, worker: string, account?: string): s
   return `/testing/sign-in?redirect=${redirect}${acct}&worker=${worker}`;
 }
 
-export const test = base.extend<{ env: FlowEnv; signIn: SignIn }>({
+export const test = base.extend<{ env: FlowEnv; signIn: SignIn; bscFake: BscFake }>({
   env: async ({}, use, testInfo) => {
     // The project feeds the d/m marker in every minted name (./env.ts).
     await use(makeEnv(testInfo.project.name));
@@ -73,6 +78,17 @@ export const test = base.extend<{ env: FlowEnv; signIn: SignIn }>({
         waitUntil: "domcontentloaded",
       });
     });
+  },
+  // NEO-552: faults and orders on the worker's own fake BuySportsCards account
+  // (./bscFake.ts). Teardown clears the rules (and the deployment's BSC call
+  // gate when a rule could have opened it), red or green, so a rule never
+  // outlives its test. Depends on `context` only, so it tears down while the
+  // context is still open and can use a page of its own. A test that never
+  // calls it costs nothing: teardown sends nothing when nothing was set.
+  bscFake: async ({ context }, use, testInfo) => {
+    const fake = new BscFake(context, testInfo.tags, LAUNCH_GATE);
+    await use(fake);
+    await fake.teardown();
   },
 });
 
