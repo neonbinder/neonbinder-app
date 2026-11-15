@@ -337,6 +337,17 @@ describe("seller synthesis", () => {
       body: { sellerId: id, listings: [{ ...first[0], availableQuantity: 3, price: 0.5, sellerSku: "303|1" }] },
     });
     assert.equal(put.status, 200);
+    // The answer has the real capture's shape: those paths and types, nothing more.
+    const answered = shapeOf(put.body);
+    assert.deepEqual(Object.keys(answered).sort(), Object.keys(REAL_PUT_SHAPE).sort());
+    for (const [p, types] of Object.entries(answered)) {
+      const real = types.filter((t) => t !== "null");
+      if (real.length) assert.deepEqual(real, REAL_PUT_SHAPE[p], p);
+    }
+    assert.equal(put.body.listings.length, 1);
+    assert.equal(put.body.listings[0].cardId, "c1");
+    assert.equal(put.body.listings[0].price, "0.50");
+    assert.equal(put.body.listings[0].availableQuantity, 3);
     const after = (await sheet("near_mint")).body;
     const listed = after.find((r) => r.cardId === "c1");
     assert.equal(listed.availableQuantity, 3);
@@ -806,17 +817,41 @@ describe("cold start: listening before the recordings are in", () => {
   });
 });
 
+/**
+ * The shape real BSC answered a listing PUT with (write capture, 2026-11-14,
+ * status 200): key paths and types only, as the capture stored them.
+ */
+const REAL_PUT_SHAPE = {
+  "": ["object"],
+  listings: ["array"],
+  "listings[]": ["object"],
+  ...Object.fromEntries(
+    Object.entries({
+      active: "boolean", availableQuantity: "number", cardId: "string", cardYear: "number", cartQty: "number", condition: "string",
+      currency: "string", imageChanged: "boolean", matchVal: "string", orderQuantity: "number", price: "string", productId: "string",
+      productType: "string", sellerId: "string", sellerImgBack: "string", sellerImgFront: "string", sellerInventoryStatus: "boolean",
+      sellerSku: "string", shippingCost: "string", sportId: "string", updatedTimestamp: "string",
+    }).map(([k, t]) => [`listings[].${k}`, [t]]),
+  ),
+  result: ["string"],
+};
+
 describe("write captures", () => {
   let fake;
   before(async () => (fake = await startFake()));
   after(() => fake.close());
 
   it("stores a capture and judges the synthesis against it", async () => {
-    // What a real PUT answer could look like: more fields than the fake makes.
-    const realPut = [{ productId: "p", productType: "raw", cardId: "c", condition: "near_mint", availableQuantity: 1, price: "0.25", sellerId: "s", sellerSku: "1|1", updatedTimestamp: "t", active: true }];
-    const ok = await fake.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint: "PUT seller/bulk-upload", status: 200, shape: shapeOf(realPut) } });
+    const ok = await fake.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint: "PUT seller/bulk-upload", status: 200, shape: REAL_PUT_SHAPE } });
     assert.equal(ok.status, 200);
     assert.equal(ok.body.verdict, "ok");
+    // The fake's first guess, a bare array of rows, is what the real capture flagged.
+    const { synthConformsTo } = require("../dist/src/shape.js");
+    const oldGuess = shapeOf([{ productId: "p", productType: "raw", cardId: "c", condition: "near_mint", availableQuantity: 1, price: "0.25", sellerId: "s", sellerSku: "1|1", updatedTimestamp: "t" }]);
+    assert.ok(synthConformsTo(oldGuess, REAL_PUT_SHAPE).paths.includes(""));
+    // The synthesis the verdict judges is exactly the real shape: no invented path, every type real.
+    const { synthesisedWrite } = require("../dist/src/captures.js");
+    assert.deepEqual(synthesisedWrite("PUT seller/bulk-upload").shape, REAL_PUT_SHAPE);
     const drift = await fake.call("POST", "/__fake/write-captures", {
       email: LOADER,
       admin: true,

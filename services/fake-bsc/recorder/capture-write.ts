@@ -400,7 +400,7 @@ export interface CaptureDeps extends BscDeps {
  * undo it.
  */
 export type CaptureResult =
-  | { ok: true; sent: number; writeSent: true; status: number; paths: number; verdict: string; driftPaths: string[] }
+  | { ok: true; sent: number; writeSent: true; status: number; paths: number; verdict: string; driftPaths: string[]; shape: Shape }
   | { ok: false; sent: number; writeSent: true; reason: "timeout" | "network" | "too_large" | "upload_refused" }
   | { ok: false; sent: number; writeSent: false; reason: "read_refused"; refusal: ReadRefusal }
   | { ok: false; sent: number; writeSent: false; reason: "already_listed" };
@@ -437,7 +437,7 @@ export async function runCaptureWrite(deps: CaptureDeps): Promise<CaptureResult>
       shape,
       capturedAt: new Date((deps.now ?? Date.now)()).toISOString(),
     });
-    return { ok: true, sent, writeSent: true, status: write.status, paths: Object.keys(shape).length, verdict: verdict.verdict, driftPaths: verdict.paths ?? [] };
+    return { ok: true, sent, writeSent: true, status: write.status, paths: Object.keys(shape).length, verdict: verdict.verdict, driftPaths: verdict.paths ?? [], shape };
   } catch {
     return { ok: false, sent, writeSent: true, reason: "upload_refused" };
   }

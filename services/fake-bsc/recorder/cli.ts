@@ -18,6 +18,7 @@ import { bscSession, loadBrowserModules } from "./bsc";
 import { MAX_REQUESTS_PER_SESSION, bscCaller, describeRequest, planMisses, runRecordSession } from "./record";
 import { describeRefusal, describeUndo, describeUndoCheck, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite, type CaptureResult, type UndoResult } from "./capture-write";
 import { askOnTerminal } from "./confirm";
+import type { Shape } from "../src/shape";
 
 const FORBIDDEN_FLAGS = new Set(["--password", "--username", "--user", "--pass", "--credentials"]);
 
@@ -145,6 +146,7 @@ export function captureOutcomeLines(r: CaptureResult, requestFile: string, listi
   if (r.ok) {
     lines.push(`sent ${r.sent} request(s); the write answered ${r.status}; ${r.paths} shape path(s) stored; fake verdict: ${r.verdict}`);
     for (const p of r.driftPaths) lines.push(`  differs: ${p}`);
+    lines.push(...shapeLines(r.shape));
   } else if (r.reason === "read_refused") {
     return [`nothing written: ${describeRefusal(r.refusal)} (${r.sent} read(s) sent)`];
   } else if (r.reason === "already_listed") {
@@ -164,6 +166,16 @@ export function captureOutcomeLines(r: CaptureResult, requestFile: string, listi
     lines.push(`${what} PHOTO UPLOAD on the signed-in BSC account; there is no API undo (README, "Undoing a capture").`);
   }
   return lines;
+}
+
+/**
+ * The shape the capture stored, one line per key path with its types: what
+ * `putAnswer` / `photoAnswer` must match. Key names and types only, never a
+ * value (`shapeOf` already turned any key that is really a value into `*`).
+ */
+export function shapeLines(shape: Shape): string[] {
+  const paths = Object.keys(shape).sort();
+  return [`stored shape (${paths.length} path(s), no values):`, ...paths.map((p) => `  ${p === "" ? "(root)" : p}: ${shape[p].join(" | ")}`)];
 }
 
 /** What `undo-write` prints about its run; like `captureOutcomeLines`, no BSC value. */

@@ -114,6 +114,20 @@ describe("the seller client's calls", () => {
     expect(r.value).toMatchObject({ kind: "narrowed", total: 3, unreadable: 2 });
     expect(r.value.rows.map((x) => x.bscCardId)).toEqual(["c1"]);
   });
+
+  test("NEO-552: a listing PUT's answer is never read, so any JSON shape (object, array, empty) succeeds", async () => {
+    // The real answer's shape is not what the fake first guessed (a write
+    // capture found an object root, not an array). NB must not depend on it:
+    // the push confirms by reading the sheet back.
+    for (const answer of [
+      () => Response.json({ anything: [{ nested: 1 }], ok: true }),
+      () => Response.json([{ cardId: "c1", availableQuantity: 1 }]),
+      () => new Response("", { status: 200 }),
+    ]) {
+      vi.stubGlobal("fetch", (async () => answer()) as typeof fetch);
+      expect(await putBscListings(ctx, session(), { sellerId: "s-1", listings: [{ cardId: "c1" }] })).toEqual({ ok: true, value: null });
+    }
+  });
 });
 
 describe("NEO-475: what a failure says, and what a sheet read logs", () => {

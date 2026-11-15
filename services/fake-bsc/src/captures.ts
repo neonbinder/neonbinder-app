@@ -52,7 +52,9 @@ const SAMPLE_LISTING: Listing = {
   sellerImgFront: null,
   sellerImgBack: null,
   updatedTimestamp: "2026-01-01T00:00:00.000000",
-  card: null,
+  // A card with a year and a sport, so every field the answer derives from it
+  // has its real type (a null would match anything and check nothing).
+  card: { id: "samplecard", cardNo: "1", year: "2024", sport: "baseball" },
 };
 
 /** The status and shape the fake answers a successful write with. */

@@ -713,6 +713,11 @@ describe("capture-write", () => {
     const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => ({ verdict: "shape_drift", paths: ["[].price"] }) } });
     assert.equal(bsc.calls[2].body.sellerId, SELLER, "the PUT carries the looked-up seller id");
     const lines = [...captureOutcomeLines(r, "/tmp/put.json", true)];
+    // The stored shape is printed: key paths and types, never a value.
+    assert.ok(lines.includes(`stored shape (${r.paths} path(s), no values):`));
+    assert.ok(lines.includes("  (root): array"));
+    assert.ok(lines.includes("  [].sellerId: string"));
+    assert.ok(lines.includes("  [].price: string"));
     lines.push(...captureOutcomeLines({ ok: false, sent: 2, writeSent: false, reason: "already_listed" }, "f", true));
     for (const reason of ["timeout", "upload_refused"]) lines.push(...captureOutcomeLines({ ok: false, sent: 3, writeSent: true, reason }, "f", true));
     for (const refusal of [{ step: "profile", reason: "no_seller_id" }, { step: "sheet", reason: "card_on_sheet_more_than_once", rows: 2 }, { step: "sheet", reason: "http", status: 500 }, { step: "sheet", reason: "oversized_row" }]) {

@@ -255,7 +255,9 @@ FAKE_BSC_CALLER_KEY=... FAKE_BSC_ADMIN_KEY=... \
   listing that was there before). Every answer is read with a byte cap, as
   NB reads it.
 - It prints counts, statuses and reasons only, never the seller id or a row
-  value, and uploads only the PUT answer's status and shape.
+  value, and uploads only the PUT answer's status and shape. After the upload
+  it prints that stored shape, one key path and its types per line (no
+  values), so drift can be fixed straight from the terminal.
 - Once the PUT has gone out, any failure (a timeout, a dropped connection,
   an answer too large to read, the fake refusing the upload) still prints
   **THIS MAY HAVE BEEN A REAL WRITE** with the `undo-write` command: the

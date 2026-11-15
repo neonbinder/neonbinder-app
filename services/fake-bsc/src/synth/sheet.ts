@@ -10,12 +10,13 @@
  *             `condition`, `availableQuantity`, `price` (dollar string),
  *             `productType`, `sellerSku`, `sellerImgFront/Back`, `productId`.
  *   put       bscSeller.ts putBscListings: `{sellerId, listings}`; NB ignores
- *             the answer and reads the sheet back.
+ *             the answer and reads the sheet back. The answer's shape is the
+ *             real one, from a write capture: `{listings: [...], result}`.
  *   photo     bscSeller.ts uploadBscSellerPhoto: `{objectKey}`.
  *
- * The PUT and photo answers are the fake's best guess until a write capture
- * pins them (`/__fake/write-captures`); `putAnswer` and `photoAnswer` are the
- * one place each is built.
+ * Write answers are checked against write captures of real BSC
+ * (`/__fake/write-captures`); `putAnswer` (pinned by one) and `photoAnswer`
+ * are the one place each is built.
  */
 import { randomBytes } from "node:crypto";
 import { canonicalRequest, type CanonicalRequest } from "../requestKey";
@@ -217,19 +218,52 @@ function readPutRow(v: unknown): PutRow | null {
   };
 }
 
-/** The PUT's answer: the rows as saved. Pinned by a write capture once one exists. */
+/** The `result` BSC's PUT answer carries (a string; the capture holds no value). */
+export const PUT_RESULT = "success";
+
+/** A card year from the row's echoed card, or null. */
+function cardYearOf(card: Record<string, unknown> | null): number | null {
+  const y = card?.year;
+  const n = typeof y === "number" ? y : typeof y === "string" && /^\d{4}$/.test(y) ? Number(y) : NaN;
+  return Number.isInteger(n) ? n : null;
+}
+
+/**
+ * The PUT's answer, in the shape the write capture of real BSC pinned
+ * (2026-11-14, status 200): an object, `{listings: [...], result}`, one
+ * listing per saved row with exactly the fields below and no others (the
+ * capture check refuses a path real BSC does not send). Values come from the
+ * saved rows and the namespace; `price` is a dollar STRING, as on the sheet,
+ * though the PUT takes a number. NB never reads this answer: a push confirms
+ * by reading the sheet back.
+ */
 export function putAnswer(saved: readonly Listing[], state: NamespaceState): unknown {
-  return saved.map((l) => ({
-    productId: l.productId,
-    productType: "raw",
-    cardId: l.cardId,
-    condition: l.condition,
-    availableQuantity: l.availableQuantity,
-    price: dollars(l.price),
-    sellerId: state.sellerId,
-    sellerSku: l.sellerSku,
-    updatedTimestamp: l.updatedTimestamp,
-  }));
+  return {
+    listings: saved.map((l) => ({
+      active: l.availableQuantity > 0,
+      availableQuantity: l.availableQuantity,
+      cardId: l.cardId,
+      cardYear: cardYearOf(l.card),
+      cartQty: 0,
+      condition: l.condition,
+      currency: "USD",
+      imageChanged: false,
+      matchVal: `${l.cardId}|${l.condition}`,
+      orderQuantity: 0,
+      price: dollars(l.price),
+      productId: l.productId,
+      productType: "raw",
+      sellerId: state.sellerId,
+      sellerImgBack: l.sellerImgBack ?? DEFAULT_IMG_BACK,
+      sellerImgFront: l.sellerImgFront ?? DEFAULT_IMG_FRONT,
+      sellerInventoryStatus: l.availableQuantity > 0,
+      sellerSku: l.sellerSku,
+      shippingCost: "0.00",
+      sportId: typeof l.card?.sport === "string" ? l.card.sport : null,
+      updatedTimestamp: l.updatedTimestamp,
+    })),
+    result: PUT_RESULT,
+  };
 }
 
 /**

@@ -202,6 +202,24 @@ response's status and shape (key paths and types, no values) through
 `POST /__fake/write-captures`, and the fake's synthesis is checked against
 that shape in its tests. This happens before the PR is pushed to CI.
 
+Captured so far:
+
+- **`PUT seller/bulk-upload`** (2026-11-14, status 200): an object,
+  `{listings: [...], result: string}`, one listing per saved row with
+  `active`, `sellerInventoryStatus`, `imageChanged` (booleans);
+  `availableQuantity`, `cardYear`, `cartQty`, `orderQuantity` (numbers);
+  `cardId`, `condition`, `currency`, `matchVal`, `price` (a dollar
+  **string**, though the PUT sends a number), `productId`, `productType`,
+  `sellerId`, `sellerImgFront`, `sellerImgBack`, `sellerSku`, `shippingCost`,
+  `sportId`, `updatedTimestamp` (strings). 25 paths in all. Not a bare array
+  of rows, which was the fake's first guess. `putAnswer` builds exactly these
+  paths from the saved rows and the namespace, and `tests/server.test.mjs`
+  pins them. NB never reads this answer (`putBscListings` discards it and the
+  push reads the sheet back), so its shape cannot break a push.
+- The photo upload: captured (status 200, verdict ok). The answer is an
+  object with `name`, `objectKey` and `url` (strings), which the fake's
+  `photoAnswer` already matched.
+
 The write is real: a PUT makes or changes a listing on the account that
 signed in, a photo upload stores a real image. `recorder undo-write --request
 <the same file>` mirrors NB's delist: a fresh sheet read, then the card's row
