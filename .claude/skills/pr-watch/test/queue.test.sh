@@ -58,6 +58,15 @@ out=$(bash "$HERE/../watch.sh" --queue 42 2>&1); rc=$?
 if [ "$rc" = 0 ] && echo "$out" | grep -q 'RUNNING — AWAITING_CHECKS' && echo "$out" | grep -q 'DONE MERGED' && ! echo "$out" | grep -q 'GREEN'; then echo "ok   re-enqueue then merge"
 else echo "FAIL re-enqueue then merge ($rc)"; echo "$out" | sed 's/^/     /'; fails=$((fails+1)); fi
 
+# Re-armed after an earlier ejection, still waiting on the PR's own checks
+# (shakedown, #482): the old failed_checks removal must not be this attempt's verdict.
+ARM='{"__typename":"AutoMergeEnabledEvent","createdAt":"2026-11-14T11:00:00Z"}'
+OLDREM=$(rem failed_checks '{"__typename":"Bot","login":"github-merge-queue"}')
+fresh; pr OPEN null "[$ADD,$OLDREM,$ARM]" | jq -c '.data.repository.pullRequest.autoMergeRequest={"enabledAt":"2026-11-14T11:00:00Z"}' > "$FIX/graphql.json"
+PR_WATCH_QUEUE_MAX_MIN=0 run "re-armed, not yet queued: waits, ignores the old removal" 2 'DONE TIMEOUT'
+fresh; pr OPEN null "[$ADD,$OLDREM,$ARM]" > "$FIX/graphql.json"
+run "armed then disarmed before joining is REMOVED" 4 'DONE REMOVED.*armed and then disabled'
+
 fresh; pr OPEN null "[]" > "$FIX/graphql.json"
 PR_WATCH_ENQUEUE_GRACE_MIN=0 run "never enqueued" 5 'DONE NOT_QUEUED'
 
