@@ -217,7 +217,7 @@ jobs:
             echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path (NEO-552)."
             exit 1
           fi
-          version=$(bash .github/scripts/resolve-secret-version.sh fake-bsc-caller-key neonbinder-dev)
+          version=$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-secret-version.sh" fake-bsc-caller-key neonbinder-dev)
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Configure Docker for GCR
