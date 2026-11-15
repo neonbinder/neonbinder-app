@@ -368,6 +368,10 @@ function sideFailedWhat(side: PlatformSide, kind?: FetchFailureKind): string {
       return `${name} signed us out`;
     case "no_sign_in":
       return `we couldn't sign in to ${name}`;
+    case "paced":
+      // NEO-552: our own call gate held the call back; the marketplace was
+      // never asked, so the copy never blames it.
+      return `we're pacing our calls to ${name}`;
     default:
       return `${name} didn't answer`;
   }

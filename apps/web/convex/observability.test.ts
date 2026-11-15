@@ -119,6 +119,18 @@ describe("classifyAdapterError", () => {
     expect(classifyAdapterError("No SportLots session cookie")).toBe("no_credentials");
   });
 
+  test("NEO-552: NB's own pacing copy is 'paced', never BSC's 'rate_limited'", () => {
+    expect(
+      classifyAdapterError(
+        "NeonBinder is pacing its calls to BuySportsCards, so it didn't ask just now. No sweat: give it about 30 seconds and try again.",
+      ),
+    ).toBe("paced");
+    // Even with a status in the same message (the fan-out joins them).
+    expect(classifyAdapterError("BSC error: a: BSC API error: 429; b: NeonBinder is pacing its calls to BuySportsCards")).toBe(
+      "paced",
+    );
+  });
+
   test("maps rate limit responses to 'rate_limited'", () => {
     expect(classifyAdapterError("BSC API error: 429")).toBe("rate_limited");
     expect(classifyAdapterError("rate limit exceeded")).toBe("rate_limited");

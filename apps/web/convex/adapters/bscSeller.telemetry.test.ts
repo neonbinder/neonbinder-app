@@ -28,6 +28,7 @@ import {
   type BscSellerSession,
 } from "./bscSeller";
 import { createBscRecorder, resetBscInflightForTests } from "../lib/bscCallTelemetry";
+import { openBscGate } from "../../lib/testing/bsc-gate-stub";
 
 type Scheduled = { name: string; delay: number; args: Record<string, unknown> };
 
@@ -42,7 +43,7 @@ function makeCtx(opts: { runAfter?: (delay: number, ref: unknown, args: unknown)
         return "scheduled-id";
       }),
   );
-  return { ctx: { runAction, scheduler: { runAfter } }, scheduled, runAction, runAfter };
+  return { ctx: { runAction, scheduler: { runAfter }, ...openBscGate().ctx }, scheduled, runAction, runAfter };
 }
 
 const session = (): BscSellerSession => ({ ownerId: "owner", token: "tok", reauthAttempted: false, dead: false });
@@ -364,7 +365,7 @@ describe("NEO-489: the session's sign-in is BSC wait time, counted once", () => 
       return (handlers.token ?? (async () => ({ token: "tok-1" })))();
     });
     const runAfter = vi.fn(async () => "scheduled-id");
-    return { ctx: { runAction, scheduler: { runAfter } }, runAction, runAfter };
+    return { ctx: { runAction, scheduler: { runAfter }, ...openBscGate().ctx }, runAction, runAfter };
   }
 
   test("the token read opens the wait, and it and the first call are one wait: one open edge, one close", async () => {

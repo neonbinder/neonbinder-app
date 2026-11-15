@@ -950,6 +950,8 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetCollectionContainersBatch",
     "resetCollectionBuildingSetsBatch",
     "resetVariantCommonPricesBatch",
+    // NEO-552 — the BSC call gate.
+    "resetMarketplaceCallGatesBatch",
     // PR 451 (NEO-482) — the BSC 429 cooldown and the BSC wait rows.
     "resetMarketplaceCooldownsBatch",
     "resetMarketplaceWaitsBatch",
@@ -3238,9 +3240,22 @@ describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () =
     ["marketplaceWaits.ts", "open", "internalMutation"],
     ["marketplaceWaits.ts", "edge", "internalMutation"],
     ["marketplaceWaits.ts", "expire", "internalMutation"],
-    ["marketplaceCooldowns.ts", "get", "internalQuery"],
-    ["marketplaceCooldowns.ts", "record429", "internalMutation"],
-    ["marketplaceCooldowns.ts", "recordSuccess", "internalMutation"],
+    // NEO-552 — the call gate replaced the cooldown: a public twin would let
+    // anyone open (or close) the breaker on every BSC call of the deployment.
+    ["bscCallGate.ts", "acquire", "internalMutation"],
+    ["bscCallGate.ts", "recordOutcome", "internalMutation"],
+    ["bscCallGate.ts", "state", "internalQuery"],
+    ["bscCallGate.ts", "releaseProbe", "internalMutation"],
+    ["bscCallGate.ts", "clearForTesting", "internalMutation"],
+    // NEO-552 — the fake BSC's controls and its ID token.
+    ["fakeBsc.ts", "idToken", "internalAction"],
+    ["fakeBsc.ts", "resetNamespace", "internalAction"],
+    ["fakeBsc.ts", "resetPrefix", "internalAction"],
+    ["fakeBsc.ts", "setFaults", "internalAction"],
+    ["fakeBsc.ts", "addOrder", "internalAction"],
+    ["fakeBsc.ts", "misses", "internalAction"],
+    ["fakeBsc.ts", "reportMisses", "internalAction"],
+    ["fakeBsc.ts", "writeCaptureStatus", "internalAction"],
     ["bscTeamPool.ts", "enqueueBscTeamChecks", "internalMutation"],
     ["bscTeamPool.ts", "cancelAllBscTeamChecks", "internalMutation"],
     ["checklistCandidates.ts", "resolveChecklistTeamTexts", "internalQuery"],
@@ -3617,5 +3632,49 @@ describe("NEO-556: the No Team run is admin-gated", () => {
     const t = convexTest(schema, modules);
     const ids = await seedIds(t);
     await expect(call(t.withIdentity(ADMIN) as never, ids)).resolves.toBeDefined();
+  });
+});
+
+/**
+ * NEO-552 — the fake BuySportsCards test controls (`testing.setMyBscFaults`,
+ * `testing.addMyBscOrder`, and their teardowns `testing.clearMyBscFaults`,
+ * `testing.clearBscCallGate`) and `testing.resetMyTestState`, now an action so
+ * the caller's fake namespace is cleared before it returns. Public because the
+ * E2E pages call them as the signed-in suite account, so they carry the
+ * testing seeds' locks: refused to an anonymous caller, refused where
+ * `TESTING_RESET_SECRET` is unset (every production deployment), and the fault
+ * and order controls also refuse a deployment that talks to the real BSC. They
+ * reach only the caller's own namespace, derived from the Clerk subject; that
+ * scoping is pinned in `testing.fakeBsc.test.ts`.
+ */
+describe("NEO-552: the fake BSC test controls are locked like the other testing seeds", () => {
+  const rules = [{ match: { method: "GET" as const, pathTemplate: "marketplace/user/profile" }, kind: "503" as const }];
+  const order = { items: [{ cardId: "abc123", condition: "nm", quantity: 1 }] };
+  const cases: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["testing.setMyBscFaults", (t) => t.action(api.testing.setMyBscFaults, { rules })],
+    ["testing.addMyBscOrder", (t) => t.action(api.testing.addMyBscOrder, { order })],
+    ["testing.clearMyBscFaults", (t) => t.action(api.testing.clearMyBscFaults, {})],
+    ["testing.clearBscCallGate", (t) => t.action(api.testing.clearBscCallGate, {})],
+    ["testing.resetMyTestState", (t) => t.action(api.testing.resetMyTestState, {})],
+  ];
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test.each(cases)("%s refuses an anonymous caller", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    await expect(call(convexTest(schema, modules))).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(cases)("%s throws where TESTING_RESET_SECRET is unset", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/not enabled/);
+  });
+
+  test.each(cases.slice(0, 4))("%s refuses a deployment on the real BuySportsCards", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "");
+    await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/real BuySportsCards/);
   });
 });

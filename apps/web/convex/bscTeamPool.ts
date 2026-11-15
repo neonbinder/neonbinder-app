@@ -7,8 +7,8 @@
  * notion of the rest of the deployment: two commits ran two chains in
  * parallel, and a chain kept asking straight through a 429 block, which only
  * extended it. One lane, one card at a time, deployment wide, and a 429 or an
- * open cooldown (`marketplaceCooldowns`) pushes the card back to the end of
- * the window instead of spending one of its passes.
+ * open BSC call gate (`bscCallGate`, NEO-552) pushes the card back to the end
+ * of the window instead of spending one of its passes.
  *
  * Each card is one work item (`adapters/buysportscards.runBscTeamCheckItem`),
  * re-enqueued by its completion (`onBscTeamCheckComplete`) when it has to be
@@ -19,7 +19,7 @@
  *    the item threw): the NEO-330 ladder, unchanged. Passes at now, +60 s,
  *    +5 min; a card that fails the third is handed to the operator
  *    (`bscTeamCheck.markBscTeamCheckGivenUp`), never given a guessed team.
- *  - deferred (BSC answered 429, or a cooldown is open): pushed back to the
+ *  - deferred (BSC answered 429, or the call gate is blocked): pushed back to the
  *    window's end WITHOUT using a pass. Once a card has been waiting 30 min in
  *    all since it was first queued it goes to the operator.
  *
@@ -173,7 +173,7 @@ export const enqueueBscTeamChecks = internalMutation({
 /**
  * PR 451 (NEO-482) — empties the lane, for the E2E reset: a reset wipes the
  * cards, but items queued by the previous seed would otherwise stay on the
- * one slot (pushed back behind an open cooldown for up to 30 minutes) in
+ * one slot (pushed back behind an open call gate for up to 30 minutes) in
  * front of the new run's cards.
  *
  * Armed like every reset step (`assertResetArmed`), because it throws away
@@ -185,7 +185,7 @@ export const enqueueBscTeamChecks = internalMutation({
  * re-enqueue, no hand-off to the operator, no write. An item already RUNNING
  * is let finish and reports its real result; if that re-enqueues it, the new
  * item is not cancelled, but its row is gone by then, so its first run reads
- * the row, answers `notNeeded` with no cooldown read and no call, and ends.
+ * the row, answers `notNeeded` with no gate read and no call, and ends.
  */
 export const cancelAllBscTeamChecks = internalMutation({
   args: {},

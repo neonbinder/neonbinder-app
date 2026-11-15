@@ -287,7 +287,7 @@ describe("resetMyTestState", () => {
     await s.me.mutation(api.collectionWants.set, { cardId: s.fx.gooden1, binderId: a, on: true });
     await s.me.mutation(api.collectionWants.set, { cardId: s.fx.strawberry2, on: true });
     await s.them.mutation(api.collectionWants.set, { cardId: s.fx.gooden1, on: true });
-    const result = await s.me.mutation(api.testing.resetMyTestState, {});
+    const result = await s.me.action(api.testing.resetMyTestState, {});
     expect(result.collectionWants).toBe(2);
     expect(await wantRows(s, ME.subject)).toEqual([]);
     expect(await wantRows(s, THEM.subject)).toHaveLength(1);

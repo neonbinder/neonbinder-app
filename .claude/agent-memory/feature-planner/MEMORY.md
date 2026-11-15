@@ -62,4 +62,5 @@
 - [Leftover copy red = unconfirmed final Remove](leftover-copy-red-is-an-unconfirmed-final-remove.md) — earlier spec on the worker ended on optimistic Remove; count removeCopy completions in its window; dismiss between identical notices
 - [Heavy cold-start notice is order-dependent](heavy-cold-start-notice-is-order-dependent.md) — warm heavy (~2 s post-#454) resolves before the seed redirect; NEO-481 edit warm-up is FAST-only
 - [Fresh-load stall: find the user's cached-hit batch](fresh-load-stall-check-for-the-users-cached-hit-batch.md) — no batch + healthy probe = page never subscribed; set-builder heading shows before its BSC sync ends
+- [Browser secrets are per Clerk user](browser-secrets-are-per-clerk-user-not-per-deployment.md) — credKey is shared by every deployment signing in one test user; isolate via key + TTL, never a clash guard
 - [Set team default: copy-down vs lookup](set-team-default-copy-down-vs-lookup.md) — teamIds copied down + cascaded; NEO-528 defaults looked up; never mix for one attribute

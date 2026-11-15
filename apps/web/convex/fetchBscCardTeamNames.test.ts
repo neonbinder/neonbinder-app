@@ -16,9 +16,10 @@
  */
 
 import { convexTest } from "convex-test";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { onTestFinished, afterEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
+import { skipBscGateWaits } from "../lib/testing/bsc-gate-stub";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -177,6 +178,9 @@ describe("fetchBscCardTeamNames", () => {
   });
 
   test("concurrency bound: never exceeds BSC_TEAM_LOOKUP_CONCURRENCY (10) in-flight calls, across 25 ids", async () => {
+    // NEO-552: 25 calls is past the call gate's burst of 10; its waits move
+    // the clock instead of sleeping.
+    onTestFinished(skipBscGateWaits());
     const t = convexTest(schema, modules);
     let inFlight = 0;
     let maxInFlight = 0;
