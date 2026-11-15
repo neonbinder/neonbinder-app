@@ -407,6 +407,18 @@ describe("Credential CRUD routes", () => {
       assert.equal(res.status, 400);
     });
 
+    it("returns 400 with a fixed body when any key is malformed, alongside valid ones", async () => {
+      store.set("bsc-credentials-present", { username: "seller@example.com" });
+      const res = await fetch(`${baseUrl}/credentials/check`, {
+        method: "POST",
+        headers: jsonHeaders,
+        body: JSON.stringify({ keys: ["bsc-credentials-present", "not a key/../x"] }),
+      });
+
+      assert.equal(res.status, 400);
+      assert.deepEqual(await res.json(), { error: "Invalid credential key format" });
+    });
+
     it("does not mistake the literal 'check' segment for a credential key", async () => {
       // Guard on the routing itself: POST /credentials/check must not fall
       // through to a :key handler.

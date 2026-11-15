@@ -17,3 +17,4 @@
 - [Measured-wait helper](measured-wait-helper-untested-and-narrower-than-flat-timeout.md) — flat live timeout swapped for announced-wait credit: helper untested, narrower than the flat ceiling, 429 UI never forced live
 - [Optimistic write, spec waits out the race](optimistic-write-spec-waits-out-the-race.md) — second-tab wait before reload hides lost-on-refresh; ask for pending/beforeunload unit test + no-wait reload
 - [Two-order spec helper](two-order-spec-helper-hook-and-pin-widening.md) — instant-or-wait helpers: check failure hooks, widened success regexes, dropped underWay gate
+- [Fake-upstream fault proof gaps](fake-upstream-fault-injection-proof-gaps.md) — conditional/times:1 faults prove nothing; dropped log-shape tests; vacuous capture checks
