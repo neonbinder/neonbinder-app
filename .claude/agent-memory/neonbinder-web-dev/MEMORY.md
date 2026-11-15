@@ -223,3 +223,4 @@
 - [Nested ConfirmDialog leaks Escape/Tab](reference_nested_confirmdialog_leaks_escape_and_tab.md) — wrap it to stop Escape/Tab; count-gated door stays mounted while busy
 - [Spec arithmetic: old vs new probe](reference_spec_arithmetic_old_vs_new_probe.md) — zzold_ copy of HEAD + CSV probe; OLD must reproduce the spec first
 - [Tokens scan reads state variants](reference_tokens_scan_reads_state_variants.md) — aria-disabled:/disabled: classes are scanned; ink-3 on button-neutral fails dark, held fields use ink-2
+- [convex-test: stub a module via the glob map](reference_convex_test_stub_a_module_via_the_glob_map.md) — add a "./x.ts" key to the modules map; check {ok:false} results; mutation→action flip breaks .mutation() call sites repo-wide

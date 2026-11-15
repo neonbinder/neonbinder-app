@@ -30,10 +30,12 @@ import {
   readCappedText,
   type BscSellerSession,
 } from "./bscSeller";
+import { openBscGate } from "../../lib/testing/bsc-gate-stub";
 
 const session = (): BscSellerSession => ({ ownerId: "owner", token: "tok", reauthAttempted: false, dead: false });
 // No call here reaches a 401, so the credential actions are never run.
-const ctx = { runAction: vi.fn() } as never;
+// NEO-552: an always-open call gate, so the calls reach the stubbed fetch.
+const ctx = { runAction: vi.fn(), ...openBscGate().ctx } as never;
 
 /** A body delivered in chunks, with no Content-Length. */
 function streamed(chunks: Uint8Array[]): Response {
@@ -111,6 +113,20 @@ describe("the seller client's calls", () => {
     if (!r.ok) return;
     expect(r.value).toMatchObject({ kind: "narrowed", total: 3, unreadable: 2 });
     expect(r.value.rows.map((x) => x.bscCardId)).toEqual(["c1"]);
+  });
+
+  test("NEO-552: a listing PUT's answer is never read, so any JSON shape (object, array, empty) succeeds", async () => {
+    // The real answer's shape is not what the fake first guessed (a write
+    // capture found an object root, not an array). NB must not depend on it:
+    // the push confirms by reading the sheet back.
+    for (const answer of [
+      () => Response.json({ anything: [{ nested: 1 }], ok: true }),
+      () => Response.json([{ cardId: "c1", availableQuantity: 1 }]),
+      () => new Response("", { status: 200 }),
+    ]) {
+      vi.stubGlobal("fetch", (async () => answer()) as typeof fetch);
+      expect(await putBscListings(ctx, session(), { sellerId: "s-1", listings: [{ cardId: "c1" }] })).toEqual({ ok: true, value: null });
+    }
   });
 });
 
@@ -342,7 +358,7 @@ describe("NEO-475: the seller profile read (5 s per attempt, one immediate retry
     const runAction = vi.fn(async () => ({ token: "tok-2", refreshed: true }));
     const { asked } = scriptProfile([401, 401, "ok"]);
     const s = session();
-    expect(await fetchBscSellerId({ runAction } as never, s)).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
+    expect(await fetchBscSellerId({ runAction, ...openBscGate().ctx } as never, s)).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
     expect(asked).toHaveLength(2);
     expect(s.dead).toBe(true);
   });

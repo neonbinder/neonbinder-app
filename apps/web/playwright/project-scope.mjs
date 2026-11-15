@@ -37,13 +37,19 @@ export function ignoredSpecs(project) {
 }
 
 // Specs that write to a marketplace seller account shared by EVERY PR's CI
-// (NEO-415): one BuySportsCards test seller and one eBay sandbox seller. Two
-// PRs running one at once clobber each other (one preview's sync zeroes the
-// other's listings; overlapping BSC sheet reads make BSC create twin rows),
-// and sharding cannot fix that. So they are planned in NO shard: e2e.yml's
+// (NEO-415): today the ONE eBay sandbox seller. Two PRs running one at once
+// clobber each other (one preview's sync zeroes the other's listings), and
+// sharding cannot fix that. So they are planned in NO shard: e2e.yml's
 // `seller-desktop` / `seller-mobile` jobs run them, one PR at a time repo-wide
 // (a queue, never a cancel), and the `e2e` gate still requires a passing
 // result for each on BOTH projects.
+//
+// NEO-552: BuySportsCards is NOT shared any more. Every test user has a fake BSC
+// account of their own (a namespace), so the two BSC listing specs left this
+// list and run in the ordinary shards: two PRs, or two shards of one, cannot
+// clobber each other's listings. Only eBay sandbox specs remain: the NEO-535
+// title hold, which lists nothing, and later the eBay listing spec once it is
+// restored (see PROJECT_IGNORE above).
 //
 // Each listed spec carries the tag below; shard-plan.mjs refuses to plan if the
 // tag and this list disagree in either direction, so a new seller spec cannot
@@ -52,8 +58,28 @@ export function ignoredSpecs(project) {
 export const SELLER_TAG = "@marketplace-seller";
 /** @type {string[]} */
 export const SELLER_SPECS = [
-  "collection/inventory-bsc-listing-2024-topps-chrome-future-stars.spec.ts",
-  "collection/inventory-bsc-listing-2026-bowman-chrome-prefix.spec.ts",
   // NEO-535: the eBay hold (a title over 80 characters) and its re-queue; needs no publish.
   "collection/inventory-ebay-sandbox-listing-title-over-80-is-held-then-requeued.spec.ts",
+];
+
+// Specs that open the BSC call gate (NEO-552). Convex holds ONE gate per
+// deployment (`convex/bscCallGate.ts`): a breaker that a 429, or a run of five
+// 5xx or timeouts, opens for every caller, and a token bucket in front of it.
+// A spec that injects such a fault (support/bscFake.ts: kind 429, 503, hang or
+// reset) therefore stops BuySportsCards calls for EVERY shard on that preview
+// until the window passes. Decision (NEO-552 plan): such specs run
+// serially, alone, never beside a shard. They are planned in NO shard:
+// e2e.yml's `breaker-desktop` / `breaker-mobile` jobs run them, each after the
+// pass's every shard and seller job has finished, and clear the gate in the
+// spec's teardown (`bscFake` fixture, `api.testing.clearBscCallGate`). The
+// `e2e` gate still requires each to pass on BOTH projects.
+//
+// Each listed spec carries the tag below; shard-plan.mjs refuses to plan if
+// the tag and this list disagree, and the bscFake helper refuses a breaker
+// fault in a spec that lacks the tag, so a fault spec cannot land in a shard.
+export const BREAKER_TAG = "@bsc-breaker";
+/** @type {string[]} */
+export const BREAKER_SPECS = [
+  "set-selector/checklist-fetch-bsc-429-cooldown-holds-the-cards-back-and-queues-them.spec.ts",
+  "set-selector/checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards.spec.ts",
 ];
