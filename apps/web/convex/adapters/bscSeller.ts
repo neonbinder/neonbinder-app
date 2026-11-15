@@ -21,7 +21,10 @@
 import type { ActionCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { isPlatformPaused } from "../marketplacePause";
-import { BSC_API_BASE, bscHeaders } from "../lib/bscHttp";
+import { actionBscIdTokenSource, bscFetch, bscHeaders, isBscBreakerRefusal } from "../lib/bscHttp";
+import { BSC_PACED_SELLER } from "../lib/bscPacedCopy";
+// NEO-552 — the deployment-wide call gate every BSC call passes.
+import { bscCallGateFor } from "../bscCallGate";
 import {
   parseBscOrder,
   parseBscOrderHistoryPage,
@@ -107,7 +110,13 @@ export type BscSellerFailureKind =
   /** A non-2xx other than 401. */
   | "http"
   /** A 2xx whose body NB could not read. */
-  | "bad_response";
+  | "bad_response"
+  /**
+   * NEO-552: NeonBinder's own call gate held the call back (`x-nb-bsc-breaker`),
+   * so BSC was never asked. No `httpStatus`: the 429/503 on the refusal is NB's,
+   * not BSC's. Not retried here and never a stop; the next round tries again.
+   */
+  | "paced";
 
 export interface BscSellerFailure {
   kind: BscSellerFailureKind;
@@ -132,7 +141,11 @@ export interface BscSellerSession {
 }
 
 /** The ctx a session needs: the two credential actions. */
-type SessionCtx = Pick<ActionCtx, "runAction">;
+/**
+ * NEO-552: `runMutation` / `runQuery` for the call gate; `runAction` for the
+ * token, the re-auth, and (fake mode only) the fake's ID token.
+ */
+type SessionCtx = Pick<ActionCtx, "runAction" | "runMutation" | "runQuery">;
 
 function failure(kind: BscSellerFailureKind, message: string, httpStatus?: number): BscSellerFailure {
   return { kind, message, ...(httpStatus !== undefined ? { httpStatus } : {}) };
@@ -153,6 +166,8 @@ export const BSC_SELLER_COPY = {
   garbled: "BuySportsCards sent back a garbled answer.",
   /** A body past `BSC_SELLER_MAX_BYTES`. */
   tooBig: "BuySportsCards sent back way more than NeonBinder can carry.",
+  /** NEO-552: NB's own call gate held the call back; BSC was never asked. */
+  paced: BSC_PACED_SELLER,
 } as const;
 
 /**
@@ -398,17 +413,35 @@ async function send(
     });
     last.call = call;
     try {
-      const res = await fetch(`${BSC_API_BASE}/${opts.path}`, {
-        method: opts.method,
-        headers: bscHeaders(session.token, { json: opts.form === undefined }),
-        ...(opts.json !== undefined ? { body: JSON.stringify(opts.json) } : {}),
-        ...(opts.form !== undefined ? { body: opts.form() } : {}),
-        // The bearer token goes to BSC's API host and nowhere else: a
-        // redirect is a failure, never followed.
-        redirect: "error",
-        signal: AbortSignal.timeout(opts.timeoutMs),
-      });
+      const res = await bscFetch(
+        opts.path,
+        {
+          method: opts.method,
+          headers: bscHeaders(session.token, { json: opts.form === undefined }),
+          ...(opts.json !== undefined ? { body: JSON.stringify(opts.json) } : {}),
+          ...(opts.form !== undefined ? { body: opts.form() } : {}),
+          // The bearer token goes to BSC's API host and nowhere else: a
+          // redirect is a failure, never followed.
+          redirect: "error",
+          signal: AbortSignal.timeout(opts.timeoutMs),
+        },
+        {
+          // google-auth-library is Node-only: fake mode mints the ID token
+          // in a Node action (cached per isolate).
+          idToken: actionBscIdTokenSource(() => ctx.runAction(internal.fakeBsc.idToken, {})),
+          pathTemplate: opts.pathTemplate,
+          gate: bscCallGateFor(ctx),
+        },
+      );
       rec.respond(call, res);
+      if (isBscBreakerRefusal(res)) {
+        // NEO-552: answered by NB's own call gate, unsent. Telemetry already
+        // counts it as refused (`rec.respond` reads the header); the collector
+        // reads that NB is pacing itself, never that BSC failed.
+        await res.text().catch(() => "");
+        logCall(opts.operation, startedAt, "paced", undefined, opts.logFields);
+        return failure("paced", BSC_SELLER_COPY.paced);
+      }
       logCall(opts.operation, startedAt, res.ok ? "ok" : "http_error", res.status, opts.logFields);
       return res;
     } catch (err) {

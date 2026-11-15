@@ -1,4 +1,5 @@
 import { SecretManagerServiceClient } from '@google-cloud/secret-manager';
+import { bscTarget } from '../bsc-endpoints';
 
 /**
  * The shape stored in one Secret Manager secret.
@@ -117,6 +118,48 @@ function parseCookieMap(value: unknown): Record<string, string> | undefined {
 }
 
 const KEY_PATTERN = /^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$/;
+
+/**
+ * NEO-552: the marker of a per-deployment fake-BSC session key,
+ * `buysportscards-credentials-fake-<convexSlug>-<clerkUserId>`.
+ *
+ * Convex sends this form instead of the bare per-user key when its deployment
+ * is wired to the fake BSC, so two deployments that sign in the same Clerk
+ * test user keep separate sessions (one Secret Manager store per GCP project
+ * would otherwise make the later seed overwrite the earlier run's session).
+ * The key passes KEY_PATTERN unchanged, so the release contract is untouched;
+ * these rules narrow what is accepted, they widen nothing.
+ */
+const FAKE_KEY_MARKER = '-credentials-fake-';
+/** Only BSC has a fake: any other site carrying the marker is refused. */
+const FAKE_KEY_PATTERN = /^buysportscards-credentials-fake-[a-zA-Z0-9_-]+$/;
+
+/**
+ * NEO-552: how long a fake-BSC session secret outlives its last write.
+ *
+ * Previews and worktree deployments are many and short-lived, and Secret
+ * Manager bills every live version, so a fake key must not live forever. Every
+ * write to it (the seed's sign-in, each hourly refresh) pushes the expiry back
+ * to now + 72 h, so a secret in use never expires mid-run, and one abandoned
+ * with its deployment is deleted, versions and all, three days later. Real
+ * keys get no expiry, ever: a user's session is not ours to time out.
+ */
+export const FAKE_CREDENTIAL_TTL_MS = 72 * 60 * 60 * 1000;
+
+/** True for a key in the per-deployment fake-BSC form (see FAKE_KEY_MARKER). */
+export function isFakeCredentialKey(key: string): boolean {
+  return key.includes(FAKE_KEY_MARKER);
+}
+
+/** The site prefix of a key that passed KEY_PATTERN (`<site>-credentials-...`). */
+function siteOf(key: string): string {
+  return key.slice(0, key.indexOf('-credentials-'));
+}
+
+/** The `expireTime` a fake-key write sets: now + FAKE_CREDENTIAL_TTL_MS, whole seconds. */
+function fakeExpireTime(now: number): { seconds: number } {
+  return { seconds: Math.floor((now + FAKE_CREDENTIAL_TTL_MS) / 1000) };
+}
 
 /**
  * Retry budget for a Secret Manager call refused with RESOURCE_EXHAUSTED.
@@ -278,8 +321,30 @@ function isAlreadyExistsError(err: any): boolean {
   );
 }
 
+/**
+ * Refuse a malformed key before any Secret Manager call. Every refusal throws
+ * the same fixed message, which the routes map to a 400 with a fixed body.
+ *
+ * NEO-552 adds two refusals for the fake-BSC key form:
+ *   - on any site but `buysportscards` (only BSC has a fake), and
+ *   - while this process talks to REAL BSC (`bscTarget()` is "real"). A fake
+ *     key reaching a real-mode revision means a test deployment is wired to
+ *     the wrong browser service; storing its session here would put a test
+ *     secret in the real store and hand real BSC a fake account. Prod can
+ *     never resolve the fake (bsc-endpoints.ts), so prod refuses every fake key.
+ *
+ * The log line names the reason only, never the key.
+ */
 function validateKeyFormat(key: string): void {
   if (!KEY_PATTERN.test(key)) {
+    throw new Error("Invalid credential key format");
+  }
+  if (!isFakeCredentialKey(key)) return;
+  let reason: string | undefined;
+  if (!FAKE_KEY_PATTERN.test(key)) reason = 'fake_key_not_bsc';
+  else if (bscTarget() !== 'fake') reason = 'fake_key_on_real_bsc_target';
+  if (reason) {
+    console.warn(JSON.stringify({ msg: 'credential_key_refused', reason }));
     throw new Error("Invalid credential key format");
   }
 }
@@ -476,12 +541,20 @@ export class SecretsManagerService {
     // key, so it must be captured on BOTH the normal and create-then-add
     // paths, and prune must be skipped entirely if we never learned it.
     let createdVersionName: string | null | undefined;
+    // NEO-552: a fake-BSC key's expiry moves to now + 72 h on every write.
+    const fake = isFakeCredentialKey(key);
     try {
+      // Extend BEFORE adding the version, so the version this call writes can
+      // never land in a secret that expires a moment later. Best-effort: a
+      // failure leaves the previous expiry in place (at most 72 h after the
+      // last write) and never fails the write.
+      if (fake) await this.extendFakeExpiry(secretName, siteOf(key));
       createdVersionName = await this.addVersionCreatingIfAbsent(
         parent,
         secretId,
         secretName,
         payload,
+        fake,
       );
     } catch (err: any) {
       // Message only, and this is the sharpest case in the file: the failed
@@ -558,6 +631,7 @@ export class SecretsManagerService {
     secretId: string,
     secretName: string,
     payload: string,
+    fake = false,
   ): Promise<string | null | undefined> {
     const addVersion = async (): Promise<string | null | undefined> => {
       const [created] = await withQuotaRetry(() =>
@@ -581,6 +655,9 @@ export class SecretsManagerService {
         secretId,
         secret: {
           replication: { automatic: {} },
+          // NEO-552: a fake-BSC key is born with its expiry; a real key never
+          // has one.
+          ...(fake ? { expireTime: fakeExpireTime(Date.now()) } : {}),
         },
       });
     } catch (err: any) {
@@ -600,6 +677,53 @@ export class SecretsManagerService {
     }
 
     return await addVersion();
+  }
+
+  /**
+   * NEO-552: push a fake-BSC secret's expiry to now + FAKE_CREDENTIAL_TTL_MS.
+   *
+   * Sets `expire_time` (an absolute timestamp, update mask `expire_time`)
+   * rather than `ttl`. `ttl` is INPUT_ONLY in the API and shares the
+   * `expiration` oneof with `expire_time`; the reference does not document
+   * which update-mask path a `ttl` update takes or that it counts from the
+   * update call, whereas `expire_time` is an ordinary updatable field whose
+   * value is exactly what we send. Computing it here costs only this
+   * process's clock skew, which is seconds against a 72 h window.
+   *
+   * NOT_FOUND means there is no secret yet (a first write, or one that
+   * expired): the write's create path sets the expiry instead, so it is
+   * silent. Every other failure is logged by code and swallowed: the write
+   * must not fail over a lifecycle detail, and the old expiry still stands.
+   *
+   * The failure log names the site and the error code only, never the secret
+   * id: a fake key's id carries the Convex deployment slug and the Clerk user
+   * id, and neither is needed to act on a failed extension.
+   *
+   * @param secretName Fully-qualified name; addresses the call, NEVER logged.
+   * @param site The key's site prefix, the only identifier logged.
+   */
+  private async extendFakeExpiry(secretName: string, site: string): Promise<void> {
+    try {
+      await withQuotaRetry(() =>
+        this.client.updateSecret({
+          secret: { name: secretName, expireTime: fakeExpireTime(Date.now()) },
+          updateMask: { paths: ['expire_time'] },
+        }),
+      );
+    } catch (err: any) {
+      if (isNotFoundError(err)) return;
+      const code = (err as { code?: unknown } | null)?.code;
+      console.error(
+        JSON.stringify({
+          msg: 'fake_secret_expiry_extend_failed',
+          site,
+          fake: true,
+          // The gRPC status, or the error class when there is none; never the
+          // message, which names the resource.
+          code: typeof code === 'number' ? code : err instanceof Error ? err.name : 'unknown',
+        }),
+      );
+    }
   }
 
   /**
