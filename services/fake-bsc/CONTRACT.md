@@ -194,17 +194,19 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
 Seller writes get no real test before prod. Instead, whenever a PR adds or
 changes a BSC write (listing PUT, photo upload, any new write), Jason performs
 that write once locally against real BSC and the recorder captures it:
-`recorder capture-write`. It sends exactly one write request, stores only the
+`recorder capture-write`. It sends exactly one write request (a listing PUT
+is built as NB builds it, from one seller-profile read and one seller-sheet
+read in the same session, and refused if the card is already listed), stores only the
 response's status and shape (key paths and types, no values) through
 `POST /__fake/write-captures`, and the fake's synthesis is checked against
 that shape in its tests. This happens before the PR is pushed to CI.
 
 The write is real: a PUT makes or changes a listing on the account that
 signed in, a photo upload stores a real image. `recorder undo-write --request
-<the same file>` sends the one undo BSC allows for a PUT, the same rows at
-`availableQuantity: 0` (a second real write: dry run unless `--yes`). A row
-that was an existing listing before the capture is taken down, not restored.
-A photo upload has no API undo (README, "Undoing a capture").
+<the same file>` mirrors NB's delist: a fresh sheet read, then the card's row
+at `availableQuantity: 0` (a second real write: dry run unless `--yes`), and
+only when that row carries the capture's SKU. A photo upload has no API undo
+(README, "Undoing a capture").
 
 ## App seams
 

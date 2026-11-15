@@ -213,18 +213,44 @@ Seller writes get no real test before production. When a PR adds or changes a
 BSC write, capture that write once against real BSC **before the PR goes to
 CI**:
 
+A listing PUT is built the way NeonBinder builds one, so what is captured is
+the write NB really sends. The request file names only the intent; the tool
+fills in the rest from the signed-in session:
+
 ```bash
 cat > /tmp/put.json <<'EOF'
-{ "method": "PUT", "path": "seller/bulk-upload", "body": { "sellerId": "<yours>", "listings": [ <one sheet row> ] } }
+{ "method": "PUT", "path": "seller/bulk-upload",
+  "listing": { "cardId": "<BSC card id>",
+               "filters": { "sport": ["..."], "year": ["..."], "setName": ["..."], "variant": ["..."] },
+               "condition": "near_mint", "quantity": 1, "price": 999, "sellerSku": "<any SKU>" } }
 EOF
 FAKE_BSC_CALLER_KEY=... FAKE_BSC_ADMIN_KEY=... \
   sh -c 'bw get item <bitwarden item id> | node dist/recorder/cli.js capture-write --fake <fake url> --request /tmp/put.json'
-# prints what it would send; add --yes to send it
+# lists every request it would send, sends nothing; add --yes to send them
 ```
 
+- `filters` name the card's set, one value per facet (the slugs NB stores for
+  the set); `condition` is one of BSC's raw condition keys
+  (`apps/web/convex/lib/bscConditions.ts`); `price` is dollars, 0.25 to 999
+  (NB never sends more); `quantity` is 1 to 100.
+- After sign-in it sends three requests, each once, never retried:
+  1. `GET marketplace/user/profile` for the seller id (as NB's
+     `fetchBscSellerId` reads it);
+  2. `POST seller/bulk-upload/results` for that condition and set (the read
+     NB's listing sync makes), taking the card's row;
+  3. the PUT: `{sellerId, listings: [{...that row, condition,
+     availableQuantity, price, sellerSku}]}`, the row NB's `planBscSheet`
+     builds. No photo keys are set.
+- It stops before the PUT, writing nothing, when the profile has no seller
+  id, when the sheet does not hold exactly one row for the card, or when the
+  card is **already listed** in that condition (so the undo can never take
+  down a listing that was there before).
+- It prints counts, statuses and reasons only, never the seller id or a row
+  value, and uploads only the PUT answer's status and shape.
+
 For the photo upload use `{"method":"POST","path":"common/card/undefined/product/undefined/attachment"}`
-and `--file <image>`. It sends **exactly one** request, never retries, and
-uploads only the status and the shape (key paths and types, no values) to
+and `--file <image>`: that one request, nothing else. Either way it uploads
+only the status and the shape (key paths and types, no values) to
 `/__fake/write-captures`. The fake answers whether its synthesis fits
 (`ok` or `shape_drift` with the differing paths); fix `src/synth/sheet.ts`
 (`putAnswer`, `photoAnswer`) on drift. Keep the request file until you have
@@ -232,18 +258,20 @@ undone the write, then delete it.
 
 ### Undoing a capture
 
-A listing PUT: `undo-write` sends the same rows with `availableQuantity: 0`,
-which takes them down. That is a second real write, so it is a dry run until
-`--yes`:
+A listing PUT: `undo-write` takes it down the way NB delists. It reads the
+seller id and the card's sheet row again, then PUTs that fresh row at
+`availableQuantity: 0` (NB's own "zero" row, carrying BSC's current
+`productId` for the listing). That is a second real write, so it is a dry
+run until `--yes`:
 
 ```bash
 sh -c 'bw get item <bitwarden item id> | node dist/recorder/cli.js undo-write --request /tmp/put.json'
-# prints what it would send; add --yes to send it
+# lists every request it would send, sends nothing; add --yes to send them
 ```
 
-A row that was already listed before the capture is taken down too, not put
-back to its earlier quantity: capture with a card you do not have listed, or
-set the quantity back by hand in BSC's seller pages afterwards.
+It writes nothing when the card is not listed in that condition (already
+down), or when the listing's SKU is not the request's `sellerSku` (not the
+capture's listing: take it down by hand if it should go).
 
 A photo upload has no undo through the API. An uploaded image that no listing
 points at is not shown to buyers. If a PUT attached it (`sellerImgFront` /

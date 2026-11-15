@@ -542,54 +542,243 @@ describe("recorder end to end against the in-process fake (BSC mocked)", () => {
 });
 
 describe("capture-write", () => {
+  const { readSellerId, readCardSheetRow, describeUndo, runUndoWrite, SELLER_ID_RE, SHEET_MAX_ROWS, BSC_RAW_CONDITIONS, BSC_MIN_PRICE_CENTS, BSC_MAX_PRICE_CENTS } = require("../dist/recorder/capture-write.js");
+  const { captureOutcomeLines, undoOutcomeLines, captureWrite, undoWrite } = require("../dist/recorder/cli.js");
+  const CARD = "96f9a87adeb7d02c275e117ef10d569c";
+  const SELLER = "SECRET-seller_42";
+  const FILTERS = { sport: ["hockey"], year: ["1995"], setName: ["halifax-mooseheads-qmjhl"], variant: ["base"] };
+  const SKU = "NB1-capture-NM-test";
+  const intentFile = { method: "PUT", path: "seller/bulk-upload", listing: { cardId: CARD, filters: FILTERS, condition: "near_mint", quantity: 1, price: 999, sellerSku: SKU } };
+  const intent = { cardId: CARD, filters: FILTERS, condition: "near_mint", quantity: 1, priceCents: 99_900, sellerSku: SKU };
+  const putRequest = { endpoint: "PUT seller/bulk-upload", method: "PUT", path: "seller/bulk-upload", intent };
+
+  /** A seller-sheet row as BSC's template sends it, with values that must never leak. */
+  function sheetRow(over = {}) {
+    return {
+      productId: "SECRET-product-1",
+      productType: "raw",
+      cardId: CARD,
+      price: "0",
+      condition: "near_mint",
+      availableQuantity: 0,
+      active: false,
+      sellerId: SELLER,
+      sellerSku: null,
+      sellerImgFront: "/Images/DefaultFront.gif",
+      sellerImgBack: "/Images/DefaultBack.gif",
+      updatedTimestamp: "2026-11-14T10:00:00.000000",
+      somethingNbDoesNotRead: { nested: "SECRET-extra" },
+      card: { id: CARD, cardNo: "1", players: "SECRET Player" },
+      ...over,
+    };
+  }
+  const otherRow = () => sheetRow({ cardId: "othercard", card: { id: "othercard", cardNo: "2" }, productId: "p2" });
+
+  /** A stubbed BSC: answers the profile, the sheet (a list per read, last one repeated) and the PUT. */
+  function bscStub({ profile = { userId: "u", sellerProfile: { sellerId: SELLER, sellerStoreName: "SECRET store" } }, sheets = [[otherRow(), sheetRow()]], putStatus = 200 } = {}) {
+    const calls = [];
+    let sheetReads = 0;
+    const fetchImpl = async (url, init) => {
+      const p = new URL(url).pathname.slice(1);
+      calls.push({ method: init.method, path: p, body: init.body ? JSON.parse(init.body) : undefined });
+      if (init.method === "GET" && p === "marketplace/user/profile") return new Response(JSON.stringify(profile), { status: 200 });
+      if (init.method === "POST" && p === "seller/bulk-upload/results") return new Response(JSON.stringify(sheets[Math.min(sheetReads++, sheets.length - 1)]), { status: 200 });
+      if (init.method === "PUT" && p === "seller/bulk-upload") return new Response(JSON.stringify([{ productId: "SECRET-product-1", cardId: CARD, sellerId: SELLER, price: "999.00", availableQuantity: 1 }]), { status: putStatus });
+      throw new Error(`unexpected ${init.method} ${p}`);
+    };
+    return { calls, fetchImpl, deps: { apiBase: "https://bsc.invalid", token: "t", headers: () => ({}), fetchImpl } };
+  }
+  const SECRETS = [SELLER, "SECRET"];
+  const assertNoSecrets = (value, what) => {
+    const text = typeof value === "string" ? value : JSON.stringify(value);
+    for (const s of SECRETS) assert.ok(!text.includes(s), `${what} leaked ${s}`);
+  };
+
   let dir;
   before(async () => (dir = await mkdtemp(path.join(tmpdir(), "fake-bsc-capture-"))));
   after(() => rm(dir, { recursive: true, force: true }));
+  const writeJson = async (name, v) => {
+    const f = path.join(dir, name);
+    await writeFile(f, JSON.stringify(v));
+    return f;
+  };
 
-  it("loads only a known write endpoint", async () => {
-    const good = path.join(dir, "put.json");
-    await writeFile(good, JSON.stringify({ method: "PUT", path: "/seller/bulk-upload", body: { sellerId: "s", listings: [{ cardId: "c" }] } }));
-    const req = await loadWriteRequest(good);
+  it("loads a listing intent, and lists every request it would send", async () => {
+    const req = await loadWriteRequest(await writeJson("put.json", { ...intentFile, path: "/seller/bulk-upload" }));
     assert.equal(req.endpoint, "PUT seller/bulk-upload");
-    assert.equal(describeWrite(req), "PUT seller/bulk-upload: 1 listing row(s)");
-    const bad = path.join(dir, "bad.json");
-    await writeFile(bad, JSON.stringify({ method: "POST", path: "search/bulk-upload/results", body: {} }));
-    await assert.rejects(loadWriteRequest(bad), /not a known BSC write endpoint/);
-    const photo = path.join(dir, "photo.json");
-    await writeFile(photo, JSON.stringify({ method: "POST", path: "common/card/undefined/product/undefined/attachment" }));
-    await assert.rejects(loadWriteRequest(photo), /--file/);
+    assert.deepEqual(req.intent, intent);
+    const plan = describeWrite(req);
+    assert.equal(plan.length, 3);
+    assert.match(plan[0], /^GET marketplace\/user\/profile/);
+    assert.match(plan[1], /^POST seller\/bulk-upload\/results/);
+    assert.match(plan[2], /^PUT seller\/bulk-upload: 1 listing row, quantity 1 \(REAL WRITE\)/);
+    assert.equal(describeUndo(req).length, 3);
+    for (const line of [...plan, ...describeUndo(req)]) assert.ok(!line.includes(CARD), "the plan names no card id");
   });
 
-  it("sends exactly one write and uploads its shape only, never a value", async () => {
-    let sends = 0;
+  it("refuses a PUT with a hand-written body, and an intent NB would never send", async () => {
+    await assert.rejects(loadWriteRequest(await writeJson("body.json", { method: "PUT", path: "seller/bulk-upload", body: { sellerId: "s", listings: [] } })), /names the listing, not a body/);
+    const bad = async (over, re) => assert.rejects(loadWriteRequest(await writeJson("bad.json", { ...intentFile, listing: { ...intentFile.listing, ...over } })), re);
+    await bad({ price: 999.99 }, /0\.25 to 999/);
+    await bad({ price: 0.1 }, /0\.25 to 999/);
+    await bad({ price: 1.234 }, /whole cents/);
+    await bad({ condition: "nm-mint" }, /raw conditions/);
+    await bad({ quantity: 0 }, /quantity/);
+    await bad({ filters: { sport: ["hockey", "baseball"] } }, /exactly one value/);
+    await bad({ filters: {} }, /filters/);
+    await bad({ cardId: "../x" }, /cardId/);
+    await bad({ sellerSku: "" }, /sellerSku/);
+    await assert.rejects(loadWriteRequest(await writeJson("search.json", { method: "POST", path: "search/bulk-upload/results", body: {} })), /not a known BSC write endpoint/);
+    await assert.rejects(loadWriteRequest(await writeJson("photo.json", { method: "POST", path: "common/card/undefined/product/undefined/attachment" })), /--file/);
+  });
+
+  it("reads the seller id and the sheet, then PUTs the row exactly as planBscSheet builds it", async () => {
+    const bsc = bscStub();
     const captured = [];
-    const r = await runCaptureWrite({
-      request: { endpoint: "PUT seller/bulk-upload", method: "PUT", path: "seller/bulk-upload", json: { sellerId: "real-seller-id", listings: [] } },
-      apiBase: "https://bsc.invalid",
-      token: "t",
-      headers: () => ({}),
-      fetchImpl: async () => (sends++, new Response(JSON.stringify([{ cardId: "secret-card", sellerId: "real-seller-id", price: "9.99" }]), { status: 200 })),
-      fake: { uploadCapture: async (c) => (captured.push(c), { verdict: "ok", paths: [] }) },
-    });
-    assert.equal(sends, 1);
+    const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async (c) => (captured.push(c), { verdict: "ok", paths: [] }) } });
     assert.equal(r.ok, true);
-    const text = JSON.stringify(captured);
-    for (const v of ["secret-card", "real-seller-id", "9.99"]) assert.ok(!text.includes(v), `leaked ${v}`);
-    assert.deepEqual(captured[0].shape["[].price"], ["string"]);
+    assert.equal(r.sent, 3);
+    assert.deepEqual(bsc.calls.map((c) => `${c.method} ${c.path}`), ["GET marketplace/user/profile", "POST seller/bulk-upload/results", "PUT seller/bulk-upload"]);
+    // The sheet read is readBscSellerSheet's body.
+    assert.deepEqual(bsc.calls[1].body, { condition: "near_mint", currentListings: true, productType: "raw", page: 0, size: 5000, sort: "default", filters: FILTERS });
+    // {...raw, condition, availableQuantity, price (dollar number), sellerSku}; the raw row's other keys ride along untouched.
+    assert.deepEqual(bsc.calls[2].body, { sellerId: SELLER, listings: [{ ...sheetRow(), condition: "near_mint", availableQuantity: 1, price: 999, sellerSku: SKU }] });
+    assert.equal(captured.length, 1);
+    assert.equal(captured[0].endpoint, "PUT seller/bulk-upload");
+    assertNoSecrets(captured, "the fake upload");
+    assertNoSecrets(r, "the result");
+  });
+
+  it("never logs the seller id or a row value", async () => {
+    const bsc = bscStub();
+    const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => ({ verdict: "shape_drift", paths: ["[].price"] }) } });
+    assert.equal(bsc.calls[2].body.sellerId, SELLER, "the PUT carries the looked-up seller id");
+    const lines = [...captureOutcomeLines(r, "/tmp/put.json", true)];
+    for (const reason of ["already_listed", "timeout", "upload_refused"]) lines.push(...captureOutcomeLines({ ok: false, sent: 2, reason }, "f", true));
+    for (const refusal of [{ step: "profile", reason: "no_seller_id" }, { step: "sheet", reason: "card_on_sheet_more_than_once", rows: 2 }, { step: "sheet", reason: "http", status: 500 }]) {
+      lines.push(...captureOutcomeLines({ ok: false, sent: 2, reason: "read_refused", refusal }, "f", true), ...undoOutcomeLines({ ok: false, sent: 2, reason: "read_refused", refusal }));
+    }
+    lines.push(...undoOutcomeLines({ ok: true, sent: 3, status: 200 }), ...undoOutcomeLines({ ok: false, sent: 2, reason: "not_ours" }));
+    assert.ok(lines.length > 8);
+    assertNoSecrets(lines.join("\n"), "the printed lines");
+    assert.ok(!lines.join("\n").includes(CARD));
+  });
+
+  it("refuses to write when the card is already listed", async () => {
+    const bsc = bscStub({ sheets: [[sheetRow({ availableQuantity: 2, price: "5.00", sellerSku: "theirs" })]] });
+    const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => assert.fail("no upload") } });
+    assert.deepEqual(r, { ok: false, sent: 2, reason: "already_listed" });
+    assert.ok(!bsc.calls.some((c) => c.method === "PUT"), "no PUT sent");
+  });
+
+  it("refuses to write unless the sheet holds exactly one row for the card", async () => {
+    for (const [sheet, reason, rows] of [
+      [[otherRow()], "card_not_on_sheet"],
+      [[], "card_not_on_sheet"],
+      [[sheetRow(), sheetRow({ productId: "p9" })], "card_on_sheet_more_than_once", 2],
+      [{ results: [sheetRow(), sheetRow()] }, "card_on_sheet_more_than_once", 2],
+      [[sheetRow({ condition: "excellent" })], "card_not_on_sheet"],
+      [[sheetRow({ productType: "graded" })], "card_not_on_sheet"],
+      [{ nope: true }, "unreadable_sheet"],
+    ]) {
+      const bsc = bscStub({ sheets: [sheet] });
+      const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => assert.fail("no upload") } });
+      assert.equal(r.reason, "read_refused");
+      assert.deepEqual(r.refusal, rows ? { step: "sheet", reason, rows } : { step: "sheet", reason });
+      assert.ok(!bsc.calls.some((c) => c.method === "PUT"), `${reason}: no PUT sent`);
+    }
+  });
+
+  it("stops before the sheet when the profile carries no usable seller id", async () => {
+    for (const profile of [{ sellerProfile: {} }, { sellerProfile: { sellerId: "has space" } }, {}]) {
+      const bsc = bscStub({ profile });
+      const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => assert.fail("no upload") } });
+      assert.deepEqual(r, { ok: false, sent: 1, reason: "read_refused", refusal: { step: "profile", reason: "no_seller_id" } });
+      assert.equal(bsc.calls.length, 1);
+    }
+    assert.deepEqual(await readSellerId(bscStub().deps), { ok: true, sellerId: SELLER });
   });
 
   it("does not retry a failed write", async () => {
+    const bsc = bscStub({ putStatus: 500 });
+    const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => ({ verdict: "shape_drift", paths: ["$status"] }) } });
+    assert.equal(r.status, 500);
+    assert.equal(bsc.calls.filter((c) => c.method === "PUT").length, 1);
+  });
+
+  it("sends a photo upload as one request, as before", async () => {
     let sends = 0;
     const r = await runCaptureWrite({
-      request: { endpoint: "PUT seller/bulk-upload", method: "PUT", path: "seller/bulk-upload", json: {} },
+      request: { endpoint: "POST common/card/undefined/product/undefined/attachment", method: "POST", path: "common/card/undefined/product/undefined/attachment", file: { bytes: Buffer.from("x"), fileName: "a.jpg", contentType: "image/jpeg" } },
       apiBase: "https://bsc.invalid",
       token: "t",
       headers: () => ({}),
-      fetchImpl: async () => (sends++, new Response("oops", { status: 500 })),
-      fake: { uploadCapture: async () => ({ verdict: "shape_drift", paths: ["$status"] }) },
+      fetchImpl: async (_u, init) => (sends++, assert.ok(init.body instanceof FormData), new Response(JSON.stringify({ objectKey: "/prod/x.jpg" }), { status: 200 })),
+      fake: { uploadCapture: async () => ({ verdict: "ok", paths: [] }) },
     });
     assert.equal(sends, 1);
-    assert.equal(r.status, 500);
+    assert.equal(r.ok, true);
+    assert.equal(r.sent, 1);
+  });
+
+  it("dry runs send nothing and read no credentials", async () => {
+    const file = await writeJson("dry.json", intentFile);
+    const realFetch = globalThis.fetch;
+    let fetches = 0;
+    globalThis.fetch = async () => (fetches++, assert.fail("a dry run must not fetch"));
+    const writes = [];
+    const realWrite = process.stderr.write;
+    process.stderr.write = (chunk) => (writes.push(String(chunk)), true);
+    try {
+      assert.equal(await captureWrite(parseArgs(["capture-write", "--request", file]).flags), 0);
+      assert.equal(await undoWrite(parseArgs(["undo-write", "--request", file]).flags), 0);
+    } finally {
+      process.stderr.write = realWrite;
+      globalThis.fetch = realFetch;
+    }
+    assert.equal(fetches, 0);
+    const out = writes.join("");
+    assert.match(out, /send 3 request\(s\)/);
+    assert.match(out, /dry run: nothing sent/);
+    assert.ok(!out.includes(CARD));
+  });
+
+  it("mirrors NB's delist on undo: a fresh read, that row at quantity 0", async () => {
+    const live = sheetRow({ productId: "live-product", availableQuantity: 1, price: "999.00", sellerSku: SKU, active: true });
+    const bsc = bscStub({ sheets: [[otherRow(), live]] });
+    const r = await runUndoWrite({ ...bsc.deps, request: putRequest });
+    assert.deepEqual(r, { ok: true, sent: 3, status: 200 });
+    assert.deepEqual(bsc.calls.map((c) => `${c.method} ${c.path}`), ["GET marketplace/user/profile", "POST seller/bulk-upload/results", "PUT seller/bulk-upload"]);
+    assert.deepEqual(bsc.calls[2].body, { sellerId: SELLER, listings: [{ ...live, condition: "near_mint", availableQuantity: 0 }] });
+  });
+
+  it("undo refuses a row that is not listed, or not the capture's", async () => {
+    const unlisted = bscStub();
+    assert.deepEqual(await runUndoWrite({ ...unlisted.deps, request: putRequest }), { ok: false, sent: 2, reason: "not_listed" });
+    const theirs = bscStub({ sheets: [[sheetRow({ availableQuantity: 4, sellerSku: "someone-else" })]] });
+    assert.deepEqual(await runUndoWrite({ ...theirs.deps, request: putRequest }), { ok: false, sent: 2, reason: "not_ours" });
+    for (const b of [unlisted, theirs]) assert.ok(!b.calls.some((c) => c.method === "PUT"));
+    const photo = { endpoint: "POST common/card/undefined/product/undefined/attachment", method: "POST", path: "x", file: { bytes: Buffer.alloc(1), fileName: "a.jpg", contentType: "image/jpeg" } };
+    assert.deepEqual(await runUndoWrite({ ...unlisted.deps, request: photo }), { ok: false, sent: 0, reason: "nothing_to_undo" });
+  });
+
+  it("matches the card on card.id, refusing a row whose top-level cardId disagrees", async () => {
+    const r = await readCardSheetRow(bscStub({ sheets: [[sheetRow({ cardId: "different" })]] }).deps, intent);
+    assert.deepEqual(r, { ok: false, refusal: { step: "sheet", reason: "card_not_on_sheet" } });
+  });
+
+  it("keeps its copies of NB's rules in step with apps/web", async () => {
+    const { readFile } = await import("node:fs/promises");
+    const web = path.resolve(import.meta.dirname, "..", "..", "..", "apps", "web", "convex");
+    const seller = await readFile(path.join(web, "adapters", "bscSeller.ts"), "utf8");
+    assert.ok(seller.includes(`const SELLER_ID_RE = ${SELLER_ID_RE.toString()};`), "SELLER_ID_RE");
+    assert.ok(seller.includes(`const SHEET_MAX_ROWS = ${SHEET_MAX_ROWS};`), "SHEET_MAX_ROWS");
+    const money = await readFile(path.join(web, "lib", "bscMoney.ts"), "utf8");
+    assert.ok(money.includes(`BSC_MIN_PRICE_CENTS = ${BSC_MIN_PRICE_CENTS};`), "min price");
+    assert.ok(money.includes(`BSC_MAX_PRICE_CENTS = ${BSC_MAX_PRICE_CENTS.toLocaleString("en-US").replace(/,/g, "_")};`), "max price");
+    const conditions = await readFile(path.join(web, "lib", "bscConditions.ts"), "utf8");
+    const listed = [...conditions.matchAll(/RAW_CONDITIONS = \[([^\]]*)\]/g)].flatMap((m) => [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]));
+    assert.deepEqual([...listed].sort(), [...BSC_RAW_CONDITIONS].sort());
   });
 });
 
@@ -763,27 +952,5 @@ describe("fake client identity", () => {
     assert.deepEqual(calls, [["https://fake.example.run.app", { includeEmail: true }]]);
     const other = adcIdTokenMinter("https://a.run.app", { getClient: async () => ({}), getIdTokenClient: async () => ({ idTokenProvider: { fetchIdToken: async (a) => `sa:${a}` } }) });
     assert.equal(await other(), "sa:https://a.run.app");
-  });
-});
-
-describe("undo-write", () => {
-  const { buildUndoRequest, describeUndo, runUndoWrite } = require("../dist/recorder/capture-write.js");
-  const put = { endpoint: "PUT seller/bulk-upload", method: "PUT", path: "seller/bulk-upload", json: { sellerId: "s", listings: [{ cardId: "c", condition: "near_mint", availableQuantity: 3, price: 1 }] } };
-
-  it("builds a quantity-0 PUT of the same rows, and nothing for a photo", () => {
-    const undo = buildUndoRequest(put);
-    assert.deepEqual(undo.json, { sellerId: "s", listings: [{ cardId: "c", condition: "near_mint", availableQuantity: 0, price: 1 }] });
-    assert.equal(put.json.listings[0].availableQuantity, 3, "the original request is untouched");
-    assert.match(describeUndo(undo), /1 listing row\(s\) set to quantity 0 \(a second real write\)/);
-    assert.equal(buildUndoRequest({ endpoint: "POST common/card/undefined/product/undefined/attachment", method: "POST", path: "x", file: { bytes: Buffer.alloc(1), fileName: "a.jpg", contentType: "image/jpeg" } }), null);
-    assert.equal(buildUndoRequest({ ...put, json: { sellerId: "s", listings: [] } }), null);
-  });
-
-  it("sends the undo exactly once", async () => {
-    const bodies = [];
-    const r = await runUndoWrite({ request: put, apiBase: "https://bsc.invalid", token: "t", headers: () => ({}), fetchImpl: async (_u, init) => (bodies.push(JSON.parse(init.body)), new Response("[]", { status: 200 })) });
-    assert.deepEqual(r, { ok: true, status: 200 });
-    assert.equal(bodies.length, 1);
-    assert.equal(bodies[0].listings[0].availableQuantity, 0);
   });
 });

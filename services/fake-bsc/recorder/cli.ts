@@ -16,7 +16,7 @@ import { readCredentials } from "./credentials";
 import { FakeClient, adcIdTokenMinter, isLoopback } from "./fake-client";
 import { bscSession, loadBrowserModules } from "./bsc";
 import { MAX_REQUESTS_PER_SESSION, bscCaller, describeRequest, planMisses, runRecordSession } from "./record";
-import { buildUndoRequest, describeUndo, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite } from "./capture-write";
+import { describeRefusal, describeUndo, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite, type CaptureResult, type UndoResult } from "./capture-write";
 import { askOnTerminal } from "./confirm";
 
 const FORBIDDEN_FLAGS = new Set(["--password", "--username", "--user", "--pass", "--credentials"]);
@@ -135,13 +135,52 @@ async function record(flags: Map<string, string | true>): Promise<number> {
   return ["done", "interrupted", "cap", "declined"].includes(result.stopReason) ? 0 : 2;
 }
 
-async function captureWrite(flags: Map<string, string | true>): Promise<number> {
+/**
+ * What `capture-write` prints about its run: counts, statuses, reasons and
+ * the fake's verdict. Built only from the result's own fields, which carry no
+ * BSC value (no seller id, no row), so nothing BSC sent can reach the terminal.
+ */
+export function captureOutcomeLines(r: CaptureResult, requestFile: string, listing: boolean): string[] {
+  if (!r.ok) {
+    if (r.reason === "read_refused") return [`nothing written: ${describeRefusal(r.refusal)} (${r.sent} read(s) sent)`];
+    if (r.reason === "already_listed") return [`nothing written: the card is already listed in that condition; capture with a card this account does not list (${r.sent} read(s) sent)`];
+    return [`capture failed: ${r.reason} (${r.sent} request(s) sent)`];
+  }
+  const lines = [`sent ${r.sent} request(s); the write answered ${r.status}; ${r.paths} shape path(s) stored; fake verdict: ${r.verdict}`];
+  for (const p of r.driftPaths) lines.push(`  differs: ${p}`);
+  if (listing) {
+    lines.push("THIS WAS A REAL WRITE on the signed-in BSC account. To take the listing down again:");
+    lines.push(`  <same stdin> | node dist/recorder/cli.js undo-write --request ${requestFile}   (dry run; add --yes to send)`);
+  } else {
+    lines.push("THIS WAS A REAL PHOTO UPLOAD on the signed-in BSC account; there is no API undo (README, \"Undoing a capture\").");
+  }
+  return lines;
+}
+
+/** What `undo-write` prints about its run; like `captureOutcomeLines`, no BSC value. */
+export function undoOutcomeLines(r: UndoResult): string[] {
+  if (!r.ok) {
+    if (r.reason === "read_refused") return [`nothing written: ${describeRefusal(r.refusal)} (${r.sent} read(s) sent)`];
+    if (r.reason === "not_listed") return [`nothing written: the card is not listed in that condition (already taken down?) (${r.sent} read(s) sent)`];
+    if (r.reason === "not_ours") return [`nothing written: the card's listing does not carry this request's SKU, so it is not the capture's; take it down by hand if it should go (${r.sent} read(s) sent)`];
+    return [`undo failed: ${r.reason} (${r.sent} request(s) sent)`];
+  }
+  return [`sent ${r.sent} request(s); the write answered ${r.status}`];
+}
+
+/** Prints the plan: every request sent to BSC after sign-in. Never a value. */
+function sayPlan(lines: string[]): void {
+  say(`would sign in to BSC, then send ${lines.length} request(s):`);
+  lines.forEach((line, i) => say(`  ${i + 1}. ${line}`));
+}
+
+export async function captureWrite(flags: Map<string, string | true>): Promise<number> {
   const requestFile = str(flags, "--request");
   if (!requestFile) throw new Error("--request <file.json> is required");
   const request = await loadWriteRequest(requestFile, str(flags, "--file"));
-  say(`would send exactly one write: ${describeWrite(request)}`);
+  sayPlan(describeWrite(request));
   if (flags.get("--yes") !== true) {
-    say("dry run: add --yes to send it");
+    say("dry run: nothing sent; add --yes to send it");
     return 0;
   }
   const fake = fakeClient(flags);
@@ -156,33 +195,22 @@ async function captureWrite(flags: Map<string, string | true>): Promise<number> 
     headers: (t, o) => browser.apiHeaders(t, o),
     fake,
   });
-  if (!r.ok) {
-    say(`capture failed: ${r.reason}`);
-    return 2;
-  }
-  say(`BSC answered ${r.status}; ${r.paths} shape path(s) stored; fake verdict: ${r.verdict}`);
-  for (const p of r.driftPaths) say(`  differs: ${p}`);
-  if (buildUndoRequest(request)) {
-    say("THIS WAS A REAL WRITE on the signed-in BSC account. To take the listing(s) down again:");
-    say(`  <same stdin> | node dist/recorder/cli.js undo-write --request ${requestFile}   (dry run; add --yes to send)`);
-  } else {
-    say("THIS WAS A REAL PHOTO UPLOAD on the signed-in BSC account; there is no API undo (README, \"Undoing a capture\").");
-  }
+  for (const line of captureOutcomeLines(r, requestFile, request.intent !== undefined)) say(line);
+  if (!r.ok) return 2;
   return r.verdict === "ok" ? 0 : 3;
 }
 
-async function undoWrite(flags: Map<string, string | true>): Promise<number> {
+export async function undoWrite(flags: Map<string, string | true>): Promise<number> {
   const requestFile = str(flags, "--request");
   if (!requestFile) throw new Error("--request <file.json> is required (the file capture-write sent)");
   const request = await loadWriteRequest(requestFile, str(flags, "--file"));
-  const undo = buildUndoRequest(request);
-  if (!undo) {
+  if (!request.intent) {
     say("nothing to undo through the API: a photo upload cannot be removed this way (README, \"Undoing a capture\")");
     return 1;
   }
-  say(`would send exactly one write: ${describeUndo(undo)}`);
+  sayPlan(describeUndo(request));
   if (flags.get("--yes") !== true) {
-    say("dry run: add --yes to send it");
+    say("dry run: nothing sent; add --yes to send it");
     return 0;
   }
   const browser = loadBrowserModules(str(flags, "--browser-dist"));
@@ -190,11 +218,8 @@ async function undoWrite(flags: Map<string, string | true>): Promise<number> {
   const tokens = await browser.signIn(creds.username, creds.password);
   creds.password = "";
   const r = await runUndoWrite({ request, apiBase: browser.apiBase, token: tokens.token, headers: (t, o) => browser.apiHeaders(t, o) });
-  if (!r.ok) {
-    say(`undo failed: ${r.reason}`);
-    return 2;
-  }
-  say(`BSC answered ${r.status}`);
+  for (const line of undoOutcomeLines(r)) say(line);
+  if (!r.ok) return 2;
   return r.status >= 200 && r.status < 300 ? 0 : 2;
 }
 
