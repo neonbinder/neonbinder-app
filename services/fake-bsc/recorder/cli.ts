@@ -16,7 +16,7 @@ import { readCredentials } from "./credentials";
 import { FakeClient, adcIdTokenMinter, isLoopback } from "./fake-client";
 import { bscSession, loadBrowserModules } from "./bsc";
 import { MAX_REQUESTS_PER_SESSION, bscCaller, describeRequest, planMisses, runRecordSession } from "./record";
-import { describeRefusal, describeUndo, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite, type CaptureResult, type UndoResult } from "./capture-write";
+import { describeRefusal, describeUndo, describeUndoCheck, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite, type CaptureResult, type UndoResult } from "./capture-write";
 import { askOnTerminal } from "./confirm";
 
 const FORBIDDEN_FLAGS = new Set(["--password", "--username", "--user", "--pass", "--credentials"]);
@@ -141,31 +141,46 @@ async function record(flags: Map<string, string | true>): Promise<number> {
  * BSC value (no seller id, no row), so nothing BSC sent can reach the terminal.
  */
 export function captureOutcomeLines(r: CaptureResult, requestFile: string, listing: boolean): string[] {
-  if (!r.ok) {
-    if (r.reason === "read_refused") return [`nothing written: ${describeRefusal(r.refusal)} (${r.sent} read(s) sent)`];
-    if (r.reason === "already_listed") return [`nothing written: the card is already listed in that condition; capture with a card this account does not list (${r.sent} read(s) sent)`];
-    return [`capture failed: ${r.reason} (${r.sent} request(s) sent)`];
+  const lines: string[] = [];
+  if (r.ok) {
+    lines.push(`sent ${r.sent} request(s); the write answered ${r.status}; ${r.paths} shape path(s) stored; fake verdict: ${r.verdict}`);
+    for (const p of r.driftPaths) lines.push(`  differs: ${p}`);
+  } else if (r.reason === "read_refused") {
+    return [`nothing written: ${describeRefusal(r.refusal)} (${r.sent} read(s) sent)`];
+  } else if (r.reason === "already_listed") {
+    return [`nothing written: the card is already listed in that condition; capture with a card this account does not list (${r.sent} read(s) sent)`];
+  } else if (r.reason === "upload_refused") {
+    lines.push(`the write was sent (${r.sent} request(s) sent), but the fake refused its shape; nothing stored`);
+  } else {
+    lines.push(`capture failed after the write was sent: ${r.reason}; its answer was not read (${r.sent} request(s) sent)`);
   }
-  const lines = [`sent ${r.sent} request(s); the write answered ${r.status}; ${r.paths} shape path(s) stored; fake verdict: ${r.verdict}`];
-  for (const p of r.driftPaths) lines.push(`  differs: ${p}`);
+  // From here the write went out (writeSent): it may have changed the account.
+  const certain = r.ok || r.reason === "upload_refused";
+  const what = certain ? "THIS WAS A REAL" : "THIS MAY HAVE BEEN A REAL";
   if (listing) {
-    lines.push("THIS WAS A REAL WRITE on the signed-in BSC account. To take the listing down again:");
+    lines.push(`${what} WRITE on the signed-in BSC account. To take the listing down again:`);
     lines.push(`  <same stdin> | node dist/recorder/cli.js undo-write --request ${requestFile}   (dry run; add --yes to send)`);
   } else {
-    lines.push("THIS WAS A REAL PHOTO UPLOAD on the signed-in BSC account; there is no API undo (README, \"Undoing a capture\").");
+    lines.push(`${what} PHOTO UPLOAD on the signed-in BSC account; there is no API undo (README, "Undoing a capture").`);
   }
   return lines;
 }
 
 /** What `undo-write` prints about its run; like `captureOutcomeLines`, no BSC value. */
 export function undoOutcomeLines(r: UndoResult): string[] {
-  if (!r.ok) {
+  if (!r.ok && !r.writeSent) {
     if (r.reason === "read_refused") return [`nothing written: ${describeRefusal(r.refusal)} (${r.sent} read(s) sent)`];
     if (r.reason === "not_listed") return [`nothing written: the card is not listed in that condition (already taken down?) (${r.sent} read(s) sent)`];
-    if (r.reason === "not_ours") return [`nothing written: the card's listing does not carry this request's SKU, so it is not the capture's; take it down by hand if it should go (${r.sent} read(s) sent)`];
-    return [`undo failed: ${r.reason} (${r.sent} request(s) sent)`];
+    if (r.reason === "not_ours") return [`nothing written: the card's listing does not carry this request's capture SKU, so it is not the capture's; take it down by hand if it should go (${r.sent} read(s) sent)`];
+    return [`nothing written: ${r.reason}`];
   }
-  return [`sent ${r.sent} request(s); the write answered ${r.status}`];
+  const first = r.ok ? `sent ${r.sent} request(s); the undo answered ${r.status}` : `the undo was sent but its answer was not read (${r.reason}); ${r.sent} request(s) sent`;
+  return [first, describeUndoCheck(r.check)];
+}
+
+/** True when the undo is known to have taken the row down. */
+export function undoSucceeded(r: UndoResult): boolean {
+  return r.ok && r.status >= 200 && r.status < 300 && (r.check.state === "down" || r.check.state === "down_other_sku");
 }
 
 /** Prints the plan: every request sent to BSC after sign-in. Never a value. */
@@ -219,8 +234,7 @@ export async function undoWrite(flags: Map<string, string | true>): Promise<numb
   creds.password = "";
   const r = await runUndoWrite({ request, apiBase: browser.apiBase, token: tokens.token, headers: (t, o) => browser.apiHeaders(t, o) });
   for (const line of undoOutcomeLines(r)) say(line);
-  if (!r.ok) return 2;
-  return r.status >= 200 && r.status < 300 ? 0 : 2;
+  return undoSucceeded(r) ? 0 : 2;
 }
 
 async function main(argv: string[]): Promise<number> {

@@ -222,7 +222,7 @@ cat > /tmp/put.json <<'EOF'
 { "method": "PUT", "path": "seller/bulk-upload",
   "listing": { "cardId": "<BSC card id>",
                "filters": { "sport": ["..."], "year": ["..."], "setName": ["..."], "variant": ["..."] },
-               "condition": "near_mint", "quantity": 1, "price": 999, "sellerSku": "<any SKU>" } }
+               "condition": "near_mint", "price": 999, "sellerSku": "NBCAPTURE-<ticket>" } }
 EOF
 FAKE_BSC_CALLER_KEY=... FAKE_BSC_ADMIN_KEY=... \
   sh -c 'bw get item <bitwarden item id> | node dist/recorder/cli.js capture-write --fake <fake url> --request /tmp/put.json'
@@ -231,8 +231,15 @@ FAKE_BSC_CALLER_KEY=... FAKE_BSC_ADMIN_KEY=... \
 
 - `filters` name the card's set, one value per facet (the slugs NB stores for
   the set); `condition` is one of BSC's raw condition keys
-  (`apps/web/convex/lib/bscConditions.ts`); `price` is dollars, 0.25 to 999
-  (NB never sends more); `quantity` is 1 to 100.
+  (`apps/web/convex/lib/bscConditions.ts`).
+- A capture lists **exactly one copy** (leave `quantity` out; anything but 1
+  is refused) at **$500 to $999** (`price`, dollars in whole cents), so nobody
+  buys it in the minutes it is live; NB never sends more than $999.
+- `sellerSku` must be `NBCAPTURE-` then 1 to 80 letters, digits, `-` or `_`.
+  NB's listing SKU (`NB1-...`, `parseListingSku` in
+  `apps/web/convex/lib/listingSku.ts`) is refused, and NB can never read a
+  capture SKU as its own, so an account later connected to NB never takes the
+  capture for an NB listing.
 - After sign-in it sends three requests, each once, never retried:
   1. `GET marketplace/user/profile` for the seller id (as NB's
      `fetchBscSellerId` reads it);
@@ -242,14 +249,23 @@ FAKE_BSC_CALLER_KEY=... FAKE_BSC_ADMIN_KEY=... \
      availableQuantity, price, sellerSku}]}`, the row NB's `planBscSheet`
      builds. No photo keys are set.
 - It stops before the PUT, writing nothing, when the profile has no seller
-  id, when the sheet does not hold exactly one row for the card, or when the
-  card is **already listed** in that condition (so the undo can never take
-  down a listing that was there before).
+  id, when the sheet does not hold exactly one readable row for the card (a
+  row over NB's 16 KB row limit is refused, as NB drops it), or when the card
+  is **already listed** in that condition (so the undo can never take down a
+  listing that was there before). Every answer is read with a byte cap, as
+  NB reads it.
 - It prints counts, statuses and reasons only, never the seller id or a row
   value, and uploads only the PUT answer's status and shape.
+- Once the PUT has gone out, any failure (a timeout, a dropped connection,
+  an answer too large to read, the fake refusing the upload) still prints
+  **THIS MAY HAVE BEEN A REAL WRITE** with the `undo-write` command: the
+  listing may be up. Run the undo's dry run, then `--yes`.
 
 For the photo upload use `{"method":"POST","path":"common/card/undefined/product/undefined/attachment"}`
-and `--file <image>`: that one request, nothing else. Either way it uploads
+(that literal path, nothing else) and `--file <image>`: that one request.
+**Use a synthetic image, or one with its EXIF stripped** (no location, camera
+or owner data): BSC keeps it and there is no API undo. The file is always
+sent as `capture<ext>`, never under its own name. Either way it uploads
 only the status and the shape (key paths and types, no values) to
 `/__fake/write-captures`. The fake answers whether its synthesis fits
 (`ok` or `shape_drift` with the differing paths); fix `src/synth/sheet.ts`
@@ -261,8 +277,8 @@ undone the write, then delete it.
 A listing PUT: `undo-write` takes it down the way NB delists. It reads the
 seller id and the card's sheet row again, then PUTs that fresh row at
 `availableQuantity: 0` (NB's own "zero" row, carrying BSC's current
-`productId` for the listing). That is a second real write, so it is a dry
-run until `--yes`:
+`productId` for the listing), then reads the sheet once more to check. That
+is a second real write, so it is a dry run until `--yes`:
 
 ```bash
 sh -c 'bw get item <bitwarden item id> | node dist/recorder/cli.js undo-write --request /tmp/put.json'
@@ -270,8 +286,13 @@ sh -c 'bw get item <bitwarden item id> | node dist/recorder/cli.js undo-write --
 ```
 
 It writes nothing when the card is not listed in that condition (already
-down), or when the listing's SKU is not the request's `sellerSku` (not the
-capture's listing: take it down by hand if it should go).
+down), or when the listing's SKU is not the request's `NBCAPTURE-` SKU (not
+the capture's listing: take it down by hand if it should go).
+
+After its PUT it reads the sheet once (no retry) and says what it found:
+`down`; down but carrying another SKU; **still listed**; listed under another
+SKU; or not checked (the read failed). Anything but down exits non-zero:
+look at the card in BSC's seller pages and take it down by hand.
 
 A photo upload has no undo through the API. An uploaded image that no listing
 points at is not shown to buyers. If a PUT attached it (`sellerImgFront` /

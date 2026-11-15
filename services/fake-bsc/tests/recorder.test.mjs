@@ -542,15 +542,18 @@ describe("recorder end to end against the in-process fake (BSC mocked)", () => {
 });
 
 describe("capture-write", () => {
-  const { readSellerId, readCardSheetRow, describeUndo, runUndoWrite, SELLER_ID_RE, SHEET_MAX_ROWS, BSC_RAW_CONDITIONS, BSC_MIN_PRICE_CENTS, BSC_MAX_PRICE_CENTS } = require("../dist/recorder/capture-write.js");
-  const { captureOutcomeLines, undoOutcomeLines, captureWrite, undoWrite } = require("../dist/recorder/cli.js");
+  const cw = require("../dist/recorder/capture-write.js");
+  const { readSellerId, readCardSheetRow, readCappedText, describeUndo, runUndoWrite, CAPTURE_SKU_RE } = cw;
+  const { captureOutcomeLines, undoOutcomeLines, undoSucceeded, captureWrite, undoWrite } = require("../dist/recorder/cli.js");
   const CARD = "96f9a87adeb7d02c275e117ef10d569c";
   const SELLER = "SECRET-seller_42";
   const FILTERS = { sport: ["hockey"], year: ["1995"], setName: ["halifax-mooseheads-qmjhl"], variant: ["base"] };
-  const SKU = "NB1-capture-NM-test";
-  const intentFile = { method: "PUT", path: "seller/bulk-upload", listing: { cardId: CARD, filters: FILTERS, condition: "near_mint", quantity: 1, price: 999, sellerSku: SKU } };
+  const SKU = "NBCAPTURE-neo552-test";
+  const PHOTO = "common/card/undefined/product/undefined/attachment";
+  const intentFile = { method: "PUT", path: "seller/bulk-upload", listing: { cardId: CARD, filters: FILTERS, condition: "near_mint", price: 999, sellerSku: SKU } };
   const intent = { cardId: CARD, filters: FILTERS, condition: "near_mint", quantity: 1, priceCents: 99_900, sellerSku: SKU };
   const putRequest = { endpoint: "PUT seller/bulk-upload", method: "PUT", path: "seller/bulk-upload", intent };
+  const photoRequest = { endpoint: "POST " + PHOTO, method: "POST", path: PHOTO, file: { bytes: Buffer.from("x"), fileName: "capture.jpg", contentType: "image/jpeg" } };
 
   /** A seller-sheet row as BSC's template sends it, with values that must never leak. */
   function sheetRow(over = {}) {
@@ -573,26 +576,56 @@ describe("capture-write", () => {
     };
   }
   const otherRow = () => sheetRow({ cardId: "othercard", card: { id: "othercard", cardNo: "2" }, productId: "p2" });
+  const listedRow = (over = {}) => sheetRow({ productId: "live-product", availableQuantity: 1, price: "999.00", sellerSku: SKU, active: true, ...over });
 
-  /** A stubbed BSC: answers the profile, the sheet (a list per read, last one repeated) and the PUT. */
-  function bscStub({ profile = { userId: "u", sellerProfile: { sellerId: SELLER, sellerStoreName: "SECRET store" } }, sheets = [[otherRow(), sheetRow()]], putStatus = 200 } = {}) {
+  /** A body larger than `bytes`, streamed with no Content-Length. */
+  const bigStream = (bytes) =>
+    new ReadableStream({
+      start(c) {
+        const chunk = new Uint8Array(1024 * 1024).fill(32);
+        for (let n = 0; n <= bytes; n += chunk.length) c.enqueue(chunk);
+        c.close();
+      },
+    });
+
+  /**
+   * A stubbed BSC: answers the profile, the sheet (one answer per read, the
+   * last repeated) and the write. `write` is "ok", a status number, "hang",
+   * "network" or "big".
+   */
+  function bscStub({ profile = { userId: "u", sellerProfile: { sellerId: SELLER, sellerStoreName: "SECRET store" } }, sheets = [[otherRow(), sheetRow()]], write = "ok" } = {}) {
     const calls = [];
     let sheetReads = 0;
     const fetchImpl = async (url, init) => {
       const p = new URL(url).pathname.slice(1);
-      calls.push({ method: init.method, path: p, body: init.body ? JSON.parse(init.body) : undefined });
+      calls.push({ method: init.method, path: p, body: typeof init.body === "string" ? JSON.parse(init.body) : init.body });
       if (init.method === "GET" && p === "marketplace/user/profile") return new Response(JSON.stringify(profile), { status: 200 });
       if (init.method === "POST" && p === "seller/bulk-upload/results") return new Response(JSON.stringify(sheets[Math.min(sheetReads++, sheets.length - 1)]), { status: 200 });
-      if (init.method === "PUT" && p === "seller/bulk-upload") return new Response(JSON.stringify([{ productId: "SECRET-product-1", cardId: CARD, sellerId: SELLER, price: "999.00", availableQuantity: 1 }]), { status: putStatus });
+      if ((init.method === "PUT" && p === "seller/bulk-upload") || (init.method === "POST" && p === PHOTO)) {
+        if (write === "hang") {
+          // AbortSignal.timeout's timer does not hold the event loop open (a real socket does), so this one does.
+          return new Promise((_r, reject) => {
+            const keepAlive = setTimeout(() => reject(new Error("the stub hung past the test")), 5000);
+            init.signal.addEventListener("abort", () => (clearTimeout(keepAlive), reject(init.signal.reason)));
+          });
+        }
+        if (write === "network") throw new TypeError("fetch failed");
+        if (write === "big") return new Response(bigStream(cw.MAX_BYTES.put), { status: 200 });
+        const body = p === PHOTO ? { objectKey: "/prod/x.jpg" } : [{ productId: "SECRET-product-1", cardId: CARD, sellerId: SELLER, price: "999.00", availableQuantity: 1 }];
+        return new Response(JSON.stringify(body), { status: write === "ok" ? 200 : write });
+      }
       throw new Error(`unexpected ${init.method} ${p}`);
     };
-    return { calls, fetchImpl, deps: { apiBase: "https://bsc.invalid", token: "t", headers: () => ({}), fetchImpl } };
+    return { calls, fetchImpl, deps: { apiBase: "https://bsc.invalid", token: "t", headers: () => ({}), fetchImpl, timeoutMs: 200 } };
   }
+  const writes = (bsc) => bsc.calls.filter((c) => c.method === "PUT" || c.path === PHOTO);
   const SECRETS = [SELLER, "SECRET"];
   const assertNoSecrets = (value, what) => {
     const text = typeof value === "string" ? value : JSON.stringify(value);
     for (const s of SECRETS) assert.ok(!text.includes(s), `${what} leaked ${s}`);
   };
+  const okFake = { uploadCapture: async () => ({ verdict: "ok", paths: [] }) };
+  const noUpload = { uploadCapture: async () => assert.fail("no upload") };
 
   let dir;
   before(async () => (dir = await mkdtemp(path.join(tmpdir(), "fake-bsc-capture-"))));
@@ -612,24 +645,49 @@ describe("capture-write", () => {
     assert.match(plan[0], /^GET marketplace\/user\/profile/);
     assert.match(plan[1], /^POST seller\/bulk-upload\/results/);
     assert.match(plan[2], /^PUT seller\/bulk-upload: 1 listing row, quantity 1 \(REAL WRITE\)/);
-    assert.equal(describeUndo(req).length, 3);
-    for (const line of [...plan, ...describeUndo(req)]) assert.ok(!line.includes(CARD), "the plan names no card id");
+    const undo = describeUndo(req);
+    assert.equal(undo.length, 4);
+    assert.match(undo[3], /^POST seller\/bulk-upload\/results: .*check the row is down/);
+    for (const line of [...plan, ...undo]) assert.ok(!line.includes(CARD), "the plan names no card id");
+    // An explicit quantity of 1 is accepted too.
+    assert.equal((await loadWriteRequest(await writeJson("q1.json", { ...intentFile, listing: { ...intentFile.listing, quantity: 1 } }))).intent.quantity, 1);
   });
 
-  it("refuses a PUT with a hand-written body, and an intent NB would never send", async () => {
+  it("refuses a PUT with a hand-written body, and an intent a capture must never send", async () => {
     await assert.rejects(loadWriteRequest(await writeJson("body.json", { method: "PUT", path: "seller/bulk-upload", body: { sellerId: "s", listings: [] } })), /names the listing, not a body/);
     const bad = async (over, re) => assert.rejects(loadWriteRequest(await writeJson("bad.json", { ...intentFile, listing: { ...intentFile.listing, ...over } })), re);
-    await bad({ price: 999.99 }, /0\.25 to 999/);
-    await bad({ price: 0.1 }, /0\.25 to 999/);
-    await bad({ price: 1.234 }, /whole cents/);
+    await bad({ price: 999.99 }, /500 to 999/);
+    await bad({ price: 499.99 }, /500 to 999/);
+    await bad({ price: 1 }, /500 to 999/);
+    await bad({ price: 600.001 }, /whole cents/);
+    await bad({ quantity: 2 }, /exactly 1 copy/);
+    await bad({ quantity: 0 }, /exactly 1 copy/);
     await bad({ condition: "nm-mint" }, /raw conditions/);
-    await bad({ quantity: 0 }, /quantity/);
     await bad({ filters: { sport: ["hockey", "baseball"] } }, /exactly one value/);
     await bad({ filters: {} }, /filters/);
     await bad({ cardId: "../x" }, /cardId/);
-    await bad({ sellerSku: "" }, /sellerSku/);
+    await bad({ sellerSku: "" }, /capture SKU/);
+    await bad({ sellerSku: "NBCAPTURE-" }, /capture SKU/);
+    await bad({ sellerSku: `NBCAPTURE-${"a".repeat(81)}` }, /capture SKU/);
     await assert.rejects(loadWriteRequest(await writeJson("search.json", { method: "POST", path: "search/bulk-upload/results", body: {} })), /not a known BSC write endpoint/);
-    await assert.rejects(loadWriteRequest(await writeJson("photo.json", { method: "POST", path: "common/card/undefined/product/undefined/attachment" })), /--file/);
+  });
+
+  it("refuses an NB listing SKU: NB1- or NB-", async () => {
+    const bad = async (sku) => assert.rejects(loadWriteRequest(await writeJson("nbsku.json", { ...intentFile, listing: { ...intentFile.listing, sellerSku: sku } })), /capture SKU/);
+    await bad("NB1-k17abcdefghijklmnopqrstuvwxyz12-NM-k17abcdefghijklmnopqrstuvwxyz12");
+    await bad("NB1-capture-NM-test");
+    await bad("NB-capture");
+    await bad("nbcapture-lowercase");
+  });
+
+  it("accepts only the literal photo path, and never sends the image's own file name", async () => {
+    const img = path.join(dir, "IMG_1234 my card.JPG");
+    await writeFile(img, Buffer.from([0xff, 0xd8, 0xff]));
+    const req = await loadWriteRequest(await writeJson("photo.json", { method: "POST", path: PHOTO }), img);
+    assert.equal(req.file.fileName, "capture.jpg");
+    assert.equal(req.file.contentType, "image/jpeg");
+    await assert.rejects(loadWriteRequest(await writeJson("photo2.json", { method: "POST", path: "common/card/abc/product/def/attachment" }), img), /photo upload goes to common\/card\/undefined\/product\/undefined\/attachment exactly/);
+    await assert.rejects(loadWriteRequest(await writeJson("photo3.json", { method: "POST", path: PHOTO })), /--file/);
   });
 
   it("reads the seller id and the sheet, then PUTs the row exactly as planBscSheet builds it", async () => {
@@ -637,6 +695,7 @@ describe("capture-write", () => {
     const captured = [];
     const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async (c) => (captured.push(c), { verdict: "ok", paths: [] }) } });
     assert.equal(r.ok, true);
+    assert.equal(r.writeSent, true);
     assert.equal(r.sent, 3);
     assert.deepEqual(bsc.calls.map((c) => `${c.method} ${c.path}`), ["GET marketplace/user/profile", "POST seller/bulk-upload/results", "PUT seller/bulk-upload"]);
     // The sheet read is readBscSellerSheet's body.
@@ -654,24 +713,30 @@ describe("capture-write", () => {
     const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => ({ verdict: "shape_drift", paths: ["[].price"] }) } });
     assert.equal(bsc.calls[2].body.sellerId, SELLER, "the PUT carries the looked-up seller id");
     const lines = [...captureOutcomeLines(r, "/tmp/put.json", true)];
-    for (const reason of ["already_listed", "timeout", "upload_refused"]) lines.push(...captureOutcomeLines({ ok: false, sent: 2, reason }, "f", true));
-    for (const refusal of [{ step: "profile", reason: "no_seller_id" }, { step: "sheet", reason: "card_on_sheet_more_than_once", rows: 2 }, { step: "sheet", reason: "http", status: 500 }]) {
-      lines.push(...captureOutcomeLines({ ok: false, sent: 2, reason: "read_refused", refusal }, "f", true), ...undoOutcomeLines({ ok: false, sent: 2, reason: "read_refused", refusal }));
+    lines.push(...captureOutcomeLines({ ok: false, sent: 2, writeSent: false, reason: "already_listed" }, "f", true));
+    for (const reason of ["timeout", "upload_refused"]) lines.push(...captureOutcomeLines({ ok: false, sent: 3, writeSent: true, reason }, "f", true));
+    for (const refusal of [{ step: "profile", reason: "no_seller_id" }, { step: "sheet", reason: "card_on_sheet_more_than_once", rows: 2 }, { step: "sheet", reason: "http", status: 500 }, { step: "sheet", reason: "oversized_row" }]) {
+      lines.push(...captureOutcomeLines({ ok: false, sent: 2, writeSent: false, reason: "read_refused", refusal }, "f", true));
+      lines.push(...undoOutcomeLines({ ok: false, sent: 2, writeSent: false, reason: "read_refused", refusal }));
+      lines.push(...undoOutcomeLines({ ok: true, sent: 4, writeSent: true, status: 200, check: { state: "unchecked", refusal } }));
     }
-    lines.push(...undoOutcomeLines({ ok: true, sent: 3, status: 200 }), ...undoOutcomeLines({ ok: false, sent: 2, reason: "not_ours" }));
-    assert.ok(lines.length > 8);
+    for (const state of ["down", "down_other_sku", "still_listed", "listed_other_sku"]) lines.push(...undoOutcomeLines({ ok: true, sent: 4, writeSent: true, status: 200, check: { state } }));
+    lines.push(...undoOutcomeLines({ ok: false, sent: 2, writeSent: false, reason: "not_ours" }));
+    assert.ok(lines.length > 20);
     assertNoSecrets(lines.join("\n"), "the printed lines");
     assert.ok(!lines.join("\n").includes(CARD));
   });
 
   it("refuses to write when the card is already listed", async () => {
     const bsc = bscStub({ sheets: [[sheetRow({ availableQuantity: 2, price: "5.00", sellerSku: "theirs" })]] });
-    const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => assert.fail("no upload") } });
-    assert.deepEqual(r, { ok: false, sent: 2, reason: "already_listed" });
-    assert.ok(!bsc.calls.some((c) => c.method === "PUT"), "no PUT sent");
+    const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: noUpload });
+    assert.deepEqual(r, { ok: false, sent: 2, writeSent: false, reason: "already_listed" });
+    assert.equal(writes(bsc).length, 0, "no PUT sent");
+    assert.ok(!captureOutcomeLines(r, "f", true).some((l) => /REAL WRITE/.test(l)));
   });
 
-  it("refuses to write unless the sheet holds exactly one row for the card", async () => {
+  it("refuses to write unless the sheet holds exactly one readable row for the card", async () => {
+    const huge = sheetRow({ padding: "x".repeat(cw.MAX_SHEET_ROW_BYTES) });
     for (const [sheet, reason, rows] of [
       [[otherRow()], "card_not_on_sheet"],
       [[], "card_not_on_sheet"],
@@ -679,46 +744,80 @@ describe("capture-write", () => {
       [{ results: [sheetRow(), sheetRow()] }, "card_on_sheet_more_than_once", 2],
       [[sheetRow({ condition: "excellent" })], "card_not_on_sheet"],
       [[sheetRow({ productType: "graded" })], "card_not_on_sheet"],
+      [[sheetRow({ cardId: "different" })], "card_not_on_sheet"],
+      [[otherRow(), huge], "oversized_row"],
+      [[sheetRow({ availableQuantity: "1" })], "unreadable_row"],
       [{ nope: true }, "unreadable_sheet"],
     ]) {
       const bsc = bscStub({ sheets: [sheet] });
-      const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => assert.fail("no upload") } });
-      assert.equal(r.reason, "read_refused");
+      const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: noUpload });
+      assert.equal(r.reason, "read_refused", reason);
+      assert.equal(r.writeSent, false);
       assert.deepEqual(r.refusal, rows ? { step: "sheet", reason, rows } : { step: "sheet", reason });
-      assert.ok(!bsc.calls.some((c) => c.method === "PUT"), `${reason}: no PUT sent`);
+      assert.equal(writes(bsc).length, 0, `${reason}: no PUT sent`);
     }
+    // Another card's oversized row is dropped, not fatal.
+    const r = await readCardSheetRow(bscStub({ sheets: [[otherRow(), { ...otherRow(), padding: "x".repeat(cw.MAX_SHEET_ROW_BYTES) }, sheetRow()]] }).deps, intent);
+    assert.equal(r.ok, true);
   });
 
   it("stops before the sheet when the profile carries no usable seller id", async () => {
     for (const profile of [{ sellerProfile: {} }, { sellerProfile: { sellerId: "has space" } }, {}]) {
       const bsc = bscStub({ profile });
-      const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => assert.fail("no upload") } });
-      assert.deepEqual(r, { ok: false, sent: 1, reason: "read_refused", refusal: { step: "profile", reason: "no_seller_id" } });
+      const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: noUpload });
+      assert.deepEqual(r, { ok: false, sent: 1, writeSent: false, reason: "read_refused", refusal: { step: "profile", reason: "no_seller_id" } });
       assert.equal(bsc.calls.length, 1);
     }
     assert.deepEqual(await readSellerId(bscStub().deps), { ok: true, sellerId: SELLER });
   });
 
   it("does not retry a failed write", async () => {
-    const bsc = bscStub({ putStatus: 500 });
+    const bsc = bscStub({ write: 500 });
     const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => ({ verdict: "shape_drift", paths: ["$status"] }) } });
     assert.equal(r.status, 500);
-    assert.equal(bsc.calls.filter((c) => c.method === "PUT").length, 1);
+    assert.equal(writes(bsc).length, 1);
   });
 
-  it("sends a photo upload as one request, as before", async () => {
-    let sends = 0;
-    const r = await runCaptureWrite({
-      request: { endpoint: "POST common/card/undefined/product/undefined/attachment", method: "POST", path: "common/card/undefined/product/undefined/attachment", file: { bytes: Buffer.from("x"), fileName: "a.jpg", contentType: "image/jpeg" } },
-      apiBase: "https://bsc.invalid",
-      token: "t",
-      headers: () => ({}),
-      fetchImpl: async (_u, init) => (sends++, assert.ok(init.body instanceof FormData), new Response(JSON.stringify({ objectKey: "/prod/x.jpg" }), { status: 200 })),
-      fake: { uploadCapture: async () => ({ verdict: "ok", paths: [] }) },
-    });
-    assert.equal(sends, 1);
+  it("after the PUT went out, every failure says it may have been a real write and how to undo it", async () => {
+    for (const [write, reason] of [["hang", "timeout"], ["network", "network"], ["big", "too_large"]]) {
+      const bsc = bscStub({ write });
+      const r = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: noUpload });
+      assert.deepEqual(r, { ok: false, sent: 3, writeSent: true, reason }, write);
+      assert.equal(writes(bsc).length, 1, `${write}: sent once, never retried`);
+      const out = captureOutcomeLines(r, "/tmp/put.json", true).join("\n");
+      assert.match(out, /THIS MAY HAVE BEEN A REAL WRITE/);
+      assert.match(out, /undo-write --request \/tmp\/put\.json/);
+    }
+    const bsc = bscStub();
+    const refused = await runCaptureWrite({ ...bsc.deps, request: putRequest, fake: { uploadCapture: async () => { throw new Error("403"); } } });
+    assert.deepEqual(refused, { ok: false, sent: 3, writeSent: true, reason: "upload_refused" });
+    const out = captureOutcomeLines(refused, "/tmp/put.json", true).join("\n");
+    assert.match(out, /THIS WAS A REAL WRITE/);
+    assert.match(out, /undo-write --request \/tmp\/put\.json/);
+  });
+
+  it("sends a photo upload as one request; a failure after it says there is no API undo", async () => {
+    const ok = bscStub();
+    const r = await runCaptureWrite({ ...ok.deps, request: photoRequest, fake: okFake });
     assert.equal(r.ok, true);
     assert.equal(r.sent, 1);
+    assert.ok(ok.calls[0].body instanceof FormData);
+    assert.equal(ok.calls[0].body.get("attachment").name, "capture.jpg");
+    const hung = bscStub({ write: "hang" });
+    const failed = await runCaptureWrite({ ...hung.deps, request: photoRequest, fake: noUpload });
+    assert.deepEqual(failed, { ok: false, sent: 1, writeSent: true, reason: "timeout" });
+    const out = captureOutcomeLines(failed, "f", false).join("\n");
+    assert.match(out, /THIS MAY HAVE BEEN A REAL PHOTO UPLOAD.*no API undo/);
+    assert.ok(!out.includes("undo-write"));
+  });
+
+  it("reads answers with a streamed byte cap", async () => {
+    assert.equal(await readCappedText(new Response("abc"), 3), "abc");
+    assert.equal(await readCappedText(new Response(bigStream(2 * 1024 * 1024)), 1024 * 1024), null);
+    assert.equal(await readCappedText(new Response("x", { headers: { "content-length": "999999" } }), 10), null);
+    const big = bscStub({ sheets: [[]] });
+    big.deps.fetchImpl = async () => new Response(bigStream(cw.MAX_BYTES.profile), { status: 200 });
+    assert.deepEqual(await readSellerId(big.deps), { ok: false, refusal: { step: "profile", reason: "too_large" } });
   });
 
   it("dry runs send nothing and read no credentials", async () => {
@@ -726,9 +825,9 @@ describe("capture-write", () => {
     const realFetch = globalThis.fetch;
     let fetches = 0;
     globalThis.fetch = async () => (fetches++, assert.fail("a dry run must not fetch"));
-    const writes = [];
+    const out = [];
     const realWrite = process.stderr.write;
-    process.stderr.write = (chunk) => (writes.push(String(chunk)), true);
+    process.stderr.write = (chunk) => (out.push(String(chunk)), true);
     try {
       assert.equal(await captureWrite(parseArgs(["capture-write", "--request", file]).flags), 0);
       assert.equal(await undoWrite(parseArgs(["undo-write", "--request", file]).flags), 0);
@@ -737,48 +836,85 @@ describe("capture-write", () => {
       globalThis.fetch = realFetch;
     }
     assert.equal(fetches, 0);
-    const out = writes.join("");
-    assert.match(out, /send 3 request\(s\)/);
-    assert.match(out, /dry run: nothing sent/);
-    assert.ok(!out.includes(CARD));
+    const text = out.join("");
+    assert.match(text, /send 3 request\(s\)/);
+    assert.match(text, /send 4 request\(s\)/);
+    assert.match(text, /dry run: nothing sent/);
+    assert.ok(!text.includes(CARD));
   });
 
-  it("mirrors NB's delist on undo: a fresh read, that row at quantity 0", async () => {
-    const live = sheetRow({ productId: "live-product", availableQuantity: 1, price: "999.00", sellerSku: SKU, active: true });
-    const bsc = bscStub({ sheets: [[otherRow(), live]] });
+  it("mirrors NB's delist on undo: a fresh read, that row at quantity 0, then one check read", async () => {
+    const live = listedRow();
+    const bsc = bscStub({ sheets: [[otherRow(), live], [otherRow(), sheetRow({ productId: "new-template" })]] });
     const r = await runUndoWrite({ ...bsc.deps, request: putRequest });
-    assert.deepEqual(r, { ok: true, sent: 3, status: 200 });
-    assert.deepEqual(bsc.calls.map((c) => `${c.method} ${c.path}`), ["GET marketplace/user/profile", "POST seller/bulk-upload/results", "PUT seller/bulk-upload"]);
+    assert.deepEqual(r, { ok: true, sent: 4, writeSent: true, status: 200, check: { state: "down" } });
+    assert.ok(undoSucceeded(r));
+    assert.deepEqual(bsc.calls.map((c) => `${c.method} ${c.path}`), ["GET marketplace/user/profile", "POST seller/bulk-upload/results", "PUT seller/bulk-upload", "POST seller/bulk-upload/results"]);
     assert.deepEqual(bsc.calls[2].body, { sellerId: SELLER, listings: [{ ...live, condition: "near_mint", availableQuantity: 0 }] });
+  });
+
+  it("tells the operator when the check read finds the row still up, under another SKU, or cannot read it", async () => {
+    for (const [after, state, ok] of [
+      [[listedRow()], "still_listed", false],
+      [[listedRow({ sellerSku: "someone-else" })], "listed_other_sku", false],
+      [[sheetRow({ sellerSku: "someone-else" })], "down_other_sku", true],
+    ]) {
+      const bsc = bscStub({ sheets: [[listedRow()], after] });
+      const r = await runUndoWrite({ ...bsc.deps, request: putRequest });
+      assert.deepEqual(r.check, { state }, state);
+      assert.equal(undoSucceeded(r), ok, state);
+      assert.equal(bsc.calls.filter((c) => c.path === "seller/bulk-upload/results").length, 2, "one check read, no retry");
+    }
+    const gone = bscStub({ sheets: [[listedRow()], []] });
+    const r = await runUndoWrite({ ...gone.deps, request: putRequest });
+    assert.deepEqual(r.check, { state: "unchecked", refusal: { step: "sheet", reason: "card_not_on_sheet" } });
+    assert.equal(undoSucceeded(r), false);
+    assert.match(undoOutcomeLines(r).join("\n"), /NOT CHECKED/);
+    // The undo's PUT timing out still gets its check read.
+    const hung = bscStub({ sheets: [[listedRow()], [sheetRow()]], write: "hang" });
+    const h = await runUndoWrite({ ...hung.deps, request: putRequest });
+    assert.deepEqual(h, { ok: false, sent: 4, writeSent: true, reason: "timeout", check: { state: "down" } });
+    assert.equal(writes(hung).length, 1);
   });
 
   it("undo refuses a row that is not listed, or not the capture's", async () => {
     const unlisted = bscStub();
-    assert.deepEqual(await runUndoWrite({ ...unlisted.deps, request: putRequest }), { ok: false, sent: 2, reason: "not_listed" });
-    const theirs = bscStub({ sheets: [[sheetRow({ availableQuantity: 4, sellerSku: "someone-else" })]] });
-    assert.deepEqual(await runUndoWrite({ ...theirs.deps, request: putRequest }), { ok: false, sent: 2, reason: "not_ours" });
-    for (const b of [unlisted, theirs]) assert.ok(!b.calls.some((c) => c.method === "PUT"));
-    const photo = { endpoint: "POST common/card/undefined/product/undefined/attachment", method: "POST", path: "x", file: { bytes: Buffer.alloc(1), fileName: "a.jpg", contentType: "image/jpeg" } };
-    assert.deepEqual(await runUndoWrite({ ...unlisted.deps, request: photo }), { ok: false, sent: 0, reason: "nothing_to_undo" });
+    assert.deepEqual(await runUndoWrite({ ...unlisted.deps, request: putRequest }), { ok: false, sent: 2, writeSent: false, reason: "not_listed" });
+    for (const sku of ["someone-else", "NB1-k17abcdefghijklmnopqrstuvwxyz12-NM-k17abcdefghijklmnopqrstuvwxyz12", "NBCAPTURE-another-capture", null]) {
+      const theirs = bscStub({ sheets: [[listedRow({ availableQuantity: 4, sellerSku: sku })]] });
+      assert.deepEqual(await runUndoWrite({ ...theirs.deps, request: putRequest }), { ok: false, sent: 2, writeSent: false, reason: "not_ours" }, String(sku));
+      assert.equal(writes(theirs).length, 0);
+    }
+    assert.equal(writes(unlisted).length, 0);
+    assert.deepEqual(await runUndoWrite({ ...unlisted.deps, request: photoRequest }), { ok: false, sent: 0, writeSent: false, reason: "nothing_to_undo" });
   });
 
-  it("matches the card on card.id, refusing a row whose top-level cardId disagrees", async () => {
-    const r = await readCardSheetRow(bscStub({ sheets: [[sheetRow({ cardId: "different" })]] }).deps, intent);
-    assert.deepEqual(r, { ok: false, refusal: { step: "sheet", reason: "card_not_on_sheet" } });
-  });
-
-  it("keeps its copies of NB's rules in step with apps/web", async () => {
+  it("keeps its copies of NB's rules in step with apps/web, and its SKU out of NB's", async () => {
     const { readFile } = await import("node:fs/promises");
     const web = path.resolve(import.meta.dirname, "..", "..", "..", "apps", "web", "convex");
     const seller = await readFile(path.join(web, "adapters", "bscSeller.ts"), "utf8");
-    assert.ok(seller.includes(`const SELLER_ID_RE = ${SELLER_ID_RE.toString()};`), "SELLER_ID_RE");
-    assert.ok(seller.includes(`const SHEET_MAX_ROWS = ${SHEET_MAX_ROWS};`), "SHEET_MAX_ROWS");
+    assert.ok(seller.includes(`const SELLER_ID_RE = ${cw.SELLER_ID_RE.toString()};`), "SELLER_ID_RE");
+    assert.ok(seller.includes(`const SHEET_MAX_ROWS = ${cw.SHEET_MAX_ROWS};`), "SHEET_MAX_ROWS");
+    for (const [k, v] of Object.entries(cw.MAX_BYTES)) {
+      const mb = v % (1024 * 1024) === 0 ? `${v / (1024 * 1024)} * 1024 * 1024` : `${v / 1024} * 1024`;
+      assert.ok(seller.includes(`${k}: ${mb},`), `BSC_SELLER_MAX_BYTES.${k}`);
+    }
     const money = await readFile(path.join(web, "lib", "bscMoney.ts"), "utf8");
-    assert.ok(money.includes(`BSC_MIN_PRICE_CENTS = ${BSC_MIN_PRICE_CENTS};`), "min price");
-    assert.ok(money.includes(`BSC_MAX_PRICE_CENTS = ${BSC_MAX_PRICE_CENTS.toLocaleString("en-US").replace(/,/g, "_")};`), "max price");
+    assert.ok(money.includes(`BSC_MAX_PRICE_CENTS = ${cw.BSC_MAX_PRICE_CENTS.toLocaleString("en-US").replace(/,/g, "_")};`), "max price");
+    const plan = await readFile(path.join(web, "lib", "bscSheetPlan.ts"), "utf8");
+    assert.ok(plan.includes(`MAX_SHEET_ROW_BYTES = ${cw.MAX_SHEET_ROW_BYTES / 1024} * 1024;`), "MAX_SHEET_ROW_BYTES");
     const conditions = await readFile(path.join(web, "lib", "bscConditions.ts"), "utf8");
     const listed = [...conditions.matchAll(/RAW_CONDITIONS = \[([^\]]*)\]/g)].flatMap((m) => [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]));
-    assert.deepEqual([...listed].sort(), [...BSC_RAW_CONDITIONS].sort());
+    assert.deepEqual([...listed].sort(), [...cw.BSC_RAW_CONDITIONS].sort());
+    // NB's own SKU shape can never match a capture SKU, and a capture SKU never an NB one.
+    const skuSrc = await readFile(path.join(web, "lib", "listingSku.ts"), "utf8");
+    const shape = new RegExp(/const SKU_SHAPE = \/(.+)\/;/.exec(skuSrc)[1]);
+    assert.ok(skuSrc.includes('LISTING_SKU_PREFIX = "NB1"'));
+    for (const sku of [SKU, "NBCAPTURE-NB1-k17abcdefghijklmnopqrstuvwxyz12-NM-k17abcdefghijklmnopqrstuvwxyz12"]) {
+      assert.ok(CAPTURE_SKU_RE.test(sku));
+      assert.ok(!shape.test(sku.trim()), `NB's SKU_SHAPE accepts ${sku}`);
+    }
+    assert.ok(!CAPTURE_SKU_RE.test("NB1-k17abcdefghijklmnopqrstuvwxyz12-NM-k17abcdefghijklmnopqrstuvwxyz12"));
   });
 });
 
