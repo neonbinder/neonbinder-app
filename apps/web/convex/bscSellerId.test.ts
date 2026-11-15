@@ -1151,6 +1151,12 @@ describe("fetchTick", () => {
     const waits: number[] = [];
 
     for (let attempt = 1; attempt <= BSC_SELLER_ID_FETCH_MAX_ATTEMPTS; attempt++) {
+      // NEO-552: each read's 429 opens the BSC call gate for 15-120 s. In
+      // life the next read comes 60-300 s later, after the window; here the
+      // reads are back to back, so the gate is cleared between them.
+      await t.run(async (ctx) => {
+        for (const row of await ctx.db.query("marketplaceCallGates").collect()) await ctx.db.delete(row._id);
+      });
       const before = Date.now();
       await tick(t, attempt);
       const next = await nextTick(t);

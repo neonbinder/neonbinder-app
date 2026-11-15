@@ -9116,6 +9116,12 @@ function resetTimeBudgetMs(): number {
 /** The per-table reset counts, plus whether the run got through every table. */
 type SetBuilderResetResult = {
   /**
+   * NEO-552 — the deployment-wide BSC call gate (breaker and token bucket).
+   * A window or probe lease left by the last run would hold the next run's
+   * BSC calls behind it.
+   */
+  marketplaceCallGatesDeleted: number;
+  /**
    * PR 451 (NEO-482) — the deployment-wide BSC 429 cooldown rows. A window
    * left open by the last run would hold the next run's team lookups for up
    * to 10 minutes before any of its cards were asked.
@@ -9277,6 +9283,7 @@ async function runSetBuilderReset(
   );
 
   const counts = {
+    marketplaceCallGatesDeleted: 0,
     marketplaceCooldownsDeleted: 0,
     marketplaceWaitsDeleted: 0,
     slSetReviewsDeleted: 0,
@@ -9321,6 +9328,15 @@ async function runSetBuilderReset(
   // the NEO-370 listing tables, cardPlayerLinks, cardTeamLinks, cardChecklist, cardCrossListings,
   // entityReviewQueue, checklistCandidates) is among them.
   const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
+    // NEO-552 — the BSC call gate, FIRST of all: deployment-wide, it names no
+    // other row, and a breaker the previous run opened would refuse the next
+    // run's every BSC call. Not a reference-seed table: every scope drains
+    // it. The per-user `/testing/reset` leaves it alone (eight shards run
+    // that at once, and the gate is shared).
+    [
+      "marketplaceCallGatesDeleted",
+      internal.selectorOptions.resetMarketplaceCallGatesBatch,
+    ],
     // PR 451 (NEO-482) — the BSC 429 cooldown and the BSC wait rows, FIRST.
     // Neither names a row of any other table, so their place in the order is
     // about the run, not about references: the cooldown is deployment-wide
@@ -9617,9 +9633,10 @@ const RESET_BATCH_SIZE = 500;
  * `playerSports`, `players`, `playerAliases`, `teams`, `teamAliases`,
  * `franchises` and `leagues`. With `scope: "exceptReferenceSeed"` (NEO-330)
  * it skips the eight reference-seed tables among those and wipes the rest.
- * Every scope also clears the BSC 429 cooldown (`marketplaceCooldowns`), the
- * BSC wait rows (`marketplaceWaits`) and the BSC team lane (PR 451, NEO-482);
- * the per-user `/testing/reset` touches none of the three.
+ * Every scope also clears the BSC call gate (`marketplaceCallGates`, NEO-552),
+ * the old BSC 429 cooldown (`marketplaceCooldowns`), the BSC wait rows
+ * (`marketplaceWaits`) and the BSC team lane (PR 451, NEO-482); the per-user
+ * `/testing/reset` touches none of them.
  *
  * Runbook: `docs/operations/neo214-set-builder-admin-scripts.md`. Take a
  * **Backup Now** first (NEO-190 §3) and run it with the app CLOSED — resetting
@@ -9688,8 +9705,10 @@ export const resetSetBuilderDataFromCli = internalAction({
     ),
   },
   returns: v.object({
+    // NEO-552 — the BSC call gate, drained first in every scope.
+    marketplaceCallGatesDeleted: v.number(),
     // PR 451 (NEO-482) — the BSC 429 cooldown and the BSC wait rows, drained
-    // first in every scope.
+    // next in every scope.
     marketplaceCooldownsDeleted: v.number(),
     marketplaceWaitsDeleted: v.number(),
     // NEO-306 — pending SportLots set reviews, drained right after them.
@@ -9869,6 +9888,26 @@ export const resetEntityReviewQueueBatch = internalMutation({
     // point — see assertResetArmed.
     assertResetArmed();
     const rows = await ctx.db.query("entityReviewQueue").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `marketplaceCallGates` (NEO-552), looped by
+ * `runSetBuilderReset` first in every scope. One row per (platform, scope).
+ */
+export const resetMarketplaceCallGatesBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("marketplaceCallGates").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }

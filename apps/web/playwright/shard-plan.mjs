@@ -12,6 +12,9 @@
 //   node playwright/shard-plan.mjs --seller   the marketplace-seller specs (NEO-415), which
 //                                                        no shard runs: e2e.yml's seller-desktop /
 //                                                        seller-mobile jobs do, one PR at a time
+//   node playwright/shard-plan.mjs --breaker  the BSC breaker specs (NEO-552), which no
+//                                                        shard runs either: e2e.yml's breaker-desktop /
+//                                                        breaker-mobile jobs do, alone, after every shard
 //   node playwright/shard-plan.mjs --projects  the spec projects, one per line
 //                                                        (e2e.yml's gate reads it)
 //
@@ -48,7 +51,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { ignoredSpecs, SELLER_SPECS, SELLER_TAG } from "./project-scope.mjs";
+import { BREAKER_SPECS, BREAKER_TAG, ignoredSpecs, SELLER_SPECS, SELLER_TAG } from "./project-scope.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(HERE, "..");
@@ -71,26 +74,35 @@ function allSpecs() {
     .sort();
 }
 
-// NEO-415: the seller specs (project-scope.mjs) are planned in no shard, and the
-// tag and the list must name the same files. Checked on every plan.
-function checkSellerTags(specs) {
-  const tagged = specs.filter((s) => fs.readFileSync(path.join(TESTS, s), "utf8").includes(`"${SELLER_TAG}"`));
-  const missing = SELLER_SPECS.filter((s) => !specs.includes(s));
-  const untagged = SELLER_SPECS.filter((s) => !tagged.includes(s));
-  const unlisted = tagged.filter((s) => !SELLER_SPECS.includes(s));
-  const problems = [
-    ...missing.map((s) => `SELLER_SPECS names ${s}, which does not exist`),
-    ...untagged.map((s) => `${s} is in SELLER_SPECS but lacks the ${SELLER_TAG} tag`),
-    ...unlisted.map((s) => `${s} carries ${SELLER_TAG} but is not in SELLER_SPECS (project-scope.mjs)`),
+// NEO-415 / NEO-552: the seller specs and the BSC breaker specs (project-scope.mjs)
+// are planned in no shard, and each tag and its list must name the same files.
+// Checked on every plan.
+function checkTaggedList(specs, { list, tag, listName }) {
+  const tagged = specs.filter((s) => fs.readFileSync(path.join(TESTS, s), "utf8").includes(`"${tag}"`));
+  const missing = list.filter((s) => !specs.includes(s));
+  const untagged = list.filter((s) => !tagged.includes(s));
+  const unlisted = tagged.filter((s) => !list.includes(s));
+  return [
+    ...missing.map((s) => `${listName} names ${s}, which does not exist`),
+    ...untagged.map((s) => `${s} is in ${listName} but lacks the ${tag} tag`),
+    ...unlisted.map((s) => `${s} carries ${tag} but is not in ${listName} (project-scope.mjs)`),
   ];
-  if (problems.length) throw new Error(`seller-spec list and tag disagree:\n  ${problems.join("\n  ")}`);
 }
 
-/** The specs a shard may be handed on `project`: everything but the ignored and the seller specs. */
+function checkSellerTags(specs) {
+  const problems = [
+    ...checkTaggedList(specs, { list: SELLER_SPECS, tag: SELLER_TAG, listName: "SELLER_SPECS" }),
+    ...checkTaggedList(specs, { list: BREAKER_SPECS, tag: BREAKER_TAG, listName: "BREAKER_SPECS" }),
+    ...SELLER_SPECS.filter((s) => BREAKER_SPECS.includes(s)).map((s) => `${s} is in both SELLER_SPECS and BREAKER_SPECS`),
+  ];
+  if (problems.length) throw new Error(`seller/breaker spec lists and tags disagree:\n  ${problems.join("\n  ")}`);
+}
+
+/** The specs a shard may be handed on `project`: everything but the ignored, the seller and the breaker specs. */
 function listSpecs(project) {
   const specs = allSpecs();
   checkSellerTags(specs);
-  const ignored = new Set([...ignoredSpecs(project), ...SELLER_SPECS]);
+  const ignored = new Set([...ignoredSpecs(project), ...SELLER_SPECS, ...BREAKER_SPECS]);
   return specs.filter((p) => !ignored.has(p));
 }
 
@@ -98,6 +110,12 @@ function listSpecs(project) {
 function listSellerSpecs() {
   checkSellerTags(allSpecs());
   return [...SELLER_SPECS].sort();
+}
+
+/** The breaker specs `breaker-<pass>` runs, alone after every shard (none is project-ignored). */
+function listBreakerSpecs() {
+  checkSellerTags(allSpecs());
+  return [...BREAKER_SPECS].sort();
 }
 
 /** Seconds per spec on `project`, falling back to the desktop value. */
@@ -228,6 +246,9 @@ if (pIdx !== -1) {
 if (args[0] === "--seller") {
   const rel = toPosix(path.relative(WEB, TESTS));
   for (const spec of listSellerSpecs()) console.log(`${rel}/${spec}`);
+} else if (args[0] === "--breaker") {
+  const rel = toPosix(path.relative(WEB, TESTS));
+  for (const spec of listBreakerSpecs()) console.log(`${rel}/${spec}`);
 } else if (args[0] === "--projects") {
   for (const p of PROJECTS) console.log(p);
 } else if (args[0] === "--from-results") {

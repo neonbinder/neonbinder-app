@@ -229,3 +229,4 @@
 - [Device preference store](reference_device_preference_store.md) — per-device setting shared by page + layout: one useSyncExternalStore module, storage try/catch, test reset in afterEach
 - [Segmented switch is a radiogroup](reference_segmented_switch_is_a_radiogroup.md) — one-of-two pill = roving radiogroup; reserve the check slot; padded track keeps focus ring off the cyan fill
 - [Agent shell Node is not the apps/web pin](reference_agent_shell_node_is_not_the_apps_web_pin.md) — prepend nvm's $(cat .nvmrc) bin in the same call as each gate; print node --version
+- [convex-test: stub a module via the glob map](reference_convex_test_stub_a_module_via_the_glob_map.md) — add a "./x.ts" key to the modules map; check {ok:false} results; mutation→action flip breaks .mutation() call sites repo-wide

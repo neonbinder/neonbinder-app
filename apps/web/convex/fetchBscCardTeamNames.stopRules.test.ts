@@ -1,17 +1,20 @@
 /**
- * PR 451 (NEO-487) — when `fetchBscCardTeamNames` stops asking BSC.
+ * PR 451 (NEO-487), NEO-552 — when `fetchBscCardTeamNames` stops asking BSC.
  *
  * BSC's edge answers 429 and then blocks the IP, and Convex deployments share
  * egress IPs, so asking on only extends the block. The lookup therefore:
- *   - reads the deployment-wide cooldown before EVERY wave (10 cards) and
- *     makes no call while it is open;
- *   - stops at the first 429, never retries it, and records it exactly once;
- *   - stops after a wave in which EVERY card failed (BSC is down);
+ *   - asks the deployment-wide call gate (`bscCallGate`) before EVERY wave
+ *     (10 cards) and makes no call while it refuses; a half-open gate grants
+ *     one probe and the rest of the wave is carried, never dropped;
+ *   - stops at the first 429, never retries it; `bscFetch` reports it to the
+ *     gate, which opens the breaker once;
+ *   - stops after a wave in which EVERY card failed (BSC is down), and a run
+ *     of five failures opens the breaker on its own;
  *   - hands every card it never asked back as `success: false, skipped: true`.
- * The healthy path writes nothing.
+ * The healthy path changes nothing but the gate's token bucket.
  *
- * Driven through the real action with `fetch` stubbed; the cooldown table is
- * the real one (convex-test). Lives at the convex/ root for the glob (see
+ * Driven through the real action with `fetch` stubbed; the gate table is the
+ * real one (convex-test). Lives at the convex/ root for the glob (see
  * bscCallTelemetry.adapters.test.ts).
  */
 import { convexTest } from "convex-test";
@@ -19,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
 import { resetBscInflightForTests } from "./lib/bscCallTelemetry";
+import { skipBscGateWaits } from "../lib/testing/bsc-gate-stub";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -50,25 +54,52 @@ function fetchStub(replyFor: (bscCardId: string, nth: number) => Reply, calls: C
 
 const run = (t: ReturnType<typeof convexTest>, bscCardIds: string[]) =>
   t.action(internal.adapters.buysportscards.fetchBscCardTeamNames, { bscCardIds });
-const cooldownRows = (t: ReturnType<typeof convexTest>) =>
-  t.run(async (ctx) => ctx.db.query("marketplaceCooldowns").collect());
-const openWindow = (t: ReturnType<typeof convexTest>, until: number) =>
-  t.run(async (ctx) =>
-    ctx.db.insert("marketplaceCooldowns", {
-      platform: "bsc", endpoint: "cardListing", until, last429At: Date.now(), streak: 1, updatedAt: Date.now(),
-    }),
-  );
+const gateRows = (t: ReturnType<typeof convexTest>) =>
+  t.run(async (ctx) => ctx.db.query("marketplaceCallGates").collect());
+/** The breaker-side fields of the one gate row (the bucket fields move on every grant). */
+const breaker = async (t: ReturnType<typeof convexTest>) => {
+  const rows = await gateRows(t);
+  expect(rows).toHaveLength(1);
+  const { openUntil, openCause, streak, consecutiveFailures } = rows[0];
+  return { openUntil, openCause, streak, consecutiveFailures };
+};
+/**
+ * Sets the gate's window to end at `until` (streak 1, a full bucket),
+ * patching the row a running lookup already made rather than adding a
+ * second one.
+ */
+const openWindow = (t: ReturnType<typeof convexTest>, until: number, streak = 1) =>
+  t.run(async (ctx) => {
+    const fields = {
+      tokens: 10,
+      refilledAt: Date.now(),
+      openUntil: until,
+      openCause: "429" as const,
+      streak,
+      lastOpenedAt: Date.now(),
+      consecutiveFailures: 0,
+      lastFailureAt: 0,
+      updatedAt: Date.now(),
+    };
+    const row = await ctx.db.query("marketplaceCallGates").first();
+    if (row) await ctx.db.patch(row._id, { ...fields, probeLeaseUntil: undefined });
+    else await ctx.db.insert("marketplaceCallGates", { platform: "bsc", scope: "deployment", ...fields });
+  });
 
 const SKIPPED = (bscCardId: string) => ({
   bscCardId, rawTeamName: "", teamNames: [], success: false, attributeTokens: [], skipped: true,
 });
 
+let undoGateWaits: () => void;
 beforeEach(() => {
   resetBscInflightForTests();
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "log").mockImplementation(() => {});
+  // More cards than the bucket's burst: its waits move the clock instead.
+  undoGateWaits = skipBscGateWaits();
 });
 afterEach(() => {
+  undoGateWaits();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -93,20 +124,19 @@ describe("fetchBscCardTeamNames — a 429 stops the lookup at once", () => {
     expect(out.slice(WAVE)).toEqual([SKIPPED("bsc-11"), SKIPPED("bsc-12")]);
   });
 
-  test("it records one cooldown, and the window follows BSC's Retry-After when that is longer", async () => {
+  test("it opens the breaker once, and the window follows BSC's Retry-After when that is longer", async () => {
     const t = convexTest(schema, modules);
     const calls: Calls = [];
-    // Every card in the wave gets 429: still ONE window, recorded once.
+    // Every card in the wave gets 429: still ONE window, opened once.
     vi.stubGlobal("fetch", fetchStub(() => ({ status: 429, headers: { "Retry-After": "180" } }), calls));
     const before = Date.now();
 
     await run(t, ids(WAVE));
 
-    const rows = await cooldownRows(t);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].streak).toBe(1);
-    expect(rows[0].until).toBeGreaterThanOrEqual(before + 180_000);
-    expect(rows[0].until).toBeLessThan(Date.now() + 180_000 + 1);
+    const b = await breaker(t);
+    expect(b).toMatchObject({ openCause: "429", streak: 1 });
+    expect(b.openUntil).toBeGreaterThanOrEqual(before + 180_000);
+    expect(b.openUntil).toBeLessThan(Date.now() + 180_000 + 1);
   });
 
   test("a card in its retry pause does not retry once another card has been 429'd", async () => {
@@ -122,37 +152,36 @@ describe("fetchBscCardTeamNames — a 429 stops the lookup at once", () => {
     // bsc-1 failed its first attempt, paused 250-500 ms, saw the stop flag and did not ask again.
     expect(calls.filter((c) => c === "bsc-1")).toHaveLength(1);
     expect(out.map((o) => o.success)).toEqual([false, false, true]);
-    expect(await cooldownRows(t)).toHaveLength(1);
+    expect(await breaker(t)).toMatchObject({ openCause: "429", streak: 1 });
   });
 });
 
-describe("fetchBscCardTeamNames — the cooldown is read before every wave", () => {
-  test("an open window at the start: no BSC call, nothing written, every card skipped in request order", async () => {
+describe("fetchBscCardTeamNames — the call gate is asked before every wave", () => {
+  test("an open window at the start: no BSC call, the breaker unchanged, every card skipped in request order", async () => {
     const t = convexTest(schema, modules);
     const calls: Calls = [];
-    const stub = fetchStub(() => ({ team: "Reds" }), calls);
-    vi.stubGlobal("fetch", stub);
+    vi.stubGlobal("fetch", fetchStub(() => ({ team: "Reds" }), calls));
     await openWindow(t, Date.now() + 60_000);
-    const before = await cooldownRows(t);
+    const before = await gateRows(t);
 
     const out = await run(t, ids(WAVE + 3));
 
     expect(calls).toEqual([]);
     expect(out).toEqual(ids(WAVE + 3).map(SKIPPED));
-    // The window was already open: it is neither extended nor re-recorded.
-    expect(await cooldownRows(t)).toEqual(before);
+    // A refusal writes nothing at all.
+    expect(await gateRows(t)).toEqual(before);
   });
 
-  test("a window that lapsed is open road", async () => {
+  test("a window that lapsed long ago (no live streak) is open road", async () => {
     const t = convexTest(schema, modules);
     const calls: Calls = [];
     vi.stubGlobal("fetch", fetchStub(() => ({ team: "Reds" }), calls));
-    await openWindow(t, Date.now() - 1);
+    await openWindow(t, Date.now() - 20 * 60_000, 0);
 
-    const out = await run(t, ["bsc-1"]);
+    const out = await run(t, ids(WAVE));
 
-    expect(calls).toEqual(["bsc-1"]);
-    expect(out[0]).toMatchObject({ success: true });
+    expect(calls.sort()).toEqual(ids(WAVE).sort());
+    expect(out.every((o) => o.success)).toBe(true);
   });
 
   test("a window another caller opens while wave 1 is out stops wave 2 before any call", async () => {
@@ -173,92 +202,96 @@ describe("fetchBscCardTeamNames — the cooldown is read before every wave", () 
     expect(calls.sort()).toEqual(ids(WAVE).sort());
     expect(out.slice(0, WAVE).every((o) => o.success)).toBe(true);
     expect(out.slice(WAVE)).toEqual([SKIPPED("bsc-11"), SKIPPED("bsc-12")]);
+    expect(await gateRows(t)).toHaveLength(1);
   });
 
-  test("NEO-482: the first answered wave after a window closes resets the streak to 0", async () => {
+  test("half-open: the first wave after a window sends ONE probe, carries the rest, and its answer closes the breaker", async () => {
     const t = convexTest(schema, modules);
-    vi.stubGlobal("fetch", fetchStub(() => ({ team: "Reds" }), []));
+    const calls: Calls = [];
+    vi.stubGlobal("fetch", fetchStub(() => ({ team: "Reds" }), calls));
     await openWindow(t, Date.now() - 1);
 
-    await run(t, ids(WAVE + 5));
+    const out = await run(t, ids(WAVE + 5));
 
-    const rows = await cooldownRows(t);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].streak).toBe(0);
+    // The probe went alone; the carried cards were asked after it, none dropped.
+    expect(calls[0]).toBe("bsc-1");
+    expect(calls).toHaveLength(WAVE + 5);
+    expect(out.every((o) => o.success && o.skipped === undefined)).toBe(true);
+    expect(await breaker(t)).toMatchObject({ streak: 0 });
   });
 
-  test("NEO-482: a 429 in the first wave after a window escalates the streak instead of resetting it", async () => {
+  test("half-open: a 429 on the probe escalates the streak, and the carried cards are skipped", async () => {
     const t = convexTest(schema, modules);
+    const calls: Calls = [];
     vi.stubGlobal(
       "fetch",
-      fetchStub((id) => (id === "bsc-1" ? { status: 429 } : { team: "Reds" }), []),
+      fetchStub((id) => (id === "bsc-1" ? { status: 429 } : { team: "Reds" }), calls),
     );
     await openWindow(t, Date.now() - 1);
     const before = Date.now();
 
-    await run(t, ids(WAVE));
+    const out = await run(t, ids(WAVE));
 
-    const rows = await cooldownRows(t);
-    expect(rows[0].streak).toBe(2);
-    expect(rows[0].until).toBeGreaterThanOrEqual(before + 30_000);
+    expect(calls).toEqual(["bsc-1"]);
+    expect(out.slice(1)).toEqual(ids(WAVE).slice(1).map(SKIPPED));
+    const b = await breaker(t);
+    expect(b.streak).toBe(2);
+    expect(b.openUntil).toBeGreaterThanOrEqual(before + 30_000);
   });
 
-  test("NEO-482: with no live streak an answer writes nothing", async () => {
-    const t = convexTest(schema, modules);
-    vi.stubGlobal("fetch", fetchStub(() => ({ team: "Reds" }), []));
-    await t.run(async (ctx) =>
-      ctx.db.insert("marketplaceCooldowns", {
-        platform: "bsc", endpoint: "cardListing", until: Date.now() - 60_000,
-        last429At: Date.now() - 75_000, streak: 0, updatedAt: Date.now() - 50_000,
-      }),
-    );
-    const before = await cooldownRows(t);
-
-    await run(t, ids(WAVE + 5));
-
-    expect(await cooldownRows(t)).toEqual(before);
-  });
-
-  test("the healthy path writes no cooldown row", async () => {
+  test("the healthy path leaves the breaker closed: no window, no streak, no failures", async () => {
     const t = convexTest(schema, modules);
     vi.stubGlobal("fetch", fetchStub(() => ({ team: "Reds" }), []));
     await run(t, ids(WAVE + 5));
-    expect(await cooldownRows(t)).toEqual([]);
+    expect(await breaker(t)).toEqual({ openUntil: 0, openCause: undefined, streak: 0, consecutiveFailures: 0 });
   });
 });
 
-describe("fetchBscCardTeamNames — a wave in which every card failed stops the lookup", () => {
-  test("BSC down: wave 1 fails both attempts, wave 2 is skipped and never asked, no cooldown is recorded", async () => {
+describe("fetchBscCardTeamNames — failures", () => {
+  test("BSC down: wave 1's 503s open the breaker on the failure ladder, no retry is sent, and wave 2 is skipped", async () => {
     const t = convexTest(schema, modules);
     const calls: Calls = [];
     vi.stubGlobal("fetch", fetchStub(() => ({ status: 503 }), calls));
 
     const out = await run(t, ids(WAVE + 2));
 
-    // Ten cards, two attempts each, and nothing from wave 2.
-    expect(calls).toHaveLength(WAVE * 2);
-    expect(calls.some((c) => c === "bsc-11" || c === "bsc-12")).toBe(false);
+    // Ten first attempts went out together; the fifth failure opened the
+    // breaker, so every retry was refused unsent.
+    expect(calls.sort()).toEqual(ids(WAVE).sort());
     expect(out.slice(0, WAVE).every((o) => o.success === false && o.skipped === undefined)).toBe(true);
     expect(out.slice(WAVE)).toEqual([SKIPPED("bsc-11"), SKIPPED("bsc-12")]);
-    // A 5xx is not a 429: no window.
-    expect(await cooldownRows(t)).toEqual([]);
+    expect(await breaker(t)).toMatchObject({ openCause: "failures", streak: 1 });
+    // Telemetry: the refused retries were never sent, so they are counted by
+    // reason, never as a 429 or a failure.
+    const summaries = vi
+      .mocked(console.log)
+      .mock.calls.map((c) => String(c[0]))
+      .filter((line) => line.includes('"bsc_call_summary"'))
+      .map((line) => JSON.parse(line) as { calls: number; byStatus: Record<string, number>; refused?: Record<string, number> });
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].calls).toBe(WAVE);
+    expect(summaries[0].byStatus).toEqual({ "503": WAVE });
+    expect(summaries[0].refused?.open).toBeGreaterThan(0);
   });
 
-  test("one answered card in the wave keeps the lookup going", async () => {
+  test("a few failing cards among answers keep the lookup going: the answers end the failure run", async () => {
     const t = convexTest(schema, modules);
     const calls: Calls = [];
+    const failing = new Set(["bsc-1", "bsc-2", "bsc-3"]);
     vi.stubGlobal(
       "fetch",
-      fetchStub((id) => (id === "bsc-1" ? { team: "Reds" } : { status: 503 }), calls),
+      fetchStub((id) => (failing.has(id) ? { status: 503 } : { team: "Reds" }), calls),
     );
 
     const out = await run(t, ids(WAVE + 2));
 
     expect(calls.some((c) => c === "bsc-11")).toBe(true);
     expect(out.some((o) => o.skipped)).toBe(false);
+    expect(out.filter((o) => !o.success).map((o) => o.bscCardId)).toEqual(["bsc-1", "bsc-2", "bsc-3"]);
+    expect((await breaker(t)).openUntil).toBe(0);
   });
 
-  test("a permanent 4xx (not 429) is a failure that is neither retried nor a cooldown", async () => {
+  test("a permanent 4xx (not 429) is neither retried nor a failure to the breaker", async () => {
     const t = convexTest(schema, modules);
     const calls: Calls = [];
     vi.stubGlobal("fetch", fetchStub(() => ({ status: 404 }), calls));
@@ -267,6 +300,6 @@ describe("fetchBscCardTeamNames — a wave in which every card failed stops the 
 
     expect(calls).toHaveLength(WAVE); // one attempt each, wave 2 skipped
     expect(out[WAVE]).toEqual(SKIPPED("bsc-11"));
-    expect(await cooldownRows(t)).toEqual([]);
+    expect(await breaker(t)).toMatchObject({ openUntil: 0, consecutiveFailures: 0 });
   });
 });

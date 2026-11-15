@@ -84,6 +84,7 @@ import { ebayConfig } from "./lib/ebayEnv";
 import { isBscConditionOfEra, type BscRawCondition } from "./lib/bscConditions";
 import { chunkRows, photoKeyFor, type BscSheetRow } from "./lib/bscSheetPlan";
 import { isPlatformPaused } from "./marketplacePause";
+import { fakeBscMode } from "./testing";
 import { readSheets, storedBscSellerId, type VariantInput } from "./listingDrain";
 import { variantTypeKindFromTitle } from "./variantRole";
 
@@ -348,7 +349,16 @@ const bscReportValidator = v.object({
    * account (`BSC_CLEANUP_SELLER_ID_PAUSES_MS`), so rows above 0 were left
    * as they are (`listed` minus `zeroed`). Not a failure: the specs run.
    */
-  outcome: v.union(v.literal("clean"), v.literal("paused"), v.literal("sellerIdStalled")),
+  outcome: v.union(
+    v.literal("clean"),
+    v.literal("paused"),
+    v.literal("sellerIdStalled"),
+    // NEO-552: this deployment's BSC is the fake, whose per-run namespaces
+    // `/__fake/reset` clears (run state; it keeps catalogue misses for the
+    // recorder): there is no shared BSC seller, so nothing is signed in to or
+    // read.
+    v.literal("fakeBsc"),
+  ),
   rows: v.number(),
   unreadableRows: v.number(),
   /** Rows above 0 when this started, and what the PUTs took to 0. */
@@ -688,9 +698,14 @@ export const clearSellerAccounts = internalAction({
     const ebay = ebayPaused
       ? { report: { outcome: "paused", items: 0, withdrawn: 0, deleted: 0 } satisfies EbayReport, error: null }
       : await runSide<EbayReport>(ctx, "ebay", "ebay", () => clearEbay(ctx));
-    const bsc = bscPaused
+    // NEO-552: on the fake there is no shared BSC seller to clear (each run's
+    // namespace is reset by `/__fake/reset`, which keeps only catalogue misses
+    // for the recorder), so the BSC side signs in to nothing. Off the fake it
+    // is unchanged.
+    const bscSkipped = bscPaused ? "paused" : fakeBscMode() ? "fakeBsc" : null;
+    const bsc = bscSkipped
       ? {
-          report: { outcome: "paused", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0, skippedSets: 0 } satisfies BscReport,
+          report: { outcome: bscSkipped, rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0, skippedSets: 0 } satisfies BscReport,
           error: null,
         }
       : await runSide<BscReport>(ctx, "bsc", "buysportscards", () => clearBsc(ctx));

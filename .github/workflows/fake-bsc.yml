@@ -1,0 +1,51 @@
+name: Fake BSC CI
+
+# NEO-552: build + unit tests for services/fake-bsc, the standing fake of
+# BuySportsCards that previews, worktree deployments and dev call instead of
+# the real site. PRE-MERGE lane only.
+#
+# There is deliberately NO per-PR preview: the fake is one dev service,
+# deployed from main by release.yml (fake-bsc-deploy.yml, workflow_call). A PR
+# that changes the fake is proven by its unit tests here and by the E2E, which
+# runs against the already-deployed fake.
+#
+# The blocking copy of this job lives in pr-pipeline.yml (`fake-bsc-test`) so
+# `ci-gate` can depend on it: a path-filtered workflow cannot be a required
+# check. Keep the two in sync.
+#
+# NEVER add a `push:` trigger here; release.yml is the only push-to-main
+# driver (CLAUDE.md, CI/CD).
+
+on:
+  pull_request:
+    paths:
+      - "services/fake-bsc/**"
+      - ".github/workflows/fake-bsc.yml"
+      - ".github/workflows/fake-bsc-deploy.yml"
+
+concurrency:
+  group: fake-bsc-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: services/fake-bsc
+
+jobs:
+  test:
+    name: Build + unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: services/fake-bsc/.nvmrc
+          cache: npm
+          cache-dependency-path: services/fake-bsc/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test

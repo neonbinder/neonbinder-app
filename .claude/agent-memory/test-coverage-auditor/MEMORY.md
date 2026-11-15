@@ -18,3 +18,4 @@
 - [Optimistic write, spec waits out the race](optimistic-write-spec-waits-out-the-race.md) — second-tab wait before reload hides lost-on-refresh; ask for pending/beforeunload unit test + no-wait reload
 - [Inverted skip path loses its live proof](inverted-skip-path-loses-its-live-proof.md) — a rule flip rewrites the skip specs; the unchanged case survives only as an .or(); grep removed sentences
 - [Two-order spec helper](two-order-spec-helper-hook-and-pin-widening.md) — instant-or-wait helpers: check failure hooks, widened success regexes, dropped underWay gate
+- [Fake-upstream fault proof gaps](fake-upstream-fault-injection-proof-gaps.md) — conditional/times:1 faults prove nothing; dropped log-shape tests; vacuous capture checks
