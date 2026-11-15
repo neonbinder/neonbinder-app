@@ -629,6 +629,23 @@ describe("awaitingSellerSince and sellerAccountStalled (NEO-483)", () => {
     expect(got).not.toHaveProperty("sellerAccountStalled");
   });
 
+  test("the wait clears the moment the seller id lands: pending read says waiting, the stored id says neither", async () => {
+    const s = await setup();
+    await connectWith(s);
+    await listOn(s, ME.subject, { listingStartedAt: 777, ...running(4242) });
+    expect((await bsc(s)).awaitingSellerSince).toBe(4242);
+
+    // The background profile read lands the id; its chain is still on the row.
+    await s.t.run(async (ctx) => {
+      const profile = await ctx.db.query("userProfiles").first();
+      await ctx.db.patch(profile!._id, { marketplaceAccountIds: { bscSellerId: "seller-1" } } as never);
+    });
+
+    const after = await bsc(s);
+    expect(after).not.toHaveProperty("awaitingSellerSince");
+    expect(after).not.toHaveProperty("sellerAccountStalled");
+  });
+
   test("a stored value that is not a seller id a PUT can name still counts as no account (the drain's own rule)", async () => {
     const s = await setup();
     await connectWith(s, { marketplaceAccountIds: { bscSellerId: "has spaces" } });

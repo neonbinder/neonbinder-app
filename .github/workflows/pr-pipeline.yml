@@ -66,6 +66,7 @@ jobs:
       web: ${{ steps.filter.outputs.web }}
       browser: ${{ steps.filter.outputs.browser }}
       preprocess: ${{ steps.filter.outputs.preprocess }}
+      fake_bsc: ${{ steps.filter.outputs.fake_bsc }}
       scripts: ${{ steps.filter.outputs.scripts }}
       scanner: ${{ steps.filter.outputs.scanner }}
       deps_only: ${{ steps.deps.outputs.deps_only }}
@@ -105,8 +106,16 @@ jobs:
               - 'apps/web/**'
             browser:
               - 'services/browser/**'
+              # NEO-552: browser's bsc-fake-identity-contract test loads these two
+              # files from the fake, so a PR touching only them still runs browser-test.
+              - 'services/fake-bsc/src/identity/**'
+              - 'services/fake-bsc/src/namespace.ts'
             preprocess:
               - 'services/preprocess/**'
+            # NEO-552: the standing fake BuySportsCards (dev). Own lane, own
+            # deploy (release.yml); never a per-PR preview.
+            fake_bsc:
+              - 'services/fake-bsc/**'
             # NEO-309/NEO-310: node --test coverage for the ops shell scripts
             # (revision GC, image check) plus their test helpers, and for the
             # NEO-310 Discord-notify scripts/action — none of these ship as
@@ -1162,6 +1171,31 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  # NEO-552: build + unit tests for the fake BSC. Mirror of fake-bsc.yml `test`
+  # (kept in sync intentionally, same rationale as browser-test above). There
+  # is no per-PR preview: the fake is deployed once from main by release.yml.
+  fake-bsc-test:
+    name: Fake BSC build + unit tests
+    needs: changes
+    if: needs.changes.outputs.fake_bsc == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: services/fake-bsc
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: services/fake-bsc/.nvmrc
+          cache: npm
+          cache-dependency-path: services/fake-bsc/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
   # NEO-386: the scanner script (apps/scanner). Typecheck + unit tests; the
   # scanner itself only exists on a collector's desk, so nothing here drives one.
   scanner-test:
@@ -1752,7 +1786,7 @@ jobs:
 
   ci-gate:
     name: CI Gate
-    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, scripts-test, scanner-test, scanner-build, preprocess-crop-matrix, preprocess-mask-parity, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
+    needs: [changes, web-preview, web-lint, web-typecheck, web-unit, browser-test, preprocess-test, fake-bsc-test, scripts-test, scanner-test, scanner-build, preprocess-crop-matrix, preprocess-mask-parity, wire-browser-url, wire-preprocess-url, wire-preprocess-capacity, e2e, repo-hygiene, capacity-parity]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 3
@@ -1776,6 +1810,7 @@ jobs:
           R_WEB_UNIT: ${{ needs.web-unit.result }}
           R_BROWSER_TEST: ${{ needs.browser-test.result }}
           R_PREPROCESS_TEST: ${{ needs.preprocess-test.result }}
+          R_FAKE_BSC_TEST: ${{ needs.fake-bsc-test.result }}
           R_SCRIPTS_TEST: ${{ needs.scripts-test.result }}
           R_SCANNER_TEST: ${{ needs.scanner-test.result }}
           R_SCANNER_BUILD: ${{ needs.scanner-build.result }}

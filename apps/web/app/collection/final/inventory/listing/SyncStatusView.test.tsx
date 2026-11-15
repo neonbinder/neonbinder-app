@@ -143,6 +143,19 @@ describe("the Sync status screen", () => {
     await expectAccessibleInBothModes(view.container, { label: "Sync status, awaiting seller account", rerender });
   });
 
+  it("awaiting the seller account: the waiting line clears when the id lands, and the idle line returns", () => {
+    const platform = bsc({ awaitingSellerSince: T });
+    const { rerender } = draw({ platforms: [platform] });
+    expect(within(section("Running now")).getByText(awaitingSellerLine("bsc"))).toBeTruthy();
+
+    delete platform.awaitingSellerSince;
+    rerender();
+
+    const part = section("Running now");
+    expect(within(part).queryByText(awaitingSellerLine("bsc"))).toBeNull();
+    expect(within(part).getByText(/Nothing syncing right now/)).toBeTruthy();
+  });
+
   it("awaiting the seller account: after the announce delay the wait names BuySportsCards", () => {
     vi.useFakeTimers();
     try {

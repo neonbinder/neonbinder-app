@@ -83,3 +83,7 @@
 - [Lint crashes beside a vitest run](reference_lint_crashes_beside_a_vitest_run.md) — eslint glob stack trace when .vitest/ vanishes mid-walk is not a result; rerun lint alone
 - [Date-cutoff rules need a frozen clock](reference_date_cutoff_rules_need_a_frozen_clock_in_convex_test.md) — _creationTime is real time; freeze Date per describe; ceil/floor fractional ms
 - [Every stored-session login runs setUpListing](reference_every_stored_session_login_runs_set_up_listing.md) — renewals reach setUpListing(save:false) hourly; user-only effects key on opts.save / transient
+- [Cloud Run strips the serverless-auth signature](reference_cloud_run_strips_serverless_auth_signature.md) — never trust it; verify a second signed-token header yourself; includeEmail for impersonated ADC
+- [Express 5 finish loggers see rewritten req.path](reference_express5_req_path_rewritten_by_mounted_routers.md) — capture req.originalUrl at entry; mounted routers strip the prefix
+- [BSC call gate in unit tests](reference_bsc_call_gate_in_unit_tests.md) — stub ctx fails closed without runMutation; openBscGate/skipBscGateWaits/vi.mock open gate; 5 failures open it
+- [Fake-mode /health stub needs bscTarget](reference_fake_mode_health_stub_needs_bsc_target.md) — fake-mode convex-tests must serve bscTarget "fake" or every BSC credential call is refused; BSC keys carry the slug

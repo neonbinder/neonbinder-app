@@ -80,6 +80,7 @@
 import { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { getCurrentUserId } from "./auth";
+import { BSC_PACED_MARKER } from "./lib/bscPacedCopy";
 
 // "preprocess" (NEO-170) is not a marketplace — it is our own Cloud Run image
 // pipeline. It shares this event because the question the dashboard asks is the
@@ -336,6 +337,8 @@ export function newRequestId(): string {
 export function classifyAdapterError(raw: string | undefined): string | undefined {
   if (!raw) return undefined;
   const s = raw.toLowerCase();
+  // NEO-552: NB's own BSC call gate held the call back; BSC never answered.
+  if (s.includes(BSC_PACED_MARKER)) return "paced";
   if (s.includes("timed out") || s.includes("timeout")) return "timeout";
   if (s.includes("401") || s.includes("unauthorized") || s.includes("no token")) return "auth";
   if (s.includes("403") || s.includes("forbidden")) return "forbidden";

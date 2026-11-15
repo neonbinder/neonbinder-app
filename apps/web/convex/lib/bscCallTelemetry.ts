@@ -28,6 +28,12 @@
  * SAME token: a call already counted ok is converted to a failure, its latency
  * (to headers) kept, so `calls` never double-counts.
  *
+ * NEO-552 — a call the BSC call gate refused was never sent. `bscFetch`
+ * answers it itself (429 or 503 with `x-nb-bsc-breaker: <reason>`), and
+ * `respond` recognises that answer: the call is counted under
+ * `refused[<reason>]` (open, probing, throttled, gate_unavailable), never as
+ * a call, a status, a failure kind or a latency.
+ *
  * Emits, exactly:
  *  - `bsc_call_failed` (console.warn JSON), at most {@link MAX_DETAIL_LINES} per
  *    recorder; the rest are only counted in `suppressed`;
@@ -59,6 +65,19 @@
  * the calls of the one isolate it runs in: a LOWER BOUND on deployment-wide
  * concurrency.
  */
+
+import { BSC_BREAKER_HEADER } from "./bscHttp";
+
+/** Why the gate refused a call (`x-nb-bsc-breaker`); anything else reads as "unknown". */
+export type BscRefusalReason = "open" | "probing" | "throttled" | "gate_unavailable" | "unknown";
+const REFUSAL_REASONS: ReadonlySet<string> = new Set(["open", "probing", "throttled", "gate_unavailable"]);
+
+/** The gate's refusal reason when `headers` mark `bscFetch`'s own answer, else null. */
+export function bscRefusalReason(headers: Pick<Headers, "get"> | null | undefined): BscRefusalReason | null {
+  const value = headers?.get(BSC_BREAKER_HEADER);
+  if (value === null || value === undefined) return null;
+  return REFUSAL_REASONS.has(value) ? (value as BscRefusalReason) : "unknown";
+}
 
 /** Why a call failed. Mirrors `bscCallKindValidator` in schema.ts. */
 export type BscCallKind = "http" | "timeout" | "body_timeout" | "network" | "parse";
@@ -322,6 +341,9 @@ const HEADER_ALLOWLIST = new Set([
   "x-amzn-requestid",
   "x-amzn-trace-id",
   "x-amzn-errortype",
+  // NEO-552 — `bscFetch`'s own refusal marker. A refusal is counted, never
+  // sampled, so this only ever shows on an answer that carried it anyway.
+  BSC_BREAKER_HEADER,
 ]);
 const HEADER_DENY = /^x-amzn-remapped-/;
 /** Ids minted by AWS/Cloudflare themselves: UUID/hex-shaped by design, not echoed input. */
@@ -376,6 +398,12 @@ export type BscSummaryLine = {
   maxInflight: number;
   suppressed: number;
   lat: BscLatency;
+  /**
+   * NEO-552 — calls the BSC call gate refused, by reason. None of them was
+   * sent, so none is in `calls`, `ok`, `byKind`, `byStatus` or `lat`.
+   * Present only when at least one was refused.
+   */
+  refused?: Record<string, number>;
 };
 
 export function emptyLatency(): BscLatency {
@@ -452,6 +480,7 @@ export function mergeSummaries(a: BscSummaryLine, b: BscSummaryLine): BscSummary
       sum: a.lat.sum + b.lat.sum,
       buckets,
     },
+    ...(a.refused || b.refused ? { refused: addCounts(a.refused ?? {}, b.refused ?? {}) } : {}),
   };
 }
 
@@ -614,7 +643,8 @@ export async function whileWaitingOnBsc<T>(
 type CallState = {
   meta: BscCallMeta;
   startedMs: number;
-  state: "open" | "ok" | "failed";
+  /** `refused`: the gate refused it; it was never sent (NEO-552). */
+  state: "open" | "ok" | "failed" | "refused";
   durationMs?: number;
   status?: number;
   headers?: Record<string, string>;
@@ -692,6 +722,7 @@ export function createBscRecorder(op: string, opts: BscRecorderOptions = {}): Bs
   const lat = emptyLatency();
   const byKind: Record<string, number> = {};
   const byStatus: Record<string, number> = {};
+  const refused: Record<string, number> = {};
   const samples: BscFailureSample[] = [];
   const pending: Array<Promise<void>> = [];
   let nextId = 1;
@@ -860,6 +891,18 @@ export function createBscRecorder(op: string, opts: BscRecorderOptions = {}): Bs
 
     respond(token, response) {
       try {
+        const refusal = bscRefusalReason(response.headers);
+        if (refusal !== null) {
+          // NEO-552 — `bscFetch`'s own answer: nothing was sent. Closes the
+          // call's in-flight and wait accounting, and counts only the reason.
+          const call = calls.get(token.id);
+          if (!call || call.state !== "open") return;
+          waitCallSettled(now());
+          inflightNow = Math.max(0, inflightNow - 1);
+          call.state = "refused";
+          refused[refusal] = (refused[refusal] ?? 0) + 1;
+          return;
+        }
         if (response.ok) {
           recorder.ok(token, response);
           return;
@@ -889,7 +932,7 @@ export function createBscRecorder(op: string, opts: BscRecorderOptions = {}): Bs
     fail(token, info = {}) {
       try {
         const call = calls.get(token.id);
-        if (!call || call.state === "failed") return;
+        if (!call || call.state === "failed" || call.state === "refused") return;
         const kind = info.kind ?? classify(info.error);
         const status = info.status ?? info.response?.status;
         let inflightAtSettle = inflightNow;
@@ -958,6 +1001,7 @@ export function createBscRecorder(op: string, opts: BscRecorderOptions = {}): Bs
           maxInflight,
           suppressed,
           lat,
+          ...(Object.keys(refused).length > 0 ? { refused } : {}),
         };
         log.log(JSON.stringify({ msg: "bsc_call_summary", ...summary }));
         return { summary, samples, row: { ...summary, samples } };

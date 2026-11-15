@@ -429,6 +429,35 @@ describe("a paused marketplace", () => {
   });
 });
 
+describe("NEO-552: a deployment on the fake BuySportsCards", () => {
+  test("never signs in to or reads BSC, needs no BSC credentials, and still clears eBay", async () => {
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-abc123-uc.a.run.app");
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+    vi.stubEnv("DEV_BSC_USERNAME", "");
+    vi.stubEnv("DEV_BSC_PASSWORD", "");
+    const t = await ready();
+    sheet = [row("p1", "bsc-1", COND, 2)];
+    const r = await clear(t);
+    expect(r.bsc).toEqual({
+      outcome: "fakeBsc", rows: 0, unreadableRows: 0, listed: 0, zeroed: 0, twinKeys: 0, twinKeysRemaining: 0, skippedSets: 0,
+    });
+    expect(r.ebay.outcome).toBe("clean");
+    expect(bscCalls).toBe(0);
+    expect(sheet[0].availableQuantity).toBe(2);
+    expect(browserCalls.some((c) => c.path.includes("bsc") || c.path.includes("buysportscards"))).toBe(false);
+    await drainScheduled(t);
+  });
+
+  test("a misconfigured fake still counts as the fake: BSC is never contacted", async () => {
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://not-cloud-run.example.com");
+    const t = await ready();
+    const r = await clear(t);
+    expect(r.bsc.outcome).toBe("fakeBsc");
+    expect(bscCalls).toBe(0);
+    await drainScheduled(t);
+  });
+});
+
 describe("eBay", () => {
   test("withdraws every published offer, whatever the item is, and only published ones", async () => {
     const t = await ready();
@@ -1352,7 +1381,9 @@ describe("NEO-483: the seller account a cleanup PUT names", () => {
     const r = await clear(t);
 
     // Four reads, each with the adapter's one immediate retry of a timeout.
-    expect(profileReads).toBe(8);
+    // NEO-552: the fifth stalled call in a row opens the BSC call breaker,
+    // so the three calls after it are refused unsent: five reach BSC.
+    expect(profileReads).toBe(5);
     expect(sellerIdPauses).toEqual([30_000, 60_000, 120_000]);
     expect(puts).toEqual([]);
     expect(sheet[0].availableQuantity).toBe(2);

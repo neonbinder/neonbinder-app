@@ -6,10 +6,11 @@
 // (under the retired Maestro suite, whose `inputText` appended rather than
 // replaced, that produced concatenated garbage).
 //
-// Fix: a test signs the user in, then calls this mutation to wipe that
-// user's own per-user state before the assertions run.
+// Fix: a test signs the user in, then calls `resetMyTestState` to wipe that
+// user's own per-user state (and, NEO-552, their fake BSC namespace) before
+// the assertions run.
 //
-// Security posture — why this is safe as a *public* mutation:
+// Security posture — why this is safe as a *public* function:
 // - It is scoped to the CALLER: it deletes only rows owned by
 //   getCurrentUserId(ctx). A signed-in user can only wipe their own data, never
 //   anyone else's. There is no clerkUserId argument to spoof.
@@ -22,7 +23,14 @@
 // - Deletes are strictly scoped to the three per-user tables via the by_user
 //   index. No bulk-wipe paths, no cross-user reach.
 
-import { mutation, action, internalAction, internalMutation, type MutationCtx } from "./_generated/server";
+import {
+  mutation,
+  action,
+  internalAction,
+  internalMutation,
+  internalQuery,
+  type MutationCtx,
+} from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
 import { getCurrentUserId } from "./auth";
@@ -52,9 +60,10 @@ import { ebayLineTitle, projectEbayOrder } from "./lib/ebayListing";
 import { TEST_OUTBOX_SEQ, TEST_SALE_ORDER_PREFIX, TEST_SYNC_MARK } from "./lib/testSeedMarks";
 import { bscConditionFor, type BscEra } from "./lib/bscConditions";
 import { buildListingSku } from "./lib/listingSku";
-import { BSC_LISTED_BOUNDS, bscListedText } from "./lib/bscOrders";
+import { BSC_LISTED_BOUNDS, BSC_ORDER_BOUNDS, bscListedText } from "./lib/bscOrders";
 import { CatalogReader } from "./lib/catalogView";
 import { slotIds } from "./platformSlots";
+import { resolveBscTarget } from "./lib/bscHttp";
 
 /**
  * What {@link seedMyTestLabelScans} hands back.
@@ -72,35 +81,216 @@ type ScanFixtureResult = {
   applied: boolean;
 };
 
-export const resetMyTestState = mutation({
+// ─── NEO-552 — the fake BuySportsCards account of a test user ───────────────
+//
+// On a deployment wired to the fake BSC (`resolveBscTarget` is not "real",
+// which needs `NEONBINDER_BSC_API_BASE` AND `TESTING_RESET_SECRET`:
+// services/fake-bsc/CONTRACT.md, "App seams"), every test user signs in
+// to the fake as `nb+<convexSlug>-<userTag>@fake.invalid`. The part between
+// `nb+` and the `@`, `<convexSlug>-<userTag>`, is the user's namespace on the
+// fake (CONTRACT.md, "Namespace"): their listings, photos, orders and faults
+// live under it, so two deployments, or two users on one, never share state.
+// The deployment's own namespaces all start with `<convexSlug>-`, which is
+// what the scripted reset clears (`resetFakeBscForDeploymentFromCli`).
+//
+// The password is the fake's fixed sign-in password, not a secret: the fake
+// is reachable only by our own service accounts (CONTRACT.md, "Who may call
+// it"), and a real BSC account never signs in through these helpers.
+
+/** The fake BSC's sign-in password (CONTRACT.md, "Accounts and per-run isolation"). */
+export const FAKE_BSC_PASSWORD = "fake-bsc-password";
+
+/**
+ * Whether this deployment's BSC calls go to the fake rather than the real
+ * site. A test deployment whose fake settings are unusable (`misconfigured`)
+ * counts as fake: it must still seed the fake account and fail on the fake's
+ * calls, never fall back to a real BSC account.
+ */
+export function fakeBscMode(env: Record<string, string | undefined> = process.env): boolean {
+  return resolveBscTarget(env).mode !== "real";
+}
+
+/**
+ * The Convex deployment's slug from `CONVEX_CLOUD_URL`
+ * (`https://<slug>.convex.cloud`), or null when it is missing or not the
+ * shape a Convex slug has. Lowercase letters, digits and hyphens only, so it
+ * is safe inside an email local part.
+ */
+export function convexSlugOf(cloudUrl: string | undefined): string | null {
+  if (!cloudUrl) return null;
+  const slug = /^https:\/\/([a-z0-9-]+)\.convex\.cloud\/?$/.exec(cloudUrl)?.[1];
+  return slug ?? null;
+}
+
+/**
+ * A stable, short tag for one test user: the first 12 hex digits of the
+ * FNV-1a 64-bit hash of their Clerk subject. Stable across runs and
+ * deployments (the same worker account always has the same tag), and it keeps
+ * the Clerk id itself off the fake. Synchronous and runtime-free, so a
+ * mutation and an action derive the same value.
+ */
+export function fakeBscUserTag(userId: string): string {
+  let hash = 0xcbf29ce484222325n;
+  for (const byte of new TextEncoder().encode(userId)) {
+    hash ^= BigInt(byte);
+    hash = (hash * 0x100000001b3n) & 0xffffffffffffffffn;
+  }
+  return hash.toString(16).padStart(16, "0").slice(0, 12);
+}
+
+/**
+ * Every namespace this deployment owns on the fake starts with this:
+ * `<convexSlug>-`. The trailing hyphen keeps one slug from matching another
+ * that merely starts with it.
+ */
+export function fakeBscPrefixFor(cloudUrl: string | undefined): string {
+  const slug = convexSlugOf(cloudUrl);
+  if (!slug) {
+    // Fail closed: a namespace with no deployment in it could collide with
+    // another deployment's, and a reset by an empty prefix would clear them all.
+    throw new Error("Fake BuySportsCards needs this deployment's CONVEX_CLOUD_URL");
+  }
+  return `${slug}-`;
+}
+
+/** The test user's namespace on the fake: `<convexSlug>-<userTag>`. */
+export function fakeBscNamespaceFor(userId: string, cloudUrl: string | undefined): string {
+  return `${fakeBscPrefixFor(cloudUrl)}${fakeBscUserTag(userId)}`;
+}
+
+/** The test user's fake BSC sign-in, `nb+<namespace>@fake.invalid`. */
+export function fakeBscUsernameFor(userId: string, cloudUrl: string | undefined): string {
+  return `nb+${fakeBscNamespaceFor(userId, cloudUrl)}@fake.invalid`;
+}
+
+/**
+ * Every browser-service key this deployment's fake BSC sessions are stored
+ * under starts with this: `buysportscards-credentials-fake-<convexSlug>-`.
+ * Throws without a usable `CONVEX_CLOUD_URL`, like {@link fakeBscPrefixFor}.
+ */
+export function fakeBscCredentialKeyPrefixFor(cloudUrl: string | undefined): string {
+  return `buysportscards-credentials-fake-${fakeBscPrefixFor(cloudUrl)}`;
+}
+
+/**
+ * NEO-552 — the browser service's Secret Manager key for a test user's fake
+ * BSC session: `buysportscards-credentials-fake-<convexSlug>-<clerkUserId>`.
+ *
+ * The bare key (`buysportscards-credentials-<clerkUserId>`) is per Clerk user,
+ * and Secret Manager is one store per GCP project, so every deployment that
+ * signs in the same test user would share one session and overwrite each
+ * other's. Putting the deployment's slug in the key gives each deployment its
+ * own. `credentials.credKey` is the only caller, and only in fake mode: a
+ * deployment on the real BSC keeps the bare key byte for byte.
+ *
+ * The browser service treats the key as opaque under its `KEY_PATTERN`
+ * (`^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$`): the slug is lowercase letters,
+ * digits and hyphens, and a Clerk id is letters, digits and underscores.
+ */
+export function fakeBscCredentialKeyFor(userId: string, cloudUrl: string | undefined): string {
+  return `${fakeBscCredentialKeyPrefixFor(cloudUrl)}${userId}`;
+}
+
+/**
+ * The caller's namespace when this deployment is on the fake, else null. Only
+ * ever derived from the verified Clerk subject, so a caller can reach no
+ * namespace but their own.
+ */
+function fakeBscNamespaceOf(userId: string): string | null {
+  return fakeBscMode() ? fakeBscNamespaceFor(userId, process.env.CONVEX_CLOUD_URL) : null;
+}
+
+/** What every `internal.fakeBsc` control action answers (it reports, never throws). */
+type FakeBscControlResult = { ok: true; skipped: boolean } | { ok: false; status?: number; error: string };
+
+/**
+ * Throws unless the fake did what was asked. `skipped` means the fake module
+ * found no fake to talk to, which only a caller that already decided this
+ * deployment is on the fake can reach, so it is a failure too.
+ */
+function requireFakeBscDone(result: FakeBscControlResult, what: string): void {
+  if (!result.ok) {
+    throw new Error(`Fake BuySportsCards did not ${what}: ${result.error}${result.status ? ` (${result.status})` : ""}`);
+  }
+  if (result.skipped) {
+    throw new Error(`Fake BuySportsCards did not ${what}: this deployment has no fake to reach`);
+  }
+}
+
+/** What the caller's reset deletes, per table family. */
+const resetCountsFields = {
+  publicProfiles: v.number(),
+  userProfiles: v.number(),
+  prizePool: v.number(),
+  // NEO-358: the caller's collection (copies before the containers they
+  // live in). NEO-359: wants before the containers they may be scoped to.
+  collectionCopies: v.number(),
+  collectionWants: v.number(),
+  // NEO-361: the caller's requests, with their private cards and sets.
+  cardRequests: v.number(),
+  collectionContainers: v.number(),
+  collectionBuildingSets: v.number(),
+  // NEO-378: the caller's common prices per variant.
+  variantCommonPrices: v.number(),
+  // NEO-370: the caller's marketplace listing rows, all four tables
+  // (outbox, per-variant syncs, per-platform states, sales) summed.
+  marketplaceListing: v.number(),
+};
+
+/** Written out to cut the inference cycle described on {@link ScanFixtureResult}. */
+type ResetCounts = { [K in keyof typeof resetCountsFields]: number };
+
+/**
+ * The caller's per-user test state: their rows here, and (NEO-552) their
+ * namespace on the fake BSC when the deployment uses it.
+ *
+ * An action, not a mutation, so the fake's namespace is cleared before this
+ * returns. The reset page goes straight on to the credential seed and the
+ * spec, and a reset scheduled from a mutation could land on the fake after
+ * them, wiping the faults or orders a spec had just set up.
+ *
+ * The rows go first, in one transaction (`resetMyTestStateRows`). If the fake
+ * then fails to answer, the call throws: a spec must not run against a
+ * namespace still holding the last run's listings.
+ */
+export const resetMyTestState = action({
   args: {},
   returns: v.object({
-    publicProfiles: v.number(),
-    userProfiles: v.number(),
-    prizePool: v.number(),
-    // NEO-358: the caller's collection (copies before the containers they
-    // live in). NEO-359: wants before the containers they may be scoped to.
-    collectionCopies: v.number(),
-    collectionWants: v.number(),
-    // NEO-361: the caller's requests, with their private cards and sets.
-    cardRequests: v.number(),
-    collectionContainers: v.number(),
-    collectionBuildingSets: v.number(),
-    // NEO-378: the caller's common prices per variant.
-    variantCommonPrices: v.number(),
-    // NEO-370: the caller's marketplace listing rows, all four tables
-    // (outbox, per-variant syncs, per-platform states, sales) summed.
-    marketplaceListing: v.number(),
+    ...resetCountsFields,
+    // NEO-552: true when the caller's fake BSC namespace was cleared too
+    // (false on a deployment that talks to the real site).
+    fakeBscNamespaceReset: v.boolean(),
   }),
   handler: async (ctx) => {
     // Fail closed in production: the enabling flag is unset there.
     if (!process.env.TESTING_RESET_SECRET) {
       throw new Error("Test reset is not enabled on this deployment");
     }
-
     const userId = await getCurrentUserId(ctx);
     if (!userId) {
       throw new Error("Not authenticated");
+    }
+    const counts: ResetCounts = await ctx.runMutation(internal.testing.resetMyTestStateRows, { userId });
+    const ns = fakeBscNamespaceOf(userId);
+    if (ns) {
+      const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.resetNamespace, { ns });
+      requireFakeBscDone(done, "clear your test account");
+    }
+    return { ...counts, fakeBscNamespaceReset: ns !== null };
+  },
+});
+
+/**
+ * The rows half of {@link resetMyTestState}: deletes `userId`'s own per-user
+ * rows. Internal; `userId` comes only from the public action's verified Clerk
+ * subject. Re-checks the testing flag, as every write helper here does.
+ */
+export const resetMyTestStateRows = internalMutation({
+  args: { userId: v.string() },
+  returns: v.object(resetCountsFields),
+  handler: async (ctx, { userId }): Promise<ResetCounts> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("Test reset is not enabled on this deployment");
     }
 
     const publicProfiles = await ctx.db
@@ -268,6 +458,260 @@ export const resetMyTestState = mutation({
         listingLinks.length +
         ebaySettings.length,
     };
+  },
+});
+
+// ─── NEO-552 — the caller's fake BSC faults and orders ──────────────────────
+//
+// What a spec sets up on its own fake BSC account. Both are public actions,
+// because the E2E pages call them as the signed-in worker, and both carry the
+// testing seeds' locks: they throw where `TESTING_RESET_SECRET` is unset
+// (every production deployment), they refuse an anonymous caller, and they act
+// only on the caller's own namespace, derived from the verified Clerk subject
+// (no namespace argument exists to spoof). They also refuse a deployment that
+// talks to the real BSC, so a spec can never aim a fault or an order there.
+// The fake's caller key and ID token are added by `fakeBsc`; nothing secret
+// passes through these arguments or comes back from them.
+
+/** The most rules one call sets: a spec needs a handful, never a list. */
+export const MAX_FAKE_BSC_FAULT_RULES = 20;
+/** Longest delay a rule may ask for: two minutes, past every BSC call budget NB sets. */
+export const MAX_FAKE_BSC_DELAY_MS = 120_000;
+/** Longest a rule may live (the fake's default is 10 minutes). One hour. */
+export const MAX_FAKE_BSC_FAULT_TTL_S = 3_600;
+/** Most items on one injected order. */
+export const MAX_FAKE_BSC_ORDER_ITEMS = 50;
+
+/** One fault rule, as CONTRACT.md "Faults" names it. */
+export const fakeBscFaultRuleValidator = v.object({
+  match: v.object({
+    method: v.union(v.literal("GET"), v.literal("POST"), v.literal("PUT"), v.literal("DELETE")),
+    // The BSC path template NB's own call telemetry uses (`seller/order/:id`).
+    pathTemplate: v.string(),
+    cardId: v.optional(v.string()),
+  }),
+  kind: v.union(v.literal("429"), v.literal("503"), v.literal("delay"), v.literal("hang"), v.literal("reset")),
+  delayMs: v.optional(v.number()),
+  retryAfterS: v.optional(v.number()),
+  times: v.optional(v.number()),
+  ttlS: v.optional(v.number()),
+});
+type FakeBscFaultRule = (typeof fakeBscFaultRuleValidator)["type"];
+
+/**
+ * One order a spec injects into its fake seller's order history, in NB's own
+ * terms; the fake renders BSC's wire shape from it. Ids, conditions and SKUs
+ * are bounded as `parseBscOrder` bounds what it reads.
+ */
+export const fakeBscOrderValidator = v.object({
+  orderNo: v.optional(v.string()),
+  status: v.optional(v.string()),
+  /** When the order was placed, epoch ms. The fake's clock when absent. */
+  orderDateMs: v.optional(v.number()),
+  items: v.array(
+    v.object({
+      cardId: v.string(),
+      condition: v.string(),
+      quantity: v.number(),
+      priceCents: v.optional(v.number()),
+      sellerSku: v.optional(v.string()),
+    }),
+  ),
+});
+type FakeBscOrder = (typeof fakeBscOrderValidator)["type"];
+
+const isWholeIn = (n: number | undefined, min: number, max: number) =>
+  n === undefined || (Number.isInteger(n) && n >= min && n <= max);
+
+/** Throws on the first rule a spec could not have meant; the fake never sees it. */
+export function checkFakeBscFaultRules(rules: FakeBscFaultRule[]): void {
+  if (rules.length === 0 || rules.length > MAX_FAKE_BSC_FAULT_RULES) {
+    throw new Error(`Set between 1 and ${MAX_FAKE_BSC_FAULT_RULES} fault rules`);
+  }
+  for (const rule of rules) {
+    const template = rule.match.pathTemplate;
+    if (
+      template.length === 0 ||
+      template.length > 200 ||
+      !/^[A-Za-z0-9/_:.-]+$/.test(template) ||
+      template.includes("..") ||
+      template.includes("//") ||
+      // A scheme (`https:`) makes it a URL, not a path; `:id` placeholders follow a slash.
+      /^[A-Za-z][A-Za-z0-9+.-]*:/.test(template)
+    ) {
+      throw new Error("A fault rule's pathTemplate must be a BSC path template such as seller/order/:id");
+    }
+    if (rule.match.cardId !== undefined && !/^[A-Za-z0-9-]{1,64}$/.test(rule.match.cardId)) {
+      throw new Error("A fault rule's cardId must be a BSC card id");
+    }
+    if (rule.kind === "delay" && rule.delayMs === undefined) {
+      throw new Error("A delay fault needs delayMs");
+    }
+    if (!isWholeIn(rule.delayMs, 0, MAX_FAKE_BSC_DELAY_MS)) {
+      throw new Error(`delayMs must be a whole number from 0 to ${MAX_FAKE_BSC_DELAY_MS}`);
+    }
+    if (!isWholeIn(rule.retryAfterS, 0, 3_600)) throw new Error("retryAfterS must be a whole number from 0 to 3600");
+    if (!isWholeIn(rule.times, 1, 1_000)) throw new Error("times must be a whole number from 1 to 1000");
+    if (!isWholeIn(rule.ttlS, 1, MAX_FAKE_BSC_FAULT_TTL_S)) {
+      throw new Error(`ttlS must be a whole number from 1 to ${MAX_FAKE_BSC_FAULT_TTL_S}`);
+    }
+  }
+}
+
+/** Throws on an order `parseBscOrder` could not read back. */
+export function checkFakeBscOrder(order: FakeBscOrder): void {
+  const fits = (s: string | undefined, max: number) => s === undefined || (s.trim() !== "" && s.length <= max);
+  if (!fits(order.orderNo, BSC_ORDER_BOUNDS.orderNo)) throw new Error("orderNo is blank or too long");
+  if (!fits(order.status, BSC_ORDER_BOUNDS.status)) throw new Error("status is blank or too long");
+  if (order.orderDateMs !== undefined && !(Number.isInteger(order.orderDateMs) && order.orderDateMs >= 0)) {
+    throw new Error("orderDateMs must be epoch milliseconds");
+  }
+  if (order.items.length === 0 || order.items.length > MAX_FAKE_BSC_ORDER_ITEMS) {
+    throw new Error(`An order carries between 1 and ${MAX_FAKE_BSC_ORDER_ITEMS} items`);
+  }
+  for (const item of order.items) {
+    if (!/^[A-Za-z0-9-]{1,64}$/.test(item.cardId)) throw new Error("An item's cardId must be a BSC card id");
+    if (!fits(item.condition, BSC_ORDER_BOUNDS.condition)) throw new Error("An item's condition is blank or too long");
+    if (!fits(item.sellerSku, BSC_ORDER_BOUNDS.sku)) throw new Error("An item's sellerSku is blank or too long");
+    if (!isWholeIn(item.quantity, 1, 1_000)) throw new Error("An item's quantity must be a whole number from 1 to 1000");
+    if (!isWholeIn(item.priceCents, 0, 100_000_000)) throw new Error("An item's priceCents must be whole cents");
+  }
+}
+
+/**
+ * The caller's namespace for a fault or order call, after the testing locks.
+ * Throws off a testing deployment, for an anonymous caller, and on a
+ * deployment that talks to the real BSC.
+ */
+async function callerFakeBscNamespace(ctx: ActionCtx): Promise<string> {
+  if (!process.env.TESTING_RESET_SECRET) {
+    throw new Error("Fake BuySportsCards controls are not enabled on this deployment");
+  }
+  const userId = await getCurrentUserId(ctx);
+  if (!userId) {
+    throw new Error("Not authenticated");
+  }
+  const ns = fakeBscNamespaceOf(userId);
+  if (!ns) {
+    throw new Error("This deployment talks to the real BuySportsCards, so it takes no fake faults or orders");
+  }
+  return ns;
+}
+
+/**
+ * Replace the caller's fault rules on the fake BSC (CONTRACT.md, "Faults"):
+ * a 429, a 503, a delay, a hang or a reset on the calls a rule matches. The
+ * fake drops each rule after `times` matches or `ttlS` seconds.
+ */
+export const setMyBscFaults = action({
+  args: { rules: v.array(fakeBscFaultRuleValidator) },
+  returns: v.object({ rules: v.number() }),
+  handler: async (ctx, args) => {
+    const ns = await callerFakeBscNamespace(ctx);
+    checkFakeBscFaultRules(args.rules);
+    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.setFaults, { ns, rules: args.rules });
+    requireFakeBscDone(done, "set the fault rules");
+    return { rules: args.rules.length };
+  },
+});
+
+/**
+ * Add one order to the caller's fake seller order history, as a buyer's
+ * purchase would, so the sales poll has something to find.
+ */
+export const addMyBscOrder = action({
+  args: { order: fakeBscOrderValidator },
+  returns: v.object({ items: v.number() }),
+  handler: async (ctx, args) => {
+    const ns = await callerFakeBscNamespace(ctx);
+    checkFakeBscOrder(args.order);
+    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.addOrder, { ns, order: args.order });
+    requireFakeBscDone(done, "add the order");
+    return { items: args.order.items.length };
+  },
+});
+
+/**
+ * Drop every fault rule on the caller's fake BSC account, and nothing else
+ * (listings, photos and orders stay). The E2E suite's teardown for the rules
+ * `setMyBscFaults` set; a spec's own `finally` cannot rely on the rules' TTL,
+ * because a later spec on the same worker would meet whatever is left of it.
+ */
+export const clearMyBscFaults = action({
+  args: {},
+  returns: v.object({ cleared: v.boolean() }),
+  handler: async (ctx) => {
+    const ns = await callerFakeBscNamespace(ctx);
+    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.setFaults, { ns, rules: [] });
+    requireFakeBscDone(done, "clear the fault rules");
+    return { cleared: true };
+  },
+});
+
+/**
+ * Clear this deployment's BSC call gate (`bscCallGate`: the breaker and its
+ * failure run), so a spec that opened it, with a 429 or a run of 5xx or
+ * timeouts, leaves it closed. The gate is DEPLOYMENT-WIDE, not per user: it is
+ * the one control here that reaches past the caller, which is why only specs
+ * tagged `@bsc-breaker` (run alone, after every shard) may move it. Same locks
+ * as the other controls: a testing deployment, a signed-in caller, the fake.
+ */
+export const clearBscCallGate = action({
+  args: {},
+  returns: v.object({ deleted: v.number() }),
+  // Annotated: without it the action's type loops back through `internal` (TS7022).
+  handler: async (ctx): Promise<{ deleted: number }> => {
+    await callerFakeBscNamespace(ctx);
+    const cleared: { deleted: number } = await ctx.runMutation(internal.bscCallGate.clearForTesting, {});
+    return cleared;
+  },
+});
+
+/**
+ * NEO-552 — the scripted reset's fake BSC step (`e2e-baseline.sh reset`):
+ * clears every namespace this deployment owns on the fake (`<slug>-`), so
+ * a new pass starts with no listings, photos, orders or faults from the last.
+ * The fake keeps the catalogue misses (the recorder's to-do list) until they
+ * are recorded.
+ * Internal: reached only by `convex run` with deploy credentials, so the fake's
+ * keys stay on the deployment and never touch the runner. A deployment that
+ * talks to the real BSC has nothing to clear and says so.
+ *
+ * The BSC call breaker is not cleared here: the scripted reset clears it with
+ * the rest of the deployment's tables (`selectorOptions.resetSetBuilderData`).
+ */
+export const resetFakeBscForDeploymentFromCli = internalAction({
+  args: {},
+  returns: v.object({ fake: v.boolean(), prefix: v.optional(v.string()) }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET || !fakeBscMode()) {
+      return { fake: false };
+    }
+    const prefix = fakeBscPrefixFor(process.env.CONVEX_CLOUD_URL);
+    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.resetPrefix, { prefix });
+    requireFakeBscDone(done, "clear this deployment's accounts");
+    return { fake: true, prefix };
+  },
+});
+
+/** How many users one fake-session cleanup reads (a preview has a dozen). */
+export const FAKE_BSC_CLEANUP_MAX_USERS = 200;
+
+/**
+ * NEO-552 — the users whose fake BSC sessions `credentials.deleteFakeBscSessionsFromCli`
+ * deletes: every `userProfiles` row on this deployment, with or without a
+ * saved BSC flag (a per-user reset can drop the flag while the session
+ * stays). Only ids leave this query. Bounded; `truncated` says more exist.
+ * Internal, and empty where the testing flag is unset (production).
+ */
+export const fakeBscCleanupUserIds = internalQuery({
+  args: {},
+  returns: v.object({ userIds: v.array(v.string()), truncated: v.boolean() }),
+  handler: async (ctx) => {
+    if (!process.env.TESTING_RESET_SECRET) return { userIds: [], truncated: false };
+    const rows = await ctx.db.query("userProfiles").take(FAKE_BSC_CLEANUP_MAX_USERS + 1);
+    const userIds = [...new Set(rows.slice(0, FAKE_BSC_CLEANUP_MAX_USERS).map((row) => row.userId))];
+    return { userIds, truncated: rows.length > FAKE_BSC_CLEANUP_MAX_USERS };
   },
 });
 
@@ -1161,9 +1605,20 @@ export const seedMyTestCredentials = action({
         seeded.push({ site, stored: connected.ok, ...(connected.ok ? {} : { reason: connected.error }) });
         continue;
       }
+      // NEO-552 — on a deployment wired to the fake BSC, the BSC sign-in is
+      // the caller's own fake account (their namespace there) and the fake's
+      // fixed password, never the DEV_BSC_* account: no real BSC credential
+      // reaches the fake, and each test user gets state of their own. The rest
+      // of the seed (the renewable-session skip, the listing branch) is the
+      // same for both.
+      const fakeBsc = site === "buysportscards" && fakeBscMode();
       const envKeys = SEED_SITE_ENV[site];
-      const username = envKeys ? process.env[envKeys.username] : undefined;
-      const password = envKeys ? process.env[envKeys.password] : undefined;
+      const username = fakeBsc
+        ? fakeBscUsernameFor(userId, process.env.CONVEX_CLOUD_URL)
+        : envKeys
+          ? process.env[envKeys.username]
+          : undefined;
+      const password = fakeBsc ? FAKE_BSC_PASSWORD : envKeys ? process.env[envKeys.password] : undefined;
       if (!username || !password) {
         // No dev creds configured for this site on this deployment — skip
         // rather than failing the whole seed call.

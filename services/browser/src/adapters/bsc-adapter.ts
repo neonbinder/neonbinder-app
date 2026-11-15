@@ -1,5 +1,4 @@
 import { Page } from "puppeteer";
-import crypto from "node:crypto";
 import {
   BaseAdapter,
   AdapterResponse,
@@ -9,11 +8,23 @@ import {
   summarizeFetchError,
 } from "./base-adapter";
 import { Credentials, SecretsManagerService } from "../services/secrets-manager";
+import { FAKE_ONLY_ACCOUNT_ERROR, refuseNonFakeAccount, resolveBscEndpoints } from "../bsc-endpoints";
+import { bscFetch } from "../bsc-fetch";
 import {
-  buildLoginDiagnostic,
-  LoginDiagnostic,
-  DiagnosticSecrets,
-} from "../services/login-diagnostic";
+  B2CCookieJar,
+  BSC_B2C_STEP_TIMEOUT_MS,
+  BSC_UA,
+  BscTokenSet,
+  attachSsoCookies,
+  bscPasswordSignIn,
+  bscRefreshGrant,
+  buildAuthorizeRequest,
+  cookieHeader,
+  exchangeAuthCode,
+  extractAuthCode,
+  extractAuthError,
+  parseB2CSettings,
+} from "../bsc-signin";
 
 interface BscSellerProfile {
   // Confirmed live from /marketplace/user/profile: `sellerId` is the
@@ -28,61 +39,15 @@ interface BscProfileResponse {
   sellerProfile?: BscSellerProfile;
 }
 
-// --- Azure AD B2C custom-policy sign-in configuration -----------------------
+// --- Azure AD B2C sign-in ----------------------------------------------------
 //
-// BSC authenticates through an Azure AD B2C tenant
-// (identity.buysportscards.com) using a CUSTOM policy (B2C_1A_signin). The SPA
-// runs MSAL.js, which performs an OAuth2 auth-code-+-PKCE flow against the B2C
-// authorize/token endpoints and writes the resulting Bearer access token into
-// www.buysportscards.com localStorage.
-//
-// Because the BSC sign-in custom policy presents NO CAPTCHA/JS challenge (the
-// old Puppeteer login just filled #signInName/#password and clicked Next), the
-// entire flow is reproducible over plain fetch — no Chromium required. These
-// constants are extracted from the BSC SPA bundle (main.*.js) and the B2C
-// OIDC metadata document; they are PUBLIC client configuration, not secrets.
-const BSC_B2C = {
-  clientId: "9b4d7d82-6b2b-4c9e-9542-d94ee43bcac1",
-  authority:
-    "https://identity.buysportscards.com/identity.buysportscards.com/b2c_1a_signin",
-  policy: "B2C_1A_signin",
-  redirectUri: "https://www.buysportscards.com/",
-  // openid+profile get the id_token; the api/read scope is the resource the
-  // Bearer access token is minted for (the one used against api-prod).
-  //
-  // NEO-140: `offline_access` is listed for legibility of intent, NOT because
-  // it is required. Probed live against BSC's B2C tenant on 2026-08-11: the
-  // token endpoint already returns a `refresh_token` under the base scope
-  // alone. (The comment that used to sit here claimed the SPA does not
-  // request offline_access "so we don't either — we re-login on expiry rather
-  // than refresh". Both halves were wrong: we were being handed a refresh
-  // token on every login and throwing it away, which is precisely why a
-  // user's password had to be kept on disk.)
-  //
-  // NEO-278: `refresh_token_expires_in` is ABSOLUTE from the password
-  // sign-in, not a sliding window. Probed 2026-09-14: a refresh grant issued
-  // 4s after sign-in came back with 86396, not 86400. Rotation keeps the
-  // access token alive but never extends the window, so a refresh-only chain
-  // dies 24h after the password was typed. The B2C "Keep me signed in" SSO
-  // cookie (see B2CCookieJar.ssoCookies and silentReauthorize) is what carries
-  // a session past that.
-  scope:
-    "openid profile https://buysportscards.onmicrosoft.com/api/read offline_access",
-} as const;
-
-const BSC_AUTHORIZE_URL = `${BSC_B2C.authority}/oauth2/v2.0/authorize`;
-const BSC_TOKEN_URL = `${BSC_B2C.authority}/oauth2/v2.0/token`;
-const BSC_SELF_ASSERTED_URL = `${BSC_B2C.authority}/SelfAsserted`;
-
-// A desktop UA so B2C serves the standard self-asserted HTML page.
-const BSC_UA =
-  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-
-// Fallback access-token lifetime, used ONLY when the token endpoint omits
-// `expires_in`. BSC currently returns expires_in=3600, and we prefer the real
-// value — a hardcoded TTL that outlives the actual token produces a "valid"
-// cache entry that 401s, costing a wasted round trip on every call.
-const TOKEN_TTL_MS = 60 * 60 * 1000;
+// BSC authenticates through an Azure AD B2C tenant using a CUSTOM policy
+// (B2C_1A_signin) with no CAPTCHA/JS challenge, so the whole OAuth2
+// auth-code-+-PKCE exchange runs over plain fetch, no Chromium. NEO-552: the
+// protocol (client config, PKCE, the cookie jar, the four steps) lives in
+// ../bsc-signin.ts and the hosts in ../bsc-endpoints.ts, so the probe and the
+// fake BSC's recorder share it. This adapter owns the login LADDER (cache,
+// refresh, silent SSO, password) and the Secret Manager write-back.
 
 // NEO-445: BSC's profile call usually answers in a couple of seconds and can
 // stall for 30s before a 503. One attempt gets 5s, headers and body together, and
@@ -127,181 +92,6 @@ export interface BscLoginOptions extends LoginOptions {
   tokenRefused?: boolean;
 }
 
-/**
- * The fields we read off the B2C token endpoint, for both the
- * authorization_code and refresh_token grants.
- *
- * All observed live on 2026-08-11: expires_in=3600 (access token),
- * refresh_token_expires_in=86400 (refresh token, absolute from the password
- * sign-in — see BSC_B2C.scope), and the refresh grant returning a NEW
- * refresh_token each time.
- */
-interface BscTokenResponse {
-  access_token?: string;
-  expires_in?: number;
-  refresh_token?: string;
-  refresh_token_expires_in?: number;
-}
-
-/**
- * A normalized token set with absolute expiries, ready to persist.
- *
- * SECURITY: every field except the expiries is credential material. Instances
- * of this type must never be logged or returned to a caller.
- */
-interface BscTokenSet {
-  token: string;
-  expiresAt: number;
-  refreshToken?: string;
-  refreshExpiresAt?: number;
-  /**
-   * NEO-278: the B2C SSO cookies observed on the exchange that minted this
-   * token set (password sign-in or silent re-authorize). Absent on a refresh
-   * grant, which never touches /authorize — persistTokens carries the stored
-   * ones forward in that case.
-   */
-  ssoCookies?: Record<string, string>;
-  ssoExpiresAt?: number;
-}
-
-/**
- * Prefix of the Azure AD B2C "Keep me signed in" SSO cookie(s). Observed live
- * 2026-09-14 as `x-ms-cpim-sso:<tenant>_0`, issued on the /confirmed step
- * when `rememberMe=true`, ~62 days long, and re-issued with a fresh expiry on
- * every silent /authorize that honours it. Matched by PREFIX because the
- * tenant suffix is B2C's to change.
- */
-const BSC_SSO_COOKIE_PREFIX = "x-ms-cpim-sso";
-
-/** Epoch ms for cookies that carry no expiry attribute at all. */
-type CookieExpiry = number | undefined;
-
-/**
- * Minimal in-flight cookie jar for the B2C sign-in exchange.
- *
- * B2C threads its anti-forgery state through `x-ms-cpim-*` cookies that are
- * set on the /authorize response and must be echoed back on the /SelfAsserted
- * POST and /confirmed GET. node's fetch does not persist cookies across calls,
- * so we collect Set-Cookie ourselves. Host/path are intentionally ignored: the
- * jar lives only for the duration of one login() and only ever talks to the
- * single B2C host.
- *
- * NEO-278: expiry is now tracked per cookie, and a Set-Cookie that CLEARS a
- * cookie (empty value, or an expiry in the past) removes it — B2C clears
- * `x-ms-cpim-trans` on the silent-authorize redirect, and the only durable
- * thing we lift out of the jar (the SSO cookies) must never be persisted with
- * a cleared value or a dead expiry.
- *
- * SECURITY: cookie VALUES are anti-forgery tokens and, for the SSO cookies,
- * the user's BSC session. They are never logged; only cookie NAMES may be
- * logged for debugging.
- */
-class B2CCookieJar {
-  private cookies = new Map<string, string>();
-  private expiries = new Map<string, CookieExpiry>();
-
-  ingest(response: Response): void {
-    const setCookies =
-      typeof response.headers.getSetCookie === "function"
-        ? response.headers.getSetCookie()
-        : [];
-    const now = Date.now();
-    for (const sc of setCookies) {
-      const [nameValue, ...attributes] = sc.split(";");
-      const eq = nameValue.indexOf("=");
-      if (eq <= 0) continue;
-      const name = nameValue.slice(0, eq).trim();
-      const value = nameValue.slice(eq + 1).trim();
-      const expiry = B2CCookieJar.parseExpiry(attributes, now);
-      if (value.length === 0 || (expiry !== undefined && expiry <= now)) {
-        this.cookies.delete(name);
-        this.expiries.delete(name);
-        continue;
-      }
-      this.cookies.set(name, value);
-      this.expiries.set(name, expiry);
-    }
-  }
-
-  /**
-   * Absolute expiry from the cookie's attributes. `Max-Age` wins over
-   * `Expires` (RFC 6265 §5.3 step 5). Undefined when neither is present or
-   * neither parses — a session cookie, which we treat as "no known expiry".
-   */
-  private static parseExpiry(attributes: string[], now: number): CookieExpiry {
-    let expires: CookieExpiry;
-    for (const raw of attributes) {
-      const attribute = raw.trim();
-      const eq = attribute.indexOf("=");
-      if (eq <= 0) continue;
-      const key = attribute.slice(0, eq).trim().toLowerCase();
-      const val = attribute.slice(eq + 1).trim();
-      if (key === "max-age") {
-        const seconds = Number(val);
-        if (Number.isFinite(seconds)) return now + seconds * 1000;
-      } else if (key === "expires") {
-        const parsed = Date.parse(val);
-        if (Number.isFinite(parsed)) expires = parsed;
-      }
-    }
-    return expires;
-  }
-
-  header(): string {
-    return [...this.cookies.entries()].map(([k, v]) => `${k}=${v}`).join("; ");
-  }
-
-  /**
-   * NEO-278: the SSO cookie(s) currently in the jar, ready to persist, or
-   * undefined when B2C issued none. `expiresAt` is the earliest expiry among
-   * them (undefined when none carried one), so a single timestamp answers
-   * "is the whole set still presentable".
-   */
-  ssoCookies(): { cookies: Record<string, string>; expiresAt?: number } | undefined {
-    const cookies: Record<string, string> = {};
-    let expiresAt: CookieExpiry;
-    let count = 0;
-    for (const [name, value] of this.cookies) {
-      if (!name.startsWith(BSC_SSO_COOKIE_PREFIX)) continue;
-      cookies[name] = value;
-      count++;
-      const expiry = this.expiries.get(name);
-      if (expiry !== undefined && (expiresAt === undefined || expiry < expiresAt)) {
-        expiresAt = expiry;
-      }
-    }
-    if (count === 0) return undefined;
-    return expiresAt === undefined ? { cookies } : { cookies, expiresAt };
-  }
-}
-
-/** Serialise a stored cookie map into a Cookie request header. */
-function cookieHeader(cookies: Record<string, string>): string {
-  return Object.entries(cookies)
-    .map(([k, v]) => `${k}=${v}`)
-    .join("; ");
-}
-
-/** base64url-encode a Buffer (no padding) for PKCE/state/nonce values. */
-function base64Url(buffer: Buffer): string {
-  return buffer
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-/**
- * The subset of the B2C self-asserted page's embedded `SETTINGS` blob we use:
- * the anti-forgery `csrf` token, the transaction id `transId`, and the policy
- * api name (`api`, e.g. "SelfAsserted") that forms the /confirmed path.
- */
-interface B2CSettings {
-  csrf?: string;
-  transId?: string;
-  api?: string;
-}
-
 export interface BSCAdapterOptions {
   /** Limit on one profile attempt, headers and body. Default 5s. */
   profileAttemptTimeoutMs?: number;
@@ -309,6 +99,11 @@ export interface BSCAdapterOptions {
 
 export class BSCAdapter extends BaseAdapter {
   private readonly profileAttemptTimeoutMs: number;
+  /**
+   * NEO-552: the fake-mode 429 breaker scope (the credential key), set at the
+   * top of login(). Ignored against real BSC, where the breaker is global.
+   */
+  private breakerScope?: string;
 
   constructor(page?: Page, opts: BSCAdapterOptions = {}) {
     super(page, "BuySportsCards (BSC)");
@@ -316,7 +111,7 @@ export class BSCAdapter extends BaseAdapter {
   }
 
   getHomeUrl(): string {
-    return "https://www.buysportscards.com";
+    return resolveBscEndpoints().homeUrl;
   }
 
   /**
@@ -358,10 +153,14 @@ export class BSCAdapter extends BaseAdapter {
     const signal = AbortSignal.timeout(this.profileAttemptTimeoutMs);
     let status: number | undefined;
     try {
-      const response = await fetch("https://api-prod.buysportscards.com/marketplace/user/profile", {
-        headers: { "Authorization": `Bearer ${token}` },
-        signal,
-      });
+      const response = await bscFetch(
+        `${resolveBscEndpoints().apiBase}/marketplace/user/profile`,
+        {
+          headers: { "Authorization": `Bearer ${token}` },
+          signal,
+        },
+        { scope: this.breakerScope },
+      );
       status = response.status;
       if (!response.ok) {
         console.warn(`${label} answered ${status} in ${Date.now() - startedAt}ms`);
@@ -404,291 +203,6 @@ export class BSCAdapter extends BaseAdapter {
   }
 
   /**
-   * Browser-free Azure AD B2C sign-in over fetch.
-   *
-   * Replays the same OAuth2 auth-code-+-PKCE exchange the BSC SPA's MSAL.js
-   * performs, but with no Chromium:
-   *   1. GET  /authorize        → self-asserted HTML + SETTINGS{csrf,transId,api}
-   *                               + x-ms-cpim-* anti-forgery cookies
-   *   2. POST /SelfAsserted      → submit signInName/password; B2C replies
-   *                               {"status":"200"} on accept, {"status":"400"}
-   *                               on rejection (still HTTP 200)
-   *   3. GET  /api/<api>/confirmed → 302 to redirectUri#code=...
-   *   4. POST /token             → exchange code (+ PKCE verifier) for the
-   *                               Bearer access_token
-   *
-   * Returns a normalized {@link BscTokenSet} — the bare access token (no
-   * "Bearer " prefix, matching the storage convention the rest of the system
-   * relies on) plus the rotating refresh token — or a structured failure with
-   * a sanitized diagnostic. NEVER calls launchPage(), so this.browser stays
-   * undefined and cleanup() remains a no-op — no Chromium process to leak.
-   *
-   * SECURITY: the email, password, anti-forgery cookies, csrf token, auth
-   * code, and access token are NEVER logged or placed in returned error
-   * strings. On failure we build a sanitized diagnostic via
-   * buildLoginDiagnostic, which redacts the typed credentials and any
-   * token/cookie-shaped material from the captured B2C response text.
-   */
-  private async httpLogin(
-    email: string,
-    password: string,
-  ): Promise<
-    | { tokens: BscTokenSet }
-    | { error: string; diagnostic?: LoginDiagnostic; credentialRejected?: boolean }
-  > {
-    const secrets: DiagnosticSecrets = { email, password };
-    const jar = new B2CCookieJar();
-
-    // --- Step 1: GET /authorize -------------------------------------------
-    //
-    // `prompt=select_account` is what makes B2C serve the sign-in form even
-    // when it holds an SSO session for this client. The silent path
-    // (silentReauthorize) deliberately omits it.
-    const { codeVerifier, state, authorizeUrl } = this.buildAuthorizeRequest({
-      prompt: "select_account",
-    });
-
-    console.log(`[BSC Adapter] B2C step 1: GET /authorize`);
-    const authorizeResponse = await fetch(authorizeUrl, {
-      headers: { "User-Agent": BSC_UA },
-      redirect: "manual",
-    });
-    jar.ingest(authorizeResponse);
-    const authorizeHtml = await authorizeResponse.text();
-
-    const settings = this.parseB2CSettings(authorizeHtml);
-    if (!settings?.csrf || !settings.transId || !settings.api) {
-      // No self-asserted form — B2C served a redirect, an error, or an
-      // unexpected (possibly JS-gated) page. Capture sanitized context.
-      console.warn(
-        `[BSC Adapter] B2C /authorize did not yield a sign-in form (status=${authorizeResponse.status}).`,
-      );
-      const diagnostic = buildLoginDiagnostic(
-        { url: BSC_AUTHORIZE_URL, rawText: this.stripTags(authorizeHtml) },
-        secrets,
-      );
-      return { error: `Authentication failed`, diagnostic };
-    }
-
-    // --- Step 2: POST /SelfAsserted ---------------------------------------
-    const selfAssertedUrl = new URL(BSC_SELF_ASSERTED_URL);
-    selfAssertedUrl.search = new URLSearchParams({
-      tx: settings.transId,
-      p: BSC_B2C.policy,
-    }).toString();
-
-    console.log(`[BSC Adapter] B2C step 2: POST /SelfAsserted`);
-    const selfAssertedResponse = await fetch(selfAssertedUrl, {
-      method: "POST",
-      headers: {
-        "User-Agent": BSC_UA,
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
-        "X-CSRF-TOKEN": settings.csrf,
-        "X-Requested-With": "XMLHttpRequest",
-        "Cookie": jar.header(),
-        "Referer": authorizeUrl.toString(),
-      },
-      body: new URLSearchParams({
-        request_type: "RESPONSE",
-        signInName: email,
-        password,
-      }).toString(),
-      redirect: "manual",
-    });
-    jar.ingest(selfAssertedResponse);
-    const selfAssertedBody = await selfAssertedResponse.text();
-
-    // B2C answers SelfAsserted with a small JSON {"status":"200"} on success
-    // or {"status":"400","message":"<reason>"} on rejection — both as HTTP
-    // 200. The `message` can echo the typed identifier, so it is NEVER
-    // returned raw; it only feeds the sanitized diagnostic.
-    let selfAssertedStatus: string | undefined;
-    try {
-      selfAssertedStatus = (JSON.parse(selfAssertedBody) as { status?: string }).status;
-    } catch {
-      selfAssertedStatus = undefined;
-    }
-    if (selfAssertedStatus !== "200") {
-      console.warn(
-        `[BSC Adapter] B2C SelfAsserted rejected credentials (status field=${selfAssertedStatus ?? "(unparseable)"}).`,
-      );
-      const diagnostic = buildLoginDiagnostic(
-        { url: BSC_SELF_ASSERTED_URL, rawText: selfAssertedBody },
-        secrets,
-      );
-      // NEO-98: this is the ONE branch in the whole B2C exchange where BSC
-      // demonstrably evaluated the credentials and said no — it parsed as
-      // B2C's own {"status":"<non-200>"} envelope. Every other failure below
-      // (and above) is an integration fault and must stay pageable.
-      //
-      // Two carve-outs, both deliberate:
-      //   - selfAssertedStatus === undefined means the body did NOT parse as
-      //     the envelope at all. That is B2C returning something unexpected,
-      //     not a rejection, so it does NOT count.
-      //   - a challenge page means we were bot-blocked before the password
-      //     was ever judged. Our problem, not the seller's.
-      const credentialRejected =
-        selfAssertedStatus !== undefined && diagnostic.challengeDetected !== true;
-      return { error: `Authentication failed`, diagnostic, credentialRejected };
-    }
-
-    // --- Step 3: GET /api/<api>/confirmed → 302 with #code= ----------------
-    //
-    // NEO-278: `rememberMe=true` is B2C's "Keep me signed in". It makes the
-    // /confirmed response set the long-lived `x-ms-cpim-sso:*` cookie (~62
-    // days, probed 2026-09-14), which silentReauthorize later presents to
-    // mint a new code — and a fresh 24h refresh window — with no password.
-    const confirmedUrl = new URL(`${BSC_B2C.authority}/api/${settings.api}/confirmed`);
-    confirmedUrl.search = new URLSearchParams({
-      rememberMe: "true",
-      csrf_token: settings.csrf,
-      tx: settings.transId,
-      p: BSC_B2C.policy,
-    }).toString();
-
-    console.log(`[BSC Adapter] B2C step 3: GET /api/${settings.api}/confirmed`);
-    const confirmedResponse = await fetch(confirmedUrl, {
-      headers: {
-        "User-Agent": BSC_UA,
-        "Cookie": jar.header(),
-        "Referer": authorizeUrl.toString(),
-      },
-      redirect: "manual",
-    });
-    jar.ingest(confirmedResponse);
-
-    const code = this.extractAuthCode(confirmedResponse.headers.get("location"), state);
-    if (!code) {
-      console.warn(
-        `[BSC Adapter] B2C /confirmed did not return an auth code (status=${confirmedResponse.status}).`,
-      );
-      // No page body to mine here; emit a body-less diagnostic so the caller
-      // still gets challengeDetected=false + the endpoint url.
-      const diagnostic = buildLoginDiagnostic({ url: confirmedUrl.origin + confirmedUrl.pathname }, secrets);
-      return { error: `Authentication failed`, diagnostic };
-    }
-
-    // --- Step 4: POST /token (code + PKCE verifier) ------------------------
-    const tokens = await this.exchangeAuthCode(code, codeVerifier);
-    if (!tokens) {
-      return { error: `Authentication failed` };
-    }
-
-    // NEO-278: lift the "Keep me signed in" cookie(s) out of the jar so they
-    // are persisted with the tokens. Names only in the log.
-    this.attachSsoCookies(tokens, jar);
-
-    // Metadata only: booleans and a count. Never the token or cookie values.
-    console.log(
-      `[BSC Adapter] B2C sign-in complete; access token acquired ` +
-        `(refresh_token_present=${!!tokens.refreshToken}, ` +
-        `sso_cookies=${Object.keys(tokens.ssoCookies ?? {}).length}).`,
-    );
-    return { tokens };
-  }
-
-  /**
-   * Build the /authorize request: fresh PKCE verifier + S256 challenge, state
-   * and nonce, and the URL carrying them. The verifier never leaves this
-   * process; only its challenge is sent.
-   *
-   * `prompt` is optional for a reason: the password sign-in sends
-   * `select_account` to force the form, and the silent SSO re-authorize must
-   * send NO prompt at all so B2C is free to honour the SSO cookie with a
-   * straight 302 (probed 2026-09-14).
-   */
-  private buildAuthorizeRequest(options: { prompt?: string }): {
-    codeVerifier: string;
-    state: string;
-    authorizeUrl: URL;
-  } {
-    const codeVerifier = base64Url(crypto.randomBytes(32));
-    const codeChallenge = base64Url(
-      crypto.createHash("sha256").update(codeVerifier).digest(),
-    );
-    const state = base64Url(crypto.randomBytes(16));
-    const nonce = base64Url(crypto.randomBytes(16));
-
-    const params = new URLSearchParams({
-      client_id: BSC_B2C.clientId,
-      redirect_uri: BSC_B2C.redirectUri,
-      response_type: "code",
-      scope: BSC_B2C.scope,
-      code_challenge: codeChallenge,
-      code_challenge_method: "S256",
-      state,
-      nonce,
-      response_mode: "fragment",
-    });
-    if (options.prompt) params.set("prompt", options.prompt);
-
-    const authorizeUrl = new URL(BSC_AUTHORIZE_URL);
-    authorizeUrl.search = params.toString();
-    return { codeVerifier, state, authorizeUrl };
-  }
-
-  /**
-   * Step 4 of the exchange: trade an auth code (+ the PKCE verifier it was
-   * issued against) for a token set. Shared by the password sign-in and the
-   * silent SSO re-authorize — the body is identical for both.
-   *
-   * Returns undefined on any failure, after logging status + B2C's short
-   * `error` code only. The token endpoint's `error_description` can carry
-   * trace ids but not the user's secret; it is still never surfaced.
-   */
-  private async exchangeAuthCode(
-    code: string,
-    codeVerifier: string,
-  ): Promise<BscTokenSet | undefined> {
-    console.log(`[BSC Adapter] B2C step 4: POST /token`);
-    const tokenResponse = await fetch(BSC_TOKEN_URL, {
-      method: "POST",
-      headers: {
-        "User-Agent": BSC_UA,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        client_id: BSC_B2C.clientId,
-        grant_type: "authorization_code",
-        code,
-        redirect_uri: BSC_B2C.redirectUri,
-        code_verifier: codeVerifier,
-        scope: BSC_B2C.scope,
-      }).toString(),
-    });
-
-    if (!tokenResponse.ok) {
-      let tokenError = "(unparseable)";
-      try {
-        tokenError = ((await tokenResponse.json()) as { error?: string }).error ?? "(none)";
-      } catch {
-        /* ignore */
-      }
-      console.warn(
-        `[BSC Adapter] B2C token exchange failed (status=${tokenResponse.status}, error=${tokenError}).`,
-      );
-      return undefined;
-    }
-
-    const tokens = this.toTokenSet((await tokenResponse.json()) as BscTokenResponse);
-    if (!tokens) {
-      console.warn(`[BSC Adapter] B2C token response had no access_token.`);
-    }
-    return tokens;
-  }
-
-  /**
-   * Copy the SSO cookie(s) B2C issued during an exchange onto the token set
-   * that exchange produced, so persistTokens stores them together.
-   */
-  private attachSsoCookies(tokens: BscTokenSet, jar: B2CCookieJar): void {
-    const sso = jar.ssoCookies();
-    if (!sso) return;
-    tokens.ssoCookies = sso.cookies;
-    if (sso.expiresAt !== undefined) tokens.ssoExpiresAt = sso.expiresAt;
-  }
-
-  /**
    * NEO-278: silent re-authorize with the stored "Keep me signed in" cookie.
    *
    * A bare GET /authorize with a NEW PKCE pair, the same params as the
@@ -714,24 +228,29 @@ export class BSCAdapter extends BaseAdapter {
     ssoCookies: Record<string, string>,
   ): Promise<{ tokens: BscTokenSet } | { error: string }> {
     const jar = new B2CCookieJar();
-    const { codeVerifier, state, authorizeUrl } = this.buildAuthorizeRequest({});
+    const { codeVerifier, state, authorizeUrl } = buildAuthorizeRequest({});
 
     console.log(
       `[BSC Adapter] B2C silent re-authorize: GET /authorize ` +
         `(sso_cookie_names=${Object.keys(ssoCookies).join(",")})`,
     );
     try {
-      const authorizeResponse = await fetch(authorizeUrl, {
-        headers: {
-          "User-Agent": BSC_UA,
-          "Cookie": cookieHeader(ssoCookies),
+      const authorizeResponse = await bscFetch(
+        authorizeUrl,
+        {
+          headers: {
+            "User-Agent": BSC_UA,
+            "Cookie": cookieHeader(ssoCookies),
+          },
+          redirect: "manual",
+          signal: AbortSignal.timeout(BSC_B2C_STEP_TIMEOUT_MS),
         },
-        redirect: "manual",
-      });
+        { scope: this.breakerScope },
+      );
       jar.ingest(authorizeResponse);
 
       const location = authorizeResponse.headers.get("location");
-      const code = this.extractAuthCode(location, state);
+      const code = extractAuthCode(location, state);
       if (!code) {
         // Three shapes, all "B2C did not honour the SSO session": a 200 with
         // the sign-in form (SETTINGS blob present), a 302 carrying `error=`,
@@ -739,11 +258,11 @@ export class BSCAdapter extends BaseAdapter {
         let outcome = `status=${authorizeResponse.status}`;
         if (authorizeResponse.status === 200) {
           const html = await authorizeResponse.text();
-          outcome += this.parseB2CSettings(html)
+          outcome += parseB2CSettings(html)
             ? ", sign-in form served"
             : ", no sign-in form";
         } else {
-          outcome += `, error=${this.extractAuthError(location) ?? "(none)"}`;
+          outcome += `, error=${extractAuthError(location) ?? "(none)"}`;
         }
         console.warn(
           `[BSC Adapter] B2C silent re-authorize did not yield an auth code (${outcome}); ` +
@@ -752,11 +271,13 @@ export class BSCAdapter extends BaseAdapter {
         return { error: `Authentication failed` };
       }
 
-      const tokens = await this.exchangeAuthCode(code, codeVerifier);
+      const tokens = await exchangeAuthCode(code, codeVerifier, {
+        fetchOptions: { scope: this.breakerScope },
+      });
       if (!tokens) {
         return { error: `Authentication failed` };
       }
-      this.attachSsoCookies(tokens, jar);
+      attachSsoCookies(tokens, jar);
 
       console.log(
         `[BSC Adapter] B2C silent re-authorize succeeded ` +
@@ -776,60 +297,10 @@ export class BSCAdapter extends BaseAdapter {
   }
 
   /**
-   * The short OAuth `error` code (e.g. `interaction_required`) from a redirect
-   * Location, for the log line. Never the `error_description`.
-   */
-  private extractAuthError(location: string | null): string | undefined {
-    if (!location) return undefined;
-    const hashIndex = location.indexOf("#");
-    const queryIndex = location.indexOf("?");
-    const splitIndex = hashIndex >= 0 ? hashIndex : queryIndex;
-    if (splitIndex < 0) return undefined;
-    return new URLSearchParams(location.slice(splitIndex + 1)).get("error") ?? undefined;
-  }
-
-  /**
-   * Normalize a token-endpoint response into absolute expiries.
-   *
-   * Returns undefined when there is no access token — the caller treats that
-   * as a failed exchange. A response with an access token but NO refresh token
-   * is still valid: it just means the next expiry costs a full sign-in.
-   *
-   * SECURITY: reads values, logs none of them.
-   */
-  private toTokenSet(json: BscTokenResponse): BscTokenSet | undefined {
-    if (typeof json.access_token !== "string" || json.access_token.length === 0) {
-      return undefined;
-    }
-    const now = Date.now();
-    const tokens: BscTokenSet = {
-      token: json.access_token,
-      // Prefer the lifetime B2C actually issued; TOKEN_TTL_MS is only a floor
-      // for a response that omits it.
-      expiresAt:
-        typeof json.expires_in === "number" && json.expires_in > 0
-          ? now + json.expires_in * 1000
-          : now + TOKEN_TTL_MS,
-    };
-    if (typeof json.refresh_token === "string" && json.refresh_token.length > 0) {
-      tokens.refreshToken = json.refresh_token;
-      if (
-        typeof json.refresh_token_expires_in === "number" &&
-        json.refresh_token_expires_in > 0
-      ) {
-        tokens.refreshExpiresAt = now + json.refresh_token_expires_in * 1000;
-      }
-    }
-    return tokens;
-  }
-
-  /**
    * Exchange a stored refresh token for a fresh access token — the NEO-141
-   * replacement for "keep the user's password and re-login".
-   *
-   * The grant body is exactly what BSC's public B2C client accepts: client_id,
-   * grant_type, refresh_token, scope. No client secret (public client), no
-   * PKCE verifier (that belongs to the auth-code grant only).
+   * replacement for "keep the user's password and re-login". The grant itself
+   * (body, logging, status classification) is `bscRefreshGrant`, shared with
+   * the fake-BSC recorder.
    *
    * THE RESPONSE ROTATES THE REFRESH TOKEN. B2C returns a new refresh_token
    * and invalidates the one presented, so the caller MUST durably persist the
@@ -838,7 +309,9 @@ export class BSCAdapter extends BaseAdapter {
    * @returns the new token set, or a failure that says whether it is the
    *   user's problem (`reauthRequired`: the grant was refused, so the chain is
    *   broken and only a fresh sign-in can fix it) or ours (an unreachable or
-   *   misbehaving token endpoint, which must stay pageable).
+   *   misbehaving token endpoint, which must stay pageable). A 5xx or a 429
+   *   must NOT be reported as reauth_required, or a BSC outage would present
+   *   to every user as "your session expired, sign in again" (NEO-278).
    *
    * SECURITY: neither the presented nor the returned refresh token is ever
    * logged; only the HTTP status and B2C's short `error` code.
@@ -846,62 +319,12 @@ export class BSCAdapter extends BaseAdapter {
   private async refreshAccessToken(
     refreshToken: string,
   ): Promise<{ tokens: BscTokenSet } | { error: string; reauthRequired: boolean }> {
-    console.log(`[BSC Adapter] B2C refresh grant: POST /token`);
-    const response = await fetch(BSC_TOKEN_URL, {
-      method: "POST",
-      headers: {
-        "User-Agent": BSC_UA,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        client_id: BSC_B2C.clientId,
-        grant_type: "refresh_token",
-        refresh_token: refreshToken,
-        scope: BSC_B2C.scope,
-      }).toString(),
-    });
-
-    if (!response.ok) {
-      let errorCode = "(unparseable)";
-      try {
-        errorCode = ((await response.json()) as { error?: string }).error ?? "(none)";
-      } catch {
-        /* ignore — never surface the raw body */
-      }
-      // A 4xx here is B2C saying the grant itself is no good: expired,
-      // revoked, already-rotated, or issued to a different client. Nothing we
-      // can retry our way out of — the user must sign in again.
-      //
-      // A 5xx / anything else is BSC being unwell. That must NOT be reported
-      // as reauth_required, or a BSC outage would present to every user as
-      // "your session expired, sign in again" and never page anyone.
-      //
-      // NEO-278: 429 is carved out of the 4xx bucket even though it is
-      // numerically a 4xx. It says nothing about the grant's validity — it is
-      // B2C throttling us — so it belongs with "BSC being unwell": pageable,
-      // never reported as "sign in again".
-      const reauthRequired =
-        response.status >= 400 && response.status < 500 && response.status !== 429;
-      console.warn(
-        `[BSC Adapter] B2C refresh grant failed (status=${response.status}, ` +
-          `error=${errorCode}, reauth_required=${reauthRequired}).`,
-      );
-      return {
-        error: reauthRequired ? REAUTH_REQUIRED_ERROR : `Authentication failed`,
-        reauthRequired,
-      };
-    }
-
-    const tokens = this.toTokenSet((await response.json()) as BscTokenResponse);
-    if (!tokens) {
-      console.warn(`[BSC Adapter] B2C refresh grant returned no access_token.`);
-      return { error: `Authentication failed`, reauthRequired: false };
-    }
-    console.log(
-      `[BSC Adapter] B2C refresh grant succeeded ` +
-        `(rotated_refresh_token=${!!tokens.refreshToken}).`,
-    );
-    return { tokens };
+    const r = await bscRefreshGrant({ refreshToken, fetchOptions: { scope: this.breakerScope } });
+    if (r.ok) return { tokens: r.tokens };
+    return {
+      error: r.reauthRequired ? REAUTH_REQUIRED_ERROR : `Authentication failed`,
+      reauthRequired: r.reauthRequired,
+    };
   }
 
   /**
@@ -957,78 +380,6 @@ export class BSCAdapter extends BaseAdapter {
   }
 
   /**
-   * Parse the `SETTINGS` JSON blob the B2C self-asserted page embeds inline.
-   * Returns undefined if the blob is absent (e.g. B2C served a redirect or an
-   * unexpected page). Only the csrf/transId/api fields are read; the raw HTML
-   * is never logged.
-   */
-  private parseB2CSettings(html: string): B2CSettings | undefined {
-    const match =
-      html.match(/var SETTINGS\s*=\s*(\{.*?\});/s) ||
-      html.match(/SETTINGS\s*=\s*(\{.*?\});/s);
-    if (!match) return undefined;
-    try {
-      const parsed = JSON.parse(match[1]) as {
-        csrf?: string;
-        transId?: string;
-        api?: string;
-      };
-      return { csrf: parsed.csrf, transId: parsed.transId, api: parsed.api };
-    } catch {
-      return undefined;
-    }
-  }
-
-  /**
-   * Extract the OAuth authorization `code` from a redirect Location (the
-   * /confirmed 302 on the password path, the /authorize 302 on the silent
-   * path), which carries it in the URL fragment (response_mode=fragment) or
-   * query. Returns undefined if absent, if an `error` is present, if the
-   * Location does not target our registered redirect URI, or if the echoed
-   * `state` is not the one we sent on /authorize. B2C enforces the redirect
-   * URI server-side and echoes `state` on both legs (probed live, NEO-278);
-   * checking them here is defence in depth, not a functional dependency.
-   */
-  private extractAuthCode(
-    location: string | null,
-    expectedState: string,
-  ): string | undefined {
-    if (!location || !location.startsWith(BSC_B2C.redirectUri)) return undefined;
-    const hashIndex = location.indexOf("#");
-    const queryIndex = location.indexOf("?");
-    const splitIndex = hashIndex >= 0 ? hashIndex : queryIndex;
-    if (splitIndex < 0) return undefined;
-    const params = new URLSearchParams(location.slice(splitIndex + 1));
-    if (params.get("error")) return undefined;
-    if (params.get("state") !== expectedState) return undefined;
-    return params.get("code") ?? undefined;
-  }
-
-  /**
-   * Strip HTML tags to approximate visible text for the failure diagnostic.
-   * buildLoginDiagnostic expects innerText-style input (not raw HTML) so that
-   * inline <script> token material never reaches the snippet; this gives a
-   * close-enough approximation for a fetch'd page where we have no DOM.
-   *
-   * Security note (CodeQL js/bad-tag-filter): the <script>/<style> block
-   * removal must tolerate every well-known end-tag spelling, or inline token
-   * material slips past the filter and into the diagnostic snippet. The end-tag
-   * sub-pattern `<\/script[^>]*>` matches any chars up to the first '>', so it
-   * accepts trailing whitespace/newlines and bogus attributes before the close
-   * (`</script >`, `</script\n>`, `</script foo="bar">`) — the exact bypasses
-   * js/bad-tag-filter flags. The `(?:<\/script[^>]*>|$)` alternation also drops
-   * an unterminated block running to EOF (a truncated/maintenance page) rather
-   * than leaving its body in the output. The trailing `<[^>]*>` sweep then
-   * removes any remaining ordinary tags.
-   */
-  private stripTags(html: string): string {
-    return html
-      .replace(/<script\b[^>]*>[\s\S]*?(?:<\/script[^>]*>|$)/gi, " ")
-      .replace(/<style\b[^>]*>[\s\S]*?(?:<\/style[^>]*>|$)/gi, " ")
-      .replace(/<[^>]*>/g, " ");
-  }
-
-  /**
    * Authenticate against BSC, in descending order of cost.
    *
    *   0. transient credentials in the request body → fresh sign-in (bootstrap
@@ -1054,6 +405,7 @@ export class BSCAdapter extends BaseAdapter {
    * the entire point of the probe, and both Cloud Scheduler jobs depend on it.
    */
   async login(key: string, opts?: BscLoginOptions): Promise<AdapterResponse> {
+    this.breakerScope = key;
     const secretsManager = new SecretsManagerService();
     const canary = opts?.canary === true;
     const transient = opts?.transientCredentials;
@@ -1066,6 +418,9 @@ export class BSCAdapter extends BaseAdapter {
     // bootstraps a key that does not exist yet. The password is used here and
     // nowhere else, and persistTokens never writes it.
     if (transient) {
+      // NEO-552: on the fake, only a fake account signs in. Checked before
+      // any network call, so a real password never leaves this process.
+      if (refuseNonFakeAccount(transient.username)) return this.fakeOnlyRefusal();
       console.log(`[BSC Adapter] request supplied credentials; fresh sign-in for ${this.siteName}`);
       return this.passwordLogin(
         secretsManager,
@@ -1077,6 +432,12 @@ export class BSCAdapter extends BaseAdapter {
     }
 
     const credentials = await secretsManager.getCredentials(key);
+
+    // NEO-552: the same guard for a stored session. On the fake, a secret
+    // holding a real account (a real user's session, or the real canary) is
+    // never validated, refreshed, re-authorized or signed in with: every one
+    // of those sends its token, cookie or password to the fake.
+    if (refuseNonFakeAccount(credentials.username)) return this.fakeOnlyRefusal();
 
     // --- Cache-hit path: validate the stored token, never touch a browser --
     //
@@ -1322,6 +683,18 @@ export class BSCAdapter extends BaseAdapter {
     );
   }
 
+  /**
+   * NEO-552: the answer when a real account meets the fake. A caller-data
+   * problem, not an outage: `credentialRejected` makes it 422
+   * `invalid_credentials`, which never pages. Logs no username.
+   */
+  private fakeOnlyRefusal(): AdapterResponse {
+    console.warn(
+      JSON.stringify({ msg: "bsc_fake_account_refused", reason: "not_a_fake_account" }),
+    );
+    return { success: false, error: FAKE_ONLY_ACCOUNT_ERROR, credentialRejected: true };
+  }
+
   /** True when the secret holds a refresh token that has not visibly expired. */
   private refreshTokenIsLive(credentials: Credentials): boolean {
     if (!credentials.refreshToken) return false;
@@ -1381,7 +754,11 @@ export class BSCAdapter extends BaseAdapter {
     }
 
     try {
-      const result = await this.httpLogin(username, password);
+      const result = await bscPasswordSignIn({
+        username,
+        password,
+        fetchOptions: { scope: this.breakerScope },
+      });
       if ("error" in result) {
         return {
           success: false,
@@ -1456,113 +833,5 @@ export class BSCAdapter extends BaseAdapter {
     console.log(
       `[BSC Adapter] ${context} profile. Store: ${profile.storeName} sellerId: ${sellerIdPrefix}`,
     );
-  }
-
-  async getAvailableSetParameters(partialParams: {
-    sport?: string;
-    year?: number;
-    manufacturer?: string;
-    setName?: string;
-    variantType?: "base" | "insert" | "parallel" | "parallel_of_insert";
-    insertName?: string;
-    parallelName?: string;
-  }): Promise<{
-    availableOptions: {
-      sports?: Array<{ site: string; values: Array<{ label: string; value: string }> }>;
-      years?: Array<{ site: string; values: Array<{ label: string; value: string }> }>;
-      manufacturers?: Array<{ site: string; values: Array<{ label: string; value: string }> }>;
-      setNames?: Array<{ site: string; values: Array<{ label: string; value: string }> }>;
-      variantNames?: Array<{ site: string; values: Array<{ label: string; value: string }> }>;
-    };
-    currentParams: typeof partialParams;
-  }> {
-    try {
-      console.log(`[BSC Adapter] Getting available set parameters with filters:`, partialParams);
-
-      if (!this.page) {
-        throw new Error('No Puppeteer page available for BSC scraping');
-      }
-
-      // Navigate to the BSC search page
-      const searchUrl = "https://www.buysportscards.com/seller/bulk-upload/results";
-      await this.page.goto(searchUrl, { waitUntil: "networkidle2" });
-
-      // Wait for the page to load
-      await this.page.waitForSelector('body', { timeout: 10000 });
-
-      // Extract available options based on current filters
-      const availableOptions: any = {};
-
-      // For now, return mock data since the actual scraping logic would be complex
-      // In a real implementation, you would:
-      // 1. Check what filters are already applied
-      // 2. Look for dropdown options or form fields
-      // 3. Extract the available values
-      // 4. Return them in the expected format
-
-      if (!partialParams.sport) {
-        // If no sport is selected, return available sports
-        availableOptions.sports = [{
-          site: "BSC",
-          values: [
-            { label: "Football", value: "football" },
-            { label: "Baseball", value: "baseball" },
-            { label: "Basketball", value: "basketball" },
-            { label: "Hockey", value: "hockey" },
-          ]
-        }];
-      } else if (!partialParams.year) {
-        // If sport is selected but no year, return available years
-        availableOptions.years = [{
-          site: "BSC",
-          values: [
-            { label: "2024", value: "2024" },
-            { label: "2023", value: "2023" },
-            { label: "2022", value: "2022" },
-            { label: "2021", value: "2021" },
-          ]
-        }];
-      } else if (!partialParams.manufacturer) {
-        // If sport and year are selected but no manufacturer, return available manufacturers
-        availableOptions.manufacturers = [{
-          site: "BSC",
-          values: [
-            { label: "Panini", value: "panini" },
-            { label: "Topps", value: "topps" },
-            { label: "Upper Deck", value: "upper-deck" },
-            { label: "Donruss", value: "donruss" },
-          ]
-        }];
-      } else if (!partialParams.setName) {
-        // If sport, year, and manufacturer are selected but no set name, return available set names
-        availableOptions.setNames = [{
-          site: "BSC",
-          values: [
-            { label: "Donruss Elite", value: "donruss-elite" },
-            { label: "Panini Prizm", value: "panini-prizm" },
-            { label: "Topps Chrome", value: "topps-chrome" },
-            { label: "Upper Deck Series 1", value: "upper-deck-series-1" },
-          ]
-        }];
-      } else if (!partialParams.variantType) {
-        // If all previous filters are selected but no variant type, return available variant types
-        availableOptions.variantNames = [{
-          site: "BSC",
-          values: [
-            { label: "Base", value: "base" },
-            { label: "Insert", value: "insert" },
-            { label: "Parallel", value: "parallel" },
-          ]
-        }];
-      }
-
-      return {
-        availableOptions,
-        currentParams: partialParams,
-      };
-    } catch (error) {
-      console.error(`[BSC Adapter] Error getting available set parameters:`, error);
-      throw error;
-    }
   }
 }
