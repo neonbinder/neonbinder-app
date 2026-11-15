@@ -155,8 +155,9 @@ jobs:
     if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && vars.BROWSER_DEPLOY_ENABLED == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    # No checkout — override the workflow's services/browser working-dir so the
-    # gcloud run steps don't fail on a missing directory.
+    # Sparse checkout of .github/scripts only — override the workflow's
+    # services/browser working-dir so the gcloud run steps don't fail on a
+    # missing directory.
     defaults:
       run:
         working-directory: ${{ github.workspace }}
