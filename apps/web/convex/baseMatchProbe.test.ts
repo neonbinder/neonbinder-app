@@ -1392,7 +1392,10 @@ describe("the probes write nothing and log no secret", () => {
         ],
       } as never),
     );
-    const before = await rowCounts(t, ["userProfiles"]);
+    // NEO-552: the BSC call gate (`marketplaceCallGates`) is transport state
+    // every BSC call writes (its token bucket), not data a probe owns: it is
+    // compared apart too.
+    const before = await rowCounts(t, ["userProfiles", "marketplaceCallGates"]);
     const profileBefore = await profileWithoutLock(t);
 
     stubSl((id, start) =>
@@ -1406,7 +1409,7 @@ describe("the probes write nothing and log no secret", () => {
     await probeBsc(t, parallel, ["a", "b"]);
     await sig(t, parallel);
 
-    expect(await rowCounts(t, ["userProfiles"])).toEqual(before);
+    expect(await rowCounts(t, ["userProfiles", "marketplaceCallGates"])).toEqual(before);
     expect(await profileWithoutLock(t)).toEqual(profileBefore);
   });
 

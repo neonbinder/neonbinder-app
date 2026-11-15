@@ -2,8 +2,8 @@
 # Wait for this job's turn on the shared marketplace seller accounts (NEO-415).
 #
 # Called by e2e.yml's seller-desktop and seller-mobile jobs, as the step named
-# the step named STEP_NAME below ("held" means a job has passed that step). Every PR's CI shares one BuySportsCards and one eBay
-# sandbox seller, so only one seller job may run repo-wide. GitHub's
+# the step named STEP_NAME below ("held" means a job has passed that step). Every PR's CI shares one eBay
+# sandbox seller (NEO-552: BuySportsCards is the fake now, a namespace per run), so only one seller job may run repo-wide. GitHub's
 # `concurrency` cannot queue (it cancels an older pending job when a third
 # joins), so this polls the repo's own runs and goes when
 #   1. no seller job has passed this step and is still running, and

@@ -5,8 +5,9 @@
  *  - a cancelled item reaches the REAL completion as `canceled` and is done:
  *    no re-enqueue, no hand-off to the operator, no write to the row;
  *  - an item whose row is gone (a stale item from the previous seed) ends on
- *    its first run as `notNeeded`, even behind an open cooldown: the row is
- *    read first, so there is no cooldown read and no BSC call.
+ *    its first run as `notNeeded`, even behind an open BSC call gate window
+ *    (NEO-552): the row is read first, so there is no gate read and no BSC
+ *    call.
  *
  * convex-test cannot mount the workpool component (see
  * lib/testing/bsc-team-lane.ts), so `cancelAll` itself is spied.
@@ -17,9 +18,10 @@ import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import schema from "./schema";
 import { BSC_TEAM_CHECK_MAX_PASSES, BSC_TEAM_CHECK_OPERATOR_AFTER_MS, bscTeamPool } from "./bscTeamPool";
-import * as cooldowns from "./marketplaceCooldowns";
+import * as callGate from "./bscCallGate";
 import { insertTestCard } from "../lib/testing/card-row";
 import { captureBscTeamLane, runBscTeamLane } from "../lib/testing/bsc-team-lane";
+import { bscGateWindowRow } from "../lib/testing/bsc-gate-stub";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -63,19 +65,15 @@ async function seedCard(t: ReturnType<typeof convexTest>): Promise<Id<"cardCheck
 }
 
 const openWindow = (t: ReturnType<typeof convexTest>, until: number) =>
-  t.run(async (ctx) =>
-    ctx.db.insert("marketplaceCooldowns", {
-      platform: "bsc", endpoint: "cardListing", until, last429At: NOW, streak: 1, updatedAt: NOW,
-    }),
-  );
+  t.run(async (ctx) => ctx.db.insert("marketplaceCallGates", bscGateWindowRow(until, NOW)));
 
 /**
- * Counts every run of the cooldown read (`marketplaceCooldowns.get`):
+ * Counts every run of the gate read (`bscCallGate.state`):
  * convex-test runs a registered function through its `_handler`. The live-row
  * control below proves the spy sees the read.
  */
-function spyCooldownReads() {
-  return vi.spyOn(cooldowns.get as unknown as { _handler: (...a: unknown[]) => unknown }, "_handler");
+function spyGateReads() {
+  return vi.spyOn(callGate.state as unknown as { _handler: (...a: unknown[]) => unknown }, "_handler");
 }
 
 describe("cancelAllBscTeamChecks", () => {
@@ -136,15 +134,15 @@ describe("a cancelled item", () => {
   });
 });
 
-describe("runBscTeamCheckItem reads the row before the cooldown", () => {
-  test("a deleted row behind an open cooldown is notNeeded at once: no cooldown read, no call", async () => {
+describe("runBscTeamCheckItem reads the row before the call gate", () => {
+  test("a deleted row behind an open gate window is notNeeded at once: no gate read, no call", async () => {
     const t = convexTest(schema, modules);
     const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
     const card = await seedCard(t);
     await openWindow(t, NOW + 600_000);
     await t.run(async (ctx) => ctx.db.delete(card));
-    const reads = spyCooldownReads();
+    const reads = spyGateReads();
 
     const result = await t.action(internal.adapters.buysportscards.runBscTeamCheckItem, {
       cardChecklistId: card,
@@ -157,14 +155,14 @@ describe("runBscTeamCheckItem reads the row before the cooldown", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  test("a settled row behind an open cooldown is notNeeded the same way", async () => {
+  test("a settled row behind an open gate window is notNeeded the same way", async () => {
     const t = convexTest(schema, modules);
     const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
     const card = await seedCard(t);
     await openWindow(t, NOW + 600_000);
     await t.run(async (ctx) => ctx.db.patch(card, { teamCheckDoneAt: NOW - 1_000 }));
-    const reads = spyCooldownReads();
+    const reads = spyGateReads();
 
     const result = await t.action(internal.adapters.buysportscards.runBscTeamCheckItem, {
       cardChecklistId: card,
@@ -177,13 +175,13 @@ describe("runBscTeamCheckItem reads the row before the cooldown", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
-  test("control: a live row behind the same window reads the cooldown and is deferred", async () => {
+  test("control: a live row behind the same window reads the gate and is deferred", async () => {
     const t = convexTest(schema, modules);
     const fetchSpy = vi.fn(async () => new Response("{}", { status: 200 }));
     vi.stubGlobal("fetch", fetchSpy);
     const card = await seedCard(t);
     await openWindow(t, NOW + 600_000);
-    const reads = spyCooldownReads();
+    const reads = spyGateReads();
 
     const result = await t.action(internal.adapters.buysportscards.runBscTeamCheckItem, {
       cardChecklistId: card,

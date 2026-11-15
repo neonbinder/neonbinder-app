@@ -1,14 +1,18 @@
 // Origin: .maestro/flows/profile/credentials-lifecycle.yaml (Maestro suite retired in NEO-341; see git history)
-// Isolated "new-profile" account. Per platform: connect real creds (seeded),
-// test, clear, then a rejected sign-in with fake creds (nothing saved: the
-// sign-in form is still showing), re-connect real creds, test, clear.
+// Isolated "new-profile" account. Per platform: connect (seeded: the fake
+// BuySportsCards account of this user, SportLots' real one), test, clear, then a
+// rejected sign-in with bad creds (nothing saved: the sign-in form is still
+// showing), re-connect, test, clear.
 import type { Page } from "@playwright/test";
 import { expectBscTestSuccess } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const SEED_BUDGET = 90_000; // seed-credentials performs a real marketplace sign-in
 const LIVE = 30_000; // live marketplace round trip
-const REJECTED = 120_000; // a rejected live sign-in
+const REJECTED = 120_000; // a rejected live sign-in (SportLots still is one; the fake BSC answers at once)
+/** NEO-552: the fake BuySportsCards' rejected-credentials pair: a well-formed fake user and the password it always refuses. */
+const FAKE_BSC_REJECTED_USER = "nb+e2e-rejected@fake.invalid";
+const FAKE_BSC_REJECTED_PASSWORD = "wrong-password";
 
 async function seedAndOpen(page: Page, site: string, label: string): Promise<void> {
   await page.goto(`/testing/seed-credentials?sites=${site}&redirect=/profile/credentials`);
@@ -80,8 +84,11 @@ test(
     await failedSignIn(
       page,
       bsc,
-      "e2e-fake-bsc-user",
-      "e2e-fake-bsc-pass",
+      // NEO-552: BuySportsCards is the fake; a user it knows with its one rejected password
+      // (services/fake-bsc/CONTRACT.md, "Accounts") gets B2C's rejected-credentials answer, the
+      // same path a real wrong password takes. Neither value is a secret.
+      FAKE_BSC_REJECTED_USER,
+      FAKE_BSC_REJECTED_PASSWORD,
       /Could not sign in to BuySportsCards.*Nothing was saved/s,
     );
 

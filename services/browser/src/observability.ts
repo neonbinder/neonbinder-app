@@ -385,3 +385,17 @@ export interface LoginOptions {
 export function challengeFlag(diagnostic: LoginDiagnostic | undefined): boolean | undefined {
   return diagnostic ? diagnostic.challengeDetected === true : undefined;
 }
+
+/**
+ * Error name + message with every double-quoted segment elided, for catches
+ * that wrap a fetch whose headers carry a secret. Node's fetch rejects a
+ * header containing CR/LF/NUL by throwing
+ * `TypeError: Headers.append: "<FULL HEADER VALUE>" is an invalid header value`
+ * — so logging `error.message` verbatim from such a catch can put a session
+ * cookie or bearer token into Cloud Logging. Everything else in the message
+ * (the error class, "fetch failed", an ECONNRESET code) survives.
+ */
+export function summarizeFetchError(error: unknown): string {
+  if (!(error instanceof Error)) return String(error);
+  return `${error.name}: ${error.message.replace(/"[^"]*"/g, '"…"')}`;
+}

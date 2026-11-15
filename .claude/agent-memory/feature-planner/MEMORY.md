@@ -63,3 +63,4 @@
 - [Heavy cold-start notice is order-dependent](heavy-cold-start-notice-is-order-dependent.md) — warm heavy (~2 s post-#454) resolves before the seed redirect; NEO-481 edit warm-up is FAST-only
 - [Fresh-load stall: find the user's cached-hit batch](fresh-load-stall-check-for-the-users-cached-hit-batch.md) — no batch + healthy probe = page never subscribed; set-builder heading shows before its BSC sync ends
 - [E2E accounts are all admins](e2e-accounts-are-all-admins.md) — admin-only queues of all users show on every real spec; non-admin view is unit-only; numberMismatch only via seedMyTestSync
+- [Browser secrets are per Clerk user](browser-secrets-are-per-clerk-user-not-per-deployment.md) — credKey is shared by every deployment signing in one test user; isolate via key + TTL, never a clash guard

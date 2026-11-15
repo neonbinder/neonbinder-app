@@ -1,7 +1,7 @@
-// Unit tests for the `resetMyTestState` mutation. Verifies caller-scoped
+// Unit tests for the `resetMyTestState` action (NEO-552: was a mutation). Verifies caller-scoped
 // deletes across publicProfiles / userProfiles / prizePool and (NEO-358) the
 // caller's collection tables, the auth gate
-// (must be signed in), and the production fail-closed gate (mutation throws
+// (must be signed in), and the production fail-closed gate (it throws
 // unless TESTING_RESET_SECRET is present on the deployment).
 
 import { convexTest } from "convex-test";
@@ -260,7 +260,7 @@ describe("resetMyTestState", () => {
 
     const result = await t
       .withIdentity({ subject: USER_A })
-      .mutation(api.testing.resetMyTestState, {});
+      .action(api.testing.resetMyTestState, {});
 
     expect(result).toEqual({
       publicProfiles: 1,
@@ -273,6 +273,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 1,
       variantCommonPrices: 1,
       marketplaceListing: 5,
+      fakeBscNamespaceReset: false,
     });
     expect(await countRows(t, USER_A)).toEqual({
       publicProfiles: 0,
@@ -294,7 +295,7 @@ describe("resetMyTestState", () => {
 
     await t
       .withIdentity({ subject: USER_A })
-      .mutation(api.testing.resetMyTestState, {});
+      .action(api.testing.resetMyTestState, {});
 
     expect(await countRows(t, USER_A)).toEqual({
       publicProfiles: 0,
@@ -325,7 +326,7 @@ describe("resetMyTestState", () => {
 
     const result = await t
       .withIdentity({ subject: USER_A })
-      .mutation(api.testing.resetMyTestState, {});
+      .action(api.testing.resetMyTestState, {});
 
     expect(result).toEqual({
       publicProfiles: 0,
@@ -338,6 +339,7 @@ describe("resetMyTestState", () => {
       collectionBuildingSets: 0,
       variantCommonPrices: 0,
       marketplaceListing: 0,
+      fakeBscNamespaceReset: false,
     });
   });
 
@@ -346,7 +348,7 @@ describe("resetMyTestState", () => {
     await seedUser(t, USER_A);
 
     await expect(
-      t.mutation(api.testing.resetMyTestState, {}),
+      t.action(api.testing.resetMyTestState, {}),
     ).rejects.toThrow(/Not authenticated/);
 
     // Existing rows must be untouched.
@@ -371,7 +373,7 @@ describe("resetMyTestState", () => {
     await expect(
       t
         .withIdentity({ subject: USER_A })
-        .mutation(api.testing.resetMyTestState, {}),
+        .action(api.testing.resetMyTestState, {}),
     ).rejects.toThrow(/not enabled/);
 
     expect(await countRows(t, USER_A)).toEqual({

@@ -23,6 +23,7 @@
  */
 
 import { v, type Infer } from "convex/values";
+import { BSC_PACED_MARKER } from "./bscPacedCopy";
 
 /**
  * - `timeout`      — OUR abort timer fired (a self-imposed limit).
@@ -33,6 +34,9 @@ import { v, type Infer } from "convex/values";
  *                    did not fix; SportLots served its sign-in page).
  * - `no_sign_in`   — we had no token / cookie to send at all.
  * - `refused`      — the adapter refused before sending (paused, unscoped).
+ * - `paced`        — NeonBinder's own call gate held the call back, unsent
+ *                    (NEO-552, `x-nb-bsc-breaker`); the marketplace was never
+ *                    asked, so the copy never blames it.
  * - `unknown`      — none of the above could be told apart.
  */
 export const FETCH_FAILURE_KINDS = [
@@ -43,6 +47,7 @@ export const FETCH_FAILURE_KINDS = [
   "signed_out",
   "no_sign_in",
   "refused",
+  "paced",
   "unknown",
 ] as const;
 export type FetchFailureKind = (typeof FETCH_FAILURE_KINDS)[number];
@@ -55,6 +60,7 @@ export const fetchFailureKindValidator = v.union(
   v.literal("signed_out"),
   v.literal("no_sign_in"),
   v.literal("refused"),
+  v.literal("paced"),
   v.literal("unknown"),
 );
 
@@ -118,6 +124,11 @@ export function scrubLogText(
  */
 export function failureFromMessage(message: string | undefined): FetchFailure {
   const s = (message ?? "").toLowerCase();
+  // NB's own pacing copy (`bscPacedCopy.ts`) names no status, so this runs
+  // first only to keep a future reword that adds one from reading as BSC's.
+  if (s.includes(BSC_PACED_MARKER)) {
+    return { kind: "paced", timedOut: false };
+  }
   const status = /\b(?:error|status|http error)[:\s]+(\d{3})\b/.exec(s);
   if (/timed out|timeout|aborted due to timeout/.test(s)) {
     return { kind: "timeout", timedOut: true };
