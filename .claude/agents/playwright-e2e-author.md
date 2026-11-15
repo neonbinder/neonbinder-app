@@ -123,8 +123,11 @@ test-fixtures, test-parallel and test-sharding. Read the installed
    coordinator names: this worktree's own deployment before the first push
    (root CLAUDE.md, "Run your specs on your own Convex deployment before the
    first push"), and the PR's Convex preview only when it cannot reproduce a
-   red (GUIDE "Running"). `@marketplace-seller` specs run on shared dev or a
-   preview, never on your own deployment. Never run the seed's reset on shared
+   red (GUIDE "Running"). Since NEO-552 BuySportsCards is a fake with one account per
+   test user, so BSC specs (listing included) run on your own deployment like any
+   other; only the eBay sandbox seller is one shared account, so `@marketplace-seller`
+   (eBay) specs run on shared dev or a preview, never on your own deployment. Specs that
+   make BSC 429, 503, hang or reset are `@bsc-breaker` (GUIDE, "BuySportsCards is the fake"). Never run the seed's reset on shared
    dev unasked. Never run the
    full suite locally unless the coordinator says the harness itself changed.
 4. **Diagnose a red run** from its screenshot and `error-context.md` first.

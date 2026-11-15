@@ -70,6 +70,12 @@ describe("failureFromMessage — the adapters' own wording, classified", () => {
     ["No BSC token available. Connect your BSC account first.", "no_sign_in", undefined, false],
     ["No SportLots session cookie. Re-authenticate from Profile.", "no_sign_in", undefined, false],
     ["BSC API request failed: fetch failed", "network", undefined, false],
+    [
+      "NeonBinder is pacing its calls to BuySportsCards, so it didn't ask just now. No sweat: give it about 30 seconds and try again.",
+      "paced",
+      undefined,
+      false,
+    ],
     ["Something nobody predicted", "unknown", undefined, false],
   ] as const)("%s → %s", (message, kind, httpStatus, timedOut) => {
     const failure = failureFromMessage(message);

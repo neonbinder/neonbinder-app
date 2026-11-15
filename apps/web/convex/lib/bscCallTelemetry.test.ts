@@ -4,6 +4,7 @@ import {
   BSC_LATENCY_BUCKET_EDGES_MS,
   MAX_DETAIL_LINES,
   bscInflight,
+  bscRefusalReason,
   bucketIndex,
   createBscRecorder,
   emptyLatency,
@@ -15,7 +16,8 @@ import {
   truncateUtf8,
   type BscSummaryLine,
 } from "./bscCallTelemetry";
-import { BSC_LATENCY_BUCKET_EDGES_MS as STATS_EDGES } from "../bscCallStats";
+import { BSC_LATENCY_BUCKET_EDGES_MS as STATS_EDGES, capSummary } from "../bscCallStats";
+import { bscGateRefusalResponse } from "./bscHttp";
 import { EDGES_MS as SCRIPT_EDGES } from "../../scripts/bsc-health/histogram.mjs";
 
 describe("scrubBscBody", () => {
@@ -428,6 +430,90 @@ describe("createBscRecorder", () => {
     expect(Object.keys(out!.row).sort()).toEqual(
       ["byKind", "byStatus", "calls", "endedAt", "lat", "maxInflight", "ok", "op", "samples", "startedAt", "suppressed"].sort(),
     );
+  });
+});
+
+describe("NEO-552: a call the BSC call gate refused was never sent", () => {
+  beforeEach(resetBscInflightForTests);
+  afterEach(resetBscInflightForTests);
+
+  const refusal = (reason: "open" | "probing" | "throttled" | "gate_unavailable") =>
+    bscGateRefusalResponse({ ok: false, reason, retryAt: 60_000 }, 0);
+
+  test("bscRefusalReason reads only bscFetch's own marker", () => {
+    expect(bscRefusalReason(refusal("open").headers)).toBe("open");
+    expect(bscRefusalReason(refusal("gate_unavailable").headers)).toBe("gate_unavailable");
+    expect(bscRefusalReason(new Response("", { status: 429 }).headers)).toBeNull();
+    expect(bscRefusalReason(new Headers({ "x-nb-bsc-breaker": "<script>" }))).toBe("unknown");
+    expect(bscRefusalReason(null)).toBeNull();
+  });
+
+  test("a refusal is counted by reason: no call, status, kind, latency or detail line", async () => {
+    const { sink: log, lines } = sink();
+    const c = clock();
+    const rec = createBscRecorder("op", { log, now: c.now });
+    const sent = rec.start(META);
+    c.advance(300);
+    rec.respond(sent, new Response("{}", { status: 200 }));
+    for (const reason of ["open", "open", "probing", "throttled", "gate_unavailable"] as const) {
+      const tok = rec.start(META);
+      expect(bscInflight()).toBe(1);
+      rec.respond(tok, refusal(reason));
+      expect(bscInflight()).toBe(0);
+    }
+    const out = await rec.flush();
+
+    expect(lines.warn).toHaveLength(0);
+    expect(out?.summary).toMatchObject({
+      calls: 1,
+      ok: 1,
+      byKind: {},
+      byStatus: { "200": 1 },
+      refused: { open: 2, probing: 1, throttled: 1, gate_unavailable: 1 },
+    });
+    expect(out?.summary.lat).toMatchObject({ min: 300, max: 300, sum: 300 });
+    expect(out?.row.samples).toEqual([]);
+    expect(JSON.parse(lines.log[0]).refused).toEqual({ open: 2, probing: 1, throttled: 1, gate_unavailable: 1 });
+  });
+
+  test("a later fail() on a refused call is ignored, and a run of only refusals still summarises", async () => {
+    const { sink: log, lines } = sink();
+    const rec = createBscRecorder("op", { log });
+    const tok = rec.start(META);
+    const res = refusal("open");
+    rec.respond(tok, res);
+    rec.fail(tok, { kind: "parse", response: res });
+    const out = await rec.flush();
+    expect(lines.warn).toHaveLength(0);
+    expect(out?.summary).toMatchObject({ calls: 0, ok: 0, byKind: {}, byStatus: {}, refused: { open: 1 } });
+  });
+
+  test("a recorder with no refusals has no refused key (the row shape is unchanged)", async () => {
+    const rec = createBscRecorder("op", { log: sink().sink });
+    rec.ok(rec.start(META), new Response("{}"));
+    expect(Object.keys((await rec.flush())!.row)).not.toContain("refused");
+  });
+
+  test("merge adds refusals, and keeps them when only one side has any", () => {
+    const base = (refused?: Record<string, number>): BscSummaryLine => ({
+      op: "op", startedAt: 0, endedAt: 1, calls: 0, ok: 0, byKind: {}, byStatus: {},
+      maxInflight: 0, suppressed: 0, lat: emptyLatency(), ...(refused ? { refused } : {}),
+    });
+    expect(mergeSummaries(base({ open: 1 }), base({ open: 2, probing: 1 })).refused).toEqual({ open: 3, probing: 1 });
+    expect(mergeSummaries(base(), base({ throttled: 1 })).refused).toEqual({ throttled: 1 });
+    expect(mergeSummaries(base(), base()).refused).toBeUndefined();
+  });
+
+  test("the stats row keeps refusals, capped like the other counts", () => {
+    const row = {
+      op: "op", startedAt: 0, endedAt: 1, calls: 0, ok: 0, byKind: {}, byStatus: {},
+      maxInflight: 0, suppressed: 0, lat: emptyLatency(), samples: [], refused: { open: 2, probing: -1 },
+    };
+    expect(capSummary(row).refused).toEqual({ open: 2, probing: 0 });
+  });
+
+  test("the marker header is on the allowlist", () => {
+    expect(pickBscHeaders(new Headers({ "x-nb-bsc-breaker": "open" }))).toEqual({ "x-nb-bsc-breaker": "open" });
   });
 });
 
