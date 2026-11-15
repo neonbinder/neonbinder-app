@@ -10,7 +10,7 @@
 #
 # Policy:
 #   closed                         teardown, quiet (what preview-cleanup always did)
-#   dequeued: SUCCESS, MERGED,
+#   dequeued: MERGE (seen D0), SUCCESS, MERGED,
 #             ALREADY_MERGED       neither: the PR's `closed` event tears down
 #   dequeued: MANUAL               teardown, quiet (someone pulled it on purpose)
 #   dequeued: CI_FAILURE,
@@ -55,7 +55,7 @@ case "$action" in
     ;;
   dequeued)
     case "$reason" in
-      SUCCESS|MERGED|ALREADY_MERGED)
+      MERGE|SUCCESS|MERGED|ALREADY_MERGED)
         emit false false "merged through the queue"
         ;;
       MANUAL)

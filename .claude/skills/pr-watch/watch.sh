@@ -62,10 +62,12 @@ MAX_MIN="${PR_WATCH_MAX_MIN:-90}"
 GRACE_MIN="${PR_WATCH_ENQUEUE_GRACE_MIN:-3}"
 GH="${PR_WATCH_GH:-gh}"
 EXPECTED_REPO="${PR_WATCH_REPO:-neonbinder/neonbinder-app}"
-# Automatic dequeue reasons. CONFIRM AT D0 (the first enqueue/dequeue dry run):
-# GitHub documents the event's `reason` only loosely, so this is a guess at the
-# strings it uses. Unknown reasons deliberately fall to REMOVED (stop, tell a person).
-EJECT_REASONS="${PR_WATCH_EJECT_REASONS:-^(CI_FAILURE|CI_TIMEOUT|TIMEOUT|MERGE_CONFLICT|QUEUE_CONFLICT|INVALID_MERGE_COMMIT|BRANCH_PROTECTIONS|DEPLOYMENT_FAILURE)$}"
+# Automatic dequeue reasons. The GraphQL timeline's RemovedFromMergeQueueEvent
+# uses lowercase strings: `failed_checks` (actor Bot github-merge-queue) was seen
+# on the first real ejection (NEO-546 D0, 2026-11-14). The `pull_request:
+# dequeued` webhook uses CI_FAILURE-style names for the same thing. Matching is
+# case-insensitive. Unknown reasons deliberately fall to REMOVED (stop, tell a person).
+EJECT_REASONS="${PR_WATCH_EJECT_REASONS:-^(failed_checks|CI_FAILURE|CI_TIMEOUT|TIMEOUT|TIMED_OUT|MERGE_CONFLICT|QUEUE_CONFLICT|INVALID_MERGE_COMMIT|BRANCH_PROTECTIONS|DEPLOYMENT_FAILURE)$}"
 case "$PR" in ''|*[!0-9]*) echo "DONE ERROR — PR number must be digits: $PR"; exit 3;; esac
 REQUIRED_CHECK="${PR_WATCH_REQUIRED_CHECK:-CI Gate}"
 
@@ -140,7 +142,7 @@ tick() {
 # queue entry, queue timeline events), the merge_group runs on this PR's queue
 # branch, and those runs' jobs.
 # shellcheck disable=SC2016  # GraphQL variables, not shell
-QUERY='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){state mergeCommit{oid} mergeQueueEntry{state position} timelineItems(last:20,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT]){nodes{__typename ... on AddedToMergeQueueEvent{createdAt} ... on RemovedFromMergeQueueEvent{createdAt reason actor{__typename login}}}}}}}'
+QUERY='query($owner:String!,$name:String!,$pr:Int!){repository(owner:$owner,name:$name){pullRequest(number:$pr){state mergeCommit{oid} mergeQueueEntry{state position} autoMergeRequest{enabledAt} timelineItems(last:20,itemTypes:[ADDED_TO_MERGE_QUEUE_EVENT,REMOVED_FROM_MERGE_QUEUE_EVENT,AUTO_MERGE_ENABLED_EVENT]){nodes{__typename ... on AddedToMergeQueueEvent{createdAt} ... on AutoMergeEnabledEvent{createdAt} ... on RemovedFromMergeQueueEvent{createdAt reason actor{__typename login}}}}}}}'
 OWNER=""; NAME=""; DETAIL=""; NOT_QUEUED_TICKS=0
 
 # Failing jobs (url list) of the runs in $1 (JSON array of runs with .jobs).
@@ -153,7 +155,7 @@ failing_jobs() {
 }
 
 tick_queue() {
-  local pr state last_add last_rem rem_reason rem_actor rem_bot runs group
+  local pr state last_add last_rem last_arm armed rem_reason rem_actor rem_bot runs group
   local mq_state mq_pos nruns nrun_active jtotal jdone shards_t shards_d gate
   pr=$($GH api graphql -f query="$QUERY" -f owner="$OWNER" -f name="$NAME" -F pr="$PR" 2>/dev/null \
         | jq -c '.data.repository.pullRequest // empty') || pr=""
@@ -164,6 +166,11 @@ tick_queue() {
   mq_pos=$(echo "$pr" | jq -r '.mergeQueueEntry.position // ""')
   last_add=$(echo "$pr" | jq -r '[.timelineItems.nodes[]?|select(.__typename=="AddedToMergeQueueEvent")|.createdAt]|max // ""')
   last_rem=$(echo "$pr" | jq -r '[.timelineItems.nodes[]?|select(.__typename=="RemovedFromMergeQueueEvent")|.createdAt]|max // ""')
+  # `gh pr merge` while the PR's own checks still run only ARMS auto-merge; GitHub
+  # adds it to the queue once they pass. Until then the newest queue event can be
+  # an earlier attempt's removal, which must not be read as this attempt's verdict.
+  last_arm=$(echo "$pr" | jq -r '[.timelineItems.nodes[]?|select(.__typename=="AutoMergeEnabledEvent")|.createdAt]|max // ""')
+  armed=$(echo "$pr" | jq -r 'if .autoMergeRequest then "yes" else "no" end')
   rem_reason=$(echo "$pr" | jq -r --arg t "$last_rem" 'first(.timelineItems.nodes[]?|select(.__typename=="RemovedFromMergeQueueEvent" and .createdAt==$t))|.reason // "unknown"')
   rem_actor=$(echo "$pr" | jq -r --arg t "$last_rem" 'first(.timelineItems.nodes[]?|select(.__typename=="RemovedFromMergeQueueEvent" and .createdAt==$t))|.actor.login // ""')
   # A null actor or a bot is GitHub acting by itself; anything else is a person.
@@ -202,6 +209,13 @@ tick_queue() {
     VERDICT="RUNNING"
   elif [ "$state" = "CLOSED" ]; then
     VERDICT="REMOVED"; DETAIL="PR closed without merging"
+  elif [ -n "$last_arm" ] && [ "$last_arm" \> "${last_add:-}" ] && [ "$last_arm" \> "${last_rem:-}" ]; then
+    # Armed after the latest enqueue and removal: this attempt has not joined yet.
+    if [ "$armed" = "yes" ]; then
+      VERDICT="RUNNING"; DETAIL="auto-merge armed, waiting for the PR's own checks before GitHub adds it to the queue"
+    else
+      VERDICT="REMOVED"; DETAIL="auto-merge was armed and then disabled before the PR joined the queue (a PR check failed, or someone turned it off); stop and tell the operator"
+    fi
   elif [ -n "$last_rem" ] && { [ -z "$last_add" ] || [ "$last_rem" \> "$last_add" ] || [ "$last_rem" = "$last_add" ]; }; then
     # Dequeued after its latest enqueue. EJECTED only for an allowlisted
     # automatic reason AND a null/bot actor (GitHub did it, the session may fix
@@ -211,7 +225,7 @@ tick_queue() {
     # pulled on purpose.
     local failed_runs
     failed_runs=$(echo "$runs" | jq -r '[.[]|select((.conclusion//"")|test("failure|timed_out|startup_failure";"i"))|.url]|.[:5]|join("; ")')
-    if ! echo "$rem_reason" | grep -Eq -- "$EJECT_REASONS" || [ "$rem_bot" != "yes" ]; then
+    if ! echo "$rem_reason" | grep -Eiq -- "$EJECT_REASONS" || [ "$rem_bot" != "yes" ]; then
       VERDICT="REMOVED"; DETAIL="dequeued, reason: $rem_reason, actor: ${rem_actor:-none} — not a known automatic ejection; stop and tell the operator, do not re-enqueue"
     else
       VERDICT="EJECTED"
