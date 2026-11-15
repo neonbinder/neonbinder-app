@@ -73,6 +73,7 @@ const TestSeedDashboard = lazy(() => import("@/app/testing/seed-dashboard/page")
 const TestSeedPlaceholderRun = lazy(() => import("@/app/testing/seed-placeholder-run/page"));
 const TestFailPlaceholderEntry = lazy(() => import("@/app/testing/fail-placeholder-entry/page"));
 const TestSeedPickOrder = lazy(() => import("@/app/testing/seed-pick-order/page"));
+const TestBscFake = lazy(() => import("@/app/testing/bsc-fake/page"));
 const Dashboard = lazy(loadDashboard);
 const ProfilePublic = lazy(loadProfilePublic);
 const ProfileCredentials = lazy(() => import("@/app/profile/credentials/page"));
@@ -231,6 +232,8 @@ const SentryErrorBoundary = Sentry.withErrorBoundary(
             element={<Deferred><TestFailPlaceholderEntry /></Deferred>}
           />
           <Route path="/testing/seed-pick-order" element={<Deferred><TestSeedPickOrder /></Deferred>} />
+          {/* NEO-552: sets and clears the caller's fake BuySportsCards faults, orders and the BSC call gate. */}
+          <Route path="/testing/bsc-fake" element={<Deferred><TestBscFake /></Deferred>} />
 
           {/* Protected routes — wrapped in binder shell */}
           <Route element={<ProtectedLayout />}>

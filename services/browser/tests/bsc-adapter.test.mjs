@@ -59,6 +59,9 @@ function loadBSCAdapter({ credentials, updateCredentials }) {
   };
 
   const { BSCAdapter } = require("../dist/adapters/bsc-adapter");
+  // NEO-552: the 429 breaker is process-wide module state; a test that
+  // answers 429 must not short-circuit the next test's calls.
+  require("../dist/bsc-fetch").resetBscBreaker();
   return BSCAdapter;
 }
 

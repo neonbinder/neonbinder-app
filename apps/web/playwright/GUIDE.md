@@ -53,8 +53,11 @@ Reference specs that show the patterns below:
    gets 7 s (2026-09-25: "A real user will never wait 30 seconds"). The only
    longer waits, each passed on that one call as `toBeVisible({ timeout: 60_000 })`
    and commented at the site with which exception it is:
-   - a step that directly drives a live BSC/SportLots round trip on data that
-     is not pre-synced;
+   - a step that directly drives a live SportLots round trip on data that is
+     not pre-synced (BuySportsCards is the fake since NEO-552: deterministic,
+     so its steps get the standard 7 s; the longer waits on BSC steps in older
+     specs and helpers predate it and come down once a green run has measured
+     them, never on a guess);
    - the seed's cold syncs (`setup.spec.ts` is exempt as a class: it is a
      data-loading track, and its ceilings are the measured COLD-path values.
      A measurement means nothing until you know which branch, warm or cold,
@@ -236,6 +239,11 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   summary and the attachment. Specs never import it directly.
 - `support/env.ts`: how `env` is built (`makeEnv`, `isSlPaused`); import types
   from here, do not re-derive.
+- `support/bscFake.ts` (NEO-552): the fake BuySportsCards controls and the one
+  place a spec makes BSC misbehave: `BSC_PATH`, the `bscFault` rule builders
+  (`slow`, `tooManyRequests`, `unavailable`, `hangs`, `dropsConnection`), and the
+  `BscFake` class behind the `bscFake` fixture (`setFaults`, `addOrder`, `clear`;
+  teardown is automatic). See "BuySportsCards is the fake" under Worker-state seeding.
 - `support/credentials.ts`: `openBscCredentials(page)` (opens the page, no Test press; the seed uses it), `loginToBsc(page)`, `loginToSportLots(page, env)`,
   `LIVE_LOGIN`, the BSC sign-in seed pair (`removeBscSignIn`,
   `saveBscSignIn`) and eBay's (`saveEbayConnection`, `removeEbayConnection`,
@@ -646,41 +654,109 @@ A spec whose point IS a live per-card read keeps that read small: it uploads the
 set's file with the few cards it needs left OUT (`--omit-number`), as the stall
 spec does with five.
 
-The bootstrap's optional BSC warm-up (a live sign-in through the browser service)
-runs on worker 0 only, so shards do not all sign in to BSC at the same moment.
+The bootstrap's optional BSC warm-up (a sign-in through the browser service) runs on
+worker 0 only.
+
+### BuySportsCards is the fake (NEO-552)
+
+CI previews, worktree deployments and dev call a **fake BuySportsCards**
+(`services/fake-bsc/`, contract in its `CONTRACT.md`), never the real site. Read
+this before diagnosing anything that touches BSC:
+
+- **It is deterministic.** Catalogue reads (filters, results, a card's
+  listing) are replayed from recordings; the seller's profile, sheet, writes
+  and orders are synthesised. It answers at once, never stalls on its own and
+  never returns a 429. The 7 s budget applies to every BSC step; a slow BSC
+  step is a product finding, not a marketplace mood.
+- **Every test user has a fake BSC account of their own** (a namespace derived
+  from the deployment and the user), so there is no shared BSC seller any more.
+  Two shards, two PRs or two sessions cannot clobber each other's listings; the
+  `@marketplace-seller` queue is for eBay only. Sign-in uses the fake's fixed
+  password (`fake-bsc-password`; `wrong-password` is its rejected-credentials
+  answer, which `credentials-lifecycle` uses). The scripted reset
+  (`e2e-baseline.sh reset`) and `resetMyTestState` clear the accounts, and the
+  call gate, with the rest of the state. They keep the fake's catalogue misses
+  (the recorder's to-do list): a miss leaves only once its recording is
+  uploaded, so a reset between runs never loses one.
+- **The saved BSC sign-in is per deployment too.** The browser service stores
+  it under `buysportscards-credentials-fake-<slug>-<user>`, so a worktree
+  deployment, a PR preview and dev each keep their own session for the same
+  test user. The first time you pull this change into a worktree whose
+  deployment was seeded before it, **re-run the `bootstrap` project once**:
+  the old session sits under the bare per-user key, which the deployment no
+  longer reads, so BSC specs would find no sign-in until it re-seeds. A fake
+  deployment also refuses every BSC sign-in or session call to a browser
+  service whose `/health` does not report `bscTarget: "fake"`
+  (`fake_bsc_browser_not_fake` in the Convex logs); the shared dev browser
+  service must be a fake-aware revision. CI deletes the preview's sessions
+  after both passes; the browser service's 72 h expiry catches the rest.
+- **A spec makes BSC misbehave through `support/bscFake.ts`, and only there.**
+  The `bscFake` fixture's `setFaults([...])` puts rules on the worker's own
+  account (`bscFault.slow`, `.tooManyRequests`, `.unavailable`, `.hangs`,
+  `.dropsConnection`, each aimed at a `BSC_PATH`, optionally one `cardId`);
+  `addOrder(...)` injects a buyer's order. It goes through the
+  `/testing/bsc-fake` hop (`api.testing.setMyBscFaults` / `addMyBscOrder` /
+  `clearMyBscFaults` / `clearBscCallGate`), on a second page, so the spec's own
+  page never moves. **Teardown is automatic**: the fixture clears the rules, and
+  the call gate when a rule could have opened it, whether the test passed or
+  failed. Orders are not cleared (the fake has no per-order delete); a spec that
+  injects one must be the only user of the cards it names. Never write a spec
+  that waits for BSC to be slow, and never add a deployment switch for a fault.
+- **Convex has ONE BSC call gate per deployment** (`convex/bscCallGate.ts`: a
+  breaker, plus a token bucket that is not applied against the fake, so there is no rate cap). A 429 opens it at once (honouring `Retry-After`);
+  five consecutive 5xx, timeouts or dropped connections open it too; while it is
+  open every caller on the deployment is refused without a request. So a fault of
+  kind `429`, `503`, `hang` or `reset` stops every shard's BSC calls. **Such a
+  spec carries `@bsc-breaker` and is listed in `BREAKER_SPECS`
+  (`project-scope.mjs`)**: no shard plans it; e2e.yml's `breaker-desktop` /
+  `breaker-mobile` jobs run it alone, after every shard and seller job of its
+  pass, and the gate still needs it green on both projects. `setFaults` throws
+  in a spec without the tag, and `shard-plan.mjs` refuses to plan if the tag and
+  the list disagree. A `delay` is allowed anywhere while it is shorter than the
+  caller's own timeout (a card-listing call gives up at 5 s, the seller profile
+  read at 20 s, the seller sheet at 90 s); a delay that outlasts the timeout is a
+  failure to the gate and belongs in a breaker spec. The two breaker specs today:
+  `checklist-fetch-bsc-429-cooldown-holds-the-cards-back-and-queues-them` (the
+  cooldown a 429 opens) and `checklist-fetch-bounds-a-bsc-stall-and-queues-the-cards`
+  (three hung cards, whose six timeouts open the gate).
+- **A cooldown, as a spec meets it.** A 429 on a card's listing opens a
+  deployment-wide window as long as the longer of our backoff (15 s doubling to
+  120 s) and the `Retry-After` (honoured up to 10 minutes). While it is open a
+  fetch stops asking BSC per card at once: the cards it still owed are marked
+  failed, held back from any guess and queued for the background lane, and the
+  operator picks their team (invariant 8). "Waiting on BuySportsCards" shows only
+  while a call is outstanding (a slow call, a retry pause inside one); an open
+  cooldown holds no call, so a fetch that meets one finishes at once without it.
+  The older specs' `bscLookupOutcome` / `.or()` branches for a real 429 stay (they
+  now always take the "answered" side) and **no new ones are added**: the
+  cooldown is proved by the breaker spec above.
+- **The seller's wait is still a product state.** NeonBinder reads the seller
+  account in the background and holds a run until it lands (see "The seller
+  account" below). The fake answers the profile at once, so a seller spec that
+  wants to meet the wait holds the read with `bscFault.slow(BSC_PATH.profile, ...)`
+  (shorter than the 20 s read timeout, `times: 3` and set BEFORE the sign-in is saved,
+  because the sign-in's own two 5 s reads are the first two), as the two BSC listing
+  specs do. The wait is made likelier, not guaranteed (the background read is armed
+  30 s after the save and those specs press minutes later): both orders stay legal and
+  end in the same hard asserts. The wait copy itself ("Waiting on BuySportsCards"
+  while a call is outstanding) is proved deterministically by the stall spec, whose
+  hung lookups hold the screen for about ten seconds.
 
 **A listing-on BSC seed is one store (NEO-483).** `/testing/seed-credentials?sites=buysportscards&listing=on`
-(`saveBscSignIn(page, { listing: true })`) saves the sign-in once. It no longer
-loops through re-logins until BSC's slow profile read returns the seller id, and it
-no longer fails because that read stalled (the old "seller id not saved" failure,
-NEO-482): the seed ends with the sign-in saved and the account not yet known, which
-is a real state a collector can be in. NeonBinder asks BSC for the seller account in
-the background and a run waits for it (next section). `saveBscSignIn` needed no
-change; a spec never waits for the account at the seed.
+(`saveBscSignIn(page, { listing: true })`) saves the sign-in once and returns:
+the seed ends with the sign-in saved and the seller account possibly not yet
+known, which is a real state a collector can be in. `saveBscSignIn` needed no
+change, and a spec never waits for the account at the seed.
 
-**BSC's 429 cooldown (NEO-487, NEO-489), as a spec meets it.** A `card-listing` 429
-opens a deployment-wide cooldown as long as the longer of our backoff (15 s the
-first time, doubling on each further 429 to a 120 s cap) and BSC's `Retry-After`,
-honoured up to 10 minutes. The streak resets on the first success asked after
-the window closes (15 minutes after the last 429 at the latest). While a window is
-open a fetch stops asking BSC per card at once: the cards it still owed are
-marked failed, held back from any guess and queued for the background lane, and
-the operator picks their team (invariant 8). The screen's "Waiting on
-BuySportsCards" line shows only while a call to BSC is outstanding (a slow or
-stalled call, a retry pause inside one); an open cooldown does not hold a call,
-so a fetch that meets one finishes at once with no such line. A spec whose live
-card meets a cooldown accepts either outcome (`bscLookupOutcome`, "Checklist
-first" below) and never waits the window out; a wait on the screen's own wait
-line is the measured time plus 7 s, never a flat bump.
-
-**The seller account (NEO-483), as a seller spec meets it.** BSC answers its seller
-profile slowly, sometimes for minutes. NeonBinder therefore never fails on it: when
-a drain finds no seller account it holds the run (the cards stay queued), the
-platform on Sync status says "BuySportsCards is slow to confirm your seller account…" (the live "Waiting on BuySportsCards…" line with running seconds sits under it, but that line also shows during any ordinary step's wait, so it is never the signal), and a
-background read asks BSC again after 30 s, 60 s and 120 s (then every 300 s, ten
-tries). The run starts by itself the moment an answer lands. So the first press of a
-seller spec ends in one of two orders, and **the spec passes in both with the same
-unconditional asserts after the walk (R2)**:
+**The seller account (NEO-483), as a seller spec meets it.** When a drain finds no
+seller account it holds the run (the cards stay queued), the platform on Sync
+status says "BuySportsCards is slow to confirm your seller account…" (the live
+"Waiting on BuySportsCards…" line with running seconds sits under it, but that line
+also shows during any ordinary step's wait, so it is never the signal), and a
+background read asks again after 30 s, 60 s and 120 s (then every 300 s, ten
+tries). The run starts by itself the moment an answer lands. So the first press of
+a BSC listing spec ends in one of two orders, and **the spec passes in both with
+the same unconditional asserts after the walk (R2)**:
 - the run starts at once (the account is already stored): the ledger appears under
   Running now;
 - the run starts after the wait: no ledger and no result line yet, only the
@@ -704,28 +780,59 @@ How a spec handles it, all in `support/collection.ts`:
   Pass the marketplace on every press that could be the worker's first run; a
   press after a run has already landed in the same spec may omit it. Without it
   (eBay) the claim is the plain 7 s.
-- `SELLER_ACCOUNT_CAP_MS` (240 s) is derived at its definition: the third try lands
-  210 s after the chain starts (30 + 60 + 120 s), which covers the 150 s worst BSC
-  stall measured, plus 20 s for the try's read and 7 s of our own time. Dated
-  2026-11-13 and **void if the read's delays change** (`BSC_SELLER_ID_FETCH_DELAYS_MS`,
-  convex/bscSellerId.ts). Past it the spec is red whatever the status says; a stall
-  longer than 210 s is a product finding, never a number to raise.
+- `SELLER_ACCOUNT_CAP_MS` (240 s) is a ceiling Jason signed off on 2026-11-13,
+  derived from the product's own read chain: the third try lands 210 s after the
+  chain starts (30 + 60 + 120 s), plus 20 s for the try's read and 7 s of our own
+  time. It was sized against the real BSC's worst stall (150 s); the fake never
+  stalls beyond a spec's own 15 s hold, so a green run will show a wait far below
+  it. **Void if the read's delays change** (`BSC_SELLER_ID_FETCH_DELAYS_MS`,
+  convex/bscSellerId.ts). Past it the spec is red whatever the status says; whether
+  to tighten it once a green fake run has measured the wait is Jason's call, never
+  a number to change here.
 - The Future Stars failure hook walks its zeroing press the same way (`walkForCleanup`
   around `followRunToRest`, marketplace passed), so a hook that meets the wait can spend
   up to the cap on each of its three tries. A hook only runs after the body wrote a
   box, by which time the account is normally stored.
 
-**The reset clears BSC's backoff state.** `e2e-baseline.sh reset` also empties
-the card-listing cooldown, the "Waiting on BuySportsCards" wait rows and the
-background team lane, and a lane item queued before the reset ends without
-asking BSC. A re-seed therefore starts with BSC open and the lane empty; a run
-that meets a cooldown it did not cause is not looking at the previous seed's.
+**The reset clears BSC's state.** `e2e-baseline.sh reset` also empties the BSC call
+gate, the "Waiting on BuySportsCards" wait rows, the background team lane and every
+fake BSC account the deployment owns (listings, photos, orders, faults), and a lane
+item queued before the reset ends without asking BSC. A re-seed therefore starts
+with BSC open and the lane empty.
 
-### Checklist first; live BSC only for the card under test (NEO-489, Jason 2026-11-11)
+### Unrecorded request (`501`, `x-nb-fake: unrecorded`)
 
-BSC pushes back (429) when asked card by card, and the cooldown is shared by every
-spec on the deployment, so a spec spends a live per-card lookup only on the card it
-is about:
+The fake replays catalogue reads from recordings made, by Jason, against the real
+site. A spec that makes the product ask for a catalogue request the fake has no
+recording for (a new set, a new filter, a card nobody fetched before) is answered
+`501` with the header `x-nb-fake: unrecorded`; the fake keeps the request key and
+body in its miss list, and the run's summary prints the list (the "Fake BSC misses
+for this preview" step). The product sees a non-2xx answer, so the spec fails
+somewhere on the screen that needed the data: a column that never fills, a fetch that
+ends on its error line, a checklist that says it could not read BuySportsCards.
+
+**Triage.** A red run whose screen shows a BSC read that failed, with no 429 or
+breaker in the spec, is this until the miss list says otherwise. Read the miss list
+first (CI job summary, or `fakeBsc:reportMisses` on the deployment); a miss naming
+the request the failing step made is the cause.
+
+**The fix is a recorder run, never a spec change.** Jason runs the recorder
+(`services/fake-bsc/recorder/`) against the real site, which records exactly the
+misses; the next run replays them. Do not loosen the assertion, add a branch, swap
+the set to one that happens to be recorded, raise a budget, or hand-write a
+recording. If the miss is a request the fake does not model at all ("needs a fake
+model" in the recorder's list), that is a fake change, reported to the coordinator
+with the request's method and path. A new real set, a new fixture file or a changed
+filter always arrives with its recording run in the same PR.
+
+### Checklist first; a per-card lookup only for the card under test (NEO-489, Jason 2026-11-11; NEO-552)
+
+Jason's rule was written when BSC pushed back (429) on card-by-card lookups. BSC is
+the fake now and never pushes back unless a spec asks, but the rule stays, for a new
+reason: every per-card lookup is a catalogue request somebody must RECORD from the
+real site (smaller recordings, one recorder run per new card), and each is a round
+trip the spec waits for (faster specs). So a spec spends a per-card lookup only on
+the card it is about:
 
 - **Every real-set fetch uploads its publisher checklist first** (`usePublishersChecklist`,
   or `fetchChecklistToWizard`, which does it for the default set), before Sync card
@@ -745,17 +852,16 @@ is about:
   recorded in SET-REGISTRY.md; a re-capture must put it back.
 - **Numbers are read as printed, in any case** (`TBD`, `PPR-DLa`, `1a`). `checklistFacts`
   mirrors the parser and throws on two numbers in one file that differ only by case.
-- **A 429, or a cooldown already open, on the live card is a pass, never a red and
-  never a wait.** The product holds the guess back and asks the operator (invariant 8).
-  A spec whose live card can land either way asserts ONE positive `.or()` over the
-  settled states (BSC answered, so its pre-fill or chip shows; or the lookup was
-  skipped, so the card rests on "Leave for later"), records which one with
-  `bscLookupOutcome("answered" | "cooldown", who)` (a `bsc-lookup` annotation in the
-  report), has the operator pick the team on the cooldown branch so every later step
-  converges, and says in a comment what stays unconditional. See
-  `checklist-one-marketplace-skips-match-dialog` for the pattern. Never a flat wait
-  to outlast the window, and a wait on the screen's own wait line stays the measured
-  time plus 7 s (`expectAfterMarketplace`).
+- **BSC does not 429 on its own any more, so a live card is answered.** The older
+  specs' `.or()` over "answered" and "cooldown" (`bscLookupOutcome`, a `bsc-lookup`
+  annotation) stay as they are and now take the answered side; do not add new ones.
+  The cooldown itself (the product holds the guess back and asks the operator,
+  invariant 8) is proved on purpose by the `@bsc-breaker` spec that injects the 429
+  (see "BuySportsCards is the fake"). Never a flat wait, and a wait on the screen's
+  own wait line stays the measured time plus 7 s (`expectAfterMarketplace`).
+- **A card the recordings do not hold is a recorder run, not a spec change** (see
+  "Unrecorded request"). A fixture file that leaves a card out on purpose adds that
+  card to the recorder's list: leave out as few as the spec's point needs.
 
 ### Seeding a fixture that no UI can create (`/testing/seed-credentials`)
 
@@ -910,8 +1016,9 @@ cannot produce. Assert the site-side copy (a stable, platform-named
 substring such as `/SportLots wouldn't let us in the door/`) plus the
 "nothing stored" state, as `profile/credentials-lifecycle` does; the
 transient "Could not reach SportLots..." copy must not match, since that is
-the browser service not answering (R2). BSC is unaffected and still produces
-a genuine credential rejection.
+the browser service not answering (R2). BSC is unaffected: the fake BuySportsCards
+rejects its one wrong password (`wrong-password`, NEO-552) with B2C's own
+rejected-credentials answer, which is what `credentials-lifecycle` types.
 
 ## Enrichment fixtures (NEO-289)
 
@@ -1025,9 +1132,13 @@ npx playwright test --project=e2e --no-deps <path-substring>
 
 A worker with no `TEST_EMAIL_<n>` falls back to `TEST_EMAIL`, so a different
 worker number does not give you a different user. `@marketplace-seller` specs
-need the one shared seller of each marketplace: run them on shared dev or a PR
-preview, one session at a time, never on your own deployment (root `CLAUDE.md` →
-**Cloud threads and seller specs: shared dev**, which cloud threads also follow).
+(eBay only since NEO-552: BuySportsCards is the fake, one account per test user)
+need the one shared eBay sandbox seller: run them on shared dev or a PR preview,
+one session at a time, never on your own deployment (root `CLAUDE.md` → **Cloud
+threads and seller specs: shared dev**, which cloud threads also follow). The BSC
+listing specs and the `@bsc-breaker` specs run on your own deployment like any
+other, because they talk to the fake; a breaker spec moves the deployment-wide BSC
+call gate, so run it alone and let its teardown clear it.
 
 A change to `services/browser` or `services/preprocess`, or a red your deployment
 cannot reproduce, runs against **the PR preview** after the first push instead:
@@ -1060,7 +1171,7 @@ timeboxed check and then push; CI validates.
 PR in two passes, each on a freshly seeded preview:
 
 ```
-setup -> seed -> shard-desktop x8 + seller-desktop -> seed-mobile -> shard-mobile x8 + seller-mobile -> e2e (gate) -> report
+setup -> seed -> shard-desktop x8 + seller-desktop -> breaker-desktop -> seed-mobile -> shard-mobile x8 + seller-mobile -> breaker-mobile -> e2e (gate) -> report
 ```
 
 `seed` is the scripted reset plus the `setup` project (worker 0); the desktop
@@ -1087,55 +1198,57 @@ each spec's desktop time and `byProject["e2e-mobile"]` its mobile time (a
 project with no value for a spec falls back to the desktop one, so a
 desktop-only file still plans both passes).
 
-**Marketplace-seller specs (NEO-415).** Every PR's CI uses one shared
-BuySportsCards test seller and one shared eBay sandbox seller. Two PRs
-running `inventory-bsc-listing-2024-topps-chrome-future-stars` or
-`inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars` (or the other
-seller specs in `SELLER_SPECS`) at once clobber each other (one
-preview's sync zeroes the other's listings; overlapping BSC sheet reads make
-BSC create twin rows), and sharding cannot help. So these specs are in
-`SELLER_SPECS` (`playwright/project-scope.mjs`), carry the tag
-`@marketplace-seller`, and are planned in NO shard: `shard-plan.mjs` refuses to
-plan if the tag and the list disagree, `shard-plan.mjs --seller` prints them, and
-the `e2e` gate still requires each to pass on BOTH projects (planned set = shard
-plan + seller list). The `seller-desktop` job (starts beside the desktop shards;
-`seed-mobile` needs it, since its reset would wipe the preview it runs on) and the
-`seller-mobile` job (beside the mobile shards) run them as worker 8, after the
-`bootstrap` project. Each waits its turn in a repo-wide queue
-(`.github/scripts/seller-queue.sh`, one script for both jobs): it polls this
-repo's in-progress and queued runs about every 100 s (GitHub can call a run
-`queued` while a job of it runs; from such a run only a running seller job counts)
-and goes when no seller job is running
-and none that started earlier is waiting. First come first served; it never
-cancels a waiting PR (GitHub's `concurrency` group would drop all but one pending
-job). Only runs whose head repository is this repository are read (a fork's
-edited workflow cannot forge a holder), and the poll fails closed: any API error
-or truncated listing waits rather than goes. A cancelled or dead holder stops
-counting at once; the wait is capped at 60 min, then the job fails with a message
-(re-run the workflow; the message says whether the cause was a busy queue or
-API errors). Artifacts: `pw-report-seller-<pass>-a<attempt>`, `convex-logs-seller-<pass>-a<attempt>`.
-**Starting clean (NEO-445).** The queue serializes the job window only: a run
-cancelled mid-spec (`cancel-in-progress` on a new push) can leave its preview
-connected to the shared sellers, or its listings up. So right after its turn comes
-each job runs `testingSellerCleanup:clearSellerAccounts` (internal, reachable only
-with the deploy key). On eBay's sandbox seller it withdraws every published offer,
-whatever the listing, then deletes every inventory item (NEO-453). On the BuySportsCards test seller it sets every row of the
-sets the specs list (`SELLER_SPEC_SETS`) to 0, copies of a twin row included. It
-signs in with the bootstrap's seller credentials as its own owner, not a worker,
-and removes that sign-in after. A cleanup that cannot finish fails the job, naming
-why; a paused marketplace is skipped. A twin row at 0 is not removed (BSC offers no
-delete): if BSC still shows both copies, the listing planner refuses a card listed
-in that condition (`duplicate_sheet_row`), so the step warns. A set the spec builds itself is listed with `builtBySpec: true` and is skipped when this deployment does not have it yet, so in CI (a freshly reset preview) its only cleanup is the spec's own takedown Sync and failure hook. A duplicate row anywhere in that set's chain fails the cleanup rather than skipping it, and the report counts the skips as `skippedSets`. A new spec that writes to
-a shared marketplace seller account joins the list AND takes the tag. **Locally,
-do not run these two specs while any PR's E2E is in its seller job** (check
+**Marketplace-seller specs (NEO-415).** Every PR's CI uses one shared eBay sandbox
+seller. (BuySportsCards was shared too until NEO-552; it is the fake now, one account
+per test user, so the two BSC listing specs,
+`inventory-bsc-listing-2024-topps-chrome-future-stars` and
+`inventory-bsc-listing-2026-bowman-chrome-prefix`, run in the ordinary shards on both
+projects.) Two PRs running `inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars`
+at once clobber each other (one preview's sync ends the other's listings), and sharding
+cannot help. So a spec that writes to the eBay seller is in `SELLER_SPECS`
+(`playwright/project-scope.mjs`), carries the tag `@marketplace-seller`, and is planned
+in NO shard: `shard-plan.mjs` refuses to plan if the tag and the list disagree and
+`shard-plan.mjs --seller` prints them. **The list is empty today** (the eBay spec is
+parked, `PROJECT_IGNORE`, NEO-453): `seller-desktop` / `seller-mobile` then install
+nothing, wait for nothing and succeed, with a notice. Restoring the eBay spec puts it
+back in the list and the jobs run it: as worker 8, after the `bootstrap` project, each
+waiting its turn in a repo-wide queue (`.github/scripts/seller-queue.sh`: polls this
+repo's in-progress and queued runs about every 100 s and goes when no seller job is
+running and none that started earlier is waiting; first come first served; never
+cancels; only runs whose head repository is this repository are read, and any API
+error or truncated listing waits; capped at 60 min, then the job fails with a message
+saying whether the cause was a busy queue or API errors). `seed-mobile` waits for
+`breaker-desktop`, which waits for `seller-desktop`, because the reset wipes the
+preview it runs on. Artifacts: `pw-report-seller-<pass>-a<attempt>`,
+`convex-logs-seller-<pass>-a<attempt>`. **Starting clean (NEO-445).** Right after its
+turn each job runs `testingSellerCleanup:clearSellerAccounts` (internal, reachable only
+with the deploy key): on eBay's sandbox seller it withdraws every published offer, then
+deletes every inventory item (NEO-453); it skips BuySportsCards (the fake keeps listings
+per run namespace and the reset clears them). A cleanup that cannot finish fails the
+job, naming why; a paused marketplace is skipped. A new spec that writes to a shared
+marketplace seller account joins the list AND takes the tag. **Locally, do not run an
+eBay seller spec while any PR's E2E is in its seller job** (check
 `gh run list --status in_progress`), and not against the shared seller from two
 sessions at once.
+
+**BSC breaker specs (NEO-552).** A spec that makes the fake BSC answer 429, 5xx or
+nothing opens Convex's deployment-wide BSC call gate for every shard (see
+"BuySportsCards is the fake"). Those specs are in `BREAKER_SPECS`, carry
+`@bsc-breaker`, are planned in no shard (`shard-plan.mjs --breaker` prints them) and
+run in `breaker-desktop` / `breaker-mobile`: one job per pass, as worker 8, started
+only after every shard and seller job of the pass has finished (a red among them does
+not stop it), so nothing else is calling BSC while the gate is open. Each spec clears
+the gate itself (the `bscFake` fixture's teardown); the pass's reset clears it too.
+The `e2e` gate still needs each green on both projects. Artifacts:
+`pw-report-breaker-<pass>-a<attempt>`, `convex-logs-breaker-<pass>-a<attempt>`. A new
+spec that injects such a fault joins the list AND takes the tag (`setFaults` throws
+otherwise). Locally run them alone, on your own deployment.
 
 **Reading a red run.**
 1. Find which spec failed in the "Playwright E2E" check or the sticky comment.
 2. Download the artifacts: `pw-report-desktop-<n>-a<attempt>` or
    `pw-report-mobile-<n>-a<attempt>` (the shard's screenshots and report),
-   `pw-report-seller-desktop-a<attempt>` / `pw-report-seller-mobile-a<attempt>` (the seller listing specs), `pw-report-seed-a<attempt>` / `pw-report-seed-mobile-a<attempt>` (a pass's seed), and `pw-merged`
+   `pw-report-seller-desktop-a<attempt>` / `pw-report-seller-mobile-a<attempt>` (the seller listing specs), `pw-report-breaker-desktop-a<attempt>` / `pw-report-breaker-mobile-a<attempt>` (the BSC breaker specs), `pw-report-seed-a<attempt>` / `pw-report-seed-mobile-a<attempt>` (a pass's seed), and `pw-merged`
    (both passes' merged report and results). Every per-job artifact carries
    the attempt it came from, so a rerun no longer overwrites an earlier red
    attempt's evidence (`pw-merged` is unsuffixed and is replaced by the
@@ -1153,9 +1266,10 @@ sessions at once.
    classify, 2026-11-13 12:51-13:26 UTC) and the pool's retries behaved
    correctly.
 5. A red during a `pr-queue` turn gets one full rerun (`gh run rerun`, never
-   `--failed`) only when the evidence names an outside service (BuySportsCards,
-   SportLots, eBay, ESPN, Wikidata, Clerk, Vercel, Convex's platform, GitHub's
-   runners). Anything pointing at our own code passes the turn: reproduce that
+   `--failed`) only when the evidence names an outside service (SportLots, eBay, ESPN,
+   Wikidata, Clerk, Vercel, Convex's platform, GitHub's runners; not
+   BuySportsCards: it is our fake, so a BSC read that failed is ours, usually an
+   unrecorded request, see above). Anything pointing at our own code passes the turn: reproduce that
    one spec locally on your own deployment or against the PR preview (above),
    fix it, join the queue again, and push only on the next turn. A real failure
    just fails again on a rerun. A rerun cannot fix a broken
@@ -1183,9 +1297,11 @@ public. Traces are only on locally (`retain-on-failure`).
 - [ ] Writes go to a per-worker hand-made set, or the spec is the registered
       sole writer (R7a); nothing destructive (R7).
 - [ ] A spec that fetches a real set uploads its publisher checklist first; a
-      card it leaves live is named at the call site, its team cell is never
-      blank (`No Team` when the card has none), and a 429 or open cooldown on
-      that card is a pass through `bscLookupOutcome`, not a red or a wait.
+      card it leaves live is named at the call site, and its team cell is never
+      blank (`No Team` when the card has none). A spec that makes BSC misbehave does
+      it through `bscFake` only, and a 429, 503, hang or reset puts the spec in
+      `BREAKER_SPECS` with `@bsc-breaker`. New requests it makes of the catalogue
+      come with their recorder run.
 - [ ] If the spec drives a shared helper you changed, a deliberate throw in
       the helper turns the covering specs red.
 - [ ] `npm run test:e2e:typecheck` and `npx eslint playwright` pass;

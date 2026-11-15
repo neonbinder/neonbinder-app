@@ -6,7 +6,8 @@
  *
  * The lane's retry ladder for FAILED lookups is pinned end to end in
  * bscTeamEnrichmentQueue.test.ts; this file pins what PR 451 added: a card
- * deferred by a 429 or an open cooldown goes back to the window's end WITHOUT
+ * deferred by a 429 or an open BSC call gate window (NEO-552: `bscCallGate`,
+ * which replaced the per-endpoint cooldown) goes back to the window's end WITHOUT
  * spending a pass, and goes to the operator once it has waited 30 minutes.
  */
 import { convexTest } from "convex-test";
@@ -21,7 +22,9 @@ import {
   nextBscTeamCheckStep,
 } from "./bscTeamPool";
 import { BSC_TEAM_ENRICH_DELAY_MS, BSC_TEAM_WAIT_IN_SLOT_MAX_MS } from "./adapters/buysportscards";
-import * as cooldowns from "./marketplaceCooldowns";
+import * as callGate from "./bscCallGate";
+import { COOLDOWN_MAX_MS } from "./lib/bscCallGatePolicy";
+import { bscGateWindowRow } from "../lib/testing/bsc-gate-stub";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { insertTestCard } from "../lib/testing/card-row";
@@ -148,11 +151,7 @@ describe("the lane end to end (item + completion)", () => {
   }
 
   const openWindow = (t: ReturnType<typeof convexTest>, until: number) =>
-    t.run(async (ctx) =>
-      ctx.db.insert("marketplaceCooldowns", {
-        platform: "bsc", endpoint: "cardListing", until, last429At: NOW, streak: 1, updatedAt: NOW,
-      }),
-    );
+    t.run(async (ctx) => ctx.db.insert("marketplaceCallGates", bscGateWindowRow(until, NOW)));
 
   const answerReds = () =>
     vi.fn(async () =>
@@ -161,9 +160,9 @@ describe("the lane end to end (item + completion)", () => {
         headers: { "Content-Type": "application/json" },
       }),
     );
-  /** Counts runs of `marketplaceCooldowns.get` (convex-test calls its `_handler`). */
-  const spyCooldownReads = () =>
-    vi.spyOn(cooldowns.get as unknown as { _handler: (...a: unknown[]) => unknown }, "_handler");
+  /** Counts runs of `bscCallGate.state` (convex-test calls its `_handler`). */
+  const spyGateReads = () =>
+    vi.spyOn(callGate.state as unknown as { _handler: (...a: unknown[]) => unknown }, "_handler");
 
   /**
    * Loads the adapter module with one throwaway item, then puts the clock back
@@ -185,8 +184,9 @@ describe("the lane end to end (item + completion)", () => {
     vi.setSystemTime(NOW);
   }
 
-  test("the in-slot wait covers every window we open ourselves (NEO-482)", () => {
-    expect(BSC_TEAM_WAIT_IN_SLOT_MAX_MS).toBe(cooldowns.COOLDOWN_MAX_MS);
+  test("the in-slot wait covers every 429 window we open ourselves (NEO-482)", () => {
+    // A failure-run window (up to 300 s) or a long Retry-After is deferred instead.
+    expect(BSC_TEAM_WAIT_IN_SLOT_MAX_MS).toBe(COOLDOWN_MAX_MS);
   });
 
   test("NEO-482: an item in a 15 s window waits it out once in the slot, then asks once, with no re-enqueue", async () => {
@@ -207,7 +207,7 @@ describe("the lane end to end (item + completion)", () => {
     await openWindow(t, NOW + 15_000);
     const lane = captureBscTeamLane();
     await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [card], pass: 2 });
-    const reads = spyCooldownReads();
+    const reads = spyGateReads();
     expect(await runBscTeamLane(t, lane, 5)).toBe(1);
 
     expect(calledAt).toHaveLength(1);
@@ -217,8 +217,9 @@ describe("the lane end to end (item + completion)", () => {
     expect(lane).toHaveLength(0);
     const row = await t.run(async (ctx) => ctx.db.get(card));
     expect(row?.teamCheckDoneAt).toBeDefined();
-    // The answer after the window also ends its streak.
-    const stored = await t.run(async (ctx) => ctx.db.query("marketplaceCooldowns").collect());
+    // The answer after the window (the half-open probe) also ends its streak.
+    const stored = await t.run(async (ctx) => ctx.db.query("marketplaceCallGates").collect());
+    expect(stored).toHaveLength(1);
     expect(stored[0].streak).toBe(0);
   });
 
@@ -237,7 +238,7 @@ describe("the lane end to end (item + completion)", () => {
     });
     await vi.advanceTimersByTimeAsync(5_000);
     // A 429 elsewhere escalated the window to 30 s while this item waited.
-    await t.run(async (ctx) => ctx.db.patch(windowId, { until: NOW + 15_000 + 30_000, streak: 2 }));
+    await t.run(async (ctx) => ctx.db.patch(windowId, { openUntil: NOW + 15_000 + 30_000, streak: 2 }));
     const result = await settleOnFakeClock(running);
 
     expect(result).toEqual({ outcome: "deferred", until: NOW + 45_000 });
@@ -265,7 +266,7 @@ describe("the lane end to end (item + completion)", () => {
     expect((await t.run(async (ctx) => ctx.db.get(card)))?.teamCheckDoneAt).toBeUndefined();
   });
 
-  test("NEO-482: the first card answered after a window closes resets the cooldown streak", async () => {
+  test("NEO-482: the first card answered after a window closes resets the gate's streak", async () => {
     const t = convexTest(schema, modules);
     vi.stubGlobal(
       "fetch",
@@ -278,15 +279,13 @@ describe("the lane end to end (item + completion)", () => {
     );
     const card = await seedCard(t);
     await t.run(async (ctx) =>
-      ctx.db.insert("marketplaceCooldowns", {
-        platform: "bsc", endpoint: "cardListing", until: NOW - 1, last429At: NOW - 30_001, streak: 2, updatedAt: NOW,
-      }),
+      ctx.db.insert("marketplaceCallGates", { ...bscGateWindowRow(NOW - 1, NOW), lastOpenedAt: NOW - 30_001, streak: 2 }),
     );
     const lane = captureBscTeamLane();
     await t.mutation(internal.bscTeamPool.enqueueBscTeamChecks, { cardChecklistIds: [card] });
     expect(await runBscTeamLane(t, lane, 1)).toBe(1);
 
-    const rows = await t.run(async (ctx) => ctx.db.query("marketplaceCooldowns").collect());
+    const rows = await t.run(async (ctx) => ctx.db.query("marketplaceCallGates").collect());
     expect(rows[0].streak).toBe(0);
     expect(lane).toHaveLength(0);
   });
