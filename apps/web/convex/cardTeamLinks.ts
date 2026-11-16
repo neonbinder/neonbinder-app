@@ -95,11 +95,11 @@ export function planCardTeamLinks(
  *
  * NEO-569 — and the seam where a card's league follows its teams. When the
  * team set actually CHANGED (the diff is non-empty) on a stored card, the
- * card's `leagueId` is settled through `cardLeague.settleCardLeague` (rule B:
- * a league that is still one of its teams' keeps; otherwise re-derived),
- * patched only when it differs. `card` is the row as it stood before this
- * write (its `leagueId` is the "current" value), which is why the parameter is
- * a card and not an id: every caller had to be reviewed for it. A `fresh`
+ * card's `leagueId` is re-derived through `cardLeague.settleCardLeague`
+ * (always `deriveCardLeagueId`: teams in two leagues → blank), patched only
+ * when it differs. `card` is the row as it stood before this write (its
+ * `leagueId` is compared to skip a no-op patch), which is why the parameter
+ * is a card and not an id: every caller had to be reviewed for it. A `fresh`
  * card is never settled here — `insertCardRow` / `addCustomCard` put its
  * league in the insert. `leagueCache` is the caller's per-transaction cache
  * of team and set league reads.

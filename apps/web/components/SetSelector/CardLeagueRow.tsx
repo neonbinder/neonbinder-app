@@ -42,19 +42,34 @@ type Option =
   | { kind: "none"; key: string; label: string }
   | { kind: "league"; key: string; label: string; league: LeagueSummary; inSet: boolean };
 
-/** Why the field is blank, in the admin's words. */
+/**
+ * Why the field is blank, in the admin's words: the cause, the pick, and what
+ * waits on it. Short, since it sits under one field in a busy drawer.
+ * `teamsInDifferentLeagues` is the common one: any change that leaves the
+ * card's teams in two leagues blanks the league (the server never guesses).
+ */
 export function cardLeagueBlankCopy(reason: BlankReason): string {
-  const tail = " Listings are held back until it has one.";
+  const tail = " It can't list until it has one.";
   switch (reason) {
     case "noTeam":
-      return `No league yet: this card has no team to take one from, and the set has more than one league. Pick one.${tail}`;
+      return `No team, so no league. Pick one.${tail}`;
     case "teamsInDifferentLeagues":
-      return `No league yet: its teams play in different leagues. Pick the one this card counts for.${tail}`;
+      return `Its teams play in different leagues. Pick the one this card counts for.${tail}`;
     case "teamWithoutLeague":
-      return `No league yet: one of its teams has no league. Pick one here, or give the team its league in Admin → Teams.${tail}`;
+      return `One of its teams has no league. Pick one, or give that team its league in Admin → Teams.${tail}`;
     default:
       return `No league yet. Pick one.${tail}`;
   }
+}
+
+/** An option's second line: the abbreviation when it adds something, and whether the set has it. */
+export function cardLeagueDescription(league: LeagueSummary, inSet: boolean): string | undefined {
+  const abbr = league.abbreviation?.trim();
+  const parts = [
+    abbr && abbr.toLowerCase() !== league.name.trim().toLowerCase() ? abbr : null,
+    inSet ? "in this set" : null,
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(", ") : undefined;
 }
 
 /**
@@ -170,11 +185,7 @@ export default function CardLeagueRow({
           getKey={(o) => o.key}
           getLabel={(o) => o.label}
           getDescription={(o) =>
-            o.kind === "league"
-              ? [o.league.abbreviation?.trim(), o.inSet ? "in this set" : null]
-                  .filter(Boolean)
-                  .join(", ") || undefined
-              : undefined
+            o.kind === "league" ? cardLeagueDescription(o.league, o.inSet) : undefined
           }
           onSelect={(o) => void pick(o)}
           onDismiss={() => setTyped(null)}

@@ -1,7 +1,7 @@
 /**
  * NEO-569 — each card's own league and a set's leagues.
  *
- * The pure rules first (`deriveCardLeagueId`, rule B, the blank reason), then
+ * The pure rules first (`deriveCardLeagueId`, the blank reason), then
  * the real writers: a card born with its league, a team change settling it
  * through `syncCardTeamLinks`, an admin's explicit pick, a set's leagues
  * cascading to its teamless cards (rule A), a team's own league change
@@ -14,7 +14,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
-import { cardLeagueBlankReason, deriveCardLeagueId, settleCardLeagueId } from "./cardLeague";
+import { cardLeagueBlankReason, deriveCardLeagueId } from "./cardLeague";
 import { bornSetLeagueIds } from "./leagues";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { insertTestCard } from "../lib/testing/card-row";
@@ -52,24 +52,6 @@ describe("deriveCardLeagueId — the card rule", () => {
   test("no team and a many-league or league-less set → none", () => {
     expect(deriveCardLeagueId({ teamLeagueIds: [], setLeagueIds: ["mlb", "ncaa"] })).toBeUndefined();
     expect(deriveCardLeagueId({ teamLeagueIds: [], setLeagueIds: [] })).toBeUndefined();
-  });
-});
-
-describe("settleCardLeagueId — rule B", () => {
-  test("a league still among the teams' leagues is kept (an admin's pick survives a swap)", () => {
-    expect(
-      settleCardLeagueId({ current: "nl", teamLeagueIds: ["mlb", "nl"], setLeagueIds: [] }),
-    ).toBe("nl");
-  });
-  test("a league no team carries any more is re-derived", () => {
-    expect(settleCardLeagueId({ current: "nl", teamLeagueIds: ["mlb"], setLeagueIds: [] })).toBe("mlb");
-    expect(
-      settleCardLeagueId({ current: "nl", teamLeagueIds: ["mlb", "al"], setLeagueIds: [] }),
-    ).toBeUndefined();
-  });
-  test("teams cleared: the set decides (rule B never keeps a teamless card's league by itself)", () => {
-    expect(settleCardLeagueId({ current: "nl", teamLeagueIds: [], setLeagueIds: ["mlb"] })).toBe("mlb");
-    expect(settleCardLeagueId({ current: "nl", teamLeagueIds: [], setLeagueIds: [] })).toBeUndefined();
   });
 });
 
@@ -236,7 +218,7 @@ describe("a card is born with its league", () => {
 });
 
 describe("a team change settles the league (syncCardTeamLinks)", () => {
-  test("follows the teams, clears on a split, rule B keeps an admin's pick", async () => {
+  test("every team change re-derives: a split goes blank whatever came first, and an admin's pick lasts only until the teams change", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);
     const admin = t.withIdentity(ADMIN);
@@ -246,13 +228,28 @@ describe("a team change settles the league (syncCardTeamLinks)", () => {
     await admin.mutation(api.selectorOptions.updateCard, { id, teamOnCardIds: [s.crawfords] });
     expect(await cardLeague(t, id)).toBe(s.nl);
 
+    // Teams in two leagues: blank, never the league the card had first.
     await admin.mutation(api.selectorOptions.updateCard, { id, teamOnCardIds: [s.crawfords, s.padres] });
-    expect(await cardLeague(t, id)).toBe(s.nl); // rule B: still one of the teams' leagues
+    expect(await cardLeague(t, id)).toBeNull();
+    // Same split, the other order: still blank (order never decides).
+    await admin.mutation(api.selectorOptions.updateCard, { id, teamOnCardIds: [s.padres] });
+    expect(await cardLeague(t, id)).toBe(s.mlb);
+    await admin.mutation(api.selectorOptions.updateCard, { id, teamOnCardIds: [s.padres, s.crawfords] });
+    expect(await cardLeague(t, id)).toBeNull();
 
+    // An admin's pick holds while the teams stand…
     await admin.mutation(api.selectorOptions.updateCard, { id, leagueId: s.mlb });
     expect(await cardLeague(t, id)).toBe(s.mlb);
+    // …and is replaced by the derivation once they change.
     await admin.mutation(api.selectorOptions.updateCard, { id, teamOnCardIds: [s.mets, s.crawfords] });
-    expect(await cardLeague(t, id)).toBe(s.mlb); // the pick survives the swap
+    expect(await cardLeague(t, id)).toBeNull();
+    // A pick sent WITH a team change in one save is the admin's last word.
+    await admin.mutation(api.selectorOptions.updateCard, {
+      id,
+      teamOnCardIds: [s.padres, s.crawfords],
+      leagueId: s.nl,
+    });
+    expect(await cardLeague(t, id)).toBe(s.nl);
 
     await admin.mutation(api.selectorOptions.updateCard, { id, teamOnCardIds: [s.badgers] });
     expect(await cardLeague(t, id)).toBe(s.ncaa);

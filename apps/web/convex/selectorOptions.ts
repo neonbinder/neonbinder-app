@@ -6805,8 +6805,8 @@ export const updateCard = mutation({
     }
     // NEO-358 — the team → cards index follows a written `teamOnCardIds`
     // (validated and deduped above), emptied lists included.
-    // NEO-569 — and the card's league follows a real team change (rule B,
-    // inside the seam), settled against the row as it stood before this save.
+    // NEO-569 — and the card's league is re-derived on a real team change
+    // (inside the seam); an earlier admin pick does not survive it.
     if (Array.isArray(filtered.teamOnCardIds)) {
       await syncCardTeamLinks(
         ctx,
@@ -8083,8 +8083,8 @@ export const cascadeSelectorOptionTeams = internalMutation({
       for (const card of rows) {
         budget -= 1;
         if (cardTeamFollowVerdict(card, previous, next) !== "follow") continue;
-        // NEO-569 — the card's league follows its new team in the SAME patch
-        // (rule B), and the seam is handed the updated card so it finds
+        // NEO-569 — the card's league is re-derived from its new teams in the
+        // SAME patch, and the seam is handed the updated card so it finds
         // nothing left to write: no extra operation per card.
         const leagueId = await settledCardLeagueId(ctx, card, next, leagueCache);
         await ctx.db.patch(card._id, {

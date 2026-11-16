@@ -21,16 +21,26 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
  * `inheritedFrom`), shown here in a dashed chip and said in words, so the
  * difference never rests on colour (SC 1.4.1). Changing an inherited list
  * (adding one, or taking one away when there are two or more) gives the row
- * its own list; "Use the set's leagues" drops it again. An empty list is
- * never stored: saving `[]` deletes the key, which is how the row goes back.
+ * its own list, and says so: the hint before the change ("Adding or removing
+ * one here gives this insert its own list"), the inherited chip's × ("Remove
+ * NPB from this insert") and the toast after it ("… has its own leagues
+ * now"). "Use the set's leagues" ("Use the leagues above" when the list
+ * comes from a nearer row) drops it again, and so does any change that
+ * leaves the row's list the same as the one above: a copy of the list above
+ * is never stored, so it never goes stale when the set's list changes. An
+ * empty list is never stored either: saving `[]` deletes the key, which is
+ * how the row goes back.
+ *
+ * The list above is read from the parent row (its effective leagues, and
+ * where they come from), so a row with its own list still knows it.
  *
  * Every change saves at once, through the panel's own toast ("Saving
- * League…", then "Saved League" / "Cleared League"), the same polite region
- * every other row of the panel uses.
+ * League…", then "Saved League", "Cleared League" or "Back to the set's
+ * leagues"), the same polite region every other row of the panel uses.
  *
  * Keyboard: the add field is the shared type-ahead (`Autocomplete`, picker
  * mode, as every one-of-N over a growing table is): focus opens the sport's
- * leagues, major first; typing narrows by name or abbreviation; Enter adds
+ * leagues, under "Major leagues" then "More leagues" (ARIA groups); typing narrows by name or abbreviation; Enter adds
  * the highlighted one and leaves the caret in the field for the next; Escape
  * closes the list. Each chip's × takes Delete and Backspace as well as Enter,
  * Space and a click, and after a removal focus moves to the chip that took
@@ -63,9 +73,23 @@ export const SET_LEAGUE_LABELS = {
   group: "League",
   /** The type-ahead's accessible name. */
   add: "Add league",
-  /** The way back to the inherited list. */
+  /** The way back to the inherited list, when the set holds it. */
   useInherited: "Use the set's leagues",
+  /** The way back, when a nearer row (a variant type, an insert) holds it. */
+  useAbove: "Use the leagues above",
 } as const;
+
+/** The add list's group heading for a league: major ones first. */
+export function leagueGroup(league: LeagueSummary): string {
+  return league.level === "major" ? "Major leagues" : "More leagues";
+}
+
+/** Same leagues, in any order. */
+function sameLeagues(a: ReadonlyArray<LeagueSummary>, b: ReadonlyArray<LeagueSummary>): boolean {
+  if (a.length !== b.length) return false;
+  const ids = new Set<string>(a.map((l) => l._id));
+  return b.every((l) => ids.has(l._id));
+}
 
 /** The short form a chip shows: the abbreviation when there is one. */
 export function leagueChipText(league: LeagueSummary): string {
@@ -111,8 +135,12 @@ export default function SetLeagueRow({
   levelLabel: string;
   /** The row is the set itself, so there is nothing above it to inherit. */
   isSet: boolean;
-  /** The row's ancestor chain, to name the row an inherited list comes from. */
-  ancestors: ReadonlyArray<{ _id: Id<"selectorOptions">; value: string }>;
+  /**
+   * The row's ancestor chain, root first and ending at the row itself
+   * (`getAncestorChain`): the parent whose list this row would use, and the
+   * name and level of the row that list comes from.
+   */
+  ancestors: ReadonlyArray<{ _id: Id<"selectorOptions">; value: string; level?: string }>;
   onSaving: (label: string) => void;
   onSaved: (message: string) => void;
   onFailed: (message: string) => void;
@@ -120,6 +148,13 @@ export default function SetLeagueRow({
   const data = useQuery(api.selectorOptions.getSelectorOptionLeagues, {
     selectorOptionId,
   });
+  // The list this row would use with none of its own: the parent's.
+  const selfIndex = ancestors.findIndex((a) => a._id === selectorOptionId);
+  const parentId = !isSet && selfIndex > 0 ? ancestors[selfIndex - 1]._id : undefined;
+  const aboveData = useQuery(
+    api.selectorOptions.getSelectorOptionLeagues,
+    parentId ? { selectorOptionId: parentId } : "skip",
+  );
   const setSelectorOptionLeagues = useMutation(
     api.selectorOptions.setSelectorOptionLeagues,
   );
@@ -133,7 +168,7 @@ export default function SetLeagueRow({
    * Cleared when the LATEST save settles; by then the subscription already
    * carries the new value (Convex updates queries before the promise).
    */
-  const [pending, setPending] = useState<LeagueSummary[] | null>(null);
+  const [pending, setPending] = useState<{ own: LeagueSummary[] | null } | null>(null);
 
   const noun = levelLabel.toLowerCase();
 
@@ -152,30 +187,61 @@ export default function SetLeagueRow({
     );
   }
 
-  const own: LeagueSummary[] | null = pending ?? data.own;
+  // The list above this row, once known: the parent's effective list, or,
+  // while the row inherits, its own effective list (the same thing).
+  const above: LeagueSummary[] | undefined = isSet
+    ? undefined
+    : (aboveData?.effective ?? (data.own === null ? data.effective : undefined));
+  const sourceId = aboveData
+    ? aboveData.own !== null
+      ? parentId
+      : aboveData.inheritedFrom
+    : data.inheritedFrom;
+  const source = sourceId ? ancestors.find((a) => a._id === sourceId) : undefined;
+  const fromSet = !source || source.level === "setName";
+  const sourcePhrase = fromSet ? "the set's leagues" : `the leagues from ${source.value}`;
+
+  const own: LeagueSummary[] | null = pending ? pending.own : data.own;
   const inheriting = own === null;
-  const shown: LeagueSummary[] = own ?? data.effective;
+  const shown: LeagueSummary[] = own ?? (pending ? (above ?? []) : data.effective);
   const atCap = shown.length >= MAX_SET_LEAGUES;
-  const options = atCap ? [] : addableLeagues(data.sportLeagues, shown, query);
-  const fromName = data.inheritedFrom
-    ? ancestors.find((a) => a._id === data.inheritedFrom)?.value
-    : undefined;
+  // Major ones first, each group one run under its heading (a stable sort
+  // keeps the server's A–Z inside each).
+  const options = atCap
+    ? []
+    : [...addableLeagues(data.sportLeagues, shown, query)].sort(
+        (x, y) => Number(leagueGroup(x) !== "Major leagues") - Number(leagueGroup(y) !== "Major leagues"),
+      );
   // A lone inherited league has no ×: taking it away would leave an empty
   // list, and an empty list is how a row says "use the one above", so the
   // press would change nothing.
   const canRemove = !inheriting || shown.length > 1;
 
   const save = async (next: LeagueSummary[]) => {
+    // Below the set, an empty list or a copy of the list above is no list of
+    // its own: it saves as inheriting, so it follows the list above from now on.
+    const inherit =
+      !isSet &&
+      (next.length === 0 || (above !== undefined && above.length > 0 && sameLeagues(next, above)));
+    const message = inherit
+      ? above && above.length > 0
+        ? `Back to ${sourcePhrase}`
+        : "Cleared League"
+      : next.length === 0
+        ? "Cleared League"
+        : inheriting && !isSet
+          ? `Saved League. This ${noun} has its own leagues now.`
+          : "Saved League";
     const seq = ++seqRef.current;
-    setPending(next);
+    setPending({ own: inherit ? null : next });
     onSaving(SET_LEAGUE_LABELS.group);
     try {
       await setSelectorOptionLeagues({
         selectorOptionId,
-        leagueIds: next.map((l) => l._id),
+        leagueIds: inherit ? [] : next.map((l) => l._id),
       });
       if (seq !== seqRef.current) return;
-      onSaved(next.length === 0 ? "Cleared League" : "Saved League");
+      onSaved(message);
     } catch (e) {
       if (seq !== seqRef.current) return;
       onFailed(userFacingMessage(e, "Could not save League"));
@@ -211,6 +277,9 @@ export default function SetLeagueRow({
     }, 0);
   };
 
+  const removeLabel = (league: LeagueSummary) =>
+    inheriting ? `Remove ${league.name} from this ${noun}` : `Remove ${league.name}`;
+
   const onChipKeyDown = (e: KeyboardEvent<HTMLButtonElement>, index: number) => {
     if (e.key === "Delete" || e.key === "Backspace") {
       e.preventDefault();
@@ -231,11 +300,16 @@ export default function SetLeagueRow({
   if (data.sportLeagues.length === 0) {
     hint = "This sport has no leagues yet. Add them in Admin → Leagues first.";
   } else if (isSet) {
-    hint = "Every league this set's teams play in. Team pickers look here first.";
+    hint =
+      shown.length > 0
+        ? "Every league this set's teams play in. Team pickers look here first."
+        : "No league yet. Add one so team pickers know where to look.";
   } else if (inheriting && shown.length > 0) {
-    hint = `Using ${fromName ?? "the set"}'s leagues. Change them here to give this ${noun} its own list.`;
+    hint = `Using ${sourcePhrase}. Adding or removing one here gives this ${noun} its own list.`;
   } else if (inheriting) {
     hint = `No league yet. Add one here for this ${noun} alone, or on the set for everything in it.`;
+  } else if (above && above.length > 0) {
+    hint = `This ${noun} has its own leagues instead of ${sourcePhrase}.`;
   } else {
     hint = `This ${noun} has its own leagues.`;
   }
@@ -266,11 +340,12 @@ export default function SetLeagueRow({
             <li
               key={league._id}
               // Own chips are solid; inherited ones are an outline with a
-              // dashed edge. Shape as well as fill, and the hint says it in
-              // words.
+              // dashed edge, in ink-3 (a 1px dash in --control read faint in
+              // dark; ink-3 clears 3:1 with room in both modes). Shape as
+              // well as fill, and the hint says it in words.
               className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border ${
                 inheriting
-                  ? "border-dashed border-control text-ink-2"
+                  ? "border-dashed border-ink-3 text-ink-2"
                   : "border-transparent bg-chip text-ink"
               }`}
             >
@@ -286,8 +361,9 @@ export default function SetLeagueRow({
                   data-set-league-remove=""
                   onClick={() => remove(index)}
                   onKeyDown={(e) => onChipKeyDown(e, index)}
-                  aria-label={`Remove ${league.name}`}
-                  title={`Remove ${league.name}`}
+                  // From an inherited list it changes this row only: said here.
+                  aria-label={removeLabel(league)}
+                  title={removeLabel(league)}
                   // The TeamPicker chip's ×: quiet ink-2 on the chip's grey,
                   // a pink fill with black ink under the pointer or focus
                   // (pink text on the chip misses 4.5:1 in dark).
@@ -309,6 +385,7 @@ export default function SetLeagueRow({
           getKey={(l) => l._id}
           getLabel={(l) => l.name}
           getDescription={(l) => l.abbreviation?.trim() || undefined}
+          getGroup={leagueGroup}
           onSelect={add}
           onDismiss={() => setQuery("")}
           openOnEmpty
@@ -334,7 +411,7 @@ export default function SetLeagueRow({
             onClick={returnToInherited}
             className="hit-area-24 text-[11px] text-ink-2 underline decoration-dotted underline-offset-2 hover:text-neon-blue-text focus:text-neon-blue-text focus-outline"
           >
-            {SET_LEAGUE_LABELS.useInherited}
+            {fromSet ? SET_LEAGUE_LABELS.useInherited : SET_LEAGUE_LABELS.useAbove}
           </button>
         </div>
       )}

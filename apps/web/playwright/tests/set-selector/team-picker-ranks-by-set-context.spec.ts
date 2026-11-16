@@ -1,9 +1,13 @@
 // Origin: .maestro/flows/set-selector/team-picker-ranks-by-set-context.yaml (Maestro suite retired in NEO-341; see git history)
-// NEO-331: on a card in a set, the TeamPicker orders its candidates by the SET
-// (the set's League feature and year), not by the alphabet. Four tiers:
-//   1. in the set's league AND active in the set's year
+// NEO-331 / NEO-569: on a card in a set, the TeamPicker orders its candidates by
+// the SET (the set's leagues and year), not by the alphabet. The set's leagues
+// are the NB `leagues` rows on its League list (`selectorOptions.leagueIds`, any
+// of them; a set under a real sport is born with the sport's league, which is
+// how `tpr-<worker>` gets Major League Baseball), no longer a free-text feature.
+// Four tiers:
+//   1. in one of the set's leagues AND active in the set's year
 //   2. in a league whose level is "minor" AND active in the set's year
-//   3. in the set's league but NOT active that year (closed era)
+//   3. in one of the set's leagues but NOT active that year (closed era)
 //   4. everything else
 // Within a tier: prefix match first, then A-Z.
 //
@@ -14,8 +18,8 @@
 //   QY  a new MINOR league (created inline), from 2000    -> tier 2
 //   QX  Major League Baseball, 1900-1957                   -> tier 3
 //   QW  no league, from 1958                               -> tier 4
-// "Major League Baseball" is the seed's row (no sport default since NEO-331,
-// so Z and X PICK it; this spec never creates it). Which seed writes it
+// "Major League Baseball" is the seed's row (Z and X PICK it; this spec never
+// creates it). Which seed writes it
 // depends on the preview (NEO-330): WITH the reference catalogue (CI,
 // NB_REFERENCE_BUNDLE set) it is the catalogue's row, level Major,
 // abbreviation "MLB", imported before setup and the only league whose name,

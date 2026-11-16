@@ -13,12 +13,15 @@
  *   4. Removing the last league saves [] and says "Cleared League".
  *   5. Below the set, a row with no list of its own shows the inherited one
  *      (dashed, and said in words naming the row it comes from); changing it
- *      saves an own list; "Use the set's leagues" saves [] to return.
+ *      saves an own list and says so; "Use the set's leagues" ("Use the
+ *      leagues above" from a nearer row) saves [] to return, and so does any
+ *      change that leaves the row's list the same as the one above.
  *   6. A refusal goes to onFailed and the chips snap back to the server's.
  *   7. Twelve is the cap; the field says so instead of offering more.
  *
- * Convex is module-mocked: `useQuery` serves `currentData`, `useMutation`
- * returns `mockSetLeagues`. The Autocomplete is the real primitive.
+ * Convex is module-mocked: `useQuery` serves `currentData` for the row and
+ * `parentData` for its parent (the list above), `useMutation` returns
+ * `mockSetLeagues`. The Autocomplete is the real primitive.
  */
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -37,13 +40,18 @@ vi.mock("../../convex/_generated/api", () => ({
 
 const mockSetLeagues = vi.fn();
 let currentData: unknown;
+let parentData: unknown;
+/** What a below-the-set row's effective list becomes when it saves []. */
+let clearTo: unknown[] = [];
 const queryArgs: unknown[] = [];
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (ref === "selectorOptions.getSelectorOptionLeagues") {
       queryArgs.push(args);
-      return currentData;
+      if (args === "skip") return undefined;
+      const id = (args as { selectorOptionId: string }).selectorOptionId;
+      return id === "row-1" ? currentData : parentData;
     }
     return undefined;
   },
@@ -92,9 +100,9 @@ function data(overrides: Partial<{
 }
 
 const ANCESTORS = [
-  { _id: "sport" as unknown as Id<"selectorOptions">, value: "Baseball" },
-  { _id: SET_ID, value: "2024 Bowman" },
-  { _id: ROW_ID, value: "Prospects" },
+  { _id: "sport" as unknown as Id<"selectorOptions">, value: "Baseball", level: "sport" },
+  { _id: SET_ID, value: "2024 Bowman", level: "setName" },
+  { _id: ROW_ID, value: "Prospects", level: "insert" },
 ];
 
 function renderRow(props: Partial<Parameters<typeof SetLeagueRow>[0]> = {}) {
@@ -135,7 +143,7 @@ function serverSaves() {
       [...before.sportLeagues, ...before.effective].map((l) => [l._id, l]),
     );
     const own = leagueIds.length > 0 ? leagueIds.map((id) => byId.get(id)!) : null;
-    currentData = { ...before, own, effective: own ?? [] };
+    currentData = { ...before, own, effective: own ?? clearTo };
     return null;
   });
 }
@@ -145,6 +153,8 @@ beforeEach(() => {
   queryArgs.length = 0;
   serverSaves();
   currentData = data();
+  parentData = undefined;
+  clearTo = [];
 });
 
 afterEach(() => {
@@ -171,9 +181,15 @@ describe("SetLeagueRow — pure helpers", () => {
 });
 
 describe("SetLeagueRow — reading", () => {
-  it("asks for this row's leagues", () => {
+  it("asks for this row's leagues, and on the set nothing above it", () => {
     renderRow();
     expect(queryArgs[0]).toEqual({ selectorOptionId: ROW_ID });
+    expect(queryArgs).toContain("skip");
+  });
+
+  it("below the set, it also reads the parent's list", () => {
+    renderRow({ levelLabel: "Insert", isSet: false });
+    expect(queryArgs).toContainEqual({ selectorOptionId: SET_ID });
   });
 
   it("says it is loading until the answer arrives", () => {
@@ -209,6 +225,12 @@ describe("SetLeagueRow — reading", () => {
     expect(screen.queryByRole("button", { name: SET_LEAGUE_LABELS.useInherited })).toBeNull();
   });
 
+  it("a set with no league yet says why to add one", () => {
+    currentData = data({ own: null, effective: [] });
+    renderRow();
+    expect(screen.getByText("No league yet. Add one so team pickers know where to look.")).toBeTruthy();
+  });
+
   it("a sport with no leagues says where to add them", () => {
     currentData = data({ own: null, effective: [], sportLeagues: [] });
     renderRow();
@@ -219,7 +241,7 @@ describe("SetLeagueRow — reading", () => {
 });
 
 describe("SetLeagueRow — adding", () => {
-  it("focus opens the sport's leagues not already here, major first", () => {
+  it("focus opens the sport's leagues not already here, under Major leagues then More leagues", () => {
     renderRow();
     fireEvent.focus(addField());
     expect(optionNames()).toEqual([
@@ -227,6 +249,12 @@ describe("SetLeagueRow — adding", () => {
       "International LeagueIL",
       "Pacific Coast LeaguePCL",
     ]);
+    const major = screen.getByRole("group", { name: "Major leagues" });
+    const more = screen.getByRole("group", { name: "More leagues" });
+    expect(within(major).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Nippon Professional BaseballNPB",
+    ]);
+    expect(within(more).getAllByRole("option")).toHaveLength(2);
   });
 
   it("typing narrows; Enter adds the highlighted one, saves the whole list and clears the field", async () => {
@@ -371,8 +399,15 @@ describe("SetLeagueRow — removing", () => {
 });
 
 describe("SetLeagueRow — below the set", () => {
+  const SET_LIST = [MLB, NPB];
   const inherited = () =>
-    data({ own: null, effective: [MLB, NPB], inheritedFrom: SET_ID });
+    data({ own: null, effective: SET_LIST, inheritedFrom: SET_ID });
+
+  beforeEach(() => {
+    // The set's own list, as the parent row answers it.
+    parentData = data({ own: SET_LIST });
+    clearTo = SET_LIST;
+  });
 
   it("shows the inherited leagues as inherited, naming the row they come from", () => {
     currentData = inherited();
@@ -380,11 +415,12 @@ describe("SetLeagueRow — below the set", () => {
     const list = screen.getByRole("list", { name: "Leagues from above" });
     const chips = within(list).getAllByRole("listitem");
     expect(chips).toHaveLength(2);
-    // Shape, not only colour: a dashed outline.
+    // Shape, not only colour: a dashed outline, in ink-3 for 3:1 in dark.
     expect(chips[0].className).toContain("border-dashed");
+    expect(chips[0].className).toContain("border-ink-3");
     expect(
       screen.getByText(
-        "Using 2024 Bowman's leagues. Change them here to give this insert its own list.",
+        "Using the set's leagues. Adding or removing one here gives this insert its own list.",
       ),
     ).toBeTruthy();
     expect(screen.queryByRole("button", { name: SET_LEAGUE_LABELS.useInherited })).toBeNull();
@@ -405,13 +441,52 @@ describe("SetLeagueRow — below the set", () => {
     });
   });
 
-  it("taking one of two inherited leagues away starts an own list of the other", async () => {
+  it("starting an own list says so", async () => {
     currentData = inherited();
-    renderRow({ levelLabel: "Parallel", isSet: false });
+    const { onSaved } = renderRow({ levelLabel: "Insert", isSet: false });
+    fireEvent.focus(addField());
     await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Remove Nippon Professional Baseball" }));
+      fireEvent.mouseDown(screen.getByRole("option", { name: /^International League/ }));
+    });
+    expect(onSaved).toHaveBeenCalledWith("Saved League. This insert has its own leagues now.");
+    expect(screen.getByText("This insert has its own leagues instead of the set's leagues.")).toBeTruthy();
+  });
+
+  it("taking the added one away again goes back to the set's list rather than keeping a copy", async () => {
+    currentData = data({ own: [MLB, NPB, IL] });
+    const { onSaved } = renderRow({ levelLabel: "Insert", isSet: false });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Remove International League" }));
+    });
+    expect(mockSetLeagues).toHaveBeenCalledWith({ selectorOptionId: ROW_ID, leagueIds: [] });
+    expect(onSaved).toHaveBeenCalledWith("Back to the set's leagues");
+    expect(screen.getByRole("list", { name: "Leagues from above" })).toBeTruthy();
+    expect(
+      screen.getByText("Using the set's leagues. Adding or removing one here gives this insert its own list."),
+    ).toBeTruthy();
+  });
+
+  it("the same leagues in another order are still the set's", async () => {
+    currentData = data({ own: [NPB, IL, MLB] });
+    renderRow({ levelLabel: "Insert", isSet: false });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Remove International League" }));
+    });
+    expect(mockSetLeagues).toHaveBeenCalledWith({ selectorOptionId: ROW_ID, leagueIds: [] });
+  });
+
+  it("taking one of two inherited leagues away starts an own list of the other, and its × says so first", async () => {
+    currentData = inherited();
+    const { onSaved } = renderRow({ levelLabel: "Parallel", isSet: false });
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", { name: "Remove Nippon Professional Baseball from this parallel" }),
+      );
     });
     expect(mockSetLeagues).toHaveBeenCalledWith({ selectorOptionId: ROW_ID, leagueIds: [MLB._id] });
+    expect(onSaved).toHaveBeenCalledWith("Saved League. This parallel has its own leagues now.");
+    // Its own now: the plain × name.
+    expect(screen.getByRole("button", { name: "Remove Major League Baseball" })).toBeTruthy();
   });
 
   it("a lone inherited league has no ×: an empty list is how a row inherits, so it would change nothing", () => {
@@ -422,6 +497,7 @@ describe("SetLeagueRow — below the set", () => {
   });
 
   it("nothing above either: says how to add one here or on the set", () => {
+    parentData = data({ own: null, effective: [] });
     currentData = data({ own: null, effective: [] });
     renderRow({ levelLabel: "Variant", isSet: false });
     expect(screen.queryByRole("list")).toBeNull();
@@ -437,12 +513,14 @@ describe("SetLeagueRow — below the set", () => {
     currentData = data({ own: [IL], effective: [IL] });
     const { onSaved } = renderRow({ levelLabel: "Insert", isSet: false });
     expect(screen.getByRole("list", { name: "This row's leagues" })).toBeTruthy();
-    expect(screen.getByText("This insert has its own leagues.")).toBeTruthy();
+    expect(screen.getByText("This insert has its own leagues instead of the set's leagues.")).toBeTruthy();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: SET_LEAGUE_LABELS.useInherited }));
     });
     expect(mockSetLeagues).toHaveBeenCalledWith({ selectorOptionId: ROW_ID, leagueIds: [] });
-    expect(onSaved).toHaveBeenCalledWith("Cleared League");
+    expect(onSaved).toHaveBeenCalledWith("Back to the set's leagues");
+    // The set's chips show at once, inherited.
+    expect(within(screen.getByRole("list", { name: "Leagues from above" })).getAllByRole("listitem")).toHaveLength(2);
     await act(async () => {
       vi.runAllTimers();
     });
@@ -471,5 +549,53 @@ describe("SetLeagueRow — overlapping saves", () => {
     expect(onSaved).toHaveBeenCalledTimes(1);
     expect(onSaved).toHaveBeenCalledWith("Saved League");
     await waitFor(() => expect(mockSetLeagues).toHaveBeenCalledTimes(2));
+  });
+});
+
+describe("SetLeagueRow — a list from a nearer row than the set", () => {
+  const TYPE_ID = "type-1" as unknown as Id<"selectorOptions">;
+  const CHAIN = [
+    { _id: "sport" as unknown as Id<"selectorOptions">, value: "Baseball", level: "sport" },
+    { _id: SET_ID, value: "2024 Bowman", level: "setName" },
+    { _id: TYPE_ID, value: "Chrome Prospects", level: "variantType" },
+    { _id: ROW_ID, value: "Refractor", level: "parallel" },
+  ];
+
+  beforeEach(() => {
+    // The variant type has its own list; this parallel's parent is that type.
+    parentData = data({ own: [IL, PCL] });
+    clearTo = [IL, PCL];
+  });
+
+  it("inheriting: the hint names the row, not the set", () => {
+    currentData = data({ own: null, effective: [IL, PCL], inheritedFrom: TYPE_ID });
+    renderRow({ levelLabel: "Parallel", isSet: false, ancestors: CHAIN });
+    expect(queryArgs).toContainEqual({ selectorOptionId: TYPE_ID });
+    expect(
+      screen.getByText(
+        "Using the leagues from Chrome Prospects. Adding or removing one here gives this parallel its own list.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("an own list goes back with \"Use the leagues above\", and the toast names the row", async () => {
+    currentData = data({ own: [MLB] });
+    const { onSaved } = renderRow({ levelLabel: "Parallel", isSet: false, ancestors: CHAIN });
+    expect(
+      screen.getByText("This parallel has its own leagues instead of the leagues from Chrome Prospects."),
+    ).toBeTruthy();
+    expect(screen.queryByRole("button", { name: SET_LEAGUE_LABELS.useInherited })).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: SET_LEAGUE_LABELS.useAbove }));
+    });
+    expect(mockSetLeagues).toHaveBeenCalledWith({ selectorOptionId: ROW_ID, leagueIds: [] });
+    expect(onSaved).toHaveBeenCalledWith("Back to the leagues from Chrome Prospects");
+  });
+
+  it("a parent that inherits from the set points the way back at the set", () => {
+    parentData = data({ own: null, effective: [MLB], inheritedFrom: SET_ID });
+    currentData = data({ own: [IL] });
+    renderRow({ levelLabel: "Parallel", isSet: false, ancestors: CHAIN });
+    expect(screen.getByRole("button", { name: SET_LEAGUE_LABELS.useInherited })).toBeTruthy();
   });
 });

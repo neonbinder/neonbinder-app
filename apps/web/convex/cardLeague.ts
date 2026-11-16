@@ -23,10 +23,14 @@
  *    patch after it).
  *  - **Team change**: `syncCardTeamLinks` (cardTeamLinks.ts), the one seam
  *    every `teamOnCardIds` writer passes, calls `settleCardLeague` whenever
- *    the card's team set actually changed. Rule B (coordinator default): a
- *    league the card already carries survives the change while it is still the
- *    league of one of the card's teams (an admin's pick on a two-league card
- *    stays when one team is swapped); otherwise it is re-derived.
+ *    the card's team set actually changed, and the league is ALWAYS re-derived
+ *    with `deriveCardLeagueId` (Jason: "changing the team must update the
+ *    saved league"). Teams in two leagues → blank, so the panel's helper line
+ *    shows and eBay holds the listing; the order the teams were added never
+ *    picks one. An admin's pick (`updateCard.leagueId`) holds only until the
+ *    card's teams change. (NEO-569 dropped an earlier "keep the current league
+ *    while it is still one of the teams'" rule: it let team order decide a
+ *    two-league card's eBay League.)
  *  - **A team's own league changes**: `recomputeTeamCards`, chunked over that
  *    team's `cardTeamLinks`, with the NEO-24 follow rule — a card follows when
  *    its league is absent or equals the team's PREVIOUS league, and it is
@@ -88,22 +92,6 @@ export function deriveCardLeagueId<L extends string>(input: {
   if (teamLeagueIds.some((id) => id === null)) return undefined;
   const distinct = new Set(teamLeagueIds as ReadonlyArray<L>);
   return distinct.size === 1 ? [...distinct][0] : undefined;
-}
-
-/**
- * Rule B — the league a card carries after its team set changed: the one it
- * already has when that is still one of its teams' leagues, else the derived
- * one. With every team in one league the two are the same answer.
- */
-export function settleCardLeagueId<L extends string>(input: {
-  current: L | undefined;
-  teamLeagueIds: ReadonlyArray<L | null>;
-  setLeagueIds: ReadonlyArray<L>;
-}): L | undefined {
-  if (input.current !== undefined && input.teamLeagueIds.includes(input.current)) {
-    return input.current;
-  }
-  return deriveCardLeagueId(input);
 }
 
 export type CardLeagueBlankReason = "noTeam" | "teamsInDifferentLeagues" | "teamWithoutLeague";
@@ -175,7 +163,8 @@ export async function deriveNewCardLeagueId(
 export type LeagueSettleCard = Pick<Doc<"cardChecklist">, "_id" | "selectorOptionId" | "leagueId">;
 
 /**
- * Rule B's answer for a stored card about to carry `teamOnCardIds`, without
+ * The league a stored card takes once it carries `teamOnCardIds` — always
+ * `deriveCardLeagueId`, whatever it carried before — without
  * writing it — for a caller that folds the league into its own patch (the
  * set-level team cascade) and then hands the seam the updated card, so the
  * seam sees nothing left to change.
@@ -191,11 +180,11 @@ export async function settledCardLeagueId(
     teamLeagueIds.length === 0
       ? await effectiveSetLeagueIds(ctx, card.selectorOptionId, cache.setLeagues)
       : [];
-  return settleCardLeagueId({ current: card.leagueId, teamLeagueIds, setLeagueIds });
+  return deriveCardLeagueId({ teamLeagueIds, setLeagueIds });
 }
 
 /**
- * Settle a stored card's league after its team set changed (rule B), patching
+ * Re-derive a stored card's league after its team set changed, patching
  * only when the answer differs from what the card carries. Returns the league
  * the card now carries. Called by `syncCardTeamLinks`; nothing else should
  * need it.

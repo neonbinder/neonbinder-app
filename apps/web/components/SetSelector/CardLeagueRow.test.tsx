@@ -36,6 +36,7 @@ vi.mock("convex/react", () => ({
 import CardLeagueRow, {
   CARD_LEAGUE_LABEL,
   cardLeagueBlankCopy,
+  cardLeagueDescription,
   cardLeagueOptions,
 } from "./CardLeagueRow";
 import type { LeagueSummary } from "./SetLeagueRow";
@@ -108,13 +109,23 @@ describe("CardLeagueRow — pure helpers", () => {
     expect(cardLeagueOptions([AL, NL], [IL], "zzz")).toEqual([]);
   });
 
-  it("says why it is blank, and that listings wait", () => {
+  it("says why it is blank, and that listing waits", () => {
     expect(cardLeagueBlankCopy("teamsInDifferentLeagues")).toBe(
-      "No league yet: its teams play in different leagues. Pick the one this card counts for. Listings are held back until it has one.",
+      "Its teams play in different leagues. Pick the one this card counts for. It can't list until it has one.",
     );
-    expect(cardLeagueBlankCopy("noTeam")).toMatch(/^No league yet: this card has no team/);
-    expect(cardLeagueBlankCopy("teamWithoutLeague")).toMatch(/Admin → Teams/);
-    expect(cardLeagueBlankCopy(null)).toBe("No league yet. Pick one. Listings are held back until it has one.");
+    expect(cardLeagueBlankCopy("noTeam")).toBe("No team, so no league. Pick one. It can't list until it has one.");
+    expect(cardLeagueBlankCopy("teamWithoutLeague")).toBe(
+      "One of its teams has no league. Pick one, or give that team its league in Admin → Teams. It can't list until it has one.",
+    );
+    expect(cardLeagueBlankCopy(null)).toBe("No league yet. Pick one. It can't list until it has one.");
+  });
+
+  it("an option's second line skips an abbreviation that only repeats the name", () => {
+    const ncaa = lg("lg-ncaa", "NCAA", "NCAA");
+    expect(cardLeagueDescription(ncaa, true)).toBe("in this set");
+    expect(cardLeagueDescription(ncaa, false)).toBeUndefined();
+    expect(cardLeagueDescription(AL, true)).toBe("AL, in this set");
+    expect(cardLeagueDescription(IL, false)).toBe("IL");
   });
 });
 
@@ -140,7 +151,7 @@ describe("CardLeagueRow", () => {
     // The highlight starts on the current answer, so Enter re-confirms it.
     expect(opts[1].getAttribute("aria-selected")).toBe("true");
     // No why-blank line while it has one.
-    expect(screen.queryByText(/^No league yet/)).toBeNull();
+    expect(screen.queryByText(/can't list until it has one/)).toBeNull();
   });
 
   it("a pick commits that league", async () => {
@@ -219,7 +230,7 @@ describe("CardLeagueRow", () => {
     currentData = data({ current: null, blankReason: "teamsInDifferentLeagues" });
     renderRow();
     expect(field().value).toBe("");
-    const help = screen.getByText(/^No league yet: its teams play in different leagues\./);
+    const help = screen.getByText(/^Its teams play in different leagues\./);
     expect(field().getAttribute("aria-describedby")).toBe(help.id);
     fireEvent.focus(field());
     expect(options()[0].textContent).toBe("✓No league");

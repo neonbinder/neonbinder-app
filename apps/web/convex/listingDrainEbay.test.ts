@@ -850,6 +850,24 @@ describe("eBay drain: League (NEO-569)", () => {
     expect(ebay.writes()).toEqual([]);
   });
 
+  test("a new listing held noLeague is created with the League aspect once the card gets a league, and the problem clears", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    const leagueId = await addLeague(s, v.sportId, { name: "Major League Baseball", abbreviation: "MLB" });
+    await drain(s);
+    expect((await record(s, v.variantId))?.problems).toEqual([{ cardId: card, reason: "noLeague" }]);
+    expect(ebay.writes()).toEqual([]);
+    expect(await linkOf(s, card, "NM")).toBeFalsy();
+
+    await s.t.run((ctx) => ctx.db.patch(card, { leagueId }));
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+    await drain(s);
+
+    expect(ebay.items.get(`NB2-${card}-NM`).product.aspects.League).toEqual(["MLB"]);
+    expect((await linkOf(s, card, "NM"))?.status).toBe("live");
+    expect((await record(s, v.variantId))?.problems).toEqual([]);
+  });
+
   test("noLeague comes before a missing required aspect: one reason per card", async () => {
     const s = await setup();
     const { v, card } = await oneCard(s);
