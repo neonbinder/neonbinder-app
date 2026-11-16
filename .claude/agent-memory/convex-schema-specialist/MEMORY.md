@@ -31,3 +31,5 @@
 - [Card-derived table checklist](card-derived-table-checklist.md) — strict getCardChecklist returns, removeCardRow, subtree wipe graph, E2E reset drain, pin test, parallel copy
 - [Version-stamp rewind pattern](version-stamp-rewind-pattern.md) — "absent = old version" rewinds: stamp at insert, give-up path for page-capped reads, never move the stored cursor back
 - [Filter after take caps read rows](filter-after-take-caps-read-rows.md) — capped read + in-memory filter hides shown rows; index the filter field; undefined sorts before numbers, so "unknown or >0" = two ranges
+- [Derived card field from an entity fact](derived-card-field-from-entity-fact.md) — settle at the link seam (id→doc param), compute pre-insert, follow-rule recompute off the live entity
+- [Retiring a features key](retiring-a-features-key.md) — every mint/copy point of a features key incl. backfillCardFeatures seed list; strip leaves sport rows

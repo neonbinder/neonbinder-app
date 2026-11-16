@@ -11,8 +11,9 @@ import { api } from "@/convex/_generated/api";
 //   /testing/seed-dashboard?syncRecovered=1 that set after a later sync went through (it replaces a failed one: gone from the dashboard)
 //   /testing/seed-dashboard?syncHeld=noLink  one set whose last sync went through but held a card back for
 //                                            that reason (NEO-536: noLink, sharedLink, numberMismatch, notOnSheet,
-//                                            rejected or missingAspect can be reported; any other reason is a
-//                                            fix the collector makes), per marketplace
+//                                            rejected, missingAspect or noLeague can be reported; any other reason
+//                                            is a fix the collector makes), per marketplace; noLeague on eBay only
+//                                            (NEO-569: BuySportsCards never holds a card for its league)
 //   /testing/seed-dashboard?clear=1         take every seed above back off
 // (combine them: ?sale=1&syncError=1&syncPending=1), then it forwards to
 // `redirect` (default /dashboard; only a path on this site, see
@@ -45,6 +46,7 @@ export const SYNC_HELD_REASONS = [
   "missingAspect",
   "noPhoto",
   "setupIncomplete",
+  "noLeague",
 ] as const;
 export type SyncHeldReason = (typeof SYNC_HELD_REASONS)[number];
 

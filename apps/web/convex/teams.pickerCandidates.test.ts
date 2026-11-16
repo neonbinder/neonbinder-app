@@ -3,8 +3,8 @@
  *
  * The pure ordering is `lib/teams/team-rank.test.ts`; this file is everything
  * the SERVER adds to it: reading the set context off the selectorOptions tree
- * (the League feature, resolved by name OR alias, and the year from the year
- * ancestor), the three candidate legs, the typed-text filter over them, the
+ * (NEO-569: the context row's effective `leagueIds`, kept to the searched
+ * sport, and the year from the year ancestor), the three candidate legs, the typed-text filter over them, the
  * browse window, and the gates.
  *
  * **convex-test's search is not the backend.** Its `withSearchIndex` returns
@@ -104,8 +104,11 @@ async function seedTeam(
 }
 
 /**
- * sport → year → manufacturer → setName. The set carries the League feature;
- * `year` is the year row's label verbatim ("2024", "2025-26").
+ * sport → year → manufacturer → setName. The set carries `leagueIds`
+ * (NEO-569): `league` names them the way a person would ("MLB"), and the
+ * helper looks up every league of the SET'S sport answering to it by name,
+ * alias or abbreviation — the fixture's shorthand, not something the server
+ * does any more. `year` is the year row's label verbatim ("2024", "2025-26").
  */
 async function seedSet(
   t: T,
@@ -135,13 +138,29 @@ async function seedSet(
       children: [],
       lastUpdated: 1,
     });
+    const wanted = league?.trim().toLowerCase();
+    const leagueIds = wanted
+      ? (
+          await ctx.db
+            .query("leagues")
+            .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+            .collect()
+        )
+          .filter(
+            (row) =>
+              row.name.toLowerCase() === wanted ||
+              row.abbreviation?.toLowerCase() === wanted ||
+              (row.aliases ?? []).some((alias) => alias.toLowerCase() === wanted),
+          )
+          .map((row) => row._id)
+      : [];
     const setId = await ctx.db.insert("selectorOptions", {
       level: "setName",
       value: "Series One",
       parentId: manufacturerId,
       platformData: {},
       children: [],
-      ...(league ? { features: { league } } : {}),
+      ...(leagueIds.length > 0 ? { leagueIds } : {}),
       lastUpdated: 1,
     });
     return { yearId, setId };
@@ -175,7 +194,7 @@ async function seedFourTiers(t: T, sportId: SelId) {
 }
 
 describe("teams.pickerCandidates — the set context", () => {
-  test("resolves features.league 'MLB' through an ALIAS and reads the year off the year ancestor", async () => {
+  test("ranks by the set's leagueIds and reads the year off the year ancestor", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t);
     await seedFourTiers(t, baseball);
@@ -206,10 +225,9 @@ describe("teams.pickerCandidates — the set context", () => {
 
     const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: variantId });
 
-    // The year resolved (the closed era is tier 3, not tier 1). The league is
-    // NOT inherited from the set: only the context row's own feature counts, so
-    // with none there is no league and the row is tier 4.
-    expect(summary(rows)).toEqual(["RK Old:4"]);
+    // The year resolved (the closed era is tier 3, not tier 1). NEO-569: the
+    // variant type has no leagues of its own, so it answers with its set's.
+    expect(summary(rows)).toEqual(["RK Old:3"]);
   });
 
   test("a year label like '2025-26' reads as 2025", async () => {
@@ -253,7 +271,7 @@ describe("teams.pickerCandidates — the set context", () => {
     expect(summary(rows)).toEqual(["RK Closed:1"]);
   });
 
-  test("a League feature that names no league leaves tiers 1 and 3 empty", async () => {
+  test("a set with no leagues leaves tiers 1 and 3 empty", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t);
     const mlb = await seedLeague(t, baseball, "Major League Baseball", "major");
@@ -293,90 +311,73 @@ describe("teams.pickerCandidates — the set context", () => {
   });
 });
 
-describe("teams.pickerCandidates — the abbreviation fallback", () => {
-  // Fresh data: the wizard's New League step stores the sport's short form as
-  // `abbreviation` and seeds no alias, so the name/alias lookup misses "MLB".
-  test("a league whose ABBREVIATION is 'MLB' (no alias) resolves the set's league", async () => {
+describe("teams.pickerCandidates — NEO-569: a set's leagues are ids, any-of", () => {
+  test("a team in ANY of the set's leagues is in L", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t);
-    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major", undefined, "MLB");
+    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major");
+    const ncaa = await seedLeague(t, baseball, "NCAA Division I", "college");
     const aaa = await seedLeague(t, baseball, "International League", "minor");
-    await seedTeam(t, baseball, "RK Z", { leagueId: mlb, yearsActive: { from: 1958 } });
-    await seedTeam(t, baseball, "RK Y", { leagueId: aaa, yearsActive: { from: 2000 } });
-    await seedTeam(t, baseball, "RK X", { leagueId: mlb, yearsActive: { from: 1900, to: 1957 } });
-    await seedTeam(t, baseball, "RK W", { yearsActive: { from: 1958 } });
-    const { setId } = await seedSet(t, baseball, "2024", "mlb");
+    await seedTeam(t, baseball, "RK Mlb", { leagueId: mlb, yearsActive: { from: 1958 } });
+    await seedTeam(t, baseball, "RK Ncaa", { leagueId: ncaa, yearsActive: { from: 1958 } });
+    await seedTeam(t, baseball, "RK Aaa", { leagueId: aaa, yearsActive: { from: 1990 } });
+    const { setId } = await seedSet(t, baseball, "2024", null);
+    await t.run(async (ctx) => ctx.db.patch(setId, { leagueIds: [mlb, ncaa] }));
 
     const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: setId });
 
-    expect(summary(rows)).toEqual(["RK Z:1", "RK Y:2", "RK X:3", "RK W:4"]);
+    expect(summary(rows)).toEqual(["RK Mlb:1", "RK Ncaa:1", "RK Aaa:2"]);
   });
 
-  test("the abbreviation fallback serves browse too", async () => {
+  test("a deeper row's own leagues win over its set's (nearest wins, never merged)", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t);
-    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major", undefined, "MLB");
-    await seedTeam(t, baseball, "AA Other", { yearsActive: { from: 1958 } });
-    await seedTeam(t, baseball, "ZZ Club", { leagueId: mlb, yearsActive: { from: 1958 } });
+    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major", ["MLB"]);
+    const ncaa = await seedLeague(t, baseball, "NCAA Division I", "college");
+    await seedTeam(t, baseball, "RK Mlb", { leagueId: mlb, yearsActive: { from: 1958 } });
+    await seedTeam(t, baseball, "RK Ncaa", { leagueId: ncaa, yearsActive: { from: 1958 } });
     const { setId } = await seedSet(t, baseball, "2024", "MLB");
+    const insertId = await t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        parentId: setId,
+        platformData: {},
+        children: [],
+        leagueIds: [ncaa],
+        lastUpdated: 1,
+      }),
+    );
+
+    const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: insertId });
+
+    expect(summary(rows)).toEqual(["RK Ncaa:1", "RK Mlb:4"]);
+  });
+
+  test("the league leg shares ONE budget across the set's leagues, so every league still leads", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major");
+    const ncaa = await seedLeague(t, baseball, "NCAA Division I", "college");
+    await seedTeam(t, baseball, "Bears Ncaa", { leagueId: ncaa, yearsActive: { from: 1958 } });
+    await seedTeam(t, baseball, "Bears Mlb", { leagueId: mlb, yearsActive: { from: 1958 } });
+    const { setId } = await seedSet(t, baseball, "2024", null);
+    await t.run(async (ctx) => ctx.db.patch(setId, { leagueIds: [ncaa, mlb] }));
 
     const rows = await pick(t, { query: "", sportId: baseball, contextOptionId: setId });
 
-    expect(summary(rows)).toEqual(["ZZ Club:1", "AA Other:4"]);
+    expect(summary(rows)).toEqual(["Bears Mlb:1", "Bears Ncaa:1"]);
   });
 
-  test("two leagues sharing the abbreviation give no league: no tier 1 or 3, never the first", async () => {
-    const t = convexTest(schema, modules);
-    const baseball = await seedSport(t);
-    const mlb = await seedLeague(t, baseball, "Major League Baseball", "major", undefined, "MLB");
-    const other = await seedLeague(t, baseball, "Minor League Baseball", "major", undefined, "MLB");
-    await seedTeam(t, baseball, "RK Mlb", { leagueId: mlb, yearsActive: { from: 1958 } });
-    await seedTeam(t, baseball, "RK MlbOld", { leagueId: mlb, yearsActive: { from: 1900, to: 1957 } });
-    await seedTeam(t, baseball, "RK Other", { leagueId: other, yearsActive: { from: 1958 } });
-    const { setId } = await seedSet(t, baseball, "2024", "MLB");
-
-    const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: setId });
-
-    expect(summary(rows)).toEqual(["RK Mlb:4", "RK MlbOld:4", "RK Other:4"]);
-  });
-
-  test("a name or alias match wins over another league's abbreviation", async () => {
-    const t = convexTest(schema, modules);
-    const baseball = await seedSport(t);
-    // Seeded first, so a lookup that took abbreviations first-come would land here.
-    const byAbbr = await seedLeague(t, baseball, "Mexican League", "major", undefined, "MLB");
-    const byAlias = await seedLeague(t, baseball, "Major League Baseball", "major", ["MLB"]);
-    await seedTeam(t, baseball, "RK Alias", { leagueId: byAlias, yearsActive: { from: 1958 } });
-    await seedTeam(t, baseball, "RK Abbr", { leagueId: byAbbr, yearsActive: { from: 1958 } });
-    const { setId } = await seedSet(t, baseball, "2024", "MLB");
-
-    const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: setId });
-
-    expect(summary(rows)).toEqual(["RK Alias:1", "RK Abbr:4"]);
-  });
-
-  test("a league NAMED like another's abbreviation wins over that abbreviation", async () => {
-    const t = convexTest(schema, modules);
-    const baseball = await seedSport(t);
-    const byAbbr = await seedLeague(t, baseball, "Major League Baseball", "major", undefined, "XL");
-    const byName = await seedLeague(t, baseball, "XL", "major");
-    await seedTeam(t, baseball, "RK Named", { leagueId: byName, yearsActive: { from: 1958 } });
-    await seedTeam(t, baseball, "RK Abbr", { leagueId: byAbbr, yearsActive: { from: 1958 } });
-    const { setId } = await seedSet(t, baseball, "2024", "XL");
-
-    const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: setId });
-
-    expect(summary(rows)).toEqual(["RK Named:1", "RK Abbr:4"]);
-  });
-
-  test("another sport's league with the abbreviation is never consulted", async () => {
+  test("a set league of another sport is never ranked by", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t);
     const football = await seedSport(t, "Football", "FB");
-    await seedLeague(t, football, "Made-up League Ball", "major", undefined, "MLB");
+    const nfl = await seedLeague(t, football, "National Football League", "major");
     const mlb = await seedLeague(t, baseball, "Major League Baseball", "major");
     await seedTeam(t, baseball, "RK Mlb", { leagueId: mlb, yearsActive: { from: 1958 } });
-    const { setId } = await seedSet(t, baseball, "2024", "MLB");
+    const { setId } = await seedSet(t, baseball, "2024", null);
+    await t.run(async (ctx) => ctx.db.patch(setId, { leagueIds: [nfl] }));
 
     const rows = await pick(t, { query: "RK", sportId: baseball, contextOptionId: setId });
 
@@ -999,8 +1000,8 @@ describe("teams.pickerCandidates — an unusable context gives no tier 1 or 3", 
       contextOptionId: setId,
     });
 
-    // The league is looked up in the SEARCHED sport by the set's own name, so
-    // a hockey set's "NHL" resolves to nothing in baseball: no tier 1 or 3.
+    // NEO-569: the set's leagues are kept to the SEARCHED sport, so a hockey
+    // set's NHL is nothing in baseball: no tier 1 or 3.
     expect(rows.map((r) => r.tier)).not.toContain(1);
     expect(rows.map((r) => r.tier)).not.toContain(3);
   });
@@ -1009,14 +1010,15 @@ describe("teams.pickerCandidates — an unusable context gives no tier 1 or 3", 
 describe("teams.pickerCandidates — a set built the real way (NEO-518)", () => {
   /**
    * The wizard's "Other team…" field passes the node the cards are saved
-   * under — a set or one of its variant rows — and that row's OWN
-   * `features.league` is what resolves L (nothing walks up for the league).
-   * So this tree is built through `addCustomSelectorOption`, the real
-   * creation path: the sport row is born with `league: "MLB"`
-   * (`deriveOwnLevelFeatures`) and every child copies it down at its own
-   * creation. A hand-seeded `features` would prove nothing about that.
+   * under — a set or one of its variant rows — and that row's effective
+   * `leagueIds` are L (NEO-569: the variant answers with its set's). So this
+   * tree is built through `addCustomSelectorOption`, the real creation path:
+   * the set is born with its sport's major league (`bornSetLeagueIds`, which
+   * finds the sport's configured league by name). A hand-seeded `leagueIds`
+   * would prove nothing about that. The leagues are seeded before the set,
+   * as they are in a real deployment.
    */
-  async function seedEliteSet(t: T) {
+  async function seedEliteSet(t: T, beforeSet: (sportId: SelId) => Promise<void>) {
     const asAdmin = t.withIdentity(USER);
     const add = (level: string, value: string, parentId?: SelId) =>
       asAdmin.mutation(api.selectorOptions.addCustomSelectorOption, {
@@ -1025,6 +1027,7 @@ describe("teams.pickerCandidates — a set built the real way (NEO-518)", () => 
         ...(parentId ? { parentId } : {}),
       });
     const sportId = await add("sport", "Baseball");
+    await beforeSet(sportId);
     const yearId = await add("year", "2026", sportId);
     const brandId = await add("manufacturer", "Donruss", yearId);
     const setId = await add("setName", "Donruss Elite", brandId);
@@ -1034,7 +1037,7 @@ describe("teams.pickerCandidates — a set built the real way (NEO-518)", () => 
 
   async function seedHouston(t: T, sportId: SelId) {
     // Fresh-data shape: the New League step stores the short form as the
-    // abbreviation and seeds no alias, so "MLB" resolves by the fallback.
+    // abbreviation and seeds no alias.
     const mlb = await seedLeague(t, sportId, "Major League Baseball", "major", undefined, "MLB");
     const texas = await seedLeague(t, sportId, "Texas League", "minor");
     const ncaa = await seedLeague(t, sportId, "NCAA Division I", "college");
@@ -1063,8 +1066,7 @@ describe("teams.pickerCandidates — a set built the real way (NEO-518)", () => 
     "'houston' on a 2026 baseball set leads with the Astros, then minor leagues active that year (%s-level context)",
     async (level) => {
       const t = convexTest(schema, modules);
-      const { sportId, setId, baseId } = await seedEliteSet(t);
-      await seedHouston(t, sportId);
+      const { sportId, setId, baseId } = await seedEliteSet(t, (id) => seedHouston(t, id));
 
       const rows = await pick(t, {
         query: "houston",

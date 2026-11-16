@@ -58,6 +58,11 @@ import type {
   PhotoSide,
 } from "./data/types";
 import { heldBackNotice } from "./inventory/listing/copy";
+// NEO-569: the dashboard's Report, under a notice whose fix is the crew's.
+// Both are pure of the dashboard screen: a context and one form.
+import { useCrew } from "@/app/dashboard/screen/crew";
+import ReportToCrew from "@/app/dashboard/screen/ReportToCrew";
+import { isReportableSyncReason } from "@/lib/collection/sync-report";
 import { binderText, lineNames, lineSummary, lineWhat, type NamedBinder } from "./lineItems";
 import { useLineKeys } from "./lineKeys";
 import OwnCardNote from "./OwnCardNote";
@@ -232,6 +237,9 @@ export default function CardDetail({
   held?: HeldBack;
 }) {
   const api = usePageApi();
+  // NEO-569 — the crew is there only on the signed-in dashboard (the panel
+  // over Sync status); everywhere else this is null and no Report shows.
+  const crew = useCrew();
   const writes = useCollectionActions();
   const capabilities = useCapabilities();
   const containers = useContainers();
@@ -677,10 +685,24 @@ export default function CardDetail({
       </div>
 
       {held && (
-        <p className="flex items-start gap-2 rounded-md border border-notice-warn-rule bg-notice-warn-bg px-3 py-2 text-sm text-notice-warn-ink">
-          <ExclamationTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-          <span>{heldBackNotice(held.reason, held.platform)}</span>
-        </p>
+        <div>
+          <p className="flex items-start gap-2 rounded-md border border-notice-warn-rule bg-notice-warn-bg px-3 py-2 text-sm text-notice-warn-ink">
+            <ExclamationTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
+            <span>{heldBackNotice(held.reason, held.platform)}</span>
+          </p>
+          {/* NEO-569: a reason only the crew can fix (a missing league, a
+              link, a sheet row) is reported from here too, with the same
+              form and the same "Reported" line as Sync status, about this
+              card's set. Never an inline fix: a card's league is set by an
+              admin in the set builder's card panel. */}
+          {crew && isReportableSyncReason(held.reason) && (
+            <ReportToCrew
+              crew={crew}
+              set={{ setLabel: setLabel(card.set), marketplace: held.platform }}
+              variantId={card.variant.id}
+            />
+          )}
+        </div>
       )}
 
       <CopyList

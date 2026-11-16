@@ -801,6 +801,109 @@ describe("eBay drain: only what changed is sent", () => {
   });
 });
 
+describe("eBay drain: League (NEO-569)", () => {
+  /** A league in the card's sport; with `onCard`, the card carries it. */
+  async function addLeague(
+    s: S,
+    sportId: Id<"selectorOptions">,
+    league: { name: string; abbreviation?: string },
+    onCard?: Id<"cardChecklist">,
+  ) {
+    return s.t.run(async (ctx) => {
+      const leagueId = await ctx.db.insert("leagues", {
+        ...league,
+        nameNormalized: league.name.toLowerCase(),
+        sportId,
+        level: "major",
+        lastUpdated: NOW,
+      });
+      if (onCard) await ctx.db.patch(onCard, { leagueId });
+      return leagueId;
+    });
+  }
+
+  test("the card's league goes up as the League aspect: the abbreviation, else the name", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await addLeague(s, v.sportId, { name: "Major League Baseball", abbreviation: "MLB" }, card);
+    await drain(s);
+    expect(ebay.items.get(`NB2-${card}-NM`).product.aspects.League).toEqual(["MLB"]);
+    expect((await record(s, v.variantId))?.problems).toEqual([]);
+  });
+
+  test("a league with no abbreviation goes by its name", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await addLeague(s, v.sportId, { name: "Pacific Coast League" }, card);
+    await drain(s);
+    expect(ebay.items.get(`NB2-${card}-NM`).product.aspects.League).toEqual(["Pacific Coast League"]);
+  });
+
+  test("no league on the card while its sport has leagues: held back noLeague, nothing sent", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await addLeague(s, v.sportId, { name: "Major League Baseball", abbreviation: "MLB" });
+    await drain(s);
+    const rec = await record(s, v.variantId);
+    expect(rec?.problems).toEqual([{ cardId: card, reason: "noLeague" }]);
+    expect(rec?.counts).toMatchObject({ pushed: 0, skipped: 1 });
+    expect(ebay.writes()).toEqual([]);
+  });
+
+  test("noLeague comes before a missing required aspect: one reason per card", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await addLeague(s, v.sportId, { name: "Major League Baseball", abbreviation: "MLB" });
+    ebay.required = ["Sport", "League", "Team"];
+    await drain(s);
+    expect((await record(s, v.variantId))?.problems).toEqual([{ cardId: card, reason: "noLeague" }]);
+  });
+
+  test("a sport with no leagues at all lists without the aspect, as before", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await drain(s);
+    expect(ebay.items.get(`NB2-${card}-NM`).product.aspects.League).toBeUndefined();
+    expect((await record(s, v.variantId))?.problems).toEqual([]);
+  });
+
+  test("a live listing whose card has no league is held but never withdrawn", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await drain(s);
+    expect((await linkOf(s, card, "NM"))?.status).toBe("live");
+    ebay.calls = [];
+    await addLeague(s, v.sportId, { name: "Major League Baseball", abbreviation: "MLB" });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    expect(ebay.writes()).toEqual([]);
+    expect((await linkOf(s, card, "NM"))?.status).toBe("live");
+    expect(ebay.offerFor(`NB2-${card}-NM`)?.status).toBe("PUBLISHED");
+    expect((await record(s, v.variantId))?.problems).toEqual([{ cardId: card, reason: "noLeague" }]);
+  });
+
+  test("a league set on a live listing's card re-sends the item once (the content changed), then nothing", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await drain(s);
+    ebay.calls = [];
+    await addLeague(s, v.sportId, { name: "Major League Baseball", abbreviation: "MLB" }, card);
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    expect(ebay.writes().map((c) => c.path)).toEqual(["/sell/inventory/v1/bulk_create_or_replace_inventory_item"]);
+    expect(ebay.items.get(`NB2-${card}-NM`).product.aspects.League).toEqual(["MLB"]);
+
+    ebay.calls = [];
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 3 }]);
+    await drain(s);
+    expect(ebay.writes()).toEqual([]);
+  });
+});
+
 describe("eBay drain: withdraw at zero and republish", () => {
   test("a count that goes to 0 withdraws the offer and the link goes ended; stock returning publishes again", async () => {
     const s = await setup();

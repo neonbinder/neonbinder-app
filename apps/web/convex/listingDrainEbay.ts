@@ -84,6 +84,8 @@ import {
   buildEbayAspects,
   centsToEbayValue,
   contentFingerprint,
+  ebayLeagueMissing,
+  ebayLeagueValue,
   ebayListingText,
   ebayPackageFor,
   foldEbayTargets,
@@ -318,6 +320,7 @@ const cardFactsValidator = v.object({
     manufacturerBrandUnknown: v.optional(v.boolean()),
     setName: v.optional(v.string()),
     insertName: v.optional(v.string()),
+    league: v.optional(v.string()),
     cardNumber: v.string(),
     parallelName: v.optional(v.string()),
     isRookie: v.optional(v.boolean()),
@@ -325,6 +328,8 @@ const cardFactsValidator = v.object({
     shortPrint: v.optional(v.string()),
     printRun: v.optional(v.number()),
   }),
+  /** NEO-569: no league on the card while its sport has some (`ebayLeagueMissing`): the drain holds it `noLeague`. */
+  noLeague: v.optional(v.literal(true)),
 });
 type CardFacts = typeof cardFactsValidator.type;
 
@@ -333,6 +338,10 @@ type CardFacts = typeof cardFactsValidator.type;
  * the aspect facts (the card's own features, players and teams, and its
  * chain's set, brand and insert, read the way the title generator reads
  * them: `listingShortName.titleChainFacts`). All NB data.
+ *
+ * NEO-569: the card's own league (`cardChecklist.leagueId`, abbreviation
+ * else name) and whether it is missing one its sport could give it. A sport
+ * "has leagues" when one `leagues` row names it (one indexed read per sport).
  */
 export const ebayCardFacts = internalQuery({
   args: { cardIds: v.array(v.id("cardChecklist")) },
@@ -361,6 +370,8 @@ export const ebayCardFacts = internalQuery({
       return out;
     };
     const sports = new Map<string, string | undefined>();
+    const sportHasLeagues = new Map<string, boolean>();
+    const leagues = new Map<string, string | undefined>();
     const out: CardFacts[] = [];
     for (const cardId of args.cardIds.slice(0, READ_CHUNK)) {
       const card = await ctx.db.get(cardId);
@@ -376,6 +387,22 @@ export const ebayCardFacts = internalQuery({
       for (const id of (card.teamOnCardIds ?? []).slice(0, 10)) {
         const team = await ctx.db.get(id);
         if (team) teamNames.push(teamFullName(team));
+      }
+      let league: string | undefined;
+      if (card.leagueId !== undefined) {
+        if (!leagues.has(card.leagueId)) leagues.set(card.leagueId, ebayLeagueValue(await ctx.db.get(card.leagueId)));
+        league = leagues.get(card.leagueId);
+      }
+      let noLeague = false;
+      if (league === undefined) {
+        if (!sportHasLeagues.has(card.sportId)) {
+          const first = await ctx.db
+            .query("leagues")
+            .withIndex("by_sport_id", (q) => q.eq("sportId", card.sportId))
+            .first();
+          sportHasLeagues.set(card.sportId, first !== null);
+        }
+        noLeague = ebayLeagueMissing({ league, sportHasLeagues: sportHasLeagues.get(card.sportId) === true });
       }
       const features = card.features ?? {};
       const parallel = features.parallelName?.trim() ? features.parallelName : chain.parallelLeaf;
@@ -393,6 +420,7 @@ export const ebayCardFacts = internalQuery({
           ...(chain.manufacturer?.metadata?.isBrandUnknown === true ? { manufacturerBrandUnknown: true } : {}),
           ...(chain.setName ? { setName: chain.setName } : {}),
           ...(chain.insertName ? { insertName: chain.insertName } : {}),
+          ...(league !== undefined ? { league } : {}),
           cardNumber: card.cardNumber,
           ...(parallel ? { parallelName: parallel } : {}),
           ...(card.isRookie ? { isRookie: true } : {}),
@@ -400,6 +428,7 @@ export const ebayCardFacts = internalQuery({
           ...(features.shortPrint ? { shortPrint: features.shortPrint } : {}),
           ...(typeof card.printRun === "number" ? { printRun: card.printRun } : {}),
         },
+        ...(noLeague ? { noLeague: true as const } : {}),
       });
     }
     return out;
@@ -1099,6 +1128,13 @@ async function syncEbayVariant(
       .sort((a, b) => (a.side === b.side ? 0 : a.side === "front" ? -1 : 1));
     if (photos.length === 0) {
       addHold({ cardId: t.cardId, reason: "noPhoto", conditionCode: t.conditionCode });
+      continue;
+    }
+    if (f.noLeague) {
+      // NEO-569: NB never guesses a card's league. Held like any hold: a live
+      // listing stays up as it is (its SKU is still a target, so it is not
+      // withdrawn) until an admin sets the league; the collector reports it.
+      addHold({ cardId: t.cardId, reason: "noLeague", conditionCode: t.conditionCode });
       continue;
     }
     const aspects = buildEbayAspects(f.facts as EbayAspectFacts, aspectRules.maxLengths);

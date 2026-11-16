@@ -1,6 +1,7 @@
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
-import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
+import { deriveOwnLevelFeatures, inheritableFeatures } from "./features/deriveCardFeatures";
+import { bornSetLeagueIds } from "./leagues";
 import { inheritedTeamIds } from "./lib/selectorTeams";
 import { newRowSubtreeCounts } from "./cardCounts";
 import { initialSlots } from "./platformSlots";
@@ -404,10 +405,14 @@ export async function insertSetWithBaseFromSl(
     : {};
 
   // 1. The set: NB's row, no marketplace ids.
+  // NEO-569 — through `inheritableFeatures`, like every other copy-down, so
+  // the retired free-text League is never copied onto a new set.
   const setFeatures = {
-    ...(brand.features ?? {}),
+    ...inheritableFeatures(brand.features),
     ...deriveOwnLevelFeatures("setName", value),
   };
+  // NEO-569 — and born with its sport's major league.
+  const bornLeagueIds = await bornSetLeagueIds(ctx, brand._id);
   const setId = await ctx.db.insert("selectorOptions", {
     ...newRowSubtreeCounts("setName"),
     level: "setName",
@@ -418,6 +423,7 @@ export async function insertSetWithBaseFromSl(
     ...audit,
     ...(Object.keys(setFeatures).length > 0 ? { features: setFeatures } : {}),
     ...(brandTeamIds ? { teamIds: brandTeamIds } : {}),
+    ...(bornLeagueIds ? { leagueIds: bornLeagueIds } : {}),
     lastUpdated: now,
   });
 

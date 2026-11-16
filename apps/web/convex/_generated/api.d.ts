@@ -56,6 +56,7 @@ import type * as bscTeamPool from "../bscTeamPool.js";
 import type * as bulkLoad from "../bulkLoad.js";
 import type * as cardChecklist from "../cardChecklist.js";
 import type * as cardCounts from "../cardCounts.js";
+import type * as cardLeague from "../cardLeague.js";
 import type * as cardNotes from "../cardNotes.js";
 import type * as cardNumberPrefix from "../cardNumberPrefix.js";
 import type * as cardPlayerLinks from "../cardPlayerLinks.js";
@@ -100,6 +101,7 @@ import type * as intakeRuns from "../intakeRuns.js";
 import type * as intakeScanner from "../intakeScanner.js";
 import type * as knownBrands from "../knownBrands.js";
 import type * as latencyProbe from "../latencyProbe.js";
+import type * as leagueBackfill from "../leagueBackfill.js";
 import type * as leagues from "../leagues.js";
 import type * as lib_baseMatchProbe from "../lib/baseMatchProbe.js";
 import type * as lib_batchIdReads from "../lib/batchIdReads.js";
@@ -148,6 +150,7 @@ import type * as lib_publishedChecklistSections from "../lib/publishedChecklistS
 import type * as lib_r2 from "../lib/r2.js";
 import type * as lib_searchQueryClamp from "../lib/searchQueryClamp.js";
 import type * as lib_selectorAncestry from "../lib/selectorAncestry.js";
+import type * as lib_selectorLeagues from "../lib/selectorLeagues.js";
 import type * as lib_selectorTeams from "../lib/selectorTeams.js";
 import type * as lib_teamFill from "../lib/teamFill.js";
 import type * as lib_teamRow from "../lib/teamRow.js";
@@ -278,6 +281,7 @@ declare const fullApi: ApiFromModules<{
   bulkLoad: typeof bulkLoad;
   cardChecklist: typeof cardChecklist;
   cardCounts: typeof cardCounts;
+  cardLeague: typeof cardLeague;
   cardNotes: typeof cardNotes;
   cardNumberPrefix: typeof cardNumberPrefix;
   cardPlayerLinks: typeof cardPlayerLinks;
@@ -322,6 +326,7 @@ declare const fullApi: ApiFromModules<{
   intakeScanner: typeof intakeScanner;
   knownBrands: typeof knownBrands;
   latencyProbe: typeof latencyProbe;
+  leagueBackfill: typeof leagueBackfill;
   leagues: typeof leagues;
   "lib/baseMatchProbe": typeof lib_baseMatchProbe;
   "lib/batchIdReads": typeof lib_batchIdReads;
@@ -370,6 +375,7 @@ declare const fullApi: ApiFromModules<{
   "lib/r2": typeof lib_r2;
   "lib/searchQueryClamp": typeof lib_searchQueryClamp;
   "lib/selectorAncestry": typeof lib_selectorAncestry;
+  "lib/selectorLeagues": typeof lib_selectorLeagues;
   "lib/selectorTeams": typeof lib_selectorTeams;
   "lib/teamFill": typeof lib_teamFill;
   "lib/teamRow": typeof lib_teamRow;

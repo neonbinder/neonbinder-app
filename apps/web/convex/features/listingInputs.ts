@@ -37,6 +37,7 @@ import type { Id } from "../_generated/dataModel";
 import {
   autographedFromFormat,
   deriveCardObservedFeatures,
+  RETIRED_FEATURE_KEYS,
 } from "./deriveCardFeatures";
 import {
   assessListingTitle,
@@ -179,6 +180,9 @@ export function mergeCardFeatures(
   }
   // The format is a fact about the LEAF, not about any one card.
   delete merged.autographFormat;
+  // NEO-569 — a retired key (the free-text League) is never born on a card,
+  // whatever an un-stripped snapshot or a copy's base still carries.
+  for (const key of RETIRED_FEATURE_KEYS) delete merged[key];
   return merged;
 }
 

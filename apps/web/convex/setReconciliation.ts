@@ -81,6 +81,7 @@ import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
 // NEO-277: the set-level team a fresh child inherits from its parent.
 import { inheritedTeamIds } from "./lib/selectorTeams";
 import { newRowSubtreeCounts } from "./cardCounts";
+import { bornSetLeagueIds } from "./leagues";
 import {
   assertSubVariantParent,
   variantTypeRenameCheck,
@@ -3228,6 +3229,10 @@ export const storeReconciledOptions = mutation({
           : {}),
         ...(Object.keys(features).length > 0 ? { features } : {}),
         ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
+        // NEO-569 — a new set is born with its sport's major league.
+        ...(level === "setName" && parentId
+          ? await bornSetLeagueIds(ctx, parentId).then((ids) => (ids ? { leagueIds: ids } : {}))
+          : {}),
         lastUpdated: Date.now(),
       });
       inserts++;

@@ -15,7 +15,6 @@
 import {
   AUTOGRAPH_FORMATS,
   ERA_BUCKET_OPTIONS,
-  LEAGUE_OPTIONS,
 } from "./deriveCardFeatures";
 
 export type ExpectedFeature = {
@@ -72,13 +71,9 @@ export type ExpectedFeature = {
 
 export const EXPECTED_FEATURES: ReadonlyArray<ExpectedFeature> = [
   // ---- Classification (what is this card) ----
-  {
-    key: "league",
-    label: "League",
-    applicableSports: ["Baseball", "Basketball", "Football", "Hockey"],
-    inputType: "select",
-    options: LEAGUE_OPTIONS,
-  },
+  // NEO-569 — League left this list: it is NB data with ids now (a set's
+  // League row in SetAttributesPanel, a card's League select), never a
+  // free-text feature.
   { key: "era", label: "Era", inputType: "select", options: ERA_BUCKET_OPTIONS },
   // Auto-derived from the year's era bucket at creation time (see
   // deriveSetLevelFeatures), but a plain toggle here so an operator can

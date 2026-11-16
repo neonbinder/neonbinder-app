@@ -632,7 +632,8 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
         parentId: yearId,
         platformData: {},
         children: [],
-        features: { league: "Major League Baseball" },
+        // NEO-569 — the set names its league by id.
+        leagueIds: [mlbId],
         lastUpdated: 1,
       });
       // Tier 1 for an admin: in the set's league, active in 2024.
@@ -1035,6 +1036,79 @@ describe("NEO-277: the set-level team surface is admin-gated, and its cascade is
     const src = readFileSync(join(__dirname, "selectorOptions.ts"), "utf8");
     expect(src).toContain("export const cascadeSelectorOptionTeams = internalMutation({");
     expect(src).not.toContain("export const cascadeSelectorOptionTeams = mutation(");
+  });
+});
+
+describe("NEO-569: the set and card League surface is admin-gated, and its cascades are internal", () => {
+  /**
+   * Three public functions arrived with NB leagues on sets and cards: a set
+   * row's League control (read and write) and a card's League options. All
+   * admin, like every other set-side read and edit in this file: the write
+   * changes shared reference data and schedules a cascade over the set's
+   * teamless cards, and the reads expose admin-only rows. A card's league is
+   * written through `updateCard`, already admin.
+   *
+   * The two cascades are `internalMutation`: their arguments carry a
+   * "previous league" only the writer knows, and a client that could call
+   * them could point one at any set or team and rewrite the cards beneath it.
+   */
+  test.each([
+    [
+      "selectorOptions.getSelectorOptionLeagues",
+      (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+        t.query(api.selectorOptions.getSelectorOptionLeagues, { selectorOptionId: sportId }),
+    ],
+    [
+      "selectorOptions.setSelectorOptionLeagues",
+      (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
+        t.mutation(api.selectorOptions.setSelectorOptionLeagues, {
+          selectorOptionId: sportId,
+          leagueIds: [],
+        }),
+    ],
+  ] as const)("%s refuses a signed-in non-admin and a signed-out caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    await expect(call(t.withIdentity(SIGNED_IN), sportId)).rejects.toThrow();
+    await expect(call(t, sportId)).rejects.toThrow();
+    const row = await t.run(async (ctx) => ctx.db.get(sportId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.leagueIds).toBeUndefined();
+  });
+
+  test("cardLeague.cardLeagueOptions refuses a signed-in non-admin and a signed-out caller", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const cardId = await t.run(async (ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: sportId,
+        cardNumber: "1",
+        cardName: "Card",
+        sortOrder: 0,
+        platformData: {},
+        lastUpdated: 1,
+      }),
+    );
+    const call = (c: ReturnType<typeof convexTest>) =>
+      c.query(api.cardLeague.cardLeagueOptions, { cardId });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+  });
+
+  test("the set-league and team-league cascades are declared internalMutation", () => {
+    const src = readFileSync(join(__dirname, "cardLeague.ts"), "utf8");
+    for (const name of ["cascadeSetLeagues", "recomputeTeamCards"]) {
+      expect(src).toContain(`export const ${name} = internalMutation({`);
+      expect(src).not.toContain(`export const ${name} = mutation(`);
+    }
+  });
+
+  test("the league backfill is internal and armed", () => {
+    const src = readFileSync(join(__dirname, "leagueBackfill.ts"), "utf8");
+    expect(src).toContain("export const run = internalAction({");
+    expect(src).toContain("export const page = internalMutation({");
+    expect(src).not.toMatch(/export const \w+ = (query|mutation|action)\(/);
+    expect(src).toContain("process.env[ENV_FLAG]");
   });
 });
 

@@ -174,12 +174,12 @@ describe("setSelectorOptionFeature", () => {
 
     const result = await asAdmin.mutation(
       api.selectorOptions.setSelectorOptionFeature,
-      { selectorOptionId: subtree.sportId, key: "league", value: "MLB" },
+      { selectorOptionId: subtree.sportId, key: "subsetLabel", value: "MLB" },
     );
     expect(result).toBeNull();
 
     const root = await t.run(async (ctx) => ctx.db.get(subtree.sportId));
-    expect(root!.features?.league).toBe("MLB");
+    expect(root!.features?.subsetLabel).toBe("MLB");
 
     // Descendant nodes and cards — even though the OLD cascade would have
     // fill-absent-matched every one of them — must stay untouched.
@@ -189,11 +189,11 @@ describe("setSelectorOptionFeature", () => {
     const variantTypeNode = await t.run(async (ctx) =>
       ctx.db.get(subtree.variantTypeId),
     );
-    expect(setNameNode!.features?.league).toBeUndefined();
-    expect(variantTypeNode!.features?.league).toBeUndefined();
+    expect(setNameNode!.features?.subsetLabel).toBeUndefined();
+    expect(variantTypeNode!.features?.subsetLabel).toBeUndefined();
     for (const id of subtree.cardIds) {
       const card = await t.run(async (ctx) => ctx.db.get(id));
-      expect(card!.features?.league).toBeUndefined();
+      expect(card!.features?.subsetLabel).toBeUndefined();
     }
   });
 
@@ -204,39 +204,39 @@ describe("setSelectorOptionFeature", () => {
 
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: subtree.sportId,
-      key: "league",
+      key: "subsetLabel",
       value: "MLB",
     });
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: subtree.sportId,
-      key: "league",
+      key: "subsetLabel",
       value: "MLB-International",
     });
 
     const root = await t.run(async (ctx) => ctx.db.get(subtree.sportId));
-    expect(root!.features?.league).toBe("MLB-International");
+    expect(root!.features?.subsetLabel).toBe("MLB-International");
   });
 
   test("a descendant card that independently already holds the same value is not touched by an ancestor edit", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
-    // Card 0 already has league=MLB from its OWN fixture value (simulating
+    // Card 0 already has subsetLabel=MLB from its OWN fixture value (simulating
     // it having been resolved at its own creation, unrelated to the edit
     // below) — the edit must not be the reason it holds that value.
     const subtree = await seedSubtree(t, {
-      cardFeaturesPerIndex: { 0: { league: "MLB" } },
+      cardFeaturesPerIndex: { 0: { subsetLabel: "MLB" } },
     });
 
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: subtree.sportId,
-      key: "league",
+      key: "subsetLabel",
       value: "MLB",
     });
 
     const card0 = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[0]));
-    expect(card0!.features?.league).toBe("MLB");
+    expect(card0!.features?.subsetLabel).toBe("MLB");
     const card1 = await t.run(async (ctx) => ctx.db.get(subtree.cardIds[1]));
-    expect(card1!.features?.league).toBeUndefined();
+    expect(card1!.features?.subsetLabel).toBeUndefined();
   });
 
   test("preserves other existing keys on the row when patching one key", async () => {
@@ -252,12 +252,12 @@ describe("setSelectorOptionFeature", () => {
 
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: subtree.sportId,
-      key: "league",
+      key: "subsetLabel",
       value: "MLB",
     });
 
     const root = await t.run(async (ctx) => ctx.db.get(subtree.sportId));
-    expect(root!.features?.league).toBe("MLB");
+    expect(root!.features?.subsetLabel).toBe("MLB");
     expect(root!.features?.manufacturer).toBe("Topps");
   });
 
@@ -284,7 +284,7 @@ describe("setSelectorOptionFeature", () => {
     await expect(
       asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
         selectorOptionId: subtree.sportId,
-        key: "league",
+        key: "subsetLabel",
         value: "MLB",
       }),
     ).rejects.toThrow();
@@ -572,36 +572,29 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
       api.selectorOptions.addCustomSelectorOption,
       { level: "sport", value: "Baseball" },
     );
-    // auto: sportId.features = { league: "MLB" }
+    // NEO-569: a sport row derives no league any more.
 
     const setNameId = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
       { level: "setName", value: "2024 Topps", parentId: sportId },
     );
-    // auto: copies league="MLB" down from sport + own isReprint="false"
+    // auto: own isReprint="false"
 
     // Operator overrides at the setName level, BEFORE the variantType child
     // exists, so copy-down carries them forward. `subsetLabel` has no
     // deriver at all — proves an arbitrary key still flows through
-    // copy-down. Overriding `league` here (deeper than sport's auto value)
-    // proves deeper-wins now happens via copy-down timing, not a cascade.
+    // copy-down.
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: setNameId,
       key: "subsetLabel",
       value: "Flagship",
     });
-    await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
-      selectorOptionId: setNameId,
-      key: "league",
-      value: "MLB-Flagship",
-    });
-
     const variantTypeId = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
       { level: "variantType", value: "Base", parentId: setNameId },
     );
-    // auto: copies league="MLB-Flagship", subsetLabel="Flagship",
-    // isReprint="false" down from setName + own cardType="Base"
+    // auto: copies subsetLabel="Flagship", isReprint="false" down from
+    // setName + own cardType="Base"
 
     await asAdmin.action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: variantTypeId,
@@ -656,9 +649,8 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
 
     expect(cards).toHaveLength(2);
     for (const card of cards) {
-      // setName's override survived copy-down onto the leaf, and from
-      // there onto the card — proves deeper-wins without any cascade.
-      expect(card.features?.league).toBe("MLB-Flagship");
+      // NEO-569: the retired League is never minted or copied.
+      expect(card.features).not.toHaveProperty("league");
       // Arbitrary non-heuristic key flows through copy-down untouched.
       expect(card.features?.subsetLabel).toBe("Flagship");
       // Own-level heuristic at the leaf (variantType).
@@ -796,9 +788,11 @@ describe("commitCardChecklist (ancestor feature inheritance)", () => {
     const c1 = byNumber.get("1")!;
     const c2 = byNumber.get("2")!;
 
-    // Inherited from the leaf node's snapshot.
-    expect(c1.features?.league).toBe("MLB");
-    expect(c2.features?.league).toBe("MLB");
+    // NEO-569: the leaf's legacy `league` is NOT copied onto a new card
+    // (`mergeCardFeatures` drops retired keys); the card's league is
+    // `cardChecklist.leagueId`.
+    expect(c1.features).not.toHaveProperty("league");
+    expect(c2.features).not.toHaveProperty("league");
 
     // Derived from per-card columns — wins over the inherited snapshot.
     expect(c1.features?.isRookie).toBe("true");

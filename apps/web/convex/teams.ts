@@ -13,13 +13,15 @@ import {
 import {
   // NEO-331: automatic paths link an existing league; they never create one.
   findLeagueByName,
-  // NEO-331: the picker's abbreviation fallback compares on the same reading.
-  normalizeLeagueName,
   // NEO-236: the operator's own league choice — the only league a new team
   // gets (NEO-331: no sport-default fallback).
   resolveOperatorLeagueId,
 } from "./leagues";
 import { normalizePlayerName } from "./players";
+// NEO-569 — the levels that carry a set's `leagueIds` (the picker's walk).
+import { LEAGUE_BEARING_LEVELS } from "./lib/selectorLeagues";
+// NEO-569 — a team's league edit re-settles the cards that followed it.
+import { scheduleTeamLeagueRecompute } from "./cardLeague";
 import { MANUAL_COLOR_SOURCE_URL } from "./teamColorSources";
 import { longestToken, nameTokens, rankTeamCandidates } from "./lib/entityNearMatch";
 // NEO-212 security review: the shared `Q<digits>` chokepoint — see
@@ -1368,6 +1370,10 @@ export const applyEnrichmentInternal = internalMutation({
       };
     }
     await ctx.db.patch(args.id, patch);
+    // NEO-569 — a league filled in here re-settles the cards showing the team.
+    if (patch.leagueId !== undefined && patch.leagueId !== existing.leagueId) {
+      await scheduleTeamLeagueRecompute(ctx, args.id, existing.leagueId);
+    }
     return null;
   },
 });
@@ -1508,6 +1514,8 @@ export const convertLegacyLeagueInternal = internalMutation({
       league: undefined,
       lastUpdated: Date.now(),
     });
+    // NEO-569 — the cards showing the team follow its new league.
+    await scheduleTeamLeagueRecompute(ctx, args.id, undefined);
     return null;
   },
 });
@@ -1815,6 +1823,11 @@ export const saveTeamFields = mutation({
     }
 
     await ctx.db.patch(args.id, patch);
+    // NEO-569 — a league change (set, moved or cleared) re-settles the cards
+    // that followed the team's old league.
+    if ("leagueId" in patch && patch.leagueId !== existing.leagueId) {
+      await scheduleTeamLeagueRecompute(ctx, args.id, existing.leagueId);
+    }
     return null;
   },
 });
@@ -2302,31 +2315,43 @@ function parsePickerYear(raw: string | undefined): number | undefined {
 }
 
 /**
- * NEO-331 — the set context a picker ranks by: the league named on the
- * context row's `features.league`, resolved by name OR alias within the
- * SEARCHED sport ("MLB" is an alias of Major League Baseball) — falling back
- * to an exactly-one `abbreviation` match (see below) — and the year of the
- * nearest `year`-level ancestor (the row itself included).
+ * NEO-331 / NEO-569 — the set context a picker ranks by: the context row's
+ * effective `leagueIds` (its own, else the nearest ancestor's up to the set —
+ * the same walk `lib/selectorLeagues.effectiveSetLeagueIds` makes), kept to
+ * the leagues of the SEARCHED sport, and the year of the nearest `year`-level
+ * ancestor (the row itself included).
  *
- * Resolved in the searched sport on purpose: a picker switched to another
- * sport (a football player's guest card in a baseball set) finds no league of
- * that name there, so tiers 1 and 3 empty out rather than ranking by a league
- * from the wrong sport. Nothing about the context is stored — the free-text
- * feature stays the one source, so an operator editing it re-ranks at once.
+ * Kept to the searched sport on purpose: a picker switched to another sport
+ * (a football player's guest card in a baseball set) has none of the set's
+ * leagues there, so tiers 1 and 3 empty out rather than ranking by a league
+ * from the wrong sport. Nothing about the context is stored, so an operator
+ * editing the set's leagues re-ranks at once. No name is resolved: the set
+ * names its leagues by id.
  */
 async function pickerContext(
   ctx: QueryCtx,
   contextOptionId: Id<"selectorOptions"> | undefined,
-  sportId: Id<"selectorOptions"> | undefined,
   sportLeagues: ReadonlyArray<Doc<"leagues">>,
-): Promise<{ leagueId?: Id<"leagues">; year?: number }> {
+): Promise<{ leagueIds?: Array<Id<"leagues">>; year?: number }> {
   if (!contextOptionId) return {};
   const row = await ctx.db.get(contextOptionId);
   if (!row) return {};
 
   let year: number | undefined;
+  let leagueIds: Array<Id<"leagues">> | undefined;
+  let leaguesSettled = !LEAGUE_BEARING_LEVELS.has(row.level);
   let node: Doc<"selectorOptions"> | null = row;
   for (let depth = 0; node && depth <= PICKER_YEAR_WALK_DEPTH; depth++) {
+    if (!leaguesSettled) {
+      if (!LEAGUE_BEARING_LEVELS.has(node.level)) {
+        leaguesSettled = true;
+      } else if (node.leagueIds && node.leagueIds.length > 0) {
+        leagueIds = node.leagueIds;
+        leaguesSettled = true;
+      } else if (node.level === "setName") {
+        leaguesSettled = true;
+      }
+    }
     if (node.level === "year") {
       year = parsePickerYear(node.value);
       break;
@@ -2334,48 +2359,13 @@ async function pickerContext(
     node = node.parentId ? await ctx.db.get(node.parentId) : null;
   }
 
-  const leagueName = row.features?.league?.trim();
-  const league =
-    leagueName && sportId
-      ? ((await findLeagueByName(ctx, { name: leagueName, sportId })) ??
-        leagueByUniqueAbbreviation(sportLeagues, leagueName))
-      : null;
+  const inSport = new Set<string>(sportLeagues.map((league) => league._id));
+  const usable = [...new Set(leagueIds ?? [])].filter((id) => inSport.has(id));
 
   return {
-    ...(league ? { leagueId: league._id } : {}),
+    ...(usable.length > 0 ? { leagueIds: usable } : {}),
     ...(year !== undefined ? { year } : {}),
   };
-}
-
-/**
- * NEO-331 — the picker's fallback when `findLeagueByName` misses: the ONE
- * league of the sport whose `abbreviation` reads the same as `name`.
- *
- * `features.league` carries the sport's short form ("MLB", from
- * SPORT_TO_LEAGUE), and a league minted through the wizard's New League step
- * stores that short form as `abbreviation` with no alias — so on fresh data
- * the name/alias lookup finds nothing and the set's league silently drops out
- * of the ranking. This is read-only and scoped to the picker on purpose:
- * `findLeagueByName` is what writers dedupe through, and widening it to
- * abbreviations would change which row a writer links or mints.
- *
- * Exactly one match or nothing. Abbreviations are not unique (two leagues may
- * both say "IL"), and taking the first of several would rank by a league the
- * operator never named — so a tie gives no league, and tiers 1 and 3 stay
- * empty rather than guessed.
- */
-function leagueByUniqueAbbreviation(
-  sportLeagues: ReadonlyArray<Doc<"leagues">>,
-  name: string,
-): Doc<"leagues"> | null {
-  const wanted = normalizeLeagueName(name);
-  if (!wanted) return null;
-  const matches = sportLeagues.filter(
-    (league) =>
-      league.abbreviation !== undefined &&
-      normalizeLeagueName(league.abbreviation) === wanted,
-  );
-  return matches.length === 1 ? matches[0] : null;
 }
 
 /**
@@ -2475,11 +2465,11 @@ export const pickerCandidates = query({
     // they are published). This query is merely signed-in, so honouring the
     // context for anyone would turn it into an oracle on an admin-gated row:
     // the tier each team lands in, and the order they come back in, say which
-    // league the row's `features.league` names and which year it sits under.
+    // leagues the row carries (`leagueIds`) and which year it sits under.
     // A non-admin's context is therefore IGNORED, not refused — the picker
     // still works, context-free, every row at tier 4.
     // The sport's leagues, ONCE: tier 2's level check (never a `db.get` per
-    // candidate) and the context's abbreviation fallback both read them.
+    // candidate) and the context's sport filter both read them.
     // Leagues are tens of rows per sport.
     const sportLeagues = sportId
       ? await ctx.db
@@ -2490,14 +2480,13 @@ export const pickerCandidates = query({
     const levelById = new Map<string, string>();
     for (const league of sportLeagues) levelById.set(league._id, league.level);
 
-    const { leagueId, year } = await pickerContext(
+    const { leagueIds, year } = await pickerContext(
       ctx,
       identity.role === "admin" ? args.contextOptionId : undefined,
-      sportId,
       sportLeagues,
     );
     const rankContext = {
-      ...(leagueId ? { leagueId } : {}),
+      ...(leagueIds ? { leagueIds } : {}),
       ...(year !== undefined ? { year } : {}),
       levelById,
     };
@@ -2508,12 +2497,24 @@ export const pickerCandidates = query({
       if (sportId && team.sportId !== sportId) return;
       if (!pool.has(team._id)) pool.set(team._id, team);
     };
-    // The set's league, by plain index range — never a search (see above).
-    const leagueLeg = (id: Id<"leagues">) =>
-      ctx.db
-        .query("teams")
-        .withIndex("by_league_id", (q) => q.eq("leagueId", id))
-        .take(PICKER_LEAGUE_LEG_TAKE);
+    // The set's leagues, by plain index ranges — never a search (see above).
+    // NEO-569: one range per league, in the operator's order, sharing ONE
+    // budget of `PICKER_LEAGUE_LEG_TAKE` teams in total, so a twelve-league
+    // set reads no more than a one-league set did.
+    const leagueLeg = async (ids: ReadonlyArray<Id<"leagues">>) => {
+      const out: Array<Doc<"teams">> = [];
+      for (const id of ids) {
+        const remaining = PICKER_LEAGUE_LEG_TAKE - out.length;
+        if (remaining <= 0) break;
+        out.push(
+          ...(await ctx.db
+            .query("teams")
+            .withIndex("by_league_id", (q) => q.eq("leagueId", id))
+            .take(remaining)),
+        );
+      }
+      return out;
+    };
 
     // ── Browse ────────────────────────────────────────────────────────────
     if (!typed.trim()) {
@@ -2524,7 +2525,7 @@ export const pickerCandidates = query({
         PICKER_BROWSE_DEFAULT_LIMIT,
         PICKER_BROWSE_MAX_LIMIT,
       );
-      if (leagueId) (await leagueLeg(leagueId)).forEach(add);
+      if (leagueIds) (await leagueLeg(leagueIds)).forEach(add);
       const inSport = sportId
         ? await ctx.db
             .query("teams")
@@ -2550,9 +2551,9 @@ export const pickerCandidates = query({
       PICKER_SEARCH_MAX_LIMIT,
     );
 
-    // Leg A — only when the league resolved, which needs a sport. A plain
-    // index range, name-matched below with every other leg's rows.
-    if (leagueId) (await leagueLeg(leagueId)).forEach(add);
+    // Leg A — only when the set has leagues in the searched sport. Plain
+    // index ranges, name-matched below with every other leg's rows.
+    if (leagueIds) (await leagueLeg(leagueIds)).forEach(add);
 
     // Leg B — the ONLY search read in this query (see the note above).
     const runSearch = (text: string) =>

@@ -107,6 +107,30 @@ vi.mock("convex/react", () => ({
 /** NEO-254 — rows served to `players.getManyByIds`. */
 let currentPlayerRows: Array<{ _id: string; name: string }> | undefined;
 
+/**
+ * NEO-569 — the card's League row owns its own Convex read and has its own
+ * test file (CardLeagueRow.test.tsx). Here it is a stand-in: the panel's
+ * contract with it is the card id in, and `onCommit(leagueId | null)` out.
+ */
+vi.mock("./CardLeagueRow", () => ({
+  default: ({
+    cardId,
+    onCommit,
+  }: {
+    cardId: string;
+    onCommit: (leagueId: string | null) => Promise<void>;
+  }) => (
+    <div aria-label="Card league row (stub)" data-card-id={cardId}>
+      <button type="button" onClick={() => void onCommit("league-al").catch(() => {})}>
+        Stub pick league
+      </button>
+      <button type="button" onClick={() => void onCommit(null).catch(() => {})}>
+        Stub clear league
+      </button>
+    </div>
+  ),
+}));
+
 vi.mock("./TeamPicker", () => ({
   default: ({
     value,
@@ -1519,5 +1543,58 @@ describe("CardDetailPanel — Also on this card (NEO-528)", () => {
     });
     await screen.findByRole("alert");
     expect(mockConvexMutation).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * NEO-569 — the card's own league, directly under Teams. The row's picker and
+ * why-blank line are CardLeagueRow.test.tsx's; here, where the panel puts it
+ * and what one pick writes.
+ */
+describe("CardDetailPanel — the League row (NEO-569)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdateCard.mockResolvedValue(undefined);
+  });
+
+  it("sits directly under Teams, for this card", () => {
+    renderPanel();
+    const row = screen.getByLabelText("Card league row (stub)");
+    expect(row.getAttribute("data-card-id")).toBe(CARD_ID);
+    const teams = screen.getByLabelText("Team picker (stub)").parentElement!;
+    expect(teams.nextElementSibling).toBe(row);
+    // And ahead of the features editor that used to hold a League field.
+    const features = screen.getByLabelText("Show features editor");
+    expect(row.compareDocumentPosition(features) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("a pick writes only leagueId and says Saved League", async () => {
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stub pick league" }));
+    });
+    expect(mockUpdateCard).toHaveBeenCalledTimes(1);
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, leagueId: "league-al" });
+    await waitFor(() => expect(screen.getByText("Saved League")).toBeTruthy());
+  });
+
+  it("No league writes leagueId: null and says Cleared League", async () => {
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stub clear league" }));
+    });
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, leagueId: null });
+    await waitFor(() => expect(screen.getByText("Cleared League")).toBeTruthy());
+  });
+
+  it("a refusal announces nothing as saved", async () => {
+    mockUpdateCard.mockRejectedValueOnce(
+      new ConvexError("That league isn't in this card's sport."),
+    );
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Stub pick league" }));
+    });
+    expect(screen.queryByText("Saved League")).toBeNull();
   });
 });

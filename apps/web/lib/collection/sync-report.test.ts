@@ -15,7 +15,7 @@ const ALL_REASONS = listingProblemReasonValidator.members.map((m) => m.value);
 describe("isReportableSyncReason", () => {
   test("exactly the reasons only the admin team can fix", () => {
     expect(ALL_REASONS.filter(isReportableSyncReason).sort()).toEqual(
-      ["missingAspect", "noLink", "notOnSheet", "numberMismatch", "rejected", "sharedLink"].sort(),
+      ["missingAspect", "noLeague", "noLink", "notOnSheet", "numberMismatch", "rejected", "sharedLink"].sort(),
     );
   });
 
@@ -28,6 +28,11 @@ describe("isReportableSyncReason", () => {
     expect(hasReportableCard([{ reason: "noPrice" }, { reason: "notOnSheet" }])).toBe(true);
     expect(hasReportableCard([])).toBe(false);
   });
+
+  test("NEO-569: a card with no league is the crew's, not the collector's", () => {
+    expect(isReportableSyncReason("noLeague")).toBe(true);
+    expect(hasReportableCard([{ reason: "noPhoto" }, { reason: "noLeague" }])).toBe(true);
+  });
 });
 
 describe("syncReportDetail", () => {
@@ -35,6 +40,7 @@ describe("syncReportDetail", () => {
     expect(syncReportDetail("rejected", "  said no  ")).toBe("said no");
     expect(syncReportDetail("missingAspect", "Year Manufactured")).toBe("Year Manufactured");
     expect(syncReportDetail("noLink", "anything")).toBeUndefined();
+    expect(syncReportDetail("noLeague", "anything")).toBeUndefined();
     expect(syncReportDetail("rejected", "   ")).toBeUndefined();
     expect(syncReportDetail("rejected", undefined)).toBeUndefined();
     expect(syncReportDetail("rejected", "a".repeat(MAX_SYNC_REPORT_DETAIL + 1))).toHaveLength(MAX_SYNC_REPORT_DETAIL);
@@ -53,5 +59,10 @@ describe("reportableProblems", () => {
     expect(out.heldBack).toBe(MAX_SYNC_REPORT_CARDS + 2);
     expect(out.cards).toHaveLength(MAX_SYNC_REPORT_CARDS);
     expect(out.cards[0]).toEqual({ cardId: "b", reason: "sharedLink" });
+  });
+
+  test("NEO-569: a noLeague card is copied, with no detail", () => {
+    const out = reportableProblems([{ cardId: "a", reason: "noLeague", detail: "ignored" }, { cardId: "b", reason: "noPhoto" }]);
+    expect(out).toEqual({ cards: [{ cardId: "a", reason: "noLeague" }], heldBack: 1 });
   });
 });

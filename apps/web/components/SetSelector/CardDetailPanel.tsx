@@ -15,6 +15,7 @@ import {
   ALSO_PICTURED_PICKER_LABELS,
 } from "./player-picker-labels";
 import CardFeaturesEditor, { CardFeatureRow } from "./CardFeaturesEditor";
+import CardLeagueRow from "./CardLeagueRow";
 import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
 import { useReactiveField } from "../forms/useReactiveField";
 import {
@@ -1128,6 +1129,20 @@ export default function CardDetailPanel({
               errorId={teamsErrorId}
             />
           </div>
+
+          {/* NEO-569: the card's league, directly under the teams it is
+              settled from. Writes only `leagueId`, through the same
+              commitField as every field here. */}
+          <CardLeagueRow
+            key={`card-league-${card._id}`}
+            cardId={card._id}
+            onCommit={(leagueId) =>
+              commitField(
+                { leagueId },
+                leagueId === null ? "Cleared League" : "Saved League",
+              )
+            }
+          />
 
           {/* Per-card feature overrides (persists immediately via setCardFeature).
               Kept directly under Teams — matching the old inline edit modal — so

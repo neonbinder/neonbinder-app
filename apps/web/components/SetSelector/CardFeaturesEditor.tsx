@@ -70,6 +70,9 @@ export default function CardFeaturesEditor({
       // Rendered always-visible in CardDetailPanel instead (via the shared
       // CardFeatureRow this file exports) — avoid a duplicate row here.
       if (f.key === "autographed") return false;
+      // NEO-569 — the card's league is `cardChecklist.leagueId`, edited in
+      // CardDetailPanel's own League row; the free-text feature is retired.
+      if (f.key === "league") return false;
       if (!f.applicableSports) return true;
       if (!ancestorSport) return true; // Show all when sport unknown
       return f.applicableSports.includes(ancestorSport);

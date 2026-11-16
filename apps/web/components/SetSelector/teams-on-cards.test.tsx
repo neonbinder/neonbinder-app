@@ -77,6 +77,7 @@ function build(
   extra: {
     teamNameEvidence?: Record<string, ServerTeam[]>;
     setLeagueId?: string | null;
+    setLeagueIds?: string[];
     settled?: ReadonlySet<number>;
     people?: StoredPeople;
   } = {},
@@ -91,7 +92,11 @@ function build(
     ...(extra.teamNameEvidence
       ? { teamNameEvidence: new Map(Object.entries(extra.teamNameEvidence)) }
       : {}),
-    ...(extra.setLeagueId !== undefined ? { setLeagueId: extra.setLeagueId } : {}),
+    // NEO-569 — the builder takes the set's leagues as a list (any-of).
+    ...(extra.setLeagueIds !== undefined ? { setLeagueIds: extra.setLeagueIds } : {}),
+    ...(extra.setLeagueId !== undefined
+      ? { setLeagueIds: extra.setLeagueId ? [extra.setLeagueId] : [] }
+      : {}),
     ...(extra.settled ? { settled: extra.settled } : {}),
     ...(extra.people ? { people: extra.people } : {}),
   });
@@ -852,6 +857,94 @@ describe("created players — the window and the set's league (C2, C2b, C8)", ()
     expect(suggested(groups[0])).toEqual(["Tampa Bay Rays"]);
     // The affiliates stay offered, behind the pick.
     expect(labels(groups[0])).toEqual(["Tampa Bay Rays", "Montgomery Biscuits", "Durham Bulls"]);
+  });
+
+  describe("NEO-569: undated career teams (the Jackson Burns rule)", () => {
+    const WAKE = "team_wake" as Id<"teams">;
+    const DUKE = "team_duke" as Id<"teams">;
+    const undated = (name: string, names: string[], careerTeams: Array<{ name: string; fromYear: number; toYear?: number }> = []) =>
+      row({
+        kind: "player",
+        name,
+        enrichment: { careerTeams, undatedCareerTeams: names },
+        decision: { action: "create" },
+      });
+    const evidenceFor = (
+      cards: PreviewCardForTeams[],
+      rows: TeamsReviewRow[],
+      byName: Record<string, ServerTeam[]>,
+    ): Record<string, ServerTeam[]> =>
+      Object.fromEntries(
+        teamNameRequests(cards, rows).map((r) => [r.key, byName[r.name] ?? []]),
+      );
+
+    test("the player's ONE team in the set's leagues, undated, covers every year", () => {
+      const rows = [undated("Jackson Burns", ["Wake Forest Demon Deacons"])];
+      const cards = [card("1", ["Jackson Burns"])];
+      expect(teamNameRequests(cards, rows).map((r) => r.name)).toEqual([
+        "Wake Forest Demon Deacons",
+      ]);
+      const groups = build(cards, rows, {}, 2025, {
+        teamNameEvidence: evidenceFor(cards, rows, {
+          "Wake Forest Demon Deacons": [{ teamId: WAKE, name: "Wake Forest Demon Deacons", rank: 0 }],
+        }),
+        setLeagueIds: ["league_ncaa"],
+      });
+      expect(suggested(groups[0])).toEqual(["Wake Forest Demon Deacons"]);
+    });
+
+    test("two undated teams in the set's leagues: both ignored, nothing pre-filled", () => {
+      const rows = [undated("Two Schools", ["Wake Forest Demon Deacons", "Duke Blue Devils"])];
+      const cards = [card("1", ["Two Schools"])];
+      const groups = build(cards, rows, {}, 2025, {
+        teamNameEvidence: evidenceFor(cards, rows, {
+          "Wake Forest Demon Deacons": [{ teamId: WAKE, name: "Wake Forest Demon Deacons", rank: 0 }],
+          "Duke Blue Devils": [{ teamId: DUKE, name: "Duke Blue Devils", rank: 0 }],
+        }),
+        setLeagueIds: ["league_ncaa"],
+      });
+      expect(groups[0].suggestion).toBeNull();
+    });
+
+    test("an undated team outside the set's leagues never decides the card", () => {
+      const rows = [undated("Pro Guy", ["Wake Forest Demon Deacons"])];
+      const cards = [card("1", ["Pro Guy"])];
+      const groups = build(cards, rows, {}, 2025, {
+        teamNameEvidence: evidenceFor(cards, rows, {
+          "Wake Forest Demon Deacons": [{ teamId: WAKE, name: "Wake Forest Demon Deacons" }],
+        }),
+        setLeagueIds: ["league_mlb"],
+      });
+      expect(groups[0].suggestion).toBeNull();
+    });
+
+    test("a dated team in scope beside it: the undated one is ignored", () => {
+      const rows = [
+        undated("Mixed Guy", ["Wake Forest Demon Deacons"], [
+          { name: "Duke Blue Devils", fromYear: 2023, toYear: 2023 },
+        ]),
+      ];
+      const cards = [card("1", ["Mixed Guy"])];
+      const groups = build(cards, rows, {}, 2025, {
+        teamNameEvidence: evidenceFor(cards, rows, {
+          "Wake Forest Demon Deacons": [{ teamId: WAKE, name: "Wake Forest Demon Deacons", rank: 0 }],
+          "Duke Blue Devils": [{ teamId: DUKE, name: "Duke Blue Devils", rank: 0 }],
+        }),
+        setLeagueIds: ["league_ncaa"],
+      });
+      expect(suggested(groups[0])).not.toEqual(["Wake Forest Demon Deacons"]);
+    });
+
+    test("a set with no league: the one undated team of the whole career covers every year", () => {
+      const rows = [undated("Solo Guy", ["Wake Forest Demon Deacons"])];
+      const cards = [card("1", ["Solo Guy"])];
+      const groups = build(cards, rows, {}, 2025, {
+        teamNameEvidence: evidenceFor(cards, rows, {
+          "Wake Forest Demon Deacons": [{ teamId: WAKE, name: "Wake Forest Demon Deacons" }],
+        }),
+      });
+      expect(suggested(groups[0])).toEqual(["Wake Forest Demon Deacons"]);
+    });
   });
 
   test("a team staged in this wizard is in the set's league when the operator filed it there", () => {

@@ -557,6 +557,40 @@ export const selectorOptionFields = {
    */
   teamCascadeStartedAt: v.optional(v.number()),
   /**
+   * NEO-569 — the NB leagues this set's cards belong to, picked at set level
+   * (multi-select). Settable only on `setName`, `variantType`, `insert` and
+   * `parallel` rows; a sport, year or brand never carries it (sport rows are
+   * reference-seed data, and a league picked there would answer for every set
+   * beneath it).
+   *
+   * LOOKED UP, never copied down: a row's effective leagues are its own when
+   * it has them, else the nearest ancestor's on the walk self → parent that
+   * stops after `setName` (`lib/selectorLeagues.effectiveSetLeagueIds`). A
+   * parallel of the Base set sits under the Parallel variant type, so it
+   * inherits from there, not from the Base variant type.
+   *
+   * Never stored empty (a clear removes the field and the row inherits again),
+   * deduped, every league in the row's own sport, at most `MAX_SET_LEAGUES`
+   * (`selectorOptions.setSelectorOptionLeagues`, the one operator door). A new
+   * `setName` row is born with the sport's major league
+   * (`leagues.resolveDefaultLeagueId`); nothing else writes it except the
+   * armed `leagueBackfill`.
+   *
+   * Read any-of: a team is "in the set's league" when it is in any of these
+   * (team suggestions, the picker ranking, the wizard's Teams step). NB data
+   * only; no adapter or sync reads or writes it. Replaces the free-text
+   * `features.league`, which only `leagueBackfill.ts` still reads.
+   */
+  leagueIds: v.optional(v.array(v.id("leagues"))),
+  /**
+   * NEO-569 — when a `leagueIds` edit on THIS row last handed its subtree's
+   * teamless cards to `cardLeague.cascadeSetLeagues`, and that cascade has not
+   * yet reported back. Same contract as `teamCascadeStartedAt`: a fresh stamp
+   * refuses the next edit, a stale one is overwritten, the cascade's last
+   * invocation removes it. ABSENT means no cascade in flight.
+   */
+  leagueCascadeStartedAt: v.optional(v.number()),
+  /**
    * NEO-528 round 3 — "Player on every card": the player every NEW card
    * beneath this row is born with, when it arrives with no player of its own
    * (no resolved player and no name waiting for review).
@@ -1073,6 +1107,10 @@ export const ebayConditionCodeValidator = v.union(v.literal("NM"), v.literal("EX
  *                  eBay needs one
  *   setupIncomplete (eBay) the collector's eBay settings (shipping, payment,
  *                  returns, location) are not complete, so nothing was sent
+ *   noLeague       (eBay, NEO-569) the card carries no NB league yet
+ *                  (`cardChecklist.leagueId`), so eBay's League cannot be
+ *                  filled; an admin sets it in the card panel. Never
+ *                  withdraws a live listing
  * A new reason widens this union (additive, deploy before writing it).
  * Removing one needs every row carrying it cleared first: the listing tables
  * here and, since NEO-536, `syncReports.cards[].reason` (a collector's report
@@ -1091,6 +1129,7 @@ export const listingProblemReasonValidator = v.union(
   v.literal("missingAspect"),
   v.literal("noPhoto"),
   v.literal("setupIncomplete"),
+  v.literal("noLeague"),
 );
 
 /** NEO-536 — where a collector's sync report stands. `open` until an admin closes it. */
@@ -1880,6 +1919,17 @@ export default defineSchema({
       nameOnCard: v.string(),
     }))),
     teamOnCardIds: v.optional(v.array(v.id("teams"))),
+    // NEO-569 — the NB league this card belongs to: a saved, editable copy,
+    // settled from its teams whenever `teamOnCardIds` changes
+    // (`cardLeague.ts`, through `syncCardTeamLinks`): every team in one league
+    // gives that league; no team gives the set's league when the set has
+    // exactly one; anything else (teams in two leagues, a team without a
+    // league, no team in a many-league set) leaves it ABSENT for an admin to
+    // pick in the card panel (`updateCard.leagueId`). A team's own league
+    // change re-settles the cards that followed it
+    // (`cardLeague.recomputeTeamCards`). eBay holds a card without one
+    // (`noLeague`). No index yet: nothing filters cards by league.
+    leagueId: v.optional(v.id("leagues")),
     // NEO-90: set once the BSC per-card team-enrichment queue has checked
     // this card's `platformData.bsc` detail endpoint for a team, regardless
     // of outcome. Distinct from `teamOnCardIds` being empty, which can also

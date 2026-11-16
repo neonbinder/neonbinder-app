@@ -16,7 +16,8 @@
  *      at some. The `applicableAtLevels` field that used to gate them was
  *      removed from the `ExpectedFeature` type along with the corresponding
  *      filter logic — there is no such field/logic left to test.
- *   3. `applicableSports` filtering still works (League hidden for Pokemon).
+ *   3. League is never a generic feature row (NEO-569): it is the row's own
+ *      list of NB leagues, `SetLeagueRow`, mounted under Team at set-side levels.
  *   4. Editing a feature calls `setSelectorOptionFeature(selectorOptionId,
  *      key, value)` and shows a "Saved {label}" toast — no "propagated to N
  *      cards" language (that no longer exists; propagation was removed).
@@ -323,6 +324,49 @@ vi.mock("./EveryCardPlayerControl", () => ({
   ),
 }));
 
+/**
+ * NEO-569 — the League row owns its own Convex calls and has its own test file
+ * (SetLeagueRow.test.tsx). Here it is a stand-in that reports what the panel
+ * handed it, and lets a test drive the three callbacks.
+ */
+vi.mock("./SetLeagueRow", () => ({
+  default: ({
+    selectorOptionId,
+    levelLabel,
+    isSet,
+    ancestors,
+    onSaving,
+    onSaved,
+    onFailed,
+  }: {
+    selectorOptionId: string;
+    levelLabel: string;
+    isSet: boolean;
+    ancestors: Array<{ _id: string; value: string }>;
+    onSaving: (label: string) => void;
+    onSaved: (message: string) => void;
+    onFailed: (message: string) => void;
+  }) => (
+    <div
+      aria-label="Set league row (stub)"
+      data-option-id={selectorOptionId}
+      data-level-label={levelLabel}
+      data-is-set={String(isSet)}
+      data-ancestors={ancestors.map((a) => a.value).join(">")}
+    >
+      <button type="button" onClick={() => onSaving("League")}>
+        Stub saving league
+      </button>
+      <button type="button" onClick={() => onSaved("Saved League")}>
+        Stub saved league
+      </button>
+      <button type="button" onClick={() => onFailed("No such league")}>
+        Stub failed league
+      </button>
+    </div>
+  ),
+}));
+
 // ---------------------------------------------------------------------------
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
@@ -428,17 +472,11 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
   it("renders a row's own features[key] directly, with no 'Inherited' text anywhere", () => {
     currentRow = makeRow({
       level: "setName",
-      features: { league: "MLB", era: "Modern (1980-Now)", manufacturer: "Topps" },
+      features: { era: "Modern (1980-Now)", manufacturer: "Topps" },
     });
     currentChain = makeChain("Baseball");
 
     renderPanel();
-
-    // League select shows the row's own value.
-    const leagueSelect = screen.getByLabelText(
-      "Value for League",
-    ) as HTMLSelectElement;
-    expect(leagueSelect.value).toBe("MLB");
 
     const eraSelect = screen.getByLabelText("Value for Era") as HTMLSelectElement;
     expect(eraSelect.value).toBe("Modern (1980-Now)");
@@ -501,24 +539,20 @@ describe("SetAttributesPanel — write-once feature snapshot reads (NEO-71-74)",
     expect(screen.queryByLabelText("Value for Signed By")).toBeNull();
   });
 
-  it("hides League for a non stick-and-ball sport (Pokemon) via applicableSports + ancestorSport", () => {
-    currentRow = makeRow({ level: "setName", features: {} });
-    currentChain = makeChain("Pokemon");
+  it("NEO-569: never renders the retired free-text League feature row, whatever the sport or a stray legacy value", () => {
+    for (const sport of ["Baseball", "Pokemon"]) {
+      currentRow = makeRow({ level: "setName", features: { league: "MLB" } });
+      currentChain = makeChain(sport);
 
-    renderPanel();
+      const { unmount } = renderPanel();
 
-    expect(screen.queryByLabelText("Set feature League")).toBeNull();
-    // Era has no applicableSports restriction — still shows for Pokemon.
-    expect(screen.getByLabelText("Set feature Era")).toBeTruthy();
-  });
+      expect(screen.queryByLabelText("Set feature League")).toBeNull();
+      expect(screen.queryByLabelText("Value for League")).toBeNull();
+      // Era has no applicableSports restriction — still shows for both.
+      expect(screen.getByLabelText("Set feature Era")).toBeTruthy();
 
-  it("shows League for a stick-and-ball sport (Baseball)", () => {
-    currentRow = makeRow({ level: "setName", features: {} });
-    currentChain = makeChain("Baseball");
-
-    renderPanel();
-
-    expect(screen.getByLabelText("Set feature League")).toBeTruthy();
+      unmount();
+    }
   });
 
   it("calls setSelectorOptionFeature(selectorOptionId, key, value) and shows a 'Saved {label}' toast on edit, without any propagation language", async () => {
@@ -1064,18 +1098,20 @@ describe("SetAttributesPanel — clearing an attribute (NEO-217)", () => {
     expect(mockSetSelectorOptionFeature).not.toHaveBeenCalled();
   });
 
-  it("the League select offers an ENABLED blank option that clears the value", async () => {
-    currentRow = makeRow({ level: "setName", features: { league: "MLB" } });
+  it("a select (Era) offers an ENABLED blank option that clears the value", async () => {
+    // NEO-569: this used League, the first select here, until League became
+    // its own row; Era is the same control.
+    currentRow = makeRow({ level: "setName", features: { era: "Modern (1980-Now)" } });
     currentChain = makeChain("Baseball");
 
     renderPanel();
 
-    const leagueSelect = screen.getByLabelText(
-      "Value for League",
+    const eraSelect = screen.getByLabelText(
+      "Value for Era",
     ) as HTMLSelectElement;
-    const blank = Array.from(leagueSelect.options).find((o) => o.value === "")!;
-    // It was `disabled`, i.e. a placeholder — which is why League could be set
-    // but never un-set.
+    const blank = Array.from(eraSelect.options).find((o) => o.value === "")!;
+    // It was `disabled`, i.e. a placeholder — which is why a select could be
+    // set but never un-set.
     expect(blank.disabled).toBe(false);
     // a11y (audit fix, NEO-216/217): the option's visible text IS its
     // accessible name (a11y-1 in FeatureValueControl.tsx) — "No value" says
@@ -1083,18 +1119,18 @@ describe("SetAttributesPanel — clearing an attribute (NEO-217)", () => {
     expect(blank.textContent).toBe("No value");
 
     await act(async () => {
-      fireEvent.change(leagueSelect, { target: { value: "" } });
+      fireEvent.change(eraSelect, { target: { value: "" } });
     });
 
     await waitFor(() => {
       expect(mockSetSelectorOptionFeature).toHaveBeenCalledWith({
         selectorOptionId: SELECTOR_OPTION_ID,
-        key: "league",
+        key: "era",
         value: "",
       });
     });
     await waitFor(() => {
-      expect(screen.getByText("Cleared League")).toBeTruthy();
+      expect(screen.getByText("Cleared Era")).toBeTruthy();
     });
   });
 
@@ -1106,13 +1142,13 @@ describe("SetAttributesPanel — clearing an attribute (NEO-217)", () => {
 
     renderPanel();
 
-    const leagueSelect = screen.getByLabelText(
-      "Value for League",
+    const eraSelect = screen.getByLabelText(
+      "Value for Era",
     ) as HTMLSelectElement;
-    expect(leagueSelect.value).toBe("");
+    expect(eraSelect.value).toBe("");
 
     await act(async () => {
-      fireEvent.change(leagueSelect, { target: { value: "" } });
+      fireEvent.change(eraSelect, { target: { value: "" } });
     });
 
     expect(mockSetSelectorOptionFeature).not.toHaveBeenCalled();
@@ -4191,10 +4227,13 @@ describe("SetAttributesPanel — Player on every card (NEO-528)", () => {
     const team = screen.getByRole("group", { name: "Team" });
     // Team, then the section, with nothing between them.
     expect(team.compareDocumentPosition(stub) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // Team is the last thing in the toggle's body (the `aria-controls` target,
-    // NEO-496), and the section follows that body: it stays outside so a
-    // running ledger survives a collapse.
-    expect(team.parentElement?.lastElementChild).toBe(team);
+    // Team and then League (NEO-569: the set's leagues sit directly under its
+    // team) close the toggle's body (the `aria-controls` target, NEO-496),
+    // and the section follows that body: it stays outside so a running ledger
+    // survives a collapse.
+    const league = screen.getByLabelText("Set league row (stub)");
+    expect(team.nextElementSibling).toBe(league);
+    expect(team.parentElement?.lastElementChild).toBe(league);
     expect(team.parentElement?.nextElementSibling).toBe(stub);
     // Every other attribute comes after it.
     const prefix = screen.getByLabelText("Value for Card prefix");
@@ -4234,5 +4273,82 @@ describe("SetAttributesPanel — Player on every card (NEO-528)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stub dismiss collapsed" }));
     expect(document.activeElement).toBe(toggle);
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+});
+
+/**
+ * NEO-569 — the set's League row: where the panel mounts it and what it hands
+ * it. The row's own behaviour (chips, the add field, inheriting) is
+ * SetLeagueRow.test.tsx's.
+ */
+describe("SetAttributesPanel — the League row (NEO-569)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const STUB = "Set league row (stub)";
+
+  it("mounts under Team at the set and every set-side level below it, with the panel's word for the level", () => {
+    const cases: Array<[string, string]> = [
+      ["setName", "Set"],
+      ["variantType", "Variant"],
+      ["insert", "Insert"],
+      ["parallel", "Parallel"],
+    ];
+    for (const [level, label] of cases) {
+      currentRow = makeRow({ level, value: `node-${level}` });
+      currentChain = makeChain("Baseball");
+      const { unmount } = renderPanel();
+
+      const stub = screen.getByLabelText(STUB);
+      expect(stub.getAttribute("data-option-id")).toBe(SELECTOR_OPTION_ID);
+      expect(stub.getAttribute("data-level-label")).toBe(label);
+      expect(stub.getAttribute("data-is-set")).toBe(String(level === "setName"));
+      // The chain, so an inherited list can name the row it comes from.
+      expect(stub.getAttribute("data-ancestors")).toBe(
+        "Baseball>2024>Topps>2024 Topps Chrome",
+      );
+      // Directly after the Team row.
+      const team = screen.getByRole("group", { name: "Team" });
+      expect(
+        team.compareDocumentPosition(stub) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+      expect(team.nextElementSibling).toBe(stub);
+      unmount();
+    }
+  });
+
+  it("is not on sport, year or manufacturer rows", () => {
+    for (const level of ["sport", "year", "manufacturer"]) {
+      currentRow = makeRow({ level, value: `node-${level}` });
+      currentChain = makeChain("Baseball");
+      const { unmount } = renderPanel();
+      expect(screen.queryByLabelText(STUB)).toBeNull();
+      unmount();
+    }
+  });
+
+  it("speaks through the panel's toasts: Saving, Saved League, and a failure in the alert", async () => {
+    currentRow = makeRow({ level: "setName" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+
+    fireEvent.click(screen.getByRole("button", { name: "Stub saving league" }));
+    expect(screen.getByRole("status").textContent).toBe("Saving League…");
+
+    fireEvent.click(screen.getByRole("button", { name: "Stub saved league" }));
+    expect(screen.getByRole("status").textContent).toBe("Saved League");
+
+    fireEvent.click(screen.getByRole("button", { name: "Stub failed league" }));
+    expect(alertTexts()).toContain("Failed: No such league");
+  });
+
+  it("is not drawn while the panel is collapsed", () => {
+    currentRow = makeRow({ level: "insert", value: "Stars" });
+    currentChain = makeChain("Baseball");
+    render(
+      <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />,
+    );
+    expect(screen.queryByLabelText(STUB)).toBeNull();
   });
 });

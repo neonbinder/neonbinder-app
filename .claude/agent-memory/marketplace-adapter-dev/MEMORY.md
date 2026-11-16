@@ -91,3 +91,4 @@
 - [BSC call gate in unit tests](reference_bsc_call_gate_in_unit_tests.md) — stub ctx fails closed without runMutation; openBscGate/skipBscGateWaits/vi.mock open gate; 5 failures open it
 - [Fake-mode /health stub needs bscTarget](reference_fake_mode_health_stub_needs_bsc_target.md) — fake-mode convex-tests must serve bscTarget "fake" or every BSC credential call is refused; BSC keys carry the slug
 - [Cloud Run: load before listen](reference_cloud_run_load_before_listen.md) — throttled CPU starves post-listen boot work; load first, budget optional loads; spy Server.prototype.listen
+- [New listing problem reason touch list](reference_new_listing_problem_reason_touch_list.md) — ~8 lists; tsc catches only types.ts + copy.ts; REPORTABLE and seed SYNC_HELD_REASONS fail silently

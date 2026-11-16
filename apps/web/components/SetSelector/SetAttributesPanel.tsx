@@ -43,6 +43,7 @@ import PromoteToSetControl from "./PromoteToSetControl";
 import PublishedChecklistPanel from "./PublishedChecklistPanel";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
 import EveryCardPlayerControl from "./EveryCardPlayerControl";
+import SetLeagueRow from "./SetLeagueRow";
 import {
   ALL_SIDES,
   joinLabels,
@@ -400,6 +401,9 @@ export default function SetAttributesPanel({
       // NEO-345 — rendered as its own row (`AUTOGRAPH_FORMAT_FEATURE`), saved
       // through `setAutographFormat` so the leaf's AU cards follow it.
       if (f.key === AUTOGRAPH_FORMAT_FEATURE.key) return false;
+      // NEO-569 — League is the row's own list of NB leagues (`SetLeagueRow`),
+      // never the retired free-text `features.league`.
+      if (f.key === "league") return false;
       if (!f.applicableSports) return true;
       if (!ancestorSport) return true;
       return f.applicableSports.includes(ancestorSport);
@@ -1020,13 +1024,30 @@ export default function SetAttributesPanel({
               onFailed={showFailedToast}
             />
           )}
+          {/* NEO-569: directly under Team, at the same levels. The set's
+              leagues (any of them) are what the team pickers rank by, and a
+              teamless card in a one-league set takes that league. Keyed on
+              the row so a save in flight for one set never paints its chips
+              onto the next. */}
+          {showTeamRow && (
+            <SetLeagueRow
+              key={`set-league-${selectorOptionId}`}
+              selectorOptionId={selectorOptionId}
+              levelLabel={LEVEL_LABEL[leafLevel]}
+              isSet={leafLevel === "setName"}
+              ancestors={chain}
+              onSaving={showSavingToast}
+              onSaved={showToast}
+              onFailed={showFailedToast}
+            />
+          )}
         </div>
       )}
 
       {/* NEO-528 — "Player on every card": the stored player and cameos every
           new card beneath this row is born with, and the run that brings the
           cards already here along. At EVERY level (a whole year of one
-          player's cards is a real thing), directly under Team: it is the
+          player's cards is a real thing), under Team and League: it is the
           other attribute here that reaches every card. Outside the
           `expanded` branch so a run's ledger stays on screen when the panel
           is collapsed, until it is dismissed; the control draws its section

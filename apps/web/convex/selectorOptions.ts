@@ -34,6 +34,7 @@ import {
   deriveCardObservedFeatures,
   deriveOwnLevelFeatures,
   inheritableFeatures,
+  RETIRED_FEATURE_KEYS,
   NODE_ONLY_FEATURE_KEYS,
   validateFeatureValue,
 } from "./features/deriveCardFeatures";
@@ -276,6 +277,17 @@ import { normalizeCardNotes } from "./cardNotes";
 // the one card delete (`removeCardRow`, with its collector guard), the
 // per-mutation card counts, and the stored-card title the backfill shares.
 import { syncCardTeamLinks } from "./cardTeamLinks";
+// NEO-569 — each card's league (settled through the seam above) and a set
+// row's leagues; see convex/cardLeague.ts.
+import {
+  deriveNewCardLeagueId,
+  newCardLeagueCache,
+  readSelectorOptionLeagues,
+  resolveCardLeagueForWrite,
+  settledCardLeagueId,
+  selectorOptionLeaguesValidator,
+  writeSelectorOptionLeagues,
+} from "./cardLeague";
 import { collectedCardIds, countCollectors, removeCardRow } from "./cardRowDelete";
 import { mergeCollectorCounts, type CollectorCount } from "../lib/collection/collectors";
 import { newRowSubtreeCounts, createCardCountLedger } from "./cardCounts";
@@ -318,6 +330,8 @@ import {
   findLeagueByName,
   findOrCreateLeague,
   normalizeLeagueName,
+  // NEO-569 — a new SET (not a team) is born with the sport's major league.
+  bornSetLeagueIds,
 } from "./leagues";
 // PR 451 (NEO-478 / NEO-487) — the publisher checklist's pairing (pure, rule
 // 7), the shared team splitter, and the "Waiting on BuySportsCards…" run key.
@@ -2363,6 +2377,10 @@ export const getCardChecklist = query({
         nameOnCard: v.string(),
       }))),
       teamOnCardIds: v.optional(v.array(v.id("teams"))),
+      // NEO-569 — the card's own NB league (see schema.ts). Listed because
+      // this validator is STRICT: a row carrying it would otherwise fail the
+      // whole checklist with `Object contains extra field`.
+      leagueId: v.optional(v.id("leagues")),
       // NEO-90: set once the BSC per-card team-enrichment queue has
       // checked this card, regardless of outcome (see schema.ts).
       teamCheckDoneAt: v.optional(v.number()),
@@ -2845,7 +2863,6 @@ export const storeSelectorOptions = mutation({
     // below exactly as `features` is — once, at creation. Never re-applied to
     // a row that already exists (see schema.ts `teamIds`).
     const parentTeamIds = inheritedTeamIds(parentRowForCopyDown);
-
     // The sibling snapshot. This is the ONLY set of rows this call may touch —
     // tier 0's client-supplied ids are resolved against it rather than through
     // ctx.db.get, so a caller cannot steer a write at a row under a different
@@ -3384,6 +3401,10 @@ export const storeSelectorOptions = mutation({
       const insertMetadata = {
         ...(level === "manufacturer" ? { setNamePrefix: insertValue } : {}),
       };
+      // NEO-569 — a new set is born with its sport's major league (memoised
+      // per brand for the whole call, so the batch resolves it once).
+      const bornLeagueIds =
+        level === "setName" && parentId ? await bornSetLeagueIds(ctx, parentId) : undefined;
       const id = await ctx.db.insert("selectorOptions", {
         ...newRowSubtreeCounts(level),
         level,
@@ -3403,6 +3424,7 @@ export const storeSelectorOptions = mutation({
           : {}),
         ...(Object.keys(features).length > 0 ? { features } : {}),
         ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
+        ...(bornLeagueIds ? { leagueIds: bornLeagueIds } : {}),
         ...(sportConfig ? { sportConfig } : {}),
         lastUpdated: Date.now(),
       });
@@ -4052,6 +4074,10 @@ export const addCustomSelectorOption = mutation({
       }
     }
 
+    // NEO-569 — a new set is born with its sport's major league.
+    const bornLeagueIds =
+      level === "setName" && parentId ? await bornSetLeagueIds(ctx, parentId) : undefined;
+
     const id = await ctx.db.insert("selectorOptions", {
       ...newRowSubtreeCounts(level),
       level,
@@ -4065,6 +4091,7 @@ export const addCustomSelectorOption = mutation({
       ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       ...(Object.keys(features).length > 0 ? { features } : {}),
       ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
+      ...(bornLeagueIds ? { leagueIds: bornLeagueIds } : {}),
       lastUpdated: Date.now(),
     });
 
@@ -6321,6 +6348,15 @@ export const addCustomCard = mutation({
         (await findSportForSelectorOption(ctx, args.selectorOptionId)),
     );
 
+    // NEO-569 — born with its league (its teams', else its set's only one),
+    // computed before the insert rather than patched after it.
+    const addLeagueCache = newCardLeagueCache();
+    const insertLeagueId = await deriveNewCardLeagueId(
+      ctx,
+      { selectorOptionId: args.selectorOptionId, teamOnCardIds },
+      addLeagueCache,
+    );
+
     // Insert with a placeholder sortOrder; restampCardChecklistSortOrders
     // below assigns the correct natural-cardNumber position. This way a
     // user can add #42 to a set already containing #1..#100 and the new
@@ -6329,6 +6365,7 @@ export const addCustomCard = mutation({
       selectorOptionId: args.selectorOptionId,
       cardNumber: args.cardNumber,
       cardName: args.cardName,
+      ...(insertLeagueId ? { leagueId: insertLeagueId } : {}),
       // NEO-26/NEO-208: legacy `team` string removed long ago. Teams reach a
       // new card one of two ways — real ids from the quick-add TeamPicker
       // (`teamOnCardIds`, below), or, from an old SPA bundle only, typed names
@@ -6376,7 +6413,12 @@ export const addCustomCard = mutation({
     }
     // NEO-358 — and the team → cards index.
     if (hasLinkedTeams) {
-      await syncCardTeamLinks(ctx, id, teamOnCardIds, { fresh: true });
+      await syncCardTeamLinks(
+        ctx,
+        { _id: id, selectorOptionId: args.selectorOptionId, leagueId: insertLeagueId },
+        teamOnCardIds,
+        { fresh: true, leagueCache: addLeagueCache },
+      );
     }
     // NEO-528 round 3 — and the cameo index, through the one writer (the
     // names are known, so it reads no player).
@@ -6442,6 +6484,11 @@ export const updateCard = mutation({
     // Empty array clears the link; the legacy free-text `team` field
     // was removed in this PR.
     teamOnCardIds: v.optional(v.array(v.id("teams"))),
+    // NEO-569 — an admin's explicit league for this card (the card panel's
+    // League select): a league of the card's own sport, or `null` to clear.
+    // Omit to leave it alone. When `teamOnCardIds` is in the same call, the
+    // teams settle the league first and this value then wins.
+    leagueId: v.optional(v.union(v.id("leagues"), v.null())),
     attributes: v.optional(v.array(v.string())),
     // NEO-25: structured per-card fields now editable from the card detail
     // panel. All are full-replacement (omit to leave untouched). `isRookie`/
@@ -6500,7 +6547,9 @@ export const updateCard = mutation({
      * `updates` it would be spread straight into `ctx.db.patch` and refused by
      * the schema as an unexpected field — which is exactly what happened.
      */
-    const { id, playerNamesOnCard: _printedNames, ...updates } = args;
+    // NEO-569 — `leagueId` too: it is validated and written AFTER the team
+    // settle below (and `null` is not a storable value), never spread.
+    const { id, playerNamesOnCard: _printedNames, leagueId: requestedLeagueId, ...updates } = args;
     const filtered: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined) {
@@ -6756,12 +6805,25 @@ export const updateCard = mutation({
     }
     // NEO-358 — the team → cards index follows a written `teamOnCardIds`
     // (validated and deduped above), emptied lists included.
+    // NEO-569 — and the card's league follows a real team change (rule B,
+    // inside the seam), settled against the row as it stood before this save.
     if (Array.isArray(filtered.teamOnCardIds)) {
       await syncCardTeamLinks(
         ctx,
-        id,
+        await loadStoredCard(),
         filtered.teamOnCardIds as Array<Id<"teams">>,
+        { leagueCache: newCardLeagueCache() },
       );
+    }
+    // NEO-569 — the admin's explicit league wins over whatever the teams
+    // settled. A league of the card's sport, or null to clear.
+    if (requestedLeagueId !== undefined) {
+      const card = await ctx.db.get(id);
+      if (!card) throw new ConvexError("updateCard: no such card");
+      const leagueId = await resolveCardLeagueForWrite(ctx, card, requestedLeagueId);
+      if (leagueId !== card.leagueId) {
+        await ctx.db.patch(id, { leagueId, lastUpdated: Date.now() });
+      }
     }
     return null;
   },
@@ -7265,6 +7327,10 @@ export async function materializeSelectorOptionFeature(
   if (NODE_ONLY_FEATURE_KEYS.has(key)) {
     throw new Error(`materializeSelectorOptionFeature: ${key} is not inherited`);
   }
+  // NEO-569 — the retired free-text League never cascades again.
+  if (RETIRED_FEATURE_KEYS.has(key)) {
+    throw new Error(`materializeSelectorOptionFeature: ${key} is retired`);
+  }
   validateFeatureValue(key, value);
 
   const row = await ctx.db.get(selectorOptionId);
@@ -7391,6 +7457,11 @@ export async function materializeSelectorOptionFeature(
 const FEATURE_KEYS_WITH_THEIR_OWN_DOOR: Record<string, string> = {
   autographFormat:
     "The autograph format has its own control: use autographFormat.setAutographFormat.",
+  // NEO-569 — League is NB data with ids now: a set's
+  // `selectorOptions.leagueIds` and a card's `cardChecklist.leagueId`. The
+  // free-text key is retired; a write here would bring it back.
+  league:
+    "League has its own control: use selectorOptions.setSelectorOptionLeagues for a set, or updateCard's leagueId for a card.",
 };
 
 function refuseKeyWithItsOwnDoor(key: string): void {
@@ -7820,6 +7891,46 @@ export const setSelectorOptionTeams = mutation({
 });
 
 /**
+ * NEO-569 — a set row's League control: its own leagues (null when it
+ * inherits), its effective leagues, the row it inherits them from, and every
+ * league of its sport (major first, then A–Z) for the "Add league" list.
+ * Admin, like every other read of a set row. The body is
+ * `cardLeague.readSelectorOptionLeagues`.
+ */
+export const getSelectorOptionLeagues = query({
+  args: { selectorOptionId: v.id("selectorOptions") },
+  returns: selectorOptionLeaguesValidator,
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    return await readSelectorOptionLeagues(ctx, args.selectorOptionId);
+  },
+});
+
+/**
+ * NEO-569 — set (or clear) a set row's leagues: the whole list, replacing
+ * what the row carried. An empty list removes the row's own list, so it
+ * inherits its parent's again. Only on `setName`, `variantType`, `insert` and
+ * `parallel`; deduped; at most `MAX_SET_LEAGUES`; every league in the row's
+ * sport. When the single league a teamless card would take changes, the
+ * subtree's teamless cards follow (rule A, `cardLeague.cascadeSetLeagues`),
+ * and a second edit is refused until that cascade reports back. Every refusal
+ * is a `ConvexError` with a sentence for a person. The body is
+ * `cardLeague.writeSelectorOptionLeagues`.
+ */
+export const setSelectorOptionLeagues = mutation({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    leagueIds: v.array(v.id("leagues")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    await requireAdmin(ctx);
+    await writeSelectorOptionLeagues(ctx, args.selectorOptionId, args.leagueIds);
+    return null;
+  },
+});
+
+/**
  * NEO-277 — the chunked, self-rescheduling cascade behind
  * `setSelectorOptionTeams`. Internal: the only caller is that mutation, and
  * the arguments name a subtree and a previous value that only it knows.
@@ -7955,6 +8066,8 @@ export const cascadeSelectorOptionTeams = internalMutation({
     let nodeIndex = args.nodeIndex ?? 0;
     let cursor: number | undefined = args.cursor;
     let budget = TEAM_CASCADE_CARD_PAGE;
+    // NEO-569 — the new teams' leagues, read once for the page.
+    const leagueCache = newCardLeagueCache();
     while (nodeIndex < nodeIds.length && budget > 0) {
       const nodeId = nodeIds[nodeIndex];
       const after = cursor;
@@ -7970,12 +8083,17 @@ export const cascadeSelectorOptionTeams = internalMutation({
       for (const card of rows) {
         budget -= 1;
         if (cardTeamFollowVerdict(card, previous, next) !== "follow") continue;
+        // NEO-569 — the card's league follows its new team in the SAME patch
+        // (rule B), and the seam is handed the updated card so it finds
+        // nothing left to write: no extra operation per card.
+        const leagueId = await settledCardLeagueId(ctx, card, next, leagueCache);
         await ctx.db.patch(card._id, {
           teamOnCardIds: [...next],
+          leagueId,
           lastUpdated: Date.now(),
         });
         // NEO-358 — the team → cards index follows the card.
-        await syncCardTeamLinks(ctx, card._id, next);
+        await syncCardTeamLinks(ctx, { ...card, leagueId }, next, { leagueCache });
       }
       if (rows.length < requested) {
         // This node is exhausted; on to the next with a fresh cursor.
@@ -16925,11 +17043,25 @@ export const CARDS_PER_COMMIT_CHUNK = 150;
  * that is 44 cards, about 1,200 operations, where 150 would be ~4,000.
  */
 const COMMIT_CHUNK_OPS_PER_CARD = 6;
-export const COMMIT_CHUNK_OP_BUDGET = CARDS_PER_COMMIT_CHUNK * (COMMIT_CHUNK_OPS_PER_CARD + 2);
+
+/**
+ * NEO-569 — the card's league. A new card carries it in its insert (no extra
+ * operation); an updated card whose teams changed may take one more patch
+ * (`settleCardLeague`). The reads behind it (each team's league, the set's
+ * leagues) are cached per chunk and amortise to nothing per card. Charged as
+ * one operation per card, ceiling not average, and added to the budget too,
+ * so a chunk with a default player or one cameo still commits 150 cards:
+ * 150 × 9 = 1,350 operations, well under the ~1,800 the 335-card commit
+ * carried before it timed out at 712.
+ */
+const COMMIT_CHUNK_LEAGUE_OPS_PER_CARD = 1;
+export const COMMIT_CHUNK_OP_BUDGET =
+  CARDS_PER_COMMIT_CHUNK * (COMMIT_CHUNK_OPS_PER_CARD + COMMIT_CHUNK_LEAGUE_OPS_PER_CARD + 2);
 
 /** Cards per commit chunk when every new card costs `extraWritesPerCard` more inserts. */
 export function commitChunkSize(extraWritesPerCard: number): number {
-  const perCard = COMMIT_CHUNK_OPS_PER_CARD + Math.max(0, extraWritesPerCard);
+  const perCard =
+    COMMIT_CHUNK_OPS_PER_CARD + COMMIT_CHUNK_LEAGUE_OPS_PER_CARD + Math.max(0, extraWritesPerCard);
   return Math.max(1, Math.min(CARDS_PER_COMMIT_CHUNK, Math.floor(COMMIT_CHUNK_OP_BUDGET / perCard)));
 }
 
@@ -16950,7 +17082,9 @@ export function commitChunkDefaultAllowance(
   if (sizedWritesPerCard !== undefined) return Math.max(0, Math.floor(sizedWritesPerCard));
   return Math.max(
     0,
-    Math.floor(COMMIT_CHUNK_OP_BUDGET / Math.max(1, chunkLength)) - COMMIT_CHUNK_OPS_PER_CARD,
+    Math.floor(COMMIT_CHUNK_OP_BUDGET / Math.max(1, chunkLength)) -
+      COMMIT_CHUNK_OPS_PER_CARD -
+      COMMIT_CHUNK_LEAGUE_OPS_PER_CARD,
   );
 }
 
@@ -20357,6 +20491,8 @@ export const commitCardChecklistChunk = internalMutation({
      * client argument.
      */
     let chunkSport: { id: Id<"selectorOptions"> | undefined } | undefined;
+    // NEO-569 — team and set league reads for this chunk's cards, once each.
+    const leagueCache = newCardLeagueCache();
     const cardSport = async (): Promise<Id<"selectorOptions"> | undefined> => {
       if (!chunkSport) {
         chunkSport = {
@@ -20738,7 +20874,7 @@ export const commitCardChecklistChunk = internalMutation({
         // two never both apply; `operatorFill` only fills an empty row).
         const teamsWritten = operatorFill ?? teamIdsWritten;
         if (teamsWritten !== undefined) {
-          await syncCardTeamLinks(ctx, existing._id, teamsWritten);
+          await syncCardTeamLinks(ctx, existing, teamsWritten, { leagueCache });
         }
         if (teamAnswer.enqueue) bscTeamEnrichmentIds.push(existing._id);
       } else {
@@ -20897,7 +21033,7 @@ export const commitCardChecklistChunk = internalMutation({
           // NEO-313 — the new card's player index, kept inside
           // `insertCardRow` with `fresh: true` and this chunk's `cardSport`.
           // NEO-358 — which also stamps the card's `sportId`.
-          { sport: cardSport },
+          { sport: cardSport, leagueCache },
           // NEO-358 — +1 on the leaf's counts, flushed once below.
           countLedger,
         );

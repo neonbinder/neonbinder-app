@@ -44,6 +44,12 @@ import { internalAction, internalMutation } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
+import {
+  newCardLeagueCache,
+  settleCardLeague,
+  type CardLeagueCache,
+  type LeagueSettleCard,
+} from "./cardLeague";
 
 /**
  * What one card's rows must change by to match its `teamOnCardIds`.
@@ -86,13 +92,25 @@ export function planCardTeamLinks(
  * `fresh: true` is for a card inserted in the same transaction: there is
  * nothing to diff against, so the read is skipped (the commit chunk inserts up
  * to `CARDS_PER_COMMIT_CHUNK` cards per transaction and counts every read).
+ *
+ * NEO-569 — and the seam where a card's league follows its teams. When the
+ * team set actually CHANGED (the diff is non-empty) on a stored card, the
+ * card's `leagueId` is settled through `cardLeague.settleCardLeague` (rule B:
+ * a league that is still one of its teams' keeps; otherwise re-derived),
+ * patched only when it differs. `card` is the row as it stood before this
+ * write (its `leagueId` is the "current" value), which is why the parameter is
+ * a card and not an id: every caller had to be reviewed for it. A `fresh`
+ * card is never settled here — `insertCardRow` / `addCustomCard` put its
+ * league in the insert. `leagueCache` is the caller's per-transaction cache
+ * of team and set league reads.
  */
 export async function syncCardTeamLinks(
   ctx: Pick<MutationCtx, "db">,
-  cardId: Id<"cardChecklist">,
+  card: LeagueSettleCard,
   teamOnCardIds: ReadonlyArray<Id<"teams">> | undefined,
-  opts: { fresh?: boolean } = {},
+  opts: { fresh?: boolean; leagueCache: CardLeagueCache },
 ): Promise<void> {
+  const cardId = card._id;
   if (opts.fresh && (teamOnCardIds ?? []).length === 0) return;
   const existing = opts.fresh
     ? []
@@ -105,6 +123,47 @@ export async function syncCardTeamLinks(
   for (const teamId of toInsert) {
     await ctx.db.insert("cardTeamLinks", { cardChecklistId: cardId, teamId });
   }
+  if (!opts.fresh && (toDelete.length > 0 || toInsert.length > 0)) {
+    await settleCardLeague(ctx, card, teamOnCardIds, opts.leagueCache);
+  }
+}
+
+/**
+ * NEO-569 — does any card show this team? One indexed `.first()`, so a team's
+ * league edit schedules `cardLeague.recomputeTeamCards` only when there is a
+ * card to recompute.
+ */
+export async function teamHasCardTeamLinks(
+  ctx: Pick<QueryCtx, "db">,
+  teamId: Id<"teams">,
+): Promise<boolean> {
+  const first = await ctx.db
+    .query("cardTeamLinks")
+    .withIndex("by_team", (q) => q.eq("teamId", teamId))
+    .first();
+  return first !== null;
+}
+
+/**
+ * NEO-569 — one page of the cards showing a team, for
+ * `cardLeague.recomputeTeamCards`. A READ kept here so this module stays the
+ * one sanctioned reader of the index outside the collector's search.
+ */
+export async function pageCardTeamLinksForTeam(
+  ctx: Pick<QueryCtx, "db">,
+  teamId: Id<"teams">,
+  cursor: string | null,
+  numItems: number,
+): Promise<{ cardIds: Array<Id<"cardChecklist">>; isDone: boolean; continueCursor: string }> {
+  const page = await ctx.db
+    .query("cardTeamLinks")
+    .withIndex("by_team", (q) => q.eq("teamId", teamId))
+    .paginate({ cursor, numItems });
+  return {
+    cardIds: page.page.map((row) => row.cardChecklistId),
+    isDone: page.isDone,
+    continueCursor: page.continueCursor,
+  };
 }
 
 /**
@@ -204,6 +263,7 @@ export const backfillCardTeamLinksPage = internalMutation({
     let cardsChanged = 0;
     let rowsInserted = 0;
     let rowsDeleted = 0;
+    const leagueCache = newCardLeagueCache();
     for (const card of page.page) {
       const existing = await ctx.db
         .query("cardTeamLinks")
@@ -216,7 +276,7 @@ export const backfillCardTeamLinksPage = internalMutation({
       rowsInserted += plan.toInsert.length;
       rowsDeleted += plan.toDelete.length;
       if (args.apply) {
-        await syncCardTeamLinks(ctx, card._id, card.teamOnCardIds);
+        await syncCardTeamLinks(ctx, card, card.teamOnCardIds, { leagueCache });
       }
     }
     return {

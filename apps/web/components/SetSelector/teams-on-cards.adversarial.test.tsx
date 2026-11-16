@@ -79,6 +79,7 @@ function build(
     setYear?: number;
     teamNameEvidence?: Record<string, ServerTeam[]>;
     setLeagueId?: string | null;
+    setLeagueIds?: string[];
     settled?: ReadonlySet<number>;
   } = {},
 ) {
@@ -93,7 +94,11 @@ function build(
     ...(extra.teamNameEvidence
       ? { teamNameEvidence: new Map(Object.entries(extra.teamNameEvidence)) }
       : {}),
-    ...(extra.setLeagueId !== undefined ? { setLeagueId: extra.setLeagueId } : {}),
+    // NEO-569 — the builder takes the set's leagues as a list (any-of).
+    ...(extra.setLeagueIds !== undefined ? { setLeagueIds: extra.setLeagueIds } : {}),
+    ...(extra.setLeagueId !== undefined
+      ? { setLeagueIds: extra.setLeagueId ? [extra.setLeagueId] : [] }
+      : {}),
   });
 }
 

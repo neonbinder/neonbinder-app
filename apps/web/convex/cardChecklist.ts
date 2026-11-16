@@ -41,12 +41,12 @@ import { teamFullName } from "../lib/teams/team-name";
 // NEO-335: the wizard's pre-save team suggestions (`teamSuggestionsForPreview`).
 import { ConvexError } from "convex/values";
 import { sameNamePlayers } from "./players";
-import { isDatedTeamYear } from "../lib/players/team-tenure";
 // Called inside the handler only; `cardPlayerLinks.ts` imports this module
 // back (for `findSportForSelectorOption`), which is safe for the same reason.
 import { recentCardIdsForPlayer } from "./cardPlayerLinks";
 // NEO-358 — every `teamOnCardIds` write here keeps the team → cards index.
 import { syncCardTeamLinks } from "./cardTeamLinks";
+import { newCardLeagueCache } from "./cardLeague";
 // NEO-330: also the key `entityReviewSkips.nameNormalized` is written with
 // (the commit prelude's `norm`). A skip lookup keyed any other way would miss.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
@@ -59,7 +59,7 @@ import {
   type TeamSuggestionTier,
 } from "./lib/teamFill";
 // NEO-335 Phase 2: the set's league (C2b) and a listing's team name as choices.
-import { findLeagueByName } from "./leagues";
+import { effectiveSetLeagueIds } from "./lib/selectorLeagues";
 import { pickTeamForYear, teamOptionLabel } from "../lib/teams/team-era";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
 // NEO-345: BSC attribute tokens read into NB's vocabulary, and the closed
@@ -177,6 +177,8 @@ export const backfillTeamToOnCardIds = internalMutation({
      * cached as such, so a miss is not re-walked either.
      */
     const setYearCache = new Map<string, number | undefined>();
+    // NEO-569 — team and set league reads, shared across the batch.
+    const leagueCache = newCardLeagueCache();
     const setYearFor = async (
       selectorOptionId: Id<"selectorOptions">,
     ): Promise<number | undefined> => {
@@ -279,7 +281,7 @@ export const backfillTeamToOnCardIds = internalMutation({
         lastUpdated: Date.now(),
       } as any);
       // NEO-358 — the team → cards index follows the link.
-      await syncCardTeamLinks(ctx, row._id, [teamId]);
+      await syncCardTeamLinks(ctx, row, [teamId], { leagueCache });
       processed += 1;
     }
 
@@ -894,7 +896,9 @@ export const applyBscTeamResolution = internalMutation({
           lastUpdated: Date.now(),
         });
         // NEO-358 — the team → cards index follows the card.
-        await syncCardTeamLinks(ctx, row._id, [wholeTeamId]);
+        await syncCardTeamLinks(ctx, row, [wholeTeamId], {
+          leagueCache: newCardLeagueCache(),
+        });
         return { applied: true, unmatched: false };
       }
       // The whole string names a team NB holds, but not one this card can
@@ -995,7 +999,9 @@ export const applyBscTeamResolution = internalMutation({
       lastUpdated: Date.now(),
     });
     // NEO-358 — the team → cards index follows the card.
-    await syncCardTeamLinks(ctx, row._id, resolvedTeamIds);
+    await syncCardTeamLinks(ctx, row, resolvedTeamIds, {
+      leagueCache: newCardLeagueCache(),
+    });
 
     return { applied: true, unmatched: false };
   },
@@ -1647,14 +1653,16 @@ type PlayerSuggestionResult = {
  * sport — and anything else is no evidence, never a guess at which of two
  * same-name players is meant. Results come back in input order.
  *
- * ## The set's league (C2b)
+ * ## The set's leagues (C2b, NEO-569)
  *
- * The set's `features.league` — NB's own field, derived from the sport when
- * the node is created and operator-editable — read from the nearest node on
- * the walk up that carries one, resolved with `findLeagueByName` in the
- * set's sport. Its id and `level` rank each career team (0 same league, 1
- * same level, 2 other) to break a window tie and to order candidates. No
- * league row → nothing is ranked and nothing is tie-broken.
+ * The node's effective `leagueIds` — NB's own league rows, picked at set
+ * level (`lib/selectorLeagues.effectiveSetLeagueIds`: the node's own, else
+ * the nearest ancestor's up to the set). Any-of: a career team ranks 0 when
+ * it is in any of them, 1 when its league's level is any of theirs, 2
+ * otherwise, to break a window tie and to order candidates. No league →
+ * nothing is ranked and nothing is tie-broken. Undated career stints reach
+ * the career rule too, which counts one only when it is the player's one team
+ * in the set's leagues (`teamFill.careerTeamVerdict`).
  *
  * ## `teamNames` — names resolved to existing NB teams, as CHOICES
  *
@@ -1693,7 +1701,9 @@ export const teamSuggestionsForPreview = query({
     /** The set's sport — the browser's team search and New Team dialog file
      *  under it, and the commit refuses any other. */
     sportId: v.union(v.id("selectorOptions"), v.null()),
-    /** The league the set prefers (C2b), when it has one we hold. */
+    /** NEO-569 — the set's effective leagues (C2b, any-of), in the set's order. */
+    setLeagueIds: v.array(v.id("leagues")),
+    /** The first of `setLeagueIds`, or null: kept for a bundle older than NEO-569. */
     setLeagueId: v.union(v.id("leagues"), v.null()),
     players: v.array(
       v.object({
@@ -1747,6 +1757,7 @@ export const teamSuggestionsForPreview = query({
       return {
         setYear: null,
         sportId: null,
+        setLeagueIds: [],
         setLeagueId: null,
         players: args.players.map(empty),
         teamNames: teamNameArgs.map(noTeams),
@@ -1754,18 +1765,15 @@ export const teamSuggestionsForPreview = query({
     }
 
     // One walk up the chain for the facts it holds: the sport (the card
-    // links are filed under the CARD's sport), the setName row whose
-    // children hold the base checklist, and the nearest `features.league`.
+    // links are filed under the CARD's sport) and the setName row whose
+    // children hold the base checklist.
     let sportId: Id<"selectorOptions"> | undefined;
     let setNameNode: Doc<"selectorOptions"> | null = null;
-    let leagueName: string | undefined;
     {
       let cursor: Doc<"selectorOptions"> | null = node;
       let depth = 0;
       while (cursor && depth < 16) {
         if (cursor.level === "setName" && !setNameNode) setNameNode = cursor;
-        const ownLeague = cursor.features?.league?.trim();
-        if (ownLeague && leagueName === undefined) leagueName = ownLeague;
         if (cursor.level === "sport") {
           sportId = cursor._id;
           break;
@@ -1776,12 +1784,20 @@ export const teamSuggestionsForPreview = query({
     }
     const setYear = await findSetYearForSelectorOption(ctx, node._id);
 
-    // C2b — the set's league, by NB's own field and NB's own row.
-    const setLeague =
-      sportId && leagueName ? await findLeagueByName(ctx, { name: leagueName, sportId }) : null;
-    const setPreference = setLeague
-      ? { leagueId: setLeague._id as string, level: setLeague.level ?? null }
-      : null;
+    // C2b / NEO-569 — the set's leagues, by NB's own field and NB's own rows,
+    // any-of. A league of another sport (or one that is gone) is not ranked by.
+    const setLeagues: Array<Doc<"leagues">> = [];
+    for (const leagueId of await effectiveSetLeagueIds(ctx, node._id)) {
+      const league = await ctx.db.get(leagueId);
+      if (league && league.sportId === sportId) setLeagues.push(league);
+    }
+    const setPreference =
+      setLeagues.length > 0
+        ? {
+            leagueIds: setLeagues.map((league) => league._id as string),
+            levels: setLeagues.map((league) => league.level ?? null),
+          }
+        : null;
 
     const parallelOfNodeId =
       node.level === "parallel" && node.parentId ? node.parentId : null;
@@ -1895,11 +1911,13 @@ export const teamSuggestionsForPreview = query({
       }
       const usablePlayer = player
         ? {
-            // NEO-285 — dated stints only: the suggestion reasons in seasons,
-            // and an undated college stint has none.
-            teamYears: (player.teamYears ?? [])
-              .filter(isDatedTeamYear)
-              .filter((entry) => known.get(entry.teamId) !== null),
+            // NEO-569 — undated stints go through too: the career rule counts
+            // one only when it is the player's ONE team in the set's leagues
+            // (Jason, 2026-11-16), and ignores every undated stint otherwise,
+            // as NEO-285's filter here used to.
+            teamYears: (player.teamYears ?? []).filter(
+              (entry) => known.get(entry.teamId) !== null,
+            ),
           }
         : undefined;
 
@@ -1914,6 +1932,7 @@ export const teamSuggestionsForPreview = query({
         currentYear,
         maxCandidates: TEAM_SUGGESTION_MAX_CANDIDATES,
         rankOf: (teamId) => known.get(teamId) ?? UNRANKED,
+        setHasLeagues: setPreference !== null,
       });
 
       let answer: PlayerSuggestionResult["answer"] = null;
@@ -1998,7 +2017,8 @@ export const teamSuggestionsForPreview = query({
     return {
       setYear: setYear ?? null,
       sportId: sportId ?? null,
-      setLeagueId: setLeague?._id ?? null,
+      setLeagueIds: setLeagues.map((league) => league._id),
+      setLeagueId: setLeagues[0]?._id ?? null,
       players,
       teamNames,
     };

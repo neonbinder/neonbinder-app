@@ -84,6 +84,10 @@ export function problemCopy(platform: ListingPlatform): Record<ListingProblemRea
     notOnSheet: `${name} doesn't show this card for this set, so it can't list there.`,
     rejected: `${name} turned this one down.`,
     missingAspect: `${name} wants a card detail we don't have yet, so it's held back.`,
+    // NEO-569: only the crew sets a card's league; the collector reports it.
+    // Said where the Report action is: the dashboard's Sync status. On the
+    // dashboard itself `problemSentence(..., "dashboard")` says it shorter.
+    noLeague: `${name} listings need a league, and this card doesn't have one yet. Report it from Sync status on your dashboard and our crew sets it.`,
     noPhoto: `${name} listings need a photo. Add one to a copy of this card and it goes up.`,
     setupIncomplete: `Finish your ${name} setup in ${credentialsWords(platform)} and this one goes up.`,
   };
@@ -105,6 +109,8 @@ export function problemCopyReadOnly(platform: ListingPlatform): Record<ListingPr
     noPrice: "No price yet: no common price on the set and no minimum price on the card.",
     noCondition: "A copy has no condition.",
     noPhoto: `No photo on a copy of this card yet, and ${name} listings need one.`,
+    // The admin is the one who can fix it: say where.
+    noLeague: `No league on this card yet, and ${name} listings need one. Pick it in the card's panel.`,
     setupIncomplete: `The collector's ${name} setup isn't finished.`,
   };
 }
@@ -116,13 +122,22 @@ export const PROBLEM_COPY_READ_ONLY: Record<ListingProblemReason, string> = prob
  * BSC's `rejectedPushDetail`), said as ours, never framed as a quote from the
  * platform; for `missingAspect` the detail it wants, when the server names
  * it ("Team").
+ *
+ * `surface` is where the sentence shows. Only the dashboard's Sync status
+ * offers "Report to our crew" (NEO-536), so a reason only the crew fixes
+ * (NEO-569 `noLeague`) says "Report it" there and, everywhere else (the
+ * Inventory Sync status tab, the default), where to go to report it.
  */
 export function problemSentence(
   problem: Pick<SyncProblem, "reason" | "detail">,
   readOnly = false,
   platform: ListingPlatform = "bsc",
+  surface: "inventory" | "dashboard" = "inventory",
 ): string {
   const detail = problem.detail?.trim();
+  if (problem.reason === "noLeague" && !readOnly && surface === "dashboard") {
+    return `${PLATFORM_NAME[platform]} listings need a league, and this card doesn't have one yet. Report it and our crew sets it.`;
+  }
   if (problem.reason === "missingAspect" && detail) {
     return `${PLATFORM_NAME[platform]} wants this card's ${detail}, and we don't have it yet, so it's held back.`;
   }
@@ -135,13 +150,18 @@ export function problemSentence(
  * NEO-464 — the card panel's one line for a card a sync held back, when the
  * dashboard's Sync status opened it: why, and that the fix is right here. A
  * price or a photo is fixed on the copy below (the panel opens its Edit form
- * there); every other reason says what it says on Sync status.
+ * there); a missing league (NEO-569) is the crew's to set, so the line says
+ * to report it (the panel offers the dashboard's Report beside it); every
+ * other reason says what it says on Sync status.
  */
 export function heldBackNotice(reason: ListingProblemReason, platform: ListingPlatform): string {
   const name = PLATFORM_NAME[platform];
   if (reason === "noPrice") return `Held back from ${name}: no price yet. Set one on your copy below and it goes up next sync.`;
   if (reason === "noPhoto") {
     return `Held back from ${name}: listings there need a photo. Add one to your copy below and it goes up next sync.`;
+  }
+  if (reason === "noLeague") {
+    return `Held back from ${name}: listings there need a league, and this card doesn't have one yet. Report it and our crew sets it.`;
   }
   return problemSentence({ reason }, false, platform);
 }

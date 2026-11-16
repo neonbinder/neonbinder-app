@@ -77,14 +77,14 @@ async function getFeatures(
 // ===========================================================================
 
 describe("own-level heuristic on a root (parentless) node", () => {
-  test("sport -> league", async () => {
+  test("sport -> nothing (NEO-569: the League derivation is retired)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const id = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
       { level: "sport", value: "Baseball" },
     );
-    expect(await getFeatures(t, id)).toEqual({ league: "MLB" });
+    expect((await getFeatures(t, id)) ?? undefined).toBeUndefined();
   });
 
   test("year -> era, vintage, season", async () => {
@@ -240,7 +240,6 @@ describe("full copy-down from parent to child", () => {
     );
 
     expect(await getFeatures(t, yearId)).toEqual({
-      league: "MLB", // copied down, no deriver at year level
       subsetLabel: "Flagship", // arbitrary key, copied down verbatim
       era: "Modern (1980-Now)", // own-level heuristic
       vintage: "false", // own-level heuristic
@@ -273,7 +272,6 @@ describe("full copy-down from parent to child", () => {
     );
     expect(yearRow).toHaveLength(1);
     expect(yearRow[0].features).toEqual({
-      league: "MLB",
       era: "Vintage (1970-79)",
       vintage: "true",
       season: "1975",
@@ -302,8 +300,8 @@ describe("full copy-down from parent to child", () => {
     // Operator override, simulating a real edit.
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: sportId,
-      key: "league",
-      value: "CUSTOM_LEAGUE",
+      key: "subsetLabel",
+      value: "CUSTOM_LABEL",
     });
 
     // Re-sync the SAME value — hits the merge branch, not fresh-insert.
@@ -312,7 +310,7 @@ describe("full copy-down from parent to child", () => {
       options: [{ value: "Baseball", platformData: { bsc: "bsc-1-updated" } }],
     });
 
-    expect(await getFeatures(t, sportId)).toEqual({ league: "CUSTOM_LEAGUE" });
+    expect(await getFeatures(t, sportId)).toEqual({ subsetLabel: "CUSTOM_LABEL" });
   });
 
   /**
@@ -368,7 +366,6 @@ describe("full copy-down from parent to child", () => {
     expect(insertRow).toHaveLength(1);
     expect(insertRow[0].metadata).toBeUndefined();
     expect(insertRow[0].features).toMatchObject({
-      league: "MLB", // copied down from sport
       isReprint: "false", // copied down from setName
       autographed: "None", // copied down from setName
       cardSize: "Standard", // copied down from setName

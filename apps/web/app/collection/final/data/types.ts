@@ -1048,7 +1048,10 @@ export type ListingProblemReason =
   // setup (shipping, payment, returns, ships-from) not finished.
   | "missingAspect"
   | "noPhoto"
-  | "setupIncomplete";
+  | "setupIncomplete"
+  // NEO-569, eBay: the card has no league while its sport has some. Only an
+  // admin sets it; the collector reports it.
+  | "noLeague";
 
 /** One card a sync held back, named as the collector reads it. */
 export interface SyncProblem {

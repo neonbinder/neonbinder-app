@@ -13,7 +13,10 @@
  * `convex/syncReports.ts` decides what a report copies with the same rule.
  */
 
-/** Reasons only the admin team can fix: the card's link, its sheet row, or what the platform said. */
+/**
+ * Reasons only the admin team can fix: the card's link, its sheet row, what
+ * the platform said, or (NEO-569) the card's league, which only an admin sets.
+ */
 export const REPORTABLE_SYNC_REASONS = [
   "noLink",
   "sharedLink",
@@ -21,6 +24,7 @@ export const REPORTABLE_SYNC_REASONS = [
   "notOnSheet",
   "rejected",
   "missingAspect",
+  "noLeague",
 ] as const;
 
 export type ReportableSyncReason = (typeof REPORTABLE_SYNC_REASONS)[number];

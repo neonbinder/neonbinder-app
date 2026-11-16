@@ -95,6 +95,10 @@ describe("NEO-536: syncHeld asks for a held set", () => {
     expect([...SYNC_HELD_REASONS].sort()).toEqual(listingProblemReasonValidator.members.map((m) => m.value).sort());
   });
 
+  it("NEO-569: a noLeague held set can be asked for", () => {
+    expect(ask("syncHeld=noLeague").syncHeld).toBe("noLeague");
+  });
+
   it("the readout names a held set", () => {
     expect(syncReadout([{ platform: "bsc", pending: false, error: false, held: true }])).toEqual(["sync on bsc: held set"]);
   });
