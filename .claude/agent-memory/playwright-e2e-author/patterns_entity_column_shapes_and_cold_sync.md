@@ -272,3 +272,5 @@ Base; #25–#27 are ~5 rows up, reached by scrolling the list's own scroller fro
 re-entering through the open-one-marketplace-set-base helper. Pin a sub-line to ONE row
 by its position between its own number node and the next row's. Related:
 virtualized list phantom rows.
+
+**A set named like its own brand (Donruss, Bowman, Score, Topps) in the All Brands view:** `columnOption(page, "Sets", "Donruss")` matches 2 options, because every sibling's brand text is also exactly "Donruss". Pick by the option's whole name, `^<set> \S+$` (set, then one word of brand), in EVERY helper that opens such a set, including a red-path cleanup helper (`removeSetChecklistUnderAllBrands`) that only runs when the body failed. A set whose name is not a brand ("Topps Chrome") is unaffected by the exact-text match. Probe by counting both locators in a throwaway spec.
