@@ -1,0 +1,14 @@
+---
+name: patterns-dialog-seed-from-stale-batch-masks-a-lookup-loss
+description: NEO-556 - a spec green locally and red in CI on "Still looking up teams for N cards"; Match Cards absorbs pending rows and drops their lookup outcome unless a stale batch seeded the dialog; how to see which shape a run had
+metadata:
+  type: patterns
+---
+
+- **Symptom**: after a Match Cards fetch (a pasted checklist makes the dialog open, NEO-496) the commit queues far more cards on the one-slot `bscTeamPool` lane than the fetch-time cap (40) explains: CI "Still looking up teams for 32 cards", Convex `bsc_team_check_enqueued cards:35` where a local run says `cards:3`. The Convex log still shows `bsc_call_summary fetchBscCardTeamNames calls:40 ok:40`, so BSC answered; the answers never reached the commit.
+- **Cause**: the dialog opens on the first streamed rows, which are `pending` (no `teamLookup`); `ABSORB` is append-only and its `enrich` adopts only `teams`, never `teamLookup`/`rawTeamName`. So a row absorbed before `resolveCandidateTeams` lands commits with no lookup outcome and goes to the lane. A unit test of the modal (render with the pending card, rerender with `teamLookup: "answered"`, Confirm) shows `teamLookup` undefined: deterministic, no browser.
+- **Why local passes**: if the previous fetch's candidate batch is still in the table when the next fetch starts (the cancel's discard is fire-and-forget and often had not landed), the dialog mounts on those complete stale rows and keeps them (same refs are "seen"), so every card keeps its outcome. In CI the discard had landed (`getReadyCandidates` readDocs 0 just before `startCandidateBatch`), so the dialog meets pending rows. A spec that cancels one fetch and re-fetches the same row is therefore non-deterministic locally.
+- **How to see the shape of a run** (temp spec, deleted after): `page.on("websocket")` then `framereceived` counting `"teamResolved":false` / `true` with the batchId, and `framesent` containing `commitCardChecklist` counting `"teamLookup":"answered"`. A stale frame (`ready=44`, old batchId) between the cancel and the next Sync click means the masked shape; `answered=0` in the commit frame is the CI shape. `Emulation.setCPUThrottlingRate` (8x) and a 1.5 s card-listing delay did NOT reproduce it (the stale batch still seeded the dialog); skipping the first fetch does, deterministically.
+- **Fixture arithmetic worth keeping**: a Proof family of 44 cards, one claimed by the pasted row, needs 43 lookups; the cap leaves 3 for the lane even when everything works. The lane drains one card about every 2.1 s on the fake (pass 1 of an idle lane), so 35 cards is about 75 s and a 7 s assertion cannot wait it out: that is a product finding, not a budget.
+
+Related: [[patterns-leaf-vivid-real-unlicensed-set]], [[patterns-set-no-team-spec-shape]]

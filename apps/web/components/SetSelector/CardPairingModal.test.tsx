@@ -2239,7 +2239,9 @@ describe("CardPairingModal — naming two conflicts on one number (NEO-201)", ()
  * background enrichment queue quietly fetching the same names a second time
  * after the commit.
  *
- * These pin the merge and its limit: `teams` is adopted, and nothing else is.
+ * These pin the merge and its limit: `teams` is adopted, and (NEO-556) the
+ * BSC lookup's outcome and listed team value on a row that has none; nothing
+ * else is.
  */
 describe("CardPairingModal — enrichment that lands after the dialog opened", () => {
   /** The same card, before and after its BSC team lookup came back. */
@@ -2356,6 +2358,112 @@ describe("CardPairingModal — enrichment that lands after the dialog opened", (
     const saved = onConfirm.mock.calls[0][0].cards[0];
     expect(saved.cardName).toBe("Carl Yastrzemski");
     expect(saved.teams).toEqual(["Boston Red Sox"]);
+  });
+
+  /**
+   * NEO-556 — the lookup's OUTCOME is adopted too, not only a team it found.
+   *
+   * The dialog opens on rows still pending their BSC lookup. When the lookup
+   * landed afterwards only `teams` was merged, so an answered card reached
+   * `onConfirm` with no `teamLookup` and the commit sent it to BSC a second
+   * time — and an answer of "no team" carried nothing at all to merge.
+   */
+  test("a lookup that answered with no team reaches onConfirm as answered", async () => {
+    const { onConfirm, stream } = renderThenStream(withoutTeam, {
+      ...withoutTeam,
+      teamLookup: "answered",
+    });
+
+    stream();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const saved = onConfirm.mock.calls[0][0].cards[0];
+    expect(saved.teamLookup).toBe("answered");
+    expect(saved.teams).toBeUndefined();
+  });
+
+  test("the listed team value comes with the outcome, so the listing's claim still blocks a guess", async () => {
+    const { onConfirm, stream } = renderThenStream(withoutTeam, {
+      ...withoutTeam,
+      teamLookup: "answered",
+      rawTeamName: "Cincinnati Reds / Louisville Bats",
+    });
+
+    stream();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const saved = onConfirm.mock.calls[0][0].cards[0];
+    expect(saved.teamLookup).toBe("answered");
+    expect(saved.rawTeamName).toBe("Cincinnati Reds / Louisville Bats");
+  });
+
+  test("an answer that found a team brings both the team and the outcome", async () => {
+    const { onConfirm, stream } = renderThenStream(withoutTeam, {
+      ...withTeam,
+      teamLookup: "answered",
+    });
+
+    stream();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const saved = onConfirm.mock.calls[0][0].cards[0];
+    expect(saved.teams).toEqual(["Cincinnati Reds"]);
+    expect(saved.teamLookup).toBe("answered");
+  });
+
+  test("the outcome reaches a card the operator has already moved to the keep shelf", async () => {
+    const { onConfirm, stream } = renderThenStream(
+      withoutTeam,
+      { ...withoutTeam, teamLookup: "answered" },
+      { keep: true },
+    );
+
+    fireEvent.click(
+      screen.getByLabelText("Keep #50 Elly De La Cruz as BSC-only"),
+    );
+    stream();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].teamLookup).toBe("answered");
+  });
+
+  test("an outcome the row already holds is kept when a later row says otherwise", async () => {
+    const { onConfirm, stream } = renderThenStream(
+      { ...withoutTeam, teamLookup: "failed" },
+      {
+        ...withoutTeam,
+        teamLookup: "answered",
+        rawTeamName: "Cincinnati Reds",
+      },
+    );
+
+    stream();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const saved = onConfirm.mock.calls[0][0].cards[0];
+    expect(saved.teamLookup).toBe("failed");
+    expect(saved.rawTeamName).toBeUndefined();
+  });
+
+  test("a checklist row's answer is not a BSC lookup and is not adopted", async () => {
+    // A row the server paired with the publisher checklist arrives as
+    // `teamLookup: "checklist"`; the held row (here, one with no checklist
+    // link, as after an Unlink) must not take that answer.
+    const { onConfirm, stream } = renderThenStream(withoutTeam, {
+      ...withoutTeam,
+      teamLookup: "checklist",
+    });
+
+    stream();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].teamLookup).toBeUndefined();
   });
 });
 
