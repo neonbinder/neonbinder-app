@@ -38,6 +38,9 @@ import { ListingLabels } from "./lib/listingLabels";
 import { isPlatformPaused } from "./marketplacePause";
 import { DRAIN_LEASE_MS, MAX_STORED_PROBLEMS, storedBscSellerId } from "./listingDrain";
 import { ensureBscSellerIdFetch } from "./bscSellerId";
+// A cycle (listingSales imports this module too), read only inside function
+// bodies, so it is safe at module load.
+import { ORDER_READ_VERSION } from "./listingSales";
 import {
   clearListingOutbox,
   enqueueListingCards,
@@ -179,6 +182,16 @@ export type ListingSetup =
   | "testOff";
 
 /**
+ * NEO-520 — what every new `marketplaceListingStates` row is stamped with: the
+ * platform's current order-read version, so a new row never takes the
+ * catch-up (`listingSales.ORDER_READ_VERSION`) and its first read starts at
+ * its creation less the grace.
+ */
+function newStateStamp(platform: ListingPlatform): { orderReadVersion: number } {
+  return { orderReadVersion: ORDER_READ_VERSION[platform] };
+}
+
+/**
  * A sign-in for `platform`'s site was saved (or found saved by the cron):
  * start listing there. Called from `userProfile.updateSiteCredentialStatus`
  * on every save and every successful login (`credentials` re-asserts the
@@ -269,7 +282,7 @@ export async function setUpListing(
       lastUpdated: now,
     };
     if (state) await ctx.db.patch(state._id, held);
-    else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...held });
+    else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...held, ...newStateStamp(platform) });
     return "sellerConflict";
   }
   const on = {
@@ -281,7 +294,7 @@ export async function setUpListing(
     lastUpdated: now,
   };
   if (state) await ctx.db.patch(state._id, on);
-  else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...on });
+  else await ctx.db.insert("marketplaceListingStates", { ownerId, platform, ...on, ...newStateStamp(platform) });
   await ctx.scheduler.runAfter(0, internal.listingSync.startListingWalk, { ownerId, platform, startedAt: now });
   // Turning listing on is a fresh start: it never waits out an ended chain's cooldown.
   if (platform === "bsc") await awaitBscSeller(ctx, ownerId, credential.sellerId, { userAction: true });
@@ -340,7 +353,7 @@ export async function holdTestListingOff(ctx: MutationCtx, ownerId: string, plat
   const state = await listingStateOf(ctx, ownerId, platform);
   const now = Date.now();
   if (!state) {
-    await ctx.db.insert("marketplaceListingStates", { ownerId, platform, testListingOff: true, lastUpdated: now });
+    await ctx.db.insert("marketplaceListingStates", { ownerId, platform, testListingOff: true, lastUpdated: now, ...newStateStamp(platform) });
     return;
   }
   if (state.testListingOff !== true || state.listingStartedAt !== undefined || state.drainRequested !== undefined) {
@@ -1382,6 +1395,11 @@ export const saleValidator = v.object({
       applied: v.boolean(),
       problem: v.optional(saleItemProblemValidator),
       shortBy: v.optional(v.number()),
+      /**
+       * NEO-520 — the listing's own title as eBay sent it (`listed.title`),
+       * for naming a line NB holds no card for. A label only.
+       */
+      title: v.optional(v.string()),
     }),
   ),
 });
@@ -1402,6 +1420,7 @@ function publicSale(row: Doc<"marketplaceSales">): typeof saleValidator.type {
       applied: item.applied,
       ...(item.problem !== undefined ? { problem: item.problem } : {}),
       ...(item.shortBy !== undefined ? { shortBy: item.shortBy } : {}),
+      ...(item.listed?.title !== undefined ? { title: item.listed.title } : {}),
     })),
   };
 }
