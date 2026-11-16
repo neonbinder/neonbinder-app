@@ -110,12 +110,18 @@ jobs:
               # files from the fake, so a PR touching only them still runs browser-test.
               - 'services/fake-bsc/src/identity/**'
               - 'services/fake-bsc/src/namespace.ts'
+              # NEO-555: browser's ebay-probe tests read the fake's eBay
+              # sources and the contract doc.
+              - 'services/fake-bsc/src/ebay/**'
+              - 'services/fake-bsc/CONTRACT.md'
             preprocess:
               - 'services/preprocess/**'
             # NEO-552: the standing fake BuySportsCards (dev). Own lane, own
             # deploy (release.yml); never a per-PR preview.
             fake_bsc:
               - 'services/fake-bsc/**'
+              # NEO-555: the fake's tests read the browser probe sources.
+              - 'services/browser/src/routes/ebay-probe*.ts'
             # NEO-309/NEO-310: node --test coverage for the ops shell scripts
             # (revision GC, image check) plus their test helpers, and for the
             # NEO-310 Discord-notify scripts/action — none of these ship as

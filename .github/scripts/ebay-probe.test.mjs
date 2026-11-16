@@ -275,3 +275,120 @@ test("ebay-fake-token.sh: any failure degrades to minted=false and exits 0", asy
   assert.equal(grant400.code, 0);
   assert.match(grant400.ghOutput, /minted=false/);
 });
+
+// --- N4: free-form `detail` text never reaches a log --------------------------
+
+test("verdict: leg detail text is never printed, only the outcome enum", () => {
+  const secret = "operator-account-secret-text";
+  const acct = verdict("real", {
+    ...OK_PROBE("real"),
+    outcome: "account_warning",
+    accountLeg: { ok: false, outcome: "refresh_failed", scopes: null, detail: secret },
+  });
+  assert.equal(acct.outcome, "account_warning");
+  assert.match(acct.err, /account leg: refresh_failed/);
+  assert.ok(!acct.err.includes(secret));
+  const app = verdict("real", {
+    ...OK_PROBE("real"),
+    outcome: "app_failed",
+    appLeg: { ok: false, outcome: "grant_failed", detail: secret },
+    detail: secret,
+  });
+  assert.equal(app.status, 1);
+  assert.match(app.err, /app leg: grant_failed/);
+  assert.ok(!app.err.includes(secret));
+  // A leg outcome that is not a plain enum word is not echoed either.
+  const odd = verdict("real", {
+    ...OK_PROBE("real"),
+    outcome: "app_failed",
+    appLeg: { ok: false, outcome: `x ${secret}` },
+  });
+  assert.ok(!odd.err.includes(secret));
+  assert.match(odd.err, /unrecognised/);
+});
+
+// --- ebay-drift-payload.sh ------------------------------------------------------
+
+test("drift payload: only shapes, statuses and hashes leave; no detail", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ebaypayload-"));
+  const probe = join(dir, "probe.json");
+  const out = join(dir, "nested", "payload.json");
+  writeFileSync(probe, JSON.stringify({
+    ...OK_PROBE("real"),
+    appLeg: { ok: true, outcome: "ok", detail: "leak-app" },
+    accountLeg: { ok: true, outcome: "ok", detail: "leak-acct" },
+    detail: "leak-top",
+  }));
+  const r = spawnSync("bash", [join(SCRIPTS, "ebay-drift-payload.sh"), probe, out], { encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  const body = readFileSync(out, "utf8");
+  assert.deepEqual(Object.keys(JSON.parse(body)).sort(), ["hashes", "marketplace", "shapes", "statuses"]);
+  assert.ok(!/leak-/.test(body));
+});
+
+test("drift payload: a probe without shape maps is refused and writes nothing", () => {
+  const dir = mkdtempSync(join(tmpdir(), "ebaypayload-"));
+  const probe = join(dir, "probe.json");
+  const out = join(dir, "payload.json");
+  writeFileSync(probe, JSON.stringify({ shapes: {}, statuses: {} }));
+  const r = spawnSync("bash", [join(SCRIPTS, "ebay-drift-payload.sh"), probe, out], { encoding: "utf8" });
+  assert.notEqual(r.status, 0);
+  assert.throws(() => readFileSync(out));
+});
+
+// --- fake-bsc-url.sh ------------------------------------------------------------
+
+function fakeUrl(url) {
+  const r = spawnSync("bash", [join(SCRIPTS, "fake-bsc-url.sh")], { env: { PATH: process.env.PATH, FAKE_URL: url }, encoding: "utf8" });
+  return { status: r.status, out: r.stdout.trim() };
+}
+
+test("fake url: the fake's own run.app URL passes, trailing slash trimmed", () => {
+  const ok = "https://neonbinder-fake-bsc-abc123-uc.a.run.app";
+  assert.deepEqual(fakeUrl(ok), { status: 0, out: `base=${ok}` });
+  assert.equal(fakeUrl(`${ok}/`).out, `base=${ok}`);
+});
+
+test("fake url: tags, paths, other hosts and empty fail", () => {
+  for (const bad of [
+    "",
+    "https://neonbinder-fake-bsc-abc-uc.a.run.app/path",
+    "https://tag---neonbinder-fake-bsc-abc-uc.a.run.app",
+    "http://neonbinder-fake-bsc-abc-uc.a.run.app",
+    "https://neonbinder-browser-abc-uc.a.run.app",
+    "https://neonbinder-fake-bsc-abc.evil.com",
+  ]) {
+    const r = fakeUrl(bad);
+    assert.equal(r.status, 1, bad);
+    assert.equal(r.out, "", bad);
+  }
+});
+
+// --- ebay-probe-key-check.sh ----------------------------------------------------
+
+function keyCheck(key) {
+  const r = spawnSync("bash", [join(SCRIPTS, "ebay-probe-key-check.sh")], { env: { PATH: process.env.PATH, PROBE_KEY: key }, encoding: "utf8" });
+  return { status: r.status, out: r.stdout + r.stderr };
+}
+
+test("probe key: unset passes with a notice; a real key passes", () => {
+  assert.equal(keyCheck("").status, 0);
+  assert.match(keyCheck("").out, /::notice::/);
+  assert.equal(keyCheck("ebay-credentials-user_1-x").status, 0);
+});
+
+test("probe key: bad shapes and fake- keys fail, and the value is never printed", () => {
+  for (const bad of [
+    "ebay-credentials-fake-abc",
+    "ebay-credentials-",
+    "ebay-credentials-a,b",
+    "ebay-credentials-a\nb",
+    "bsc-credentials-abc",
+    `ebay-credentials-${"a".repeat(129)}`,
+  ]) {
+    const r = keyCheck(bad);
+    assert.equal(r.status, 1, JSON.stringify(bad));
+    assert.ok(!r.out.includes("credentials-a"), "value leaked");
+    assert.ok(!r.out.includes("fake-abc"), "value leaked");
+  }
+});

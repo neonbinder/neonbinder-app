@@ -6,9 +6,8 @@ metadata:
 ---
 
 The fake (`services/fake-bsc`) is one standing dev Cloud Run service. Its deploy
-lane runs from `release.yml` on main; a branch cannot deploy it (the dev WIF
-condition admits main, pull_request and merge_group refs, and the per-PR fake
-workflow only builds and tests). A PR's E2E therefore always runs against
+lane runs from `release.yml` on main; a branch cannot deploy it (the per-PR
+fake workflow only builds and tests). A PR's E2E therefore always runs against
 main's fake, never the PR's fake code (NEO-552 follow-up found this the hard
 way). Host pins in Convex and the browser service also refuse tagged-revision
 URLs, so a per-PR fake revision is not an option without loosening a security

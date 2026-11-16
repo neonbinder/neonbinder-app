@@ -18,6 +18,9 @@ on:
   pull_request:
     paths:
       - "services/browser/**"
+      # NEO-555: the browser tests read the fake's eBay sources and contract.
+      - "services/fake-bsc/src/ebay/**"
+      - "services/fake-bsc/CONTRACT.md"
       # This workflow's own path (NEO-130). Without it a PR that changes only
       # this file does not run it, so the change ships unexercised — which is
       # exactly how a broken preview image path could reach main and take the
@@ -378,9 +381,7 @@ jobs:
           FAKE_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
         run: |
           set -uo pipefail
-          re='^https://neonbinder-fake-bsc-[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
-          base="${FAKE_URL%/}"
-          if [[ ! "$base" =~ $re ]] || [[ "$base" == *---* ]]; then
+          if ! bash "$GITHUB_WORKSPACE/.github/scripts/fake-bsc-url.sh" >/dev/null; then
             echo "::warning::vars.NEONBINDER_FAKE_BSC_URL must be the fake's own https://neonbinder-fake-bsc-….run.app URL; skipping the eBay probe preflight"
             echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
           fi

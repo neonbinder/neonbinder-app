@@ -42,7 +42,10 @@ target=$(jq -r '.ebayTarget // ""' "$probe")
 [ "$target" = "$expect" ] || emit wrong_target "/probe/ebay says ebayTarget='$target', expected '$expect'"
 
 outcome=$(jq -r '.outcome // ""' "$probe")
-detail() { jq -r '[.appLeg.detail, .accountLeg.detail, .detail] | map(select(. != null and . != "")) | first // "no detail"' "$probe" | head -c 300; }
+# N4: only the outcome enums are printed. `detail` text is free-form service
+# output and stays out of logs, summaries and artifacts. A leg outcome that is
+# not a plain enum word is shown as "unrecognised".
+leg() { jq -r "(.$1.outcome // \"unknown\") | if test(\"^[a-z_]{1,40}\$\") then . else \"unrecognised\" end" "$probe"; }
 case "$outcome" in
   ok)
     jq -e '.appLeg.ok == true' "$probe" >/dev/null 2>&1 \
@@ -53,9 +56,9 @@ case "$outcome" in
     # The app leg must still be sound, or this is really an app failure.
     jq -e '.appLeg.ok == true' "$probe" >/dev/null 2>&1 \
       || emit inconsistent_probe "outcome is account_warning but the app leg is not ok"
-    emit account_warning "account leg: $(jq -r '.accountLeg.outcome // "unknown"' "$probe"); $(jq -r '.accountLeg.detail // "no detail"' "$probe" | head -c 200)"
+    emit account_warning "account leg: $(leg accountLeg)"
     ;;
   skipped_paused) emit skipped_paused "eBay is paused (NEONBINDER_PAUSED_PLATFORMS), so no call was made" ;;
-  app_failed) emit app_failed "app leg: $(jq -r '.appLeg.outcome // "unknown"' "$probe"); $(detail)" ;;
+  app_failed) emit app_failed "app leg: $(leg appLeg)" ;;
   *) emit unknown_outcome "outcome='$outcome'" ;;
 esac

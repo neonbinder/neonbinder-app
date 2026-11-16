@@ -20,6 +20,8 @@ on:
   pull_request:
     paths:
       - "services/fake-bsc/**"
+      # NEO-555: the fake's tests read the browser service's eBay probe sources.
+      - "services/browser/src/routes/ebay-probe*.ts"
       - ".github/workflows/fake-bsc.yml"
       - ".github/workflows/fake-bsc-deploy.yml"
 

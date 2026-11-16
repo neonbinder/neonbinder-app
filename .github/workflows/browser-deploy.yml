@@ -407,6 +407,12 @@ jobs:
       tagged_url: ${{ steps.capture-new.outputs.tagged_url }}
       prev_revision: ${{ steps.capture-prev.outputs.prev_revision }}
     steps:
+      # Before auth: checkout after google-github-actions/auth deletes its
+      # credentials file. The eBay probe key check below is a repo script.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
       - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
@@ -450,22 +456,19 @@ jobs:
             exit 1
           fi
       # NEO-555: the account the prod eBay probe reads (POST /probe/ebay), named
-      # by the credential key of one connected eBay seller. UNSET IS FINE: the
-      # service then skips the probe's account leg (a warning, never a
-      # failure), and an empty value written to env_vars clears a key set by an
-      # earlier deploy. A set value must look like a credential key, which also
-      # keeps a stray comma or newline out of env_vars.
-      - name: Check the eBay probe account variable (optional)
+      # by the credential key of one connected eBay seller. It is a repository
+      # SECRET, not a variable: the value names an operator's account, and
+      # Actions masks secrets in every log line (including the deploy action's
+      # own output) where variables are printed. UNSET IS FINE: the service
+      # then skips the probe's account leg (a warning, never a failure), and
+      # an empty value written to env_vars clears a key set by an earlier
+      # deploy. A set value must look like a credential key (and not a fake-
+      # one), which also keeps a stray comma or newline out of env_vars. The
+      # check never echoes the value.
+      - name: Check the eBay probe account secret (optional)
         env:
-          PROBE_KEY: ${{ vars.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY }}
-        run: |
-          set -uo pipefail
-          if [ -z "$PROBE_KEY" ]; then
-            echo "::notice::vars.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY is unset: the prod eBay probe will skip its account leg."
-          elif ! [[ "$PROBE_KEY" =~ ^ebay-credentials-[A-Za-z0-9_-]{1,128}$ ]]; then
-            echo "::error::vars.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY must be an ebay-credentials-<id> key (or unset)."
-            exit 1
-          fi
+          PROBE_KEY: ${{ secrets.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ebay-probe-key-check.sh"
       - id: capture-prev
         name: Capture prod's currently-serving revision
         run: |
@@ -491,7 +494,7 @@ jobs:
             EBAY_CLIENT_ID=${{ vars.EBAY_CLIENT_ID_PRODUCTION }}
             EBAY_RU_NAME=${{ vars.EBAY_RU_NAME_PRODUCTION }}
             EBAY_ENVIRONMENT=production
-            NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY=${{ vars.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY }}
+            NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY=${{ secrets.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY }}
           secrets: |
             EBAY_CLIENT_SECRET=ebay-client-secret:${{ steps.ebay.outputs.version }}
           no_traffic: true
