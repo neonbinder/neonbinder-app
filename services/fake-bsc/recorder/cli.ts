@@ -87,16 +87,44 @@ export function readMissScope(flags: Map<string, string | true>): { prefix: stri
   return { prefix };
 }
 
-async function record(flags: Map<string, string | true>): Promise<number> {
+export interface RecordOptions {
+  scope: { prefix: string } | { all: true };
+  max: number | undefined;
+  yes: boolean;
+  watch: boolean;
+  includeAnon: boolean;
+}
+
+/**
+ * The `record` flags. `--all --yes` would replay every PR's misses with no one
+ * reading the plan, so it needs an explicit `--max N` too.
+ */
+export function readRecordOptions(flags: Map<string, string | true>): RecordOptions {
   const scope = readMissScope(flags);
   const max = readMax(flags.get("--max"));
-  const includeAnon = flags.get("--include-anon") === true;
-  const watch = flags.get("--watch") === true;
+  const yes = flags.get("--yes") === true;
+  if ("all" in scope && yes && max === undefined) {
+    throw new Error("--all with --yes needs --max N: it replays every owner's misses without asking, so set how many");
+  }
+  return { scope, max, yes, watch: flags.get("--watch") === true, includeAnon: flags.get("--include-anon") === true };
+}
+
+async function record(flags: Map<string, string | true>): Promise<number> {
+  const { scope, max, yes, watch, includeAnon } = readRecordOptions(flags);
   const fake = fakeClient(flags);
   // The one miss source for the plan and the session; `--all` reads every owner.
+  let saidTruncated = false;
+  const readAll = async () => {
+    const page = await fake.allMissesPage();
+    if (page.truncated && !saidTruncated) {
+      say(`the fake has more misses than one read lists (${page.misses.length} shown, oldest first); run again after this session for the rest`);
+      saidTruncated = true;
+    }
+    return page.misses;
+  };
   const source =
     "all" in scope
-      ? { misses: () => fake.allMisses(), uploadRecording: (r: unknown) => fake.uploadRecording(r) }
+      ? { misses: () => readAll(), uploadRecording: (r: unknown) => fake.uploadRecording(r) }
       : { misses: (p: string) => fake.misses(p), uploadRecording: (r: unknown) => fake.uploadRecording(r) };
   const prefix = "all" in scope ? "(all)" : scope.prefix;
 
@@ -105,7 +133,6 @@ async function record(flags: Map<string, string | true>): Promise<number> {
   for (const r of plan.refused) say(`refused (never sent): ${r.label}`);
   if (plan.anonSkipped) say(`${plan.anonSkipped} anonymous miss(es) left alone (--include-anon to replay them)`);
   const cap = max ?? MAX_REQUESTS_PER_SESSION;
-  const yes = flags.get("--yes") === true;
   // Shows every request, then asks. Used for the plan below and again, inside
   // the session, for anything not in the confirmed set (new misses, --watch).
   const confirm = async (items: string[]): Promise<boolean> => {

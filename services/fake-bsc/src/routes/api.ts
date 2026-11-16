@@ -10,7 +10,7 @@ import type { Catalogue } from "../catalogue";
 import { canonicalRequest, diffRequestPaths, normalisePath, requestKey, type CanonicalRequest } from "../requestKey";
 import { catalogueEndpointFor, type CatalogueEndpoint } from "../sanitise";
 import { ATTACHMENT_RE, ORDER_DETAIL_RE, templatesFor } from "../paths";
-import type { MissOwner, StateStore } from "../state";
+import { settleWithin, type MissOwner, type StateStore } from "../state";
 import { applyPhotoUpload, applyPut, catalogueRequestFor, profileAnswer, readSheetRequest, sheetAnswer, synthSheet } from "../synth/sheet";
 import { orderDetail, orderHistory } from "../synth/orders";
 import { readHeaderScope } from "../namespace";
@@ -90,7 +90,7 @@ export function apiRouter(deps: { catalogue: Catalogue; state: StateStore; ns: N
 
   const missCatalogue = async (res: Response, owner: MissOwner, endpoint: CatalogueEndpoint, req: CanonicalRequest): Promise<void> => {
     const key = requestKey(req);
-    state.recordMiss(owner, {
+    const { saved } = state.recordMissDurably(owner, {
       key,
       kind: "catalogue",
       method: req.method,
@@ -99,7 +99,8 @@ export function apiRouter(deps: { catalogue: Catalogue; state: StateStore; ns: N
       request: req,
       nearMiss: nearMiss(catalogue, endpoint, req),
     });
-    await state.flushMisses(MISS_WRITE_BUDGET_MS);
+    // This miss's own write only: other persistence work never delays a 501.
+    await settleWithin(saved, MISS_WRITE_BUDGET_MS);
     unrecorded(res, key);
   };
 

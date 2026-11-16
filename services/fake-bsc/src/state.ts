@@ -92,6 +92,26 @@ export interface MissPersistence {
   restore(nowMs: number, isRecorded: (key: string) => boolean): Promise<Array<{ owner: MissOwner; miss: Miss }>>;
 }
 
+/**
+ * Waits for `work` at most `timeoutMs`: true when it settled in time. Never
+ * rejects (the work carries on regardless).
+ */
+export async function settleWithin(work: Promise<unknown>, timeoutMs: number): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined;
+  const settled = await Promise.race([
+    work.then(
+      () => true,
+      () => true,
+    ),
+    new Promise<boolean>((r) => {
+      timer = setTimeout(() => r(false), timeoutMs);
+      timer.unref();
+    }),
+  ]);
+  clearTimeout(timer);
+  return settled;
+}
+
 export function listingKey(cardId: string, condition: string): string {
   return `${cardId}|${condition}`;
 }
@@ -129,10 +149,11 @@ export class StateStore {
     private readonly persistence?: MissPersistence,
   ) {}
 
-  private track(work: Promise<void> | undefined): void {
-    if (!work) return;
+  private track(work: Promise<void> | undefined): Promise<void> {
+    if (!work) return Promise.resolve();
     const p = work.catch(() => undefined).finally(() => this.inflight.delete(p));
     this.inflight.add(p);
+    return p;
   }
 
   /**
@@ -142,16 +163,7 @@ export class StateStore {
    */
   async flushMisses(timeoutMs: number): Promise<boolean> {
     if (this.inflight.size === 0) return true;
-    let timer: NodeJS.Timeout | undefined;
-    const settled = await Promise.race([
-      Promise.all([...this.inflight]).then(() => true),
-      new Promise<boolean>((r) => {
-        timer = setTimeout(() => r(false), timeoutMs);
-        timer.unref();
-      }),
-    ]);
-    clearTimeout(timer);
-    return settled;
+    return settleWithin(Promise.all([...this.inflight]), timeoutMs);
   }
 
   /** Persistence work still running (tests). */
@@ -260,6 +272,16 @@ export class StateStore {
   }
 
   recordMiss(owner: MissOwner, miss: Omit<Miss, "count" | "firstSeen" | "lastSeen">): Miss {
+    return this.recordMissDurably(owner, miss).miss;
+  }
+
+  /**
+   * `recordMiss`, plus the promise of this miss's own bucket write (resolved
+   * at once when nothing is written: a repeat, a needs-model miss, no
+   * persistence). The 501 awaits only that, capped (`settleWithin`), so
+   * other persistence work (a reset-all, a TTL sweep) never delays it.
+   */
+  recordMissDurably(owner: MissOwner, miss: Omit<Miss, "count" | "firstSeen" | "lastSeen">): { miss: Miss; saved: Promise<void> } {
     const map = owner === null ? this.anonMisses : "ns" in owner ? this.get(owner.ns).misses : this.prefixList(owner.prefix);
     const at = new Date(this.now()).toISOString();
     const prev = map.get(miss.key);
@@ -267,7 +289,7 @@ export class StateStore {
       prev.count += 1;
       prev.lastSeen = at;
       if (miss.nearMiss) prev.nearMiss = miss.nearMiss;
-      return prev;
+      return { miss: prev, saved: Promise.resolve() };
     }
     if (map.size >= MAX_MISSES_PER_NAMESPACE) {
       const first = map.keys().next().value;
@@ -279,9 +301,9 @@ export class StateStore {
     }
     const m: Miss = { ...miss, count: 1, firstSeen: at, lastSeen: at };
     map.set(miss.key, m);
-    // Kept once per owner and key; the 501 awaits it (`flushMisses`).
-    if (m.kind === "catalogue") this.track(this.persistence?.save(owner, m));
-    return m;
+    // Kept once per owner and key; the 501 awaits this write only.
+    const saved = m.kind === "catalogue" ? this.track(this.persistence?.save(owner, m)) : Promise.resolve();
+    return { miss: m, saved };
   }
 
   private prefixList(prefix: string): Map<string, Miss> {

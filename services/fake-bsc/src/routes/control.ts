@@ -30,6 +30,8 @@ export interface ControlDeps {
 }
 
 export const MAX_RECORDINGS_PER_UPLOAD = 50;
+/** Most entries `GET /__fake/misses?all=1` answers (oldest first), with `truncated: true` past it. */
+export const ALL_MISSES_CAP = 2000;
 /** How long a miss read waits for the TTL sweep's deletes. */
 export const MISS_SWEEP_BUDGET_MS = 5000;
 /** How long a stored recording waits for its misses' objects to go. */
@@ -132,7 +134,11 @@ export function controlRouter(deps: ControlDeps): Router {
     }
     state.expireMisses();
     await state.flushMisses(MISS_SWEEP_BUDGET_MS);
-    const misses = state.listMisses(sel).map((m) => ({
+    const all = state.listMisses(sel);
+    // `?all=1` spans every owner (up to 2,000 namespaces × 500): capped, oldest first.
+    const everyOwner = req.query.all !== undefined;
+    const truncated = everyOwner && all.length > ALL_MISSES_CAP;
+    const misses = (truncated ? all.slice(0, ALL_MISSES_CAP) : all).map((m) => ({
       ns: m.ns,
       ...(m.prefix !== undefined ? { prefix: m.prefix } : {}),
       key: m.key,
@@ -146,7 +152,7 @@ export function controlRouter(deps: ControlDeps): Router {
       lastSeen: m.lastSeen,
       ...(m.nearMiss ? { nearMiss: m.nearMiss } : {}),
     }));
-    res.json({ misses, allowlistVersion: SANITISE_ALLOWLIST_VERSION });
+    res.json({ misses, allowlistVersion: SANITISE_ALLOWLIST_VERSION, ...(everyOwner ? { truncated } : {}) });
   });
 
   // ── Admin ──────────────────────────────────────────────────────────────

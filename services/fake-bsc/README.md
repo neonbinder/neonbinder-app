@@ -113,8 +113,8 @@ The service scales to zero, so the catalogue misses the recorder could replay
 the recordings bucket, one small object per owner and request under
 `misses/v<allowlistVersion>/`, written once inside the 501 and restored at
 boot. `needs-model` misses and anything the allowlist refuses stay in memory
-and go with a restart. At most 2,000 are kept in all; CONTRACT.md, "Durable
-misses", has the rest.
+and go with a restart. At most 2,000 are kept in all, created at most 60 a
+minute (20 per owner); CONTRACT.md, "Durable misses", has the rest.
 
 The seller sheet (`POST seller/bulk-upload/results`) answers `{results:
 [...]}`, as real BSC does. A blank row (no listing) carries no `sellerSku`,
@@ -188,7 +188,9 @@ FAKE_BSC_ADMIN_KEY="$(gcloud secrets versions access latest --secret=<admin-key 
 - `--all` in place of `--prefix <p>` reads every owner's misses (the
   admin-only `GET /__fake/misses?all=1`), so a session after the preview is
   gone needs no slug. The allowlist, the `--include-anon` rule and the typed
-  confirmation are the same.
+  confirmation are the same. `--all --yes` (unattended) also needs `--max N`,
+  so an unread plan never replays every PR's misses; the fake lists at most
+  2,000 at a time, and the recorder says when there were more.
 
 - BSC credentials come **only** from stdin (a Bitwarden item, `{username,
   password}` JSON, or two lines) or, on a terminal, a prompt with the password

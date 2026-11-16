@@ -168,17 +168,28 @@ so the ones the recorder could replay are also kept in the recordings bucket.
 - **Write once:** the first miss of a key for an owner creates its object
   (create-only precondition); repeats change only the in-memory count. The
   write is awaited inside the 501 (Cloud Run throttles CPU outside a
-  request), bounded at 2 s; a failed or slow write is logged
-  (`miss_persist_failed`, with the error class and timing only) and the
-  answer is still the 501, never a 5xx.
+  request), bounded at 2 s. The 501 waits for that miss's own write only,
+  never for other persistence work (a reset-all, a TTL sweep). A failed or
+  slow write is logged (`miss_persist_failed`, with the error class and
+  timing only) and the answer is still the 501, never a 5xx.
+- **Create rate:** any caller-key holder can miss a new allowlisted key, so
+  creates are rate limited: a process-wide token bucket of 60 a minute
+  (burst 60) and, inside it, 20 a minute per owner (namespace, prefix or
+  anonymous). Over either limit the miss stays in memory only (a later miss
+  of the key tries again) and the fake logs `miss_persist_skipped` with
+  `reason: "rate"`, the scope that refused it and a count, at most once a
+  minute. The 501 is unchanged.
 - **Bounds:** 30 days from `firstSeen` (memory and bucket); 2,000 objects in
   all (past it, the oldest object is removed, and that miss stays listed in
   memory until a restart); the existing 500 per owner (an evicted miss's
   object is removed too).
 - **Removal:** when a recording for the key is stored (every owner's object),
   on `/__fake/reset-all` (every object under `misses/`), at the TTL, on
-  per-owner eviction, and at boot for any object under another allowlist
-  version or one that fails validation. `/__fake/reset` keeps them, as it
+  per-owner eviction, and at boot for any object under an older allowlist
+  version or one that fails validation. An object under a NEWER allowlist
+  version belongs to a newer revision (overlapping revisions, or a rollback):
+  a restore neither restores nor deletes it; only `/__fake/reset-all` sweeps
+  it. `/__fake/reset` keeps them, as it
   keeps the in-memory catalogue misses. Namespace eviction (past 2,000
   namespaces) drops only the in-memory list; the objects come back at the
   next boot.
@@ -199,7 +210,9 @@ so the ones the recorder could replay are also kept in the recordings bucket.
 - **Every owner at once:** `GET /__fake/misses?all=1` (admin, 403 without the
   admin key and an admin caller) lists every namespace's, prefix's and
   anonymous miss, so a later session needs no slug of a preview that is gone.
-  Any other `all` value is a 400.
+  It answers at most 2,000 entries, oldest first, and `truncated: true` when
+  there were more (`truncated: false` otherwise; `?ns=`/`?prefix=` reads carry
+  no such field). Any other `all` value is a 400.
 
 ## Faults
 
@@ -239,7 +252,10 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
   `--include-anon`.
 - `--all` in place of `--prefix` reads every owner's misses through the
   admin-only `GET /__fake/misses?all=1`, for a session whose preview is gone.
-  The same allowlist, `--include-anon` rule and typed confirmation apply.
+  The same allowlist, `--include-anon` rule and typed confirmation apply. With
+  `--yes` (no one reads the plan) `--all` also needs `--max N`, or the
+  recorder refuses to start. When the fake answers `truncated: true` the
+  recorder says so once; a later session reaches the rest.
 - Before any credential is read or BSC contacted, it prints every request it
   will send (endpoint and facet slugs, or the hex card id) and needs the word
   `yes` typed on the terminal, or `--yes`. Only those keys are confirmed: a

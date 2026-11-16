@@ -393,9 +393,9 @@ describe("DurableMisses.restore", () => {
     assert.equal(lines.find((l) => l.operation === "misses_restored").deleted, 6);
   });
 
-  it("deletes an object kept under another allowlist version without reading it", async () => {
+  it("deletes an object kept under an older allowlist version without reading it", async () => {
     const m = filtersMiss();
-    const old = missObjectName({ ns: NS }, m.key, SANITISE_ALLOWLIST_VERSION + 1);
+    const old = missObjectName({ ns: NS }, m.key, SANITISE_ALLOWLIST_VERSION - 1);
     await store.createOnce(old, missRecordFor({ ns: NS }, m).record);
     let reads = 0;
     const read = store.readVersion.bind(store);
@@ -595,7 +595,11 @@ describe("StateStore with durable misses", () => {
     assert.deepEqual(await stored(store), []);
   });
 
+  // These two write past the create rate limit on purpose: it is lifted here.
+  const NO_RATE_LIMIT = { createsPerMinute: 1e9, createsBurst: 1e9, createsPerOwnerPerMinute: 1e9 };
+
   it("evicting the oldest of an owner's 500 removes its object too", async () => {
+    state = fresh2(new DurableMisses(store, NO_RATE_LIMIT));
     const first = filtersMiss("e0", T0);
     record({ ns: NS }, first);
     for (let i = 1; i <= MAX_MISSES_PER_NAMESPACE; i++) record({ ns: NS }, filtersMiss(`e${i}`, T0 + i));
@@ -607,6 +611,7 @@ describe("StateStore with durable misses", () => {
   });
 
   it("dropping the oldest prefix list past 200 removes that prefix's objects too", async () => {
+    state = fresh2(new DurableMisses(store, NO_RATE_LIMIT));
     const m = filtersMiss();
     for (let i = 0; i <= MAX_PREFIX_MISS_LISTS; i++) record({ prefix: `pfx${i}-` }, m);
     await flush();
@@ -990,5 +995,189 @@ describe("recorder: --all", () => {
     assert.equal(seen[0].admin, "a".repeat(40));
     assert.equal(seen[1].url, "https://fake.example.run.app/__fake/misses?prefix=happy-cat-");
     assert.equal(seen[1].admin, undefined);
+  });
+});
+
+// ── Security audit follow-ups ────────────────────────────────────────────
+
+describe("create rate limit", () => {
+  const { MISS_CREATES_PER_MINUTE, MISS_CREATES_BURST, MISS_CREATES_PER_OWNER_PER_MINUTE } = require("../dist/src/missStore.js");
+
+  it("defaults to 60 a minute (burst 60) process-wide and 20 a minute per owner", () => {
+    assert.equal(MISS_CREATES_PER_MINUTE, 60);
+    assert.equal(MISS_CREATES_BURST, 60);
+    assert.equal(MISS_CREATES_PER_OWNER_PER_MINUTE, 20);
+  });
+
+  it("stops creating at the per-owner and the process-wide limit, logs a count, and refills over time", async () => {
+    const store = new MemoryStore();
+    let clock = T0;
+    const dm = new DurableMisses(store, { createsPerMinute: 3, createsBurst: 3, createsPerOwnerPerMinute: 2, now: () => clock });
+    for (const s of ["a1", "a2", "a3"]) await dm.save({ ns: NS }, filtersMiss(s));
+    assert.equal((await stored(store)).length, 2, "the owner's 2 a minute");
+    await dm.save({ ns: "other-ns" }, filtersMiss("b1"));
+    await dm.save({ ns: "other-ns" }, filtersMiss("b2"));
+    assert.equal((await stored(store)).length, 3, "the process-wide 3 a minute, whoever asks");
+    const skips = lines.filter((l) => l.operation === "miss_persist_skipped");
+    assert.equal(skips.length, 1, "logged at most once a minute");
+    assert.equal(skips[0].reason, "rate");
+    assert.equal(skips[0].scope, "owner");
+    assert.equal(skips[0].skipped, 1);
+    assert.equal(JSON.stringify(skips[0]).includes("a3"), false, "counts only, no value");
+
+    // A skipped key is not indexed: once the bucket refills, missing it again keeps it.
+    clock += 60_000;
+    await dm.save({ ns: NS }, filtersMiss("a3"));
+    assert.equal((await stored(store)).length, 4);
+    await dm.save({ ns: "other-ns" }, filtersMiss("b3"));
+    await dm.save({ ns: "third-ns" }, filtersMiss("c1"));
+    await dm.save({ ns: "third-ns" }, filtersMiss("c2"));
+    const later = lines.filter((l) => l.operation === "miss_persist_skipped");
+    assert.equal(later.length, 2);
+    assert.equal(later[1].scope, "global");
+    assert.equal(later[1].skipped, 2, "b2 and c2 since the last line");
+  });
+
+  it("over the limit the 501 still answers and the miss stays listed in memory", async () => {
+    const store = new MemoryStore();
+    const fake = await startFake({ store, persistence: new DurableMisses(store, { createsPerOwnerPerMinute: 2 }) });
+    try {
+      for (const s of ["r1", "r2", "r3", "r4"]) {
+        const r = await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body: { filters: { sport: [s] } } });
+        assert.equal(r.status, 501, s);
+      }
+      assert.equal((await stored(store)).length, 2);
+      assert.equal((await fake.call("GET", `/__fake/misses?ns=${NS}`)).body.misses.length, 4);
+    } finally {
+      await fake.close();
+    }
+  });
+});
+
+describe("restore and newer allowlist versions", () => {
+  it("neither restores nor deletes nor reads an object under a newer version; reset-all still sweeps it", async () => {
+    const store = new MemoryStore();
+    const m = filtersMiss();
+    const newer = missObjectName({ ns: NS }, m.key, SANITISE_ALLOWLIST_VERSION + 1);
+    await store.createOnce(newer, { ...missRecordFor({ ns: NS }, m).record, allowlistVersion: SANITISE_ALLOWLIST_VERSION + 1 });
+    await store.createOnce(`misses/v${SANITISE_ALLOWLIST_VERSION + 1}/some/new-layout.json`, { x: 1 });
+    let reads = 0;
+    const read = store.readVersion.bind(store);
+    store.readVersion = async (n, g) => (reads++, read(n, g));
+    const dm = new DurableMisses(store);
+    assert.deepEqual(await dm.restore(T0, () => false), []);
+    assert.equal(reads, 0);
+    assert.equal((await stored(store)).length, 2, "both newer-version objects stay");
+    assert.equal(lines.find((l) => l.operation === "misses_restored").newerVersion, 2);
+    await dm.removeAll();
+    assert.deepEqual(await stored(store), []);
+  });
+});
+
+describe("a 501 waits for its own write only", () => {
+  it("is not delayed by other persistence work that hangs", async () => {
+    const store = new MemoryStore();
+    const fake = await startFake({ store, persistence: new DurableMisses(store) });
+    try {
+      assert.equal((await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body: { filters: { sport: ["held"] } } })).status, 501);
+      // Every delete now hangs; a stored recording's removal (here clearMiss) is left running.
+      store.deleteVersion = () => new Promise(() => undefined);
+      fake.state.clearMiss(filtersMiss("held").key);
+      assert.equal(await fake.state.flushMisses(50), false, "the unrelated work is still running");
+      const t0 = Date.now();
+      const r = await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body: { filters: { sport: ["fresh"] } } });
+      assert.equal(r.status, 501);
+      assert.ok(Date.now() - t0 < MISS_WRITE_BUDGET_MS / 2, `answered in ${Date.now() - t0} ms`);
+      assert.ok((await stored(store)).some((n) => n.endsWith(`${filtersMiss("fresh").key}.json`)), "its own write still happened first");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("recordMissDurably hands back the miss's own write, already settled for a repeat or a needs-model miss", async () => {
+    const pending = gate();
+    const store = new MemoryStore();
+    const create = store.createOnce.bind(store);
+    store.createOnce = async (n, v) => (await pending.promise, create(n, v));
+    const state = new StateStore(() => T0, new DurableMisses(store));
+    const first = state.recordMissDurably({ ns: NS }, fresh(filtersMiss("own")));
+    let settled = false;
+    first.saved.then(() => (settled = true));
+    await new Promise((r) => setTimeout(r, 20));
+    assert.equal(settled, false, "the first miss waits for its create");
+    const again = state.recordMissDurably({ ns: NS }, fresh(filtersMiss("own")));
+    assert.equal(again.miss.count, 2);
+    await again.saved; // a repeat writes nothing
+    const nm = state.recordMissDurably({ ns: NS }, { key: "x".repeat(64), kind: "needs-model", method: "GET", path: "a/b" });
+    await nm.saved;
+    pending.open();
+    await first.saved;
+    assert.equal((await stored(store)).length, 1);
+  });
+});
+
+describe("recorder: --all --yes needs --max", () => {
+  const { readRecordOptions } = require("../dist/recorder/cli.js");
+  const flags = (...pairs) => new Map(pairs);
+
+  it("refuses --all --yes without --max, and allows every other combination", () => {
+    assert.throws(() => readRecordOptions(flags(["--all", true], ["--yes", true])), /--all with --yes needs --max N/);
+    assert.throws(() => readRecordOptions(flags(["--all", true], ["--yes", true], ["--watch", true])), /needs --max/);
+    assert.deepEqual(readRecordOptions(flags(["--all", true], ["--yes", true], ["--max", "20"])), { scope: { all: true }, max: 20, yes: true, watch: false, includeAnon: false });
+    assert.equal(readRecordOptions(flags(["--all", true])).max, undefined, "asked on the terminal: no --max needed");
+    assert.equal(readRecordOptions(flags(["--prefix", "happy-cat-"], ["--yes", true])).yes, true, "one deployment with --yes is unchanged");
+  });
+});
+
+describe("GET /__fake/misses?all=1 cap", () => {
+  const { ALL_MISSES_CAP } = require("../dist/src/routes/control.js");
+
+  it("answers at most 2,000 entries, oldest first, with truncated: true past it", async () => {
+    assert.equal(ALL_MISSES_CAP, 2000);
+    let clock = T0;
+    const fake = await startFake({ now: () => clock });
+    try {
+      // 5 namespaces of 401 (each under the 500-per-owner cap): 2,005 in all.
+      for (let n = 0; n < 5; n++) {
+        for (let i = 0; i < 401; i++) {
+          clock += 1;
+          fake.state.recordMiss({ ns: `ns-${n}` }, fresh(filtersMiss(`s${n}x${i}`)));
+        }
+      }
+      const r = await fake.call("GET", "/__fake/misses?all=1", { email: LOADER, admin: true });
+      assert.equal(r.status, 200);
+      assert.equal(r.body.misses.length, ALL_MISSES_CAP);
+      assert.equal(r.body.truncated, true);
+      assert.equal(r.body.misses[0].firstSeen, iso(T0 + 1), "oldest first");
+      const seen = r.body.misses.map((m) => m.firstSeen);
+      assert.deepEqual(seen, [...seen].sort());
+      assert.equal((await fake.call("GET", "/__fake/misses?prefix=ns-")).body.truncated, undefined, "prefix reads carry no flag");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("says truncated: false under the cap", async () => {
+    const fake = await startFake();
+    try {
+      fake.state.recordMiss({ ns: NS }, fresh(filtersMiss()));
+      const r = await fake.call("GET", "/__fake/misses?all=1", { email: LOADER, admin: true });
+      assert.equal(r.body.misses.length, 1);
+      assert.equal(r.body.truncated, false);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("FakeClient.allMissesPage reads the flag; allMisses gives the entries", async () => {
+    const client = new FakeClient({
+      baseUrl: "https://fake.example.run.app",
+      callerKey: "c".repeat(40),
+      adminKey: "a".repeat(40),
+      idToken: async () => "h.p.s",
+      fetchImpl: async () => new Response(JSON.stringify({ misses: [{ key: "k" }], truncated: true }), { status: 200 }),
+    });
+    assert.deepEqual(await client.allMissesPage(), { misses: [{ key: "k" }], truncated: true });
+    assert.deepEqual(await client.allMisses(), [{ key: "k" }]);
   });
 });

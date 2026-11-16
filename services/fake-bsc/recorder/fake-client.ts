@@ -110,8 +110,17 @@ export class FakeClient {
    * session whose preview is gone (CONTRACT.md, "Durable misses").
    */
   async allMisses(): Promise<MissEntry[]> {
-    const out = (await this.call("GET", "/__fake/misses?all=1", true)) as { misses?: unknown };
-    return Array.isArray(out?.misses) ? (out.misses as MissEntry[]) : [];
+    return (await this.allMissesPage()).misses;
+  }
+
+  /**
+   * `allMisses` with the fake's `truncated` flag: true when the fake had more
+   * than it answers (its cap, oldest first). Recording some and reading again
+   * reaches the rest.
+   */
+  async allMissesPage(): Promise<{ misses: MissEntry[]; truncated: boolean }> {
+    const out = (await this.call("GET", "/__fake/misses?all=1", true)) as { misses?: unknown; truncated?: unknown };
+    return { misses: Array.isArray(out?.misses) ? (out.misses as MissEntry[]) : [], truncated: out?.truncated === true };
   }
 
   async uploadRecording(recording: unknown): Promise<{ manifestVersion: number }> {

@@ -33,6 +33,19 @@ export const MAX_PERSISTED_MISSES = 2000;
 export const MAX_RESTORE_LISTING = 5000;
 /** Store calls in flight at once during a restore or a sweep. */
 const CONCURRENCY = 16;
+/**
+ * Create rate (CONTRACT.md, "Durable misses"): any caller-key holder can miss
+ * a new allowlisted key, so creates are rate limited process-wide and per
+ * owner. Over the limit the miss stays in memory only.
+ */
+export const MISS_CREATES_PER_MINUTE = 60;
+export const MISS_CREATES_BURST = 60;
+export const MISS_CREATES_PER_OWNER_PER_MINUTE = 20;
+/** Owners whose create bucket is tracked at once (least recently used dropped). */
+const MAX_OWNER_BUCKETS = 2000;
+/** At most one `miss_persist_skipped` line this often; it carries the count since the last. */
+const SKIP_LOG_INTERVAL_MS = 60_000;
+const VERSION_PREFIX_RE = /^misses\/v(\d{1,6})\//;
 
 const KEY_RE = /^[0-9a-f]{64}$/;
 const PREFIX_RE = /^[a-z0-9][a-z0-9-]{1,98}-$/;
@@ -148,9 +161,52 @@ function errorName(err: unknown): string {
   return err instanceof Error ? err.name : "unknown";
 }
 
+/**
+ * A token bucket: `capacity` tokens, refilled at `perMinute`. `take` spends
+ * one when there is one.
+ */
+export class TokenBucket {
+  private tokens: number;
+  private at: number;
+
+  constructor(
+    private readonly capacity: number,
+    private readonly perMinute: number,
+    nowMs: number,
+  ) {
+    this.tokens = capacity;
+    this.at = nowMs;
+  }
+
+  private refill(nowMs: number): void {
+    if (nowMs > this.at) {
+      this.tokens = Math.min(this.capacity, this.tokens + ((nowMs - this.at) * this.perMinute) / 60_000);
+      this.at = nowMs;
+    }
+  }
+
+  has(nowMs: number): boolean {
+    this.refill(nowMs);
+    return this.tokens >= 1;
+  }
+
+  take(nowMs: number): boolean {
+    if (!this.has(nowMs)) return false;
+    this.tokens -= 1;
+    return true;
+  }
+}
+
 export interface DurableMissesOptions {
   /** Cap on kept misses in all (default 2,000). */
   maxPersisted?: number;
+  /** Creates a minute, process-wide (default 60), and the burst (default 60). */
+  createsPerMinute?: number;
+  createsBurst?: number;
+  /** Creates a minute per owner (default 20; its burst is the same number). */
+  createsPerOwnerPerMinute?: number;
+  /** The clock the rate limit reads (default Date.now). */
+  now?: () => number;
   /** Cap on objects a restore lists (default 5,000). */
   maxListing?: number;
 }
@@ -170,6 +226,47 @@ export class DurableMisses implements MissPersistence {
   ) {
     this.maxPersisted = opts.maxPersisted ?? MAX_PERSISTED_MISSES;
     this.maxListing = opts.maxListing ?? MAX_RESTORE_LISTING;
+    this.now = opts.now ?? Date.now;
+    this.perOwnerPerMinute = opts.createsPerOwnerPerMinute ?? MISS_CREATES_PER_OWNER_PER_MINUTE;
+    this.global = new TokenBucket(opts.createsBurst ?? MISS_CREATES_BURST, opts.createsPerMinute ?? MISS_CREATES_PER_MINUTE, this.now());
+  }
+
+  private readonly now: () => number;
+  private readonly perOwnerPerMinute: number;
+  private readonly global: TokenBucket;
+  private readonly ownerBuckets = new Map<string, TokenBucket>();
+  private skipped = 0;
+  private lastSkipLog = -Infinity;
+
+  /**
+   * Spends one create from the process-wide bucket and the owner's, or none
+   * when either is empty. A refusal is logged at most once a minute, as a count.
+   */
+  private allowCreate(owner: MissOwner): boolean {
+    const t = this.now();
+    const who = owner === null ? "anon" : "ns" in owner ? `ns:${owner.ns}` : `prefix:${owner.prefix}`;
+    let mine = this.ownerBuckets.get(who);
+    if (mine) this.ownerBuckets.delete(who); // re-inserted below: most recent last
+    else mine = new TokenBucket(this.perOwnerPerMinute, this.perOwnerPerMinute, t);
+    this.ownerBuckets.set(who, mine);
+    if (this.ownerBuckets.size > MAX_OWNER_BUCKETS) {
+      const first = this.ownerBuckets.keys().next().value;
+      if (first !== undefined) this.ownerBuckets.delete(first);
+    }
+    const globalOk = this.global.has(t);
+    const ownerOk = mine.has(t);
+    if (globalOk && ownerOk) {
+      this.global.take(t);
+      mine.take(t);
+      return true;
+    }
+    this.skipped += 1;
+    if (t - this.lastSkipLog >= SKIP_LOG_INTERVAL_MS) {
+      log("miss_persist_skipped", { reason: "rate", scope: globalOk ? "owner" : "global", skipped: this.skipped });
+      this.skipped = 0;
+      this.lastSkipLog = t;
+    }
+    return false;
   }
 
   /** How many kept misses this process knows of (tests, health). */
@@ -228,6 +325,8 @@ export class DurableMisses implements MissPersistence {
     if (!read.ok) return;
     const name = missObjectName(owner, miss.key);
     if (name === null || this.index.has(name)) return;
+    // Over the create rate the miss stays in memory only; a later miss of the key tries again.
+    if (!this.allowCreate(owner)) return;
     const entry: Entry = { owner, key: miss.key, firstSeenMs: Date.parse(miss.firstSeen), generation: null };
     this.index.set(name, entry);
     const work: Promise<void>[] = [];
@@ -296,7 +395,15 @@ export class DurableMisses implements MissPersistence {
     const kept: Array<{ name: string; generation: string; owner: MissOwner; miss: Miss }> = [];
     const drop: Array<{ name: string; generation: string; reason: string }> = [];
     let failedReads = 0;
+    let newer = 0;
     await inBatches(listed, async (v) => {
+      // A newer allowlist version belongs to a newer revision (overlapping
+      // revisions, or a rollback): neither restored nor deleted. Older ones go.
+      const version = VERSION_PREFIX_RE.exec(v.name);
+      if (version && Number(version[1]) > SANITISE_ALLOWLIST_VERSION) {
+        newer += 1;
+        return;
+      }
       const at = parseMissObjectName(v.name);
       if (!at || at.allowlistVersion !== SANITISE_ALLOWLIST_VERSION) {
         drop.push({ ...v, reason: at ? "allowlist_version" : "bad_name" });
@@ -345,6 +452,7 @@ export class DurableMisses implements MissPersistence {
       restored: out.length,
       deleted: drop.length,
       failedReads,
+      newerVersion: newer,
       ms: Date.now() - started,
     });
     return out;
