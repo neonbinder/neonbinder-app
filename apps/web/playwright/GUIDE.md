@@ -1084,7 +1084,8 @@ answer. What that changes:
   Wikidata stayed unavailable through all of them. Confirm from the run's
   `convex-logs-runner-0` artifact (the preview's Convex logs for the whole
   run): each unavailable attempt logs `wikidata_lookup_unavailable` (kind,
-  row id, reason, never a name). Then rerun. A red with no such lines, or a
+  row id, reason, never a name). Then run it again on a later turn (or
+  re-enqueue), never inside the turn. A red with no such lines, or a
   repeat with `query.wikidata.org` healthy, is a product finding.
 - **Do not add the live-proof name to the recording.** The capture reads the
   deployment's `players` rows, so a capture taken after the suite has run
@@ -1302,8 +1303,9 @@ otherwise). Locally run them alone, on your own deployment.
    correctly.
 5. A red during a `pr-queue` turn (or a merge-queue eject) is never rerun
    inside the turn. The turn passes at once, and the `pr-queue` skill's triage
-   decides what happens next: a known `ci-fail` failure goes again unchanged
-   every time, anything else goes to the planner and then waits for Jason.
+   decides what happens next: a known `ci-fail` failure, whose spec and the
+   code under it are outside the PR's diff, goes again unchanged every time;
+   anything else goes to the planner and then waits for Jason.
    BuySportsCards is our fake, so a BSC read that failed is never an outside
    outage: it is ours, usually an unrecorded request (see above). To fix one,
    reproduce that spec locally on your own deployment or against the PR
