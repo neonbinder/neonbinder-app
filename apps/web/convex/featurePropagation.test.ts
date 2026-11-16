@@ -1105,7 +1105,7 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
   // carries neither the player names (they are behind `playerIds`) nor the set
   // name (an ancestor walk), so "did the core fit?" is not a question the row
   // can answer about itself. See `cardChecklist.listingTitleTruncated`.
-  test("an overflowing core writes listingTitleTruncated: true", async () => {
+  test("a title that lost a first name writes listingTitleTruncated: true (NEO-535)", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
@@ -1152,13 +1152,16 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
         .collect(),
     );
 
+    // NEO-535: the number and the first word "An" are cut; the rest of the
+    // name is never cut, so the title STOPs over the cap. The flag puts the
+    // card on the Card titles step for the first name; the length raises
+    // `titleOverLimit` besides. No ellipsis, nothing sliced.
     expect(card.listingTitleTruncated).toBe(true);
-    // Still a VALID, listable title — cut at a whole word, no ellipsis, card
-    // number intact. The flag says "a human should put the missing words
-    // back", not "this is broken".
-    expect(card.listingTitle!.length).toBeLessThanOrEqual(80);
+    expect(card.listingTitle).toBe(
+      "2024 Topps Chrome Absurdly Long Player Full Name That Alone Exceeds The Entire Title Budget",
+    );
+    expect(card.listingTitle!.length).toBeGreaterThan(80);
     expect(card.listingTitle).not.toContain("…");
-    expect(card.listingTitle!.endsWith("#99999")).toBe(true);
   });
 
   test("a card whose core fits omits listingTitleTruncated entirely", async () => {
@@ -1332,10 +1335,12 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
       "2024 Topps Chrome Julio Rodriguez #300b Image Variation Baseball",
     );
     // Once, not twice: `deriveCardObservedFeatures` also copies cardVariation
-    // into `features.parallelName`, so the identity sentence already names it.
+    // into `features.parallelName`; a parallel that IS the variation is stated
+    // as the variation only (NEO-535 gives it its own line).
     expect(card.listingDescription).toBe(
-      "2024 Topps Chrome Image Variation card of Julio Rodriguez, #300b.",
+      "2024 Topps Chrome card of Julio Rodriguez, #300b.\nVariation: Image Variation.\nSport: Baseball.",
     );
+    expect(card.listingDescription!.split("Image Variation")).toHaveLength(2);
   });
 });
 

@@ -113,7 +113,7 @@
       "refersTo": "input",
       "description": "The input well with a field-rule edge and the focus outline (dark values shown; light is white with a #757090 edge and a #7A2BD9 outline).",
       "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">Player name</span><input class=\"ds-input\" placeholder=\"e.g. Ken Griffey Jr.\" /></label>",
-      "css": ".ds-field { display: block; font-family: Lexend, Arial, sans-serif; } .ds-field-label { display: block; margin-bottom: 4px; font-size: 0.875rem; color: #CBD5E1; } .ds-input { width: 100%; padding: 8px 12px; border: 1px solid #334155; border-radius: 6px; background: #0F172A; color: #F1F5F9; font: inherit; font-size: 1rem; } .ds-input::placeholder { color: #94A3B8; } .ds-input:focus { outline: none; box-shadow: 0 0 0 2px #00C2FF; }"
+      "css": ".ds-field { display: block; font-family: Lexend, Arial, sans-serif; } .ds-field-label { display: block; margin-bottom: 4px; font-size: 0.875rem; color: #CBD5E1; } .ds-input { width: 100%; padding: 8px 12px; border: 1px solid #334155; border-radius: 6px; background: #0F172A; color: #F1F5F9; font: inherit; font-size: 1rem; } .ds-input::placeholder { color: #94A3B8; } .ds-input:focus { outline: none; box-shadow: 0 0 0 2px #00C2FF; } .ds-input:disabled, .ds-input[aria-disabled=true] { background: var(--button-neutral, #314158); color: var(--ink-2, #CAD5E2); cursor: not-allowed; }"
     },
     {
       "name": "Card",

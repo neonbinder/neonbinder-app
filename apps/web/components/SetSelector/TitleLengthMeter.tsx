@@ -32,18 +32,19 @@ import {
  *
  * Every band that is not "fine" carries words: `may clip on mobile`,
  * `may clip in search`, and a full sentence in the alert. The colours below are
- * the app's existing roles — grey is neutral, pink (#FF2E9A) is the error
- * colour used for every inline field error in this directory — plus two warm
- * steps between them.
+ * the app's existing roles — grey is neutral, the danger notice ink is over
+ * the cap — plus two warm steps between them.
  *
- * ## Two surfaces (NEO-101 audit), one set of roles (NEO-356)
+ * ## One set of roles, every surface (NEO-356, NEO-535)
  *
- * This renders on TitleFixer's walker dialog (`surface="dark"`) and on
- * CardDetailPanel's drawer (`"themed"`, the default). Both now paint with
- * colour roles, which follow the light/dark mode, so each tone reads 4.5:1 on
- * either surface in either mode. The two maps differ only in the over-cap
- * tone: on the drawer's graphite the brand pink measures 4.4:1, so it takes
- * the danger notice ink there. `surface` stays so callers need no change.
+ * This renders on TitleFixer's walker dialog, the wizard's Card titles step
+ * and CardDetailPanel's drawer. All three paint with colour roles, which
+ * follow the light/dark mode, so each tone reads 4.5:1 on any of them in
+ * either mode. Over the cap is the danger notice ink everywhere: pink is the
+ * colour of backing out and taking away (DESIGN.md), never of an error, and
+ * on the drawer's graphite it measured 4.4:1 besides. There used to be a
+ * `surface` prop choosing between two maps that differed only in that tone;
+ * NEO-535 folded them into one.
  *
  * ## The bands are display truncation, not rules
  *
@@ -74,29 +75,13 @@ export type TitleLengthState = {
   alert: string | null;
 };
 
-/** Which ambient surface a caller renders this on. See the header note. */
-export type TitleLengthSurface = "themed" | "dark";
-
-/** TitleFixer's walker dialog. */
-const TONE_CLASS_DARK: Record<TitleLengthTone, string> = {
+/** One tone per band, the same on every surface (see the header note). */
+const TONE_CLASS: Record<TitleLengthTone, string> = {
   ok: "text-ink-3",
   mobile: "text-notice-warn-ink",
   search: "text-neon-orange-text",
-  over: "text-neon-pink-text",
-};
-
-/** CardDetailPanel's drawer (`bg-raised`). */
-const TONE_CLASS_THEMED: Record<TitleLengthTone, string> = {
-  ok: "text-ink-3",
-  mobile: "text-notice-warn-ink",
-  search: "text-neon-orange-text",
-  // The brand pink is 4.4:1 on the dark drawer; the danger ink clears 4.5:1.
   over: "text-notice-danger-ink",
 };
-
-function toneClass(tone: TitleLengthTone, surface: TitleLengthSurface): string {
-  return surface === "dark" ? TONE_CLASS_DARK[tone] : TONE_CLASS_THEMED[tone];
-}
 
 /**
  * Classify a length against a cap.
@@ -157,17 +142,14 @@ export function TitleLengthMeter({
   length,
   max = LISTING_TITLE_MAX,
   soft = false,
-  surface = "themed",
 }: {
   length: number;
   max?: number;
   soft?: boolean;
-  /** Which ambient surface this renders on. Default is safe for CardDetailPanel; TitleFixer passes `"dark"`. */
-  surface?: TitleLengthSurface;
 }) {
   const state = titleLengthState(length, max, soft);
   return (
-    <span className={`flex items-center gap-1 tabular-nums ${toneClass(state.tone, surface)}`}>
+    <span className={`flex items-center gap-1 tabular-nums ${TONE_CLASS[state.tone]}`}>
       <span>
         {length}/{max}
       </span>
@@ -204,7 +186,6 @@ export function TitleLengthAlert({
   max = LISTING_TITLE_MAX,
   what = "Title",
   blocking = true,
-  surface = "themed",
 }: {
   id?: string;
   length: number;
@@ -213,8 +194,6 @@ export function TitleLengthAlert({
   what?: string;
   /** False for a warn-only field. */
   blocking?: boolean;
-  /** Which ambient surface this renders on. Default is safe for CardDetailPanel; TitleFixer passes `"dark"`. */
-  surface?: TitleLengthSurface;
 }) {
   const state = titleLengthState(length, max);
   if (!state.alert) return null;
@@ -223,7 +202,7 @@ export function TitleLengthAlert({
       id={id}
       role={blocking ? "alert" : "status"}
       aria-atomic="true"
-      className={`mt-1 text-[10px] ${toneClass("over", surface)}`}
+      className={`mt-1 text-xs ${TONE_CLASS.over}`}
     >
       {what} is {state.alert}{" "}
       {blocking
@@ -238,13 +217,6 @@ export function TitleLengthAlert({
  * per-item reasons. Same type scale and colour as the counter's soft bands, so
  * "this needs a look" reads as one voice wherever it appears.
  */
-export function TitleFieldNote({
-  children,
-  surface = "themed",
-}: {
-  children: ReactNode;
-  /** Which ambient surface this renders on. Default is safe for CardDetailPanel; TitleFixer passes `"dark"`. */
-  surface?: TitleLengthSurface;
-}) {
-  return <p className={`mt-1 text-[10px] ${toneClass("mobile", surface)}`}>{children}</p>;
+export function TitleFieldNote({ children }: { children: ReactNode }) {
+  return <p className={`mt-1 text-xs ${TONE_CLASS.mobile}`}>{children}</p>;
 }

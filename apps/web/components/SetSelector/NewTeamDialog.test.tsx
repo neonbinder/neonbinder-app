@@ -808,7 +808,7 @@ describe("NewTeamDialog — the panel fits the viewport", () => {
   it("caps the panel at the viewport height", () => {
     renderDialog();
     const panel = body().parentElement!;
-    expect(panel.className).toContain("max-h-[calc(100vh-2rem)]");
+    expect(panel.className).toContain("max-h-[calc(100dvh-2rem)]");
     expect(panel.className).toContain("flex-col");
   });
 });

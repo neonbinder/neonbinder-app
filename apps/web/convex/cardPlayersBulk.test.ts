@@ -320,6 +320,8 @@ describe("addPlayerToVariant: makes them the card's player, only where no one is
       "Profiles card of Patrick Mahomes, #TP-6.",
       "Team: Kansas City Chiefs.",
       "Cameo: Travis Kelce.",
+      // NEO-535: the description closes with the sport.
+      "Sport: Football.",
     ]);
   });
 

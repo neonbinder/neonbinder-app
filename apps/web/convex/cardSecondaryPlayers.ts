@@ -167,7 +167,7 @@ export function descriptionIsGenerated(
   if (stored === undefined) return false;
   return (
     stored === generateListingDescription(inputs, { cameoNames }) ||
-    stored === generateListingDescription(inputs)
+    stored === generateListingDescription(inputs, { cameoNames: [] })
   );
 }
 
@@ -345,6 +345,34 @@ export async function cardSecondaryPlayerLinkPage(
       sportId === null ? q.eq("playerId", playerId) : q.eq("playerId", playerId).eq("sportId", sportId),
     )
     .take(limit);
+}
+
+/**
+ * NEO-535 — one page of a player's cameo index rows on a cursor, for the
+ * player-rename description fan-out (`cardDescriptionFanOut`): a card names
+ * its cameos in its description, so a cameo's rename reaches it too. The
+ * same `[playerId, sportId]` + `_creationTime` cursor `cardPlayerLinkPage`
+ * walks; `after` null starts at the beginning.
+ */
+export async function cardSecondaryPlayerLinkPageAfter(
+  ctx: ReadCtx,
+  playerId: Id<"players">,
+  after: { sportId: Id<"selectorOptions">; creationTime: number } | null,
+  limit: number,
+): Promise<Array<Doc<"cardSecondaryPlayerLinks">>> {
+  if (!after) return await cardSecondaryPlayerLinkPage(ctx, playerId, null, limit);
+  const rest = await ctx.db
+    .query("cardSecondaryPlayerLinks")
+    .withIndex("by_player_and_sport", (q) =>
+      q.eq("playerId", playerId).eq("sportId", after.sportId).gt("_creationTime", after.creationTime),
+    )
+    .take(limit);
+  if (rest.length >= limit) return rest;
+  const next = await ctx.db
+    .query("cardSecondaryPlayerLinks")
+    .withIndex("by_player_and_sport", (q) => q.eq("playerId", playerId).gt("sportId", after.sportId))
+    .take(limit - rest.length);
+  return rest.concat(next);
 }
 
 // ───────────────────────────────────────────────────────────────────────────

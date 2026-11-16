@@ -51,3 +51,11 @@ Drain vs cancel: see [[convex-components-unregistered-in-convex-test]]. Drain wh
 the work is pure and local; cancel when it reaches an unmounted component, when
 the test asserts the scheduled ROWS rather than their effect, or when the chain is
 too long for convex-test's iteration ceiling.
+
+**Prevention when adding a side effect to a hot mutation (NEO-535).** A
+`ctx.scheduler.runAfter` added to a mutation dozens of test files call
+(`selectorOptions.updateCard`) turns each of those files into a teardown-leak
+candidate overnight. Do the bounded work inline instead (`.take(N + 1)`, not
+`.paginate()`: a public mutation may need its one paginate elsewhere, see
+[[convex-one-paginate-per-function]]) and schedule only past the bound, so the
+common test case schedules nothing. Shape: `listingTitleRequeue.queueRetitledCardNow`.

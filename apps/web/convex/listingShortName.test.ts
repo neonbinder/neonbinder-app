@@ -10,6 +10,8 @@ import { describe, expect, test } from "vitest";
 import {
   MAX_LISTING_SHORT_NAME_LENGTH,
   normalizeListingShortName,
+  parallelAfterInsert,
+  roughlySays,
   titleChainFacts,
   type TitleChainRow,
 } from "./listingShortName";
@@ -26,11 +28,12 @@ describe("normalizeListingShortName", () => {
 
   test("the cap is inclusive", () => {
     const atCap = "s".repeat(MAX_LISTING_SHORT_NAME_LENGTH);
-    expect(MAX_LISTING_SHORT_NAME_LENGTH).toBe(60);
+    // NEO-535: raised from 60, the box holds the whole set description.
+    expect(MAX_LISTING_SHORT_NAME_LENGTH).toBe(80);
     expect(normalizeListingShortName(atCap)).toBe(atCap);
     expect(() => normalizeListingShortName(`${atCap}s`)).toThrow(ConvexError);
     expect(() => normalizeListingShortName(`${atCap}s`)).toThrow(
-      /at most 60 characters/,
+      "Set name in titles tops out at 80 characters.",
     );
   });
 
@@ -174,13 +177,15 @@ describe("titleChainFacts", () => {
         row("setName", "Collector's Choice", { listingShortName: "UD Choice" }),
       ]).listingShortName,
     ).toBe("UD Hologram");
+    // NEO-535: a value stored above the insert row covers the set, so the
+    // insert's name is appended (trimmed value, verbatim name).
     expect(
       titleChainFacts([
         row("insert", "Hologram"),
         row("variantType", "Inserts"),
         row("setName", "Collector's Choice", { listingShortName: " UD Choice " }),
       ]).listingShortName,
-    ).toBe("UD Choice");
+    ).toBe("UD Choice Hologram");
   });
 
   test("nothing past the setName row is read", () => {
@@ -222,5 +227,110 @@ describe("titleChainFacts", () => {
     expect(
       titleChainFacts([row("insert", "Hologram"), null, row("variantType", "Inserts")]),
     ).toEqual({});
+  });
+});
+
+describe("NEO-535: a name the box already says, in another spelling, is not appended again", () => {
+  test("roughlySays folds case, edge punctuation, a plural s and the autograph spellings", () => {
+    expect(roughlySays("Metal 1991 Gold Prospect Auto", "1991 Gold Prospects Autographs")).toBe(true);
+    expect(roughlySays("Leaf Metal AU", "Autographed")).toBe(true);
+    expect(roughlySays("Chrome Refractors,", "refractor")).toBe(true);
+    // "ss" and short words keep their s; a missing word is not said.
+    expect(roughlySays("Chrome Glass", "Glas")).toBe(false);
+    expect(roughlySays("Chrome Bu", "Bus")).toBe(false);
+    expect(roughlySays("Metal 1991 Gold Prospect", "1991 Gold Prospects Autographs")).toBe(false);
+    expect(roughlySays("anything", "  ")).toBe(false);
+  });
+
+  test("an insert the box says in a shortened spelling is not appended", () => {
+    const chain = (box: string) => [
+      row("insert", "1991 Gold Prospects Autographs"),
+      row("variantType", "Insert"),
+      row("setName", "Leaf Metal", { listingShortName: box }),
+    ];
+    expect(titleChainFacts(chain("2026 Leaf Metal 1991 Gold Prospect Auto")).listingShortName).toBe(
+      "2026 Leaf Metal 1991 Gold Prospect Auto",
+    );
+    expect(titleChainFacts(chain("2026 Leaf Metal")).listingShortName).toBe(
+      "2026 Leaf Metal 1991 Gold Prospects Autographs",
+    );
+  });
+
+  test("a parallel the box says in a plural is not appended", () => {
+    const chain = (box: string) => [
+      row("parallel", "Prismatic"),
+      row("insert", "Gold Prospects"),
+      row("variantType", "Insert"),
+      row("setName", "Leaf Metal"),
+    ].map((r, i) => (i === 1 ? { ...r, metadata: { listingShortName: box } } : r));
+    expect(titleChainFacts(chain("2026 Leaf Metal Gold Prospects Prismatics")).listingShortName).toBe(
+      "2026 Leaf Metal Gold Prospects Prismatics",
+    );
+    expect(titleChainFacts(chain("2026 Leaf Metal Gold Prospects")).listingShortName).toBe(
+      "2026 Leaf Metal Gold Prospects Prismatic",
+    );
+  });
+});
+
+describe("parallelAfterInsert (NEO-535: the insert's words said once)", () => {
+  test("the leading run the parallel shares with its insert goes", () => {
+    expect(parallelAfterInsert("Anime Red Refractors", "Anime")).toBe("Red Refractors");
+    expect(parallelAfterInsert("TRItanium Red Flood", "TRItanium Prismatic White")).toBe("Red Flood");
+    expect(parallelAfterInsert("anime  RED Refractors", "ANIME")).toBe("RED Refractors");
+  });
+
+  test("folded as roughlySays folds: plural and autograph spellings", () => {
+    expect(parallelAfterInsert("Gold Prospect Auto Orange", "Gold Prospects Autographs")).toBe("Orange");
+  });
+
+  test("only a leading run: a shared word later in the name stays", () => {
+    expect(parallelAfterInsert("Red Anime Refractors", "Anime")).toBe("Red Anime Refractors");
+    expect(parallelAfterInsert("Gold Refractor", "Chrome Gold")).toBe("Gold Refractor");
+  });
+
+  test("a parallel that is all insert words leaves nothing; no insert leaves it whole", () => {
+    expect(parallelAfterInsert("Anime", "Anime")).toBe("");
+    expect(parallelAfterInsert("Anime Red", undefined)).toBe("Anime Red");
+    expect(parallelAfterInsert("Anime Red", "")).toBe("Anime Red");
+  });
+
+  test("a box stored above the parallel appends only the parallel's own words", () => {
+    const chain = [
+      row("parallel", "Anime Red Refractors"),
+      row("insert", "Anime"),
+      row("variantType", "Inserts"),
+      row("setName", "Bowman", { listingShortName: "Bowman" }),
+    ];
+    expect(titleChainFacts(chain).listingShortName).toBe("Bowman Anime Red Refractors");
+    // Stored ON the insert row: the parallel's own words follow it.
+    expect(
+      titleChainFacts([
+        row("parallel", "Anime Red Refractors"),
+        row("insert", "Anime", { listingShortName: "Bowman Anime" }),
+        row("variantType", "Inserts"),
+        row("setName", "Bowman"),
+      ]).listingShortName,
+    ).toBe("Bowman Anime Red Refractors");
+  });
+
+  test("a parallel that is all insert words leaves a stored box unchanged", () => {
+    const facts = titleChainFacts([
+      row("parallel", "Anime"),
+      row("insert", "Anime"),
+      row("variantType", "Inserts"),
+      row("setName", "Bowman", { listingShortName: "Bowman Anime" }),
+    ]);
+    expect(facts.listingShortName).toBe("Bowman Anime");
+  });
+
+  test("an insert that is not a role leaves the parallel appended whole", () => {
+    const facts = titleChainFacts([
+      row("parallel", "Anime Red Refractors"),
+      row("insert", "Anime"),
+      row("variantType", "Parallels"),
+      row("setName", "Bowman", { listingShortName: "Bowman" }),
+    ]);
+    expect(facts.insertIsRole).toBeUndefined();
+    expect(facts.listingShortName).toBe("Bowman Anime Red Refractors");
   });
 });

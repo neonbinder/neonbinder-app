@@ -7,8 +7,10 @@
  *  - `listingTitle` — the operator's own title, written verbatim, never
  *    flagged cut short. Over LISTING_TITLE_MAX refuses the commit before any
  *    phase writes (the same cap `updateCard` holds an edit to).
- *  - `listingTitleKept` — the operator kept the trimmed title. The server
- *    still generates it; it just does not flag it.
+ *  - `listingTitleKept` — the operator kept the title the step showed. The
+ *    server still generates it; it just does not flag it. NEO-535: it may be
+ *    over the cap (the generator STOPs rather than cut description words),
+ *    so it is bounded by LISTING_TITLE_KEPT_MAX, not the cap.
  *  - `cardVariationAnswered` — `cardVariation` is the operator's trim, held
  *    to ASPECT_VALUE_MAX and stored trimmed.
  *
@@ -23,6 +25,7 @@ import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "./features/listingLimits";
+import { LISTING_TITLE_KEPT_MAX } from "./features/listingInputs";
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -50,13 +53,22 @@ const ADMIN_IDENTITY = {
 
 type T = ReturnType<typeof convexTest>;
 
-/** A set name long enough that every card's title core is cut. */
+/** A set name long enough that every card's builder title is over the cap. */
 const LONG_SET_NAME =
   "Chrome Update Series Sapphire Edition Platinum Anniversary Collectors Box Hobby Exclusive";
 
+/**
+ * The leaf's box text ("Set name in titles"). NEO-535: an over-cap builder
+ * title is built from it instead, and such a card is born
+ * `listingTitleTruncated` so it is on the Card titles step.
+ */
+const BOX = "2026 Topps Sapphire";
+
 async function seedTree(
   t: T,
+  opts: { box?: string | null } = {},
 ): Promise<{ sportId: Id<"selectorOptions">; leafId: Id<"selectorOptions"> }> {
+  const box = opts.box === undefined ? BOX : opts.box;
   return t.run(async (ctx) => {
     const sportId = await ctx.db.insert("selectorOptions", {
       level: "sport",
@@ -80,6 +92,7 @@ async function seedTree(
       value: "Base",
       platformData: {},
       features: { manufacturer: "Topps", season: "2026" },
+      ...(box ? { metadata: { listingShortName: box } } : {}),
       parentId: setNameId,
       children: [],
       lastUpdated: Date.now(),
@@ -141,14 +154,27 @@ async function settle(t: T) {
 }
 
 describe("commitCardChecklist — the 'Card titles' answers (NEO-335)", () => {
-  test("no answer: the generated title, flagged cut short — exactly as before", async () => {
+  test("no answer: the generated title (built from the box), flagged — exactly as before", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedTree(t);
     await commit(t, ids, [card({ cardNumber: "1" })]);
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
+    expect(row.listingTitle).toBe("2026 Topps Sapphire #1 Baseball");
     expect(row.listingTitleTruncated).toBe(true);
-    expect(row.listingTitle!.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
-    expect(row.listingTitle).toMatch(/#1$|#1 /);
+    await settle(t);
+  });
+
+  test("no box and a description over the cap: the over-cap title is written whole, flagged by its length only", async () => {
+    // NEO-535 STOP: description words are never cut. No first name was lost
+    // and no box was used, so `listingTitleTruncated` is not written; the
+    // walker raises `titleOverLimit` from the length instead.
+    const t = convexTest(schema, modules);
+    const ids = await seedTree(t, { box: null });
+    await commit(t, ids, [card({ cardNumber: "1" })]);
+    const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
+    expect(row.listingTitle).toBe(`2026 Topps ${LONG_SET_NAME}`);
+    expect(row.listingTitle!.length).toBeGreaterThan(LISTING_TITLE_MAX);
+    expect(row.listingTitleTruncated).toBeUndefined();
     await settle(t);
   });
 
@@ -178,12 +204,27 @@ describe("commitCardChecklist — the 'Card titles' answers (NEO-335)", () => {
     await settle(t);
   });
 
-  test("a kept title over the cap refuses the commit before anything is written", async () => {
+  test("a kept over-cap title that the server generates: kept, not flagged truncated", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedTree(t, { box: null });
+    const shown = `2026 Topps ${LONG_SET_NAME}`;
+    await commit(t, ids, [card({ cardNumber: "1", listingTitleKept: shown })]);
+    const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
+    expect(row.listingTitle).toBe(shown);
+    expect(row.listingTitleTruncated).toBeUndefined();
+    await settle(t);
+  });
+
+  test("a kept title past its bound refuses the commit before anything is written", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedTree(t);
     await expect(
-      commit(t, ids, [card({ cardNumber: "1", listingTitleKept: "t".repeat(LISTING_TITLE_MAX + 1) })]),
-    ).rejects.toThrow(/card #1: the title is 81 characters; the limit is 80/);
+      commit(t, ids, [
+        card({ cardNumber: "1", listingTitleKept: "t".repeat(LISTING_TITLE_KEPT_MAX + 1) }),
+      ]),
+    ).rejects.toThrow(
+      `card #1: the title is ${LISTING_TITLE_KEPT_MAX + 1} characters; the limit is ${LISTING_TITLE_KEPT_MAX}.`,
+    );
     expect((await rowsByNumber(t, ids.leafId)).size).toBe(0);
     await settle(t);
   });

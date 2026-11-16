@@ -17,3 +17,4 @@
 - [Pull sheet dealer checks](pull-sheet-dealer-checks.md) — sale must record which copy/box/slot it took; merge then split; server check-off; no buyer PII; colour collisions
 - [Local build exploratory driver](local-build-exploratory-driver.md) — headless Playwright via scratch config + support helpers; sign-in/seed URL; what was refused
 - [Derived value survival is order-dependent](derived-value-survival-is-order-dependent.md) — "keep while valid" without a picked flag = order decides; test A-then-B and B-then-A
+- [Exploratory pass driving recipe](exploratory_pass_driving_recipe.md) — headless persistent-profile driver, reaching Card titles step, Back/blank-history trap

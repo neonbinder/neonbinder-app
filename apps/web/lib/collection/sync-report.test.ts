@@ -15,7 +15,7 @@ const ALL_REASONS = listingProblemReasonValidator.members.map((m) => m.value);
 describe("isReportableSyncReason", () => {
   test("exactly the reasons only the admin team can fix", () => {
     expect(ALL_REASONS.filter(isReportableSyncReason).sort()).toEqual(
-      ["missingAspect", "noLeague", "noLink", "notOnSheet", "numberMismatch", "rejected", "sharedLink"].sort(),
+      ["missingAspect", "noLeague", "noLink", "notOnSheet", "numberMismatch", "rejected", "sharedLink", "titleTooLong"].sort(),
     );
   });
 
@@ -27,6 +27,8 @@ describe("isReportableSyncReason", () => {
     expect(hasReportableCard([{ reason: "noPrice" }, { reason: "noPhoto" }])).toBe(false);
     expect(hasReportableCard([{ reason: "noPrice" }, { reason: "notOnSheet" }])).toBe(true);
     expect(hasReportableCard([])).toBe(false);
+    // NEO-535: only the crew can shorten a title in the set builder.
+    expect(hasReportableCard([{ reason: "noPrice" }, { reason: "titleTooLong" }])).toBe(true);
   });
 
   test("NEO-569: a card with no league is the crew's, not the collector's", () => {
@@ -41,6 +43,7 @@ describe("syncReportDetail", () => {
     expect(syncReportDetail("missingAspect", "Year Manufactured")).toBe("Year Manufactured");
     expect(syncReportDetail("noLink", "anything")).toBeUndefined();
     expect(syncReportDetail("noLeague", "anything")).toBeUndefined();
+    expect(syncReportDetail("titleTooLong", "anything")).toBeUndefined();
     expect(syncReportDetail("rejected", "   ")).toBeUndefined();
     expect(syncReportDetail("rejected", undefined)).toBeUndefined();
     expect(syncReportDetail("rejected", "a".repeat(MAX_SYNC_REPORT_DETAIL + 1))).toHaveLength(MAX_SYNC_REPORT_DETAIL);

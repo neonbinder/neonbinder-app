@@ -14,6 +14,7 @@ import {
   assessNewCardListing,
   checkTitleAnswer,
   leftOutOfTitle,
+  LISTING_TITLE_KEPT_MAX,
   titleAttentionItems,
   type ListingSetContext,
 } from "./listingInputs";
@@ -26,6 +27,11 @@ const LONG_SET: ListingSetContext = {
   sportValue: "Baseball",
   setNameValue: "Chrome Update Series Sapphire Edition Platinum Anniversary Collectors Box",
   inheritedFeatures: { manufacturer: "Topps", season: "2026" },
+};
+/** NEO-535 — fits once "Shohei" is cut: born `listingTitleTruncated`, under the cap. */
+const FIRST_NAME_SET: ListingSetContext = {
+  ...LONG_SET,
+  setNameValue: "Chrome Update Series Sapphire Edition Platinum Anniversary",
 };
 
 function row(over: Partial<NewCardRow> = {}): NewCardRow {
@@ -46,23 +52,42 @@ const attention = (r: ReturnType<typeof buildCardRowForInsert>["row"]) =>
   deriveCardAttention(r).map((i) => i.kind);
 
 describe("parity with the stored row, with the operator's answers on it", () => {
-  const predicted = assessNewCardListing({ cardNumber: "9" }, LONG_SET, {
+  const predicted = assessNewCardListing({ cardNumber: "9" }, FIRST_NAME_SET, {
+    playerNames: ["Shohei Ohtani"],
+  });
+  const overCap = assessNewCardListing({ cardNumber: "9" }, LONG_SET, {
     playerNames: ["Shohei Ohtani"],
   });
 
+  test("the fixtures are what they claim", () => {
+    expect(predicted.assessment.fits).toBe(true);
+    expect(predicted.assessment.firstNameLost).toBe(true);
+    expect(predicted.items.map((i) => i.kind)).toEqual(["titleTruncated"]);
+    expect(overCap.assessment.fits).toBe(false);
+    expect(overCap.items.map((i) => i.kind)).toEqual(["titleOverLimit"]);
+  });
+
   test("kept = exactly the predicted title: stored title matches and the walker is quiet", () => {
-    const built = buildCardRowForInsert(row({ listingTitleKept: predicted.assessment.title }), LONG_SET, NOW);
+    const built = buildCardRowForInsert(row({ listingTitleKept: predicted.assessment.title }), FIRST_NAME_SET, NOW);
     expect(built.row.listingTitle).toBe(predicted.assessment.title);
+    expect(built.row).not.toHaveProperty("listingTitleTruncated");
     expect(attention(built.row)).not.toContain("titleTruncated");
   });
 
   test("kept = one character off: the walker still asks, because nobody saw this title", () => {
     const built = buildCardRowForInsert(
       row({ listingTitleKept: predicted.assessment.title.slice(1) }),
-      LONG_SET,
+      FIRST_NAME_SET,
       NOW,
     );
     expect(attention(built.row)).toContain("titleTruncated");
+  });
+
+  test("kept over the cap: the kept answer clears the first-name flag, but the length is still flagged", () => {
+    const built = buildCardRowForInsert(row({ listingTitleKept: overCap.assessment.title }), LONG_SET, NOW);
+    expect(built.row.listingTitle).toBe(overCap.assessment.title);
+    expect(built.row).not.toHaveProperty("listingTitleTruncated");
+    expect(attention(built.row)).toContain("titleOverLimit");
   });
 
   test("their own title at exactly 80: quiet; the predicted items are not what the row raises", () => {
@@ -79,7 +104,7 @@ describe("parity with the stored row, with the operator's answers on it", () => 
   });
 
   test("a whitespace-only title is no answer: the row is generated and flagged", () => {
-    const built = buildCardRowForInsert(row({ listingTitle: "   " }), LONG_SET, NOW);
+    const built = buildCardRowForInsert(row({ listingTitle: "   " }), FIRST_NAME_SET, NOW);
     expect(built.row.listingTitle).toBe(predicted.assessment.title);
     expect(attention(built.row)).toContain("titleTruncated");
   });
@@ -145,8 +170,13 @@ describe("titleAttentionItems — exactly at the caps", () => {
 });
 
 describe("checkTitleAnswer — edges", () => {
-  test("kept and title are each held to the cap; an unanswered variation is never checked", () => {
-    expect(() => checkTitleAnswer({ listingTitleKept: "k".repeat(81) }, "c")).toThrow(/81 characters/);
+  test("the title is held to the cap, kept to its bound; an unanswered variation is never checked", () => {
+    expect(checkTitleAnswer({ listingTitleKept: "k".repeat(81) }, "c")).toEqual({
+      listingTitleKept: "k".repeat(81),
+    });
+    expect(() =>
+      checkTitleAnswer({ listingTitleKept: "k".repeat(LISTING_TITLE_KEPT_MAX + 1) }, "c"),
+    ).toThrow(`${LISTING_TITLE_KEPT_MAX + 1} characters`);
     expect(() => checkTitleAnswer({ listingTitle: "t".repeat(81) }, "c")).toThrow(/81 characters/);
     expect(checkTitleAnswer({ cardVariation: "v".repeat(72) }, "c")).toEqual({});
     expect(checkTitleAnswer({ cardVariation: "v".repeat(72), cardVariationAnswered: false }, "c")).toEqual({});
@@ -173,7 +203,7 @@ describe("leftOutOfTitle — odd inputs", () => {
     const inputs = assessNewCardListing({ cardNumber: "1" }, { sportValue: "Baseball", setNameValue: "Chrome" }, {
       playerNames: [],
     });
-    expect(leftOutOfTitle(inputs.inputs, inputs.assessment)).toEqual([]);
+    expect(leftOutOfTitle(inputs.inputs, inputs.assessment.title)).toEqual([]);
   });
 
   test("an ampersand between two players is never reported as a loss", () => {
@@ -181,7 +211,8 @@ describe("leftOutOfTitle — odd inputs", () => {
       playerNames: ["Mike Trout", "Shohei Ohtani"],
     });
     expect(assessment.coreFits).toBe(false);
-    expect(leftOutOfTitle(inputs, assessment)).not.toContain("&");
+    expect(assessment.title).toContain(" & ");
+    expect(leftOutOfTitle(inputs, assessment.title)).not.toContain("&");
     expect(assessListingTitle(inputs).title).toBe(assessment.title);
   });
 });

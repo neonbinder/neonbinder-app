@@ -262,6 +262,9 @@ describe("the description names the cameos, unless a person wrote it", () => {
 
   test("a card with no description is left without one", async () => {
     const s = await setup();
+    // NEO-535: the shared fixture gives every card a description; this case
+    // needs a card with none.
+    await s.t.run(async (ctx) => ctx.db.patch(s.fx.strawberry2, { listingDescription: undefined }));
     await set(s, s.fx.strawberry2, [s.fx.goodenId]);
     expect("listingDescription" in (await cardOf(s, s.fx.strawberry2))).toBe(false);
   });

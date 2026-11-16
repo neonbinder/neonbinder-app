@@ -41,8 +41,8 @@ import {
 } from "./deriveCardFeatures";
 import {
   assessListingTitle,
-  isFillerToken,
-  rookieAsRc,
+  leftOutOfTitle,
+  titleDescription,
   type ListingCardInputs,
   type ListingTitleAssessment,
 } from "./generateListing";
@@ -86,8 +86,11 @@ export type ListingSetContext = {
    */
   parallelLeafValue?: string;
   /**
-   * NEO-335 — the chain's resolved `listingShortName` (nearest self-or-ancestor
-   * up to the setName row), or the operator's draft on the Card titles step.
+   * NEO-535 — the set's box text ("Set name in titles"): the chain's resolved
+   * `listingShortName` (nearest self-or-ancestor up to the setName row, with
+   * the insert's and parallel's names appended when it sits above them; see
+   * `titleChainFacts`), or the operator's draft on the Card titles step, which
+   * is written to the leaf and so covers the whole description.
    */
   listingShortName?: string;
 };
@@ -116,6 +119,12 @@ export type TitleContext = ListingSetContext & {
   setPlayerNames?: string[];
   /** NEO-528 round 3 — that player's id, beside the name; absent when none. */
   setPlayerId?: Id<"players">;
+  /**
+   * NEO-528 + NEO-535 — the NB names of the cameos a new card is born with
+   * (the row's default cameos), in order. Optional: an older server sends
+   * none. The pre-save title names them as the insert will.
+   */
+  setCameoNames?: string[];
   /** Printed spelling (trimmed, verbatim) → the resolved player's name. */
   players: Array<{ printed: string; name: string }>;
   /** Printed spelling (trimmed, verbatim) → the resolved team's full name. */
@@ -146,8 +155,16 @@ export type ListingCardFacts = {
 
 /**
  * The card's `features` as a new row is born with them: the set snapshot (or
- * a copy's base), then what the card itself shows, then a copy's own
- * parallel name. Precedence is NEO-71-74's: inherited < observed.
+ * a copy's base), then what the card itself shows, then its parallel name.
+ * Precedence is NEO-71-74's: inherited < observed.
+ *
+ * NEO-535 — a card born on a parallel leaf names that leaf, whatever path
+ * creates it: a parallel copy passes the leaf's NB name itself
+ * (`card.parallelName`, NEO-321), and a card committed through the wizard or
+ * added by hand gets the same from the chain (`set.parallelLeafValue`, set by
+ * `titleChainFacts` only on a parallel ROLE, read through `variantRole`).
+ * The leaf's snapshot often inherits another name ("Base" from a Parallel
+ * type), which would leave the parallel out of the title.
  */
 export function mergeCardFeatures(
   card: ListingCardFacts,
@@ -163,7 +180,7 @@ export function mergeCardFeatures(
       attributes: card.attributes,
     }),
   };
-  const ownParallelName = card.parallelName?.trim();
+  const ownParallelName = card.parallelName?.trim() || set.parallelLeafValue?.trim();
   if (ownParallelName) merged.parallelName = ownParallelName;
   // NEO-345 — the leaf's autograph FORMAT (`set.inheritedFeatures
   // .autographFormat`: the operator's answer stored on the leaf, or the
@@ -197,20 +214,24 @@ export function mergeCardFeatures(
 export function listingInputsForCard(
   card: ListingCardFacts,
   set: ListingSetContext,
-  names: { playerNames: string[]; teamNames?: string[] },
+  names: { playerNames: string[]; teamNames?: string[]; cameoNames?: string[] },
   mergedFeatures: Record<string, string> = mergeCardFeatures(card, set),
 ): ListingCardInputs {
   // NEO-335 — the insert's name joins the core on the insert row's NB ROLE,
   // never on its level or its name (product invariant 4).
   const insertName =
     set.insertIsRole === true ? set.insertNameValue?.trim() || undefined : undefined;
-  // NEO-335 — a parallel leaf synced straight from a marketplace has no
-  // `features.parallelName`; its own value (set only for the NB parallel
-  // role) is the parallel token then. A named parallel in the features wins.
+  // NEO-535 — a card on a parallel leaf names that leaf, as every parallel
+  // copy does (NEO-321): the leaf's own NB value, set only on the parallel
+  // ROLE (`titleChainFacts` → `derivedVariantFlags`), wins over whatever the
+  // features say. Those are often a name the leaf's snapshot inherited ("Base"
+  // from a Parallel type) and stored on cards committed before NEO-535, so a
+  // stored card's preview and Regenerate name the leaf too. `parallelName` is
+  // not an operator-editable feature (`expectedFeatures`), so nothing an
+  // operator typed is overridden. Off a parallel leaf the features' name is
+  // the parallel token, as before (NEO-335).
   const parallelName =
-    mergedFeatures.parallelName?.trim()
-      ? mergedFeatures.parallelName
-      : set.parallelLeafValue?.trim() || undefined;
+    set.parallelLeafValue?.trim() || mergedFeatures.parallelName?.trim() || undefined;
   const setShortName = set.listingShortName?.trim() || undefined;
   // NEO-335 — the leaf's parallel ROLE earns the parallel its "Parallel"
   // label. `parallelLeafValue` is set by `titleChainFacts` only on that role
@@ -219,6 +240,9 @@ export function listingInputsForCard(
   return {
     cardNumber: card.cardNumber,
     playerNames: names.playerNames,
+    // NEO-528 — the people also pictured; absent when none, so a card with no
+    // cameo builds exactly the inputs it did before.
+    ...(names.cameoNames && names.cameoNames.length > 0 ? { cameoNames: names.cameoNames } : {}),
     year: mergedFeatures.season,
     manufacturer: mergedFeatures.manufacturer,
     manufacturerBrandUnknown: set.manufacturerBrandUnknown,
@@ -319,7 +343,7 @@ export function titleAttentionFieldsAtInsert(
 export function assessNewCardListing(
   card: ListingCardFacts,
   set: ListingSetContext,
-  names: { playerNames: string[]; teamNames?: string[] },
+  names: { playerNames: string[]; teamNames?: string[]; cameoNames?: string[] },
 ): {
   mergedFeatures: Record<string, string>;
   inputs: ListingCardInputs;
@@ -337,88 +361,50 @@ export function assessNewCardListing(
   };
 }
 
-/** Lowercased whitespace-delimited words, for "is this word in the title". */
-function wordsOf(text: string): string[] {
-  return text.toLowerCase().split(/\s+/).filter(Boolean);
+/**
+ * NEO-535 — what a title's text leaves out of the card's facts, computed from
+ * the text itself (the operator's own words included). Lives beside the
+ * generator, which reads the same description; re-exported here for the Card
+ * titles step.
+ */
+export { leftOutOfTitle };
+
+/**
+ * NEO-535 — the prefill for the "Set name in titles" box when nothing is
+ * stored: the builder's own full description for this set's cards, without
+ * the "Insert" / "Parallel" labels ("2026 Leaf Metal 1991 Gold Prospects
+ * Autographs Prismatic Silver"). The year and maker come from the leaf's
+ * features snapshot, the insert from its NB role. Never the stored box text.
+ *
+ * The box holds the WHOLE description, parallel included (Jason). A card on
+ * a parallel leaf names that leaf: the parallel build gives every copy the
+ * leaf's own NB name as its `parallelName` (NEO-321), over whatever the
+ * leaf's snapshot inherited (often the "Base" a Parallel type handed down,
+ * which the description leaves out). So the description is read for such a
+ * card, never a blank one. `card.parallelName` is that name when the caller
+ * has the row; otherwise the parallel leaf's value (`parallelLeafValue`,
+ * set only on a parallel role) stands in for it.
+ */
+export function setDescriptionForTitles(
+  set: ListingSetContext,
+  card: { parallelName?: string } = {},
+): string {
+  const parallelName = card.parallelName?.trim() || set.parallelLeafValue?.trim() || undefined;
+  return titleDescription(
+    listingInputsForCard(
+      { cardNumber: "", ...(parallelName ? { parallelName } : {}) },
+      { ...set, listingShortName: undefined },
+      { playerNames: [] },
+    ),
+  );
 }
 
 /**
- * NEO-335 — is this dropped token one of the generator's FILLER words: the
- * sport, "Rookie" (the second spelling, appended only beside "RC"), or the
- * "Insert" / "Parallel" labels?
- * Lives in generateListing.ts now (the short-name rule reads it there);
- * re-exported so existing importers keep working.
+ * NEO-535 — the bound on a KEPT title (`checkTitleAnswer`): a generated title
+ * over eBay's cap is kept as shown, so the bound is not the cap. Generous
+ * enough for any real set description plus the card's facts.
  */
-export { isFillerToken };
-
-/**
- * NEO-335 — what the title had to leave out, in the order the generator
- * would have spent characters on it: the identity words the core cut lost
- * (year, maker, set, each player), then the optional tokens it dropped.
- *
- * The generator reports the dropped OPTIONAL tokens itself; a core cut it
- * only reports as `coreFits: false`. The core is cut at a word boundary, so
- * what it lost is read per segment. Year, maker and set report whichever of
- * their words the title no longer carries. A PLAYER is reported whole when
- * the title no longer carries the whole name: "Mike Trout & Shohei Ohtani"
- * cut after "Shohei" reports "Shohei Ohtani", and a dropped "Ken Griffey Sr."
- * is reported as that, never as a bare "Sr." because "Ken Griffey" survives
- * in his son's name beside it. The maker is skipped when NB does not know the
- * brand (NEO-272): the generator never put it in.
- *
- * FILLER is not listed (collector review, NEO-335): the sport word, the
- * second spelling of rookie ("Rookie" beside "RC") and the "Insert" /
- * "Parallel" labels are the generator's
- * deliberate fill tail — they exist to spend characters that would otherwise
- * go unused — so they are not a loss an operator should be shown, let alone
- * first. Only the dropped TOKENS are filtered; a set or player word that
- * happens to read "Baseball" is still reported.
- *
- * Display only. Nothing is stored from this.
- */
-export function leftOutOfTitle(
-  inputs: ListingCardInputs,
-  assessment: ListingTitleAssessment,
-): string[] {
-  const present = new Set(wordsOf(assessment.title));
-  const out: string[] = [];
-  if (!assessment.coreFits) {
-    // NEO-335 — the insert's name is core identity now, so its words are
-    // reported like the set's. A title built with the short name reads the
-    // short name in their place: the full names were left out on purpose.
-    const maker = inputs.manufacturerBrandUnknown ? undefined : inputs.manufacturer;
-    // A title that shortened "Rookie" to "RC" in the insert's name reads
-    // the shortened name: "Rookie" was not lost, it was abbreviated.
-    const insertName =
-      assessment.rookieAsRcUsed && inputs.insertName
-        ? rookieAsRc(inputs.insertName)
-        : inputs.insertName;
-    const segments = assessment.shortNameUsed
-      ? [inputs.year, maker, inputs.setShortName]
-      : [inputs.year, maker, inputs.setName, insertName];
-    for (const segment of segments) {
-      const words = (segment ?? "").split(/\s+/).filter(Boolean);
-      const missing = words.filter((w) => w !== "&" && !present.has(w.toLowerCase()));
-      if (missing.length > 0) {
-        const text = missing.join(" ");
-        if (!out.includes(text)) out.push(text);
-      }
-    }
-    // Then the players, whole — the core's own order.
-    const titleLower = assessment.title.toLowerCase();
-    for (const raw of inputs.playerNames ?? []) {
-      const name = raw.trim().split(/\s+/).filter(Boolean).join(" ");
-      if (name && !titleLower.includes(name.toLowerCase()) && !out.includes(name)) {
-        out.push(name);
-      }
-    }
-  }
-  for (const token of assessment.dropped) {
-    if (isFillerToken(token, inputs)) continue;
-    if (!out.includes(token)) out.push(token);
-  }
-  return out;
-}
+export const LISTING_TITLE_KEPT_MAX = 400;
 
 /**
  * NEO-335 — the operator's pre-save title answer, held to the same caps the
@@ -440,15 +426,19 @@ export function checkTitleAnswer(
   where: string,
 ): { listingTitle?: string; listingTitleKept?: string; cardVariation?: string } {
   const out: { listingTitle?: string; listingTitleKept?: string; cardVariation?: string } = {};
-  // Both title fields are held to the same cap: the kept one is the title
-  // the step SHOWED, which the generator never makes longer than this.
+  // The operator's own title is held to eBay's cap. The KEPT one is the
+  // title the step SHOWED, which since NEO-535 may be over the cap (the
+  // generator stops rather than cut description words): keeping it only
+  // answers the first-name question, and the row is still flagged
+  // `titleOverLimit` by its length. It is bounded, not capped.
   for (const field of ["listingTitle", "listingTitleKept"] as const) {
     const raw = answer[field];
     if (raw === undefined) continue;
     const title = raw.trim();
-    if (title.length > LISTING_TITLE_MAX) {
+    const limit = field === "listingTitle" ? LISTING_TITLE_MAX : LISTING_TITLE_KEPT_MAX;
+    if (title.length > limit) {
       throw new Error(
-        `${where}: the title is ${title.length} characters; the limit is ${LISTING_TITLE_MAX}.`,
+        `${where}: the title is ${title.length} characters; the limit is ${limit}.`,
       );
     }
     if (title) out[field] = title;
@@ -464,48 +454,6 @@ export function checkTitleAnswer(
     if (variation) out.cardVariation = variation;
   }
   return out;
-}
-
-/**
- * NEO-335 — a shorter set name to OFFER on the Card titles step: the maker
- * (unless NB has not identified the brand, NEO-272), then the first word of
- * the insert's name — or, with no insert, the first word of the set's name
- * that is not the maker's. 1990 Upper Deck Collector's Choice, Hologram
- * insert → "Upper Deck Hologram".
- *
- * Reads NB row values only: the maker from the set's features snapshot, the
- * insert name only when the insert row carries the NB insert role. Only ever
- * shown as a suggestion; nothing stores it unless the operator accepts it.
- * Undefined when there is nothing shorter to offer.
- */
-export function suggestShortSetName(set: ListingSetContext): string | undefined {
-  const maker = set.manufacturerBrandUnknown
-    ? undefined
-    : set.inheritedFeatures?.manufacturer?.trim() || undefined;
-  const makerWords = maker ? maker.split(/\s+/) : [];
-  const insert = set.insertIsRole === true ? set.insertNameValue?.trim() : undefined;
-  const firstWord = (text: string | undefined, skip: readonly string[]): string | undefined => {
-    const words = (text ?? "").split(/\s+/).filter(Boolean);
-    // Skip the maker's words only where the name LEADS with them ("Upper
-    // Deck Collector's Choice"), never a matching word later on.
-    let at = 0;
-    while (
-      at < skip.length &&
-      at < words.length &&
-      words[at].toLowerCase() === skip[at].toLowerCase()
-    ) {
-      at += 1;
-    }
-    if (at > 0 && at < skip.length) at = 0;
-    return words[at];
-  };
-  const word = firstWord(insert, makerWords) ?? firstWord(set.setNameValue, makerWords);
-  if (!word) return undefined;
-  const suggestion = [maker, word].filter(Boolean).join(" ");
-  // Nothing shorter to offer: the suggestion says what the set name already does.
-  const full = [maker, set.setNameValue?.trim(), insert].filter(Boolean).join(" ");
-  if (suggestion.length >= full.length) return undefined;
-  return suggestion;
 }
 
 /**
@@ -530,7 +478,7 @@ export function checkShortNameAnswer(
       error:
         typeof data === "string"
           ? data
-          : `A short name is at most ${MAX_LISTING_SHORT_NAME_LENGTH} characters.`,
+          : `Set name in titles tops out at ${MAX_LISTING_SHORT_NAME_LENGTH} characters.`,
     };
   }
 }

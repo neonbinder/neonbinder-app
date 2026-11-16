@@ -51,7 +51,7 @@ export default function RequestCardDialog({
 
   return (
     <Overlay labelledBy={headingId} onClose={onClose} variant="modal">
-      <div className="max-h-[calc(100vh-4rem)] space-y-4 overflow-y-auto">
+      <div className="max-h-[calc(100dvh-4rem)] space-y-4 overflow-y-auto">
         <div className="space-y-1">
           <h2 id={headingId} tabIndex={-1} className="text-lg font-bold text-ink focus:outline-none">
             Ask us to add a card

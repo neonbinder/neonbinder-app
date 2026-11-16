@@ -349,3 +349,45 @@ describe("Textarea", () => {
     expect(container.querySelector("label")?.getAttribute("for")).toBe("desc");
   });
 });
+
+/**
+ * NEO-535 — a field that is off (native `disabled`, or `aria-disabled` on a
+ * `readOnly` field kept focusable) takes the primitive's own swap: the
+ * button-neutral fill and ink-2, never a fade. Callers no longer add an
+ * opacity, so if this drops out a held field looks live.
+ */
+describe("the off look belongs to the primitive", () => {
+  const OFF = ["aria-disabled:bg-button-neutral", "aria-disabled:text-ink-2", "aria-disabled:cursor-not-allowed", "disabled:bg-button-neutral"];
+
+  it.each([
+    ["Input", () => render(<Input bare aria-label="Held input" aria-disabled readOnly />)],
+    ["Textarea", () => render(<Textarea bare aria-label="Held textarea" aria-disabled readOnly />)],
+  ])("%s carries the swap and no opacity", (_name, draw) => {
+    draw();
+    const field = screen.getByRole("textbox");
+    for (const cls of OFF) expect(field.className).toContain(cls);
+    expect(field.className).not.toMatch(/(^|\s)(disabled:)?opacity-/);
+    expect(field.getAttribute("aria-disabled")).toBe("true");
+  });
+});
+
+/**
+ * NEO-535 — a field's error message is the danger notice ink, never neon pink
+ * (pink is backing out and taking away, DESIGN.md). Helper text stays ink-3.
+ */
+describe("the error message is the danger ink", () => {
+  it.each([
+    ["Input", () => render(<Input label="Name" error="Name is required." />)],
+    ["Textarea", () => render(<Textarea label="Notes" error="Notes are required." />)],
+  ])("%s paints its error in notice-danger-ink", (_name, draw) => {
+    draw();
+    const message = screen.getByText(/required\./);
+    expect(message.className).toContain("text-notice-danger-ink");
+    expect(message.className).not.toContain("neon-pink");
+  });
+
+  it("helper text without an error stays quiet ink", () => {
+    render(<Textarea label="Notes" helperText="Optional." />);
+    expect(screen.getByText("Optional.").className).toContain("text-ink-3");
+  });
+});

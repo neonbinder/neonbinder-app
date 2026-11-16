@@ -224,4 +224,56 @@ describe("parallel build — also-pictured players (NEO-528)", () => {
     expect(after.orphans).toEqual([]);
     expect(after.linksOnParallel).toHaveLength(1);
   });
+  test("a copy's listingTitle names its insert card's cameo after the card's own player", async () => {
+    const t = convexTest(schema, modules);
+    const { insert, parallel, judge } = await seed(t);
+    await t.run(async (ctx) => {
+      const [ohtaniCard] = (
+        await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", insert))
+          .collect()
+      ).filter((c) => c.cardNumber === "1");
+      await setCardSecondaryPlayers(ctx, ohtaniCard, [judge]);
+    });
+    bscState.cards = kanjiCards();
+    await t.withIdentity(ADMIN).action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: parallel });
+
+    const { cards } = await cameoState(t, parallel);
+    const one = cards.find((c) => c.cardNumber === "1")!;
+    const two = cards.find((c) => c.cardNumber === "2")!;
+    expect(one.listingTitle).toContain("Shohei Ohtani & Aaron Judge");
+    expect(two.listingTitle).not.toContain("&");
+  });
+
+  test("a cameo too long for the title is cut from the copy's listingTitle, and the copy's description keeps it", async () => {
+    const t = convexTest(schema, modules);
+    const { sport, insert, parallel } = await seed(t);
+    const longCameo = `Bartholomew ${"Fitzgerald".repeat(7)}`;
+    await t.run(async (ctx) => {
+      const long = await ctx.db.insert("players", {
+        name: longCameo,
+        nameNormalized: longCameo.toLowerCase(),
+        sportId: sport,
+        lastUpdated: SENTINEL,
+      });
+      const [ohtaniCard] = (
+        await ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", insert))
+          .collect()
+      ).filter((c) => c.cardNumber === "1");
+      await setCardSecondaryPlayers(ctx, ohtaniCard, [long]);
+    });
+    bscState.cards = kanjiCards();
+    await t.withIdentity(ADMIN).action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: parallel });
+
+    const { cards } = await cameoState(t, parallel);
+    const one = cards.find((c) => c.cardNumber === "1")!;
+    expect(one.listingTitle).toContain("Shohei Ohtani");
+    expect(one.listingTitle).not.toContain("Bartholomew");
+    expect((one.listingTitle ?? "").length).toBeLessThanOrEqual(80);
+    expect((one.listingDescription ?? "").split("\n")).toContain(`Cameo: ${longCameo}.`);
+    expect(one.secondaryPlayerIds).toHaveLength(1);
+  });
 });

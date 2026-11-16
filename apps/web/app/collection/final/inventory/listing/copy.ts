@@ -70,6 +70,15 @@ export function credentialsWords(platform: ListingPlatform): string {
   return `Profile → Credentials → ${PLATFORM_NAME[platform]}`;
 }
 
+/**
+ * How a too-long title is said (NEO-535): NB's own limit for the listing,
+ * never pinned on the marketplace. Only eBay's cap is known to be 80, so no
+ * other platform's sentence names a number.
+ */
+function titleCapWords(platform: ListingPlatform): string {
+  return platform === "ebay" ? "over the 80-character limit for listings" : "too long to list";
+}
+
 /** Why a card didn't list on a platform, in a collector's words. */
 export function problemCopy(platform: ListingPlatform): Record<ListingProblemReason, string> {
   const name = PLATFORM_NAME[platform];
@@ -90,6 +99,11 @@ export function problemCopy(platform: ListingPlatform): Record<ListingProblemRea
     noLeague: `${name} listings need a league, and this card doesn't have one yet. Report it from Sync status on your dashboard and our crew sets it.`,
     noPhoto: `${name} listings need a photo. Add one to a copy of this card and it goes up.`,
     setupIncomplete: `Finish your ${name} setup in ${credentialsWords(platform)} and this one goes up.`,
+    // NEO-535: NB's own hold, never said as the platform turning it down. Only
+    // the crew can shorten a title (NEO-536 makes it reportable), so it says
+    // whose fix it is, like the other crew reasons, and never sends the
+    // collector to a set builder they can't open.
+    titleTooLong: `Its title is ${titleCapWords(platform)}, and we won't chop it. Once we shorten it on our end, it goes up on the next sync.`,
   };
 }
 
@@ -112,6 +126,7 @@ export function problemCopyReadOnly(platform: ListingPlatform): Record<ListingPr
     // The admin is the one who can fix it: say where.
     noLeague: `No league on this card yet, and ${name} listings need one. Pick it in the card's panel.`,
     setupIncomplete: `The collector's ${name} setup isn't finished.`,
+    titleTooLong: `Its title is ${titleCapWords(platform)}, so it's held back until it's shortened in the set builder.`,
   };
 }
 export const PROBLEM_COPY_READ_ONLY: Record<ListingProblemReason, string> = problemCopyReadOnly("bsc");

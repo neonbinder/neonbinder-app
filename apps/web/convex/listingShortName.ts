@@ -25,10 +25,11 @@ import { derivedVariantFlags } from "./variantRole";
 import type { Id } from "./_generated/dataModel";
 
 /**
- * Ceiling on a short name. A title is 80 characters and the short name stands
- * in for the set and insert words of its core; anything near 60 is not short.
+ * Ceiling on the "Set name in titles" box (NEO-535: raised from 60). The box
+ * holds the WHOLE set description a title opens with, and a title is 80
+ * characters, so 80 is the most it could ever usefully say.
  */
-export const MAX_LISTING_SHORT_NAME_LENGTH = 60;
+export const MAX_LISTING_SHORT_NAME_LENGTH = 80;
 
 /** The levels a short name may live on: the set and everything under it. */
 export const LISTING_SHORT_NAME_LEVELS: ReadonlySet<string> = new Set([
@@ -58,13 +59,13 @@ export function normalizeListingShortName(raw: string): string | undefined {
   if (forbidden) {
     throw new ConvexError(
       /\p{Cf}/u.test(forbidden[0])
-        ? "A short name cannot contain zero-width or invisible characters."
-        : "A short name cannot contain line breaks or control characters.",
+        ? "Set name in titles can't hold zero-width or invisible characters."
+        : "Set name in titles can't hold line breaks or control characters.",
     );
   }
   if (trimmed.length > MAX_LISTING_SHORT_NAME_LENGTH) {
     throw new ConvexError(
-      `A short name is at most ${MAX_LISTING_SHORT_NAME_LENGTH} characters.`,
+      `Set name in titles tops out at ${MAX_LISTING_SHORT_NAME_LENGTH} characters.`,
     );
   }
   return trimmed;
@@ -92,7 +93,12 @@ export type TitleChainFacts = {
   insertIsRole?: boolean;
   /** The LEAF's own value — only when the leaf is a parallel (see below). */
   parallelLeafValue?: string;
-  /** The nearest self-or-ancestor short name, up to the setName row. */
+  /**
+   * NEO-535 — the box text ("Set name in titles") the leaf's cards get: the
+   * nearest self-or-ancestor value, up to the setName row, with the insert's
+   * name appended when the value sits above the insert row and the parallel
+   * leaf's name appended when it sits above the leaf (see `titleChainFacts`).
+   */
   listingShortName?: string;
 };
 
@@ -137,24 +143,147 @@ export function titleChainFacts(
   const variantType = chain.find((row) => row.level === "variantType");
 
   const facts: TitleChainFacts = {};
-  let insertSeen = false;
+  let insertIndex: number | undefined;
+  let shortIndex: number | undefined;
+  let short: string | undefined;
   for (const [index, row] of chain.entries()) {
     if (index === 0 && derivedVariantFlags(row.level, variantType)?.isParallel === true) {
       facts.parallelLeafValue = row.value;
     }
-    if (row.level === "insert" && !insertSeen) {
-      insertSeen = true;
+    if (row.level === "insert" && insertIndex === undefined) {
+      insertIndex = index;
       if (derivedVariantFlags(row.level, variantType)?.isInsert === true) {
         facts.insertNameValue = row.value;
         facts.insertIsRole = true;
       }
     }
-    const short = row.metadata?.listingShortName?.trim();
-    if (short && facts.listingShortName === undefined) {
-      facts.listingShortName = short;
+    const value = row.metadata?.listingShortName?.trim();
+    if (value && short === undefined) {
+      short = value;
+      shortIndex = index;
     }
   }
+  if (short !== undefined && shortIndex !== undefined) {
+    // NEO-535 — a value covers its own row and everything above it. Stored
+    // above the insert row, the cards still need their insert's name; stored
+    // above a parallel leaf, the parallel's. Appended verbatim (the box is the
+    // operator's text, and nothing is prepended to it), and skipped when the
+    // value already says it, in any spelling `roughlySays` folds together.
+    if (facts.insertIsRole && insertIndex !== undefined && shortIndex > insertIndex) {
+      short = appendUnsaid(short, facts.insertNameValue);
+    }
+    if (facts.parallelLeafValue !== undefined && shortIndex > 0) {
+      // The parallel's own words only: its leading insert words are said by
+      // the insert (in the box or appended above), never twice.
+      short = appendUnsaid(
+        short,
+        facts.insertIsRole
+          ? parallelAfterInsert(facts.parallelLeafValue, facts.insertNameValue)
+          : facts.parallelLeafValue,
+      );
+    }
+    facts.listingShortName = short;
+  }
   return facts;
+}
+
+/** The autograph spellings a set description uses for one word. */
+const AUTO_WORDS: ReadonlySet<string> = new Set([
+  "au",
+  "auto",
+  "autos",
+  "autograph",
+  "autographs",
+  "autographed",
+]);
+
+/**
+ * A word folded for `roughlySays`: lower-cased, edge punctuation dropped, the
+ * autograph spellings made one word, and a plural "s" dropped (not from "ss",
+ * nor from a word of three letters or fewer).
+ */
+function foldWord(word: string): string {
+  const bare = word.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
+  if (AUTO_WORDS.has(bare)) return "auto";
+  if (bare.length > 3 && bare.endsWith("s") && !bare.endsWith("ss")) return bare.slice(0, -1);
+  return bare;
+}
+
+function foldedWords(text: string): string[] {
+  return text.split(/\s+/).map(foldWord).filter(Boolean);
+}
+
+/**
+ * NEO-535 — does `text` already say every word of `name`, allowing another
+ * spelling of a word? Case, a plural "s" and the autograph spellings are
+ * folded, so a box reading "Gold Prospect Auto" already says the insert
+ * "Gold Prospects Autographs". The old short names (before NEO-535) named an
+ * insert in exactly these shortened forms, so the read-time append below
+ * would otherwise say the insert twice.
+ */
+export function roughlySays(text: string, name: string): boolean {
+  const wanted = foldedWords(name);
+  if (wanted.length === 0) return false;
+  const present = new Set(foldedWords(text));
+  return wanted.every((w) => present.has(w));
+}
+
+/**
+ * NEO-535 — a parallel's name as a description writes it after its insert:
+ * the leading words it shares with the insert's name are said once, by the
+ * insert. Jason's rule: "2026 Bowman Anime Red Refractors" reads
+ * "2026 Bowman Anime Red Refractors", and "TRItanium Prismatic White
+ * TRItanium Red Flood" reads "TRItanium Prismatic White Red Flood".
+ *
+ * Only a LEADING run, matched word by word from the start of both names
+ * (folded as `roughlySays` folds: case, edge punctuation, a plural "s", the
+ * autograph spellings). A shared word later in the name stays. Returns "" when
+ * the parallel's name is all insert words (the insert already says it). The
+ * one rule the builder's description (`generateListing`) and the box's
+ * parallel append (`titleChainFacts`) both apply, so every title path agrees.
+ */
+export function parallelAfterInsert(parallel: string, insert: string | undefined): string {
+  const { words, shared } = leadingInsertWords(parallel, insert);
+  return words.slice(shared).join(" ");
+}
+
+/**
+ * NEO-535 — does the parallel's name open with the insert's WHOLE name, word
+ * for word and folded as `parallelAfterInsert` folds? "Anime Red Refractors"
+ * under "Anime" does, and so does "Anime" under "Anime"; "Gold Refractor"
+ * under "Gold Prospects" only shares a leading word, so it does not. The
+ * description's opening line names such an insert once, through the
+ * parallel's full name.
+ */
+export function parallelOpensWithInsert(parallel: string, insert: string | undefined): boolean {
+  const { shared, insertLength } = leadingInsertWords(parallel, insert);
+  return insertLength > 0 && shared === insertLength;
+}
+
+/** The parallel's words, and how many of them lead with the insert's words. */
+function leadingInsertWords(
+  parallel: string,
+  insert: string | undefined,
+): { words: string[]; shared: number; insertLength: number } {
+  const words = parallel.trim().split(/\s+/).filter(Boolean);
+  const insertWords = (insert ?? "").trim().split(/\s+/).filter(Boolean).map(foldWord);
+  let shared = 0;
+  while (
+    shared < words.length &&
+    shared < insertWords.length &&
+    insertWords[shared] !== "" &&
+    foldWord(words[shared]) === insertWords[shared]
+  ) {
+    shared += 1;
+  }
+  return { words, shared, insertLength: insertWords.length };
+}
+
+/** `text` then `name`, unless `text` already says it (`roughlySays`). */
+function appendUnsaid(text: string, name: string | undefined): string {
+  const trimmed = name?.trim();
+  if (!trimmed || roughlySays(text, trimmed)) return text;
+  return `${text} ${trimmed}`;
 }
 
 /**

@@ -39,7 +39,8 @@ type Reason =
   | "rejected"
   | "missingAspect"
   | "noPhoto"
-  | "setupIncomplete";
+  | "setupIncomplete"
+  | "titleTooLong";
 
 async function setup() {
   const t = convexTest(schema, modules);
@@ -110,6 +111,27 @@ describe("report", () => {
       { cardId: s.fx.strawberry2, reason: "noLink" },
       { cardId: s.fx.gooden1, reason: "rejected", detail: long.slice(0, MAX_SYNC_REPORT_DETAIL) },
       { cardId: s.fx.gooden1Sliding, reason: "missingAspect", detail: "Year Manufactured" },
+    ]);
+  });
+
+  test("NEO-535: a title too long to list is the crew's to shorten, so a set holding only that is reportable; it keeps no detail", async () => {
+    const s = await setup();
+    await record(s, {
+      platform: "ebay",
+      problems: [
+        // A stray detail is never kept: the hold is NB's own and its sync records none.
+        { cardId: s.fx.gooden1, reason: "titleTooLong", detail: "should not be kept" },
+        { cardId: s.fx.strawberry2, reason: "noPrice" },
+      ],
+    });
+    const out = await s.me.mutation(api.syncReports.report, { variantId: s.fx.baseId, platform: "ebay" });
+    const [row] = await allReports(s);
+    expect(row).toMatchObject({ platform: "ebay", heldBack: 1 });
+    expect(row.cards).toEqual([{ cardId: s.fx.gooden1, reason: "titleTooLong" }]);
+
+    const review = await s.admin.query(api.syncReports.review, { id: out.id });
+    expect(review!.cards).toEqual([
+      { cardId: s.fx.gooden1, reason: "titleTooLong", cardNumber: "1", cardLabel: "Dwight Gooden" },
     ]);
   });
 

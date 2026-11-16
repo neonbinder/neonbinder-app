@@ -112,6 +112,18 @@ describe("a mixed set's tiles say which cards are the crew's", () => {
     expect(within(items[2]).getByRole("link").textContent).toContain("On our crew");
   });
 
+  it("a title-too-long held card is a crew card: tagged \"On our crew\" and sorted after the collector's own", () => {
+    const { data, set } = mixedSet(3, 0);
+    const cards = set.cards.map((c, i) => (i === 0 ? { ...c, code: "titleTooLong" as const } : c));
+    const withTitle = { ...set, cards, crewFix: "some" as const };
+    draw({ ...data, syncStatus: { ...data.syncStatus!, problems: [data.syncStatus!.problems[0], withTitle] } }, crewOf());
+    const items = tiles(withTitle);
+    expect(items).toHaveLength(3);
+    expect(within(items[2]).getByText("On our crew")).toBeTruthy();
+    expect(within(items[0]).queryByText("On our crew")).toBeNull();
+    expect(within(items[1]).queryByText("On our crew")).toBeNull();
+  });
+
   it("the crew's tiles fold past the preview behind the collector's own, and Show all brings them", () => {
     const { data, set } = mixedSet(8, 2);
     draw(data, crewOf());

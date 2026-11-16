@@ -327,6 +327,60 @@ describe("buildCardRowForInsert — listing text and sortOrder", () => {
   });
 });
 
+describe("buildCardRowForInsert — the cameos a card is born with (NEO-528)", () => {
+  const cameo = (id: string, name: string) => ({ playerId: id as unknown as Id<"players">, name });
+  const own = "player-own" as unknown as Id<"players">;
+
+  test("a cameo is stored and named in the title and the description, after the card's player", () => {
+    const built = buildCardRowForInsert(
+      baseCard({ cameos: [cameo("p-ohtani", "Shohei Ohtani")] }),
+      baseSet(),
+      1_700_000_000_000,
+    );
+    expect(built.row.secondaryPlayerIds).toEqual(["p-ohtani"]);
+    expect(built.row.listingTitle).toContain("Ken Griffey Jr. & Shohei Ohtani");
+    expect(built.row.listingDescription).toContain("Cameo: Shohei Ohtani.");
+  });
+
+  test("a cameo who is the card's own player (by id) is said once and not stored as a cameo", () => {
+    const built = buildCardRowForInsert(
+      baseCard({
+        playerIds: [own],
+        playerLinks: [{ playerId: own, nameOnCard: "Ken Griffey Jr." }],
+        cameos: [cameo(own as string, "Ken Griffey Jr."), cameo("p-ohtani", "Shohei Ohtani")],
+      }),
+      baseSet(),
+      1_700_000_000_000,
+    );
+    expect(built.row.secondaryPlayerIds).toEqual(["p-ohtani"]);
+    expect(built.row.listingTitle).not.toMatch(/Ken Griffey Jr\..*Ken Griffey Jr\./);
+    expect(built.row.listingDescription).not.toContain("Cameo: Ken Griffey Jr.");
+  });
+
+  test("a repeated cameo is stored and named once; the list keeps its order", () => {
+    const built = buildCardRowForInsert(
+      baseCard({
+        cameos: [cameo("p-a", "Al Bo"), cameo("p-b", "Cy Di"), cameo("p-a", "Al Bo")],
+      }),
+      baseSet(),
+      1_700_000_000_000,
+    );
+    expect(built.row.secondaryPlayerIds).toEqual(["p-a", "p-b"]);
+    expect(built.row.listingTitle).toContain("& Al Bo & Cy Di");
+    expect((built.row.listingTitle.match(/Al Bo/g) ?? []).length).toBe(1);
+  });
+
+  test("a card with only its own player as a cameo is born with no cameo field at all", () => {
+    const built = buildCardRowForInsert(
+      baseCard({ playerIds: [own], cameos: [cameo(own as string, "Ken Griffey Jr.")] }),
+      baseSet(),
+      1_700_000_000_000,
+    );
+    expect(built.row).not.toHaveProperty("secondaryPlayerIds");
+    expect(built.row.listingDescription).not.toContain("Cameo");
+  });
+});
+
 describe("insertCardRow — keepSku (NEO-312 R2)", () => {
   test("a keepSku is written verbatim instead of generating a fresh SKU", async () => {
     const t = convexTest(schema, modules);
@@ -542,5 +596,38 @@ describe("buildCardRowForInsert — a parallel copy's parallelName (NEO-321)", (
     );
     expect(blank.row.features?.parallelName).toBe("Base");
     expect(blank.row.listingTitle).toBe(withNothing.row.listingTitle);
+  });
+});
+
+describe("buildCardRowForInsert — a card committed on a parallel leaf names the leaf (NEO-535)", () => {
+  // The leaf's snapshot inherited "Base" from a Parallel type; the chain says
+  // the leaf IS a parallel (`parallelLeafValue`, set only on that role).
+  const leafSet = baseSet({
+    setNameValue: "Bowman",
+    inheritedFeatures: { season: "2026", manufacturer: "Bowman", parallelName: "Base" },
+    insertNameValue: "Anime",
+    insertIsRole: true,
+    parallelLeafValue: "Anime Red Refractors",
+  });
+
+  test("the commit (no parallelName passed) is born like a parallel copy", () => {
+    const committed = buildCardRowForInsert(baseCard({ cardNumber: "BA-3", playerNames: ["Murakami"] }), leafSet, 1);
+    const copied = buildCardRowForInsert(
+      baseCard({ cardNumber: "BA-3", playerNames: ["Murakami"], parallelName: "Anime Red Refractors" }),
+      leafSet,
+      1,
+    );
+    expect(committed.row.features?.parallelName).toBe("Anime Red Refractors");
+    expect(committed.row.listingTitle).toBe(copied.row.listingTitle);
+    expect(committed.row.listingTitle).toContain("2026 Bowman Anime Insert Red Refractors Parallel Murakami");
+  });
+
+  test("off a parallel leaf nothing changes: the snapshot's name stands", () => {
+    const row = buildCardRowForInsert(
+      baseCard(),
+      baseSet({ inheritedFeatures: { season: "2026", parallelName: "Refractor" } }),
+      1,
+    );
+    expect(row.row.features?.parallelName).toBe("Refractor");
   });
 });

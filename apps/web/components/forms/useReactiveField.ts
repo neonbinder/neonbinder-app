@@ -148,7 +148,23 @@ export function useReactiveField<
   const inFlightValueRef = useRef<string | null>(null);
 
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setErrorState] = useState<string | null>(null);
+  // The trimmed text the standing error is about, or null when there is
+  // none. An error describes one value; once the field holds different text,
+  // the error is about something no longer on screen. A refused save names
+  // the value it refused; otherwise it is what the field holds after the
+  // handler ran, so a handler that rewrites the field before refusing
+  // (`onEmptyCommit` putting the stored value back and saying why) keeps its
+  // explanation through the blur that follows.
+  const errorTextRef = useRef<string | null>(null);
+
+  const setError = useCallback((message: string | null, about?: string) => {
+    errorTextRef.current =
+      message === null
+        ? null
+        : (about ?? (inputRef.current?.value ?? "").trim());
+    setErrorState(message);
+  }, []);
 
   // Focus-guard mirroring: when the external value changes AND the field is
   // idle (not focused, not saving), write it into the input via a direct DOM
@@ -164,7 +180,7 @@ export function useReactiveField<
     // refusal at content that is no longer on screen — see `replace` below for
     // the same rule applied to a programmatic replacement.
     setError(null);
-  }, [value]);
+  }, [value, setError]);
 
   const runCommit = useCallback(async () => {
     // Read the LIVE DOM value at commit — never a lagged React/library copy.
@@ -172,10 +188,29 @@ export function useReactiveField<
     const trimmed = (el?.value ?? "").trim();
     const baseline = compareBaseline ?? value;
 
+    // An error stays only while the field still holds the text it was raised
+    // on. Every early return below that leaves the field at a value nobody
+    // needs to save goes through here, so a refusal never outlives its value.
+    const retireStaleError = (fieldText: string) => {
+      if (errorTextRef.current !== null && errorTextRef.current !== fieldText) {
+        setError(null);
+      }
+    };
+
     // No-op: unchanged vs the persisted baseline. Checked BEFORE the busy
     // guard so a redundant commit while a save is in flight stays silent —
     // there is nothing being dropped.
-    if (trimmed === baseline) return;
+    //
+    // NEO-535 bug (E2E): this used to return before touching the error. Paste
+    // an over-length description, get refused, type the stored description
+    // back and leave: nothing needs saving, but the refusal (and the field's
+    // aria-invalid, which callers derive from `error`) stayed up beside valid
+    // text. Back at the stored value means nothing is wrong, so a refusal
+    // raised on other text goes.
+    if (trimmed === baseline) {
+      retireStaleError(trimmed);
+      return;
+    }
 
     // A DIFFERENT change arriving while a save is in flight is dropped — the hook
     // owns one field and will not interleave two writes on it. That drop used
@@ -189,7 +224,8 @@ export function useReactiveField<
     // value nobody typed. Every caller gets the message for free through the
     // `error` they already render.
     if (busyRef.current) {
-      if (trimmed !== inFlightValueRef.current) setError(BUSY_MESSAGE);
+      if (trimmed !== inFlightValueRef.current) setError(BUSY_MESSAGE, trimmed);
+      else retireStaleError(trimmed);
       return;
     }
 
@@ -211,8 +247,10 @@ export function useReactiveField<
         return;
       }
       // No empty handler → treat as no-op and reset the input to the external
-      // value (matches the existing "empty input reverts" UX).
+      // value (matches the existing "empty input reverts" UX). The field is
+      // back at the stored value, so a refusal of other text goes with it.
       if (el) el.value = value ?? "";
+      retireStaleError((value ?? "").trim());
       return;
     }
 
@@ -223,13 +261,13 @@ export function useReactiveField<
       await onSave(trimmed);
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(e instanceof Error ? e.message : String(e), trimmed);
     } finally {
       setBusy(false);
       busyRef.current = false;
       inFlightValueRef.current = null;
     }
-  }, [value, compareBaseline, onSave, onEmptyCommit]);
+  }, [value, compareBaseline, onSave, onEmptyCommit, setError]);
 
   const onFocus = useCallback(() => {
     focusedRef.current = true;
@@ -276,7 +314,7 @@ export function useReactiveField<
       setError(null);
       await runCommit();
     },
-    [runCommit],
+    [runCommit, setError],
   );
 
   return {

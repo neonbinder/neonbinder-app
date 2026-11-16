@@ -44,9 +44,38 @@ test(
     await expect(page.getByText(/Saved Card title/)).toBeVisible();
 
     const description = page.getByRole("textbox", { name: "Card description", exact: true });
-    await description.fill(`NEO-25 description body for ${id}`);
+    const savedDescription = `NEO-25 description body for ${id}`;
+    await description.fill(savedDescription);
     await cardName.click(); // leaving the field saves it
     await expect(page.getByText(/Saved Card description/)).toBeVisible();
+
+    // NEO-535: the description is what a collector's card search reads, so it
+    // is never stored blank. Cleared and left, the stored text comes back and
+    // the drawer says why. (Before the print run is set, so a red here leaves
+    // no "/99" card in this worker's set for its next run to trip on.)
+    await description.clear();
+    await cardName.click();
+    await expect(
+      page.getByText("A card needs a description. It's what collectors search, so type one in."),
+    ).toBeVisible();
+    await expect(description).toHaveValue(savedDescription);
+    // Over eBay's 4,000-character cap: refused before any write, and the
+    // operator's text stays in the field beside the reason.
+    const overLong = `${savedDescription} ${"Long text. ".repeat(400)}`.trim();
+    await description.fill(overLong);
+    await cardName.click();
+    await expect(
+      page.getByText(
+        `Not saved — that description runs ${overLong.length.toLocaleString("en-US")} characters, past the 4,000 limit. Trim it down and save again.`,
+      ),
+    ).toBeVisible();
+    await expect(description).toHaveValue(overLong);
+    await expectAccessible(page, { within: page.getByRole("dialog"), label: "Card detail drawer, over-long description refused" });
+    // Put the stored text back (it never changed on the server) before moving on.
+    await description.fill(savedDescription);
+    await cardName.click();
+    await expect(page.getByText(/^Not saved — that description runs /)).toHaveCount(0);
+    await expect(description).toHaveValue(savedDescription);
 
     await page.getByRole("button", { name: "Toggle RC" }).click();
     await expect(page.getByText(/Saved Attributes/)).toBeVisible();

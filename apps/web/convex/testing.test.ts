@@ -2061,6 +2061,21 @@ describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
       expect(await me.mutation(api.testing.clearMyTestDashboardSeeds, {})).toEqual({ sales: 0, queued: 0, records: 2 });
     });
 
+    test("NEO-535: a titleTooLong hold is seeded with no detail, as the real eBay sync records it, and can be reported", async () => {
+      const { t, fx, me } = await withBoxedCard();
+      await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, held: "titleTooLong" });
+      const record = await t.run((ctx) =>
+        ctx.db
+          .query("marketplaceListingSyncs")
+          .withIndex("by_owner_variant_platform", (q) => q.eq("ownerId", USER_A).eq("variantId", fx.baseId).eq("platform", "ebay"))
+          .unique(),
+      );
+      expect(record?.problems).toEqual([{ cardId: fx.gooden1, reason: "titleTooLong" }]);
+      await expect(me.mutation(api.syncReports.report, { variantId: fx.baseId, platform: "ebay" })).resolves.toMatchObject({
+        already: false,
+      });
+    });
+
     test("a reason the collector fixes is seeded too (it just can't be reported)", async () => {
       const { fx, me } = await withBoxedCard();
       await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, held: "noPrice" });
