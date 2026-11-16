@@ -24,6 +24,8 @@ import {
   type BscTeamLaneItem,
 } from "../lib/testing/bsc-team-lane";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+import * as parallelBuild from "./parallelChecklistBuild";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 
 const modules = (
   import.meta as unknown as {
@@ -422,6 +424,66 @@ describe("parallel build — the copy's own BSC team lookup (NEO-556)", () => {
     expect(copy.teamIndex).toEqual([fx.dodgers]);
     expect(copy.teamCheckOutcome).toBe("answered");
     expect(copy.teamNoneConfirmedAt).toBeUndefined();
+  });
+
+  test("an ordinary parallel (no No Team, no set team) owes the lookup, and BSC's team lands on the copy with no stamp", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await insertCard(t, fx, "1");
+    await build(t, fx);
+
+    const before = (await copies(t, fx)).get("1")!;
+    expect(lane.map((l) => l.item.cardChecklistId)).toEqual([before._id]);
+    expect(before.teamOnCardIds).toBeUndefined();
+
+    await t.mutation(internal.cardChecklist.applyBscTeamResolution, {
+      cardChecklistId: before._id,
+      rawTeamName: "Los Angeles Dodgers",
+      teamNames: ["Los Angeles Dodgers"],
+    });
+
+    const copy = (await copies(t, fx)).get("1")!;
+    expect(copy.teamOnCardIds).toEqual([fx.dodgers]);
+    expect(copy.teamIndex).toEqual([fx.dodgers]);
+    expect(copy.teamNoneConfirmedAt).toBeUndefined();
+    expect(copy.teamNoneConfirmedByUserId).toBeUndefined();
+  });
+
+  test("the page's write-budget break leaves room for the lookup schedule: it stops one copy earlier than without", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    const cameos = await t.run(async (ctx) => {
+      const out: Array<Id<"players">> = [];
+      for (let i = 0; i < MAX_CARD_PLAYERS; i++) {
+        out.push(
+          await ctx.db.insert("players", { name: `Cameo ${i}`, nameNormalized: `cameo ${i}`, sportId: fx.sport, lastUpdated: NOW }),
+        );
+      }
+      return out;
+    });
+    // A copy writes row + SKU + 1 player + 20 cameos = 23. After 50 copies the
+    // page holds 1150, and 1150 + the most one copy can write (50) is exactly
+    // the budget: without the schedule's write it would take a 51st copy.
+    const perCopy = 2 + 1 + MAX_CARD_PLAYERS;
+    const maxCopy = 2 + MAX_CARD_PLAYERS + MAX_CARD_TEAMS + MAX_CARD_PLAYERS;
+    const fits = 50;
+    expect(fits * perCopy + maxCopy).toBe(parallelBuild.INSERT_PAGE_WRITE_BUDGET);
+    for (let i = 1; i <= fits + 2; i++) await insertCard(t, fx, String(i));
+    await store(t, fx.parallel, { defaultPlayerIds: [fx.skenes], defaultCameoIds: cameos });
+
+    const page = parallelBuild.insertParallelCardsPage as unknown as {
+      _handler: (...args: unknown[]) => Promise<{ processed: number }>;
+    };
+    const spy = vi.spyOn(page, "_handler");
+    try {
+      const result = await build(t, fx);
+      expect(result.copied).toBe(fits + 2);
+      const processed = await Promise.all(spy.mock.results.map((r) => r.value as Promise<{ processed: number }>));
+      expect(processed[0].processed).toBe(fits);
+      expect(processed.length).toBeGreaterThan(1);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("a copy whose source's lookup has finished carries that answer and is not asked again", async () => {

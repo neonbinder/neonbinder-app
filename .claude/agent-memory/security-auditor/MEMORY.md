@@ -113,3 +113,4 @@
 - [Neo483 background chain re-arm](patterns_neo483_background_chain_rearm.md) — capped chain re-armed by a cron is perpetual; upstream "no" terminal; user-action bypass needs a floor; tokenRefused on 401s
 - [Neo552 fake upstream + recorder](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; probe leaks; TOCTOU; prefix delete via ..; mode guard; undo-by-SKU namespace
 - [Neo556 copied-down decision stamp](patterns_neo556_copied_down_decision_stamp.md) — server-minted {setAt,setByUserId} copied down + reused for background stamps; cursor {i,t,c,r}; one bool two caps
+- [Merge guard survival; bscTeamPool enqueue](patterns_merge_resolution_guard_survival_and_bsc_lane_enqueue.md) — comm -23 line-survival check for merges; one-slot lane enqueue is bounded if admin/internal + row re-read
