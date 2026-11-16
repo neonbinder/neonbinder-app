@@ -209,13 +209,25 @@
 - [Wait line mounting breaks test mocks](reference_wait_line_mounting_breaks_test_mocks.md) — useQuery/watchQuery stubs, one-status pins, waitKey toEqual; 50 rows per key
 - [Long admin lists freeze whole-DOM scanners](reference_long_admin_lists_freeze_whole_dom_scanners.md) — 2,000 rows = 20k nodes, axe 10 s; a select INP report there is DOM size or popup-open time, not the handler
 - [Playwright harness mirrors the checklist parser](playwright-harness-mirrors-checklist-parser.md) — checklistFacts must share lib/checklists rules; check it on parser changes (NEO-489)
+- [pdf.js 6 quirks](reference_pdfjs_6_driver_quirks.md) — no isEvalSupported/eval path; task.destroy(); legacy build in Node; TextItem from types/src/display/api
+- [Browser-probe a lib through Vite](reference_browser_probe_a_lib_through_vite.md) — spare-port Vite, goto /robots.txt (not /), page.evaluate(import("/lib/…ts"))
+- [Lockfile peer-flag churn](reference_lockfile_peer_flag_churn.md) — npm install drops stale @esbuild "peer": true flags; restore by script; install with .nvmrc Node
+- [Folded key growth needs NFC expansion](reference_folded_key_growth_needs_nfc_expansion.md) — lower-case grows ≤2x; U+FB2C NFC grows 1→3, use it to exceed a folded-key cap
+- [SetAttributesPanel children route status via showToast](reference_set_attributes_panel_children_route_status_through_showtoast.md) — one role=status in the panel (NEO-412); add the child's api namespace to the test's api mock
+- [Replace-list writes: unknown is not empty](reference_replace_semantics_need_unknown_not_empty.md) — absent=untouched/[]=clear args need a per-row "links unknown" state; refuse attach, never send
+- [Differential check against HEAD](reference_differential_check_against_head.md) — prove a bounds/perf rewrite changes no answer: HEAD copy in scratchpad + tsx .mts driver + seeded random diff, or real checklist files row-dumped; `.default` interop
+- [Status after a dialog closes](reference_status_after_a_dialog_closes.md) — say it from a parent effect after the inert release, not in the closing handler; sr-only text breaks anchored Playwright getByText
+- [Checklist section kinds read card numbers](reference_checklist_section_kinds_read_card_numbers.md) — numbered fixtures 1,2,3… turn parallels into base-subsets; parallels repeat the base numbers
+- [Duplicate React key regression test](reference_duplicate_react_key_regression_test.md) — spy console.error for "same key"; text assertions pass with the bug
 - [break-words does not shrink a table cell](reference_break_words_does_not_shrink_a_table_cell.md) — auto-layout table + unspaced title: use wrap-anywhere; flex + min-w-0 is fine with break-words
 - [Unlayered text-wrap beats truncate](reference_unlayered_text_wrap_beats_truncate.md) — globals.css p/li/h text-wrap is unlayered, so `truncate` wraps; long names use min-w-0 + wrap-anywhere
 - [Centred fixed toast shrink-wraps to 50vw](reference_centred_fixed_toast_shrink_wraps_to_half_the_viewport.md) — use a fixed inset-x-4 flex band + max-w-full box; items-start + mt nudges keep one-line rows
 - [A name in a NeonButton needs free height](reference_a_name_in_a_neonbutton_needs_free_height.md) — Radix fixes height, not nowrap; h-auto min-h-8 py-1.5 max-w-full wrap-anywhere (size 1: min-h-6 py-1)
 - [Demo content column is ~806px at 1024](reference_demo_content_column_is_806px_at_e2e_width.md) — lg:pr-170 rail gutter; budget demo tables to ~800px or they slide under the exit rail
+- [No NB account-deletion sweep](reference_no_nb_account_deletion_sweep.md) — deletion is manual; per-user scrubs are operator-run internal mutations (forgetUploader pattern)
 - [Picker context league is the row's own feature](reference_picker_context_league_is_the_rows_own_feature.md) — pickerCandidates reads L off the context row only (year walks up); prove tiers on a tree built via addCustomSelectorOption
 - [sr-only suffix in a name is unstable](reference_sr_only_suffix_in_a_name_is_unstable.md) — extra screen-reader words on a role=heading: aria-label, not an sr-only child (happy-dom pads it)
+- [Image-sized link is 0 px wide before decode](reference_image_sized_link_is_zero_wide_before_decode.md) — `h-N w-auto` img in a link fails axe target-size pre-load; frame the link aspect-[5/7] h-N
 - [Wrapping label with hint names the control](reference_wrapping_label_with_hint_names_the_control.md) — checkbox label holding a help line: name it via aria-labelledby on the title span
 - [Replay a tester report from convex logs](reference_convex_logs_replay_a_tester_report.md) — mutation list + per-query read counts show what really ran; NEO-528 "Have" was the locked All toggle
 - [Setup project is once per seed](reference_setup_project_is_once_per_seed.md) — rerun on a seeded deployment reds at "No manufacturers available" by design; bootstrap only

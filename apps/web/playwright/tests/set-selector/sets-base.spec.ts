@@ -51,7 +51,7 @@ test(
       // "Loading…" becomes "Confirm Base Set" once the BSC round trip lands (BSC alone while
       // SportLots is paused, under the picker's wait line: measured 0.8 s on the #487 merge-group run (GUIDE)).
       await expectAfterMarketplace(page, confirm, { platform: "BuySportsCards", what: "the Base picker's candidates" });
-      await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+      await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
       await expect(bsc.first()).toBeVisible();
       await expect(sl).toHaveCount(0);
       await expectAccessible(page, { within: picker, label: "Select Base Set dialog (SportLots paused)" });

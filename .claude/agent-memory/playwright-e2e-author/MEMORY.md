@@ -58,6 +58,11 @@
 - [Placeholder real-intake specs](patterns_placeholder_real_intake_specs.md) — NEO-529: drop on /print/placeholders, cap recovery via Recent runs, second-page tidy, ESM path, stale node_modules
 - [Sibling edits reload a local Vite run](patterns_sibling_edits_reload_a_local_vite_run.md) — one-off red on a step green on rerun: check Vite log for hmr/page reload at that time; eBay unmatched row names
 - [Shared fast pool read ceiling](patterns_shared_fast_pool_read_ceiling.md) — NEO-529: FAST_READ_CEILING for "All N photos read."; no fast-vs-heavy E2E spec
+- [Probe Vite from a HEAD snapshot](patterns_probe_vite_from_a_head_snapshot.md) — builders' edits HMR-crash a worktree Vite (multiple ClerkProvider, black PNG); git-archive…
+- [Compare a publisher checklist with BSC facets](reference_compare_a_publisher_checklist_with_bsc_facets.md) — one aggregation call lists every BSC section; insert parallels are…
+- [Checklist is a Match Cards source](patterns_checklist_is_a_match_cards_source.md) — NEO-496: BSC + checklist opens Match Cards paused; name-fallback pairing; no-checklist branches are dead
+- [Blocked parallel via a collector copy](patterns_blocked_parallel_via_a_collector_copy.md) — NEO-496: Have one built-parallel card; list/ledger strings; finally cleanup
+- [List scroll vs page scroll in a viewport red](patterns_split_list_scroll_from_page_scroll_in_a_viewport_red.md) — read which scroll failed from the PNG; prod-build + main-snapshot probes rule out dev-only/branch height
 
 ## From the NEO-552 consolidation
 - [Local run backend, Vite, previews](patterns_local_run_backend_and_vite.md) — function-spec check, one Vite per worktree, CI seed resets

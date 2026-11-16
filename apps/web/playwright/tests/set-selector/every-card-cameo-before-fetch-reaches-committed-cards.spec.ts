@@ -55,8 +55,7 @@ import { escapeRe } from "../../support/cards";
 import type { CollectorSet } from "../../support/collection";
 import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { expectAfterMarketplace } from "../../support/marketplace-wait";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
 import { drillToSet, pick, pickAfterBscSync, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import { advanceToSave, confirmSaveButton, nextStepButton, reviewWizard, tidyUpName } from "../../support/wizard";
 
@@ -75,8 +74,6 @@ const OWN_CARDS = [
 ] as const;
 const CARDS = 25;
 
-/** A two-sided fetch confirms Match Cards (live SportLots: GUIDE hard rule 3's exception; the 1984 cameo spec's ceiling). */
-const CHECKLIST_FETCH = 120_000;
 /** The wizard opens behind the entity check's batch (live lookups; the same spec's ceiling). */
 const WIZARD_OPENS = 60_000;
 /** "Skip remaining names" is repeated while lookups still stage names (the same spec's ceiling). */
@@ -103,21 +100,13 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
   // GUIDE "Checklist first": every row names its team, so BSC is asked for no card one by one.
   const facts = await usePublishersChecklist(page, CHECKLISTS.toppsProfiles2026);
   await syncChecklistButton(page).click();
-  if (!env.SL_PAUSED) {
-    const ready = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-    await expect(ready).toBeVisible({ timeout: CHECKLIST_FETCH });
-    await ready.click();
-  } else {
-    // One marketplace: 7 s of our own time plus the seconds the screen waits on BSC (NEO-487).
-    await expectAfterMarketplace(page, page.getByText(/Kept all [0-9]+ cards? from BSC/), {
-      platform: "BuySportsCards",
-      what: "the one-marketplace fetch's kept-cards line",
-    });
-  }
+  // NEO-496 (D10, NQ1): the uploaded checklist is a second source, so the fetch opens Match Cards on
+  // either branch (SportLots paused or not). The helper waits on it (7 s of ours plus BSC's), proves the
+  // teams line while it is open (the only time before the save), keeps any BSC-only card and confirms.
+  await confirmChecklistMatchCards(page, { facts, what: "the empty checklist's fetch" });
   const wizard = reviewWizard(page);
   await expect(wizard).toBeVisible({ timeout: WIZARD_OPENS });
   await expect(wizard).toHaveAccessibleName(tidyUpName({ year: BUILD.year, set: BUILD.set, variant: INSERT }));
-  await expectTeamsFromChecklist(page, facts);
   // The names are not this spec's claim: skip the ones nobody knows, repeating
   // while a lookup can still stage one, then save.
   const namesDone = nextStepButton(page).or(confirmSaveButton(page));
