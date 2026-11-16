@@ -745,6 +745,15 @@ describe("a card whose listing named a player is never given the default player 
     // card the listing named nobody on.
     for (const n of ["1", "4", "5"]) expect(cards.get(n)!.listingNamedPlayer, n).toBe(true);
     for (const n of ["2", "3"]) expect(cards.get(n)!, n).not.toHaveProperty("listingNamedPlayer");
+    // ... and the checklist query returns it: its returns validator is strict,
+    // so a field it does not list would fail the whole read.
+    const served = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.getCardChecklist, { selectorOptionId: fx.base });
+    const byNumber = new Map(served.map((c) => [c.cardNumber, c]));
+    expect(byNumber.size).toBe(5);
+    for (const n of ["1", "4", "5"]) expect(byNumber.get(n)!.listingNamedPlayer, n).toBe(true);
+    for (const n of ["2", "3"]) expect(byNumber.get(n)!, n).not.toHaveProperty("listingNamedPlayer");
     await drainScheduled(t);
     await cancelScheduled(t);
   });
