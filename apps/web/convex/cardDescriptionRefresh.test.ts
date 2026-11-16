@@ -610,3 +610,69 @@ describe("renames reach the descriptions of the cards beneath", () => {
     expect(after).toBe(await builderDescription(t, fx.futureStar));
   });
 });
+
+describe("NEO-528 cameos: the description writers keep the cameo line", () => {
+  /** Strawberry's card with Gooden also pictured, its description the builder's. */
+  async function withCameo() {
+    const s = await setup();
+    await s.asAdmin.mutation(api.cardSecondaryPlayers.setSecondaryPlayers, {
+      cardId: s.fx.strawberry2,
+      playerIds: [s.fx.goodenId],
+    });
+    expect(await storedDescription(s.t, s.fx.strawberry2)).toContain("Cameo: Dwight Gooden.");
+    return s;
+  }
+
+  test("a fact change rebuilds the description with its cameo line", async () => {
+    const { t, fx, asAdmin } = await withCameo();
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: fx.strawberry2,
+      teamOnCardIds: [fx.exposId],
+    });
+    const after = (await storedDescription(t, fx.strawberry2))!.split("\n");
+    expect(after).toContain("Team: Montreal Expos.");
+    expect(after[after.indexOf("Team: Montreal Expos.") + 1]).toBe("Cameo: Dwight Gooden.");
+  });
+
+  test("a description written before cameos were described still follows a fact change, and gains the line", async () => {
+    const { t, fx, asAdmin } = await withCameo();
+    const noCameoLine = await t.run(async (ctx) => {
+      const card = (await ctx.db.get(fx.strawberry2))!;
+      const { inputs } = await listingInputsForStoredCard(ctx, card);
+      return generateListingDescription(inputs, { cameoNames: [] });
+    });
+    await setDescription(t, fx.strawberry2, noCameoLine);
+    expect(await storedDescription(t, fx.strawberry2)).not.toContain("Cameo");
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: fx.strawberry2,
+      teamOnCardIds: [fx.exposId],
+    });
+    const after = await storedDescription(t, fx.strawberry2);
+    expect(after).toContain("Team: Montreal Expos.");
+    expect(after).toContain("Cameo: Dwight Gooden.");
+  });
+
+  test("a cameo's rename reaches the cameo line, in the rename's own transaction", async () => {
+    const { t, fx, asAdmin } = await withCameo();
+    await asAdmin.mutation(api.players.savePlayerFields, {
+      id: fx.goodenId,
+      name: "Dwight Eugene Gooden",
+    });
+    const straw = await storedDescription(t, fx.strawberry2);
+    expect(straw).toContain("Cameo: Dwight Eugene Gooden.");
+    expect(straw).not.toContain("Cameo: Dwight Gooden.");
+    // Gooden's own card follows too, and nothing is left for a chain.
+    expect(await storedDescription(t, fx.gooden1)).toContain("Dwight Eugene Gooden");
+    expect(await pendingFanOutPages(t)).toBe(0);
+  });
+
+  test("a hand-written description on a card with a cameo stays through the cameo's rename", async () => {
+    const { t, fx, asAdmin } = await withCameo();
+    await setDescription(t, fx.strawberry2, HAND_WRITTEN);
+    await asAdmin.mutation(api.players.savePlayerFields, {
+      id: fx.goodenId,
+      name: "Dwight Eugene Gooden",
+    });
+    expect(await storedDescription(t, fx.strawberry2)).toBe(HAND_WRITTEN);
+  });
+});

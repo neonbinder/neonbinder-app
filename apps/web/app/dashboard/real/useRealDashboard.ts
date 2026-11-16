@@ -168,7 +168,8 @@ function percentOf(have: number, total: number): number {
 /** What a spine carries beyond its container: the news since the last visit, a smart binder's checklist count and its could-fit cards. */
 export interface SpineExtras {
   newCards?: DashCard[];
-  checklist?: { have: number; total: number } | null;
+  /** NEO-528 — `secondary`: the cameo count, when the binder includes cameos. */
+  checklist?: { have: number; total: number; secondary?: { have: number; total: number } } | null;
   couldFit?: CouldFitCards;
 }
 
@@ -203,6 +204,10 @@ export function shelfBinderOf(container: Container, pockets: Pocket[] = [], extr
     couldFit: smart ? (extras.couldFit?.cards ?? []) : [],
     ...(smart && extras.couldFit ? { couldFitTotal: { count: extras.couldFit.count, more: extras.couldFit.more } } : {}),
     checklist: list ? { have: list.have, total: list.total, percent: percentOf(list.have, list.total) } : null,
+    // NEO-528 — the cameos' own count, kept apart (even when the binder's own players fill none of it).
+    ...(smart && extras.checklist?.secondary && extras.checklist.secondary.total > 0
+      ? { cameos: { have: extras.checklist.secondary.have, total: extras.checklist.secondary.total } }
+      : {}),
     ...labelled(labelOf(container)),
     pockets,
     checklistCards: null,

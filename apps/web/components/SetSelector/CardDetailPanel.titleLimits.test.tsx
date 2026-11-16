@@ -38,6 +38,10 @@ vi.mock("../../convex/_generated/api", () => ({
       getCardChecklist: "getCardChecklist",
       previewListingTitle: "previewListingTitle",
     },
+    // NEO-528: the Also pictured field's writer, called through useConvex().
+    cardSecondaryPlayers: {
+      setSecondaryPlayers: "cardSecondaryPlayers.setSecondaryPlayers",
+    },
   },
 }));
 
@@ -47,6 +51,8 @@ const mockUpdateCard = vi.fn();
 let previewResult: unknown;
 
 vi.mock("convex/react", () => ({
+  // NEO-528: the Also pictured field reaches its writer through the client.
+  useConvex: () => ({ mutation: vi.fn() }),
   useMutation: (ref: string) => {
     if (ref === "updateCard") return mockUpdateCard;
     return vi.fn();

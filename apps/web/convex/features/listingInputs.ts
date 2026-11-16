@@ -33,6 +33,7 @@
  */
 
 import type { AttentionItem } from "./cardAttention";
+import type { Id } from "../_generated/dataModel";
 import {
   autographedFromFormat,
   deriveCardObservedFeatures,
@@ -109,6 +110,20 @@ export type ListingSetContext = {
 export type TitleContext = ListingSetContext & {
   /** Full names of the leaf's set-level teams, in stored order. */
   setTeamNames: string[];
+  /**
+   * NEO-528 round 3 — the NB name of the player a new card with no player of
+   * its own is born with ("Player on every card"), or empty. Optional: an
+   * older server sends none.
+   */
+  setPlayerNames?: string[];
+  /** NEO-528 round 3 — that player's id, beside the name; absent when none. */
+  setPlayerId?: Id<"players">;
+  /**
+   * NEO-528 + NEO-535 — the NB names of the cameos a new card is born with
+   * (the row's default cameos), in order. Optional: an older server sends
+   * none. The pre-save title names them as the insert will.
+   */
+  setCameoNames?: string[];
   /** Printed spelling (trimmed, verbatim) → the resolved player's name. */
   players: Array<{ printed: string; name: string }>;
   /** Printed spelling (trimmed, verbatim) → the resolved team's full name. */
@@ -195,7 +210,7 @@ export function mergeCardFeatures(
 export function listingInputsForCard(
   card: ListingCardFacts,
   set: ListingSetContext,
-  names: { playerNames: string[]; teamNames?: string[] },
+  names: { playerNames: string[]; teamNames?: string[]; cameoNames?: string[] },
   mergedFeatures: Record<string, string> = mergeCardFeatures(card, set),
 ): ListingCardInputs {
   // NEO-335 — the insert's name joins the core on the insert row's NB ROLE,
@@ -221,6 +236,9 @@ export function listingInputsForCard(
   return {
     cardNumber: card.cardNumber,
     playerNames: names.playerNames,
+    // NEO-528 — the people also pictured; absent when none, so a card with no
+    // cameo builds exactly the inputs it did before.
+    ...(names.cameoNames && names.cameoNames.length > 0 ? { cameoNames: names.cameoNames } : {}),
     year: mergedFeatures.season,
     manufacturer: mergedFeatures.manufacturer,
     manufacturerBrandUnknown: set.manufacturerBrandUnknown,
@@ -321,7 +339,7 @@ export function titleAttentionFieldsAtInsert(
 export function assessNewCardListing(
   card: ListingCardFacts,
   set: ListingSetContext,
-  names: { playerNames: string[]; teamNames?: string[] },
+  names: { playerNames: string[]; teamNames?: string[]; cameoNames?: string[] },
 ): {
   mergedFeatures: Record<string, string>;
   inputs: ListingCardInputs;

@@ -1557,3 +1557,166 @@ describe("NEO-535 — a parallel's leading insert words are said once", () => {
     );
   });
 });
+
+describe("NEO-528 — the description names the card's cameos", () => {
+  const profiles = {
+    cardNumber: "TP-1",
+    year: "2026",
+    manufacturer: "Topps",
+    setName: "Profiles",
+    playerNames: ["Shohei Ohtani"],
+    teamNames: ["Los Angeles Dodgers"],
+  };
+
+  test("one cameo: its own line, right after the team, without a doubled full stop", () => {
+    expect(generateListingDescription(profiles, { cameoNames: ["Ken Griffey Jr."] })).toBe(
+      "2026 Topps Profiles card of Shohei Ohtani, #TP-1.\nTeam: Los Angeles Dodgers.\nCameo: Ken Griffey Jr.",
+    );
+  });
+
+  test("several cameos: plural, in the order given", () => {
+    const desc = generateListingDescription(
+      { ...profiles, isRookie: true },
+      { cameoNames: ["Mookie Betts", "Freddie Freeman"] },
+    );
+    // NEO-535's line order: the RC line comes before the team.
+    expect(desc.split("\n")).toEqual([
+      "2026 Topps Profiles card of Shohei Ohtani, #TP-1.",
+      "Rookie Card (RC).",
+      "Team: Los Angeles Dodgers.",
+      "Cameos: Mookie Betts, Freddie Freeman.",
+    ]);
+  });
+
+  test("none (absent, empty or blank names): no cameo line, the description unchanged", () => {
+    const plain = generateListingDescription(profiles);
+    expect(plain).not.toMatch(/Cameo/);
+    expect(generateListingDescription(profiles, { cameoNames: [] })).toBe(plain);
+    expect(generateListingDescription(profiles, { cameoNames: ["  "] })).toBe(plain);
+  });
+
+  test("a card with no team still states its cameo after the identity line", () => {
+    expect(
+      generateListingDescription({ ...profiles, teamNames: [] }, { cameoNames: ["Ken Griffey Jr."] }),
+    ).toBe("2026 Topps Profiles card of Shohei Ohtani, #TP-1.\nCameo: Ken Griffey Jr.");
+  });
+
+  test("a description with a cameo line still reads as the builder's (Regenerate rebuilds it)", () => {
+    const one = generateListingDescription(profiles, { cameoNames: ["Ken Griffey Jr."] });
+    const two = generateListingDescription(profiles, { cameoNames: ["Mookie Betts", "Freddie Freeman"] });
+    expect(readsAsGeneratedDescription(one)).toBe(true);
+    expect(readsAsGeneratedDescription(two)).toBe(true);
+  });
+
+  test("the title never names a cameo: it takes no cameo argument at all", () => {
+    expect(generateListingTitle.length).toBe(1);
+    expect(assessListingTitle.length).toBe(1);
+  });
+});
+
+describe("NEO-528 + NEO-535 — cameos in the title: named while there is room, dropped first", () => {
+  // Jason: "secondary names should be dropped before we drop anything else
+  // with meaning". Only the no-loss cuts (a repeated AUTO/RC/RELIC, the
+  // "Insert" / "Parallel" labels) and the "#" at exactly 81 go before them.
+  const base: ListingCardInputs = {
+    cardNumber: "17",
+    year: "2024",
+    manufacturer: "Topps",
+    setName: "Chrome",
+    playerNames: ["Shohei Ohtani"],
+    teamNames: ["Los Angeles Dodgers"],
+    isRookie: true,
+    sport: "Baseball",
+  };
+  const plain = assessListingTitle(base);
+  /** A two-word name exactly `length` characters long. */
+  const nameOf = (length: number, first = "Ken") => `${first} ${"G".repeat(length - first.length - 1)}`;
+
+  test("the baseline card fits with every token, so any loss below is the cameo's", () => {
+    expect(plain.fits).toBe(true);
+    expect(plain.dropped).toEqual([]);
+    expect(plain.title).toContain("Baseball");
+    expect(plain.title).toContain("Shohei Ohtani #17");
+  });
+
+  test("a title that fits with its cameo keeps it, after the card's own player", () => {
+    const a = assessListingTitle({ ...base, cameoNames: ["Ken Griffey Jr."], teamNames: [], sport: undefined });
+    expect(a.title).toBe("2024 Topps Chrome Shohei Ohtani & Ken Griffey Jr. #17 RC Rookie");
+    expect(a.fits).toBe(true);
+    expect(a.dropped).toEqual([]);
+    expect(a.coreFits).toBe(true);
+  });
+
+  test("over the limit with a cameo: the cameo goes first and everything else stays", () => {
+    const cameo = nameOf(80 - plain.title.length);
+    const a = assessListingTitle({ ...base, cameoNames: [cameo] });
+    // Over the cap with it: plain + " & " + the name is 83 characters.
+    expect(plain.title.length + 3 + cameo.length).toBeGreaterThan(81);
+    expect(a.title).toBe(plain.title);
+    expect(a.fits).toBe(true);
+    expect(a.dropped).toEqual([cameo]);
+    // Losing a cameo is not a first-name loss: the card is not flagged.
+    expect(a.firstNameLost).toBe(false);
+    expect(a.coreFits).toBe(true);
+  });
+
+  test("the cameo goes before the sport, a team, the number and a first name", () => {
+    // A cameo long enough that the sport alone would have made room for it.
+    const cameo = nameOf("Baseball".length - 3 + 80 - plain.title.length);
+    const a = assessListingTitle({ ...base, cameoNames: [cameo] });
+    expect(a.title).toContain("Baseball");
+    expect(a.title).toContain("Los Angeles Dodgers");
+    expect(a.title).toContain("Shohei Ohtani #17");
+    expect(a.title).not.toContain(cameo);
+  });
+
+  test("several cameos: the last goes first, and one that still fits stays", () => {
+    const first = "Ken Griffey Jr.";
+    const last = nameOf(30, "Zed");
+    const a = assessListingTitle({ ...base, sport: undefined, teamNames: [], cameoNames: [first, last] });
+    expect(a.title).toContain(`Shohei Ohtani & ${first} #17`);
+    expect(a.title).not.toContain(last);
+    expect(a.dropped).toEqual([last]);
+  });
+
+  test("the no-loss cuts go before a cameo: the Parallel label, then the cameo keeps its place", () => {
+    const card: ListingCardInputs = {
+      ...base,
+      teamNames: [],
+      sport: undefined,
+      parallelName: "Gold Refractor",
+      parallelIsRole: true,
+    };
+    const labelled = assessListingTitle(card).title;
+    expect(labelled).toContain("Gold Refractor Parallel");
+    // Exactly the label's room over the cap: the label goes, the cameo stays.
+    const cameo = nameOf(80 - labelled.length - 3 + " Parallel".length);
+    const a = assessListingTitle({ ...card, cameoNames: [cameo] });
+    expect(a.title).not.toContain("Parallel");
+    expect(a.title).toContain(`Shohei Ohtani & ${cameo} #17`);
+    expect(a.fits).toBe(true);
+  });
+
+  test("at exactly 81 with a cameo the \"#\" alone goes, and the cameo stays", () => {
+    const card = { ...base, teamNames: [] };
+    const short = assessListingTitle(card).title;
+    const cameo = nameOf(81 - short.length - 3);
+    expect(cameo.length).toBeGreaterThan(10);
+    const a = assessListingTitle({ ...card, cameoNames: [cameo] });
+    expect(a.title).toBe(short.replace("Shohei Ohtani #17", `Shohei Ohtani & ${cameo} 17`));
+    expect(a.title.length).toBe(80);
+  });
+
+  test("a cameo who is also the card's player is said once", () => {
+    const a = assessListingTitle({ ...base, cameoNames: ["shohei ohtani"] });
+    expect(a.title).toBe(plain.title);
+    expect(a.dropped).toEqual([]);
+  });
+
+  test("the description still names a cameo the title had to drop", () => {
+    const cameo = nameOf(80 - plain.title.length);
+    const inputs = { ...base, cameoNames: [cameo] };
+    expect(assessListingTitle(inputs).title).not.toContain(cameo);
+    expect(generateListingDescription(inputs).split("\n")).toContain(`Cameo: ${cameo}.`);
+  });
+});

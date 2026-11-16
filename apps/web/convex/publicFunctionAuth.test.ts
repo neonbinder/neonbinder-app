@@ -3433,6 +3433,142 @@ describe("NEO-500: the pick-order seed is locked like the other testing seeds", 
 });
 
 /**
+ * NEO-528 — "Also pictured" players on a card. Editing them is operator
+ * tooling (`requireAdmin`): one card's list, the "Player on every card" adds
+ * over a checklist and its parallels (as the card's player or as a cameo),
+ * that run's target list, and (round 3) the stored per-row defaults with the
+ * panel's read of them. A collector
+ * only ever READS them, through the signed-in smart binder read `ruleFits`
+ * (which answers only for the caller's own binder).
+ */
+describe("NEO-528: the also-pictured surface is admin-gated; ruleFits is signed-in", () => {
+  async function seedIds(t: ReturnType<typeof convexTest>) {
+    const sportId = await seedSport(t);
+    return t.run(async (ctx) => {
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: sportId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const playerId = await ctx.db.insert("players", {
+        name: "Dan Marino",
+        nameNormalized: "dan marino",
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: variantId,
+        cardNumber: "1",
+        cardName: "Card",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { variantId, playerId, cardId };
+    });
+  }
+  /** What a refused call must not have written on the card. */
+  const cardWrites = (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) =>
+    t.run(async (ctx) => {
+      const card = await ctx.db.get(ids.cardId);
+      const row = await ctx.db.get(ids.variantId);
+      return {
+        secondaryPlayerIds: card?.secondaryPlayerIds ?? null,
+        playerIds: card?.playerIds ?? null,
+        // NEO-528 round 3: the stored "Player on every card" values.
+        defaults: [row?.defaultPlayerIds ?? null, row?.defaultCameoIds ?? null],
+      };
+    });
+  const ADMIN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) => Promise<unknown>]
+  > = [
+    [
+      "cardSecondaryPlayers.setSecondaryPlayers",
+      (t, ids) => t.mutation(api.cardSecondaryPlayers.setSecondaryPlayers, { cardId: ids.cardId, playerIds: [ids.playerId] }),
+    ],
+    [
+      "cardPlayersBulk.addPlayerToVariant",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.addPlayerToVariant, {
+          variantId: ids.variantId,
+          playerId: ids.playerId,
+          cursor: null,
+        }),
+    ],
+    [
+      "cardPlayersBulk.addCameoToVariant",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.addCameoToVariant, {
+          variantId: ids.variantId,
+          playerId: ids.playerId,
+          cursor: null,
+        }),
+    ],
+    [
+      "cardPlayersBulk.everyCardTargets",
+      (t, ids) => t.query(api.cardPlayersBulk.everyCardTargets, { variantId: ids.variantId, kind: "player" }),
+    ],
+    [
+      "cardPlayersBulk.setCardPlayerDefault",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.setCardPlayerDefault, {
+          selectorOptionId: ids.variantId,
+          kind: "player",
+          playerId: ids.playerId,
+        }),
+    ],
+    [
+      "cardPlayersBulk.clearCardPlayerDefault",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.clearCardPlayerDefault, {
+          selectorOptionId: ids.variantId,
+          kind: "cameo",
+          playerId: ids.playerId,
+        }),
+    ],
+    [
+      "cardPlayersBulk.cardPlayerDefaults",
+      (t, ids) => t.query(api.cardPlayersBulk.cardPlayerDefaults, { selectorOptionId: ids.variantId }),
+    ],
+  ];
+
+  test.each(ADMIN_GATED)("%s rejects an anonymous caller and writes nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t, ids)).rejects.toThrow(/not authenticated/i);
+    expect(await cardWrites(t, ids)).toEqual({ secondaryPlayerIds: null, playerIds: null, defaults: [null, null] });
+  });
+
+  test.each(ADMIN_GATED)("%s rejects a signed-in non-admin and writes nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity({ subject: "member", role: "member" }) as never, ids)).rejects.toThrow(
+      /admin access required/i,
+    );
+    expect(await cardWrites(t, ids)).toEqual({ secondaryPlayerIds: null, playerIds: null, defaults: [null, null] });
+  });
+
+  test.each(ADMIN_GATED)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity(ADMIN) as never, ids)).resolves.toBeDefined();
+  });
+
+  test("binderRules.ruleFits rejects an anonymous caller and answers a signed-in non-admin", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.query(api.binderRules.ruleFits, { containerId: "not-an-id", cardIds: [] })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.binderRules.ruleFits, { containerId: "not-an-id", cardIds: [] }),
+    ).resolves.toEqual([]);
+  });
+});
+
+/**
  * NEO-520 — `testing.seedMyTestEbayOrder`, the unmatched-eBay-sale spec's seed
  * hop, by the same two locks as `seedMyTestPickOrder`: an anonymous caller is
  * refused, and a deployment without `TESTING_RESET_SECRET` (every production

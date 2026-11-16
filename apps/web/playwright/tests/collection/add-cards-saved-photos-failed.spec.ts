@@ -21,11 +21,18 @@
 //
 // R7/R7a: writes only the account's own seeded runs, sets and boxes (SET-REGISTRY.md,
 // `PhotoFixture-`); each seed cancels the account's open runs first, for the
-// active-run cap, and they stand until the global reset.
+// active-run cap. The last seeded batch reads "running" and holds a cap slot, so
+// `afterEach` discards it through /print/placeholders (the runs and photos stand until
+// the global reset).
 //
 // R5: every wait is the standard 7 s; the first seed is a full page load, so its
 // gate is LAUNCH_GATE.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { discardIfStillOpen } from "../../support/placeholder-intake";
+
+test.afterEach(async ({ page }, testInfo) => {
+  await discardIfStillOpen(page, testInfo, { all: true });
+});
 
 const CARD = "#1 Testcard";
 

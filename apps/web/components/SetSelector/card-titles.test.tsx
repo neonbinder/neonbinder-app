@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
-import { type TitleContext } from "../../convex/features/listingInputs";
+import { assessNewCardListing, type TitleContext } from "../../convex/features/listingInputs";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import {
   buildTitleGroups,
@@ -152,6 +152,57 @@ describe("recomputed from the team answers", () => {
       buildTitleGroups([card("1")], context({ setTeamNames: ["Los Angeles Angels"] })).titleGroups,
     );
     expect(setTeam[0].leftOut).toContain("Los Angeles Angels");
+  });
+
+  test("NEO-528: a card with nobody on it takes the row's Player on every card; a card with a player keeps its own", () => {
+    const withDefault = context({ setPlayerNames: ["Ken Griffey Jr."] });
+    const titled = (ctx: TitleContext, playerNames: string[]) =>
+      assessNewCardListing({ cardNumber: "1" }, ctx, { playerNames, teamNames: [] }).assessment.title;
+    const nobody = buildTitleGroups([card("1", { players: [] })], withDefault).titleGroups;
+    expect(nobody[0].cards[0].title).toBe(titled(withDefault, ["Ken Griffey Jr."]));
+    // This long set cuts the title. NEO-535's order keeps the player's name
+    // (the default player is the card's player): only the first name goes,
+    // after the number, and the surname stays.
+    expect(nobody[0].cards[0].title).toContain("Griffey Jr.");
+    expect(nobody[0].cards[0].leftOut).toEqual(["#1", "Ken"]);
+    // Printed and resolved: their own player, never the default.
+    const own = buildTitleGroups([card("1")], withDefault).titleGroups;
+    expect(own[0].cards[0].title).toBe(titled(withDefault, ["Shohei Ohtani"]));
+    // Jason, 2026-11-15: a card whose listing names anyone is left blank by
+    // the commit, so its title never names the default, even when every
+    // printed name was ruled out (no player resolves from it) or is still
+    // waiting for review.
+    // NEO-535: only a card whose title needs a look is listed, and this one
+    // fits once nobody is named, so it is not listed at all (with the default
+    // it would be, exactly as `nobody` is).
+    const ruledOut = buildTitleGroups([card("1", { players: ["Team Photo"] })], withDefault).titleGroups;
+    expect(ruledOut).toEqual([]);
+    // A blank printed string names nobody: the default still applies.
+    const blank = buildTitleGroups([card("1", { players: ["  "] })], withDefault).titleGroups;
+    expect(blank[0].cards[0].title).toBe(titled(withDefault, ["Ken Griffey Jr."]));
+    // An older server sends no default: nobody stays nobody.
+    const older = buildTitleGroups([card("1", { players: [] })], context()).titleGroups;
+    expect(older).toEqual([]);
+  });
+
+  test("NEO-528 + NEO-535: the row's default cameos ride in the title as the insert's will, dropped first", () => {
+    const withCameo = context({ setCameoNames: ["Ken Griffey Jr."] });
+    const groups = buildTitleGroups([card("1")], withCameo).titleGroups;
+    const row = groups[0].cards[0];
+    // The same title the insert builds for this card with the default cameo.
+    expect(row.title).toBe(
+      assessNewCardListing({ cardNumber: "1" }, withCameo, {
+        playerNames: ["Shohei Ohtani"],
+        teamNames: [],
+        cameoNames: ["Ken Griffey Jr."],
+      }).assessment.title,
+    );
+    // This long set is over the cap: the cameo is the first thing given up.
+    expect(row.title).not.toContain("Griffey");
+    expect(row.leftOut[0]).toBe("Ken Griffey Jr.");
+    // A default cameo who is the card's own player is not named twice.
+    const self = buildTitleGroups([card("1")], context({ setCameoNames: ["Shohei Ohtani"] })).titleGroups;
+    expect(self[0].cards[0].leftOut).not.toContain("Shohei Ohtani");
   });
 
   test("the team answer's strings REPLACE the printed ones", () => {

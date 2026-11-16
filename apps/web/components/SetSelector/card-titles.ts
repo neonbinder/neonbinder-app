@@ -1,5 +1,6 @@
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+import { listingNamesAPlayer } from "../../convex/lib/cardPlayerDefaults";
 import { teamFullName } from "../../lib/teams/team-name";
 // Browser-safe: pure feature derivations only, the same ones the insert runs.
 import {
@@ -16,7 +17,7 @@ import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
 } from "../../convex/features/listingLimits";
-import { MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
 import type { TeamAnswer } from "./teams-on-cards";
 
 /**
@@ -195,11 +196,20 @@ function cardNames(
   teamAnswer: TeamAnswer | undefined,
   index: NameIndex,
   context: TitleContext,
-): { playerNames: string[]; teamNames: string[] } {
-  const playerNames: string[] = [];
+): { playerNames: string[]; teamNames: string[]; cameoNames: string[] } {
+  let playerNames: string[] = [];
   for (const p of card.players ?? []) {
     const name = index.player(p);
     if (name) playerNames.push(name);
+  }
+  // NEO-528 — a new card whose listing names nobody is born with the row's
+  // "Player on every card", and its title names them, as the commit's will.
+  // A card that prints any name (even one ruled "not a person", or still
+  // waiting for review) is left blank by the commit, so its title names
+  // nobody (`listingNamesAPlayer`, the commit's own test; Jason, 2026-11-15).
+  // The name is the server's, never written onto the card here.
+  if (playerNames.length === 0 && !listingNamesAPlayer(card.players)) {
+    playerNames = [...(context.setPlayerNames ?? [])];
   }
   const fromIds = (teamAnswer?.teamIds ?? [])
     .map((id) => index.teamById(id))
@@ -211,7 +221,14 @@ function cardNames(
     teamNames = Array.from(new Set(teamNames)).slice(0, MAX_CARD_TEAMS);
   }
   if (teamNames.length === 0) teamNames = [...context.setTeamNames];
-  return { playerNames, teamNames };
+  // NEO-528 + NEO-535 — the row's default cameos go on every new card, never
+  // as one of its own players (the commit's `planDefaultCameos`), so its
+  // title names them while it has room, as the insert's will.
+  const own = new Set(playerNames.map((n) => normalizeEntityName(n)));
+  const cameoNames = (context.setCameoNames ?? [])
+    .filter((n) => !own.has(normalizeEntityName(n)))
+    .slice(0, MAX_CARD_PLAYERS);
+  return { playerNames, teamNames, cameoNames };
 }
 
 /** The variation the card will be saved with: a valid trimmed answer, else its own. */
@@ -532,11 +549,21 @@ export function groupTitleAssessments(
  * (`CardTitleAssessment.ownWords`).
  */
 export function ownWordsOf(
-  names: { playerNames: readonly string[]; teamNames: readonly string[] },
+  names: {
+    playerNames: readonly string[];
+    teamNames: readonly string[];
+    cameoNames?: readonly string[];
+  },
   cardNumber: string,
 ): Set<string> {
   return new Set(
-    [...names.playerNames, ...names.teamNames, cardNumber, `#${cardNumber}`].flatMap((n) =>
+    [
+      ...names.playerNames,
+      ...(names.cameoNames ?? []),
+      ...names.teamNames,
+      cardNumber,
+      `#${cardNumber}`,
+    ].flatMap((n) =>
       n.toLowerCase().split(/\s+/).filter(Boolean),
     ),
   );

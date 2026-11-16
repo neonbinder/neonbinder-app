@@ -76,7 +76,7 @@
  *     stored; replaced.
  *   - `skippedUnresolved` (`rewriteExisting` runs only): a description is
  *     stored and the card has a
- *     dangling player or team id or its row is gone. Kept: rewriting from
+ *     dangling player, cameo or team id or its row is gone. Kept: rewriting from
  *     partial data would drop facts the stored text may still carry.
  *   - `keptExisting` (the default): a different description is stored and
  *     the run was not asked to rewrite it. Kept.
@@ -92,8 +92,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { generateListingDescription } from "./features/generateListing";
 import {
   listingInputsForStoredCard,
-  newStoredCardLookupCache,
-  type StoredCardLookupCache,
+  newStoredCardReadCache,
+  type StoredCardReadCache,
 } from "./storedCardTitle";
 
 /** The string an armed run must carry. */
@@ -147,17 +147,19 @@ export type DescriptionPlan = {
 export async function planDescription(
   ctx: { db: QueryCtx["db"] },
   card: Doc<"cardChecklist">,
-  cache: StoredCardLookupCache,
+  cache: StoredCardReadCache,
   options: { rewriteExisting?: boolean } = {},
 ): Promise<DescriptionPlan> {
   const { inputs, unresolved } = await listingInputsForStoredCard(ctx, card, cache);
+  // NEO-528 — the inputs carry the cameos, so the cameo line is written too.
   const next = generateListingDescription(inputs);
   const stored = card.listingDescription;
   const hasStored = stored !== undefined && stored.trim().length > 0;
   if (stored === next) return { action: "unchanged", next };
   if (!hasStored) return { action: "filled", next };
   if (!options.rewriteExisting) return { action: "keptExisting", next };
-  const isUnresolved = unresolved.players > 0 || unresolved.teams > 0 || unresolved.parent;
+  const isUnresolved =
+    unresolved.players > 0 || unresolved.teams > 0 || unresolved.parent || unresolved.cameos > 0;
   if (isUnresolved) return { action: "skippedUnresolved", next };
   return { action: "rewritten", next };
 }
@@ -225,7 +227,7 @@ export const backfillListingDescriptionsPage = internalMutation({
       .withIndex("by_selector_option_and_sort")
       .paginate({ numItems, cursor: args.cursor });
 
-    const cache = newStoredCardLookupCache();
+    const cache = newStoredCardReadCache();
     const counts = emptyCounts();
     const samples: Sample[] = [];
     for (const card of page.page) {

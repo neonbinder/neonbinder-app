@@ -28,6 +28,15 @@ tests is knowable from the spec's own flow.
   by accessible name) instead of opening the panel with an `aria-expanded`
   branch.
 
+- An undo step that must remove one chip (a cameo under "Also on this card") cannot
+  branch on the chip's visibility: the drawer's chips load AFTER the card, so the
+  branch sees no chip, skips the ×, and the closing `toHaveCount(0)` passes on the
+  unloaded drawer (NEO-528 left the cameo behind on a green run). Settle first on a
+  value that arrives WITH the card doc (the drawer's `Card description` textbox:
+  `toHaveValue(/<player>, #<n>/)`), then branch on that value (`Cameo: <name>` line),
+  and end on the value again (`not.toHaveValue(...)`), not on the chip alone.
+  Check the database after the first green run of any self-cleaning spec.
+
 A horizontal overflow inside a lane (a status pill clipped in a ~125 px lane at
 the desktop project's 1024 px width) shows up as axe `scrollable-region-focusable`
 on `section[aria-label="Cropping & reading, N"] > .overflow-auto`. Seen on the

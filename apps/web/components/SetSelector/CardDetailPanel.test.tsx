@@ -68,6 +68,10 @@ vi.mock("../../convex/_generated/api", () => ({
       setCardVariationParent: "setCardVariationParent",
       getCardChecklist: "getCardChecklist",
     },
+    // NEO-528: the Also pictured field's writer, called through useConvex().
+    cardSecondaryPlayers: {
+      setSecondaryPlayers: "cardSecondaryPlayers.setSecondaryPlayers",
+    },
   },
 }));
 
@@ -80,7 +84,11 @@ const mockSiblingCards = [
   { _id: "card-2", cardNumber: "2", cardName: "Roberto Osuna" },
 ];
 
+/** NEO-528 — `useConvex().mutation`, the Also pictured field's one write. */
+const mockConvexMutation = vi.fn();
+
 vi.mock("convex/react", () => ({
+  useConvex: () => ({ mutation: mockConvexMutation }),
   useMutation: (ref: string) => {
     if (ref === "updateCard") return mockUpdateCard;
     if (ref === "setCardFeature") return mockSetCardFeature;
@@ -122,10 +130,29 @@ vi.mock("./PlayerPicker", () => ({
   default: ({
     value,
     onChange,
+    labels,
+    ariaDescribedBy,
   }: {
     value: string[];
     onChange: (next: string[]) => void;
-  }) => (
+    labels?: { root: string };
+    ariaDescribedBy?: string;
+  }) =>
+    // NEO-528: the drawer mounts two — the labelled one is Also pictured.
+    labels ? (
+      <div aria-label={`${labels.root} (stub)`} data-described-by={ariaDescribedBy ?? ""}>
+        <span>Also pictured: {value.join(",")}</span>
+        <button onClick={() => onChange([...value, "cameo-new"])}>
+          Stub add cameo
+        </button>
+        <button onClick={() => onChange([...value, "player-1"])}>
+          Stub add the card's own player as a cameo
+        </button>
+        <button onClick={() => onChange(value.slice(0, -1))}>
+          Stub remove last cameo
+        </button>
+      </div>
+    ) : (
     <div aria-label="Player picker (stub)">
       <span>Players: {value.join(",")}</span>
       <button onClick={() => onChange([...value, "player-new"])}>
@@ -135,14 +162,18 @@ vi.mock("./PlayerPicker", () => ({
         Stub remove last player
       </button>
     </div>
-  ),
+    ),
 }));
 
 // ---------------------------------------------------------------------------
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
 
-import CardDetailPanel from "./CardDetailPanel";
+import CardDetailPanel, {
+  ALREADY_A_PLAYER_MESSAGE,
+  ALSO_PICTURED_HINT,
+} from "./CardDetailPanel";
+import { ALSO_PICTURED_PICKER_LABELS } from "./player-picker-labels";
 // NEO-272: the drawer-geometry block below reads the character budget from the
 // server's own constant rather than restating 80.
 import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
@@ -521,6 +552,23 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
 
     const status = await screen.findByRole("status");
     expect(status.textContent).toBe("Saved Card name");
+  });
+
+  it("shows the save in the drawer's footer, in place of the autosave rule, never over the fields", async () => {
+    renderPanel();
+
+    await editAndCommit(nameInput(), "Shohei Ohtani");
+
+    const status = await screen.findByRole("status");
+    // Inside the dialog (NEO-528 audit: the viewport-fixed toast sat on Card
+    // name), beside Done, and not positioned over anything.
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.contains(status)).toBe(true);
+    const footer = screen.getByLabelText("Done editing card").parentElement!;
+    expect(footer.contains(status)).toBe(true);
+    expect(status.className).not.toMatch(/\bfixed\b|\babsolute\b/);
+    // It stands in for the rule while it shows.
+    expect(screen.queryByText("Changes save as you leave each field.")).toBeNull();
   });
 
   /**
@@ -1433,5 +1481,153 @@ describe("CardDetailPanel — NEO-331 the set context reaches the team picker", 
     expect(
       screen.getByLabelText("Team picker (stub)").getAttribute("data-context-option-id"),
     ).toBe("");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-528 — Also pictured: a second player list, its own writer.
+// ---------------------------------------------------------------------------
+
+describe("CardDetailPanel — Also on this card (NEO-528)", () => {
+  const ids = (...xs: string[]) => xs as unknown as Array<Id<"players">>;
+  const ALSO = `${ALSO_PICTURED_PICKER_LABELS.root} (stub)`;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdateCard.mockResolvedValue(null);
+    mockConvexMutation.mockResolvedValue({ secondaryPlayerIds: [], strippedPrimary: 0 });
+    currentPlayerRows = undefined;
+  });
+
+  it("mounts a second picker under its own labels, seeded with the card's also-pictured players", () => {
+    renderPanel({ card: makeCard({ secondaryPlayerIds: ids("cameo-1", "cameo-2") }) });
+    expect(screen.getByText("Also on this card", { selector: "label" })).toBeTruthy();
+    expect(screen.getByLabelText(ALSO)).toBeTruthy();
+    expect(screen.getByText("Also pictured: cameo-1,cameo-2")).toBeTruthy();
+    // The Players picker is still the default-labelled one.
+    expect(screen.getByLabelText("Player picker (stub)")).toBeTruthy();
+  });
+
+  it("describes the picker with the visible hint", () => {
+    expect(ALSO_PICTURED_HINT).toBe(
+      "Anyone on the card besides its main player: a teammate in the photo, a name on a team leaders card, the star a Profiles card is about. Smart binders can count these as cameos.",
+    );
+    expect(ALREADY_A_PLAYER_MESSAGE).toBe("They're already this card's player. No cameo needed.");
+    renderPanel();
+    const hint = screen.getByText(ALSO_PICTURED_HINT);
+    expect(hint.id).not.toBe("");
+    expect(screen.getByLabelText(ALSO).getAttribute("data-described-by")).toBe(hint.id);
+  });
+
+  it("an add writes ONLY the also-pictured list, through its own mutation, and says so", async () => {
+    renderPanel({ card: makeCard({ secondaryPlayerIds: ids("cameo-1") }) });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add cameo"));
+    });
+    await waitFor(() => {
+      expect(mockConvexMutation).toHaveBeenCalledWith(
+        "cardSecondaryPlayers.setSecondaryPlayers",
+        { cardId: CARD_ID, playerIds: ["cameo-1", "cameo-new"] },
+      );
+    });
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(await screen.findByText("Saved Also on this card")).toBeTruthy();
+  });
+
+  it("a remove writes the shortened list; the last one off writes []", async () => {
+    renderPanel({ card: makeCard({ secondaryPlayerIds: ids("cameo-1") }) });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub remove last cameo"));
+    });
+    await waitFor(() => {
+      expect(mockConvexMutation).toHaveBeenCalledWith(
+        "cardSecondaryPlayers.setSecondaryPlayers",
+        { cardId: CARD_ID, playerIds: [] },
+      );
+    });
+  });
+
+  it("refuses the card's own player beside the field, without a write", async () => {
+    renderPanel({ card: makeCard({ playerIds: ids("player-1"), secondaryPlayerIds: [] }) });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add the card's own player as a cameo"));
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(ALREADY_A_PLAYER_MESSAGE);
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+    // The picker reads the live row again: no chip appeared.
+    expect(screen.getByText("Also pictured:")).toBeTruthy();
+  });
+
+  it("shows the server's refusal inline and snaps back to the live row", async () => {
+    mockConvexMutation.mockRejectedValue(
+      new ConvexError("A card can have at most 20 people under Also on this card."),
+    );
+    renderPanel({ card: makeCard({ secondaryPlayerIds: ids("cameo-1") }) });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add cameo"));
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("A card can have at most 20 people under Also on this card.");
+    expect(screen.getByText("Also pictured: cameo-1")).toBeTruthy();
+  });
+
+  it("falls back to a plain sentence when the write fails with no user-facing text", async () => {
+    mockConvexMutation.mockRejectedValue(new Error("Server Error"));
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add cameo"));
+    });
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Couldn't save Also on this card. Give it another go.");
+  });
+
+  it("a player made one of the card's own players leaves Also pictured", async () => {
+    // The stub's "add player" appends "player-new"; that player was a cameo.
+    renderPanel({
+      card: makeCard({
+        playerIds: ids("player-1"),
+        secondaryPlayerIds: ids("cameo-1", "player-new"),
+      }),
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add player"));
+    });
+    await waitFor(() => {
+      expect(mockConvexMutation).toHaveBeenCalledWith(
+        "cardSecondaryPlayers.setSecondaryPlayers",
+        { cardId: CARD_ID, playerIds: ["cameo-1"] },
+      );
+    });
+    expect(mockUpdateCard).toHaveBeenCalledWith({
+      id: CARD_ID,
+      playerIds: ["player-1", "player-new"],
+    });
+    expect(
+      await screen.findByText("Saved Players and moved them out of Also on this card"),
+    ).toBeTruthy();
+  });
+
+  it("a Players write that touches no cameo leaves Also pictured alone", async () => {
+    renderPanel({
+      card: makeCard({ playerIds: ids("player-1"), secondaryPlayerIds: ids("cameo-1") }),
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add player"));
+    });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalled());
+    expect(mockConvexMutation).not.toHaveBeenCalled();
+  });
+
+  it("a refused Players write never touches Also pictured", async () => {
+    mockUpdateCard.mockRejectedValue(new ConvexError("Nope."));
+    renderPanel({
+      card: makeCard({ playerIds: ids("player-1"), secondaryPlayerIds: ids("player-new") }),
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByText("Stub add player"));
+    });
+    await screen.findByRole("alert");
+    expect(mockConvexMutation).not.toHaveBeenCalled();
   });
 });

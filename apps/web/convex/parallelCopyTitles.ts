@@ -48,8 +48,8 @@ import { requireAdmin } from "./auth";
 import { parallelSetContext, resolveBuildSource } from "./parallelChecklistBuild";
 import {
   listingInputsForStoredCard,
-  newStoredCardLookupCache,
-  type StoredCardLookupCache,
+  newStoredCardReadCache,
+  type StoredCardReadCache,
 } from "./storedCardTitle";
 import {
   assessParallelCopyTitle,
@@ -81,6 +81,8 @@ const GONE = "That parallel is gone. Refresh and try again.";
 const listingInputsValidator = v.object({
   cardNumber: v.string(),
   playerNames: v.array(v.string()),
+  // NEO-528 + NEO-535 — the people also pictured, named while the title has room.
+  cameoNames: v.optional(v.array(v.string())),
   year: v.optional(v.string()),
   manufacturer: v.optional(v.string()),
   manufacturerBrandUnknown: v.optional(v.boolean()),
@@ -138,7 +140,7 @@ async function copyTitleInputs(
   ctx: { db: QueryCtx["db"] },
   sourceRowId: Id<"selectorOptions">,
   card: Doc<"cardChecklist">,
-  cache: StoredCardLookupCache,
+  cache: StoredCardReadCache,
 ): Promise<{ inputs: ListingCardInputs & { playerNames: string[]; teamNames: string[] }; carriedRest?: string }> {
   const { inputs } = await listingInputsForStoredCard(ctx, card, cache);
   const source = await sourceCardOf(ctx, sourceRowId, card);
@@ -157,7 +159,7 @@ async function copyTitleNow(
   ctx: { db: QueryCtx["db"] },
   sourceRowId: Id<"selectorOptions">,
   card: Doc<"cardChecklist">,
-  cache: StoredCardLookupCache,
+  cache: StoredCardReadCache,
 ): Promise<ParallelCopyTitle> {
   const { inputs, carriedRest } = await copyTitleInputs(ctx, sourceRowId, card, cache);
   return assessParallelCopyTitle(inputs, carriedRest);
@@ -225,7 +227,7 @@ export const failingTitles = query({
       .paginate({ numItems: FAILING_TITLES_SCAN, cursor: args.cursor ?? null });
     const failing = page.page.filter(storedTitleFails);
     const want = clampWantCards(args.wantCards);
-    const cache = newStoredCardLookupCache();
+    const cache = newStoredCardReadCache();
     const cards = [];
     for (const card of failing.slice(0, want)) {
       const { inputs, carriedRest } = await copyTitleInputs(ctx, source._id, card, cache);
@@ -379,7 +381,7 @@ export const saveTitleFixes = mutation({
       });
     }
 
-    const cache = newStoredCardLookupCache();
+    const cache = newStoredCardReadCache();
     let saved = 0;
     let rewritten = 0;
     let kept = 0;
@@ -486,7 +488,7 @@ export const rewriteFailingTitlesPage = internalMutation({
         q.eq("selectorOptionId", args.parallelId),
       )
       .paginate({ numItems: REWRITE_TITLES_PAGE, cursor: args.cursor ?? null });
-    const cache = newStoredCardLookupCache();
+    const cache = newStoredCardReadCache();
     let rewritten = 0;
     for (const card of page.page) {
       if (!storedTitleFails(card)) continue;

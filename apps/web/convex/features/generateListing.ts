@@ -61,6 +61,16 @@ export type ListingCardInputs = {
   cardNumber: string;
   /** Resolved player display names, already looked up from playerIds. */
   playerNames?: string[];
+  /**
+   * NEO-528 + NEO-535 — the NB names of the people also pictured on the card
+   * (its cameos), in stored order. The title names them
+   * after the card's own players while there is room, and they are the FIRST
+   * meaningful thing it gives up (Jason: "secondary names should be dropped
+   * before we drop anything else with meaning"): only the no-loss cuts (a
+   * repeated AUTO/RC/RELIC, the "Insert" / "Parallel" labels) and the "#" at
+   * 81 go before them. The description states them on a line of their own.
+   */
+  cameoNames?: string[];
   /** Mirrors the year node's value verbatim — same field `features.season` holds. */
   year?: string;
   manufacturer?: string;
@@ -522,6 +532,8 @@ type TitleState = {
   insertLabelIn: boolean;
   parallelLabelIn: boolean;
   players: Array<{ full: string; short?: string; firstOut: boolean }>;
+  /** NEO-528 — the cameos, after the players; each whole name in or out. */
+  cameos: Array<{ name: string; in: boolean }>;
   number?: { text: string; mode: "hash" | "bare" | "out" };
   tail: TailToken[];
 };
@@ -534,6 +546,8 @@ function renderTitle(state: TitleState): string {
   if (parallel) out.push(parallel);
   if (state.parallelLabelIn) out.push(PARALLEL_LABEL);
   const players = state.players.map((p) => (p.firstOut && p.short ? p.short : p.full));
+  // NEO-528 — the people also pictured follow the card's own, in one run.
+  for (const cameo of state.cameos) if (cameo.in) players.push(cameo.name);
   if (players.length > 0) out.push(players.join(" & "));
   if (state.number && state.number.mode !== "out") {
     out.push(state.number.mode === "hash" ? `#${state.number.text}` : state.number.text);
@@ -555,12 +569,17 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
     firstOut: false,
   }));
   const cardNumber = inputs.cardNumber?.trim();
+  const own = new Set(players.map((p) => p.full.toLowerCase()));
+  const cameos = distinctNames(inputs.cameoNames)
+    .filter((name) => !own.has(name.toLowerCase()))
+    .map((name) => ({ name, in: true }));
   const state: TitleState = {
     parts,
     insertAbbreviated: false,
     insertLabelIn: parts.insertLabel,
     parallelLabelIn: parts.parallelLabel,
     players,
+    cameos,
     ...(cardNumber ? { number: { text: cardNumber, mode: "hash" as const } } : {}),
     tail: [],
   };
@@ -630,6 +649,8 @@ type Cut = {
  *   3  RELIC, when the title says Relic/Relics (repeat)
  *   4  the "Insert" label
  *   5  the "Parallel" label
+ *   5½ cameos (the people also pictured), last first, each whole name
+ *      (NEO-528, Jason: dropped before anything else with meaning)
  *   6  the sport (already skipped when a team name says it)
  *   7  the second "Rookie" (only ever beside a non-repeat RC)
  *   8  "Rookie" → "RC" inside the insert's name
@@ -677,6 +698,20 @@ function planCuts(
   if (state.parallelLabelIn) {
     add(5, () => { state.parallelLabelIn = false; }, [() => { state.parallelLabelIn = true; }]);
   }
+  // NEO-528 — the cameos, after the no-loss cuts and before everything that
+  // carries meaning. A meaningful cut (`real`), so a repeat is not put back
+  // while a cameo is still out; refilled last of the meaningful cuts.
+  for (const [index, cameo] of [...state.cameos.entries()].reverse()) {
+    cuts.push({
+      row: CAMEO_ROW,
+      rank: cutRank(CAMEO_ROW, CAMEO_PLACES - index),
+      real: true,
+      repeat: false,
+      out: false,
+      cut: () => { cameo.in = false; },
+      restores: [() => { cameo.in = true; }],
+    });
+  }
   for (const t of tokens("sport")) toggle(6, t);
   for (const t of tokens("rookie")) toggle(7, t);
   if (state.parts.insertRc) {
@@ -714,6 +749,12 @@ function planCuts(
  * (is cut sooner, and refilled later).
  */
 const LAST_FIRST = 999;
+/**
+ * NEO-528 — the cameos' place: between the "Parallel" label (row 5) and the
+ * sport (row 6). Ranked 5,500 down to 5,400, last cameo lowest (cut first).
+ */
+const CAMEO_ROW = 5.5;
+const CAMEO_PLACES = 100;
 function cutRank(row: number, within = 0): number {
   return row * 1000 + within;
 }
@@ -859,6 +900,7 @@ export function generateListingTitle(inputs: ListingCardInputs): string {
  *   1. description words the text does not carry (year + set, then the
  *      insert's, then the parallel's), unless the text carries the box text,
  *      which stands in for the description. "RC" counts for "Rookie" (row 8);
+ *   1½. cameos (NEO-528), last first, each whole name;
  *   2. teams, last first;
  *   3. the card number, as `#<number>` (present with or without its "#");
  *   4. players, last first: the first name when the surname part is there,
@@ -895,6 +937,12 @@ export function leftOutOfTitle(inputs: ListingCardInputs, text: string): string[
         .filter((w) => w && w !== "&" && !wordIn(w));
       if (missing.length > 0) add(missing.join(" "));
     }
+  }
+
+  const ownNames = new Set(distinctNames(inputs.playerNames).map((n) => n.toLowerCase()));
+  const cameos = distinctNames(inputs.cameoNames).filter((n) => !ownNames.has(n.toLowerCase()));
+  for (const name of [...cameos].reverse()) {
+    if (!phraseIn(name)) add(name);
   }
 
   const teams = (inputs.teamNames ?? []).map((t) => t.trim()).filter(Boolean);
@@ -983,8 +1031,17 @@ function descriptionSetLabel(inputs: ListingCardInputs): string {
  * No cap applies: eBay's description field takes ~500k of HTML. Pure and
  * deterministic, so a backfill that reruns it writes nothing the second time.
  * Absent facts are skipped, never rendered as blanks.
+ *
+ * NEO-528 — the NB names of the people also pictured on the card (its
+ * cameos), in stored order, stated on their own line right after the team
+ * ("Cameo: Ken Griffey Jr." / "Cameos: A, B."). `extras.cameoNames` when
+ * given (`[]` says "no cameo line"), else `inputs.cameoNames`, the ones the
+ * title names while it has room.
  */
-export function generateListingDescription(inputs: ListingCardInputs): string {
+export function generateListingDescription(
+  inputs: ListingCardInputs,
+  extras: { cameoNames?: ReadonlyArray<string> } = {},
+): string {
   const lines: string[] = [];
   const cardNumber = inputs.cardNumber?.trim();
   const number = cardNumber ? `#${cardNumber}` : "";
@@ -1041,6 +1098,16 @@ export function generateListingDescription(inputs: ListingCardInputs): string {
   }
   const teamNames = (inputs.teamNames ?? []).map((t) => t.trim()).filter(Boolean);
   if (teamNames.length > 0) lines.push(`Team: ${teamNames.join(", ")}.`);
+  // NEO-528: who else is pictured, named in full like the teams. A name that
+  // already ends in a full stop ("Ken Griffey Jr.") does not get a second one.
+  const cameoNames = (extras.cameoNames ?? inputs.cameoNames ?? [])
+    .map((n) => n.trim())
+    .filter(Boolean);
+  if (cameoNames.length > 0) {
+    const label = cameoNames.length === 1 ? "Cameo" : "Cameos";
+    const list = cameoNames.join(", ");
+    lines.push(list.endsWith(".") ? `${label}: ${list}` : `${label}: ${list}.`);
+  }
   const sport = inputs.sport?.trim();
   if (sport) lines.push(`Sport: ${sport}.`);
   return lines.join("\n");
@@ -1062,6 +1129,8 @@ const DESCRIPTION_FACT_LINES: readonly RegExp[] = [
   /^Rookie Card \(RC\)\.$/,
   /^(?:Super )?Short Print \(.+\)\.$/,
   /^Team: .+\.$/,
+  // NEO-528 — the cameo line (no second full stop after "Jr.").
+  /^Cameos?: .+$/,
   /^Sport: .+\.$/,
 ];
 

@@ -20,7 +20,7 @@ import { internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { generateListingDescription } from "./features/generateListing";
-import { listingInputsForStoredCard, newStoredCardLookupCache } from "./storedCardTitle";
+import { listingInputsForStoredCard, newStoredCardReadCache } from "./storedCardTitle";
 import { CONFIRM_TOKEN, ENV_FLAG, planDescription } from "./backfillListingDescriptions";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
 
@@ -308,7 +308,7 @@ describe("parity with the commit path", () => {
     });
     const cardId = result.storedIds[0];
     const plan = await t.run(async (ctx) =>
-      planDescription(ctx, (await ctx.db.get(cardId))!, newStoredCardLookupCache()),
+      planDescription(ctx, (await ctx.db.get(cardId))!, newStoredCardReadCache()),
     );
     const stored = await t.run(async (ctx) => (await ctx.db.get(cardId))!.listingDescription);
     expect(plan.action).toBe("unchanged");

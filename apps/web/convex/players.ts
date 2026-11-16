@@ -70,6 +70,8 @@ import { readManyByIds } from "./lib/batchIdReads";
 import { clampSearchQuery } from "./lib/searchQueryClamp";
 // NEO-535 — a rename reaches the descriptions of the player's cards.
 import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
+// NEO-528: the also-pictured index, for the sport-removal guard.
+import { cardSecondaryPlayerLinkPage } from "./cardSecondaryPlayers";
 // NEO-463: a one-word name that is a fuller-named player's first or last name.
 import {
   fragmentMatches,
@@ -3931,8 +3933,15 @@ export const setAdditionalSports = mutation({
           q.eq("playerId", args.playerId).eq("sportId", sportId),
         )
         .take(SPORT_REMOVAL_COUNT_CAP);
-      if (cards.length > 0) {
-        throw new ConvexError({ code: "SPORT_HAS_CARDS", sportId, count: cards.length });
+      // NEO-528 — a card he is only pictured on ("Also pictured") holds the
+      // sport too: removing it would leave that card naming a player outside
+      // its sport.
+      const cameos =
+        cards.length < SPORT_REMOVAL_COUNT_CAP
+          ? await cardSecondaryPlayerLinkPage(ctx, args.playerId, sportId, SPORT_REMOVAL_COUNT_CAP - cards.length)
+          : [];
+      if (cards.length + cameos.length > 0) {
+        throw new ConvexError({ code: "SPORT_HAS_CARDS", sportId, count: cards.length + cameos.length });
       }
       let stints = 0;
       for (const stint of player.teamYears ?? []) {

@@ -87,6 +87,12 @@ export interface PocketModel {
   /** NEO-362 — a card in a smart binder that its rule no longer takes in. */
   outside?: true;
   /**
+   * NEO-528 — a card the smart binder's rule takes in only as a cameo: who
+   * is pictured on it (`cameoNames`, empty when not known yet). Wears the
+   * Cameo sticker; never set together with `outside`.
+   */
+  cameo?: readonly string[];
+  /**
    * NEO-444: the public binder only, this very copy's photos. Two copies of a
    * card can differ, so a visitor's pocket never falls back to another copy's.
    */
@@ -448,6 +454,8 @@ export function sortedPages(input: {
   heldElsewhere?: ReadonlySet<CardId>;
   /** A smart binder: is this card one its rule still takes in? */
   fits?: (cardId: CardId) => boolean;
+  /** NEO-528 — a smart binder: who makes the cameo, when the card fits only as one (else undefined). */
+  cameo?: CameoOf;
 }): PageModel[] {
   const { copies, cards, sort, emptySlots } = input;
   const entries: Entry[] = [];
@@ -463,11 +471,16 @@ export function sortedPages(input: {
   }
   entries.sort(compareEntries(sort));
   const toPocket = ({ card, copy }: Entry): PocketModel => {
+    const cameo = input.cameo?.(card);
     if (!copy) {
-      return { content: input.heldElsewhere?.has(card.id) ? { kind: "need", card, elsewhere: true } : { kind: "need", card } };
+      return {
+        content: input.heldElsewhere?.has(card.id) ? { kind: "need", card, elsewhere: true } : { kind: "need", card },
+        ...(cameo ? { cameo } : {}),
+      };
     }
     const pocket: PocketModel = { content: { kind: "have", card, copies: [copy] } };
     if (input.fits && !input.fits(card.id)) pocket.outside = true;
+    else if (cameo) pocket.cameo = cameo;
     return pocket;
   };
   if (!emptySlots) return paginate(entries.map(toPocket), null);
@@ -490,14 +503,31 @@ export function sortedPages(input: {
   return pages;
 }
 
-/** A smart binder's pages with each card its rule no longer takes in marked "outside the rule". */
-export function markOutside(pages: PageModel[], fits: ((cardId: CardId) => boolean) | undefined): PageModel[] {
+/**
+ * NEO-528 — who makes the cameo on a card a smart binder takes in only as a
+ * cameo (`cameoNames`); undefined for every other card.
+ */
+export type CameoOf = (card: Card) => readonly string[] | undefined;
+
+/**
+ * A smart binder's pages with each card its rule no longer takes in marked
+ * "outside the rule", and (NEO-528) each card it takes in only as a cameo
+ * marked with who is pictured.
+ */
+export function markOutside(
+  pages: PageModel[],
+  fits: ((cardId: CardId) => boolean) | undefined,
+  cameo?: CameoOf,
+): PageModel[] {
   if (!fits) return pages;
   return pages.map((page) => ({
     ...page,
-    pockets: page.pockets.map((pocket) =>
-      pocket.content.kind === "have" && !fits(pocket.content.card.id) ? { ...pocket, outside: true as const } : pocket,
-    ),
+    pockets: page.pockets.map((pocket) => {
+      if (pocket.content.kind !== "have") return pocket;
+      if (!fits(pocket.content.card.id)) return { ...pocket, outside: true as const };
+      const who = cameo?.(pocket.content.card);
+      return who ? { ...pocket, cameo: who } : pocket;
+    }),
   }));
 }
 

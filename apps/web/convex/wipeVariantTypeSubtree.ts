@@ -177,6 +177,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "NEO-358 derived index: a wiped card's rows are deleted with it, in the same transaction",
   },
+  cardSecondaryPlayerLinks: {
+    fields: ["cardChecklistId", "sportId"],
+    handling:
+      "NEO-528 derived index of a card's also-pictured players: a wiped card's rows are deleted with it, in the same transaction; sportId is sport-level",
+  },
   collectionCopies: {
     fields: ["cardId", "variantId", "setId"],
     handling:
@@ -323,6 +328,8 @@ export const WIPED_TABLES = [
   "cardPlayerLinks",
   // NEO-358 — likewise.
   "cardTeamLinks",
+  // NEO-528 — likewise.
+  "cardSecondaryPlayerLinks",
   "entityReviewQueue",
   "checklistCandidates",
   "entityReviewSkips",
@@ -1224,6 +1231,7 @@ export const wipeCardsPage = internalMutation({
     const deletedLinks: string[] = [];
     const deletedPlayerLinks: string[] = [];
     const deletedTeamLinks: string[] = [];
+    const deletedSecondaryLinks: string[] = [];
     const dropCard = async (card: Doc<"cardChecklist">): Promise<void> => {
       // NEO-358 — the one card delete: guard, cross-listings, variations
       // (already gone here: children are dropped first), player and team
@@ -1232,16 +1240,19 @@ export const wipeCardsPage = internalMutation({
       deletedLinks.push(...removed.crossListingIds);
       deletedPlayerLinks.push(...removed.playerLinkIds);
       deletedTeamLinks.push(...removed.teamLinkIds);
+      deletedSecondaryLinks.push(...removed.secondaryLinkIds);
       deleted.add(card._id);
       deletedCards.push(card._id);
-      // 8: the fixed reads and the delete, the want-index read included;
-      // each want swept costs 3 (its delete, its owner's Want List read and
-      // patch); scheduling the continuation costs 1.
+      // 9: the fixed reads and the delete, the want-index read and (NEO-528)
+      // the also-pictured index read included; each want swept costs 3 (its
+      // delete, its owner's Want List read and patch); scheduling the
+      // continuation costs 1.
       ops +=
-        8 +
+        9 +
         removed.crossListingIds.length +
         removed.playerLinkIds.length +
         removed.teamLinkIds.length +
+        removed.secondaryLinkIds.length +
         3 * removed.wantIds.length +
         (removed.wantSweepScheduled ? 1 : 0);
     };
@@ -1303,6 +1314,7 @@ export const wipeCardsPage = internalMutation({
     logDeleted(args.variantTypeId, "cardCrossListings", deletedLinks);
     logDeleted(args.variantTypeId, "cardPlayerLinks", deletedPlayerLinks);
     logDeleted(args.variantTypeId, "cardTeamLinks", deletedTeamLinks);
+    logDeleted(args.variantTypeId, "cardSecondaryPlayerLinks", deletedSecondaryLinks);
     logDeleted(args.variantTypeId, "cardChecklist", deletedCards);
     return {
       cardChecklist: deletedCards.length,

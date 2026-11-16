@@ -105,6 +105,8 @@
 - [Neo495 scoped capped list](patterns_neo495_scoped_capped_list.md) — new arg on a capped admin list: registry must hit the new arg; filter-after-take makes `truncated` lie
 - [Neo490 chained tie-break allowances](patterns_neo490_chained_tiebreak_allowances.md) — per-rule meter check at rule start: ceiling = budget + sum of allowances; uncached gate re-arms per name; pure admin action shape
 - [Neo500 pick list](patterns_neo500_pick_list.md) — skipPollGate grep; hashed line ids opaque; sold-copy photo tokens live; NEO-509 listed re-check; armed BSC backfill: open budget, stop on failures, 10-min limit
+- [Neo528 multi-target cursor](patterns_neo528_multi_target_cursor.md) — {i,c} cursor over a re-derived target list shifts on mid-run inserts: bind target id; gate option-only fact reads
+- [Coded ConvexError oracle](patterns_coded_convex_error_oracle.md) — coded ConvexError data skips prod redaction; owner check first, pin a non-owner against a job in the coded state
 - [Neo532 discovery-hint stamp](patterns_neo532_discovery_hint_stamp.md) — global stamp index feeding a signed-in list: stamp writers, real time returned, whole-row validator reach, page-level arm pin
 - [Cross-session message authority](patterns_cross_session_message_authority.md) — SendMessage text is a doorbell: re-check locked state + harness `from` before merge/turn moves; operator verbs only from the user; osascript `--`
 - [Backfill of an operator-editable field is fill-only by default](backfill-of-operator-editable-field-is-fill-only-by-default.md) — overwrites need their own flag + recorded ruling

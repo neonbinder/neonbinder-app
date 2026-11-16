@@ -5,12 +5,16 @@ import { Textarea } from "../primitives/Textarea";
 import { oneLine } from "./card-titles";
 import { NotesLengthMeter } from "./NotesLengthMeter";
 import { Theme } from "@radix-ui/themes";
-import { useMutation, useQuery } from "convex/react";
+import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import type { Id } from "../../convex/_generated/dataModel";
 import TeamPicker from "./TeamPicker";
 import PlayerPicker from "./PlayerPicker";
+import {
+  ALSO_ON_THIS_CARD_HEADING,
+  ALSO_PICTURED_PICKER_LABELS,
+} from "./player-picker-labels";
 import CardFeaturesEditor, { CardFeatureRow } from "./CardFeaturesEditor";
 import { EXPECTED_FEATURES } from "../../convex/features/expectedFeatures";
 import { useReactiveField } from "../forms/useReactiveField";
@@ -25,6 +29,7 @@ import {
 import { useTitlePreview } from "./useTitlePreview";
 import { LISTING_DESCRIPTION_MAX } from "../../convex/features/listingLimits";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
+import { CheckIcon } from "@heroicons/react/20/solid";
 import NeonButton from "@/components/modules/NeonButton";
 
 const AUTOGRAPHED_FEATURE = EXPECTED_FEATURES.find(
@@ -146,6 +151,18 @@ const PRINT_RUN_MESSAGE =
  * `selectorOptions.BLANK_LISTING_TITLE_REFUSAL`, which `updateCard` throws for
  * any other client: the server is the rule, this saves the round trip.
  */
+/**
+ * NEO-528 — the "Also on this card" field's words. "Cameo" is what a
+ * collector's smart binder calls such a card, so the hint says where these go.
+ */
+export const ALSO_PICTURED_HINT =
+  "Anyone on the card besides its main player: a teammate in the photo, a name on a team leaders card, the star a Profiles card is about. Smart binders can count these as cameos.";
+export const ALREADY_A_PLAYER_MESSAGE =
+  "They're already this card's player. No cameo needed.";
+export const ALSO_PICTURED_SAVED = `Saved ${ALSO_ON_THIS_CARD_HEADING}`;
+export const ALSO_PICTURED_MOVED_TO_PLAYERS = `Saved Players and moved them out of ${ALSO_ON_THIS_CARD_HEADING}`;
+const ALSO_PICTURED_SAVE_FAILED = `Couldn't save ${ALSO_ON_THIS_CARD_HEADING}. Give it another go.`;
+
 const BLANK_TITLE_MESSAGE =
   "A card needs a title. Type one in, or hit Regenerate for a fresh one.";
 
@@ -189,6 +206,14 @@ type CardDetailCard = {
    * canonical name speak for the card.
    */
   playerLinks?: Array<{ playerId: Id<"players">; nameOnCard: string }>;
+  /**
+   * NEO-528 — players PICTURED on the card who are not its subject (a
+   * teammate in the photo, a manager). "Also on this card" here; a smart binder
+   * that opts in counts the card as a cameo. Admin-entered NB data, never
+   * read from a marketplace, never touched by a re-sync. Absent when empty,
+   * and never holds an id that is also in `playerIds`.
+   */
+  secondaryPlayerIds?: Array<Id<"players">>;
   teamOnCardIds?: Array<Id<"teams">>;
   /**
    * NEO-208 — team names an operator typed that no `teams` row exists for yet.
@@ -820,6 +845,58 @@ export default function CardDetailPanel({
     }
   };
 
+  // ----- also pictured (NEO-528) ---------------------------------------
+  //
+  // Its own mutation (`cardSecondaryPlayers.setSecondaryPlayers`, the one
+  // writer of the list and its index), reached through the client at CALL
+  // time: the tests that render this drawer hand-build their `api` mock, and
+  // a `useMutation(api.cardSecondaryPlayers…)` here would read a module those
+  // mocks do not have, at render, in every one of them.
+  const convex = useConvex();
+  const [alsoPending, setAlsoPending] = useState<Array<
+    Id<"players">
+  > | null>(null);
+  const [alsoError, setAlsoError] = useState<string | null>(null);
+  const alsoErrorId = `${uid}-also-pictured-error`;
+  const alsoHintId = `${uid}-also-pictured-hint`;
+  const alsoPicturedIds = alsoPending ?? card.secondaryPlayerIds ?? [];
+
+  /** Write the card's also-pictured list; the server drops the card's own players. */
+  const writeAlsoPictured = async (next: Array<Id<"players">>) =>
+    await convex.mutation(api.cardSecondaryPlayers.setSecondaryPlayers, {
+      cardId: card._id,
+      playerIds: next,
+    });
+
+  const saveAlsoPictured = async (next: Array<Id<"players">>) => {
+    // A card's own player is never also its cameo. Said here, beside the
+    // field, rather than letting the server quietly drop the pick (it would:
+    // `strippedPrimary`), so the chip never appears and then vanishes.
+    const own = new Set<string>(playerIds as string[]);
+    const kept = next.filter((id) => !own.has(id as string));
+    if (kept.length < next.length) {
+      setAlsoError(ALREADY_A_PLAYER_MESSAGE);
+      const current = card.secondaryPlayerIds ?? [];
+      if (
+        kept.length === current.length &&
+        kept.every((id, i) => id === current[i])
+      ) {
+        return;
+      }
+    } else {
+      setAlsoError(null);
+    }
+    setAlsoPending(kept);
+    try {
+      await writeAlsoPictured(kept);
+      announce(ALSO_PICTURED_SAVED);
+    } catch (e) {
+      setAlsoError(userFacingMessage(e, ALSO_PICTURED_SAVE_FAILED));
+    } finally {
+      setAlsoPending(null);
+    }
+  };
+
   const savePlayers = async (next: Array<Id<"players">>) => {
     setPlayersPending(next);
     try {
@@ -827,8 +904,26 @@ export default function CardDetailPanel({
       setPlayersError(null);
     } catch (e) {
       setPlayersError(e instanceof Error ? e.message : String(e));
-    } finally {
       setPlayersPending(null);
+      return;
+    }
+    setPlayersPending(null);
+    // NEO-528 — a player just added under Players who was listed as also
+    // pictured is the card's subject now, so he leaves that list (the server
+    // strips the card's own players only when THAT list is written).
+    const own = new Set<string>(next as string[]);
+    const cameos = card.secondaryPlayerIds ?? [];
+    const kept = cameos.filter((id) => !own.has(id as string));
+    if (kept.length === cameos.length) return;
+    setAlsoPending(kept);
+    try {
+      await writeAlsoPictured(kept);
+      setAlsoError(null);
+      announce(ALSO_PICTURED_MOVED_TO_PLAYERS);
+    } catch (e) {
+      setAlsoError(userFacingMessage(e, ALSO_PICTURED_SAVE_FAILED));
+    } finally {
+      setAlsoPending(null);
     }
   };
 
@@ -925,25 +1020,6 @@ export default function CardDetailPanel({
         aria-hidden="true"
         onClick={onClose}
       />
-      {/* The one save confirmation for the whole drawer.
-
-          NEO-47's reasoning, inherited from SetAttributesPanel: FIXED in the
-          viewport rather than in-flow, because an edit made while scrolled
-          down to the print run would otherwise render its confirmation above
-          the fold, invisible to the operator who just made it.
-
-          NEO-341: `pointer-events-none`. It only reports; on a phone the
-          drawer is full width and this toast lands on the Card name field,
-          so for its few seconds it swallowed the tap meant for the field. */}
-      {toast && (
-        <div
-          className="pointer-events-none fixed top-20 left-1/2 -translate-x-1/2 z-[60] px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg"
-          role="status"
-          aria-live="polite"
-        >
-          {toast}
-        </div>
-      )}
       {/*
         NEO-272 — THE WIDTH IS MEASURED OFF AN 80-CHARACTER TITLE, not picked
         off a breakpoint. Same derivation, same field and the same number as
@@ -1713,6 +1789,34 @@ export default function CardDetailPanel({
             />
           </div>
 
+          {/* NEO-528 — Also on this card: the second PlayerPicker in this drawer,
+              so every name it renders is reworded apart from the one above
+              (`ALSO_PICTURED_PICKER_LABELS`). The hint is the trigger's
+              description, so a keyboard user hears what the field is for on
+              the control they land on. */}
+          <div>
+            <label className="block text-[10px] uppercase tracking-wide text-ink-3 mb-1">
+              {ALSO_ON_THIS_CARD_HEADING}
+            </label>
+            <PlayerPicker
+              value={alsoPicturedIds}
+              onChange={(next) => void saveAlsoPictured(next)}
+              sportId={ancestorSportId}
+              labels={ALSO_PICTURED_PICKER_LABELS}
+              ariaDescribedBy={
+                alsoError ? `${alsoHintId} ${alsoErrorId}` : alsoHintId
+              }
+            />
+            <p id={alsoHintId} className="mt-1 text-[11px] text-ink-3">
+              {ALSO_PICTURED_HINT}
+            </p>
+            <FieldFeedback
+              busy={alsoPending !== null}
+              error={alsoError}
+              errorId={alsoErrorId}
+            />
+          </div>
+
           {/* Inherited from set (read-only) — where this card was printed.
               Cross-release membership is additive and lives in "Also appears
               in" below; these levels are never overridden per-card. */}
@@ -1808,9 +1912,32 @@ export default function CardDetailPanel({
             open — the NEO-189 stranding finding. "Done" is that element, and
             it does exactly what Escape and the × do. */}
         <div className="px-4 py-3 border-t border-rule-strong flex items-center justify-between gap-3">
-          <span className="text-[10px] text-ink-3">
-            Changes save as you leave each field.
-          </span>
+          {/* The one save confirmation for the whole drawer, in place of the
+              rule it confirms while it shows.
+
+              NEO-47 wanted it where an edit made far down the drawer can
+              still see it, which once meant fixed to the viewport, centred
+              at the top. NEO-528's audit: there it sat on the drawer's own
+              Card name field (on a phone, and on a desktop window narrower
+              than the drawer's 45rem). The footer has the same property
+              without the cover: it never scrolls away (the body scrolls
+              between header and footer), and it is where the operator was
+              told that leaving a field saves it. Mounted with its text, as
+              the fixed toast was. */}
+          {toast ? (
+            <span
+              className="min-w-0 inline-flex items-center gap-1.5 px-2 py-1 bg-raised-deep border border-neon-green-text/60 rounded text-xs font-medium text-neon-green-text"
+              role="status"
+              aria-live="polite"
+            >
+              <CheckIcon aria-hidden="true" className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 break-words">{toast}</span>
+            </span>
+          ) : (
+            <span className="text-[10px] text-ink-3">
+              Changes save as you leave each field.
+            </span>
+          )}
           <NeonButton
             type="button"
             size="1"

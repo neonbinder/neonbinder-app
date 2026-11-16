@@ -37,6 +37,57 @@ function playerIdWriteLines(src: string): string[] {
 }
 
 describe("NEO-254: no writer sets playerIds without playerLinks", () => {
+  test("NEO-528: the \"Player on every card\" add writes the pair in one literal, same order", () => {
+    const src = readFileSync(join(CONVEX_DIR, "cardPlayersBulk.ts"), "utf8");
+    const writes = playerIdWriteLines(src);
+    // One write: the patch in `putPlayerOnCard`.
+    expect(writes).toHaveLength(1);
+    const lines = src.split("\n");
+    const lineNo = Number(writes[0].split(":")[0]);
+    // The very next line, inside the same patch literal.
+    expect(lines[lineNo - 1].trim()).toBe("playerIds: [player._id],");
+    expect(lines[lineNo].trim()).toBe("playerLinks,");
+    // And `playerLinks` is the one-element list naming the same player.
+    expect(src).toContain("const playerLinks = [{ playerId: player._id, nameOnCard: player.name }];");
+  });
+
+  test("NEO-528 round 3: a card born with the default player gets the pair from one answer, same player, same order", () => {
+    // The one place the default player becomes a card's players:
+    // `cardRowCreate.bornCardPlayers`, in one literal.
+    const create = readFileSync(join(CONVEX_DIR, "cardRowCreate.ts"), "utf8");
+    const helper = create.slice(
+      create.indexOf("export function bornCardPlayers"),
+      create.indexOf("export type BuiltCardRowFields"),
+    );
+    const writes = playerIdWriteLines(helper);
+    expect(writes.map((w) => w.split(": ").slice(1).join(": "))).toEqual(["playerIds: [_id],"]);
+    const lines = helper.split("\n").map((l) => l.trim());
+    const at = lines.indexOf("playerIds: [_id],");
+    expect(at).toBeGreaterThan(-1);
+    expect(lines[at + 1]).toBe("playerLinks: [{ playerId: _id, nameOnCard: name }],");
+    expect(lines[at + 2]).toBe("playerNames: [name],");
+    // Otherwise the card's own pair passes through untouched, both or neither.
+    expect(helper).toContain("...(facts.playerIds !== undefined ? { playerIds: facts.playerIds } : {}),");
+    expect(helper).toContain("...(facts.playerLinks !== undefined ? { playerLinks: facts.playerLinks } : {}),");
+
+    // Each creation path hands the helper's pair to the insert together.
+    const commit = SRC.slice(SRC.indexOf("export const commitCardChecklistChunk"));
+    const commitLines = commit.split("\n").map((l) => l.trim());
+    const commitAt = commitLines.indexOf("playerIds: born.playerIds,");
+    expect(commitAt).toBeGreaterThan(-1);
+    expect(commitLines[commitAt + 1]).toBe("playerLinks: born.playerLinks,");
+    const parallel = readFileSync(join(CONVEX_DIR, "parallelChecklistBuild.ts"), "utf8").split("\n").map((l) => l.trim());
+    const parallelAt = parallel.indexOf("playerIds: born.playerIds,");
+    expect(parallelAt).toBeGreaterThan(-1);
+    expect(parallel[parallelAt + 1]).toBe("playerLinks: born.playerLinks,");
+    expect(playerIdWriteLines(parallel.join("\n"))).toHaveLength(1);
+    // `addCustomCard` asks for the default by id and writes it through the
+    // shared helper, which derives the pair in one loop.
+    const add = SRC.slice(SRC.indexOf("export const addCustomCard"), SRC.indexOf("export const updateCard"));
+    expect(add).toMatch(/bornDefaults\.player\.kind === "fill" \? bornDefaults\.playerIds \?\? \[\] : args\.playerIds \?\? \[\]/);
+    expect(add).toContain("requestedPlayerIds,");
+  });
+
   test("every cardChecklist playerIds write has a playerLinks write beside it", () => {
     const writes = playerIdWriteLines(SRC);
     // The three real writers: the commit chunk's built object, the chunk's

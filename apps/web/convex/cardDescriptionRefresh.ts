@@ -44,8 +44,8 @@ import {
 } from "./features/generateListing";
 import {
   listingInputsForStoredCard,
-  newStoredCardLookupCache,
-  type StoredCardLookupCache,
+  newStoredCardReadCache,
+  type StoredCardReadCache,
   type StoredCardReader,
 } from "./storedCardTitle";
 
@@ -93,16 +93,37 @@ function afterPatch(before: CardDoc, patch: Partial<CardDoc>): CardDoc {
   return { ...before, ...patch };
 }
 
+/**
+ * The builder's description for `card` as `ctx` reads it, with its cameo line
+ * (NEO-528: the people also pictured on it, in stored order),
+ * and the same text without that line: a card described before NEO-528 taught
+ * the generator about cameos carries that one (`descriptionIsGenerated`'s
+ * rule), and it still counts as the builder's. A cameo id that no longer
+ * resolves makes the card unresolved, like a dangling player or team.
+ */
 async function descriptionFor(
   ctx: { db: StoredCardReader },
   card: CardDoc,
-  cache: StoredCardLookupCache,
-): Promise<{ description: string; resolved: boolean }> {
+  cache: StoredCardReadCache,
+): Promise<{ description: string; withoutCameos: string; resolved: boolean }> {
   const { inputs, unresolved } = await listingInputsForStoredCard(ctx, card, cache);
   return {
     description: generateListingDescription(inputs),
-    resolved: unresolved.players === 0 && unresolved.teams === 0 && !unresolved.parent,
+    withoutCameos: generateListingDescription(inputs, { cameoNames: [] }),
+    resolved:
+      unresolved.players === 0 &&
+      unresolved.teams === 0 &&
+      !unresolved.parent &&
+      unresolved.cameos === 0,
   };
+}
+
+/** Is `stored` the builder's text in `was` (with or without the cameo line)? */
+function wasBuilders(
+  stored: string,
+  was: { description: string; withoutCameos: string },
+): boolean {
+  return stored === was.description || stored === was.withoutCameos;
 }
 
 /**
@@ -114,7 +135,7 @@ export async function refreshedListingDescription(
   ctx: { db: QueryCtx["db"] },
   before: CardDoc,
   patch: Partial<CardDoc>,
-  cache: StoredCardLookupCache = newStoredCardLookupCache(),
+  cache: StoredCardReadCache = newStoredCardReadCache(),
 ): Promise<string | undefined> {
   if (patch.listingDescription !== undefined) return undefined;
   const stored = before.listingDescription?.trim();
@@ -122,7 +143,7 @@ export async function refreshedListingDescription(
   if (!patchTouchesDescriptionFacts(before, patch)) return undefined;
 
   const was = await descriptionFor(ctx, before, cache);
-  if (was.description !== stored) return undefined;
+  if (!wasBuilders(stored, was)) return undefined;
   const next = await descriptionFor(ctx, afterPatch(before, patch), cache);
   if (!next.resolved || next.description === stored) return undefined;
   return next.description;
@@ -140,7 +161,7 @@ export async function regeneratedDescription(
 ): Promise<string | undefined> {
   const stored = card.listingDescription?.trim() ?? "";
   if (stored && !readsAsGeneratedDescription(stored)) return undefined;
-  const next = await descriptionFor(ctx, card, newStoredCardLookupCache());
+  const next = await descriptionFor(ctx, card, newStoredCardReadCache());
   if (!next.resolved || next.description === stored) return undefined;
   return next.description;
 }
@@ -174,12 +195,12 @@ function overlaidReader(db: StoredCardReader, overlay: DescriptionOverlay): {
 
 /** The two lookup caches of one fan-out page: the old reads and the new. */
 export type RenameLookupCaches = {
-  before: StoredCardLookupCache;
-  after: StoredCardLookupCache;
+  before: StoredCardReadCache;
+  after: StoredCardReadCache;
 };
 
 export function newRenameLookupCaches(): RenameLookupCaches {
-  return { before: newStoredCardLookupCache(), after: newStoredCardLookupCache() };
+  return { before: newStoredCardReadCache(), after: newStoredCardReadCache() };
 }
 
 /**
@@ -203,7 +224,7 @@ export async function renamedListingDescription(
   const stored = card.listingDescription?.trim();
   if (!stored) return undefined;
   const was = await descriptionFor(overlaidReader(ctx.db, overlay), card, caches.before);
-  if (was.description !== stored) return undefined;
+  if (!wasBuilders(stored, was)) return undefined;
   const next = await descriptionFor(ctx, card, caches.after);
   if (!next.resolved || next.description === stored) return undefined;
   return next.description;

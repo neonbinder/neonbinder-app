@@ -17,19 +17,33 @@
  * (`MAX_CARD_PLAYERS` / `MAX_CARD_TEAMS`, what the write paths enforce); a
  * dangling id is skipped rather than failing; a hand-added card's still
  * pending names are the fallback, as `addCustomCard` uses them.
+ *
+ * NEO-528 — a caller that asks about many cards (a bulk page, a parallel
+ * build page) passes one `StoredCardReadCache`, so the ancestor chain is
+ * walked once per checklist and each player or team is read once per page,
+ * not once per card. A card's cameos are read here too (Jason, at the
+ * NEO-528 + NEO-535 merge): the title names them while it has room, the
+ * first meaningful thing it drops, and the description states them.
  */
 
 import type { QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   assessListingTitle,
+  generateListingDescription,
   type ListingCardInputs,
   type ListingTitleAssessment,
 } from "./features/generateListing";
 import { listingInputsForCard } from "./features/listingInputs";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { teamFullName } from "../lib/teams/team-name";
-import { titleChainFacts, type TitleChainFacts } from "./listingShortName";
+// From listingShortName.ts, not selectorOptions.ts: the cameo writer
+// (cardSecondaryPlayers.ts) imports this module, players.ts imports the
+// writer, and a static path back into selectorOptions.ts would close an
+// import cycle that leaves its validators undefined at load. (NEO-535 had
+// moved it here for the same reason; NEO-528's home in listingShortName.ts
+// is the one kept.)
+import { findAncestorLabels } from "./listingShortName";
 
 export type StoredCardInputs = ListingCardInputs & {
   playerNames: string[];
@@ -40,7 +54,7 @@ export type StoredCardTitle = ListingTitleAssessment & {
   inputs: StoredCardInputs;
 };
 
-type AncestorLabels = Awaited<ReturnType<typeof findAncestorLabels>>;
+type ChainLabels = Awaited<ReturnType<typeof findAncestorLabels>>;
 
 /**
  * NEO-535 — all a stored card's inputs are read through: `get` by id, nothing
@@ -48,38 +62,107 @@ type AncestorLabels = Awaited<ReturnType<typeof findAncestorLabels>>;
  * shows some rows as they were (`cardDescriptionRefresh`'s rename overlay).
  */
 export type StoredCardReader = Pick<QueryCtx["db"], "get">;
+type ReadCtx = { db: StoredCardReader };
 
 /**
- * Memoised reads for `listingInputsForStoredCard`, shared across the cards of
- * one transaction (one backfill page). Keyed by id; a `null` entry is a
- * dangling id, remembered so it is not read twice either. Never shared across
- * transactions: a later page must see later data.
+ * Reads one page of title or description work shares (NEO-528, NEO-535): a
+ * bulk page, a parallel build page, one backfill page. Keyed by id; `null`
+ * is "read, and gone", so a dangling id is not read twice either. Never
+ * shared across transactions: a later page must see later data.
  */
-export type StoredCardLookupCache = {
-  chains: Map<Id<"selectorOptions">, { found: boolean; labels: AncestorLabels }>;
-  playerNames: Map<Id<"players">, string | null>;
-  teamNames: Map<Id<"teams">, string | null>;
+export type StoredCardReadCache = {
+  /**
+   * `findAncestorLabels` of a card's checklist row, by that row's id, and
+   * whether the row itself was found (NEO-535: a gone row reads no set,
+   * sport or chain facts, and `listingInputsForStoredCard` says so).
+   */
+  chain: Map<string, { found: boolean; labels: ChainLabels }>;
+  /** A player's NB name, by id. */
+  players: Map<string, string | null>;
+  /** A team's full name (`teamFullName`), by id. */
+  teams: Map<string, string | null>;
 };
 
-export function newStoredCardLookupCache(): StoredCardLookupCache {
-  return { chains: new Map(), playerNames: new Map(), teamNames: new Map() };
+export function newStoredCardReadCache(): StoredCardReadCache {
+  return { chain: new Map(), players: new Map(), teams: new Map() };
+}
+
+/** A player's NB name, or null for an id that no longer resolves. */
+export async function playerNameFor(
+  ctx: ReadCtx,
+  id: Id<"players">,
+  cache?: StoredCardReadCache,
+): Promise<string | null> {
+  const key = id as string;
+  if (cache?.players.has(key)) return cache.players.get(key) ?? null;
+  const name = (await ctx.db.get(id))?.name ?? null;
+  cache?.players.set(key, name);
+  return name;
+}
+
+async function teamNameFor(
+  ctx: ReadCtx,
+  id: Id<"teams">,
+  cache?: StoredCardReadCache,
+): Promise<string | null> {
+  const key = id as string;
+  if (cache?.teams.has(key)) return cache.teams.get(key) ?? null;
+  const team = await ctx.db.get(id);
+  // NEO-236: full name, matching what the commit path stores on the card.
+  const name = team ? teamFullName(team) : null;
+  cache?.teams.set(key, name);
+  return name;
+}
+
+async function chainLabelsFor(
+  ctx: ReadCtx,
+  selectorOptionId: Id<"selectorOptions">,
+  cache?: StoredCardReadCache,
+): Promise<{ found: boolean; labels: ChainLabels }> {
+  const key = selectorOptionId as string;
+  const hit = cache?.chain.get(key);
+  if (hit) return hit;
+  const parentNode = await ctx.db.get(selectorOptionId);
+  const chain = {
+    found: parentNode !== null,
+    labels: await findAncestorLabels(ctx, parentNode),
+  };
+  cache?.chain.set(key, chain);
+  return chain;
+}
+
+/**
+ * NEO-528 — what the generator WOULD write as a stored card's description,
+ * given the names of the people also pictured on it (in stored order).
+ * Compared against the stored `listingDescription` to tell a generated one
+ * (refreshed when the card changes) from one a person typed (kept).
+ */
+export async function descriptionForStoredCard(
+  ctx: ReadCtx,
+  card: Doc<"cardChecklist">,
+  cameoNames: ReadonlyArray<string>,
+  cache?: StoredCardReadCache,
+): Promise<string> {
+  const { inputs } = await listingInputsForStoredCard(ctx, card, cache);
+  return generateListingDescription(inputs, { cameoNames });
 }
 
 /**
  * The listing inputs a STORED card resolves to today, and what failed to
- * resolve: `unresolved.players` / `unresolved.teams` count dangling ids (the
- * pending-name fallback may still have filled the names), `unresolved.parent`
+ * resolve: `unresolved.players` / `unresolved.teams` / `unresolved.cameos`
+ * count dangling ids (the pending-name fallback may still have filled the
+ * player and team names), `unresolved.parent`
  * says the card's own row is gone, so no set, sport or chain facts were read.
  * A caller that writes from these inputs decides what an unresolved card
  * means for it; the title preview ignores it, as it always has.
  */
 export async function listingInputsForStoredCard(
-  ctx: { db: StoredCardReader },
+  ctx: ReadCtx,
   card: Doc<"cardChecklist">,
-  cache: StoredCardLookupCache = newStoredCardLookupCache(),
+  cache: StoredCardReadCache = newStoredCardReadCache(),
 ): Promise<{
   inputs: StoredCardInputs;
-  unresolved: { players: number; teams: number; parent: boolean };
+  unresolved: { players: number; teams: number; cameos: number; parent: boolean };
 }> {
   // Deduped and BOUNDED before any read, exactly as `teamOnCardIds` is
   // below. NEO-101 originally bounded this with a LOCAL constant of its own
@@ -99,11 +182,7 @@ export async function listingInputsForStoredCard(
   const resolvedPlayerNames: string[] = [];
   let danglingPlayers = 0;
   for (const playerId of previewPlayerIds) {
-    if (!cache.playerNames.has(playerId)) {
-      const player = await ctx.db.get(playerId);
-      cache.playerNames.set(playerId, player ? player.name : null);
-    }
-    const name = cache.playerNames.get(playerId) ?? null;
+    const name = await playerNameFor(ctx, playerId, cache);
     // A dangling id is a data problem, not a reason to fail a preview —
     // skip it and let the chips show what actually resolved.
     if (name !== null) resolvedPlayerNames.push(name);
@@ -127,12 +206,7 @@ export async function listingInputsForStoredCard(
   const resolvedTeamNames: string[] = [];
   let danglingTeams = 0;
   for (const teamId of previewTeamIds) {
-    if (!cache.teamNames.has(teamId)) {
-      const team = await ctx.db.get(teamId);
-      // NEO-236: full name, matching what the commit path stores on the card.
-      cache.teamNames.set(teamId, team ? teamFullName(team) : null);
-    }
-    const name = cache.teamNames.get(teamId) ?? null;
+    const name = await teamNameFor(ctx, teamId, cache);
     if (name !== null) resolvedTeamNames.push(name);
     else danglingTeams += 1;
   }
@@ -144,16 +218,20 @@ export async function listingInputsForStoredCard(
       ? resolvedTeamNames
       : (card.pendingTeamNames ?? []).slice(0, MAX_CARD_TEAMS);
 
-  const features: Record<string, string> = card.features ?? {};
-  let chain = cache.chains.get(card.selectorOptionId);
-  if (!chain) {
-    const parentNode = await ctx.db.get(card.selectorOptionId);
-    chain = {
-      found: parentNode !== null,
-      labels: await findAncestorLabels(ctx, parentNode),
-    };
-    cache.chains.set(card.selectorOptionId, chain);
+  // NEO-528 — the people also pictured, in stored order, deduped and bounded
+  // like the players (the writer caps the list at `MAX_CARD_PLAYERS`). The
+  // title names them while it has room; the description on its own line.
+  const cameoIds = [...new Set(card.secondaryPlayerIds ?? [])].slice(0, MAX_CARD_PLAYERS);
+  const cameoNames: string[] = [];
+  let danglingCameos = 0;
+  for (const id of cameoIds) {
+    const name = await playerNameFor(ctx, id, cache);
+    if (name !== null) cameoNames.push(name);
+    else danglingCameos += 1;
   }
+
+  const features: Record<string, string> = card.features ?? {};
+  const chain = await chainLabelsFor(ctx, card.selectorOptionId, cache);
   const {
     setName: setNameValue,
     sport: sportValue,
@@ -182,7 +260,7 @@ export async function listingInputsForStoredCard(
       manufacturerBrandUnknown,
       ...chainFacts,
     },
-    { playerNames, teamNames },
+    { playerNames, teamNames, cameoNames },
     features,
   );
 
@@ -191,101 +269,17 @@ export async function listingInputsForStoredCard(
     unresolved: {
       players: danglingPlayers,
       teams: danglingTeams,
+      cameos: danglingCameos,
       parent: !chain.found,
     },
   };
 }
 
 export async function titleForStoredCard(
-  ctx: { db: StoredCardReader },
+  ctx: ReadCtx,
   card: Doc<"cardChecklist">,
-  cache?: StoredCardLookupCache,
+  cache?: StoredCardReadCache,
 ): Promise<StoredCardTitle> {
   const { inputs } = await listingInputsForStoredCard(ctx, card, cache);
   return { ...assessListingTitle(inputs), inputs };
-}
-
-/**
- * NEO-535: moved here from selectorOptions.ts, unchanged, so this module (and
- * the description fan-out players.ts and teams.ts import) no longer imports
- * selectorOptions.ts at load. selectorOptions.ts imports it from here.
- *
- * Walk a selectorOptions node's parent chain ONCE, collecting everything
- * listing generation needs from above the card: the setName display value
- * ("Chrome"), the sport display value ("Baseball"), and — NEO-272 — whether NB
- * has identified the brand of the set at all (a ROLE off
- * `metadata.isBrandUnknown` on the manufacturer in between, never its name).
- *
- * NEO-101 widened this from `findSetNameValue`, which returned early at the
- * setName level. The sport node sits ABOVE setName, so a second helper would
- * have meant a second walk over the same chain for every card previewed or
- * hand-added — the walk is the cost here, not the comparison, so both values
- * come out of one pass.
- *
- * Still deliberately narrow rather than a general ancestor-chain utility:
- * every other consumer of the chain already had its own reason to walk it
- * (commitCardChecklist resolves both in the prelude, once per commit, and
- * hands them to the chunks). Depth-bounded like
- * `findSportForSelectorOption`, so a cyclic or corrupted `parentId` cannot
- * spin a query.
- */
-export async function findAncestorLabels(
-  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
-  node: any,
-): Promise<
-  {
-    setName?: string;
-    sport?: string;
-    manufacturerBrandUnknown?: boolean;
-  } & TitleChainFacts
-> {
-  const labels: {
-    setName?: string;
-    sport?: string;
-    manufacturerBrandUnknown?: boolean;
-  } = {};
-  if (!node) return labels;
-  // NEO-335 — the rows from `node` up to and including the setName row, LEAF
-  // FIRST, for `titleChainFacts` (the insert role, a parallel leaf, the
-  // nearest short name). Collected on the way past: this walk already passes
-  // every one of them before it can stop.
-  const titleChain: any[] = [];
-  let current = node;
-  let depth = 0;
-  while (current && depth < 16) {
-    if (labels.setName === undefined) titleChain.push(current);
-    if (current.level === "setName" && labels.setName === undefined) {
-      labels.setName = current.value;
-    }
-    // NEO-272 — the manufacturer ROLE, not its name. Picked up on the way past
-    // rather than by a walk of its own: the chain is
-    // sport › year › manufacturer › setName › …, so walking UP from a card's
-    // parent reaches the manufacturer AFTER setName and BEFORE sport, and the
-    // break below waits for sport. Every chain that has a manufacturer level
-    // therefore passes through it before this loop can stop.
-    if (
-      current.level === "manufacturer" &&
-      labels.manufacturerBrandUnknown === undefined
-    ) {
-      labels.manufacturerBrandUnknown =
-        current.metadata?.isBrandUnknown === true;
-    }
-    if (current.level === "sport" && labels.sport === undefined) {
-      labels.sport = current.value;
-    }
-    // Deliberately NOT extended with `manufacturerBrandUnknown`. A chain with
-    // no manufacturer level at all — a setName hung straight off a sport, which
-    // is what most fixtures and some hand-built trees look like — would then
-    // never satisfy the condition and would walk to the depth cap, paying extra
-    // reads on every card previewed or hand-added to buy nothing. The value is
-    // already collected above by the time sport is reached, so stopping here
-    // loses nothing; leaving it absent is the same "no manufacturer role" answer
-    // as `false`, which is exactly how the generator reads it.
-    if (labels.setName !== undefined && labels.sport !== undefined) break;
-    const parentId: Id<"selectorOptions"> | undefined = current.parentId;
-    if (!parentId) break;
-    current = await ctx.db.get(parentId);
-    depth += 1;
-  }
-  return { ...labels, ...titleChainFacts(titleChain) };
 }

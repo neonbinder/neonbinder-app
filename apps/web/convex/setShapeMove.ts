@@ -57,7 +57,7 @@ import { createCardCountLedger } from "./cardCounts";
 import { findSetForSelectorOption } from "./lib/selectorAncestry";
 import { forgetBuildingCards, HomeSides } from "./collection";
 import { refreshedListingDescription } from "./cardDescriptionRefresh";
-import { newStoredCardLookupCache } from "./storedCardTitle";
+import { newStoredCardReadCache } from "./storedCardTitle";
 // NEO-370 — a moved card lists under another marketplace set: its box
 // copies' owners re-sync both variants.
 import { enqueueMovedListingCards, listsAnywhere, type MovedListingCard } from "./listingOutbox";
@@ -814,7 +814,7 @@ export const refreshMovedCardDescriptions = internalMutation({
   handler: async (ctx, args) => {
     const start = Number.isInteger(args.index) && args.index >= 0 ? args.index : 0;
     const end = Math.min(start + MOVED_DESCRIPTION_PAGE, args.moved.length);
-    const cache = newStoredCardLookupCache();
+    const cache = newStoredCardReadCache();
     let rewritten = 0;
     for (let i = start; i < end; i++) {
       const { cardId, fromId } = args.moved[i];

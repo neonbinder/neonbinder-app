@@ -8,7 +8,9 @@
  * renamed:
  *
  *  - a player (`players.savePlayerFields`): every card carrying the player,
- *    through `cardPlayerLinks`;
+ *    through `cardPlayerLinks`, then (NEO-528) every card picturing them as a
+ *    cameo, through `cardSecondaryPlayerLinks`: the description names its
+ *    cameos on their own line;
  *  - a team, its name or its location (`teams.saveTeamFields`): every card
  *    printed with the team, through `cardTeamLinks`;
  *  - a set, insert or parallel row (`renameSelectorOption`, and the
@@ -54,6 +56,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { cardPlayerLinkPage } from "./cardPlayerLinks";
 import { cardTeamLinkPage } from "./cardTeamLinks";
+import { cardSecondaryPlayerLinkPageAfter } from "./cardSecondaryPlayers";
 import {
   newRenameLookupCaches,
   renamedListingDescription,
@@ -129,6 +132,17 @@ const walkStateValidator = v.union(
     after: v.union(
       v.null(),
       v.object({ sportId: v.optional(v.id("selectorOptions")), creationTime: v.number() }),
+    ),
+  }),
+  v.object({
+    /**
+     * NEO-528 — a player rename's second leg, after its `links`: the cards
+     * that picture the player as a cameo. Same cursor shape.
+     */
+    kind: v.literal("cameoLinks"),
+    after: v.union(
+      v.null(),
+      v.object({ sportId: v.id("selectorOptions"), creationTime: v.number() }),
     ),
   }),
   v.object({
@@ -220,6 +234,29 @@ async function linkPage(
       rows.length < RENAME_DESCRIPTION_PAGE
         ? null
         : { kind: "links", after: { creationTime: last._creationTime } },
+  };
+}
+
+/**
+ * NEO-528 — one page of a renamed player's cameo index rows, through the cameo
+ * module's reader: the card ids, and the cursor after them, `null` when done.
+ */
+async function cameoLinkPage(
+  ctx: MutationCtx,
+  playerId: Id<"players">,
+  after: Extract<WalkState, { kind: "cameoLinks" }>["after"],
+): Promise<{
+  cardIds: Array<Id<"cardChecklist">>;
+  next: Extract<WalkState, { kind: "cameoLinks" }> | null;
+}> {
+  const rows = await cardSecondaryPlayerLinkPageAfter(ctx, playerId, after, RENAME_DESCRIPTION_PAGE);
+  const last = rows[rows.length - 1];
+  return {
+    cardIds: rows.map((link) => link.cardChecklistId),
+    next:
+      rows.length < RENAME_DESCRIPTION_PAGE
+        ? null
+        : { kind: "cameoLinks", after: { sportId: last.sportId, creationTime: last._creationTime } },
   };
 }
 
@@ -385,10 +422,27 @@ async function runPage(
 ): Promise<WalkState | null> {
   if (state.kind === "subtree") return await subtreePage(ctx, state, visit);
   if (target.kind === "rows") return null;
+  if (state.kind === "cameoLinks") {
+    if (target.kind !== "player") return null;
+    const page = await cameoLinkPage(ctx, target.playerId, state.after);
+    for (const cardId of page.cardIds) {
+      const card = await ctx.db.get(cardId);
+      if (card) await visit(card);
+    }
+    return page.next;
+  }
   const page = await linkPage(ctx, target, state.after);
   for (const cardId of page.cardIds) {
     const card = await ctx.db.get(cardId);
     if (card) await visit(card);
+  }
+  // NEO-528 — a player's own cards done, the cards picturing them as a cameo
+  // come next (a card never holds one player as both, so none is read twice).
+  // Started in this same run, so an ordinary rename still schedules nothing:
+  // the player page came back short, so the two together stay within two
+  // pages of cards.
+  if (page.next === null && target.kind === "player") {
+    return await runPage(ctx, target, { kind: "cameoLinks", after: null }, visit);
   }
   return page.next;
 }
