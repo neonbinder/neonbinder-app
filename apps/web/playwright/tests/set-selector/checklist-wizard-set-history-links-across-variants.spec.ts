@@ -77,7 +77,7 @@ import {
 } from "../../support/set-builder";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
 import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
 import {
   answerPlayerAsNew,
   advanceToSave,
@@ -153,7 +153,8 @@ const CHECKLIST_OF: Readonly<Record<string, ChecklistName | undefined>> = {
  * is the fake (NEO-552) and the wait is the marketplace rule: 7 s plus the seconds
  * "Waiting on BuySportsCards" is up (measured 6.3 s at most on the #487 merge-group run (GUIDE)). The wizard
  * opening afterwards is our own backend at the 7 s default. The fetch itself (the bulk
- * checklist, one BSC round trip) is waited on with `expectAfterMarketplace` (NEO-487).
+ * checklist, one BSC round trip) is waited on inside `confirmChecklistMatchCards` with
+ * `expectAfterMarketplace` (NEO-487).
  */
 const LIVE_BSC_FETCH = 60_000;
 
@@ -327,27 +328,18 @@ async function fetchInsertToWizard(
   // The empty-checklist assert makes the saved cards below THIS fetch's (fresh-only guard).
   await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
   const checklist = CHECKLIST_OF[name];
-  const published = checklist === undefined ? undefined : await usePublishersChecklist(page, checklist);
+  // Every insert this spec fetches has its captured checklist (NEO-489, checklists first), so
+  // no fetch here takes the no-checklist path; a name without one is a spec error.
+  if (checklist === undefined) throw new Error(`${name} has no captured checklist in CHECKLIST_OF`);
+  const published = await usePublishersChecklist(page, checklist);
   await syncChecklistButton(page).click();
 
-  // A SportLots set paired with the insert opens "Match Cards"; one source takes
-  // the one-marketplace path. NEO-287: paused, the dialog is the bug.
-  const matchCards = page.getByText(/Match Cards/).first();
-  const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-  await expectAfterMarketplace(page, matchCards.or(kept).or(wizard).first(), {
-    platform: "BuySportsCards",
-    what: `${name}'s fetch landing`,
-  });
-  if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
-  if (await matchCards.isVisible()) {
-    const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-    await expect(confirm).toBeVisible({ timeout: LIVE_BSC_FETCH });
-    await confirm.click();
-    await expect(page.getByText(/Match Cards/)).toBeHidden();
-  }
+  // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
+  // with SportLots paused or live. The helper waits on it (7 s of ours plus BSC's), proves the
+  // teams line while it is open, keeps any card the file leaves out, and confirms.
+  await confirmChecklistMatchCards(page, { facts: published, what: `${name}'s fetch` });
   // Our own backend after the live fetch: the 7 s default.
   await expect(wizard, `${name}'s sync opens the tidy-up wizard`).toBeVisible();
-  if (published !== undefined) await expectTeamsFromChecklist(page, published);
 }
 
 test(

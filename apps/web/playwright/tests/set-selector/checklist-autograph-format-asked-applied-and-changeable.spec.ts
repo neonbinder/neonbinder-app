@@ -60,7 +60,7 @@ import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";
 import { expectStepWithSportLots } from "../../support/marketplace-wait";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
+import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
 import {
   COLD_SYNC,
   columnHeading,
@@ -169,27 +169,18 @@ test(
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanDraftNightsAutographs2025);
     await syncChecklistButton(page).click();
 
-    // A SportLots set paired with the insert opens "Match Cards"; one source
-    // takes the one-marketplace path ("Kept all N cards from BSC"). A live round trip.
-    const matchCards = page.getByText(/Match Cards/).first();
-    const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-    await expectStepWithSportLots(page, matchCards.or(kept).or(wizard).first(), env, {
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards
+    // opens with SportLots paused or live. The dialog OPENING is not the fetch FINISHING:
+    // Confirm reads "Loading…" and is inert until it resolves. Live SportLots keeps the old
+    // ceiling; paused, BSC alone under the fetch's wait line (`expectStepWithSportLots`).
+    const matchCards = matchCardsDialog(page);
+    await expectStepWithSportLots(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), env, {
       liveMs: CHECKLIST_FETCH,
       what: "the insert checklist fetch",
     });
-    // NEO-287: paused, nothing was asked of SportLots, so the pairing dialog is the bug.
-    if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
-    if (await matchCards.isVisible()) {
-      // The dialog OPENING is not the fetch FINISHING: Confirm reads "Loading…" and is inert until it resolves.
-      const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expect(confirm).toBeVisible({ timeout: CHECKLIST_FETCH });
-      await expectAccessible(page, {
-        within: page.getByRole("dialog", { name: /^Match Cards/ }),
-        label: "Match Cards dialog (Bowman Draft Nights Autographs)",
-      });
-      await confirm.click();
-      await expect(page.getByText(/Match Cards/)).toBeHidden();
-    }
+    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog (Bowman Draft Nights Autographs)" });
+    // Proves the teams line while the dialog is open, keeps any card the file leaves out, confirms.
+    await confirmChecklistMatchCards(page, { facts, what: "the Bowman Draft Nights Autographs fetch" });
 
     // ── STEP 4: the wizard opens, and (a) its Autographed cards step is asked ──
     // REQUIRED (R2): every card of this insert is tagged AU and the part has no
@@ -199,7 +190,6 @@ test(
     await expect(wizard, "the sync opens the tidy-up wizard for AU cards on a part with no autograph format").toBeVisible({
       timeout: WIZARD_OPENS,
     });
-    await expectTeamsFromChecklist(page, facts);
 
     // Names first, when the catalogue lacks any (it may hold all five draftees;
     // then the wizard opens straight onto the autograph step). Lookups settle

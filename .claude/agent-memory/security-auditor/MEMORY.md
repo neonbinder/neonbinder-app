@@ -104,6 +104,7 @@
 - [LLM-operated shell queue](patterns_llm_operated_shell_queue.md) — message text typed into Bash is injected before jq --arg helps; sender binding; gh pr list --head matches forks/old PRs
 - [Neo495 scoped capped list](patterns_neo495_scoped_capped_list.md) — new arg on a capped admin list: registry must hit the new arg; filter-after-take makes `truncated` lie
 - [Neo490 chained tie-break allowances](patterns_neo490_chained_tiebreak_allowances.md) — per-rule meter check at rule start: ceiling = budget + sum of allowances; uncached gate re-arms per name; pure admin action shape
+- [Neo496 client file readers](patterns_neo496_client_file_readers.md) — xlsx/pdf in browser: inflate cap ≠ derived-string cap (shared-string amplification), unclosed-tag quadratic regex, pdf.js checklist; per-user scrub sentinel
 - [Neo500 pick list](patterns_neo500_pick_list.md) — skipPollGate grep; hashed line ids opaque; sold-copy photo tokens live; NEO-509 listed re-check; armed BSC backfill: open budget, stop on failures, 10-min limit
 - [Neo528 multi-target cursor](patterns_neo528_multi_target_cursor.md) — {i,c} cursor over a re-derived target list shifts on mid-run inserts: bind target id; gate option-only fact reads
 - [Coded ConvexError oracle](patterns_coded_convex_error_oracle.md) — coded ConvexError data skips prod redaction; owner check first, pin a non-owner against a job in the coded state
