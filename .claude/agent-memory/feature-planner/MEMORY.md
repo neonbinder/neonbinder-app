@@ -64,3 +64,5 @@
 - [Fresh-load stall: find the user's cached-hit batch](fresh-load-stall-check-for-the-users-cached-hit-batch.md) — no batch + healthy probe = page never subscribed; set-builder heading shows before its BSC sync ends
 - [Browser secrets are per Clerk user](browser-secrets-are-per-clerk-user-not-per-deployment.md) — credKey is shared by every deployment signing in one test user; isolate via key + TTL, never a clash guard
 - [BSC sign-in is fetch, not Puppeteer](bsc-sign-in-is-fetch-not-puppeteer.md) — B2C PKCE over fetch + direct API profile read in services/browser; a BSC host seam must cover both services
+- [Shape probes see one account state](shape-probes-see-one-account-state.md) — probe account has no listings: listed-only keys are optional in drift; fake empty row and root form must match the probe
+- [CI step timings live in the HTML report](ci-step-timings-live-in-the-html-report.md) — per-step duration by file:line in the embedded zip; unexecuted line = other flag branch; one run = two samples
