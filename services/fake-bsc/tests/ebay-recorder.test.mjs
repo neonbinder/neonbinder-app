@@ -6,6 +6,8 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, writeFile, chmod, symlink, mkdir, rm } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -13,7 +15,8 @@ const require = createRequire(import.meta.url);
 const { EbayApi, EbayStop, EBAY_SCOPES, MIN_EBAY_INTERVAL_MS } = require("../dist/recorder/ebay-api.js");
 const { readCredsFile, readProductionCreds } = require("../dist/recorder/ebay-credentials.js");
 const { ebayRecordPlan, runEbayRecord } = require("../dist/recorder/ebay-record.js");
-const { runProdCapture, runSandboxCapture, runEbayUndo, prodPlanLines, prodFailureLines, checkCaptureSku, captureSku } = require("../dist/recorder/ebay-capture.js");
+const { runProdCapture, runSandboxCapture, runEbayUndo, prodPlanLines, prodFailureLines, checkCaptureSku, captureSku, GUARDED_SIGNALS } = require("../dist/recorder/ebay-capture.js");
+const { askYes, askToType, typeOnTerminal, askOnTerminal } = require("../dist/recorder/confirm.js");
 const { ebayCapture, ebayUndo, parseArgs } = require("../dist/recorder/cli.js");
 const { canonicalRequest, requestKey } = require("../dist/src/requestKey.js");
 
@@ -172,6 +175,44 @@ describe("eBay recorder credentials", () => {
     assert.match(err.message, /not valid JSON/);
     assert.ok(!err.message.includes(CERT));
     await assert.rejects(() => readCredsFile(path.join(dir, "ok.json"), { uid: 999999 }), /not owned by you/);
+  });
+
+  it("opens with O_NOFOLLOW and checks the open handle: a link, a FIFO, a directory and an oversized file are refused", async () => {
+    // A link to a good file: the kernel refuses it at open (O_NOFOLLOW).
+    await writeFile(path.join(dir, "real.json"), good, { mode: 0o600 });
+    await symlink(path.join(dir, "real.json"), path.join(dir, "via-link.json"));
+    await assert.rejects(() => readCredsFile(path.join(dir, "via-link.json")), /is a link/);
+    // A FIFO with no writer: refused by fstat, and the open does not hang (O_NONBLOCK).
+    const fifo = path.join(dir, "creds.fifo");
+    let haveFifo = true;
+    try {
+      execFileSync("mkfifo", ["-m", "600", fifo]);
+    } catch {
+      haveFifo = false;
+    }
+    if (haveFifo) await assert.rejects(() => readCredsFile(fifo), /not a regular file/);
+    const sub = path.join(dir, "a-dir");
+    await mkdir(sub, { mode: 0o700 });
+    await assert.rejects(() => readCredsFile(sub), /not a regular file/);
+    const big = path.join(dir, "big.json");
+    await writeFile(big, JSON.stringify({ clientId: "NB-app-id", certId: CERT, refreshToken: REFRESH, pad: "x".repeat(16 * 1024) }), { mode: 0o600 });
+    await assert.rejects(() => readCredsFile(big), /larger than a credentials file/);
+    await assert.rejects(() => readCredsFile(path.join(dir, "missing.json")), /not found/);
+    // The mode and owner checks still hold on the handle.
+    const loose = path.join(dir, "loose2.json");
+    await writeFile(loose, good, { mode: 0o640 });
+    await chmod(loose, 0o640);
+    await assert.rejects(() => readCredsFile(loose), /chmod 600/);
+    await assert.rejects(() => readCredsFile(path.join(dir, "real.json"), { uid: 999999 }), /not owned by you/);
+    assert.equal((await readCredsFile(path.join(dir, "real.json"))).refreshToken, REFRESH);
+  });
+
+  it("a link inside the path is followed for the git check: a file in a checkout reached through a linked directory is refused", async () => {
+    const repo = path.join(dir, "repo2");
+    await mkdir(path.join(repo, ".git"), { recursive: true });
+    await writeFile(path.join(repo, "c.json"), good, { mode: 0o600 });
+    await symlink(repo, path.join(dir, "outside"));
+    await assert.rejects(() => readCredsFile(path.join(dir, "outside", "c.json")), /git checkout/);
   });
 
   it("production: reads the Cert ID and the stored session's refresh token through the secret reader", async () => {
@@ -358,6 +399,12 @@ describe("ebay-capture --prod: the run", () => {
     ["the account has no fulfillment policy", { "GET /sell/account/v1/fulfillment_policy": () => ({ status: 200, body: { total: 0, fulfillmentPolicies: [] } }) }, /policy/],
     ["the location is disabled", { "GET /sell/inventory/v1/location/neonbinder-main": () => ({ status: 200, body: { merchantLocationStatus: "DISABLED" } }) }, /location/],
     ["the location is missing", { "GET /sell/inventory/v1/location/neonbinder-main": () => ({ status: 404, body: { errors: [{ errorId: 25804 }] } }) }, /location/],
+    ["only the payment policy list is empty", { "GET /sell/account/v1/payment_policy": () => ({ status: 200, body: { total: 0, paymentPolicies: [] } }) }, /payment, return and fulfillment policy/],
+    ["only the return policy list is empty", { "GET /sell/account/v1/return_policy": () => ({ status: 200, body: { total: 0, returnPolicies: [] } }) }, /payment, return and fulfillment policy/],
+    ["the offer read answers 503", { "GET /sell/inventory/v1/offer": () => ({ status: 503, body: { errors: [{ errorId: 25001 }] } }) }, /GET offer\?sku= answered HTTP 503/],
+    ["the offer read answers 400", { "GET /sell/inventory/v1/offer": () => ({ status: 400, body: { errors: [{ errorId: 25709 }] } }) }, /GET offer\?sku= answered HTTP 400/],
+    ["the item read answers 500", { [`GET /sell/inventory/v1/inventory_item/${PRD_SKU}`]: () => ({ status: 500 }) }, /inventory_item\/NBCAPTURE-PRD-20261116 answered HTTP 500/],
+    ["the item read answers 401", { [`GET /sell/inventory/v1/inventory_item/${PRD_SKU}`]: () => ({ status: 401, body: { errors: [{ errorId: 1001 }] } }) }, /inventory_item\/NBCAPTURE-PRD-20261116 answered HTTP 401/],
   ]) {
     it(`the pre-check refuses, with nothing written, when ${what}`, async () => {
       const { routes } = prodRoutes(over);
@@ -821,5 +868,317 @@ describe("ebay-capture --prod (adversarial): nothing secret in reports or errors
         bad,
       );
     }
+  });
+});
+
+// ── Audit round (NEO-555): signals, thrown transport errors, confirmation ──
+
+/** Runs `fn` with stderr captured (the CLI's `say`); answers its result and the text. */
+async function quietly(fn) {
+  const out = [];
+  const write = process.stderr.write;
+  process.stderr.write = (s) => (out.push(String(s)), true);
+  try {
+    return { result: await fn(), text: out.join("") };
+  } finally {
+    process.stderr.write = write;
+  }
+}
+
+const listenerCounts = () => GUARDED_SIGNALS.map((s) => process.listenerCount(s));
+
+describe("ebay-capture --prod (audit): stop signals", () => {
+  it("guards SIGINT, SIGTERM and SIGHUP on every request from the grant through the first write to the last verification read", async () => {
+    assert.deepEqual([...GUARDED_SIGNALS], ["SIGINT", "SIGTERM", "SIGHUP"]);
+    const before = listenerCounts();
+    const { routes } = prodRoutes();
+    const stub = stubEbay({ "POST /identity/v1/oauth2/token": tokenOk, ...routes });
+    const seen = [];
+    const fetchImpl = (url, init = {}) => {
+      seen.push({ req: `${init.method ?? "GET"} ${new URL(url).pathname}`, counts: listenerCounts() });
+      return stub.fetchImpl(url, init);
+    };
+    const { api: a } = api("production", {}, { fetchImpl });
+    const out = await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: () => {}, exit: () => assert.fail("no exit") });
+    assert.equal(out.ok, true);
+    const firstWrite = seen.findIndex((x) => x.req === "POST /commerce/media/v1_beta/image/create_image_from_file");
+    assert.ok(firstWrite > 0);
+    // The run ends with the two verification reads.
+    assert.deepEqual(seen.slice(-2).map((x) => x.req), ["GET /sell/inventory/v1/offer", `GET /sell/inventory/v1/inventory_item/${PRD_SKU}`]);
+    for (const x of seen) assert.deepEqual(x.counts, before.map((n) => n + 1), x.req);
+    assert.deepEqual(listenerCounts(), before);
+  });
+
+  it("after a first signal the cleanup and the verification still run, and nothing exits", async () => {
+    const before = listenerCounts();
+    const exits = [];
+    const lines = [];
+    let signalledAt = -1;
+    const { routes, state } = prodRoutes({
+      "POST /sell/inventory/v1/bulk_update_price_quantity": (ctx) => {
+        signalledAt = ctx.calls.length;
+        process.emit("SIGTERM", "SIGTERM");
+        return { status: 400, body: { errors: [{ errorId: 25709 }] } };
+      },
+    });
+    const { api: a, stub } = api("production", routes);
+    const out = await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: (l) => lines.push(l), exit: (c) => exits.push(c) });
+    assert.equal(out.ok, false);
+    assert.equal(out.stage, "write");
+    assert.equal(out.cleanedUp, true);
+    assert.equal(state.live, false);
+    assert.equal(state.item, false);
+    assert.deepEqual(exits, []);
+    assert.ok(lines.some((l) => /interrupt ignored/.test(l)));
+    const after = stub.calls.slice(signalledAt).map((c) => `${c.method} ${c.path}`);
+    assert.ok(after.includes("POST /sell/inventory/v1/offer/777/withdraw"), after.join("\n"));
+    assert.ok(after.includes(`DELETE /sell/inventory/v1/inventory_item/${PRD_SKU}`));
+    assert.deepEqual(after.slice(-2), ["GET /sell/inventory/v1/offer", `GET /sell/inventory/v1/inventory_item/${PRD_SKU}`]);
+    assert.deepEqual(listenerCounts(), before);
+  });
+
+  it("a second signal prints the undo command and Seller Hub with the listing id, and exits non-zero once", async () => {
+    const before = listenerCounts();
+    const exits = [];
+    const lines = [];
+    const { routes } = prodRoutes({
+      "POST /sell/inventory/v1/bulk_update_price_quantity": () => {
+        process.emit("SIGINT", "SIGINT");
+        process.emit("SIGTERM", "SIGTERM");
+        process.emit("SIGHUP", "SIGHUP");
+        return { status: 200, body: { responses: [{ statusCode: 200 }] } };
+      },
+    });
+    const { api: a } = api("production", routes);
+    await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: (l) => lines.push(l), exit: (c) => exits.push(c) });
+    assert.deepEqual(exits, [143], "the second signal (SIGTERM) exits 128+15, and only once");
+    const text = lines.join("\n");
+    assert.match(text, /THE CLEANUP COULD NOT BE VERIFIED\. Listing id: 110000000001\./);
+    assert.ok(lines.includes(`  run: node dist/recorder/cli.js ebay-undo --prod --sku ${PRD_SKU} --yes   (same credential flags)`), text);
+    assert.ok(lines.includes("  or end it in Seller Hub."), text);
+    assert.match(text, /after 5 write\(s\)/);
+    assert.match(text, /second SIGTERM/);
+    assert.deepEqual(listenerCounts(), before);
+  });
+
+  it("a second signal before any write says nothing was written, and still exits non-zero", async () => {
+    const exits = [];
+    const lines = [];
+    const { routes } = prodRoutes({
+      "GET /sell/account/v1/payment_policy": () => {
+        process.emit("SIGINT", "SIGINT");
+        process.emit("SIGINT", "SIGINT");
+        return { status: 200, body: { total: 1, paymentPolicies: [{ paymentPolicyId: "11", name: "p" }] } };
+      },
+    });
+    const { api: a } = api("production", routes);
+    await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: (l) => lines.push(l), exit: (c) => exits.push(c) });
+    assert.deepEqual(exits, [130]);
+    assert.ok(lines.some((l) => /^nothing written: stopped by a second SIGINT/.test(l)), lines.join("\n"));
+    assert.ok(!lines.some((l) => /ebay-undo/.test(l)));
+  });
+
+  it("a second signal still prints when the report throws (a closed terminal), and the exit is still called", async () => {
+    const exits = [];
+    const { routes } = prodRoutes({
+      "POST /sell/inventory/v1/offer/777/publish": (_c, st) => {
+        st.live = true;
+        process.emit("SIGHUP", "SIGHUP");
+        process.emit("SIGHUP", "SIGHUP");
+        return { status: 200, body: { listingId: "110000000001" } };
+      },
+    });
+    const { api: a } = api("production", routes);
+    const out = await runProdCapture({
+      api: a,
+      sink: sink(),
+      sku: PRD_SKU,
+      picture: PICTURE,
+      report: () => {
+        throw new Error("EIO");
+      },
+      exit: (c) => exits.push(c),
+    });
+    assert.deepEqual(exits, [129]);
+    assert.equal(out.ok, true, "the stubbed exit returns, so the run itself carries on and cleans up");
+  });
+});
+
+describe("ebay-capture --prod (audit): cleanup after a thrown transport error", () => {
+  it("a network error on bulk_create_offer: not ok, the item deleted, nothing live, nothing stored", async () => {
+    const { routes, state } = prodRoutes({ "POST /sell/inventory/v1/bulk_create_offer": () => new TypeError("fetch failed") });
+    const { api: a, stub } = api("production", routes);
+    const s = sink();
+    const out = await runProdCapture({ api: a, sink: s, sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    assert.equal(out.ok, false);
+    assert.equal(out.stage, "write");
+    assert.equal(out.cleanedUp, true);
+    assert.match(out.reason, /network/);
+    assert.equal(state.item, false);
+    assert.equal(state.live, false);
+    assert.equal(state.offer, false);
+    assert.deepEqual(s.stored, []);
+    assert.ok(stub.calls.some((c) => c.method === "DELETE"));
+    assert.ok(!stub.calls.some((c) => c.path.endsWith("/publish")));
+  });
+
+  it("a timeout after publish (on the price update): not ok, withdrawn and deleted, nothing stored", async () => {
+    const { routes, state } = prodRoutes({ "POST /sell/inventory/v1/bulk_update_price_quantity": () => Object.assign(new Error("timed out"), { name: "TimeoutError" }) });
+    const { api: a, stub } = api("production", routes);
+    const s = sink();
+    const out = await runProdCapture({ api: a, sink: s, sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    assert.equal(out.ok, false);
+    assert.equal(out.cleanedUp, true);
+    assert.match(out.reason, /timeout/);
+    assert.equal(out.listingId, "110000000001");
+    assert.equal(state.live, false);
+    assert.equal(state.item, false);
+    assert.deepEqual(s.stored, []);
+    assert.ok(stub.calls.some((c) => c.path === "/sell/inventory/v1/offer/777/withdraw"));
+  });
+
+  it("a thrown error, then a 401 on the item DELETE: one re-grant, the delete goes through, verified", async () => {
+    let deletes = 0;
+    const { routes, state } = prodRoutes({
+      "POST /sell/inventory/v1/bulk_create_offer": () => new TypeError("fetch failed"),
+      [`DELETE /sell/inventory/v1/inventory_item/${PRD_SKU}`]: (_c, st) => {
+        deletes += 1;
+        if (deletes === 1) return { status: 401, body: { errors: [{ errorId: 1001 }] } };
+        st.item = false;
+        return { status: 204 };
+      },
+    });
+    const { api: a, stub } = api("production", routes);
+    const s = sink();
+    const out = await runProdCapture({ api: a, sink: s, sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    assert.equal(out.ok, false);
+    assert.equal(out.cleanedUp, true);
+    assert.equal(deletes, 2);
+    assert.equal(stub.calls.filter((c) => c.path === "/identity/v1/oauth2/token").length, 2, "the run's grant plus one re-grant");
+    assert.equal(state.item, false);
+    assert.equal(state.live, false);
+    assert.deepEqual(s.stored, []);
+  });
+});
+
+describe("recorder confirmation", () => {
+  const ask = async (fn, typed, ...args) => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    output.resume();
+    const p = fn(input, output, "go? ", ...args);
+    if (typed === null) input.end();
+    else input.end(typed);
+    return p;
+  };
+
+  it("askToType is true only for the exact SKU", async () => {
+    assert.equal(await ask(askToType, `${PRD_SKU}\n`, PRD_SKU), true);
+    assert.equal(await ask(askToType, `  ${PRD_SKU}  \n`, PRD_SKU), true, "surrounding blanks are trimmed");
+    assert.equal(await ask(askToType, "NBCAPTURE-PRD-20261115\n", PRD_SKU), false);
+    assert.equal(await ask(askToType, `${PRD_SKU.toLowerCase()}\n`, PRD_SKU), false);
+    assert.equal(await ask(askToType, "\n", PRD_SKU), false);
+    assert.equal(await ask(askToType, null, PRD_SKU), false, "EOF");
+    assert.equal(await ask(askToType, "yes\n", PRD_SKU), false);
+  });
+
+  it("askYes is true only for the word yes", async () => {
+    assert.equal(await ask(askYes, "yes\n"), true);
+    assert.equal(await ask(askYes, " YES \n"), true);
+    for (const typed of ["y\n", "no\n", "\n", "yes please\n", null]) assert.equal(await ask(askYes, typed), false, JSON.stringify(typed));
+  });
+
+  it("with no terminal both questions reject instead of answering", async () => {
+    const noTty = () => {
+      throw Object.assign(new Error("ENXIO"), { code: "ENXIO" });
+    };
+    await assert.rejects(() => typeOnTerminal("go? ", PRD_SKU, noTty), /no terminal to confirm on/);
+    await assert.rejects(() => askOnTerminal("go? ", noTty), /no terminal to confirm on: .*--yes/);
+  });
+});
+
+describe("ebay-capture --prod and ebay-undo --prod through the CLI (audit)", () => {
+  const prodFlags = (...extra) => parseArgs(["ebay-capture", "--prod", "--yes", ...extra]).flags;
+
+  /** An ebayApi seam that counts builds (a build is the only step that reads credentials). */
+  function apiSeam(routes) {
+    const built = [];
+    const holder = {};
+    const make = async (env) => {
+      built.push(env);
+      const made = api(env, routes);
+      holder.stub = made.stub;
+      return made.api;
+    };
+    return { built, holder, make };
+  }
+
+  it("a typed SKU that does not match sends nothing: no credentials read, no grant, no write", async () => {
+    const { routes } = prodRoutes();
+    const seam = apiSeam(routes);
+    const asked = [];
+    const s = sink();
+    const { result, text } = await quietly(() =>
+      ebayCapture(prodFlags(), () => NOW, { typeToConfirm: async (q, expected) => (asked.push([q, expected]), false), ebayApi: seam.make, sink: () => s }),
+    );
+    assert.equal(result, 0);
+    assert.match(text, /not confirmed; nothing sent/);
+    assert.deepEqual(asked.map((x) => x[1]), [PRD_SKU]);
+    assert.match(asked[0][0], new RegExp(`Type ${PRD_SKU}`));
+    assert.deepEqual(seam.built, [], "credentials were read");
+    assert.equal(seam.holder.stub, undefined, "an eBay client was made");
+    assert.deepEqual(s.stored, []);
+  });
+
+  it("with no terminal it rejects before reading credentials", async () => {
+    const seam = apiSeam(prodRoutes().routes);
+    const noTty = () => {
+      throw new Error("ENXIO");
+    };
+    await assert.rejects(
+      () => quietly(() => ebayCapture(prodFlags(), () => NOW, { typeToConfirm: (q, e) => typeOnTerminal(q, e, noTty), ebayApi: seam.make, sink: () => sink() })),
+      /no terminal to confirm on/,
+    );
+    assert.deepEqual(seam.built, []);
+  });
+
+  it("control: the matching SKU runs the capture end to end through the same seams", async () => {
+    const { routes, state } = prodRoutes();
+    const seam = apiSeam(routes);
+    const s = sink();
+    const { result, text } = await quietly(() => ebayCapture(prodFlags(), () => NOW, { typeToConfirm: async (_q, e) => e === PRD_SKU, ebayApi: seam.make, sink: () => s }));
+    assert.equal(result, 0, text);
+    assert.deepEqual(seam.built, ["production"]);
+    assert.equal(writesOf(seam.holder.stub.calls).length, 7);
+    assert.equal(state.item, false);
+    assert.ok(s.stored.length > 0);
+  });
+
+  it("ebay-undo --prod: no --yes is a dry run with no credentials read; --yes withdraws, deletes and verifies", async () => {
+    const { routes, state } = prodRoutes();
+    state.item = true;
+    state.offer = true;
+    state.live = true;
+    const seam = apiSeam(routes);
+    const dry = await quietly(() => ebayUndo(parseArgs(["ebay-undo", "--prod", "--sku", PRD_SKU]).flags, { ebayApi: seam.make }));
+    assert.equal(dry.result, 0);
+    assert.match(dry.text, /dry run: nothing sent/);
+    assert.deepEqual(seam.built, []);
+    const run = await quietly(() => ebayUndo(parseArgs(["ebay-undo", "--prod", "--sku", PRD_SKU, "--yes"]).flags, { ebayApi: seam.make }));
+    assert.equal(run.result, 0, run.text);
+    assert.deepEqual(seam.built, ["production"]);
+    assert.match(run.text, /verified: no offer, no item/);
+    assert.equal(state.live, false);
+    assert.equal(state.item, false);
+    assert.ok(seam.holder.stub.calls.every((c) => !c.host.includes("sandbox")));
+  });
+
+  it("ebay-undo --prod --yes that cannot verify exits 2 and names Seller Hub", async () => {
+    const { routes, state } = prodRoutes({ [`DELETE /sell/inventory/v1/inventory_item/${PRD_SKU}`]: () => ({ status: 400, body: { errors: [{ errorId: 25709 }] } }) });
+    state.item = true;
+    const seam = apiSeam(routes);
+    const run = await quietly(() => ebayUndo(parseArgs(["ebay-undo", "--prod", "--sku", PRD_SKU, "--yes"]).flags, { ebayApi: seam.make }));
+    assert.equal(run.result, 2);
+    assert.match(run.text, /NOT verified: end it in Seller Hub/);
   });
 });

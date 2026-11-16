@@ -13,7 +13,8 @@
  * Errors never quote a value.
  */
 import { execFile } from "node:child_process";
-import { lstat, readFile, realpath, stat } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { open, realpath, stat, type FileHandle } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import type { Readable, Writable } from "node:stream";
@@ -52,21 +53,50 @@ export interface CredsFileDeps {
   uid?: number;
 }
 
-/** Reads and checks the sandbox credentials file. Refuses anything loose. */
+/**
+ * Reads and checks the sandbox credentials file. Refuses anything loose.
+ *
+ * Opened once with O_NOFOLLOW (a link is refused by the kernel, not by an
+ * earlier look that a swap could beat) and O_NONBLOCK (a FIFO cannot hang the
+ * open); every check is then `fstat` on that handle, and the bytes come from
+ * the same handle, at most one byte past the limit.
+ */
 export async function readCredsFile(path: string, deps: CredsFileDeps = {}): Promise<EbayAppCredentials> {
-  const l = await lstat(path).catch(() => null);
-  if (!l) throw new Error("credentials file: not found");
-  if (l.isSymbolicLink()) throw new Error("credentials file: is a link; point at the file itself");
-  if (!l.isFile()) throw new Error("credentials file: not a regular file");
-  const uid = deps.uid ?? (typeof process.getuid === "function" ? process.getuid() : -1);
-  if (uid >= 0 && l.uid !== uid) throw new Error("credentials file: not owned by you");
-  if ((l.mode & 0o077) !== 0) throw new Error("credentials file: readable by others; chmod 600 it");
-  if (l.size > MAX_CREDS_FILE_BYTES) throw new Error("credentials file: larger than a credentials file");
-  const real = await realpath(path);
-  if (await gitCheckoutOf(real)) throw new Error("credentials file: inside a git checkout; keep it outside every repository");
+  let fh: FileHandle;
+  try {
+    fh = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | null)?.code;
+    if (code === "ENOENT" || code === "ENOTDIR") throw new Error("credentials file: not found");
+    if (code === "ELOOP" || code === "EMLINK") throw new Error("credentials file: is a link; point at the file itself");
+    throw new Error("credentials file: could not be opened");
+  }
+  let text: string;
+  try {
+    const st = await fh.stat();
+    if (!st.isFile()) throw new Error("credentials file: not a regular file");
+    const uid = deps.uid ?? (typeof process.getuid === "function" ? process.getuid() : -1);
+    if (uid >= 0 && st.uid !== uid) throw new Error("credentials file: not owned by you");
+    if ((st.mode & 0o077) !== 0) throw new Error("credentials file: readable by others; chmod 600 it");
+    if (st.size > MAX_CREDS_FILE_BYTES) throw new Error("credentials file: larger than a credentials file");
+    if (await gitCheckoutOf(await realpath(path))) throw new Error("credentials file: inside a git checkout; keep it outside every repository");
+    // The size can change after the fstat: read at most one byte past the limit.
+    const buf = Buffer.alloc(MAX_CREDS_FILE_BYTES + 1);
+    let got = 0;
+    while (got < buf.length) {
+      const { bytesRead } = await fh.read(buf, got, buf.length - got, got);
+      if (bytesRead === 0) break;
+      got += bytesRead;
+    }
+    if (got > MAX_CREDS_FILE_BYTES) throw new Error("credentials file: larger than a credentials file");
+    text = buf.subarray(0, got).toString("utf8");
+    buf.fill(0);
+  } finally {
+    await fh.close().catch(() => undefined);
+  }
   let parsed: unknown;
   try {
-    parsed = JSON.parse(await readFile(real, "utf8"));
+    parsed = JSON.parse(text);
   } catch {
     throw new Error("credentials file: not valid JSON");
   }

@@ -18,8 +18,10 @@ import {
   MAX_LOCATIONS,
   MAX_ORDERS,
   MAX_POLICIES,
+  MAX_STORED_JSON_BYTES,
   centsToValue,
   digits,
+  jsonBytes,
   valueToCents,
   type EbayOrder,
   type EbaySellerState,
@@ -240,6 +242,9 @@ function readItem(e: unknown): EntryCheck<InventoryItem> {
   if (!isInt(qty, 0, 100_000)) return { ok: false, errorId: 25709 };
   if (e.conditionDescriptors !== undefined && !Array.isArray(e.conditionDescriptors)) return { ok: false, errorId: 25709 };
   if (e.packageWeightAndSize !== undefined && !isObj(e.packageWeightAndSize)) return { ok: false, errorId: 25709 };
+  // Both are stored as sent: capped, so they cannot grow a seller's memory.
+  if (e.conditionDescriptors !== undefined && jsonBytes(e.conditionDescriptors) > MAX_STORED_JSON_BYTES) return { ok: false, errorId: 25709 };
+  if (e.packageWeightAndSize !== undefined && jsonBytes(e.packageWeightAndSize) > MAX_STORED_JSON_BYTES) return { ok: false, errorId: 25709 };
   return {
     ok: true,
     value: {

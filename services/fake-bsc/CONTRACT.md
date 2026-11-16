@@ -958,7 +958,9 @@ extracted from eBay's OpenAPI contracts). Every error answer is eBay's
   200 when every entry passed, 207 when some did, 400 (body still carrying
   `responses`) when none did. An entry with no `product.imageUrls` fails with
   errorId 25717; no `sku`, a SKU over 50 characters, a title over 80, a
-  missing `condition` or a bad quantity fail with errorId 25709. `GET
+  missing `condition` or a bad quantity fail with errorId 25709, as does a
+  `conditionDescriptors` or `packageWeightAndSize` over 2 KB of JSON (each is
+  stored as sent, so each is capped; NB sends well under 200 bytes). `GET
   inventory_item/:sku` (404 errorId 25710 when absent), `DELETE
   inventory_item/:sku` (204; also removes the SKU's offers and ends its
   listing; 404 when absent), `GET inventory_item?limit=&offset=` (offset is
@@ -1096,7 +1098,9 @@ GET ebay/apiz/commerce/identity/v1/user
   never drift (the recordings come from the sandbox, whose metadata differs
   from production's). The other rows compare the paths NB reads against the
   fake's synthesis; a path missing from the probe is drift only when its
-  parent is present, never for an array's items.
+  parent is present, never for an array's items. Row 13 (orders) reports the
+  page's top-level keys only (an order carries buyer data), so no `orders[]`
+  path is ever required there; one that is present is still type-checked.
 - Statuses: a row compares only a 2xx body, with two exceptions. The probe
   reads the location (row 6) and the item (row 10) with keys that need not
   exist, so a 404 there compares eBay's error envelope (`errors[].errorId`,
@@ -1122,7 +1126,9 @@ access token per run, plus one app token where row 16 needs it.
 
 - **Sandbox credentials:** `--creds-file <path>`, JSON `{clientId, certId,
   refreshToken}`, a regular file owned by the user, mode 600 (no group or
-  other bits), at most 16 KB, outside any git checkout; else a prompt on
+  other bits), at most 16 KB, outside any git checkout. It is opened once
+  with `O_NOFOLLOW` (a link is refused at the open) and every check is an
+  `fstat` of that handle, which the bytes are then read from; else a prompt on
   the terminal (Cert ID and refresh token hidden). Credential values are
   never flags: `--cert-id`, `--refresh-token`, `--client-secret` and
   `--token` are refused.
@@ -1160,7 +1166,8 @@ passes), plus the production client id. Refresh grant only.
 - Pre-checks, before anything is written: `GET inventory_item/<sku>` is 404,
   `GET offer?sku=` has none, his payment, return and fulfillment policies and
   his `neonbinder-main` location exist (read only; nothing is created and
-  there is no opt-in).
+  there is no opt-in). Any other answer to the item or offer read (a 401, a
+  5xx) is a refusal naming the status, with nothing written.
 - Default is a dry run that prints exactly the **7 requests that change the
   account**: (1) image upload, (2) bulk item (one, qty 1), (3) bulk offer
   (one, $999.99, his first payment, return and fulfillment policies), (4)
@@ -1180,6 +1187,12 @@ passes), plus the production client id. Refresh grant only.
   On any failure it exits non-zero and prints, to the terminal only, the
   listing id, the exact `ebay-undo --prod --sku ...` command and "end it in
   Seller Hub".
+- Stop signals (SIGINT, SIGTERM, SIGHUP) are held for the whole run, from
+  before the token grant to after the verification: the first is noted and
+  the run, cleanup included, carries on. A second stops at once (exit
+  128 + the signal number) after printing the same failure lines: the
+  listing id when one is known, the `ebay-undo` command and Seller Hub, or
+  "nothing written" when no write had been sent. `kill -9` cannot be held.
 - Stores only `{endpoint, status, shape}` per write through
   `/__fake/write-captures` as the loader SA, after the cleanup. Re-run only
   when a PR changes publish, price-quantity, withdraw or media.

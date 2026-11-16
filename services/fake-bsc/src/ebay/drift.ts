@@ -46,7 +46,7 @@ const AMOUNT = (p: string) => [p, `${p}.value`, `${p}.currency`];
  * is served, the paths NB reads, and those of them an answer may lack
  * (never drift when absent).
  */
-const SYNTH_ROWS: ReadonlyArray<{ op: EbayOp; read: readonly string[]; optional?: readonly string[] }> = [
+const SYNTH_ROWS: ReadonlyArray<{ op: EbayOp; read: readonly string[]; optional?: readonly string[]; optionalUnder?: readonly string[] }> = [
   { op: "optedInPrograms", read: ["", "programs", "programs[]", "programs[].programType"] },
   { op: "listPaymentPolicies", read: ["", "total", "paymentPolicies", "paymentPolicies[]", "paymentPolicies[].paymentPolicyId", "paymentPolicies[].name"] },
   {
@@ -122,8 +122,12 @@ const SYNTH_ROWS: ReadonlyArray<{ op: EbayOp; read: readonly string[]; optional?
       "orders[].lineItems[].title",
       ...AMOUNT("orders[].lineItems[].lineItemCost"),
     ],
-    // The last page has no `next`; a line may have no SKU (NEO-520); fees and delivery may be absent.
-    optional: ["next", "orders[].lineItems[].sku", "orders[].totalMarketplaceFee", "orders[].pricingSummary.deliveryCost"],
+    // Row 13: the probe reports the page's top-level keys only (an order
+    // carries buyer data, so no `orders[]` element path leaves eBay's answer).
+    // Every element path is therefore optional: never drift when absent, still
+    // type-checked if one is ever present. The last page has no `next`.
+    optional: ["next", "orders[]"],
+    optionalUnder: ["orders[]"],
   },
   { op: "identityUser", read: ["", "userId", "username"] },
 ];
@@ -229,7 +233,8 @@ export function compareEbayDrift(input: unknown, catalogue: Catalogue): { ok: tr
 
     const row = synthRow!;
     const fake = servedShapes().get(name)!;
-    const required = new Set(row.read.filter((p) => !(row.optional ?? []).includes(p)));
+    const optional = (p: string) => (row.optional ?? []).includes(p) || (row.optionalUnder ?? []).some((root) => p.startsWith(`${root}.`) || p.startsWith(`${root}[]`));
+    const required = new Set(row.read.filter((p) => !optional(p)));
     const paths = compare(probe, fake.shape, (p) => row.read.includes(p), required);
     results.push({ endpoint: name, verdict: paths.length ? "shape_drift" : "ok", paths });
   }

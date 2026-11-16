@@ -203,6 +203,8 @@ export interface ProdDeps {
   sku: string;
   picture: Picture;
   report: (line: string) => void;
+  /** Ends the process on a second stop signal (tests pass a recorder). Default: `process.exit`. */
+  exit?: (code: number) => void;
 }
 
 /**
@@ -210,9 +212,11 @@ export interface ProdDeps {
  * Reads only. Returns the policies to list with, or why not.
  */
 export async function prodPrechecks(api: EbayApi, sku: string): Promise<{ ok: true; policies: Policies } | { ok: false; reason: string }> {
-  const item = await api.call(C.getItem(sku));
-  if (item.status !== 404) return { ok: false, reason: `inventory item ${sku} already exists (HTTP ${item.status}); run ebay-undo first` };
-  const offers = await api.call(C.offersBySku(sku));
+  // `attempt`, not `call`: a 401 or 5xx here is a refusal with nothing written, not a stop.
+  const item = await api.attempt(C.getItem(sku));
+  if (ok2xx(item.status)) return { ok: false, reason: `inventory item ${sku} already exists (HTTP ${item.status}); run ebay-undo first` };
+  if (item.status !== 404) return { ok: false, reason: `GET inventory_item/${sku} answered HTTP ${item.status}; nothing was written` };
+  const offers = await api.attempt(C.offersBySku(sku));
   if (offers.status !== 404 && offersOf(offers).length > 0) return { ok: false, reason: `an offer for ${sku} already exists; run ebay-undo first` };
   if (offers.status !== 404 && !ok2xx(offers.status)) return { ok: false, reason: `GET offer?sku= answered HTTP ${offers.status}` };
   const pay = await api.call(C.policies("payment"));
@@ -251,32 +255,65 @@ async function cleanupCall(api: EbayApi, call: EbayCall, done: (s: number) => bo
 }
 
 /** Signals that would end the process (and skip the cleanup) while a listing may be live. */
-const GUARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+export const GUARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+/** What a run has sent so far, for the second-interrupt exit. */
+interface Progress {
+  writes: number;
+  listingId: string | null;
+}
+
+/** The exit code for a stop forced by a second signal: 128 + the signal number. */
+function signalExitCode(signal: string): number {
+  return signal === "SIGHUP" ? 129 : signal === "SIGTERM" ? 143 : 130;
+}
 
 /**
- * The production capture is not interruptible: a signal that kills the
+ * The production capture holds off stop signals: a signal that kills the
  * process mid-run would leave the real listing live (`finally` does not run
- * on a signal). Ctrl-C, a terminal close and `kill` are noted and ignored
- * until the run, cleanup included, has finished. `kill -9` is the last resort.
+ * on a signal). The first Ctrl-C, terminal close or `kill` is noted and the
+ * run, cleanup and verification included, carries on. A second one stops at
+ * once, after printing what may be left and the exact command that ends it
+ * (`prodFailureLines`). The handlers cover the whole run, from before the
+ * token grant until the captures are stored, and are removed afterwards.
  */
 export async function runProdCapture(deps: ProdDeps): Promise<ProdOutcome> {
   checkCaptureSku("production", deps.sku);
-  const onSignal = () => {
+  const exit = deps.exit ?? ((code: number) => process.exit(code));
+  const progress: Progress = { writes: 0, listingId: null };
+  let signals = 0;
+  const say = (line: string) => {
     try {
-      deps.report("interrupt ignored: the cleanup must finish first (the listing may be live)");
+      deps.report(line);
     } catch {
-      // nothing to do
+      // a closed terminal: nothing to do
     }
+  };
+  const onSignal = (received: unknown) => {
+    const signal = typeof received === "string" && received.length <= 16 ? received : "stop signal";
+    signals += 1;
+    if (signals === 1) {
+      say("interrupt ignored: the cleanup must finish first (the listing may be live); interrupt again to stop now without it");
+      return;
+    }
+    if (signals > 2) return;
+    const reason = `stopped by a second ${signal} before the cleanup was verified`;
+    const outcome: Extract<ProdOutcome, { ok: false }> =
+      progress.writes === 0
+        ? { ok: false, stage: "precheck", reason: `${reason}; no write had been sent`, writes: 0, listingId: null, cleanedUp: true }
+        : { ok: false, stage: "cleanup", reason, writes: progress.writes, listingId: progress.listingId, cleanedUp: false };
+    for (const line of prodFailureLines(outcome, deps.sku)) say(line);
+    exit(signalExitCode(signal));
   };
   for (const s of GUARDED_SIGNALS) process.on(s, onSignal);
   try {
-    return await runProdCaptureGuarded(deps);
+    return await runProdCaptureGuarded(deps, progress);
   } finally {
     for (const s of GUARDED_SIGNALS) process.off(s, onSignal);
   }
 }
 
-async function runProdCaptureGuarded(deps: ProdDeps): Promise<ProdOutcome> {
+async function runProdCaptureGuarded(deps: ProdDeps, progress: Progress): Promise<ProdOutcome> {
   const { api, sink, sku, picture } = deps;
   // A report that throws (a closed stdout) must never skip the cleanup.
   const report = (line: string): void => {
@@ -303,8 +340,10 @@ async function runProdCaptureGuarded(deps: ProdDeps): Promise<ProdOutcome> {
   let listingId: string | null = null;
   let failure: string | null = null;
 
+  // Counted before it is sent: a write whose answer never came may still have landed.
   const write = async (call: EbayCall): Promise<EbayResponse> => {
     writes += 1;
+    progress.writes = writes;
     return api.call(call);
   };
 
@@ -341,7 +380,10 @@ async function runProdCaptureGuarded(deps: ProdDeps): Promise<ProdOutcome> {
     const pub = await write(C.publish(offerId));
     keep("publishOffer", pub);
     const lid = pub.body && typeof pub.body === "object" ? (pub.body as { listingId?: unknown }).listingId : undefined;
-    if (typeof lid === "string") listingId = lid;
+    if (typeof lid === "string") {
+      listingId = lid;
+      progress.listingId = lid;
+    }
     if (!ok2xx(pub.status) || !listingId) throw new Error(`publish answered HTTP ${pub.status} (errorIds ${errorIdsOf(pub.body).join(",") || "none"})`);
     report(`listed: listing ${listingId} (ending it now)`);
 

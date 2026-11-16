@@ -112,6 +112,23 @@ export const MAX_LOCATIONS = 20;
 export const MAX_ITEMS = 20_000;
 export const MAX_IMAGES = 5_000;
 export const MAX_ORDERS = 500;
+/**
+ * The JSON size the fake stores of an item's free-form `conditionDescriptors`
+ * and `packageWeightAndSize` (each). NB sends well under 200 bytes; past this
+ * the item is refused 25709, so no caller can grow a seller's memory through
+ * them.
+ */
+export const MAX_STORED_JSON_BYTES = 2048;
+
+/** The UTF-8 size of `v` as JSON, or Infinity when it does not serialise. */
+export function jsonBytes(v: unknown): number {
+  try {
+    const s = JSON.stringify(v);
+    return typeof s === "string" ? Buffer.byteLength(s, "utf8") : Infinity;
+  } catch {
+    return Infinity;
+  }
+}
 
 function hash(s: string, n: number): string {
   return createHash("sha256").update(s).digest("hex").slice(0, n);

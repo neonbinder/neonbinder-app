@@ -31,6 +31,7 @@ import {
   runSandboxCapture,
   sandboxPlanLines,
   captureDate,
+  type CaptureSink,
   type Picture,
 } from "./ebay-capture";
 import { imageMetadataProblem } from "./capture-write";
@@ -336,6 +337,21 @@ export function readProdCredFlags(flags: Map<string, string | true>): { clientId
   return { clientId, certSecret, sessionSecret, project };
 }
 
+/**
+ * The eBay commands' seams (tests only; the CLI passes none). Each default is
+ * the real thing: the controlling terminal, the credential readers, the fake.
+ */
+export interface EbayCliDeps {
+  /** The production capture's typed-SKU confirmation. */
+  typeToConfirm?: (question: string, expected: string) => Promise<boolean>;
+  /** Reads the credentials and builds the client: the only step that reads a credential. */
+  ebayApi?: (env: EbayEnv, flags: Map<string, string | true>) => Promise<EbayApi>;
+  /** Where captures go. */
+  sink?: (flags: Map<string, string | true>) => CaptureSink;
+  /** The production capture's second-signal exit. */
+  exit?: (code: number) => void;
+}
+
 async function ebayApi(env: EbayEnv, flags: Map<string, string | true>): Promise<EbayApi> {
   if (env === "production") {
     const creds = await readProductionCreds(readProdCredFlags(flags));
@@ -392,8 +408,10 @@ export async function loadPicture(file: string | undefined): Promise<Picture> {
   return { filename: `front${extname(path).toLowerCase()}`, contentType, bytes };
 }
 
-export async function ebayCapture(flags: Map<string, string | true>, now: () => number = Date.now): Promise<number> {
+export async function ebayCapture(flags: Map<string, string | true>, now: () => number = Date.now, deps: EbayCliDeps = {}): Promise<number> {
   refuseEbaySecrets(flags);
+  const makeApi = deps.ebayApi ?? ebayApi;
+  const makeSink = deps.sink ?? fakeClient;
   if (flags.get("--prod") === true) {
     const sku = captureSku("production", now());
     const given = str(flags, "--sku");
@@ -405,15 +423,17 @@ export async function ebayCapture(flags: Map<string, string | true>, now: () => 
       say("dry run: nothing sent; add --yes to send it (you will be asked to type the SKU)");
       return 0;
     }
-    const fake = fakeClient(flags);
+    const fake = makeSink(flags);
     const picture = await loadPicture(str(flags, "--picture"));
-    if (!(await typeOnTerminal(`This creates a REAL listing on your eBay account. Type ${sku} to go on: `, sku))) {
+    // Before any credential is read: no terminal (a pipe, CI) throws here.
+    const typed = await (deps.typeToConfirm ?? typeOnTerminal)(`This creates a REAL listing on your eBay account. Type ${sku} to go on: `, sku);
+    if (!typed) {
       say("not confirmed; nothing sent");
       return 0;
     }
-    const api = await ebayApi("production", flags);
+    const api = await makeApi("production", flags);
     try {
-      const out = await runProdCapture({ api, sink: fake, sku, picture, report: say });
+      const out = await runProdCapture({ api, sink: fake, sku, picture, report: say, ...(deps.exit ? { exit: deps.exit } : {}) });
       if (out.ok) {
         say(`done: ${out.stored} capture(s) stored; the listing was ended and the item deleted (verified)`);
         return 0;
@@ -437,8 +457,8 @@ export async function ebayCapture(flags: Map<string, string | true>, now: () => 
     say("dry run: nothing sent; add --yes to send it");
     return 0;
   }
-  const fake = fakeClient(flags);
-  const api = await ebayApi("sandbox", flags);
+  const fake = makeSink(flags);
+  const api = await makeApi("sandbox", flags);
   try {
     const out = await runSandboxCapture({ api, sink: fake, now: now(), publicKeyId: kid, report: say });
     say(`stored ${out.stored} capture(s)${out.reason ? `; ${out.reason}` : ""}`);
@@ -450,7 +470,7 @@ export async function ebayCapture(flags: Map<string, string | true>, now: () => 
   }
 }
 
-export async function ebayUndo(flags: Map<string, string | true>): Promise<number> {
+export async function ebayUndo(flags: Map<string, string | true>, deps: Pick<EbayCliDeps, "ebayApi"> = {}): Promise<number> {
   refuseEbaySecrets(flags);
   const prod = flags.get("--prod") === true;
   const sandbox = flags.get("--sandbox") === true;
@@ -464,7 +484,7 @@ export async function ebayUndo(flags: Map<string, string | true>): Promise<numbe
     say("dry run: nothing sent; add --yes to send it");
     return 0;
   }
-  const api = await ebayApi(env, flags);
+  const api = await (deps.ebayApi ?? ebayApi)(env, flags);
   try {
     const out = await runEbayUndo(api, sku);
     for (const l of out.lines) say(l);

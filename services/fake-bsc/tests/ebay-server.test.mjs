@@ -893,3 +893,222 @@ describe("fake eBay (adversarial): namespaces and the alt seller stay apart", ()
     assert.ok(res.status === 401 || res.status === 403);
   });
 });
+
+// ── Audit round (NEO-555): every error id and cap the synthesis answers ─────
+
+describe("fake eBay (audit): error ids and caps", () => {
+  const { MAX_LOCATIONS, MAX_ITEMS, MAX_STORED_JSON_BYTES, sellerOf } = require("../dist/src/ebay/state.js");
+  let fake;
+  let tok;
+  let policies;
+  const NS = "errtable-ns";
+  before(async () => {
+    fake = await startFake();
+    tok = (await connect(fake, NS)).access;
+    await ebay(fake, "POST", `${ACC}/program/opt_in`, { token: tok, body: { programType: "SELLING_POLICY_MANAGEMENT" } });
+    policies = await setUpSeller(fake, NS, tok);
+    assert.equal((await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: tok, body: { requests: [item("NB2-err-NM")] } })).status, 200);
+  });
+  after(() => fake.close());
+
+  /** Asserts eBay's status and first error id. */
+  const refused = (r, status, errorId, what) => {
+    assert.equal(r.status, status, `${what}: ${JSON.stringify(r.body)}`);
+    assert.equal(r.body.errors[0].errorId, errorId, what);
+  };
+  /** A bulk answer: whole status, then the first entry's status and error id. */
+  const refusedEntry = (r, errorId, what) => {
+    assert.equal(r.status, 400, `${what}: ${JSON.stringify(r.body)}`);
+    assert.equal(r.body.responses[0].statusCode, 400, what);
+    assert.equal(r.body.responses[0].errors[0].errorId, errorId, what);
+  };
+
+  it("20409: a second opt_in", async () => {
+    refused(await ebay(fake, "POST", `${ACC}/program/opt_in`, { token: tok, body: { programType: "SELLING_POLICY_MANAGEMENT" } }), 409, 20409, "opt_in again");
+  });
+
+  it("25710: GET and DELETE of an item that does not exist; 25713: an offer that does not exist", async () => {
+    refused(await ebay(fake, "GET", `${INV}/inventory_item/NB2-nope-NM`, { token: tok }), 404, 25710, "GET item");
+    refused(await ebay(fake, "DELETE", `${INV}/inventory_item/NB2-nope-NM`, { token: tok }), 404, 25710, "DELETE item");
+    const { sku: _s, marketplaceId: _m, format: _f, ...update } = offer("NB2-err-NM", policies);
+    refused(await ebay(fake, "PUT", `${INV}/offer/4040404040`, { token: tok, body: update }), 404, 25713, "PUT offer");
+    refused(await ebay(fake, "POST", `${INV}/offer/4040404040/publish`, { token: tok }), 404, 25713, "publish");
+    refused(await ebay(fake, "POST", `${INV}/offer/4040404040/withdraw`, { token: tok }), 404, 25713, "withdraw");
+    refused(await ebay(fake, "GET", `${INV}/offer?sku=NB2-nope-NM`, { token: tok }), 404, 25713, "GET offer?sku=");
+  });
+
+  it("25804: GET, update and enable of a location that does not exist", async () => {
+    const { merchantLocationStatus: _s, ...details } = LOCATION;
+    refused(await ebay(fake, "GET", `${INV}/location/no-such-loc`, { token: tok }), 404, 25804, "GET location");
+    refused(await ebay(fake, "POST", `${INV}/location/no-such-loc/update_location_details`, { token: tok, body: details }), 404, 25804, "update");
+    refused(await ebay(fake, "POST", `${INV}/location/no-such-loc/enable`, { token: tok }), 404, 25804, "enable");
+  });
+
+  it("190011: an image that does not exist; 195000: a public key that does not exist", async () => {
+    refused(await ebay(fake, "GET", "/ebay/apim/commerce/media/v1_beta/image/fakenope", { token: tok }), 404, 190011, "image");
+    const app = await appToken(fake);
+    refused(await ebay(fake, "GET", "/ebay/api/commerce/notification/v1/public_key/other-kid", { token: app }), 404, 195000, "public key");
+  });
+
+  it("MAX_LOCATIONS: the 21st location is refused 25709, an update of an existing one is not", async () => {
+    const own = (await connect(fake, "errtable-locs")).access;
+    for (let i = 0; i < MAX_LOCATIONS; i++) assert.equal((await ebay(fake, "POST", `${INV}/location/loc-${i}`, { token: own, body: LOCATION })).status, 204, `location ${i}`);
+    refused(await ebay(fake, "POST", `${INV}/location/loc-${MAX_LOCATIONS}`, { token: own, body: LOCATION }), 400, 25709, "21st location");
+    const { merchantLocationStatus: _s, ...details } = LOCATION;
+    assert.equal((await ebay(fake, "POST", `${INV}/location/loc-0/update_location_details`, { token: own, body: details })).status, 204);
+  });
+
+  it("MAX_ITEMS: a new SKU past the cap is refused 25709 per entry; replacing a held SKU still works", async () => {
+    const own = (await connect(fake, "errtable-items")).access;
+    const s = sellerOf(fake.state.get("errtable-items"), "main");
+    const held = { locale: "en_US", condition: "USED_VERY_GOOD", conditionDescriptors: null, quantity: 1, product: { title: "t", description: "", aspects: {}, imageUrls: ["https://www.neonbinder.io/x.jpg"] }, packageWeightAndSize: null };
+    for (let i = 0; i < MAX_ITEMS; i++) s.items.set(`SEED-${i}`, { ...held, sku: `SEED-${i}` });
+    assert.equal(s.items.size, MAX_ITEMS);
+    const r = await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: own, body: { requests: [item("SEED-0"), item("NB2-over-NM")] } });
+    assert.equal(r.status, 207);
+    assert.equal(r.body.responses[0].statusCode, 200, "a held SKU is replaced");
+    assert.equal(r.body.responses[1].statusCode, 400);
+    assert.equal(r.body.responses[1].errors[0].errorId, 25709);
+    assert.equal(s.items.size, MAX_ITEMS);
+  });
+
+  it("pagination: limit 0, limit 201 and a negative page are 25709 on inventory_item and offer", async () => {
+    for (const q of ["limit=0", "limit=201", "offset=-1", "limit=1.5", "offset=x"]) {
+      refused(await ebay(fake, "GET", `${INV}/inventory_item?${q}`, { token: tok }), 400, 25709, `inventory_item?${q}`);
+    }
+    for (const q of ["limit=0", "limit=201"]) refused(await ebay(fake, "GET", `${INV}/offer?sku=NB2-err-NM&${q}`, { token: tok }), 400, 25709, `offer?${q}`);
+    refused(await ebay(fake, "GET", `${INV}/offer`, { token: tok }), 400, 25709, "offer with no sku");
+    assert.equal((await ebay(fake, "GET", `${INV}/inventory_item?limit=200&offset=0`, { token: tok })).status, 200, "the bounds themselves are accepted");
+  });
+
+  it("25709 on every item-validation branch, per entry", async () => {
+    const big = (n) => "x".repeat(n);
+    const cases = [
+      ["an http:// picture", item("NB2-v1-NM", { product: { title: "t", imageUrls: ["http://www.neonbinder.io/x.jpg"] } })],
+      ["a data: picture", item("NB2-v1-NM", { product: { title: "t", imageUrls: ["data:image/jpeg;base64,AAAA"] } })],
+      ["25 pictures", item("NB2-v1-NM", { product: { title: "t", imageUrls: Array.from({ length: 25 }, () => "https://www.neonbinder.io/x.jpg") } })],
+      ["a title of 81 characters", item("NB2-v1-NM", { product: { title: big(81), imageUrls: ["https://www.neonbinder.io/x.jpg"] } })],
+      ["no title", item("NB2-v1-NM", { product: { imageUrls: ["https://www.neonbinder.io/x.jpg"] } })],
+      ["quantity -1", item("NB2-v1-NM", { availability: { shipToLocationAvailability: { quantity: -1 } } })],
+      ["quantity 100001", item("NB2-v1-NM", { availability: { shipToLocationAvailability: { quantity: 100_001 } } })],
+      ["quantity 1.5", item("NB2-v1-NM", { availability: { shipToLocationAvailability: { quantity: 1.5 } } })],
+      ["no condition", item("NB2-v1-NM", { condition: undefined })],
+      ["a SKU with a space", item("NB2 v1 NM")],
+      ["a SKU of 51 characters", item(big(51))],
+      ["an aspect value of 66 characters", item("NB2-v1-NM", { product: { title: "t", aspects: { Sport: [big(66)] }, imageUrls: ["https://www.neonbinder.io/x.jpg"] } })],
+      ["conditionDescriptors not a list", item("NB2-v1-NM", { conditionDescriptors: { name: "40001" } })],
+      ["packageWeightAndSize not an object", item("NB2-v1-NM", { packageWeightAndSize: [1] })],
+    ];
+    for (const [what, entry] of cases) {
+      refusedEntry(await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: tok, body: { requests: [entry] } }), 25709, what);
+    }
+    refused(await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: tok, body: { requests: [] } }), 400, 25709, "no requests");
+    refused(await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: tok, body: { requests: "x" } }), 400, 25709, "requests not a list");
+  });
+
+  it("25709 on every offer-validation branch, per entry, and on the PUT", async () => {
+    const without = (o, ...keys) => {
+      const c = structuredClone(o);
+      for (const k of keys) delete c.listingPolicies[k];
+      return c;
+    };
+    const base = offer("NB2-err-NM", policies);
+    const cases = [
+      ["marketplaceId EBAY_GB", { ...base, marketplaceId: "EBAY_GB" }],
+      ["format AUCTION", { ...base, format: "AUCTION" }],
+      ["no marketplaceId", { ...base, marketplaceId: undefined }],
+      ["price in EUR", { ...base, pricingSummary: { price: { value: "12.50", currency: "EUR" } } }],
+      ["price with three decimals", { ...base, pricingSummary: { price: { value: "12.505", currency: "USD" } } }],
+      ["price as a number", { ...base, pricingSummary: { price: { value: 12.5, currency: "USD" } } }],
+      ["listingDuration DAYS_7", { ...base, listingDuration: "DAYS_7" }],
+      ["no fulfillmentPolicyId", without(base, "fulfillmentPolicyId")],
+      ["no paymentPolicyId", without(base, "paymentPolicyId")],
+      ["no returnPolicyId", without(base, "returnPolicyId")],
+      ["no listingPolicies", { ...base, listingPolicies: undefined }],
+      ["availableQuantity -1", { ...base, availableQuantity: -1 }],
+      ["a categoryId that is not digits", { ...base, categoryId: "abc" }],
+      ["no merchantLocationKey", { ...base, merchantLocationKey: undefined }],
+    ];
+    for (const [what, entry] of cases) {
+      refusedEntry(await ebay(fake, "POST", `${INV}/bulk_create_offer`, { token: tok, body: { requests: [JSON.parse(JSON.stringify(entry))] } }), 25709, what);
+    }
+    // The PUT checks the same fields (an offer must exist first).
+    const made = await ebay(fake, "POST", `${INV}/bulk_create_offer`, { token: tok, body: { requests: [base] } });
+    const offerId = made.body.responses[0].offerId;
+    const { sku: _s, marketplaceId: _m, format: _f, ...update } = base;
+    refused(await ebay(fake, "PUT", `${INV}/offer/${offerId}`, { token: tok, body: { ...update, listingDuration: "DAYS_30" } }), 400, 25709, "PUT listingDuration");
+    refused(await ebay(fake, "PUT", `${INV}/offer/${offerId}`, { token: tok, body: { ...update, pricingSummary: { price: { value: "1.00", currency: "CAD" } } } }), 400, 25709, "PUT currency");
+    refused(await ebay(fake, "PUT", `${INV}/offer/${offerId}`, { token: tok, body: [] }), 400, 25709, "PUT a list");
+  });
+
+  it("25709 on every bulk_update_price_quantity branch, per entry", async () => {
+    const got = await ebay(fake, "GET", `${INV}/offer?sku=NB2-err-NM`, { token: tok });
+    const offerId = got.body.offers[0].offerId;
+    const cases = [
+      ["no SKU", { offers: [{ offerId, price: { value: "1.00", currency: "USD" } }] }],
+      ["a quantity of -1", { sku: "NB2-err-NM", shipToLocationAvailability: { quantity: -1 } }],
+      ["shipToLocationAvailability not an object", { sku: "NB2-err-NM", shipToLocationAvailability: 3 }],
+      ["offers not a list", { sku: "NB2-err-NM", offers: { offerId } }],
+      ["26 offers", { sku: "NB2-err-NM", offers: Array.from({ length: 26 }, () => ({ offerId })) }],
+      ["an offer availableQuantity of 1.5", { sku: "NB2-err-NM", offers: [{ offerId, availableQuantity: 1.5 }] }],
+      ["a price in GBP", { sku: "NB2-err-NM", offers: [{ offerId, price: { value: "1.00", currency: "GBP" } }] }],
+      ["a price that is not money", { sku: "NB2-err-NM", offers: [{ offerId, price: { value: "one", currency: "USD" } }] }],
+    ];
+    for (const [what, entry] of cases) {
+      refusedEntry(await ebay(fake, "POST", `${INV}/bulk_update_price_quantity`, { token: tok, body: { requests: [entry] } }), 25709, what);
+    }
+    refused(await ebay(fake, "POST", `${INV}/bulk_update_price_quantity`, { token: tok, body: { requests: [] } }), 400, 25709, "no requests");
+    refused(await ebay(fake, "POST", `${INV}/bulk_update_price_quantity`, { token: tok, body: {} }), 400, 25709, "no requests key");
+    // Control: a good update still goes through, and refused entries changed nothing.
+    const ok = await ebay(fake, "POST", `${INV}/bulk_update_price_quantity`, { token: tok, body: { requests: [{ sku: "NB2-err-NM", offers: [{ offerId, price: { value: "2.00", currency: "USD" } }] }] } });
+    assert.equal(ok.status, 200);
+    assert.equal((await ebay(fake, "GET", `${INV}/inventory_item/NB2-err-NM`, { token: tok })).body.availability.shipToLocationAvailability.quantity, 3);
+  });
+
+  it("conditionDescriptors and packageWeightAndSize are stored only up to 2 KB of JSON each", async () => {
+    assert.equal(MAX_STORED_JSON_BYTES, 2048);
+    // The largest list that fits: one descriptor padded to exactly the cap.
+    const descriptorsOf = (bytes) => {
+      const shell = JSON.stringify([{ name: "40001", values: [""] }]).length;
+      return [{ name: "40001", values: ["v".repeat(bytes - shell)] }];
+    };
+    const packageOf = (bytes) => {
+      const shell = JSON.stringify({ packageType: "LETTER", note: "" }).length;
+      return { packageType: "LETTER", note: "n".repeat(bytes - shell) };
+    };
+    assert.equal(JSON.stringify(descriptorsOf(2048)).length, 2048);
+    assert.equal(JSON.stringify(packageOf(2048)).length, 2048);
+    const at = await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, {
+      token: tok,
+      body: { requests: [item("NB2-cap-NM", { conditionDescriptors: descriptorsOf(2048), packageWeightAndSize: packageOf(2048) })] },
+    });
+    assert.equal(at.status, 200, JSON.stringify(at.body));
+    const stored = await ebay(fake, "GET", `${INV}/inventory_item/NB2-cap-NM`, { token: tok });
+    assert.deepEqual(stored.body.conditionDescriptors, descriptorsOf(2048));
+    assert.deepEqual(stored.body.packageWeightAndSize, packageOf(2048));
+    refusedEntry(
+      await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: tok, body: { requests: [item("NB2-cap2-NM", { conditionDescriptors: descriptorsOf(2049) })] } }),
+      25709,
+      "descriptors one byte over",
+    );
+    refusedEntry(
+      await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: tok, body: { requests: [item("NB2-cap2-NM", { packageWeightAndSize: packageOf(2049) })] } }),
+      25709,
+      "package one byte over",
+    );
+    // Multi-byte text counts in bytes, not characters: 700 three-byte characters are over.
+    refusedEntry(
+      await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: tok, body: { requests: [item("NB2-cap2-NM", { packageWeightAndSize: { note: "€".repeat(700) } })] } }),
+      25709,
+      "package in multi-byte text",
+    );
+    // A refused replace leaves the held item as it was.
+    refusedEntry(
+      await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: tok, body: { requests: [item("NB2-cap-NM", { conditionDescriptors: descriptorsOf(4096) })] } }),
+      25709,
+      "replace over the cap",
+    );
+    assert.deepEqual((await ebay(fake, "GET", `${INV}/inventory_item/NB2-cap-NM`, { token: tok })).body.conditionDescriptors, descriptorsOf(2048));
+    assert.equal((await ebay(fake, "GET", `${INV}/inventory_item/NB2-cap2-NM`, { token: tok })).status, 404);
+  });
+});

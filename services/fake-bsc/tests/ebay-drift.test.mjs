@@ -97,11 +97,39 @@ describe("eBay drift: compare", () => {
 
   it("a read path NB uses that went missing is drift; a type change is drift", () => {
     const probe = cleanProbe();
-    delete probe.shapes[ORDERS]["orders[].lineItems[].legacyItemId"];
+    const FUL = endpointName("listFulfillmentPolicies");
+    delete probe.shapes[FUL]["fulfillmentPolicies[].shippingOptions[].shippingServices[].shippingServiceCode"];
     probe.shapes[endpointName("listPaymentPolicies")].total = "string";
     const out = compareEbayDrift(probe, recorded).result;
     assert.equal(out.outcome, "shape_drift");
-    assert.deepEqual(out.paths.sort(), [`${ORDERS} orders[].lineItems[].legacyItemId`, `${endpointName("listPaymentPolicies")} total`].sort());
+    assert.deepEqual(out.paths.sort(), [`${FUL} fulfillmentPolicies[].shippingOptions[].shippingServices[].shippingServiceCode`, `${endpointName("listPaymentPolicies")} total`].sort());
+  });
+
+  it("row 13 (orders) as the probe reports it, top-level keys only, is ok; a missing or retyped top-level key is still drift", () => {
+    const topLevel = { $: "object", href: "string", limit: "number", offset: "number", total: "number", orders: "array" };
+    for (const [what, shape] of [
+      ["top-level keys only", topLevel],
+      ["with the element itself but none of its paths", { ...topLevel, "orders[]": "object" }],
+      ["with no root entry", { total: "number", orders: "array" }],
+    ]) {
+      const probe = cleanProbe();
+      probe.shapes[ORDERS] = shape;
+      const out = compareEbayDrift(probe, recorded).result;
+      assert.equal(out.outcome, "ok", `${what}: ${out.paths}`);
+      assert.equal(out.endpoints.find((e) => e.endpoint === ORDERS).verdict, "ok", what);
+    }
+    const noTotal = cleanProbe();
+    const { total: _t, ...rest } = topLevel;
+    noTotal.shapes[ORDERS] = rest;
+    assert.deepEqual(compareEbayDrift(noTotal, recorded).result.paths, [`${ORDERS} total`]);
+    const retyped = cleanProbe();
+    retyped.shapes[ORDERS] = { ...topLevel, orders: "object" };
+    assert.equal(compareEbayDrift(retyped, recorded).result.outcome, "shape_drift");
+    // An element path that IS reported is still type-checked; one that is absent is not drift.
+    const typed = cleanProbe();
+    typed.shapes[ORDERS]["orders[].lineItems[].legacyItemId"] = "number";
+    delete typed.shapes[ORDERS]["orders[].orderId"];
+    assert.deepEqual(compareEbayDrift(typed, recorded).result.paths, [`${ORDERS} orders[].lineItems[].legacyItemId`]);
   });
 
   it("an optional path NB reads is not drift when absent (the last page has no next, a line may have no SKU)", () => {
@@ -177,5 +205,50 @@ describe("eBay drift over HTTP", () => {
     assert.equal(bsc.body.warnings, undefined);
     assert.equal((await fake.call("POST", "/__fake/drift-compare", { email: LOADER, admin: true, body: { marketplace: "mercari", shapes: {} } })).status, 400);
     assert.equal((await fake.call("POST", "/__fake/drift-compare", { body: { marketplace: "ebay", shapes: {} } })).status, 403);
+  });
+
+  const post = (f, body) => f.call("POST", "/__fake/drift-compare", { email: LOADER, admin: true, body });
+
+  it("a drifted probe answers outcome shape_drift with the paths as strings", async () => {
+    await fake.catalogue.add(RECORDINGS.map((r) => require("../dist/src/catalogue.js").checkRecording(r).recording));
+    const probe = cleanProbe();
+    probe.shapes[endpointName("listPaymentPolicies")].total = "string";
+    probe.shapes[SHIP]["shippingServices[].shippingService"] = "number";
+    const r = await post(fake, probe);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.outcome, "shape_drift");
+    assert.ok(Array.isArray(r.body.paths) && r.body.paths.length > 0);
+    assert.ok(r.body.paths.every((p) => typeof p === "string" && p.length > 0));
+    assert.deepEqual(r.body.paths.sort(), [`${SHIP} shippingServices[].shippingService`, `${endpointName("listPaymentPolicies")} total`].sort());
+    // Control: the same fake answers ok to the unchanged probe.
+    assert.equal((await post(fake, cleanProbe())).body.outcome, "ok");
+  });
+
+  it("a hash mismatch answers ok with a warning naming the endpoint and kind", async () => {
+    const r = await post(fake, { ...cleanProbe(), hashes: { [SHIP]: ebayCatalogueHash(["SomethingElse"]) } });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.outcome, "ok");
+    assert.equal(r.body.warnings.length, 1);
+    assert.deepEqual(r.body.warnings[0], { endpoint: SHIP, kind: "hash_mismatch" });
+  });
+
+  it("an unrecorded pinned key answers the exact outcome ebay-drift-verdict.sh switches on", async () => {
+    const script = readFileSync(new URL("../../../.github/scripts/ebay-drift-verdict.sh", import.meta.url), "utf8");
+    const labels = [...script.matchAll(/^\s*"([^"]+)"\)/gm)].map((m) => m[1]);
+    assert.ok(labels.length >= 1, "the script names no quoted case label");
+    const scriptOutcome = labels.find((l) => /unrecorded/.test(l));
+    assert.ok(scriptOutcome, `no unrecorded case in ${labels}`);
+    // The bare outcomes the script also matches: ok and shape_drift.
+    assert.match(script, /^\s*ok\) ;;$/m);
+    assert.match(script, /^\s*shape_drift\)$/m);
+    const empty = await startFake();
+    try {
+      const r = await post(empty, cleanProbe());
+      assert.equal(r.status, 200);
+      assert.equal(r.body.outcome, scriptOutcome);
+      assert.equal(r.body.outcome, "unrecorded pinned key");
+    } finally {
+      await empty.close();
+    }
   });
 });

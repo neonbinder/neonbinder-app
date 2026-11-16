@@ -35,45 +35,31 @@ export async function askToType(input: Readable, output: Writable, question: str
   }
 }
 
+/** Opens the controlling terminal; tests pass one that throws, as a run with no terminal does. */
+export type TerminalOpener = () => number;
+const openTty: TerminalOpener = () => openSync("/dev/tty", "r+");
+
 /** Asks on the controlling terminal for `expected` typed back. Throws when there is no terminal. */
-export async function typeOnTerminal(question: string, expected: string): Promise<boolean> {
-  return withTerminal((input, output) => askToType(input, output, question, expected));
+export async function typeOnTerminal(question: string, expected: string, openTerminal: TerminalOpener = openTty): Promise<boolean> {
+  return withTerminal(openTerminal, "no terminal to confirm on: run it from a terminal", (input, output) => askToType(input, output, question, expected));
 }
 
-async function withTerminal<T>(fn: (input: Readable, output: Writable) => Promise<T>): Promise<T> {
+/** Asks on the controlling terminal. Throws when there is none: use `--yes`. */
+export async function askOnTerminal(question: string, openTerminal: TerminalOpener = openTty): Promise<boolean> {
+  return withTerminal(openTerminal, "no terminal to confirm on: run it from a terminal, or pass --yes", (input, output) => askYes(input, output, question));
+}
+
+async function withTerminal<T>(openTerminal: TerminalOpener, noTerminal: string, fn: (input: Readable, output: Writable) => Promise<T>): Promise<T> {
   let fd: number;
   try {
-    fd = openSync("/dev/tty", "r+");
+    fd = openTerminal();
   } catch {
-    throw new Error("no terminal to confirm on: run it from a terminal");
+    throw new Error(noTerminal);
   }
   const input = new ReadStream(fd);
   const output = new WriteStream(fd);
   try {
     return await fn(input, output);
-  } finally {
-    input.destroy();
-    output.destroy();
-    try {
-      closeSync(fd);
-    } catch {
-      // already closed by the streams
-    }
-  }
-}
-
-/** Asks on the controlling terminal. Throws when there is none: use `--yes`. */
-export async function askOnTerminal(question: string): Promise<boolean> {
-  let fd: number;
-  try {
-    fd = openSync("/dev/tty", "r+");
-  } catch {
-    throw new Error("no terminal to confirm on: run it from a terminal, or pass --yes");
-  }
-  const input = new ReadStream(fd);
-  const output = new WriteStream(fd);
-  try {
-    return await askYes(input, output, question);
   } finally {
     input.destroy();
     output.destroy();
