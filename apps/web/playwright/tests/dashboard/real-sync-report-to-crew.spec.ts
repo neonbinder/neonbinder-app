@@ -8,6 +8,9 @@
 // shows it as Fixed with the crew's note. A second report on the same set,
 // closed as Not a bug with the crew's reason, shows there as Not a bug; and the
 // Card Requests chips (Waiting, Sync reports) live in the URL, Back steps one view.
+// That second report is on the eBay set, re-seeded as held for a title over eBay's
+// 80 characters (`syncHeld=titleTooLong`, NEO-535): it too is on our crew, offers
+// Report to our crew and is accepted.
 //
 // No @smoke tag, like its sibling real-sync-status-and-sale (the signed-in
 // dashboard writers that make a box are not in the fast subset). No isMobile
@@ -15,7 +18,8 @@
 // asserts the Send and Withdraw actions are on screen (toBeInViewport) on both.
 //
 // A held-back set is a state only a real sync produces, so the spec seeds NB's
-// own record of one with /testing/seed-dashboard?syncHeld=numberMismatch
+// own record of one with /testing/seed-dashboard?syncHeld=numberMismatch (and, for
+// the second report, syncHeld=titleTooLong, which replaces it in place)
 // (`seedMyTestSync`, `clearMyTestDashboardSeeds`: the caller's own marked rows,
 // refused off testing deployments; nothing seeded makes NB call a marketplace).
 //
@@ -34,23 +38,25 @@
 // tokens minted from `env.ATTEMPT_TOKEN`.
 import { createBox, deleteBoxNamed, deleteOpenBox, drillToCollectorBase, inventoryTabs, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /** What the body has written so far, so the failure hook can take it back. */
-const written: { box?: string; card?: { short: string; number: string; player: string }; reported?: boolean } = {};
+type Market = "BuySportsCards" | "eBay";
+const written: { box?: string; card?: { short: string; number: string; player: string }; reported?: Market | false } = {};
 
 /** The card's panel, by its title ("2024 Topps Chrome #<number> <player>..."). */
 const drawerOf = (page: Page, card: { number: string; player: string }) =>
   page.getByRole("dialog", { name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(card.number)} ${escapeRegExp(card.player)}`) });
 
-/** The BuySportsCards set on the dashboard's Sync status, by its heading ("<set> on BuySportsCards"). */
-const bscSet = (page: Page) =>
+/** A marketplace's set on the dashboard's Sync status, by its heading ("<set> on <marketplace>"). */
+const marketSet = (page: Page, market: Market) =>
   page
     .getByRole("region", { name: "Sync status" })
     .getByRole("article")
-    .filter({ has: page.getByRole("heading", { level: 3, name: / on BuySportsCards$/ }) });
+    .filter({ has: page.getByRole("heading", { level: 3, name: new RegExp(` on ${market}$`) }) });
+const bscSet = (page: Page) => marketSet(page, "BuySportsCards");
 
 const REPORTED = "Reported. Our crew's on it.";
 const WITHDRAW_REPORT = /^Withdraw report for /;
@@ -74,7 +80,7 @@ test.afterEach(async ({ context }, testInfo) => {
       await attempt(async () => {
         await clean.goto("/dashboard");
         await expect(clean.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible();
-        const set = bscSet(clean);
+        const set = marketSet(clean, written.reported as Market);
         const reportedLine = set.getByText(REPORTED);
         const reportButton = set.getByRole("button", { name: /^Report to our crew about /, exact: false });
         // The set settles on one of two: still reported (withdraw it), or the body already closed it.
@@ -172,31 +178,37 @@ test(
     const reportButton = set.getByRole("button", { name: /^Report to our crew about .+ on BuySportsCards$/ });
     await expect(reportButton).toBeVisible();
     // "<set label>", read off the button's accessible name (its aria snapshot line) so the later rows are found by what they say.
-    const setLabel = /button "Report to our crew about (.+) on BuySportsCards"/.exec(await reportButton.ariaSnapshot())?.[1];
-    expect(setLabel, "the set's label, from the Report button's name").toBeTruthy();
+    const labelOf = async (button: Locator, market: Market) => {
+      const label = new RegExp(`button "Report to our crew about (.+) on ${market}"`).exec(await button.ariaSnapshot())?.[1];
+      expect(label, `the ${market} set's label, from the Report button's name`).toBeTruthy();
+      return label!;
+    };
+    const setLabel = await labelOf(reportButton, "BuySportsCards");
 
     // --- Report it with a note ------------------------------------------------
     // `audit` runs the axe check on the open form (once is enough: the second report is the same form).
-    const reportWithNote = async (text: string, audit = false) => {
-      await reportButton.click();
-      const noteField = set.getByRole("textbox", { name: /^Note for our crew \(optional\)/ });
+    const reportWithNote = async (text: string, audit = false, on = { market: "BuySportsCards" as Market, set, reportButton }) => {
+      const { set: target, reportButton: button } = on;
+      await button.click();
+      const noteField = target.getByRole("textbox", { name: /^Note for our crew \(optional\)/ });
       await expect(noteField).toBeFocused();
       if (audit) await expectAccessible(page, { label: "Dashboard, report form open" });
       await noteField.fill(text);
-      written.reported = true;
-      const send = set.getByRole("button", { name: /^Send report on / });
+      written.reported = on.market;
+      const send = target.getByRole("button", { name: /^Send report on / });
       // Reachability on both projects (a phone folds the form under the tile): the action is on screen.
       await send.scrollIntoViewIfNeeded();
       await expect(send).toBeInViewport();
       await send.click();
-      await expect(set.getByText(REPORTED)).toBeVisible();
+      await expect(target.getByText(REPORTED)).toBeVisible();
     };
     await reportWithNote(note, true);
     await expect(reportButton).toHaveCount(0);
 
     // "With our crew" lists it, one line, with a way to take it back.
     const withCrew = page.getByRole("region", { name: "With our crew" });
-    const mine = withCrew.getByRole("listitem").filter({ hasText: "Sync report" }).filter({ hasText: setLabel! });
+    const mineOn = (label: string) => withCrew.getByRole("listitem").filter({ hasText: "Sync report" }).filter({ hasText: label });
+    const mine = mineOn(setLabel);
     await expect(mine).toBeVisible();
     await expect(mine).toContainText("BuySportsCards");
     await expectAccessible(page, { label: "Dashboard, a set reported to the crew" });
@@ -232,20 +244,20 @@ test(
     // --- "From collectors" links to the review, from the dashboard ------------------
     // Each closing cycle below enters through the dashboard's row and ends on Back, which returns there.
     const review = page.getByRole("region", { name: "Review" });
-    const openReviewFromDashboard = async () => {
+    const openReviewFromDashboard = async (label = setLabel) => {
       await page.goto("/dashboard");
       await expect(greeting).toBeVisible();
       const theirs = page
         .getByRole("region", { name: "From collectors" })
         .getByRole("link")
         .filter({ hasText: "Sync report" })
-        .filter({ hasText: setLabel! });
+        .filter({ hasText: label });
       await expect(theirs).toBeVisible();
       await theirs.click();
       await expect(page).toHaveURL(/\/admin\/card-requests\?/);
       await expect(page).toHaveURL(/[?&]kind=sync(&|$)/);
       await expect(page).toHaveURL(/[?&]open=[^&]+/);
-      await expect(review.getByRole("heading", { level: 3, name: `Sync report: ${setLabel}`, exact: true })).toBeVisible();
+      await expect(review.getByRole("heading", { level: 3, name: `Sync report: ${label}`, exact: true })).toBeVisible();
     };
     await openReviewFromDashboard();
     await expect(review.getByText(note)).toBeVisible();
@@ -270,7 +282,7 @@ test(
     await expect(page).toHaveURL(/[?&]kind=sync(&|$)/);
     await expect(page).not.toHaveURL(/[?&]open=/);
     await expect(review.getByText("Pick a report to review it.")).toBeVisible();
-    await expect(reports.getByRole("button").filter({ hasText: setLabel! })).toHaveCount(0);
+    await expect(reports.getByRole("button").filter({ hasText: setLabel })).toHaveCount(0);
     await expect(reports.getByText(note)).toHaveCount(0);
     // No report of ours stands open in the list, and nothing is open for review.
     await expectAccessible(page, { label: "Sync reports list, nothing open" });
@@ -283,12 +295,23 @@ test(
     // --- The dashboard: the report is gone from "With our crew", Report is offered again ---
     await expect(bscSet(page).getByRole("button", { name: /^Report to our crew about .+ on BuySportsCards$/ })).toBeVisible();
     await expect(page.getByRole("button", { name: WITHDRAW_REPORT })).toHaveCount(0);
-    await expect(page.getByRole("listitem").filter({ hasText: "Sync report" }).filter({ hasText: setLabel! })).toHaveCount(0);
+    await expect(page.getByRole("listitem").filter({ hasText: "Sync report" }).filter({ hasText: setLabel })).toHaveCount(0);
 
-    // --- A second report on the same set, closed as Not a bug with the crew's reason ---
-    await reportWithNote(secondNote);
-    await expect(mine).toBeVisible();
-    await openReviewFromDashboard();
+    // --- A second report, on the eBay set held for a title over eBay's 80 characters, closed as Not a bug ---
+    // The seed replaces the numbering hold in place; eBay's title hold is NB's own (NEO-535) and is the crew's to fix too.
+    await page.goto("/testing/seed-dashboard?syncHeld=titleTooLong");
+    await expect(page).toHaveURL(/\/dashboard$/);
+    await expect(greeting).toBeVisible();
+    const ebaySet = marketSet(page, "eBay");
+    await expect(ebaySet).toBeVisible();
+    await expect(ebaySet.getByText("On our crew, not you.")).toBeVisible();
+    const ebayReportButton = ebaySet.getByRole("button", { name: /^Report to our crew about .+ on eBay$/ });
+    await expect(ebayReportButton).toBeVisible();
+    const ebayLabel = await labelOf(ebayReportButton, "eBay");
+    await reportWithNote(secondNote, false, { market: "eBay", set: ebaySet, reportButton: ebayReportButton });
+    await expect(mineOn(ebayLabel)).toBeVisible();
+    await expect(mineOn(ebayLabel)).toContainText("eBay");
+    await openReviewFromDashboard(ebayLabel);
     await expect(review.getByText(secondNote)).toBeVisible();
     await review.getByRole("textbox", { name: "Note to the collector" }).fill(notABugNote);
     await review.getByRole("button", { name: "Not a bug", exact: true }).click();
@@ -308,16 +331,17 @@ test(
     const dialog = page.getByRole("dialog", { name: "Can't find it?" });
     await expect(dialog.getByRole("tab", { name: "My requests", selected: true })).toBeVisible();
     await expect(dialog.getByRole("heading", { name: "Sets you reported" })).toBeVisible();
-    const sets = dialog.getByRole("list", { name: "My sync reports" }).getByRole("listitem").filter({ hasText: setLabel! });
-    const reported = sets.filter({ hasText: crewNote });
+    const sets = dialog.getByRole("list", { name: "My sync reports" }).getByRole("listitem");
+    const reported = sets.filter({ hasText: setLabel }).filter({ hasText: crewNote });
     await expect(reported).toBeVisible();
     await expect(reported).toContainText("BuySportsCards");
     await expect(reported).toContainText("Fixed");
     await expect(reported).toContainText(`Your note: ${note}`);
     await expect(reported).toContainText(`From our crew: ${crewNote}`);
     await expect(reported.getByRole("button", { name: /^Withdraw/ })).toHaveCount(0);
-    const refused = sets.filter({ hasText: notABugNote });
+    const refused = sets.filter({ hasText: ebayLabel }).filter({ hasText: notABugNote });
     await expect(refused).toBeVisible();
+    await expect(refused).toContainText("eBay");
     await expect(refused).toContainText("Not a bug");
     await expect(refused).toContainText(`Your note: ${secondNote}`);
     await expect(refused).toContainText(`From our crew: ${notABugNote}`);
