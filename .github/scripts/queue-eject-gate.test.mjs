@@ -56,7 +56,7 @@ test("dequeued by hand: teardown, quiet", () => {
 });
 
 test("dequeued because it merged: nothing (the closed event cleans up)", () => {
-  for (const reason of ["SUCCESS", "MERGED", "ALREADY_MERGED"]) {
+  for (const reason of ["MERGE", "SUCCESS", "MERGED", "ALREADY_MERGED"]) {
     const r = dq(reason);
     assert.equal(r.out.teardown, "false", reason);
     assert.equal(r.out.notify, "false", reason);

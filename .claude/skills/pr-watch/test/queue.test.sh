@@ -39,6 +39,8 @@ run "unknown reason is REMOVED, not EJECTED" 4 'DONE REMOVED.*SOMETHING_NEW'
 
 fresh; pr OPEN null "[$ADD,$(rem CI_FAILURE '{"__typename":"User","login":"someone"}')]" > "$FIX/graphql.json"
 run "known reason with a human actor is REMOVED" 4 'DONE REMOVED.*CI_FAILURE.*someone'
+fresh; pr OPEN null "[$ADD,$(rem failed_checks '{"__typename":"Bot","login":"github-merge-queue"}')]" > "$FIX/graphql.json"
+run "real D0 shape: failed_checks by github-merge-queue is EJECTED" 1 'DONE EJECTED.*failed_checks'
 
 fresh; pr OPEN null "[]" > "$FIX/graphql.json"
 PR_WATCH_REPO=other/repo run "wrong repo refused" 3 'DONE ERROR.*only watches other/repo'
@@ -55,6 +57,15 @@ printf "$RUN" in_progress "" > "$FIX/runs.json"; printf "$JOBS" in_progress "" >
 out=$(bash "$HERE/../watch.sh" --queue 42 2>&1); rc=$?
 if [ "$rc" = 0 ] && echo "$out" | grep -q 'RUNNING — AWAITING_CHECKS' && echo "$out" | grep -q 'DONE MERGED' && ! echo "$out" | grep -q 'GREEN'; then echo "ok   re-enqueue then merge"
 else echo "FAIL re-enqueue then merge ($rc)"; echo "$out" | sed 's/^/     /'; fails=$((fails+1)); fi
+
+# Re-armed after an earlier ejection, still waiting on the PR's own checks
+# (shakedown, #482): the old failed_checks removal must not be this attempt's verdict.
+ARM='{"__typename":"AutoMergeEnabledEvent","createdAt":"2026-11-14T11:00:00Z"}'
+OLDREM=$(rem failed_checks '{"__typename":"Bot","login":"github-merge-queue"}')
+fresh; pr OPEN null "[$ADD,$OLDREM,$ARM]" | jq -c '.data.repository.pullRequest.autoMergeRequest={"enabledAt":"2026-11-14T11:00:00Z"}' > "$FIX/graphql.json"
+PR_WATCH_QUEUE_MAX_MIN=0 run "re-armed, not yet queued: waits, ignores the old removal" 2 'DONE TIMEOUT'
+fresh; pr OPEN null "[$ADD,$OLDREM,$ARM]" > "$FIX/graphql.json"
+run "armed then disarmed before joining is REMOVED" 4 'DONE REMOVED.*armed and then disabled'
 
 fresh; pr OPEN null "[]" > "$FIX/graphql.json"
 PR_WATCH_ENQUEUE_GRACE_MIN=0 run "never enqueued" 5 'DONE NOT_QUEUED'
