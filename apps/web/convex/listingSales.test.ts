@@ -270,7 +270,7 @@ describe("applying a sale", () => {
     // The per-user test reset clears the orphaned photo rows with the rest.
     process.env.TESTING_RESET_SECRET = "test-enabled";
     try {
-      await s.me.mutation(api.testing.resetMyTestState, {});
+      await s.me.action(api.testing.resetMyTestState, {});
     } finally {
       delete process.env.TESTING_RESET_SECRET;
     }

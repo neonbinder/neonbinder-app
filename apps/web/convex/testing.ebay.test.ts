@@ -157,7 +157,7 @@ describe("resetMyTestState and the eBay tables", () => {
     const t = convexTest(schema, modules);
     await seedOwner(t, USER_A);
     await seedOwner(t, USER_B);
-    const result = await t.withIdentity({ subject: USER_A }).mutation(api.testing.resetMyTestState, {});
+    const result = await t.withIdentity({ subject: USER_A }).action(api.testing.resetMyTestState, {});
     expect(result.marketplaceListing).toBe(3);
     expect(await counts(t, USER_A)).toEqual({ links: 0, settings: 0 });
     expect(await counts(t, USER_B)).toEqual({ links: 2, settings: 1 });
@@ -167,7 +167,7 @@ describe("resetMyTestState and the eBay tables", () => {
     const t = convexTest(schema, modules);
     await seedOwner(t, USER_A);
     vi.stubEnv("TESTING_RESET_SECRET", "");
-    await expect(t.withIdentity({ subject: USER_A }).mutation(api.testing.resetMyTestState, {})).rejects.toThrow();
+    await expect(t.withIdentity({ subject: USER_A }).action(api.testing.resetMyTestState, {})).rejects.toThrow();
     expect(await counts(t, USER_A)).toEqual({ links: 2, settings: 1 });
   });
 });

@@ -203,6 +203,23 @@ jobs:
             exit 1
           fi
 
+      # NEO-552: a preview must talk to the FAKE BSC, never the real site. Fail
+      # the deploy loudly if the fake's URL is not configured, and pin the
+      # caller-key secret to a resolved version (see resolve-secret-version.sh).
+      - id: fakebsc
+        name: Preflight fake BSC config (dev project)
+        env:
+          FAKE_BSC_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
+        run: |
+          set -euo pipefail
+          re='^https://neonbinder-fake-bsc-[a-z0-9-]+(\.[a-z0-9-]+)*\.run\.app$'
+          if [[ -z "${FAKE_BSC_URL:-}" ]] || [[ ! "${FAKE_BSC_URL%/}" =~ $re ]] || [[ "${FAKE_BSC_URL%/}" == *---* ]]; then
+            echo "::error::Repo variable NEONBINDER_FAKE_BSC_URL must be https://neonbinder-fake-bsc-….run.app, the fake's own service URL, with no tag or path (NEO-552)."
+            exit 1
+          fi
+          version=$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-secret-version.sh" fake-bsc-caller-key neonbinder-dev)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Configure Docker for GCR
         run: gcloud auth configure-docker --quiet
 
@@ -246,8 +263,10 @@ jobs:
             EBAY_CLIENT_ID=${{ vars.EBAY_CLIENT_ID_SANDBOX }}
             EBAY_RU_NAME=${{ vars.EBAY_RU_NAME_SANDBOX }}
             EBAY_ENVIRONMENT=sandbox
+            NEONBINDER_FAKE_BSC_URL=${{ vars.NEONBINDER_FAKE_BSC_URL }}
           secrets: |
             EBAY_CLIENT_SECRET=ebay-client-secret:${{ steps.ebay.outputs.version }}
+            NEONBINDER_FAKE_BSC_KEY=fake-bsc-caller-key:${{ steps.fakebsc.outputs.version }}
           no_traffic: true
           tag: pr-${{ needs.scope.outputs.pr }}
           # NEO-299: explicit per-deploy cap — see the env block comment above.
@@ -276,12 +295,12 @@ jobs:
           echo "preview_tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Preview URL: $TAGGED_URL"
 
-  # Real BSC + SportLots login round-trip against the tagged preview revision.
+  # Fake-BSC probe + real SportLots login round-trip against the tagged preview revision.
   # This is the dedicated browser-service e2e check (tests/integration/*.test.mjs
   # via test:prod-gate) that was missing in the monorepo CI — it catches auth
   # regressions in the PR's own browser code before the web E2E even runs.
   preview-login-probe:
-    name: Preview login probe (BSC + SportLots)
+    name: Preview login probe (fake BSC + SportLots)
     needs: deploy-preview
     # Runs whenever deploy-preview succeeded (implicit success()), on a PR or a
     # merge group.
@@ -330,20 +349,24 @@ jobs:
           id_token_audience: ${{ steps.base-url.outputs.base_url }}
           id_token_include_email: true
 
-      - name: Run integration login suite against preview
+      # NEO-552: BSC is the fake. The probe signs in with the fake's constant
+      # credentials and asserts /health says bscTarget=fake; no BSC credential
+      # exists in CI. SportLots still logs in for real.
+      - name: BSC probe against the preview (fake)
         env:
           TARGET_URL: ${{ needs.deploy-preview.outputs.preview_url }}
           PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
-          BSC_USERNAME: ${{ secrets.MAESTRO_BSC_USERNAME }}
-          BSC_PASSWORD: ${{ secrets.MAESTRO_BSC_PASSWORD }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" fake
+
+      - name: Run SportLots login suite against preview
+        env:
+          TARGET_URL: ${{ needs.deploy-preview.outputs.preview_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
           SPORTLOTS_USERNAME: ${{ secrets.MAESTRO_SPORTLOTS_USERNAME }}
           SPORTLOTS_PASSWORD: ${{ secrets.MAESTRO_SPORTLOTS_PASSWORD }}
-          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch —
-          # while SportLots is paused this probe can't log in either, so skip
-          # just that half rather than going red for a known, operator-chosen
-          # outage. No `if:` gating: BSC keeps probing unconditionally.
+          # NEO-287: mirrors the Convex-side NEONBINDER_PAUSED_PLATFORMS switch.
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
-        run: npm run test:prod-gate
+        run: node --test tests/integration/sportlots-login.test.mjs
 
   # Sticky PR comment with the preview URL + probe result, always posted so a
   # failure still leaves a trace on the PR.
@@ -399,7 +422,7 @@ jobs:
 
           **Checks**
           - Deploy: $(status "$DEPLOY_RESULT")
-          - Login probe (BSC + SportLots): $(status "$PROBE_RESULT")
+          - Login probe (fake BSC + SportLots): $(status "$PROBE_RESULT")
 
           The web E2E on this PR runs against this preview (NEONBINDER_BROWSER_URL is pointed at the tagged URL). [Workflow run]($RUN_URL)
           EOF

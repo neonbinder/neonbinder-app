@@ -294,7 +294,8 @@ const ownerReportValidator = v.object({
   ordersFailed: v.number(),
   /**
    * Why this owner stopped early: a BSC failure kind ("signed_out",
-   * "no_token", "paused"), "rate_limited" (a 429), "unavailable"
+   * "no_token", "paused"), "rate_limited" (a 429), "paced" (NB's own BSC call
+   * gate held the read back, NEO-552), "unavailable"
    * (`MAX_CONSECUTIVE_UNAVAILABLE` timeout/network/5xx reads in a row) or
    * "not_armed".
    */
@@ -485,6 +486,12 @@ export async function fillMissingImpl(
             row.stopped = "signed_out";
           } else if (f.kind === "http" && f.httpStatus === 429) {
             row.stopped = "rate_limited";
+            halted = true;
+            cutShort = true;
+          } else if (f.kind === "paced") {
+            // NEO-552: NB's own call gate is holding BSC calls back; every
+            // later read this call would be refused the same way, unsent.
+            row.stopped = "paced";
             halted = true;
             cutShort = true;
           } else if (unavailableRun >= MAX_CONSECUTIVE_UNAVAILABLE) {

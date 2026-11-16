@@ -2,7 +2,6 @@ import express, { Request, Response } from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import { SUPPORTED_SITES } from "./adapters";
-import { CONTRACT_VERSION } from "./contract-version";
 import { BSCAdapter } from "./adapters/bsc-adapter";
 import { SportlotsAdapter } from "./adapters/sportlots-adapter";
 import { LoginDiagnostic } from "./services/login-diagnostic";
@@ -10,6 +9,9 @@ import { credentialRateLimitKey } from "./rate-limit";
 import { createCredentialsRouter } from "./routes/credentials";
 import { createEasypostRouter } from "./routes/easypost";
 import { createEbayOAuthRouter } from "./routes/ebay-oauth";
+import { createHealthRouter } from "./routes/health";
+import { createBscProbeRouter } from "./routes/bsc-probe";
+import { assertBscTargetAllowed } from "./bsc-endpoints";
 import { parseTransientCredentials } from "./transient-credentials";
 import { respondIfCanaryPaused } from "./canary-pause";
 import {
@@ -81,6 +83,13 @@ interface SitesResponse {
 }
 
 const ENV = process.env.ENVIRONMENT || "dev";
+
+// NEO-552: refuse to boot a prod process pointed at the fake BSC (or a dev one
+// with a malformed fake URL). Throwing here exits before app.listen(), so
+// Cloud Run never routes traffic to the revision and the deploy fails loudly.
+// The message names the env var, never its value (an internal URL).
+assertBscTargetAllowed(process.env);
+
 const app = express();
 
 // Trust proxy headers from Cloud Run / load balancers (not in dev — breaks express-rate-limit)
@@ -117,29 +126,9 @@ app.use(limiter);
 // when the service was still --allow-unauthenticated. The /health endpoint
 // remains public so Cloud Run's HTTP probe can reach it.
 
-// Health endpoint.
-//
-// `contractVersion` (NEO-143) is what Convex reads to decide whether this
-// service is new enough to understand the request it is about to send. It must
-// stay on /health specifically: this is the one route Convex can call before it
-// commits to a request shape, and it is cheap enough to poll. Do not remove it
-// or rename the field without updating apps/web/convex/credentials.ts —
-// a missing field reads as version 0 and will (deliberately) fail every
-// credential operation loudly.
-// Deliberately does NOT report the Cloud Run revision name. Not for exposure
-// reasons — this route is IAM-gated like every other one (verified 2026-08-12:
-// only named service accounts hold roles/run.invoker on this service in both
-// projects; there is no allUsers binding, and an unauthenticated GET /health
-// gets a 403 from Cloud Run before Express sees it). It is omitted simply
-// because nothing needs it: the guard keys off contractVersion alone, and the
-// serving revision is already in Cloud Run's console and logs.
-app.get("/health", (_req: Request, res: Response) => {
-  res.json({
-    status: "ok",
-    environment: ENV,
-    contractVersion: CONTRACT_VERSION,
-  });
-});
+// Health endpoint: contractVersion (NEO-143) and bscTarget (NEO-552). In
+// ./routes/health so a test can mount it; see the header there.
+app.use(createHealthRouter());
 
 // Get list of supported sites
 app.get("/sites", (_req: Request, res: Response<SitesResponse>) => {
@@ -434,6 +423,13 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
     await adapter.cleanup();
   }
 });
+
+// --- BSC probe (NEO-552) ---
+//
+// POST /probe/bsc: the prod deploy check and the daily drift source. Real
+// sign-in plus pinned reads, returning shapes and statuses only, never values.
+// See ./routes/bsc-probe for which account it uses and its 1/minute cap.
+app.use(createBscProbeRouter());
 
 // --- Credential CRUD endpoints ---
 //

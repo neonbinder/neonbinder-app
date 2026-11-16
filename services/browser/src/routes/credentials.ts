@@ -174,11 +174,25 @@ export function createCredentialsRouter(
       try {
         const store = createStore();
         const results: Record<string, boolean> = {};
-        await Promise.all(
+        // allSettled, not all: the answer must not depend on which key's
+        // failure lands first. A malformed or refused key (NEO-552: a fake-BSC
+        // key on a real-BSC process) is the caller's error and wins as a 400,
+        // like every other /credentials route; any other failure is a 500.
+        const settled = await Promise.allSettled(
           (keys as string[]).map(async (key) => {
             results[key] = await store.credentialsExist(key);
           }),
         );
+        const failures = settled.flatMap((s) => (s.status === "rejected" ? [s.reason] : []));
+        if (
+          failures.some(
+            (e) => e instanceof Error && e.message.includes("Invalid credential key format"),
+          )
+        ) {
+          res.status(400).json({ error: "Invalid credential key format" });
+          return;
+        }
+        if (failures.length > 0) throw failures[0];
         res.json({ results });
       } catch (err) {
         console.error(
