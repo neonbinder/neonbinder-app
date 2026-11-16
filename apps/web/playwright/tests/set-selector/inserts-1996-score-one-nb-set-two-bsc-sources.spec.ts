@@ -42,6 +42,25 @@ const SERIES_2 = "Dugout Collection Artist's Proofs Series 2";
 const MERGED = "Dugout Collection Artists Proofs";
 const FETCH = 120_000;
 
+/**
+ * Wait for "Add remaining players as new" to have FINISHED, never for its busy label to be
+ * gone. The press paints "Adding players…" a render later, and the walk is a few writes, so a
+ * `toBeHidden` on that label can pass before it ever shows (the trace of a red mobile run: the
+ * check ran 85 ms after the tap, the label painted after it, and the walk moved the wizard on
+ * under the next click). The finished walk has two positive signs: the link reads "(0)" (a team
+ * or league name is still undecided), or every name is decided and the footer offers Next /
+ * Confirm & Save. The steps still showing before it read "(N)" with N above zero.
+ */
+async function expectBulkWalkDone(page: Page): Promise<void> {
+  const wizard = reviewWizard(page);
+  await expect(
+    wizard
+      .getByRole("button", { name: /^Add remaining players as new \(0\)$/ })
+      .or(nextStepButton(page))
+      .or(confirmSaveButton(page)),
+  ).toBeVisible({ timeout: 240_000 });
+}
+
 // ── The SportLots-paused branch's fixture (NEO-535) ──
 // Series 1's NB row is renamed to LONG_INSERT. The title arithmetic is exact because
 // the name is a fixed string (no minted token): the description "1996 Score <name>" is
@@ -122,9 +141,7 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
       await answerPlayerAsNew(page);
       if (await addRemaining.isVisible()) {
         await addRemaining.click();
-        // The bulk walk reads "Adding players…" while it runs; a step decided in the middle of it
-        // would race its writes.
-        await expect(wizard.getByRole("button", { name: "Adding players…" })).toBeHidden({ timeout: 240_000 });
+        await expectBulkWalkDone(page);
       }
     } else {
       await answerStepAsNew(page);
@@ -388,10 +405,9 @@ test(
     await expect(stepCounter(page)).toHaveText(/^Step 2 of [0-9]+$/);
 
     await wizard.getByRole("button", { name: /Add remaining players as new/ }).click();
-    // The bulk walk reads "Adding players…" while it runs; deciding a team step
-    // in the middle of it would race the bulk's own writes (Convex OCC), and a
-    // user watches the walk finish before touching the next step.
-    await expect(wizard.getByRole("button", { name: "Adding players…" })).toBeHidden({ timeout: 240_000 });
+    // Deciding a team step in the middle of the walk would race the bulk's own writes
+    // (Convex OCC), and a user watches the walk finish before touching the next step.
+    await expectBulkWalkDone(page);
     const confirmSave = confirmSaveButton(page);
     // The names-done footer (NEO-335): "Next (Enter)" on a teams / titles step,
     // else Confirm & Save. Neither renders while a name is undecided.

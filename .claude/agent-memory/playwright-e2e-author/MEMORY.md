@@ -130,3 +130,4 @@
 - [Re-run a fresh-only spec w/o reseed](patterns_rerun_a_fresh_only_spec_without_a_reseed.md) — gcloud expired: restore spec + reset --except-reference-seed; push a break to prove stored-title asserts
 - [Parallel titles dialog specs](patterns_parallel_titles_dialog_specs.md) — NEO-535: builder-engineered names, box beats carry, sr-only duplicate status, Vite reload false red
 - [NEO-535 description, walker, Regenerate specs](patterns_neo535_description_walker_and_regenerate_specs.md) — stale builder text, walker order, rename fan-out shape, mobile-only wrap, plant traps
+- [Bulk walk busy label toBeHidden is vacuous](patterns_bulk_walk_busy_label_toBeHidden_is_vacuous.md) — wait for "(0)" or Next/Confirm after "Add remaining players as new", not the busy label gone
