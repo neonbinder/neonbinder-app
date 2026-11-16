@@ -217,6 +217,7 @@
 - [Status after a dialog closes](reference_status_after_a_dialog_closes.md) — say it from a parent effect after the inert release, not in the closing handler; sr-only text breaks anchored Playwright getByText
 - [Checklist section kinds read card numbers](reference_checklist_section_kinds_read_card_numbers.md) — numbered fixtures 1,2,3… turn parallels into base-subsets; parallels repeat the base numbers
 - [Duplicate React key regression test](reference_duplicate_react_key_regression_test.md) — spy console.error for "same key"; text assertions pass with the bug
+- [break-words does not shrink a table cell](reference_break_words_does_not_shrink_a_table_cell.md) — auto-layout table + unspaced title: use wrap-anywhere; flex + min-w-0 is fine with break-words
 - [Unlayered text-wrap beats truncate](reference_unlayered_text_wrap_beats_truncate.md) — globals.css p/li/h text-wrap is unlayered, so `truncate` wraps; long names use min-w-0 + wrap-anywhere
 - [Centred fixed toast shrink-wraps to 50vw](reference_centred_fixed_toast_shrink_wraps_to_half_the_viewport.md) — use a fixed inset-x-4 flex band + max-w-full box; items-start + mt nudges keep one-line rows
 - [A name in a NeonButton needs free height](reference_a_name_in_a_neonbutton_needs_free_height.md) — Radix fixes height, not nowrap; h-auto min-h-8 py-1.5 max-w-full wrap-anywhere (size 1: min-h-6 py-1)
