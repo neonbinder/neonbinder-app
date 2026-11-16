@@ -76,6 +76,11 @@ describe("listing copy, per platform (NEO-415)", () => {
     expect(heldBackNotice("noLeague", "ebay")).toBe(
       "Held back from eBay: listings there need a league, and this card doesn't have one yet. Report it and our crew sets it.",
     );
+    // With no crew to report to beside it (the logged-out demo), the panel says where Report is.
+    expect(heldBackNotice("noLeague", "ebay", false)).toBe(
+      "Held back from eBay: listings there need a league, and this card doesn't have one yet. Report it from Sync status on your dashboard and our crew sets it.",
+    );
+    expect(heldBackNotice("noPrice", "ebay", false)).toBe(heldBackNotice("noPrice", "ebay"));
   });
 
   it("a rejected row's detail is NB's own sentence, said as ours, never as a quote from the platform", () => {

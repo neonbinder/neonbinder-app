@@ -688,7 +688,8 @@ export default function CardDetail({
         <div>
           <p className="flex items-start gap-2 rounded-md border border-notice-warn-rule bg-notice-warn-bg px-3 py-2 text-sm text-notice-warn-ink">
             <ExclamationTriangleIcon aria-hidden="true" className="mt-0.5 size-4 shrink-0" />
-            <span>{heldBackNotice(held.reason, held.platform)}</span>
+            {/* "Report it" only beside a Report button; with no crew, where it is. */}
+            <span>{heldBackNotice(held.reason, held.platform, crew !== null)}</span>
           </p>
           {/* NEO-569: a reason only the crew can fix (a missing league, a
               link, a sheet row) is reported from here too, with the same

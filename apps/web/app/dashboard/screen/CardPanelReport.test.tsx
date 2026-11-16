@@ -100,7 +100,11 @@ describe("Report in the card panel (NEO-569)", () => {
     open("ebay.noLeague", null);
     const panel = await screen.findByRole("dialog", {}, { timeout: 5000 });
     await settle();
-    expect(within(panel).getByText(/^Held back from eBay: listings there need a league/)).toBeTruthy();
+    expect(
+      within(panel).getByText(
+        "Held back from eBay: listings there need a league, and this card doesn't have one yet. Report it from Sync status on your dashboard and our crew sets it.",
+      ),
+    ).toBeTruthy();
     expect(within(panel).queryByRole("button", { name: /^Report to our crew/ })).toBeNull();
   });
 });

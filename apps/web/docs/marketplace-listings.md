@@ -674,15 +674,21 @@ cap is dropped, never cut.
 
 **When a card has no league.** If the card's sport has at least one `leagues`
 row and the card has no `leagueId` (or its row is gone), the eBay drain holds
-the card back with reason `noLeague` (`lib/ebayListing.ebayLeagueMissing`).
-A sport with no leagues lists without the aspect, as before. The hold:
+the card back with reason `noLeague` (`lib/ebayListing.ebayLeagueMissing`)
+unless it already has a live listing. A sport with no leagues lists without
+the aspect, as before. The hold:
 
 - is eBay's only; BuySportsCards never reads a card's league;
 - is checked after the collector's own holds (price, photo) and before eBay's
   required aspects, so a card shows one reason at a time;
-- never withdraws a live listing: the listing's SKU is still a target, so it
-  stays up as it is (no price or quantity update either, as for every hold)
-  until the card has a league;
+- never applies to a live listing. Holding one would freeze its price and
+  quantity on eBay, an oversell risk for every listing until the card
+  backfill runs, and for good on a card whose teams sit in different leagues.
+  A live listing instead keeps syncing with its aspects built without League,
+  exactly as they were pushed before, so its content hash does not change and
+  only price and quantity updates go out. League is added (one item re-send)
+  once the card has a league. Since no hold is recorded, such a card is not
+  offered for Report; the card backfill and the admin's card panel fill it;
 - is reportable (`lib/collection/sync-report.REPORTABLE_SYNC_REASONS`): the
   collector cannot set a league, so the held notice says so and the existing
   Report flow sends it to the admin team, who set it in the card's panel. The
@@ -691,6 +697,7 @@ A sport with no leagues lists without the aspect, as before. The hold:
 **One-time re-send.** The League aspect is part of the item content that
 `contentFingerprint` hashes. On the first sync after NEO-569 ships, every live
 listing whose card has a league re-sends its inventory item once (item only;
-the offer is untouched unless something else changed). A card without a
-league in a sport with leagues is held instead, so roll the card backfill out
-before eBay syncs run in earnest.
+the offer is untouched unless something else changed). A live listing whose
+card has no league keeps its old content and is not re-sent. A NEW listing
+for a card without a league in a sport with leagues is held, so roll the card
+backfill out before eBay syncs run in earnest.

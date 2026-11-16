@@ -332,7 +332,7 @@ export default function SetLeagueRow({
           <button
             type="button"
             onClick={returnToInherited}
-            className="text-[11px] text-ink-2 underline decoration-dotted underline-offset-2 hover:text-neon-blue-text focus:text-neon-blue-text focus-outline"
+            className="hit-area-24 text-[11px] text-ink-2 underline decoration-dotted underline-offset-2 hover:text-neon-blue-text focus:text-neon-blue-text focus-outline"
           >
             {SET_LEAGUE_LABELS.useInherited}
           </button>

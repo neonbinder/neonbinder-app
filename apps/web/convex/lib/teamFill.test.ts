@@ -557,3 +557,65 @@ describe("careerTeamVerdict — NEO-569 undated stints", () => {
     expect(verdict.candidates).not.toContain("wake");
   });
 });
+
+describe("careerTeamVerdict — NEO-569 undated stints, adversarial", () => {
+  type K = "wake" | "duke" | "mets";
+  const rank = (inLeague: ReadonlyArray<K>) => (key: K): TeamPreferenceRank =>
+    inLeague.includes(key) ? 0 : 2;
+
+  test("one undated team in scope, a dated out-of-scope team in the window: the in-scope team wins on preference", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }, { key: "mets", fromYear: 2025 }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank(["wake"]),
+      setHasLeagues: true,
+    });
+    expect(verdict.answer?.key).toBe("wake");
+  });
+
+  test("two teams in scope, one dated one undated: the undated one is ignored", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }, { key: "duke", fromYear: 2025 }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank(["wake", "duke"]),
+      setHasLeagues: true,
+    });
+    expect(verdict.answer?.key).toBe("duke");
+    expect(verdict.candidates).not.toContain("wake");
+  });
+
+  test("setHasLeagues true with no rankOf: nothing is in scope, so an undated stint is ignored", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      setHasLeagues: true,
+    });
+    expect(verdict.answer).toBeNull();
+    expect(verdict.candidates).toEqual([]);
+  });
+
+  test("two undated stints of the one in-scope team still cover every year (no dated stint)", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }, { key: "wake" }],
+      year: 1990,
+      currentYear: CURRENT_YEAR,
+      rankOf: rank(["wake"]),
+      setHasLeagues: true,
+    });
+    expect(verdict.answer?.key).toBe("wake");
+  });
+
+  test("an undated team ranked 1 (same level, not the set's league) is not in scope", () => {
+    const verdict = careerTeamVerdict<K>({
+      stints: [{ key: "wake" }],
+      year: 2025,
+      currentYear: CURRENT_YEAR,
+      rankOf: () => 1,
+      setHasLeagues: true,
+    });
+    expect(verdict.answer).toBeNull();
+  });
+});

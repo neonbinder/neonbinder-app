@@ -113,3 +113,4 @@
 - [Merge queue cheap/full split](patterns_merge_queue_cheap_full_split.md) — stale cheap green; queue rule w/o gate; merge_group fork boundary; eject; verdict-vs-report check; pending-run replacement
 - [Neo483 background chain re-arm](patterns_neo483_background_chain_rearm.md) — capped chain re-armed by a cron is perpetual; upstream "no" terminal; user-action bypass needs a floor; tokenRefused on 401s
 - [Neo552 fake upstream + recorder](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; TOCTOU; .. prefix; SKU ns; durable list needs write rate; sweep only older versions
+- [Neo569 league ids](patterns_neo569_league_ids.md) — registry fixture the body refuses = vacuous gate test; new hold reason freezes live qty/price

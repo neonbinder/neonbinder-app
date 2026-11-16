@@ -447,6 +447,12 @@ export function orderSportLeagues<T extends { name: string; level?: string }>(
 }
 
 /** NEO-569 — every league of one sport, as summaries, major first. */
+/**
+ * NEO-569 security N2 — the most of a sport's leagues one read takes. A sport
+ * holds tens of leagues; the cap only bounds a pathological table.
+ */
+export const MAX_SPORT_LEAGUES_READ = 500;
+
 export async function sportLeagueSummaries(
   ctx: Pick<QueryCtx, "db">,
   sportId: Id<"selectorOptions"> | undefined,
@@ -455,7 +461,7 @@ export async function sportLeagueSummaries(
   const rows = await ctx.db
     .query("leagues")
     .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
-    .collect();
+    .take(MAX_SPORT_LEAGUES_READ);
   return orderSportLeagues(rows.map(toLeagueSummary));
 }
 
@@ -591,7 +597,7 @@ export async function findDefaultLeagueId(
   const sportRows = await ctx.db
     .query("leagues")
     .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
-    .collect();
+    .take(MAX_SPORT_LEAGUES_READ);
   const byAlias = sportRows.find((row) => leagueAnswersTo(row, nameKey));
   if (byAlias) return byAlias._id;
   const { abbreviation } = configured;

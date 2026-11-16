@@ -1058,14 +1058,6 @@ describe("NEO-569: the set and card League surface is admin-gated, and its casca
       (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
         t.query(api.selectorOptions.getSelectorOptionLeagues, { selectorOptionId: sportId }),
     ],
-    [
-      "selectorOptions.setSelectorOptionLeagues",
-      (t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) =>
-        t.mutation(api.selectorOptions.setSelectorOptionLeagues, {
-          selectorOptionId: sportId,
-          leagueIds: [],
-        }),
-    ],
   ] as const)("%s refuses a signed-in non-admin and a signed-out caller", async (_name, call) => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
@@ -1074,6 +1066,30 @@ describe("NEO-569: the set and card League surface is admin-gated, and its casca
     const row = await t.run(async (ctx) => ctx.db.get(sportId));
     expect(row!.lastUpdated).toBe(1_700_000_000_000);
     expect(row!.leagueIds).toBeUndefined();
+  });
+
+  test("selectorOptions.setSelectorOptionLeagues refuses a non-admin and a signed-out caller on a row the handler would accept", async () => {
+    const t = convexTest(schema, modules);
+    // A setName row: the handler accepts it, so only the admin gate can refuse.
+    const setId = await t.run(async (ctx) => {
+      const row = (level: "sport" | "year" | "manufacturer" | "setName", value: string, parentId?: Id<"selectorOptions">) =>
+        ctx.db.insert("selectorOptions", {
+          level, value, ...(parentId ? { parentId } : {}), platformData: {}, children: [], lastUpdated: 1_700_000_000_000,
+        });
+      const sport = await row("sport", "Baseball");
+      const year = await row("year", "2024", sport);
+      const brand = await row("manufacturer", "Topps", year);
+      return row("setName", "Chrome", brand);
+    });
+    const call = (c: ReturnType<typeof convexTest>) =>
+      c.mutation(api.selectorOptions.setSelectorOptionLeagues, { selectorOptionId: setId, leagueIds: [] });
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow();
+    await expect(call(t)).rejects.toThrow();
+    const row = await t.run(async (ctx) => ctx.db.get(setId));
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect(row!.leagueIds).toBeUndefined();
+    // Positive control: the same call as an admin resolves, so the refusals above are the gate.
+    await expect(call(t.withIdentity({ subject: "user_admin_569", role: "admin" }))).resolves.toBeNull();
   });
 
   test("cardLeague.cardLeagueOptions refuses a signed-in non-admin and a signed-out caller", async () => {

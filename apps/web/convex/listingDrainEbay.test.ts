@@ -867,11 +867,32 @@ describe("eBay drain: League (NEO-569)", () => {
     expect((await record(s, v.variantId))?.problems).toEqual([]);
   });
 
-  test("a live listing whose card has no league is held but never withdrawn", async () => {
+  test("S2: a live listing whose card has no league is not held: price and quantity still go out, the item is not re-sent", async () => {
     const s = await setup();
     const { v, card } = await oneCard(s);
     await drain(s);
+    const sku = `NB2-${card}-NM`;
     expect((await linkOf(s, card, "NM"))?.status).toBe("live");
+    const hashBefore = (await linkOf(s, card, "NM"))?.pushed?.contentHash;
+    ebay.calls = [];
+    await addLeague(s, v.sportId, { name: "Major League Baseball", abbreviation: "MLB" });
+    await addWithPhoto(s, card, { homeId: s.box, condition: "Near Mint", minPriceCents: 500, quantity: 2 }, "tokL");
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+
+    await drain(s);
+
+    expect(ebay.writes().map((c) => c.path)).toEqual(["/sell/inventory/v1/bulk_update_price_quantity"]);
+    expect(ebay.offerFor(sku)?.body.availableQuantity).toBe(3);
+    expect(ebay.items.get(sku).product.aspects.League).toBeUndefined();
+    expect((await linkOf(s, card, "NM"))?.status).toBe("live");
+    expect((await linkOf(s, card, "NM"))?.pushed).toMatchObject({ quantity: 3, contentHash: hashBefore });
+    expect((await record(s, v.variantId))?.problems).toEqual([]);
+  });
+
+  test("S2: a live listing whose card has no league and nothing changed sends nothing", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await drain(s);
     ebay.calls = [];
     await addLeague(s, v.sportId, { name: "Major League Baseball", abbreviation: "MLB" });
     await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
@@ -880,8 +901,6 @@ describe("eBay drain: League (NEO-569)", () => {
 
     expect(ebay.writes()).toEqual([]);
     expect((await linkOf(s, card, "NM"))?.status).toBe("live");
-    expect(ebay.offerFor(`NB2-${card}-NM`)?.status).toBe("PUBLISHED");
-    expect((await record(s, v.variantId))?.problems).toEqual([{ cardId: card, reason: "noLeague" }]);
   });
 
   test("a league set on a live listing's card re-sends the item once (the content changed), then nothing", async () => {

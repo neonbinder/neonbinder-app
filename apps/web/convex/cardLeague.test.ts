@@ -338,6 +338,49 @@ describe("setSelectorOptionLeagues — a set's leagues", () => {
     expect((await t.run((ctx) => ctx.db.get(s.set)))!.leagueIds).toEqual([s.mlb]);
   });
 
+  test("one lock per set: an ancestor's and a descendant's cascades never overlap (security N1)", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const admin = t.withIdentity(ADMIN);
+    const underInsert = await addCard(t, s.insert);
+    const stamp = async () => (await t.run((ctx) => ctx.db.get(s.set)))!.leagueCascadeStartedAt;
+    const insertStamp = async () =>
+      (await t.run((ctx) => ctx.db.get(s.inserts)))!.leagueCascadeStartedAt;
+
+    // A descendant's edit stamps the SET row, and then refuses the set's edit.
+    await admin.mutation(api.selectorOptions.setSelectorOptionLeagues, {
+      selectorOptionId: s.inserts,
+      leagueIds: [s.ncaa],
+    });
+    expect(await stamp()).toBeDefined();
+    expect(await insertStamp()).toBeUndefined();
+    await expect(
+      admin.mutation(api.selectorOptions.setSelectorOptionLeagues, {
+        selectorOptionId: s.set,
+        leagueIds: [s.nl],
+      }),
+    ).rejects.toThrow(/Still applying the last league change/);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await stamp()).toBeUndefined();
+    expect(await cardLeague(t, underInsert)).toBe(s.ncaa);
+
+    // And the other way: the set's cascade refuses a descendant's edit.
+    await admin.mutation(api.selectorOptions.setSelectorOptionLeagues, {
+      selectorOptionId: s.set,
+      leagueIds: [s.nl],
+    });
+    await expect(
+      admin.mutation(api.selectorOptions.setSelectorOptionLeagues, {
+        selectorOptionId: s.insert,
+        leagueIds: [s.mlb],
+      }),
+    ).rejects.toThrow(/Still applying the last league change/);
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+    expect(await stamp()).toBeUndefined();
+    // The insert type kept its own list, so its card stays put.
+    expect(await cardLeague(t, underInsert)).toBe(s.ncaa);
+  });
+
   test("rule A: teamless cards follow; a card with teams or an admin's other pick stays", async () => {
     const t = convexTest(schema, modules);
     const s = await seed(t);

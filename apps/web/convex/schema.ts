@@ -583,11 +583,12 @@ export const selectorOptionFields = {
    */
   leagueIds: v.optional(v.array(v.id("leagues"))),
   /**
-   * NEO-569 — when a `leagueIds` edit on THIS row last handed its subtree's
+   * NEO-569 — the set's ONE league-cascade lock, set on the `setName` row
+   * only: when a `leagueIds` edit on this set or any row within it handed
    * teamless cards to `cardLeague.cascadeSetLeagues`, and that cascade has not
-   * yet reported back. Same contract as `teamCascadeStartedAt`: a fresh stamp
-   * refuses the next edit, a stale one is overwritten, the cascade's last
-   * invocation removes it. ABSENT means no cascade in flight.
+   * yet reported back. A fresh stamp refuses every league edit within the set
+   * (so two cascades never overlap), a stale one is overwritten, the
+   * cascade's last invocation removes it. ABSENT means no cascade in flight.
    */
   leagueCascadeStartedAt: v.optional(v.number()),
   /**

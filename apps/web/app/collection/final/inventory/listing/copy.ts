@@ -151,17 +151,19 @@ export function problemSentence(
  * dashboard's Sync status opened it: why, and that the fix is right here. A
  * price or a photo is fixed on the copy below (the panel opens its Edit form
  * there); a missing league (NEO-569) is the crew's to set, so the line says
- * to report it (the panel offers the dashboard's Report beside it); every
+ * to report it: "Report it" when the panel offers the dashboard's Report
+ * under it (`canReport`, a crew to report to), else where Report is. Every
  * other reason says what it says on Sync status.
  */
-export function heldBackNotice(reason: ListingProblemReason, platform: ListingPlatform): string {
+export function heldBackNotice(reason: ListingProblemReason, platform: ListingPlatform, canReport = true): string {
   const name = PLATFORM_NAME[platform];
   if (reason === "noPrice") return `Held back from ${name}: no price yet. Set one on your copy below and it goes up next sync.`;
   if (reason === "noPhoto") {
     return `Held back from ${name}: listings there need a photo. Add one to your copy below and it goes up next sync.`;
   }
   if (reason === "noLeague") {
-    return `Held back from ${name}: listings there need a league, and this card doesn't have one yet. Report it and our crew sets it.`;
+    const report = canReport ? "Report it" : "Report it from Sync status on your dashboard";
+    return `Held back from ${name}: listings there need a league, and this card doesn't have one yet. ${report} and our crew sets it.`;
   }
   return problemSentence({ reason }, false, platform);
 }

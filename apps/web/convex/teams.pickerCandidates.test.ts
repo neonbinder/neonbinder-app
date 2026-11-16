@@ -369,6 +369,35 @@ describe("teams.pickerCandidates — NEO-569: a set's leagues are ids, any-of", 
     expect(summary(rows)).toEqual(["Bears Mlb:1", "Bears Ncaa:1"]);
   });
 
+  test("the league leg is 500 teams in TOTAL: a later league starves once an earlier one fills it, and operator order decides", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t);
+    const big = await seedLeague(t, baseball, "Big League", "major");
+    const small = await seedLeague(t, baseball, "Small League", "college");
+    await t.run(async (ctx) => {
+      for (let i = 0; i < 520; i++) {
+        await ctx.db.insert("teams", {
+          name: `Zz ${String(i).padStart(3, "0")}`,
+          nameNormalized: normalizeTeamName(`Zz ${String(i).padStart(3, "0")}`),
+          sportId: baseball,
+          leagueId: big,
+          lastUpdated: 1,
+        });
+      }
+    });
+    // Created last, so neither the sport window (first 500) nor a full big-league leg reaches it.
+    await seedTeam(t, baseball, "Aaa Late", { leagueId: small });
+    const { setId } = await seedSet(t, baseball, "2024", null);
+
+    await t.run(async (ctx) => ctx.db.patch(setId, { leagueIds: [big, small] }));
+    const starved = await pick(t, { query: "", sportId: baseball, contextOptionId: setId });
+    expect(starved.map((r) => r.team.name)).not.toContain("Aaa Late");
+
+    await t.run(async (ctx) => ctx.db.patch(setId, { leagueIds: [small, big] }));
+    const first = await pick(t, { query: "", sportId: baseball, contextOptionId: setId });
+    expect(first[0].team.name).toBe("Aaa Late");
+  });
+
   test("a set league of another sport is never ranked by", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t);

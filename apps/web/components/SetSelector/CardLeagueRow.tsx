@@ -44,7 +44,7 @@ type Option =
 
 /** Why the field is blank, in the admin's words. */
 export function cardLeagueBlankCopy(reason: BlankReason): string {
-  const tail = " eBay holds it back until it has one.";
+  const tail = " Listings are held back until it has one.";
   switch (reason) {
     case "noTeam":
       return `No league yet: this card has no team to take one from, and the set has more than one league. Pick one.${tail}`;
@@ -59,8 +59,11 @@ export function cardLeagueBlankCopy(reason: BlankReason): string {
 
 /**
  * The list, in order: the blank, the set's leagues, then the rest of the
- * sport's (no league twice), narrowed by what was typed. The blank stays
- * whatever is typed, so a clear is always one Enter away.
+ * sport's (no league twice). Typing narrows it by name or abbreviation, and
+ * then the blank goes last, and only while its own label matches ("no"):
+ * the highlight starts on the first row, so "NPB" then Enter must save NPB,
+ * never clear the card, and text that names no league offers nothing to
+ * press (the empty message says so) rather than a clear.
  */
 export function cardLeagueOptions(
   setLeagues: ReadonlyArray<LeagueSummary>,
@@ -79,16 +82,16 @@ export function cardLeagueOptions(
       leagues.push({ kind: "league", key: league._id, label: league.name, league, inSet });
     }
   }
+  const blank: Option = { kind: "none", key: NO_LEAGUE_KEY, label: "No league" };
   const query = typed?.trim().toLowerCase() ?? "";
-  const matching = query
-    ? leagues.filter(
-        (o) =>
-          o.kind === "league" &&
-          (o.league.name.toLowerCase().includes(query) ||
-            (o.league.abbreviation?.toLowerCase().includes(query) ?? false)),
-      )
-    : leagues;
-  return [{ kind: "none", key: NO_LEAGUE_KEY, label: "No league" }, ...matching];
+  if (!query) return [blank, ...leagues];
+  const matching = leagues.filter(
+    (o) =>
+      o.kind === "league" &&
+      (o.league.name.toLowerCase().includes(query) ||
+        (o.league.abbreviation?.toLowerCase().includes(query) ?? false)),
+  );
+  return blank.label.toLowerCase().includes(query) ? [...matching, blank] : matching;
 }
 
 export default function CardLeagueRow({
@@ -199,7 +202,9 @@ export default function CardLeagueRow({
         </p>
       )}
       {error && (
-        <p id={errorId} role="alert" className="mt-1 text-[10px] text-notice-danger-ink">
+        // The one channel for a refusal: the drawer's commitField throws it
+        // and announces only successes.
+        <p id={errorId} role="alert" className="mt-1 text-xs text-notice-danger-ink">
           {error}
         </p>
       )}

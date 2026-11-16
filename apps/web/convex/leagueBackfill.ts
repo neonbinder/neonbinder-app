@@ -20,7 +20,11 @@
  *     left blank. Runs after **sets** (the last step reads the sets' lists).
  *  3. **strip** — removes the `league` key from `features` on `setName`,
  *     `variantType`, `insert` and `parallel` rows, on year and brand
- *     (`manufacturer`) rows, and on cards, dropping a map that ends up empty. Text that does not resolve is KEPT (it is the only
+ *     (`manufacturer`) rows, and on cards, dropping a map that ends up empty.
+ *     Only where the text is already carried by the new field (a card's
+ *     `leagueId`, a set row's own or inherited `leagueIds`; year and brand
+ *     rows always): otherwise it is kept and counted `keptNotMigrated`, so
+ *     running strip before sets/cards loses nothing. Text that does not resolve is KEPT (it is the only
  *     record of what an operator typed) unless `includeUnresolved: true`.
  *     Never touches a sport row (reference seed).
  *
@@ -273,6 +277,13 @@ async function cardsPage(ctx: MutationCtx, cursor: string | null, apply: boolean
     }
     const teamLeagueIds = await teamLeagueIdsFor(ctx, card.teamOnCardIds, leagueCache);
     let leagueId: Id<"leagues"> | undefined;
+    if (teamLeagueIds.includes(null) && teamLeagueIds.some((id) => id !== null)) {
+      // Product invariant rule 8: a team on the card names a league, so that
+      // data claim holds back every guess. Legacy text and the set's only
+      // league could contradict it; the card is left for an admin.
+      bump(counts, "teamWithoutLeague");
+      continue;
+    }
     if (teamLeagueIds.length > 0 && !teamLeagueIds.includes(null)) {
       const distinct = new Set(teamLeagueIds);
       if (distinct.size > 1) {
@@ -282,7 +293,7 @@ async function cardsPage(ctx: MutationCtx, cursor: string | null, apply: boolean
       leagueId = teamLeagueIds[0] ?? undefined;
       bump(counts, "fromTeams");
     } else {
-      // No usable team: none at all, or one without a league.
+      // No usable team: none at all, or only teams without a league.
       if (teamLeagueIds.length > 0) bump(counts, "teamWithoutLeague");
       const text = legacyLeagueText(card.features);
       if (text) {
@@ -327,6 +338,31 @@ function withoutLeague(
   return Object.keys(rest).length > 0 ? rest : undefined;
 }
 
+/**
+ * Strip safety: whether `row`'s legacy text (resolving to `leagueId`) has
+ * already been carried into the new field, so removing it loses nothing.
+ *  - a card: it has a `leagueId`;
+ *  - a year or brand row: always (nothing migrates or reads its copy);
+ *  - a set-level row: it carries its own `leagueIds`, or it inherits a list
+ *    that contains `leagueId` (the sets phase leaves a row whose text copies
+ *    its parent's to inherit).
+ */
+async function isMigrated(
+  ctx: MutationCtx,
+  stage: (typeof STRIP_STAGES)[number],
+  row: Doc<"selectorOptions"> | Doc<"cardChecklist">,
+  leagueId: Id<"leagues">,
+  setLeagues: SelectorLeagueCache,
+): Promise<boolean> {
+  if (stage === "cards") return "leagueId" in row && row.leagueId !== undefined;
+  if (stage === "year" || stage === "manufacturer") return true;
+  const own = "leagueIds" in row ? row.leagueIds : undefined;
+  if (own && own.length > 0) return true;
+  return (await effectiveSetLeagueIds(ctx, row._id as Id<"selectorOptions">, setLeagues)).includes(
+    leagueId,
+  );
+}
+
 /** Phase 3, one page of one stage (a set level, or the cards). */
 async function stripPage(
   ctx: MutationCtx,
@@ -345,19 +381,29 @@ async function stripPage(
   const counts: Counts = {};
   const unresolved = new Map<string, number>();
   const cache = newResolveCache();
+  const setLeagues: SelectorLeagueCache = newCardLeagueCache().setLeagues;
   for (const row of page.page as Array<Doc<"selectorOptions"> | Doc<"cardChecklist">>) {
     bump(counts, "scanned");
     const features = row.features;
     if (!features || !("league" in features)) continue;
     const text = legacyLeagueText(features);
-    if (text && !includeUnresolved) {
-      const at = "selectorOptionId" in row ? row.selectorOptionId : row._id;
-      const resolved = await resolveLegacyText(ctx, text, await sportFor(ctx, at, cache), cache);
-      if (!resolved) {
+    const at = "selectorOptionId" in row ? row.selectorOptionId : row._id;
+    const resolved = text
+      ? await resolveLegacyText(ctx, text, await sportFor(ctx, at, cache), cache)
+      : null;
+    if (text && !resolved) {
+      if (!includeUnresolved) {
         bump(counts, "keptUnresolved");
         noteUnresolved(unresolved, text);
         continue;
       }
+      // Unresolved text can never migrate; the operator chose to drop it.
+    } else if (resolved && !(await isMigrated(ctx, stage, row, resolved.leagueId, setLeagues))) {
+      // The text names a league but the new field does not carry it yet
+      // (strip run before sets/cards, or a card those phases left blank):
+      // the text is the only record, so it stays.
+      bump(counts, "keptNotMigrated");
+      continue;
     }
     bump(
       counts,

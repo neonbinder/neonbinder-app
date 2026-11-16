@@ -359,7 +359,14 @@ function singleLeague(ids: ReadonlyArray<Id<"leagues">>): Id<"leagues"> | undefi
  *  - deduped, at most `MAX_SET_LEAGUES`, every league in the row's sport
  *    (refused, never dropped, as `resolveOperatorLeagueId` refuses);
  *  - an empty list removes the field: the row inherits its parent's again;
- *  - refused while the last edit's cascade is still running.
+ *  - refused while ANY league cascade in the same set is still running.
+ *
+ * NEO-569 security N1 — one lock per SET. Every cascade, whichever row of the
+ * set it starts from, stamps `leagueCascadeStartedAt` on the set's `setName`
+ * row (`leagueLockRow`), and every edit within the set checks that one stamp.
+ * So an ancestor's cascade and a descendant's can never overlap and write
+ * different leagues to the same teamless cards: the second edit is refused
+ * until the first cascade clears the stamp (or it goes stale).
  */
 export async function writeSelectorOptionLeagues(
   ctx: MutationCtx,
@@ -372,9 +379,10 @@ export async function writeSelectorOptionLeagues(
     throw new ConvexError("Pick leagues on the set, not on the sport, year or brand.");
   }
   const now = Date.now();
+  const lock = await leagueLockRow(ctx, row);
   if (
-    row.leagueCascadeStartedAt !== undefined &&
-    now - row.leagueCascadeStartedAt < LEAGUE_CASCADE_STALE_MS
+    lock.leagueCascadeStartedAt !== undefined &&
+    now - lock.leagueCascadeStartedAt < LEAGUE_CASCADE_STALE_MS
   ) {
     throw new ConvexError("Still applying the last league change. Try again in a moment.");
   }
@@ -403,18 +411,40 @@ export async function writeSelectorOptionLeagues(
   if (previous === next) {
     // A teamless card's answer is unchanged; nothing to cascade. A stale
     // stamp the edit was allowed past is wiped.
-    if (row.leagueCascadeStartedAt !== undefined) {
-      await ctx.db.patch(row._id, { leagueCascadeStartedAt: undefined });
+    if (lock.leagueCascadeStartedAt !== undefined) {
+      await ctx.db.patch(lock._id, { leagueCascadeStartedAt: undefined });
     }
     return;
   }
-  await ctx.db.patch(row._id, { leagueCascadeStartedAt: now });
+  await ctx.db.patch(lock._id, { leagueCascadeStartedAt: now });
   await ctx.scheduler.runAfter(0, internal.cardLeague.cascadeSetLeagues, {
     rootId: row._id,
+    lockId: lock._id,
     ...(previous ? { previousLeagueId: previous } : {}),
     ...(next ? { nextLeagueId: next } : {}),
     startedAt: now,
   });
+}
+
+/**
+ * The row that holds a set's one league-cascade lock: the `setName` row at or
+ * above `row`. A league-bearing row with no `setName` above it (malformed
+ * tree) locks on its topmost league-bearing ancestor, still shared by every
+ * row beneath it.
+ */
+async function leagueLockRow(
+  ctx: ReadCtx,
+  row: Doc<"selectorOptions">,
+): Promise<Doc<"selectorOptions">> {
+  let current = row;
+  const seen = new Set<string>([row._id]);
+  while (current.level !== "setName" && current.parentId && !seen.has(current.parentId)) {
+    seen.add(current.parentId);
+    const parent = await ctx.db.get(current.parentId);
+    if (!parent || !LEAGUE_BEARING_LEVELS.has(parent.level)) break;
+    current = parent;
+  }
+  return current;
 }
 
 /** Cards examined per cascade invocation: one read and at most one patch each. */
@@ -453,12 +483,15 @@ async function inheritingSubtree(
  * it then takes `nextLeagueId` (absent = none: two leagues, or none). A card
  * with teams is never touched — its teams decide. Chunked and
  * self-rescheduling over `by_selector_option`, the `cascadeSelectorOptionTeams`
- * shape; the last invocation removes the root's `leagueCascadeStartedAt` when
- * it is still this run's.
+ * shape; the last invocation removes the set's lock stamp
+ * (`leagueCascadeStartedAt` on `lockId`, the set's `setName` row) when it is
+ * still this run's.
  */
 export const cascadeSetLeagues = internalMutation({
   args: {
     rootId: v.id("selectorOptions"),
+    // The row holding the set's lock stamp (`leagueLockRow`); absent = rootId.
+    lockId: v.optional(v.id("selectorOptions")),
     previousLeagueId: v.optional(v.id("leagues")),
     nextLeagueId: v.optional(v.id("leagues")),
     startedAt: v.optional(v.number()),
@@ -503,6 +536,7 @@ export const cascadeSetLeagues = internalMutation({
     if (nodeIndex < nodeIds.length) {
       await ctx.scheduler.runAfter(0, internal.cardLeague.cascadeSetLeagues, {
         rootId: args.rootId,
+        ...(args.lockId ? { lockId: args.lockId } : {}),
         ...(args.previousLeagueId ? { previousLeagueId: args.previousLeagueId } : {}),
         ...(args.nextLeagueId ? { nextLeagueId: args.nextLeagueId } : {}),
         ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {}),
@@ -512,13 +546,14 @@ export const cascadeSetLeagues = internalMutation({
       });
       return null;
     }
-    const root = await ctx.db.get(args.rootId);
+    const lockId = args.lockId ?? args.rootId;
+    const lock = await ctx.db.get(lockId);
     if (
-      root &&
-      root.leagueCascadeStartedAt !== undefined &&
-      (args.startedAt === undefined || root.leagueCascadeStartedAt === args.startedAt)
+      lock &&
+      lock.leagueCascadeStartedAt !== undefined &&
+      (args.startedAt === undefined || lock.leagueCascadeStartedAt === args.startedAt)
     ) {
-      await ctx.db.patch(args.rootId, { leagueCascadeStartedAt: undefined });
+      await ctx.db.patch(lockId, { leagueCascadeStartedAt: undefined });
     }
     return null;
   },

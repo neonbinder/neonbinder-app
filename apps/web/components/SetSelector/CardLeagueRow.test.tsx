@@ -50,6 +50,8 @@ const lg = (id: string, name: string, abbreviation?: string): LeagueSummary => (
 const AL = lg("lg-al", "American League", "AL");
 const NL = lg("lg-nl", "National League", "NL");
 const IL = lg("lg-il", "International League", "IL");
+const NPB = lg("lg-npb", "Nippon Professional Baseball", "NPB");
+const NOR = lg("lg-nor", "Northern League");
 
 function data(overrides: Partial<{
   current: LeagueSummary | null;
@@ -91,24 +93,28 @@ describe("CardLeagueRow — pure helpers", () => {
     ]);
   });
 
-  it("narrows by name or abbreviation and keeps the blank", () => {
-    expect(cardLeagueOptions([AL, NL], [IL], "il").map((o) => o.label)).toEqual([
+  it("narrows by name or abbreviation, a match first; the blank only when its own words match, and last", () => {
+    expect(cardLeagueOptions([AL, NL], [IL], "il").map((o) => o.label)).toEqual(["International League"]);
+    expect(cardLeagueOptions([AL, NL], [IL], "nl").map((o) => o.label)).toEqual(["National League"]);
+    // "no" names the blank, and still a league that matches comes first.
+    expect(cardLeagueOptions([AL, NL], [IL, NPB], "no").map((o) => o.label)).toEqual([
       "No league",
-      "International League",
     ]);
-    expect(cardLeagueOptions([AL, NL], [IL], "nl").map((o) => o.label)).toEqual([
+    expect(cardLeagueOptions([AL, NL], [IL, NOR], "no").map((o) => o.label)).toEqual([
+      "Northern League",
       "No league",
-      "National League",
     ]);
+    // Text naming no league offers nothing to press, never a clear.
+    expect(cardLeagueOptions([AL, NL], [IL], "zzz")).toEqual([]);
   });
 
-  it("says why it is blank, and that eBay waits", () => {
+  it("says why it is blank, and that listings wait", () => {
     expect(cardLeagueBlankCopy("teamsInDifferentLeagues")).toBe(
-      "No league yet: its teams play in different leagues. Pick the one this card counts for. eBay holds it back until it has one.",
+      "No league yet: its teams play in different leagues. Pick the one this card counts for. Listings are held back until it has one.",
     );
     expect(cardLeagueBlankCopy("noTeam")).toMatch(/^No league yet: this card has no team/);
     expect(cardLeagueBlankCopy("teamWithoutLeague")).toMatch(/Admin → Teams/);
-    expect(cardLeagueBlankCopy(null)).toBe("No league yet. Pick one. eBay holds it back until it has one.");
+    expect(cardLeagueBlankCopy(null)).toBe("No league yet. Pick one. Listings are held back until it has one.");
   });
 });
 
@@ -146,15 +152,28 @@ describe("CardLeagueRow", () => {
     expect(onCommit).toHaveBeenCalledWith(NL._id);
   });
 
-  it("typing narrows; Enter takes the highlighted league", async () => {
+  it("typing narrows; Enter takes the first match, never the blank", async () => {
+    currentData = data({ sportLeagues: [AL, NL, IL, NPB] });
     const { onCommit } = renderRow();
     fireEvent.focus(field());
-    fireEvent.change(field(), { target: { value: "intern" } });
-    fireEvent.keyDown(field(), { key: "ArrowDown" });
+    fireEvent.change(field(), { target: { value: "NPB" } });
+    expect(options().map((o) => o.textContent)).toEqual(["Nippon Professional BaseballNPB"]);
     await act(async () => {
       fireEvent.keyDown(field(), { key: "Enter" });
     });
-    expect(onCommit).toHaveBeenCalledWith(IL._id);
+    expect(onCommit).toHaveBeenCalledTimes(1);
+    expect(onCommit).toHaveBeenCalledWith(NPB._id);
+  });
+
+  it("text that names no league says so, and Enter clears nothing", async () => {
+    const { onCommit } = renderRow();
+    fireEvent.focus(field());
+    fireEvent.change(field(), { target: { value: "zzz" } });
+    expect(screen.getByText("No league by that name in this sport")).toBeTruthy();
+    await act(async () => {
+      fireEvent.keyDown(field(), { key: "Enter" });
+    });
+    expect(onCommit).not.toHaveBeenCalled();
   });
 
   it("No league commits null", async () => {

@@ -245,11 +245,15 @@ describe("phase 3 — strip", () => {
       }),
     );
     arm();
+    // Strip only removes text the new field already carries: migrate first.
+    await t.action(internal.leagueBackfill.run, { phase: "sets", confirm: LEAGUE_BACKFILL_CONFIRM });
+    await t.action(internal.leagueBackfill.run, { phase: "cards", confirm: LEAGUE_BACKFILL_CONFIRM });
     const report = await t.action(internal.leagueBackfill.run, {
       phase: "strip",
       confirm: LEAGUE_BACKFILL_CONFIRM,
     });
     expect(report.complete).toBe(true);
+    expect(report.counts.keptNotMigrated ?? 0).toBe(0);
     expect(report.counts).toMatchObject({
       setRowsStripped: 5,
       yearOrBrandRowsStripped: 2,
@@ -271,5 +275,49 @@ describe("phase 3 — strip", () => {
     });
     expect(all.counts.setRowsStripped).toBe(1);
     expect((await get(t, s.unresolved))!.features).toBeUndefined();
+  });
+
+  test("strip before sets/cards keeps every text the new field does not carry yet", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const teamless = await t.run((ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "1",
+        cardName: "Card",
+        sortOrder: 0,
+        platformData: {},
+        features: { league: "MLB" },
+        lastUpdated: NOW,
+      }),
+    );
+    arm();
+    const report = await t.action(internal.leagueBackfill.run, {
+      phase: "strip",
+      confirm: LEAGUE_BACKFILL_CONFIRM,
+    });
+    // Only "Done" (own leagueIds) and the year and brand rows lose the key.
+    // byAlias, byAbbr, Base, Prospects and the card are not migrated yet.
+    expect(report.counts).toMatchObject({
+      setRowsStripped: 1,
+      yearOrBrandRowsStripped: 2,
+      keptNotMigrated: 5,
+      keptUnresolved: 1,
+    });
+    expect(report.counts.cardsStripped ?? 0).toBe(0);
+    expect((await get(t, s.byAlias))!.features).toEqual({ league: "MLB", era: "Modern (1980-Now)" });
+    expect((await get(t, s.base))!.features).toEqual({ league: "MLB" });
+    expect((await t.run((ctx) => ctx.db.get(teamless)))!.features).toEqual({ league: "MLB" });
+
+    // Migrate, then strip again: now the rest goes.
+    await t.action(internal.leagueBackfill.run, { phase: "sets", confirm: LEAGUE_BACKFILL_CONFIRM });
+    await t.action(internal.leagueBackfill.run, { phase: "cards", confirm: LEAGUE_BACKFILL_CONFIRM });
+    const again = await t.action(internal.leagueBackfill.run, {
+      phase: "strip",
+      confirm: LEAGUE_BACKFILL_CONFIRM,
+    });
+    expect(again.counts).toMatchObject({ setRowsStripped: 4, cardsStripped: 1 });
+    expect(again.counts.keptNotMigrated ?? 0).toBe(0);
+    expect((await get(t, s.base))!.features).toBeUndefined();
   });
 });

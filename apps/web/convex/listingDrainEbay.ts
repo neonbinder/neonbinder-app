@@ -1130,10 +1130,14 @@ async function syncEbayVariant(
       addHold({ cardId: t.cardId, reason: "noPhoto", conditionCode: t.conditionCode });
       continue;
     }
-    if (f.noLeague) {
-      // NEO-569: NB never guesses a card's league. Held like any hold: a live
-      // listing stays up as it is (its SKU is still a target, so it is not
-      // withdrawn) until an admin sets the league; the collector reports it.
+    if (f.noLeague && links.get(t.sku)?.status !== "live") {
+      // NEO-569: NB never guesses a card's league, so a listing that is not
+      // up yet waits for one (an admin sets it; the collector reports it).
+      // A LIVE listing is not held: holding would freeze its price and
+      // quantity on eBay (an oversell). Its aspects are built without League,
+      // exactly as they were pushed before NEO-569, so the content hash is
+      // unchanged and only price/quantity changes go out; League is added,
+      // with one item re-send, once the card has a league.
       addHold({ cardId: t.cardId, reason: "noLeague", conditionCode: t.conditionCode });
       continue;
     }
