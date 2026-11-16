@@ -109,6 +109,13 @@ export type NewCardRow = {
   platformData: Doc<"cardChecklist">["platformData"];
   /** Already bounded by the caller; omitted from the row when empty. */
   pendingPlayerNames: string[];
+  /**
+   * NEO-528 round 3 — the listing this card comes from named a player (see
+   * schema.ts). Written only when true. The checklist commit sets it through
+   * `listingNamesAPlayer`; a parallel copy carries its source's; a
+   * hand-added card never passes it.
+   */
+  listingNamedPlayer?: true;
   pendingTeamNames: string[];
   sortOrder: number;
   /** Canonical player names, for Signed By and the listing text. */
@@ -377,6 +384,9 @@ export function buildCardRowForInsert(
     ...(card.pendingPlayerNames.length
       ? { pendingPlayerNames: card.pendingPlayerNames }
       : {}),
+    // NEO-528 round 3 — provenance, only when true (absent on every other
+    // card, so their rows are exactly what they were).
+    ...(card.listingNamedPlayer === true ? { listingNamedPlayer: true as const } : {}),
     ...(card.pendingTeamNames.length
       ? { pendingTeamNames: card.pendingTeamNames }
       : {}),

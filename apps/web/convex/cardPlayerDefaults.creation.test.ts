@@ -512,6 +512,10 @@ describe("addCustomCard — a hand-added card is born with the defaults", () => 
     expect(typed.playerIds).toBeUndefined();
     expect(typed.pendingPlayerNames).toEqual(["Pat Mahomes II"]);
     expect(typed.secondaryPlayerIds).toEqual([fx.kelce]);
+    // A hand-added card has no listing: it never carries the listing's claim,
+    // typed name or not.
+    expect(picked).not.toHaveProperty("listingNamedPlayer");
+    expect(typed).not.toHaveProperty("listingNamedPlayer");
   });
 
   test("a default whose player was deleted is dropped and the card is still added", async () => {
@@ -736,6 +740,11 @@ describe("a card whose listing named a player is never given the default player 
     expect(pending.playerIds).toBeUndefined();
     expect(pending.pendingPlayerNames).toEqual(["Unknown Rookie"]);
     expect(pending.secondaryPlayerIds).toEqual([fx.kelce]);
+    // The claim is stored on every card whose listing named someone, so a
+    // parallel copied from it later holds the default back too; never on a
+    // card the listing named nobody on.
+    for (const n of ["1", "4", "5"]) expect(cards.get(n)!.listingNamedPlayer, n).toBe(true);
+    for (const n of ["2", "3"]) expect(cards.get(n)!, n).not.toHaveProperty("listingNamedPlayer");
     await drainScheduled(t);
     await cancelScheduled(t);
   });

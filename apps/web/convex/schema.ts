@@ -1713,6 +1713,21 @@ export default defineSchema({
      */
     secondaryPlayerIds: v.optional(v.array(v.id("players"))),
     /**
+     * NEO-528 round 3 — the listing this card was born from named a player
+     * (`lib/cardPlayerDefaults.listingNamesAPlayer`), whatever became of the
+     * name: resolved, waiting for review, or ruled "not a person" in entity
+     * review (which leaves the card no id and no pending name). Provenance
+     * only, written once at birth: by the checklist commit's insert, and by a
+     * parallel copy of a card that carries it. A hand-added card has no
+     * listing and never carries it. Absent otherwise; no backfill.
+     *
+     * Read by exactly one thing: a card born from one that carries it never
+     * takes the "Player on every card" default player (Jason, 2026-11-15;
+     * product invariant 8: a data claim holds back a guess). Default cameos
+     * still apply. Never a marketplace value: only that a name was printed.
+     */
+    listingNamedPlayer: v.optional(v.literal(true)),
+    /**
      * ── NEO-254: which NAME this card printed for each player ────────────────
      *
      * Jason, 2026-09-08: a card has to record the name it actually carries. A

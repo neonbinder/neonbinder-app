@@ -2329,6 +2329,9 @@ export const getCardChecklist = query({
       // ("Also pictured"). Listed because this validator is STRICT: a row
       // carrying it would otherwise fail the whole checklist.
       secondaryPlayerIds: v.optional(v.array(v.id("players"))),
+      // NEO-528 round 3 — the card's listing named a player (provenance, see
+      // schema.ts). Listed because this validator is STRICT.
+      listingNamedPlayer: v.optional(v.literal(true)),
       // NEO-254 — the name each card PRINTED for its players. The card detail
       // panel renders "As printed: Doc Gooden" beside a chip whose player is
       // filed under a different name. See schema.ts.
@@ -20526,6 +20529,9 @@ export const commitCardChecklistChunk = internalMutation({
             platformData: toStoredPlatformData(card.platformData),
             pendingPlayerNames: insertPendingPlayerNames,
             pendingTeamNames: insertPendingTeamNames,
+            // NEO-528 round 3 — stored, so a parallel copied from this card
+            // later holds the default player back too.
+            ...(card.listingNamedPlayer ? { listingNamedPlayer: true as const } : {}),
             sortOrder: card.sortOrder,
             // Resolved in the prelude, once per player rather than once per
             // card (or the default player's, read once per chunk).

@@ -1766,12 +1766,17 @@ export const insertParallelCardsPage = internalMutation({
       // its cameos travel with it (one no longer in NB is left off), then the
       // parallel's defaults: its player on a copy that names nobody and holds
       // no pending name (a copied cameo who is that player moves up), and its
-      // cameos added. A player the card names is never replaced.
+      // cameos added. A player the card names is never replaced. Nor is a
+      // card whose listing named someone (`listingNamedPlayer`, even a name
+      // ruled "not a person"): it stays blank, exactly as the commit left the
+      // card it copies (Jason, 2026-11-15). Its cameos still go on.
       await namesOf(source.secondaryPlayerIds, playerName, readPlayerName);
       const born = bornCardPlayers(
         source,
         { playerNames, cameoName: (id) => playerName.get(id as string) ?? null },
-        parallelDefaults,
+        source.listingNamedPlayer === true && parallelDefaults
+          ? { ...parallelDefaults, playerId: null, player: null }
+          : parallelDefaults,
       );
       // The Set Team gap, fill-empty only: never over a card's own team or a
       // team name waiting for review (`defaultTeamOnCardIds`), never on a
@@ -1812,6 +1817,10 @@ export const insertParallelCardsPage = internalMutation({
             ...(copy.sportlots ? { sportlots: copy.sportlots } : {}),
           }),
           pendingPlayerNames: source.pendingPlayerNames ?? [],
+          // NEO-528 round 3 — the copy comes from the same listing, so it
+          // carries the claim forward (a parallel of this parallel holds the
+          // default back too).
+          ...(source.listingNamedPlayer === true ? { listingNamedPlayer: true as const } : {}),
           pendingTeamNames: source.pendingTeamNames ?? [],
           sortOrder: source.sortOrder,
           playerNames: born.playerNames,
