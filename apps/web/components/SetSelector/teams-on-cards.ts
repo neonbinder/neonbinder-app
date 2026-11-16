@@ -382,6 +382,25 @@ export function storedPeople(
   };
 }
 
+/**
+ * NEO-528 — the preview positions a "Player on every card" default would
+ * land on: a card that does not re-sync a stored row (`existingIdByIndex` has
+ * no entry for its index) AND whose listing names nobody
+ * (`listingNamesAPlayer`; a blank-only list names nobody). Existing rows are
+ * never filled, and a new card the listing named someone on is left blank,
+ * the same test the commit's insert branch uses, so the wizard cannot plan a
+ * player the save leaves off. Positions index into `kept`, not into the
+ * diff's card indexes.
+ */
+export function defaultPlayerPositions(
+  kept: ReadonlyArray<{ card: Pick<PreviewCardForTeams, "players">; index: number }>,
+  existingIdByIndex: ReadonlyMap<number, unknown>,
+): number[] {
+  return kept.flatMap(({ card, index }, position) =>
+    existingIdByIndex.has(index) || listingNamesAPlayer(card.players) ? [] : [position],
+  );
+}
+
 /** NEO-528 — `DefaultPlayerForNewCards` as the host passes it (positions as an array). */
 export type DefaultPlayerWire = {
   playerId: Id<"players">;

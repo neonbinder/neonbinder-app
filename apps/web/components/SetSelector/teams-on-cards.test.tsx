@@ -17,6 +17,7 @@ import {
   cardNumbersSummary,
   chooseKind,
   defaultChoice,
+  defaultPlayerPositions,
   effectiveCardChoice,
   effectiveChoice,
   evidenceRequests,
@@ -1315,5 +1316,40 @@ describe("NEO-489 — a card the checklist answered No Team is never asked", () 
     expect(groups[0].cards.map((c) => c.index)).toEqual([1]);
     expect(groups[0].suggestion).toBeNull();
     expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+  });
+});
+
+describe("NEO-528 — defaultPlayerPositions: which preview cards the set's player lands on", () => {
+  // `kept` entries are { card, index }: `index` is the diff's card index,
+  // the returned values are positions in `kept`.
+  const entry = (index: number, players?: string[]) => ({
+    card: { players },
+    index,
+  });
+  const stored = new Map<number, unknown>([[10, "card_stored"]]);
+
+  test("a card that re-syncs a stored row is excluded, even when it names nobody", () => {
+    expect(defaultPlayerPositions([entry(10, [])], stored)).toEqual([]);
+    expect(defaultPlayerPositions([entry(10, undefined)], stored)).toEqual([]);
+  });
+
+  test("a new card whose listing names a player is excluded", () => {
+    expect(defaultPlayerPositions([entry(11, ["Johnny Bench"])], stored)).toEqual([]);
+  });
+
+  test("a new card whose listing names nobody is included, blank-only lists too", () => {
+    expect(defaultPlayerPositions([entry(11, [])], stored)).toEqual([0]);
+    expect(defaultPlayerPositions([entry(11, undefined)], stored)).toEqual([0]);
+    expect(defaultPlayerPositions([entry(11, ["", "   "])], stored)).toEqual([0]);
+  });
+
+  test("positions index into kept, not into the diff's card indexes", () => {
+    const kept = [
+      entry(10, []), // stored row
+      entry(11, ["Johnny Bench"]), // new, names someone
+      entry(12, []), // new, nameless
+      entry(13, [" "]), // new, blank-only
+    ];
+    expect(defaultPlayerPositions(kept, stored)).toEqual([2, 3]);
   });
 });

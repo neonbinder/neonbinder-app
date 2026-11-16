@@ -29,6 +29,7 @@ import {
 import type { TitleContext } from "../../convex/features/listingInputs";
 // NEO-335: the teams step's answers, put on the cards at commit.
 import {
+  defaultPlayerPositions,
   sameTeamAnswers,
   storedPeople,
   teamlessCardIndexes,
@@ -37,7 +38,6 @@ import {
   type TeamAnswer,
 } from "./teams-on-cards";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
-import { listingNamesAPlayer } from "../../convex/lib/cardPlayerDefaults";
 import CardPairingModal, {
   type PairingCard,
   type PairingConflicts,
@@ -2207,9 +2207,7 @@ export default function CardChecklist({
     const setPlayerId = titleContext?.setPlayerId;
     let defaultPlayer: DefaultPlayerWire | undefined;
     if (setPlayerName && setPlayerId && diff) {
-      const positions = kept.flatMap(({ card, index }, position) =>
-        existingIdByIndex.has(index) || listingNamesAPlayer(card.players) ? [] : [position],
-      );
+      const positions = defaultPlayerPositions(kept, existingIdByIndex);
       if (positions.length > 0) {
         defaultPlayer = { playerId: setPlayerId, name: setPlayerName, positions };
       }
