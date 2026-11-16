@@ -2465,6 +2465,97 @@ describe("CardPairingModal — enrichment that lands after the dialog opened", (
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
     expect(onConfirm.mock.calls[0][0].cards[0].teamLookup).toBeUndefined();
   });
+
+  test("a lookup that failed after the dialog opened reaches onConfirm as failed", async () => {
+    // The Teams step's `|lookup-failed` claim (rule 8) hangs on this: a
+    // failure is an outcome too, and must not be dropped as "still pending".
+    const { onConfirm, stream } = renderThenStream(withoutTeam, {
+      ...withoutTeam,
+      teamLookup: "failed",
+    });
+
+    stream();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].teamLookup).toBe("failed");
+  });
+
+  test("a SportLots-only row does not take an outcome from a twin matched only by its SportLots ref", async () => {
+    // The fetch-time lookup is BSC's: only a BSC ref may carry its outcome.
+    const slOnly: PairingCard = {
+      cardNumber: "50",
+      cardName: "Elly De La Cruz",
+      platformData: { sportlots: withoutTeam.platformData.sportlots },
+    };
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const { rerender } = render(
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        initialData={{ autoMatched: [], unmatchedBsc: [], unmatchedSl: [slOnly] }}
+      />,
+    );
+    fireEvent.click(
+      screen.getByLabelText("Keep #50 Elly De La Cruz as SportLots-only"),
+    );
+    rerender(
+      <CardPairingModal
+        isOpen
+        onClose={vi.fn()}
+        onConfirm={onConfirm}
+        initialData={{
+          autoMatched: [
+            { card: { ...withoutTeam, teamLookup: "answered" }, confidence: 1 },
+          ],
+          unmatchedBsc: [],
+          unmatchedSl: [],
+        }}
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const cards = onConfirm.mock.calls[0][0].cards;
+    expect(cards).toHaveLength(1);
+    expect(cards[0].platformData.bsc).toBeUndefined();
+    expect(cards[0].teamLookup).toBeUndefined();
+  });
+
+  test("a listed team the row already holds is not replaced when the outcome lands", async () => {
+    const { onConfirm, stream } = renderThenStream(
+      { ...withoutTeam, rawTeamName: "A" },
+      { ...withoutTeam, teamLookup: "answered", rawTeamName: "B" },
+    );
+
+    stream();
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    const saved = onConfirm.mock.calls[0][0].cards[0];
+    expect(saved.teamLookup).toBe("answered");
+    expect(saved.rawTeamName).toBe("A");
+  });
+
+  test("the outcome reaches a BSC-only card still sitting in the unmatched column", async () => {
+    // Not kept, not matched: the row is read from `unmatchedBsc` and must be
+    // kept for Confirm to save it.
+    const { onConfirm, stream } = renderThenStream(
+      withoutTeam,
+      { ...withoutTeam, teamLookup: "answered" },
+      { keep: true },
+    );
+
+    stream();
+    fireEvent.click(
+      screen.getByLabelText("Keep #50 Elly De La Cruz as BSC-only"),
+    );
+    fireEvent.click(screen.getByLabelText("Confirm card matches"));
+
+    await waitFor(() => expect(onConfirm).toHaveBeenCalled());
+    expect(onConfirm.mock.calls[0][0].cards[0].teamLookup).toBe("answered");
+  });
 });
 
 /**
