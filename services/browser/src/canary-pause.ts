@@ -51,9 +51,16 @@ import {
 export const PLATFORM_TO_SITE = Object.freeze({
   bsc: "buysportscards",
   sportlots: "sportlots",
+  // NEO-555: read only by the eBay probe (src/routes/ebay-probe.ts). eBay has
+  // no login canary; no /login route maps to it.
+  ebay: "ebay",
 } as const);
 
-export type CanaryPlatform = keyof typeof PLATFORM_TO_SITE;
+/** A platform the pause lookup can answer for (the login canaries plus eBay's probe). */
+export type PausePlatform = keyof typeof PLATFORM_TO_SITE;
+
+/** A platform with a login canary (`/login/<site>` with `canary: true`). eBay has none. */
+export type CanaryPlatform = Exclude<PausePlatform, "ebay">;
 
 /**
  * Overall budget for one lookup, token mint and HTTP round trip together.
@@ -109,7 +116,7 @@ type LookupResult = { pausedSites: string[] } | { failure: CanaryPauseLookupFail
  * Never throws, never rejects.
  */
 export async function shouldSkipCanary(
-  platform: CanaryPlatform,
+  platform: PausePlatform,
   deps: CanaryPauseDeps = {},
 ): Promise<boolean> {
   const log = deps.log ?? logCanaryPauseLookupFailed;

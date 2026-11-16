@@ -18,9 +18,15 @@
  * refused with a reason, never sent. The values come from what Convex sends
  * (adapters/buysportscards.ts: `{filters}` and `{condition: "all", page: 0,
  * size: 5000, sort: "default", filters}`; bscSeller.ts card-listing ids).
+ *
+ * eBay (NEO-555, CONTRACT.md "Fake eBay"): exactly the two reads NB makes,
+ * pinned whole (path and query), so a miss can name nothing else:
+ *
+ *   GET ebay/api/sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services
+ *   GET ebay/api/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category?category_id=261328
  */
 import type { CanonicalRequest } from "./requestKey";
-import { CARD_LISTING_RE, catalogueEndpointFor } from "./sanitise";
+import { CARD_LISTING_RE, catalogueEndpointFor, isEbayCatalogueEndpoint } from "./sanitise";
 
 export const MAX_REPLAY_BODY_BYTES = 4096;
 export const REPLAY_FACETS = ["sport", "year", "setName", "variant", "variantName"] as const;
@@ -52,6 +58,7 @@ function filtersRefusal(v: unknown): string | null {
 export function replayRefusal(req: CanonicalRequest): string | null {
   const endpoint = catalogueEndpointFor(req.method, req.path);
   if (!endpoint) return "not_a_catalogue_request";
+  if (isEbayCatalogueEndpoint(endpoint)) return ebayReplayRefusal(req);
   if (req.query.length > 0) return "query_string";
   if (endpoint === "cardListing") {
     const id = CARD_LISTING_RE.exec(req.path)?.[1];
@@ -72,5 +79,25 @@ export function replayRefusal(req: CanonicalRequest): string | null {
     if (body.page !== undefined && !(Number.isInteger(body.page) && (body.page as number) >= 0 && (body.page as number) <= MAX_PAGE)) return "bad_page";
     if (body.size !== undefined && !(Number.isInteger(body.size) && (body.size as number) >= 1 && (body.size as number) <= MAX_SIZE)) return "bad_size";
   }
+  return null;
+}
+
+/** The eBay reads the eBay recorder may replay (CONTRACT.md, "Fake eBay"), as canonical requests. */
+export const EBAY_PINNED_REQUESTS: ReadonlyArray<{ endpoint: "ebayShippingServices" | "ebayItemAspects"; method: "GET"; path: string; query: Array<[string, string]> }> = [
+  { endpoint: "ebayShippingServices", method: "GET", path: "ebay/api/sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services", query: [] },
+  {
+    endpoint: "ebayItemAspects",
+    method: "GET",
+    path: "ebay/api/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category",
+    query: [["category_id", "261328"]],
+  },
+];
+
+/** Null when the eBay request is one of the two pinned reads, else why not (never a value). */
+export function ebayReplayRefusal(req: CanonicalRequest): string | null {
+  if (req.body !== undefined) return "body_on_get";
+  const pinned = EBAY_PINNED_REQUESTS.find((p) => p.method === req.method && p.path === req.path);
+  if (!pinned) return "ebay_not_pinned";
+  if (JSON.stringify(req.query) !== JSON.stringify(pinned.query)) return "ebay_query_not_pinned";
   return null;
 }

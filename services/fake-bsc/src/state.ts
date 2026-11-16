@@ -1,6 +1,7 @@
 /**
  * Per-namespace, in-memory run state (CONTRACT.md, "Accounts and per-run
- * isolation"): listings, photos, orders, faults and misses. Run state is not
+ * isolation"): listings, photos, orders, faults and misses, and the fake
+ * eBay's seller state (NEO-555). Run state is not
  * persisted; a restart is a reset (the boot log line makes one visible). The
  * one exception is replayable catalogue misses, which a `MissPersistence`
  * (src/missStore.ts) also keeps in the bucket (CONTRACT.md, "Durable misses").
@@ -11,6 +12,8 @@ import type { CatalogueEndpoint } from "./sanitise";
 import { pruneRules, type FaultRule } from "./faults";
 import { matchesSelector, type NamespaceSelector } from "./namespace";
 import { replayRefusal } from "./replayAllowlist";
+import type { EbaySellerState } from "./ebay/state";
+import type { EbaySeller } from "./ebay/tokens";
 
 export interface Listing {
   cardId: string;
@@ -54,6 +57,8 @@ export interface NamespaceState {
   faults: FaultRule[];
   misses: Map<string, Miss>;
   lastSeen: number;
+  /** The fake eBay's sellers for this namespace (NEO-555, `src/ebay/state.ts`); cleared with the rest by a reset. */
+  ebay?: Partial<Record<EbaySeller, EbaySellerState>>;
 }
 
 export const MAX_NAMESPACES = 2000;

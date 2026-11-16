@@ -43,7 +43,7 @@
 - [Hold a runAfter(0) action in convex-test](reference_hold_runafter0_in_convex_test.md) — fake setTimeout, hand-run walks, cancel before useRealTimers; count drains in any state
 - [Scratch test typecheck: node-types noise](reference_scratch_test_typecheck_node_types_noise.md) — fixture-reading tests report TS2591/TS2304 under the convex tsconfig; encodeId mints real ids for lib tests
 - [New table naming a card: four places](reference_new_table_naming_a_card_three_places.md) — wipe graph (tested), set-builder reset, per-user reset (untested), reference-seed dependant list (tested; nested ids count)
-- [eBay Sell API shapes come from the OAS specs](reference_ebay_sell_api_shapes_come_from_the_oas_specs.md) — no schemas on doc pages; bulk 400 per-entry; 25002 adopt; enums via SDK; cost types loose; hash every item field
+- [eBay Sell API shapes come from the OAS specs](reference_ebay_sell_api_shapes_come_from_the_oas_specs.md) — bulk 400 per-entry; 25002 adopt; OAS fixture for fakes
 - [Work under the credential lock reads tokens directly](reference_work_under_the_credential_lock_reads_tokens_directly.md) — getSiteTokenForUser/re-auth contend for the held lock (busy = no token); read cache, refresh body, reauthAttempted:true
 - [Public refusals: return or ConvexError](reference_public_refusals_are_returns_or_convex_error.md) — a plain Error from a public function is "Server Error" in prod; return {ok:false,error}
 - [BSC seller sheet reads must be serial](reference_bsc_seller_sheet_reads_must_be_serial.md) — concurrent seller/bulk-upload/results reads per seller return twin (card, condition) rows; every card held back (NEO-415)
@@ -90,4 +90,6 @@
 - [Express 5 finish loggers see rewritten req.path](reference_express5_req_path_rewritten_by_mounted_routers.md) — capture req.originalUrl at entry; mounted routers strip the prefix
 - [BSC call gate in unit tests](reference_bsc_call_gate_in_unit_tests.md) — stub ctx fails closed without runMutation; openBscGate/skipBscGateWaits/vi.mock open gate; 5 failures open it
 - [Fake-mode /health stub needs bscTarget](reference_fake_mode_health_stub_needs_bsc_target.md) — fake-mode convex-tests must serve bscTarget "fake" or every BSC credential call is refused; BSC keys carry the slug
+- [Test signal guards with process.emit](reference_test_signal_guards_with_process_emit.md) — emit with the name arg; inject exit; listenerCount per request
 - [Cloud Run: load before listen](reference_cloud_run_load_before_listen.md) — throttled CPU starves post-listen boot work; load first, budget optional loads; spy Server.prototype.listen
+- [Stdio EPIPE is a late 'error' event](reference_stdio_epipe_error_is_a_late_event.md) — closed pipe/tty kills Node via nextTick 'error'; release scoped listeners on setImmediate; spy emit

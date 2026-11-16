@@ -21,18 +21,45 @@ export async function askYes(input: Readable, output: Writable, question: string
   }
 }
 
+/** True only when the answer is exactly `expected` (the production capture's typed SKU). */
+export async function askToType(input: Readable, output: Writable, question: string, expected: string): Promise<boolean> {
+  const rl = createInterface({ input, output, terminal: false });
+  try {
+    const answer = await new Promise<string | null>((resolve) => {
+      rl.once("close", () => resolve(null));
+      rl.question(question, resolve);
+    });
+    return typeof answer === "string" && answer.trim() === expected;
+  } finally {
+    rl.close();
+  }
+}
+
+/** Opens the controlling terminal; tests pass one that throws, as a run with no terminal does. */
+export type TerminalOpener = () => number;
+const openTty: TerminalOpener = () => openSync("/dev/tty", "r+");
+
+/** Asks on the controlling terminal for `expected` typed back. Throws when there is no terminal. */
+export async function typeOnTerminal(question: string, expected: string, openTerminal: TerminalOpener = openTty): Promise<boolean> {
+  return withTerminal(openTerminal, "no terminal to confirm on: run it from a terminal", (input, output) => askToType(input, output, question, expected));
+}
+
 /** Asks on the controlling terminal. Throws when there is none: use `--yes`. */
-export async function askOnTerminal(question: string): Promise<boolean> {
+export async function askOnTerminal(question: string, openTerminal: TerminalOpener = openTty): Promise<boolean> {
+  return withTerminal(openTerminal, "no terminal to confirm on: run it from a terminal, or pass --yes", (input, output) => askYes(input, output, question));
+}
+
+async function withTerminal<T>(openTerminal: TerminalOpener, noTerminal: string, fn: (input: Readable, output: Writable) => Promise<T>): Promise<T> {
   let fd: number;
   try {
-    fd = openSync("/dev/tty", "r+");
+    fd = openTerminal();
   } catch {
-    throw new Error("no terminal to confirm on: run it from a terminal, or pass --yes");
+    throw new Error(noTerminal);
   }
   const input = new ReadStream(fd);
   const output = new WriteStream(fd);
   try {
-    return await askYes(input, output, question);
+    return await fn(input, output);
   } finally {
     input.destroy();
     output.destroy();

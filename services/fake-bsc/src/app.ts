@@ -16,6 +16,11 @@ import { UNRECORDED_HEADER, apiRouter, bearerToken, headerScope } from "./routes
 import { controlRouter } from "./routes/control";
 import type { NamespaceSelector } from "./namespace";
 import { log } from "./log";
+import { ebayErrorBody, UNAUTHORIZED_BODY } from "./ebay/errors";
+import { notificationKey, type NotificationKey } from "./ebay/notificationKey";
+import { BULK_OPS, ebayTemplatesFor, matchEbayRoute } from "./ebay/paths";
+import { ebayBodyParser, ebayPathOf, ebayRouter, ebayScope, ebayUserOf } from "./ebay/router";
+import { createEbayTokens, type EbayTokens } from "./ebay/tokens";
 
 /** What the server needs from `src/identity/` (CONTRACT.md, "Identity"). */
 export interface IdentityModule {
@@ -52,6 +57,10 @@ export interface AppDeps {
   missesLoaded?: Promise<void>;
   /** How long a held request waits for the load before a 503 (default 25 s). */
   loadWaitMs?: number;
+  /** The fake eBay's token sealer (default: keyed from FAKE_BSC_ADMIN_KEY). */
+  ebayTokens?: EbayTokens;
+  /** The fake eBay's notification key (default: derived from FAKE_BSC_ADMIN_KEY). */
+  ebayPublicKey?: NotificationKey;
 }
 
 /** A held request waits at most this long for the recordings (Convex's timeout is 30 s). */
@@ -68,6 +77,8 @@ export function createApp(deps: AppDeps): express.Express {
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? defaultSleep;
   const { config, state, identity } = deps;
+  const ebayTokens = deps.ebayTokens ?? createEbayTokens({ secret: config.adminKey, now });
+  const ebayPublicKey = deps.ebayPublicKey ?? notificationKey(config.adminKey);
   const app = express();
   app.disable("x-powered-by");
   app.set("etag", false);
@@ -79,12 +90,13 @@ export function createApp(deps: AppDeps): express.Express {
     // Read now: mounted routers rewrite req.path while they run.
     const full = req.originalUrl.split("?")[0];
     res.on("finish", () => {
-      const area = full.startsWith("/api/") ? "api" : full.startsWith("/identity/") ? "identity" : full.startsWith("/__fake/") ? "control" : "other";
-      const p = area === "api" ? normalisePath(full) : full.replace(/^\/+/, "");
+      const area = full.startsWith("/api/") ? "api" : full.startsWith("/identity/") ? "identity" : full.startsWith("/__fake/") ? "control" : full.startsWith("/ebay/") ? "ebay" : "other";
+      const p = area === "api" || area === "ebay" ? normalisePath(full) : full.replace(/^\/+/, "");
       log("request", {
         method: req.method,
         area,
-        template: templatesFor(p)[0].slice(0, 120),
+        // eBay: the route template, never the literal path (it can hold a SKU).
+        template: (area === "ebay" ? ebayTemplatesFor(p)[0] : templatesFor(p)[0]).slice(0, 120),
         status: res.statusCode,
         ms: Date.now() - started,
       });
@@ -190,6 +202,7 @@ export function createApp(deps: AppDeps): express.Express {
       requireAdmin: admin,
       afterMissesRestore: holdForMisses,
       resetIdentity: identity.resetIdentity ? (sel) => identity.resetIdentity!(sel) : undefined,
+      ebayTokens,
     }),
   );
 
@@ -218,18 +231,20 @@ export function createApp(deps: AppDeps): express.Express {
     };
   };
 
-  const faults = (area: "api" | "identity") => async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-    const path = normalisePath(req.path);
+  const faults = (area: "api" | "identity" | "ebay") => async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+    const path = area === "ebay" ? ebayPathOf(req) : normalisePath(req.path);
     const target: FaultTarget = {
       method: req.method.toUpperCase(),
-      templates: area === "api" ? templatesFor(path) : [`identity/${path}`],
+      templates: area === "api" ? templatesFor(path) : area === "ebay" ? ebayTemplatesFor(path) : [`identity/${path}`],
       cardId: area === "api" ? cardIdOf(path) : null,
     };
     // A BSC token names one namespace; without one, `x-nb-fake-ns` names a
     // namespace or a deployment prefix (card-scoped rules under it); with
-    // neither, a card id meets every namespace's card-scoped rules.
-    const ns = tokenNs(req);
-    const scope = ns !== null ? { ns } : headerScope(req);
+    // neither, a card id meets every namespace's card-scoped rules. On eBay
+    // paths the fake eBay user token names the namespace.
+    const ebayNs = area === "ebay" ? (ebayUserOf(req, ebayTokens)?.ns ?? null) : null;
+    const ns = area === "ebay" ? ebayNs : tokenNs(req);
+    const scope = area === "ebay" ? ebayScope(req, ebayTokens) : ns !== null ? { ns } : headerScope(req);
     const rules: FaultRule[] =
       scope !== null && "ns" in scope
         ? state.faultsFor(scope.ns)
@@ -280,11 +295,41 @@ export function createApp(deps: AppDeps): express.Express {
       case "reset":
         req.socket.destroy();
         return;
+      case "unauthorized":
+        // eBay paths only (readFaultRules): NB refreshes its token and retries.
+        res.status(401).json(UNAUTHORIZED_BODY);
+        return;
+      case "ebayError": {
+        const status = rule.status ?? 500;
+        const ids = rule.errorIds ?? [25001];
+        const route = matchEbayRoute(target.method, path);
+        if (route && BULK_OPS.has(route.op)) {
+          // A refused batch answers per entry, as eBay does.
+          const reqs = Array.isArray((req.body as { requests?: unknown } | undefined)?.requests) ? ((req.body as { requests: unknown[] }).requests).slice(0, 25) : [{}];
+          const responses = reqs.map((e) => {
+            const sku = e && typeof e === "object" && typeof (e as { sku?: unknown }).sku === "string" ? (e as { sku: string }).sku.slice(0, 50) : undefined;
+            return { statusCode: status, ...(sku !== undefined ? { sku } : {}), errors: ebayErrorBody(ids).errors };
+          });
+          res.status(status).json({ responses });
+          return;
+        }
+        res.status(status).json(ebayErrorBody(ids));
+        return;
+      }
     }
   };
 
   app.use("/identity", caller, faults("identity"), identity.identityRouter);
   app.use("/api", caller, holdWhileLoading, faults("api"), apiRouter({ catalogue: deps.catalogue, state, ns: { fromToken: tokenNs }, now }));
+  // The fake eBay (CONTRACT.md, "Fake eBay"): body first, so a bulk `ebayError` fault can answer per entry.
+  app.use(
+    "/ebay",
+    caller,
+    holdWhileLoading,
+    ebayBodyParser(),
+    faults("ebay"),
+    ebayRouter({ catalogue: deps.catalogue, state, tokens: ebayTokens, publicKey: ebayPublicKey, now }),
+  );
 
   app.use((_req, res) => {
     res.status(404).json({ error: "not found" });
