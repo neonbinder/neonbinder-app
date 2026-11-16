@@ -130,3 +130,4 @@
 - [Hand-made rows cannot reach the commit path](reference_hand_made_rows_cannot_reach_the_commit_path.md) — a no-ids fetch stops before reading a publisher's checklist; birth proofs on hand-made sets use quick-add or the parallel build
 - [Planted red for server-side behaviour](patterns_planted_red_for_server_side_behaviour.md) — no backend push: plant a wrong expectation, read the snapshot for the real value, hand the convex patch to the coordinator
 - [Set-level No Team spec shape](patterns_set_no_team_spec_shape.md) — NEO-556: pressed-role toggles, cascade replaces the save toast, run ledger handles, badge proves teamless
+- [Leaf Vivid: a real unlicensed set](patterns_leaf_vivid_real_unlicensed_set.md) — NEO-556: find a set via year-wide sync, Proof type, held cards, parallel copies

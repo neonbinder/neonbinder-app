@@ -2122,6 +2122,24 @@ player name.
 `SIG-FT`, `SIG-BW` and `SIG-JW` are read back after the commit (team and number).
 No other flow may fetch or write this insert.
 
+### Baseball → 2026 → Leaf › Leaf Vivid — the real unlicensed set for set-level No Team (NEO-556) — named by Jason 2026-11-15, owner sign-off to be confirmed in the PR
+
+One flow, `set-no-team-fetch-under-leaf-vivid-proofs`, **sole writer** and **fresh-only**: it
+commits the Proof checklist, hand-adds two Base cards and builds one parallel, so a second run on
+the same seed meets cards already there (re-seed first). Leaf is unlicensed: BuySportsCards lists
+none of these cards with a team, which is why the set proves "No Team" on real data. It ends with
+the SET answering No Team (not taken back: nothing else may touch this set, and the next seed wipes it).
+
+| | |
+| -- | -- |
+| the drill | Baseball > 2026 > Manufacturers `Leaf` (minted by the seed's year-wide 2026 Sets sync from the known-brands list, SportLots paused) > Sets `Leaf Vivid` (the sync lists Leaf Baseball Nation, Electrum, Metal, Seasons in the Sun and Vivid) > Variant Types `Base`, `Insert`, `Parallel`, `Proof` |
+| Proof row | Variant Types `Proof` > Proofs `Animated Autographs Pre-Production Proofs Lazer Red`: **44** BSC cards, all printed `NNO` and `/1`, 44 distinct players already on the catalogue (no name step). BSC names no team on any card. Fetched through the one-marketplace path ("Kept all 44 cards from BSC") |
+| the checklist | a ONE-row paste, `NNO,Pete Incaviglia,Texas Rangers` (no capture file: BSC names no team anywhere in the set, so a captured file would be 44 blanks). The other 43 cards are asked of BSC per card, answered `no team`; recorded by the recorder for the fake, never a spec change |
+| Base | `Base` holds **193** BSC cards that the spec never fetches. It hand-adds two cards, `NNO` `Derek Curiel` and `NNO` `Kenedy Corona`, before the set answers, so they are teamless and unstamped (the panel's "Mark 2 teamless cards No Team" offer is the proof) |
+| Parallel | Variant Types `Parallel` holds **46** BSC parallels; the build, stopped after the first, reaches `Animated Autographs Pre-Production Proofs Clear Green` (alphabetically first), whose BSC list holds both hand-added players. Later parallels may also be built before the stop lands; only the first is read |
+| writes | the set-level No Team (and its copy to every row beneath), the Proof row's 44 cards, two Base cards, the built parallel(s). No other flow may open this set |
+| recorded reads | variant types for the set, the Proof row's results, 44 card listings, the first three parallels' results, Base's results and 193 listings when a probe opens it; the spec itself needs the first four and the first parallel |
+
 ### Three-source Match Cards — WRITTEN, PAUSED UNTIL SPORTLOTS RESUMES (NEO-490)
 
 `tests/set-selector/checklist-three-sources-link-rows-to-matched-and-unmatched-cards.spec.ts`
