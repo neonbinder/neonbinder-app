@@ -177,6 +177,38 @@ export const INSERT_COPIES_PER_PAGE = 150;
 export const INSERT_PAGE_WRITE_BUDGET = 1200;
 /** The most one copy can write: row, SKU, and every player, team and cameo index row. */
 const MAX_COPY_WRITES = 2 + MAX_CARD_PLAYERS + MAX_CARD_TEAMS + MAX_CARD_PLAYERS;
+/** NEO-556 — the page's one `enqueueBscTeamChecks` schedule, kept inside the budget. */
+const LOOKUP_SCHEDULE_WRITES = 1;
+
+/**
+ * NEO-556 — whether a copy is born owing its own BSC team lookup: it carries
+ * its own BSC link, no team, no "carries no team" ruling, and no FINISHED
+ * lookup to copy from its source. The same card `cardChecklist
+ * .getForBscTeamCheck` lets the lane ask (`needsCheck`), and the one the
+ * checklist counts as "Still looking up teams" (`isAwaitingTeamLookup`), so a
+ * copy that reads as waiting is always on the lane.
+ *
+ * A source whose lookup has been and gone passes that answer on (its stamp,
+ * outcome and hint travel with the copy) and is not asked again. One whose
+ * lookup never ran (a hand-added card) or has not run YET (still queued when
+ * the build runs) would otherwise leave the copy waiting forever: nothing
+ * else queues a copy. Once the lane answers, `applyBscTeamResolution` writes
+ * the team, or stamps the parallel's "No Team" when BSC names none.
+ */
+export function bscTeamLookupOwed(copy: {
+  hasBscRef: boolean;
+  teamOnCardIds: ReadonlyArray<Id<"teams">> | undefined;
+  teamCheckDoneAt: number | undefined;
+  teamNoneConfirmedAt: number | undefined;
+}): boolean {
+  // Truthiness, as `getForBscTeamCheck` reads both stamps.
+  return (
+    copy.hasBscRef &&
+    (copy.teamOnCardIds?.length ?? 0) === 0 &&
+    !copy.teamCheckDoneAt &&
+    !copy.teamNoneConfirmedAt
+  );
+}
 /**
  * Old cards deleted per transaction. Per card: one cross-listing lookup, one
  * variation-children lookup (plus a patch per child), one player-index lookup
@@ -1540,8 +1572,9 @@ function sameStrings(a: readonly string[], b: readonly string[]): boolean {
  * (`copyFeaturesForParallel`); listing text, SKU (or the kept SKU, R2) and
  * `platformData` with `src` on the parallel's own slots go through the shared
  * `insertCardRow`, so a copy is born exactly like a synced card. `printRun` is
- * the linked SportLots card's only. `imageUrls` is never copied and no team
- * enrichment is queued.
+ * the linked SportLots card's only. `imageUrls` is never copied. The only
+ * background work queued is NEO-556's: the BSC team lookup for each copy born
+ * owing one (`bscTeamLookupOwed`), one schedule per page.
  *
  * NEO-528 round 3 — after the copy, the PARALLEL's "Player on every card"
  * defaults (its own or the nearest row's above it) go through the per-card
@@ -1731,11 +1764,20 @@ export const insertParallelCardsPage = internalMutation({
     let writes = 0;
     // NEO-358 — every copy adds to the parallel's counts; flushed once below.
     const countLedger = createCardCountLedger();
+    // NEO-556 — copies born owing a BSC team lookup, queued once per page
+    // after the loop (see `bscTeamLookupOwed`).
+    const lookupOwed: Array<Id<"cardChecklist">> = [];
     for (const copy of args.copies) {
       // NEO-321 (audit N1) — a source card's size is unknown until it is
       // read, so ask for room first; the rest of the page goes next call.
-      // NEO-528 — and room for the most one more copy can write.
-      if (processed > 0 && writes + MAX_COPY_WRITES > INSERT_PAGE_WRITE_BUDGET) break;
+      // NEO-528 — and room for the most one more copy can write, plus the
+      // page's one lookup schedule (NEO-556).
+      if (
+        processed > 0 &&
+        writes + MAX_COPY_WRITES + LOOKUP_SCHEDULE_WRITES > INSERT_PAGE_WRITE_BUDGET
+      ) {
+        break;
+      }
       if (processed > 0 && !(await roomToRead(ctx))) break;
       processed++;
       const source = await ctx.db.get(copy.sourceCardId);
@@ -1806,7 +1848,8 @@ export const insertParallelCardsPage = internalMutation({
       // carries from its source, and ITS OWN BSC link. A listing that names a
       // team, or a BSC lookup still to run on the copy, holds the stamp back
       // (product invariant 8); `applyBscTeamResolution` stamps it once BSC
-      // answers with no team. A source the operator ruled teamless already
+      // answers with no team. That lookup is queued below, after the page
+      // (`bscTeamLookupOwed`). A source the operator ruled teamless already
       // carries its own stamp (below), so it reads `alreadyNoTeam`.
       const copyNoTeamStamp =
         parallelNoTeam &&
@@ -1885,8 +1928,28 @@ export const insertParallelCardsPage = internalMutation({
         born.cameos.length;
       newIdOf.set(source._id, newId);
       created.push({ from: source._id, to: newId });
+      if (
+        bscTeamLookupOwed({
+          hasBscRef: copy.bsc !== undefined,
+          teamOnCardIds,
+          teamCheckDoneAt: source.teamCheckDoneAt,
+          teamNoneConfirmedAt:
+            copyNoTeamStamp?.teamNoneConfirmedAt ?? source.teamNoneConfirmedAt,
+        })
+      ) {
+        lookupOwed.push(newId);
+      }
     }
     await countLedger.flush(ctx);
+    // NEO-556 — the copies' own BSC team lookups, onto the one-slot
+    // `bscTeamPool` lane, as the checklist commit queues a synced card's.
+    // One schedule per page (the enqueue chunks itself), so the page stays
+    // a fixed size and runnable where the workpool component is not mounted.
+    if (lookupOwed.length > 0) {
+      await ctx.scheduler.runAfter(0, internal.bscTeamPool.enqueueBscTeamChecks, {
+        cardChecklistIds: lookupOwed,
+      });
+    }
     return { created, missing, skippedChangedSource, processed, changed: false };
   },
 });

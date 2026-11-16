@@ -11,12 +11,19 @@
  */
 
 import { convexTest } from "convex-test";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
 import { insertTestCard } from "../lib/testing/card-row";
 import { teamRowFields } from "./lib/teamRow";
+import { isAwaitingTeamLookup } from "./features/cardAttention";
+import {
+  captureBscTeamLane,
+  runBscTeamLane,
+  type BscTeamLaneItem,
+} from "../lib/testing/bsc-team-lane";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (
   import.meta as unknown as {
@@ -61,8 +68,26 @@ vi.mock("./adapters/buysportscards", async (importOriginal) => {
   };
 });
 
+// The `bscTeamPool` component is not mounted under convex-test: every item
+// the build's scheduled enqueue hands the lane lands in `lane` instead
+// (lib/testing/bsc-team-lane.ts), and a test that wants the answer runs it.
+let lane: BscTeamLaneItem[] = [];
 beforeEach(() => {
   bscState.cards = [];
+  lane = captureBscTeamLane();
+  // Only the lane's own BSC call may reach `fetch`; a test that runs the lane
+  // stubs the answer.
+  vi.stubGlobal(
+    "fetch",
+    (async (url: string | URL) => {
+      throw new Error(`NEO-556: this test file must not reach the network: ${String(url)}`);
+    }) as unknown as typeof fetch,
+  );
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 type T = ReturnType<typeof convexTest>;
@@ -170,6 +195,8 @@ async function build(t: T, fx: Fx) {
     .withIdentity(ADMIN)
     .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId: fx.parallel });
   expect(result.status).toBe("built");
+  // The page's lookup enqueue is a `runAfter(0)`: settle it into `lane`.
+  await drainScheduled(t);
   return result;
 }
 
@@ -307,5 +334,130 @@ describe("parallel build — the parallel's No Team (NEO-556)", () => {
     const one = (await copies(t, fx)).get("1")!;
     expect(one.teamOnCardIds).toEqual([fx.dodgers]);
     expect(one.teamNoneConfirmedAt).toBeUndefined();
+  });
+});
+
+/**
+ * NEO-556 — the copy's OWN BSC team lookup. A copy is born with its own BSC
+ * link; when its source's lookup never ran (a hand-added card) or has not run
+ * yet (still queued on the lane when the build runs), the copy owes a lookup
+ * of its own and the build queues it. Before this, nothing did: the checklist
+ * said "Still looking up teams" forever and the No Team stamp never landed.
+ */
+describe("parallel build — the copy's own BSC team lookup (NEO-556)", () => {
+  /** BSC's card-listing answer per copy ref (`k-<n>`); "" = no team on file. */
+  function stubCardListing(teams: Record<string, string>) {
+    const asked: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      (async (url: string | URL | Request) => {
+        const ref = String(url).match(/\/marketplace\/card\/([^/]+)\/card-listing/)?.[1] ?? "";
+        const teamName = teams[ref];
+        if (teamName === undefined) throw new Error(`unexpected fetch: ${String(url)}`);
+        asked.push(ref);
+        return new Response(JSON.stringify({ teamName }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }) as unknown as typeof fetch,
+    );
+    return asked;
+  }
+
+  /** Plays the lane's one slot on a fake clock (its 1.7 s pacing pause). */
+  async function runLane(t: T) {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    return runBscTeamLane(t, lane, 10);
+  }
+
+  test("a copy whose source's lookup never ran is queued, and BSC's 'no team' stamps the parallel's No Team", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    // "1": the insert card's own lookup still queued (a BSC ref, no stamp).
+    await insertCard(t, fx, "1");
+    // "2": hand-added, never linked to BSC on the insert.
+    await insertCard(t, fx, "2", { extra: { platformData: {} } });
+    await store(t, fx.parallel, { noTeamDefault: NO_TEAM });
+    await build(t, fx);
+
+    const before = await copies(t, fx);
+    const queued = lane.map((l) => l.item.cardChecklistId as string).sort();
+    expect(queued).toEqual([before.get("1")!._id, before.get("2")!._id].sort());
+    for (const n of ["1", "2"]) {
+      // Held back while the lookup is owed (rule 8), and on the lane, so the
+      // "Still looking up teams" line it reads is true.
+      expect(before.get(n)!.teamNoneConfirmedAt, n).toBeUndefined();
+      expect(isAwaitingTeamLookup(before.get(n)!), n).toBe(true);
+    }
+
+    const asked = stubCardListing({ "k-1": "", "k-2": "" });
+    expect(await runLane(t)).toBe(2);
+    // Each copy is asked by ITS OWN ref, never its source's.
+    expect(asked.sort()).toEqual(["k-1", "k-2"]);
+
+    const after = await copies(t, fx);
+    for (const n of ["1", "2"]) {
+      const copy = after.get(n)!;
+      expect(copy.teamCheckDoneAt, n).toBeTypeOf("number");
+      expect(copy.teamCheckOutcome, n).toBe("answered");
+      expect(copy.teamNoneConfirmedAt, n).toBeTypeOf("number");
+      expect(copy.teamNoneConfirmedByUserId, n).toBe(SETTER);
+      expect(isAwaitingTeamLookup(copy), n).toBe(false);
+    }
+  });
+
+  test("BSC naming a team lands the team as it always has, and stamps nothing", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await insertCard(t, fx, "1");
+    await store(t, fx.parallel, { noTeamDefault: NO_TEAM });
+    await build(t, fx);
+
+    stubCardListing({ "k-1": "Los Angeles Dodgers" });
+    expect(await runLane(t)).toBe(1);
+
+    const copy = (await copies(t, fx)).get("1")!;
+    expect(copy.teamOnCardIds).toEqual([fx.dodgers]);
+    expect(copy.teamIndex).toEqual([fx.dodgers]);
+    expect(copy.teamCheckOutcome).toBe("answered");
+    expect(copy.teamNoneConfirmedAt).toBeUndefined();
+  });
+
+  test("a copy whose source's lookup has finished carries that answer and is not asked again", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await insertCard(t, fx, "1", { extra: ANSWERED });
+    await insertCard(t, fx, "2", { extra: { teamCheckDoneAt: NOW, teamCheckOutcome: "gaveUp" } });
+    await insertCard(t, fx, "3", { extra: { ...ANSWERED, bscTeamName: "LA Dodgers" } });
+    await store(t, fx.parallel, { noTeamDefault: NO_TEAM });
+    await build(t, fx);
+
+    expect(lane).toEqual([]);
+    const got = await copies(t, fx);
+    expect(got.get("1")!.teamCheckDoneAt).toBe(NOW);
+    expect(got.get("2")!.teamCheckOutcome).toBe("gaveUp");
+    expect(got.get("3")!.bscTeamName).toBe("LA Dodgers");
+  });
+
+  test("a copy born with a team or a ruling owes no lookup", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    // The source's own team, and an operator's ruling, both unlooked-up.
+    await insertCard(t, fx, "1", { teams: [fx.yankees] });
+    await insertCard(t, fx, "2", {
+      extra: { teamNoneConfirmedAt: 7, teamNoneConfirmedByUserId: "user_operator" },
+    });
+    await build(t, fx);
+    expect(lane).toEqual([]);
+
+    // The parallel's set team fills a teamless copy: that copy has a team.
+    const t2 = convexTest(schema, modules);
+    const fx2 = await seed(t2);
+    await insertCard(t2, fx2, "1");
+    await store(t2, fx2.parallel, { teamIds: [fx2.dodgers] });
+    await build(t2, fx2);
+    expect(lane).toEqual([]);
+    expect((await copies(t2, fx2)).get("1")!.teamOnCardIds).toEqual([fx2.dodgers]);
   });
 });
