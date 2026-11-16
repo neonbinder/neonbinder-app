@@ -327,20 +327,27 @@ export function healthIsLoading(body: unknown): boolean {
   return typeof wc === "object" && wc !== null && (wc as { loading?: unknown }).loading === true;
 }
 
+/** The most write endpoints a health answer may list; a longer list is unreadable, never cut short. */
+const MAX_MISSING_CAPTURES = 20;
+
 /**
  * The write endpoints named in the fake's `/__fake/health`, narrowed: fixed
- * vocabulary only. Null when the list is absent or the answer is still
- * loading: a loading fake has not read its captures, so its list (empty or
- * full) is never an answer.
+ * vocabulary only. Null when the list is absent, longer than
+ * `MAX_MISSING_CAPTURES`, holds any entry that is not an endpoint name, or the
+ * answer is still loading: a loading fake has not read its captures, so its
+ * list (empty or full) is never an answer.
  */
 export function narrowMissingCaptures(body: unknown): string[] | null {
   if (healthIsLoading(body)) return null;
   const wc = typeof body === "object" && body !== null ? (body as { writeCaptures?: unknown }).writeCaptures : undefined;
   const missing = typeof wc === "object" && wc !== null ? (wc as { missing?: unknown }).missing : undefined;
-  if (!Array.isArray(missing)) return null;
-  return missing
-    .filter((m): m is string => typeof m === "string" && /^[A-Z]{3,7} [A-Za-z0-9/_.:-]{1,128}$/.test(m))
-    .slice(0, 20);
+  if (!Array.isArray(missing) || missing.length > MAX_MISSING_CAPTURES) return null;
+  const named = missing.filter(
+    (m): m is string => typeof m === "string" && /^[A-Z]{3,7} [A-Za-z0-9/_.:-]{1,128}$/.test(m),
+  );
+  // One unreadable entry makes the whole list unreadable: dropping it could
+  // turn a real "missing" into "none missing".
+  return named.length === missing.length ? named : null;
 }
 
 const writeCapturesResult = v.union(

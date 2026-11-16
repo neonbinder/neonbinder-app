@@ -117,12 +117,28 @@ describe("outside fake mode", () => {
 });
 
 describe("narrowMissingCaptures", () => {
-  test("keeps endpoint names; drops anything else", () => {
+  test("keeps endpoint names", () => {
+    expect(
+      narrowMissingCaptures({
+        writeCaptures: { missing: ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"] },
+      }),
+    ).toEqual(["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"]);
+  });
+
+  test("any entry that is not an endpoint name makes the list unreadable (null), never shorter", () => {
     expect(
       narrowMissingCaptures({
         writeCaptures: { missing: ["PUT seller/bulk-upload", 5, "not an endpoint", "POST common/card/undefined/product/undefined/attachment"] },
       }),
-    ).toEqual(["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"]);
+    ).toBeNull();
+    // A future endpoint the regex cannot name would otherwise filter to [] and pass as "none missing".
+    expect(narrowMissingCaptures({ writeCaptures: { missing: ["PUT a{b}"] } })).toBeNull();
+  });
+
+  test("a list past the cap is unreadable (null), never cut short", () => {
+    const twenty = Array.from({ length: 20 }, (_, i) => `PUT seller/e${i}`);
+    expect(narrowMissingCaptures({ writeCaptures: { missing: twenty } })).toEqual(twenty);
+    expect(narrowMissingCaptures({ writeCaptures: { missing: [...twenty, "PUT seller/e20"] } })).toBeNull();
   });
 
   test("a health body without the field is unreadable (null), never 'none missing'", () => {
