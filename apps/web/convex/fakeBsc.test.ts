@@ -8,7 +8,15 @@ import { convexTest } from "convex-test";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "./_generated/api";
 import schema from "./schema";
-import { isOwnNamespace, isOwnPrefix, narrowMisses, narrowMissingCaptures } from "./fakeBsc";
+import {
+  HEALTH_LOADING_PAUSES_MS,
+  fakeBscControlClock,
+  healthIsLoading,
+  isOwnNamespace,
+  isOwnPrefix,
+  narrowMisses,
+  narrowMissingCaptures,
+} from "./fakeBsc";
 
 vi.mock("./lib/bscFakeIdToken", () => ({
   nodeBscIdToken: async () => "stub-id-token",
@@ -123,6 +131,29 @@ describe("narrowMissingCaptures", () => {
     expect(narrowMissingCaptures({ writeCaptures: { missing: "x" } })).toBeNull();
     expect(narrowMissingCaptures(null)).toBeNull();
   });
+
+  test("a loading answer is never a list, empty or full", () => {
+    const both = ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"];
+    // Today's fake while loading: every endpoint listed because nothing is read yet.
+    expect(narrowMissingCaptures({ loading: true, writeCaptures: { missing: both } })).toBeNull();
+    // The fixed fake while loading: no list at all.
+    expect(narrowMissingCaptures({ loading: true, writeCaptures: { loading: true } })).toBeNull();
+    // Even an empty list is not "none missing" while loading.
+    expect(narrowMissingCaptures({ loading: true, writeCaptures: { missing: [] } })).toBeNull();
+    expect(narrowMissingCaptures({ writeCaptures: { loading: true, missing: [] } })).toBeNull();
+  });
+});
+
+describe("healthIsLoading", () => {
+  test("only a boolean true says loading", () => {
+    expect(healthIsLoading({ loading: true })).toBe(true);
+    expect(healthIsLoading({ writeCaptures: { loading: true } })).toBe(true);
+    expect(healthIsLoading({ loading: false, writeCaptures: { missing: [] } })).toBe(false);
+    expect(healthIsLoading({ loading: "true" })).toBe(false);
+    expect(healthIsLoading({ writeCaptures: { missing: [] } })).toBe(false);
+    expect(healthIsLoading(null)).toBe(false);
+    expect(healthIsLoading("loading")).toBe(false);
+  });
 });
 
 describe("writeCaptureStatus in fake mode", () => {
@@ -161,5 +192,88 @@ describe("writeCaptureStatus in fake mode", () => {
   test("a refused health call is an error with its status", async () => {
     const { result } = run(() => new Response("", { status: 403 }));
     expect(await result).toEqual({ ok: false, status: 403, error: "http" });
+  });
+});
+
+describe("writeCaptureStatus while the fake is still loading", () => {
+  const BOTH = ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"];
+  // Today's fake: a cold start lists every endpoint until its captures are read.
+  const coldToday = () => Response.json({ ok: true, loading: true, writeCaptures: { missing: BOTH } });
+  // The fixed fake: no list while loading.
+  const coldFixed = () => Response.json({ ok: true, loading: true, writeCaptures: { loading: true } });
+  const warm = (missing: string[]) => Response.json({ ok: true, loading: false, writeCaptures: { missing } });
+
+  let pauses: number[];
+  const run = (...replies: Response[]) => {
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", "https://neonbinder-fake-bsc-0000-uc.a.run.app");
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+    vi.stubEnv("TESTING_RESET_SECRET", "armed");
+    vi.stubEnv("CONVEX_CLOUD_URL", "https://happy-otter-123.convex.cloud");
+    pauses = [];
+    vi.spyOn(fakeBscControlClock, "sleep").mockImplementation(async (ms: number) => {
+      pauses.push(ms);
+    });
+    const spy = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) => {
+      const next = replies.shift();
+      if (!next) throw new Error("unexpected extra call");
+      return next;
+    });
+    vi.stubGlobal("fetch", spy);
+    return { spy, result: convexTest(schema, modules).action(internal.fakeBsc.writeCaptureStatus, {}) };
+  };
+
+  test("the pauses add up to about 45 s", () => {
+    expect(HEALTH_LOADING_PAUSES_MS.reduce((a, b) => a + b, 0)).toBe(45_000);
+  });
+
+  test("loading, then loaded: waits and reports the real list", async () => {
+    const { spy, result } = run(coldToday(), coldFixed(), warm(["PUT seller/bulk-upload"]));
+    expect(await result).toEqual({ ok: true, skipped: false, missing: ["PUT seller/bulk-upload"] });
+    expect(spy).toHaveBeenCalledTimes(3);
+    expect(pauses).toEqual(HEALTH_LOADING_PAUSES_MS.slice(0, 2));
+  });
+
+  test("loading, then loaded with none missing: an empty list", async () => {
+    const { result } = run(coldToday(), warm([]));
+    expect(await result).toEqual({ ok: true, skipped: false, missing: [] });
+    expect(pauses).toEqual([HEALTH_LOADING_PAUSES_MS[0]]);
+  });
+
+  test("loading throughout: 'fake still loading', never a missing list", async () => {
+    const reads = HEALTH_LOADING_PAUSES_MS.length + 1;
+    const { spy, result } = run(...Array.from({ length: reads }, (_, i) => (i % 2 === 0 ? coldToday() : coldFixed())));
+    expect(await result).toEqual({ ok: false, error: "fake still loading" });
+    expect(spy).toHaveBeenCalledTimes(reads);
+    expect(pauses).toEqual([...HEALTH_LOADING_PAUSES_MS]);
+  });
+
+  test("not loading: one read, no wait", async () => {
+    const { spy, result } = run(warm(BOTH));
+    expect(await result).toEqual({ ok: true, skipped: false, missing: BOTH });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(pauses).toEqual([]);
+  });
+
+  test("a body with no boolean loading keeps today's reading", async () => {
+    const { spy, result } = run(Response.json({ ok: true, loading: "yes", writeCaptures: { missing: BOTH } }));
+    expect(await result).toEqual({ ok: true, skipped: false, missing: BOTH });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(pauses).toEqual([]);
+  });
+
+  test("the wall-clock budget stops the wait even when reads are slow", async () => {
+    const t0 = Date.now();
+    const now = vi.spyOn(Date, "now");
+    let clock = t0;
+    now.mockImplementation(() => clock);
+    const { spy, result } = run(coldToday(), coldToday(), warm([]));
+    // Each read "takes" 40 s: after the first pause the budget is spent.
+    spy.mockImplementation(async () => {
+      clock += 40_000;
+      return coldToday();
+    });
+    expect(await result).toEqual({ ok: false, error: "fake still loading" });
+    expect(spy).toHaveBeenCalledTimes(2);
+    expect(pauses).toEqual([HEALTH_LOADING_PAUSES_MS[0]]);
   });
 });
