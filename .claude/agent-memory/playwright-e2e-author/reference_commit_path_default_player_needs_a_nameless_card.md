@@ -22,5 +22,15 @@ person" in the wizard does not release it). Default CAMEOS are added either way.
   set (`set-selector/player-on-every-card`).
 - Watch the wizard's teams step: the client files a NEW card with every printed name ruled out under
   the default player (`teams-on-cards.ts` `cardPlayers`), the server does not (2026-11-14).
+- Measured on 2011 Leaf Pete Rose Legacy (75) and 2026 Topps Profiles (25): no card lists nobody, so
+  the fetched-fill stays quick-add + unit tests. The wizard's teams step lists only cards with NO team
+  claim; a checklist `No Team` or a listed team keeps a ruled-out card off it, so "Cards with no players"
+  and the hold-back preview cannot be reached there. Assert the committed card instead: drawer has
+  "Add player" and no `Remove player` chip, `Card title` reads `<set> #N <team> <sport>` (a player's card
+  reads `<set> <player> #N ...`; when the set's own name contains the player, check the slot before `#N`).
+- Rule names out ONE BY ONE to prove which were "not a person": loop on `/^Skip .* — not a person$/` or a
+  team step's skip, read the label with `nameOf`, gate each press with `readStep` + `expectStepLeft`.
+- A parallel built from Base copies the hold-back and the cameo (Printing Plates: only the Base numbers
+  the plate's BSC list has, 43 of 75; its attributes heading reads `<name> (Insert)`).
 
 Related: [[hand-made-rows-cannot-reach-the-commit-path]], [[capture-checklist-slug-probe]]

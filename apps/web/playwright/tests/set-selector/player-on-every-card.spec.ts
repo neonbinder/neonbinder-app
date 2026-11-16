@@ -7,8 +7,9 @@
 // a value stored on a row above shows on the rows beneath as inherited.
 //
 // The flow, on a hand-made set `pev<token>` > Insert > Base with no cards:
-// - The section says "Checking…" while its stored values load, and both
-//   actions wait for it. Q chosen reads "Picked:" until stored.
+// - Both actions wait for the section's stored values (its "Checking…" state
+//   is unit-tested, EveryCardPlayerControl.test.tsx). Q chosen reads
+//   "Picked:" until stored.
 // - Q, "Add to every card": no confirm, the "Saved" note beside the actions,
 //   the section reads "Player:" with Q's chip and no "Picked:" any more.
 // - Two cards quick-added with no player are born with Q (drawer); one
@@ -23,8 +24,10 @@
 //   card with no player changes, "Added Q to 1 card"); the Insert variant type
 //   and the Base checklist beneath both show "Q (from pev<token>)" with no ×,
 //   and Base's own cameo stays its own. Back undoes the Base pick.
-// axe, light and dark: the section with a stored player, the cameo confirm,
-// the finished ledger and the inherited line.
+// - The cameo confirm keeps its yes and Cancel inside the dialog: side by side
+//   on a desktop, Cancel stacked under yes on a phone.
+// axe, light and dark: the section with a pick not yet stored, with a stored
+// player, the cameo confirm, the finished ledger and the inherited line.
 //
 // What this spec does not cover: the Stop, failure and capped-ledger variants
 // (`components/SetSelector/EveryCardPlayerControl.test.tsx`), the sport,
@@ -50,7 +53,7 @@
 // `support/also-pictured.ts`; the drills are `drillToCustom` / `selectOrCreate`
 // (R9); the cards are added with `addCardViaForm`.
 import type { Locator, Page } from "@playwright/test";
-import { ALSO_PICTURED, EVERY_CARD_PLAYER as E, alsoPicturedGroup } from "../../support/also-pictured";
+import { ALSO_PICTURED, EVERY_CARD_PLAYER as E, alsoPicturedGroup, openEveryCardPlayer } from "../../support/also-pictured";
 import {
   addCardViaForm,
   confirmDeleteCardButton,
@@ -61,16 +64,6 @@ import {
 import { drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { drillToCustom, selectOrCreate, type CustomTarget } from "../../support/set-builder";
-
-/** The Attributes panel remembers whether it was left open: open it only if it is not. */
-async function openAttributes(page: Page) {
-  const panel = page.getByRole("region", { name: "Set attributes panel" });
-  const edit = panel.getByRole("button", { name: "Edit attributes" });
-  const hide = panel.getByRole("button", { name: "Hide attributes" });
-  await expect(edit.or(hide)).toBeVisible();
-  if (await edit.isVisible()) await edit.click();
-  await expect(hide).toBeVisible();
-}
 
 /** Open a card's drawer, run `check` on it, and close it again. */
 async function inDrawer(page: Page, number: string, check: (drawer: Locator) => Promise<void>) {
@@ -133,7 +126,7 @@ test.afterEach(async ({ context }, testInfo) => {
 test(
   "Set builder: Player on every card is stored on a row; new cards are born with its player and cameos, a cameo confirmed with cards present reaches them, clearing stops only future copies, and rows beneath show it inherited",
   { tag: ["@set-selector"] },
-  async ({ page, signIn, env }) => {
+  async ({ page, signIn, env, isMobile }) => {
     const A = env.ATTEMPT_ID;
     const SET = `pev${env.ATTEMPT_TOKEN}`;
     const setRow: CustomTarget = { sport: "Baseball", year: "2024", manufacturer: "Topps", set: SET };
@@ -155,7 +148,7 @@ test(
     written.build = build;
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Attributes for Base (Insert)" })).toBeVisible();
-    await openAttributes(page);
+    await openEveryCardPlayer(page);
 
     const section = page.getByRole("region", { name: E.region, exact: true });
     const trigger = section.getByRole("button", { name: E.trigger, exact: true });
@@ -165,6 +158,7 @@ test(
     // save's or a clear's note, beside the actions (not the panel's toast).
     const note = (text: string) => section.getByRole("status").filter({ hasText: text });
     const picked = section.getByText(E.pickedLine, { exact: true });
+    let firstPick = true;
     const choose = async (name: string) => {
       await trigger.click();
       await page.getByRole("textbox", { name: E.search, exact: true }).fill(name);
@@ -175,6 +169,10 @@ test(
       // Enabled once the stored values have loaded ("Checking…" is gone).
       await expect(addPlayer).toBeEnabled();
       await expect(section.getByText(E.checking, { exact: true })).toHaveCount(0);
+      if (firstPick) {
+        firstPick = false;
+        await expectAccessible(page, { within: section, label: "Player on every card, a pick not yet stored" });
+      }
     };
 
     // Nothing chosen yet: both actions are refused (aria-disabled).
@@ -228,6 +226,22 @@ test(
     const yesCameo = askCameo.getByRole("button", { name: E.yesCameo, exact: true });
     await expect(yesCameo).toBeVisible();
     await expectAccessible(page, { within: askCameo, label: "Player on every card, the cameo confirm" });
+    // Its two buttons sit inside the dialog: side by side on a desktop, Cancel
+    // stacked under the green yes on a phone (where they would not fit a row).
+    const cancelCameo = askCameo.getByRole("button", { name: "Cancel", exact: true });
+    const [box, yesBox, cancelBox] = await Promise.all([askCameo.boundingBox(), yesCameo.boundingBox(), cancelCameo.boundingBox()]);
+    expect(box && yesBox && cancelBox, "the confirm and both its buttons are laid out").toBeTruthy();
+    for (const b of [yesBox!, cancelBox!]) {
+      expect(b.x, "a button starts inside the dialog").toBeGreaterThanOrEqual(box!.x);
+      expect(b.y, "a button starts inside the dialog").toBeGreaterThanOrEqual(box!.y);
+      expect(b.x + b.width, "a button ends inside the dialog").toBeLessThanOrEqual(box!.x + box!.width + 0.5);
+      expect(b.y + b.height, "a button ends inside the dialog").toBeLessThanOrEqual(box!.y + box!.height + 0.5);
+    }
+    if (isMobile) {
+      expect(cancelBox!.y, "on a phone Cancel sits under the yes").toBeGreaterThanOrEqual(yesBox!.y + yesBox!.height - 0.5);
+    } else {
+      expect(Math.abs(cancelBox!.y + cancelBox!.height / 2 - (yesBox!.y + yesBox!.height / 2)), "on a desktop the two share a row").toBeLessThan(2);
+    }
     await yesCameo.click();
     await expect(askCameo).toBeHidden();
     // Our own writes, a page per checklist: the standard budget. The ledger is
@@ -270,7 +284,7 @@ test(
     // --- Q on the SET row: the rows beneath show it inherited ----------------
     await drillToCustom(page, setRow);
     await expect(page.getByRole("heading", { name: `Attributes for ${SET} (Set)` })).toBeVisible();
-    await openAttributes(page);
+    await openEveryCardPlayer(page);
     await choose(Q);
     await addPlayer.click();
     // Cards beneath: confirmed. Only the card with no player changes (c4); Q's
@@ -289,13 +303,13 @@ test(
     const inheritedQ = section.getByText(E.inherited(SET, Q), { exact: true });
     await selectOrCreate(page, "Variant Types", "Insert", { via: "list" });
     await expect(page.getByRole("heading", { name: "Attributes for Insert (Variant)" })).toBeVisible();
-    await openAttributes(page);
+    await openEveryCardPlayer(page);
     await expect(inheritedQ).toBeVisible();
     await expect(section.getByRole("button", { name: E.stopPlayer(Q), exact: true })).toHaveCount(0);
 
     await selectOrCreate(page, "Inserts", "Base", { via: "list" });
     await expect(page.getByRole("heading", { name: "Attributes for Base (Insert)" })).toBeVisible();
-    await openAttributes(page);
+    await openEveryCardPlayer(page);
     await expect(inheritedQ).toBeVisible();
     await expect(section.getByRole("button", { name: E.stopPlayer(Q), exact: true })).toHaveCount(0);
     // Each kind resolves on its own: Base's own cameo is still its own.
