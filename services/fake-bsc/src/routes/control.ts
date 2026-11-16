@@ -134,11 +134,12 @@ export function controlRouter(deps: ControlDeps): Router {
     }
     state.expireMisses();
     await state.flushMisses(MISS_SWEEP_BUDGET_MS);
-    const all = state.listMisses(sel);
-    // `?all=1` spans every owner (up to 2,000 namespaces × 500): capped, oldest first.
+    // `?all=1` spans every owner (up to 2,000 namespaces × 500): only what the
+    // recorder would replay, the oldest 2,000, so each session makes progress.
     const everyOwner = req.query.all !== undefined;
-    const truncated = everyOwner && all.length > ALL_MISSES_CAP;
-    const misses = (truncated ? all.slice(0, ALL_MISSES_CAP) : all).map((m) => ({
+    const page = everyOwner ? state.oldestReplayable(ALL_MISSES_CAP) : { misses: state.listMisses(sel), truncated: false };
+    const truncated = page.truncated;
+    const misses = page.misses.map((m) => ({
       ns: m.ns,
       ...(m.prefix !== undefined ? { prefix: m.prefix } : {}),
       key: m.key,

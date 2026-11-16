@@ -178,7 +178,9 @@ so the ones the recorder could replay are also kept in the recordings bucket.
   anonymous). Over either limit the miss stays in memory only (a later miss
   of the key tries again) and the fake logs `miss_persist_skipped` with
   `reason: "rate"`, the scope that refused it and a count, at most once a
-  minute. The 501 is unchanged.
+  minute. The 501 is unchanged. A repeat of a key that is not kept (refused
+  by the rate, or its write failed) asks again, spending a token only if it
+  is then written; a repeat of a kept key makes no store call.
 - **Bounds:** 30 days from `firstSeen` (memory and bucket); 2,000 objects in
   all (past it, the oldest object is removed, and that miss stays listed in
   memory until a restart); the existing 500 per owner (an evicted miss's
@@ -189,7 +191,8 @@ so the ones the recorder could replay are also kept in the recordings bucket.
   version or one that fails validation. An object under a NEWER allowlist
   version belongs to a newer revision (overlapping revisions, or a rollback):
   a restore neither restores nor deletes it; only `/__fake/reset-all` sweeps
-  it. `/__fake/reset` keeps them, as it
+  it. After a permanent rollback to an older version those objects stay
+  until someone runs `/__fake/reset-all`. `/__fake/reset` keeps them, as it
   keeps the in-memory catalogue misses. Namespace eviction (past 2,000
   namespaces) drops only the in-memory list; the objects come back at the
   next boot.
@@ -210,9 +213,14 @@ so the ones the recorder could replay are also kept in the recordings bucket.
 - **Every owner at once:** `GET /__fake/misses?all=1` (admin, 403 without the
   admin key and an admin caller) lists every namespace's, prefix's and
   anonymous miss, so a later session needs no slug of a preview that is gone.
-  It answers at most 2,000 entries, oldest first, and `truncated: true` when
-  there were more (`truncated: false` otherwise; `?ns=`/`?prefix=` reads carry
-  no such field). Any other `all` value is a 400.
+  It lists only the misses the recorder would replay (catalogue misses its
+  replay allowlist accepts, anonymous ones included); needs-model and refused
+  misses are left out so they can never fill the page, and a later session
+  always makes progress (`?ns=`/`?prefix=` reads still list everything). It
+  answers at most 2,000 entries, the oldest first (selected without copying
+  the whole list), and `truncated: true` when more matched (`truncated:
+  false` otherwise; `?ns=`/`?prefix=` reads carry no such field). Any other
+  `all` value is a 400.
 
 ## Faults
 

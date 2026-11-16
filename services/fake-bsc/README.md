@@ -190,7 +190,8 @@ FAKE_BSC_ADMIN_KEY="$(gcloud secrets versions access latest --secret=<admin-key 
   gone needs no slug. The allowlist, the `--include-anon` rule and the typed
   confirmation are the same. `--all --yes` (unattended) also needs `--max N`,
   so an unread plan never replays every PR's misses; the fake lists at most
-  2,000 at a time, and the recorder says when there were more.
+  2,000 at a time (only misses the recorder would replay), and the recorder
+  says when there were more.
 
 - BSC credentials come **only** from stdin (a Bitwarden item, `{username,
   password}` JSON, or two lines) or, on a terminal, a prompt with the password

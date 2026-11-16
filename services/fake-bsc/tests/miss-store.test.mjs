@@ -933,7 +933,8 @@ describe("GET /__fake/misses?all=1", () => {
     const body = { filters: { sport: ["baseball"] } };
     await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body });
     await fake.call("POST", `/api/${FILTERS_PATH}`, { bsc: "tok-other-ns", body });
-    await fake.call("GET", "/api/marketplace/card/c7/card-listing", { extra: { "x-nb-fake-ns": "other-slug-" } });
+    // A hex card id: `?all=1` lists only what the recorder would replay.
+    await fake.call("GET", "/api/marketplace/card/c0ffee07/card-listing", { extra: { "x-nb-fake-ns": "other-slug-" } });
   });
   afterEach(() => fake.close());
 
@@ -1179,5 +1180,91 @@ describe("GET /__fake/misses?all=1 cap", () => {
     });
     assert.deepEqual(await client.allMissesPage(), { misses: [{ key: "k" }], truncated: true });
     assert.deepEqual(await client.allMisses(), [{ key: "k" }]);
+  });
+});
+
+// ── Delta audit follow-ups ───────────────────────────────────────────────
+
+describe("a repeat miss retries a write the rate limit refused", () => {
+  it("refused by the rate, then repeated after the refill, the same key is kept", async () => {
+    const store = new MemoryStore();
+    let clock = T0;
+    const state = new StateStore(() => clock, new DurableMisses(store, { createsPerOwnerPerMinute: 1, now: () => clock }));
+    await state.recordMissDurably({ ns: NS }, fresh(filtersMiss("kept"))).saved;
+    await state.recordMissDurably({ ns: NS }, fresh(filtersMiss("refused"))).saved;
+    assert.equal((await stored(store)).length, 1, "the second is over the owner's 1 a minute");
+    // A repeat inside the minute is still refused, and costs no store call.
+    await state.recordMissDurably({ ns: NS }, fresh(filtersMiss("refused"))).saved;
+    assert.equal((await stored(store)).length, 1);
+    clock += 60_000;
+    const again = state.recordMissDurably({ ns: NS }, fresh(filtersMiss("refused")));
+    assert.equal(again.miss.count, 3);
+    await again.saved;
+    const names = await stored(store);
+    assert.equal(names.length, 2);
+    assert.ok(names.includes(missObjectName({ ns: NS }, filtersMiss("refused").key)));
+    const obj = await store.readVersion(names.find((n) => n.includes(filtersMiss("refused").key)), (await store.listVersions(names.find((n) => n.includes(filtersMiss("refused").key)), 1))[0].generation);
+    assert.equal(obj.firstSeen, iso(T0), "kept with the first sighting, not the repeat's");
+  });
+
+  it("a repeat of a key already kept makes no store call", async () => {
+    const store = new MemoryStore();
+    const calls = watch(store);
+    const state = new StateStore(() => T0, new DurableMisses(store));
+    await state.recordMissDurably({ ns: NS }, fresh(filtersMiss("once"))).saved;
+    for (let i = 0; i < 3; i++) await state.recordMissDurably({ ns: NS }, fresh(filtersMiss("once"))).saved;
+    assert.equal(calls.creates.length, 1);
+  });
+});
+
+describe("?all=1 lists only what the recorder would replay", () => {
+  it("leaves out needs-model and allowlist-refused misses, so they cannot hold the page", async () => {
+    let clock = T0;
+    const fake = await startFake({ now: () => clock });
+    try {
+      // 2,500 misses the recorder would never send, all older than the replayable ones.
+      for (let n = 0; n < 5; n++) {
+        for (let i = 0; i < 250; i++) {
+          clock += 1;
+          const refused = canonicalRequest({ method: "POST", path: FILTERS_PATH, query: [], body: { filters: { seller: [`x${i}`] } } });
+          fake.state.recordMiss({ ns: `junk-${n}` }, { key: requestKey(refused), kind: "catalogue", method: "POST", path: FILTERS_PATH, endpoint: "filters", request: refused });
+          clock += 1;
+          fake.state.recordMiss({ ns: `junk-${n}` }, { key: `${n}`.padStart(2, "0") + `${i}`.padStart(62, "0"), kind: "needs-model", method: "GET", path: "some/thing" });
+        }
+      }
+      clock += 1;
+      fake.state.recordMiss({ ns: NS }, fresh(filtersMiss("wanted")));
+      const r = await fake.call("GET", "/__fake/misses?all=1", { email: LOADER, admin: true });
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body.misses.map((m) => m.key), [filtersMiss("wanted").key]);
+      assert.equal(r.body.truncated, false);
+      // The per-owner read still shows them all.
+      assert.equal((await fake.call("GET", "/__fake/misses?ns=junk-0")).body.misses.length, 500);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("picks the oldest across every owner, whatever order the lists hold them in", async () => {
+    const state = new StateStore(() => T0);
+    // Owners' lists hold their misses newest first, interleaved across owners.
+    const expected = [];
+    let k = 0;
+    for (let i = 0; i < 40; i++) {
+      for (const owner of [{ ns: "aa-1" }, { prefix: "bb-" }, null]) {
+        const m = filtersMiss(`o${k++}`, T0 + 1_000_000 - i * 3 - (owner === null ? 0 : "ns" in owner ? 1 : 2));
+        const map = owner === null ? state["anonMisses"] : "ns" in owner ? state.get(owner.ns).misses : state["prefixList"](owner.prefix);
+        map.set(m.key, m);
+        expected.push(m);
+      }
+    }
+    expected.sort((a, b) => (a.firstSeen < b.firstSeen ? -1 : a.firstSeen > b.firstSeen ? 1 : a.key < b.key ? -1 : 1));
+    const page = state.oldestReplayable(25);
+    assert.deepEqual(page.misses.map((m) => m.key), expected.slice(0, 25).map((m) => m.key));
+    assert.equal(page.truncated, true);
+    const whole = state.oldestReplayable(1000);
+    assert.equal(whole.misses.length, 120);
+    assert.equal(whole.truncated, false);
+    assert.deepEqual(whole.misses.find((m) => m.prefix === "bb-")?.ns, null);
   });
 });

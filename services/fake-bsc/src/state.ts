@@ -10,6 +10,7 @@ import type { CanonicalRequest } from "./requestKey";
 import type { CatalogueEndpoint } from "./sanitise";
 import { pruneRules, type FaultRule } from "./faults";
 import { matchesSelector, type NamespaceSelector } from "./namespace";
+import { replayRefusal } from "./replayAllowlist";
 
 export interface Listing {
   cardId: string;
@@ -289,7 +290,11 @@ export class StateStore {
       prev.count += 1;
       prev.lastSeen = at;
       if (miss.nearMiss) prev.nearMiss = miss.nearMiss;
-      return { miss: prev, saved: Promise.resolve() };
+      // A repeat asks again: the store skips a key it already keeps (no store
+      // call, no token), and keeps one an earlier miss could not (the create
+      // rate, or a failed write) when it now can.
+      const saved = prev.kind === "catalogue" ? this.track(this.persistence?.save(owner, prev)) : Promise.resolve();
+      return { miss: prev, saved };
     }
     if (map.size >= MAX_MISSES_PER_NAMESPACE) {
       const first = map.keys().next().value;
@@ -399,5 +404,73 @@ export class StateStore {
     }
     for (const m of this.anonMisses.values()) out.push({ ...m, ns: null });
     return out.sort((a, b) => (a.firstSeen < b.firstSeen ? -1 : a.firstSeen > b.firstSeen ? 1 : 0));
+  }
+
+  /** Whether the recorder would replay a miss (its allowlist), cached per miss object. */
+  private readonly replayableCache = new WeakMap<Miss, boolean>();
+
+  private isReplayable(m: Miss): boolean {
+    let v = this.replayableCache.get(m);
+    if (v === undefined) {
+      v = m.kind === "catalogue" && m.request !== undefined && replayRefusal(m.request) === null;
+      this.replayableCache.set(m, v);
+    }
+    return v;
+  }
+
+  /**
+   * Every owner's misses for `GET /__fake/misses?all=1`: only those the
+   * recorder would replay (catalogue misses its allowlist accepts), the
+   * oldest `limit` of them, oldest first. Misses it would never send
+   * (needs-model, refused) are left out, so they cannot hold the page and
+   * each session makes progress. Selected with a bounded heap: nothing is
+   * copied but the page. `truncated` is true when more matched.
+   */
+  oldestReplayable(limit: number): { misses: Array<Miss & { ns: string | null; prefix?: string }>; truncated: boolean } {
+    type Item = { m: Miss; ns: string | null; prefix?: string };
+    // Max-heap on (firstSeen, key): its root is the newest kept item.
+    const heap: Item[] = [];
+    const newer = (a: Item, b: Item): boolean => (a.m.firstSeen !== b.m.firstSeen ? a.m.firstSeen > b.m.firstSeen : a.m.key > b.m.key);
+    const up = (i: number): void => {
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (!newer(heap[i], heap[p])) return;
+        [heap[i], heap[p]] = [heap[p], heap[i]];
+        i = p;
+      }
+    };
+    const down = (i: number): void => {
+      for (;;) {
+        const l = 2 * i + 1;
+        const r = l + 1;
+        let top = i;
+        if (l < heap.length && newer(heap[l], heap[top])) top = l;
+        if (r < heap.length && newer(heap[r], heap[top])) top = r;
+        if (top === i) return;
+        [heap[i], heap[top]] = [heap[top], heap[i]];
+        i = top;
+      }
+    };
+    let matched = 0;
+    const offer = (item: Item): void => {
+      if (!this.isReplayable(item.m)) return;
+      matched += 1;
+      if (limit <= 0) return;
+      if (heap.length < limit) {
+        heap.push(item);
+        up(heap.length - 1);
+      } else if (newer(heap[0], item)) {
+        heap[0] = item;
+        down(0);
+      }
+    };
+    for (const s of this.spaces.values()) for (const m of s.misses.values()) offer({ m, ns: s.ns });
+    for (const [prefix, map] of this.prefixMisses) for (const m of map.values()) offer({ m, ns: null, prefix });
+    for (const m of this.anonMisses.values()) offer({ m, ns: null });
+    const page = heap.sort((a, b) => (newer(a, b) ? 1 : newer(b, a) ? -1 : 0));
+    return {
+      misses: page.map(({ m, ns, prefix }) => ({ ...m, ns, ...(prefix !== undefined ? { prefix } : {}) })),
+      truncated: matched > page.length,
+    };
   }
 }
