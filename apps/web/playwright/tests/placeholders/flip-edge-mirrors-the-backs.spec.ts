@@ -6,6 +6,7 @@
 import type { Locator } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
+  FAST_READ_CEILING,
   discardIfStillOpen,
   finishPlaceholderBatch,
   placeholderScans,
@@ -32,8 +33,9 @@ test(
     // NEO-529: the six scans go through the real drop zone.
     await startPlaceholderBatch(page, placeholderScans("placeholder-fixtures-fullbleed"));
 
-    // Every image has been read: the state that offers finishing.
-    await expect(page.getByText("All 6 photos read.")).toBeVisible();
+    // Every image has been read: the state that offers finishing. The fast pool
+    // is shared with the other shards, so the read gets FAST_READ_CEILING.
+    await expect(page.getByText("All 6 photos read.")).toBeVisible({ timeout: FAST_READ_CEILING });
     await finishPlaceholderBatch(page);
     await expectAccessible(page, { label: "Placeholder batch, pairs ready" });
 

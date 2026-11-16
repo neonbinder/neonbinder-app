@@ -8,7 +8,7 @@
  * Fixtures stay in `public/placeholder-fixtures{,-corner,-fullbleed}/`, each
  * with a `manifest.json` whose `files` lists the scans in upload order.
  *
- * ## Approved ceilings (GUIDE hard rule 3; Jason, 2026-11-13, NEO-529)
+ * ## Approved ceilings (GUIDE hard rule 3; Jason, NEO-529: 2026-11-13, and the fast read 2026-11-15)
  * Everything else a placeholder spec waits for is the standard 7 s.
  *
  * - `UPLOAD_CEILING`, 18 s, from the drop to "Uploaded 6 of 6 images.". The run
@@ -22,10 +22,16 @@
  *   over 7 green runs: the heavy service answers a warm call in 2.0-3.5 s and a
  *   cold one in 25.6-27.6 s. Voided by: a heavy service that cold-starts for
  *   longer than that, or more escalated photos than six.
- *
- * "All 6 photos read." on the FAST path is NOT given a ceiling: after the last
- * upload it is 7 s (measured about 6.5 s or less, so the headroom is thin). A
- * red there is a product finding, never a reason to raise it.
+ * - `FAST_READ_CEILING`, 15 s, from "Uploaded 6 of 6 images." to "All 6 photos
+ *   read." on the fast path. Alone the read takes about 3.2 s. The fast
+ *   preprocess pool is 3 slots wide on a PR preview (convex/preprocessCapacity.json)
+ *   and the 8 shards share it, so the photos queue for a slot when another
+ *   shard's fast-pool spec holds some: 7.9 s observed with 2 of the 3 slots
+ *   held (every call answered 200, nothing cold), and about 10.5 s worst case
+ *   with all slots busy. Approved by Jason, 2026-11-15. It proves the photos
+ *   get through, NOT that they went fast rather than heavy. Voided by: the
+ *   preview's fast pool width changing, or another fast-pool user whose calls
+ *   run longer than the 50 MP fixture's.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -38,6 +44,8 @@ import { intakeDropzone } from "./collection";
 export const UPLOAD_CEILING = 18_000;
 /** Escalating state to "Finish the batch", heavy path. Approved 80 s, see the header. */
 export const HEAVY_CEILING = 80_000;
+/** "Uploaded N of N images." to "All N photos read.", fast path. Approved 15 s, see the header. */
+export const FAST_READ_CEILING = 15_000;
 
 const PUBLIC_DIR = fileURLToPath(new URL("../../public/", import.meta.url));
 

@@ -32,8 +32,10 @@ the card sits in the frame differs:
   * DEFAULT (inset)  -> public/placeholder-fixtures/           -> every card is
     CENTRED on a scanner bed with a wide margin all round, which the quad stage
     crops on the FAST service (no escalation). Drives
-    placeholders/pipeline-fast-crops-inset-scans.yaml. Before NEO-320 these
-    escalated, and the escalation flow used them; the quad stage made them a
+    placeholders/placeholder-intake-join-and-refusal (drop only) and the eBay
+    sandbox listing spec's scan pair; the end-to-end inset crop is proven by
+    services/preprocess tests/unit/test_cropper_frame_content.py. Before NEO-320
+    these escalated, and the escalation flow used them; the quad stage made them a
     fast crop, which is why the cornered set exists.
   * --corner         -> public/placeholder-fixtures-corner/    -> every card is
     pushed into the top-left REGISTRATION CORNER of the scanner bed, a thin
