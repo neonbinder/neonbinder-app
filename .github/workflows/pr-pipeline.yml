@@ -122,6 +122,7 @@ jobs:
               - 'services/fake-bsc/**'
               # NEO-555: the fake's tests read the browser probe sources.
               - 'services/browser/src/routes/ebay-probe*.ts'
+              - '.github/scripts/ebay-drift-verdict.sh'
             # NEO-309/NEO-310: node --test coverage for the ops shell scripts
             # (revision GC, image check) plus their test helpers, and for the
             # NEO-310 Discord-notify scripts/action — none of these ship as

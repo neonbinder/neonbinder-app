@@ -392,3 +392,60 @@ test("probe key: bad shapes and fake- keys fail, and the value is never printed"
     assert.ok(!r.out.includes("fake-abc"), "value leaked");
   }
 });
+
+// NEO-555: source-read pins on the workflow call sites. Each script was
+// extracted from inline YAML so it can be tested; these tests keep the YAML
+// calling it, and keep every job that calls a script able to find it (a job
+// with no checkout exits 127 at the call, which D2 hit in bsc-drift.yml).
+const WORKFLOWS = join(SCRIPTS, "..", "workflows");
+const wf = (name) => readFileSync(join(WORKFLOWS, name), "utf8");
+const count = (text, needle) => text.split(needle).length - 1;
+
+function jobsOf(text) {
+  const lines = text.split("\n");
+  const start = lines.findIndex((l) => l === "jobs:");
+  const jobs = [];
+  let cur = null;
+  for (const l of lines.slice(start + 1)) {
+    const m = l.match(/^ {2}([A-Za-z0-9_-]+):\s*$/);
+    if (m) {
+      cur = { name: m[1], lines: [] };
+      jobs.push(cur);
+    } else if (cur) cur.lines.push(l);
+  }
+  return jobs;
+}
+
+test("workflow call sites use the extracted scripts", () => {
+  const deploy = wf("browser-deploy.yml");
+  const drift = wf("bsc-drift.yml");
+  const browser = wf("browser.yml");
+  assert.match(deploy, /\.github\/scripts\/ebay-probe-key-check\.sh/);
+  assert.match(drift, /\.github\/scripts\/ebay-drift-payload\.sh/);
+  assert.equal(count(drift, ".github/scripts/fake-bsc-url.sh"), 2);
+  assert.match(drift, /\.github\/scripts\/ebay-drift-verdict\.sh/);
+  assert.match(browser, /\.github\/scripts\/fake-bsc-url\.sh/);
+});
+
+test("browser-deploy reads the probe credential key from secrets, never vars", () => {
+  const deploy = wf("browser-deploy.yml");
+  assert.match(deploy, /secrets\.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY/);
+  assert.doesNotMatch(deploy, /vars\.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY/);
+});
+
+test("every job that runs a .github/scripts file checks out before it", () => {
+  for (const file of ["bsc-drift.yml", "browser.yml", "browser-deploy.yml"]) {
+    for (const job of jobsOf(wf(file))) {
+      const body = job.lines;
+      const call = body.findIndex(
+        (l) => !l.trim().startsWith("#") && /\.github\/scripts\/[\w.-]+/.test(l),
+      );
+      if (call < 0) continue;
+      const checkout = body.findIndex((l) => /uses:\s*actions\/checkout@/.test(l));
+      assert.ok(
+        checkout >= 0 && checkout < call,
+        `${file} job ${job.name} runs a .github/scripts file with no actions/checkout before it`,
+      );
+    }
+  }
+});
