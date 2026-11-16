@@ -152,6 +152,16 @@ describe("recomputed from the team answers", () => {
     // Printed and resolved: their own player, never the default.
     const own = buildTitleGroups([card("1")], withDefault).titleGroups;
     expect(own[0].cards[0].title).toBe(titled(withDefault, ["Shohei Ohtani"]));
+    // Jason, 2026-11-15: a card whose listing names anyone is left blank by
+    // the commit, so its title never names the default, even when every
+    // printed name was ruled out (no player resolves from it) or is still
+    // waiting for review.
+    const ruledOut = buildTitleGroups([card("1", { players: ["Team Photo"] })], withDefault).titleGroups;
+    expect(ruledOut[0].cards[0].title).toBe(titled(withDefault, []));
+    expect(ruledOut[0].cards[0].leftOut).not.toContain("Ken Griffey Jr.");
+    // A blank printed string names nobody: the default still applies.
+    const blank = buildTitleGroups([card("1", { players: ["  "] })], withDefault).titleGroups;
+    expect(blank[0].cards[0].title).toBe(titled(withDefault, ["Ken Griffey Jr."]));
     // An older server sends no default: nobody stays nobody.
     const older = buildTitleGroups([card("1", { players: [] })], context()).titleGroups;
     expect(older[0].cards[0].title).toBe(titled(context(), []));

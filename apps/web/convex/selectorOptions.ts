@@ -68,6 +68,7 @@ import {
   type EffectiveCardPlayerDefaults,
 } from "./cardPlayersBulk";
 import { bornSecondaryPlayerFields, bornSecondaryPlayers } from "./cardSecondaryPlayers";
+import { listingNamesAPlayer } from "./lib/cardPlayerDefaults";
 import { newStoredCardReadCache } from "./storedCardTitle";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import { blockedSideFailed, sideMissingFromRun } from "./parallelChecklistBuild";
@@ -23536,7 +23537,8 @@ export const commitCardChecklist = action({
           // id nor a pending name (the skip keeps it out of the next review),
           // so without this the card would look like nobody's and take the
           // "Player on every card" default over the listing's own claim.
-          ...((c.players ?? []).some((p) => p.trim().length > 0)
+          // The same test the client previews with (`listingNamesAPlayer`).
+          ...(listingNamesAPlayer(c.players)
             ? { listingNamedPlayer: true as const }
             : {}),
         },

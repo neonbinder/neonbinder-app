@@ -704,9 +704,15 @@ describe("a card whose listing named a player is never given the default player 
     const result = await t.withIdentity(ADMIN).action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: fx.base,
       sportId: fx.sport,
-      cards: [card("1", ["Team Leaders"]), card("2", []), card("3", ["  "])],
+      cards: [
+        card("1", ["Team Leaders"]),
+        card("2", []),
+        card("3", ["  "]),
+        card("4", ["Josh Allen"]),
+        card("5", ["Unknown Rookie"]),
+      ],
     });
-    expect(result).toMatchObject({ success: true, count: 3 });
+    expect(result).toMatchObject({ success: true, count: 5 });
     const cards = await cardsOn(t, fx.base);
     const leaders = cards.get("1")!;
     // The listing named someone: no default player, nothing pending (the skip
@@ -721,6 +727,15 @@ describe("a card whose listing named a player is never given the default player 
       expect(cards.get(n)!.playerIds).toEqual([fx.mahomes]);
       expect(cards.get(n)!.secondaryPlayerIds).toEqual([fx.kelce]);
     }
+    // A card naming a person keeps them; the cameo still goes on.
+    expect(cards.get("4")!.playerIds).toEqual([fx.allen]);
+    expect(cards.get("4")!.secondaryPlayerIds).toEqual([fx.kelce]);
+    // A name still waiting for review stays pending and the card is left
+    // blank (Jason, 2026-11-15); the cameo still goes on.
+    const pending = cards.get("5")!;
+    expect(pending.playerIds).toBeUndefined();
+    expect(pending.pendingPlayerNames).toEqual(["Unknown Rookie"]);
+    expect(pending.secondaryPlayerIds).toEqual([fx.kelce]);
     await drainScheduled(t);
     await cancelScheduled(t);
   });

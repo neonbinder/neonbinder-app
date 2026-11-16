@@ -1111,9 +1111,11 @@ describe("stored people — re-synced playerless rows and the set's skip records
 });
 
 /**
- * NEO-528 — the row's "Player on every card": a NEW card with nobody on it is
- * born with that player, so the teams step files it under them (by id), with
- * their career as the evidence, never on the "Cards with no players" line.
+ * NEO-528 — the row's "Player on every card": a NEW card whose listing names
+ * nobody is born with that player, so the teams step files it under them (by
+ * id), with their career as the evidence, never on the "Cards with no
+ * players" line. A card that prints any name is left blank by the commit
+ * (Jason, 2026-11-15), so it never takes them here either.
  */
 describe("stored people — the row's Player on every card", () => {
   const GRIFFEY = "player_griffey" as Id<"players">;
@@ -1134,9 +1136,52 @@ describe("stored people — the row's Player on every card", () => {
     ]);
   });
 
-  test("a card whose only printed name was ruled out is nobody, so it takes the default too", () => {
+  // Jason, 2026-11-15: the listing named someone, so the default is not a
+  // guess to make over it. The commit leaves these cards blank
+  // (`listingNamedPlayer`); the teams step must not plan the default either,
+  // even when the host passed the position.
+  test("a card whose only printed name an earlier save ruled out stays nobody's, not the default's", () => {
     const people = storedPeople(undefined, ["Team Photo"], undefined, wire([0]));
     const groups = build([card("1", ["Team Photo"])], [], {}, undefined, { people });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe(NO_PLAYERS_GROUP_KEY);
+    expect(groups[0].players).toEqual([]);
+    expect(evidenceRequests([card("1", ["Team Photo"])], [], undefined, people)).toEqual([]);
+  });
+
+  test("a card whose every printed name was ruled out in THIS sitting stays nobody's", () => {
+    const rows = [
+      row({ kind: "player", name: "Team Photo", decision: { action: "skip" } }),
+      row({ kind: "player", name: "Checklist", decision: { action: "skip" } }),
+    ];
+    const cards = [card("1", ["Team Photo", "Checklist"]), card("2", [])];
+    const people = storedPeople(undefined, undefined, undefined, wire([0, 1]));
+    const groups = build(cards, rows, {}, undefined, { people });
+    expect(groups.find((g) => g.key === NO_PLAYERS_GROUP_KEY)?.cards.map((c) => c.index)).toEqual([0]);
+    // The nameless card beside it still takes the default.
+    expect(groups.find((g) => g.players.includes("Ken Griffey Jr."))?.cards.map((c) => c.index)).toEqual([1]);
+  });
+
+  test("a card whose printed name is still waiting for review is not the default's", () => {
+    // An undecided row (and a link with no id) is nobody on the card, but the
+    // listing named someone: the commit keeps the name pending and leaves the
+    // card blank, never the default.
+    const rows = [
+      row({ kind: "player", name: "Mystery Man", decision: null }),
+      row({ kind: "player", name: "Half Linked", decision: { action: "link" } }),
+    ];
+    const cards = [card("1", ["Mystery Man"]), card("2", ["Half Linked"])];
+    const people = storedPeople(undefined, undefined, undefined, wire([0, 1]));
+    const groups = build(cards, rows, {}, undefined, { people });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].key).toBe(NO_PLAYERS_GROUP_KEY);
+    expect(groups[0].cards.map((c) => c.index)).toEqual([0, 1]);
+    expect(evidenceRequests(cards, rows, undefined, people)).toEqual([]);
+  });
+
+  test("a blank printed string names nobody, so the card still takes the default", () => {
+    const people = storedPeople(undefined, undefined, undefined, wire([0]));
+    const groups = build([card("1", ["  ", ""])], [], {}, undefined, { people });
     expect(groups).toHaveLength(1);
     expect(groups[0].players).toEqual(["Ken Griffey Jr."]);
   });

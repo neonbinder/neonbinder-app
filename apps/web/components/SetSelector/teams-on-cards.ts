@@ -1,5 +1,6 @@
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+import { listingNamesAPlayer } from "../../convex/lib/cardPlayerDefaults";
 // Browser-safe: `features/cardAttention.ts` has no server imports (it is
 // already read by the attention walker in the browser).
 import { MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
@@ -333,11 +334,14 @@ export interface StoredPeople {
   skippedTeamNames?: ReadonlySet<string>;
   /**
    * NEO-528 — the row's "Player on every card": preview positions of NEW
-   * cards the commit will give that player when nobody else is on them
-   * (nothing printed, or every printed name ruled out). Such a card is that
-   * player's for the teams step too, so its team is asked with their career
-   * as evidence, never filed under "Cards with no players". By id: the name
-   * is only what the line shows.
+   * cards the commit will give that player. Only a card whose listing names
+   * nobody gets them (`listingNamesAPlayer`): one that prints a name, even a
+   * name ruled "not a person" or still waiting for review, is left blank by
+   * the commit (Jason, 2026-11-15; invariant 8), so it is never theirs here
+   * either, whatever position the host passed. Such a card is that player's
+   * for the teams step, so its team is asked with their career as evidence,
+   * never filed under "Cards with no players". By id: the name is only what
+   * the line shows.
    */
   defaultPlayer?: DefaultPlayerForNewCards;
 }
@@ -488,10 +492,14 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
     // A row with no decision cannot reach the Teams step (every row is
     // decided there); a link with no id is malformed. Both are nobody.
   }
-  // NEO-528 — nobody on a NEW card: the commit gives it the row's "Player on
-  // every card", so the teams step reads it as theirs.
+  // NEO-528 — a NEW card whose listing names nobody: the commit gives it the
+  // row's "Player on every card", so the teams step reads it as theirs. A
+  // card that prints any name never takes them, even when every name was
+  // ruled out or is still waiting for review: the commit leaves it blank
+  // (`listingNamedPlayer`, the same `listingNamesAPlayer` test), so it stays
+  // a card with no players here.
   const fallback = view.defaultPlayer;
-  if (out.length === 0 && fallback?.positions.has(index)) {
+  if (out.length === 0 && fallback?.positions.has(index) && !listingNamesAPlayer(card.players)) {
     out.push({
       kind: "server",
       key: norm(fallback.name),
