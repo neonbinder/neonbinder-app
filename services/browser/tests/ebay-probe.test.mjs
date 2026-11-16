@@ -764,3 +764,362 @@ describe("POST /probe/ebay (fake target)", () => {
     assert.equal(calls.length, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Adversarial pass (NEO-555 PR A): try to make the probe write, follow a
+// redirect, take input from the request, or run twice at once.
+// ---------------------------------------------------------------------------
+
+describe("ebay probe (adversarial): the allowlist cannot be forged or mutated", () => {
+  const ctx = (fetchImpl) => ({ target: resolveEbayProbeTarget(PROD_ENV), env: PROD_ENV, fetchImpl, now: Date.now, timeoutMs: 1000 });
+
+  it("refuses every look-alike of a listed entry (prototype, proxy, clone, getter that flips) before any request", async () => {
+    const stub = stubEbay();
+    const listed = EBAY_PROBE_ALLOWLIST.find((e) => e.row === 15);
+    let reads = 0;
+    const flipping = {
+      ...listed,
+      get method() {
+        return ++reads === 1 ? "GET" : "POST";
+      },
+    };
+    const lookAlikes = [
+      Object.create(listed),
+      new Proxy(listed, {}),
+      structuredClone(listed),
+      Object.assign(Object.create(null), listed),
+      flipping,
+      { ...listed, method: "get" },
+      { ...listed, host: "evil" },
+    ];
+    for (const forged of lookAlikes) {
+      await assert.rejects(probeGet(forged, USER_TOKEN, ctx(stub.fetchImpl)), /not an allowlisted GET/);
+    }
+    assert.equal(stub.calls.length, 0);
+  });
+
+  it("the list, each entry, its query values and its arrays all reject a write (strict mode throws)", () => {
+    assert.throws(() => EBAY_PROBE_ALLOWLIST.push({}), TypeError);
+    assert.throws(() => {
+      EBAY_PROBE_ALLOWLIST[0] = EBAY_PROBE_ALLOWLIST[1];
+    }, TypeError);
+    for (const e of EBAY_PROBE_ALLOWLIST) {
+      assert.throws(() => {
+        e.method = "POST";
+      }, TypeError, e.step);
+      assert.throws(() => {
+        e.path = "/sell/inventory/v1/offer/1/publish";
+      }, TypeError, e.step);
+      assert.throws(() => {
+        e.host = "evil";
+      }, TypeError, e.step);
+      assert.throws(() => e.okStatuses.push(500), TypeError, e.step);
+      assert.throws(() => e.shapePaths.push("buyer.username"), TypeError, e.step);
+      assert.throws(() => {
+        e.query.injected = "1";
+      }, TypeError, e.step);
+      for (const v of Object.values(e.query)) {
+        if (typeof v === "object") {
+          assert.ok(Object.isFrozen(v), `${e.step}: a query value object is writable`);
+          assert.throws(() => {
+            v.lastModifiedSinceDays = Number.NaN;
+          }, TypeError, e.step);
+        }
+      }
+    }
+  });
+
+  it("the orders window cannot be bent: the day count stays 30", () => {
+    const orders = EBAY_PROBE_ALLOWLIST.find((e) => e.row === 13);
+    assert.equal(orders.query.filter.lastModifiedSinceDays, PROBE_ORDERS_SINCE_DAYS);
+    assert.match(resolveProbeQueryValue(orders.query.filter, Date.parse("2026-11-16T00:00:00Z")), /^lastmodifieddate:\[2026-10-17T00:00:00\.000Z\.\.\]$/);
+  });
+
+  it("every URL probeGet builds is the target's base, the entry's path and its own fixed query, nothing else", async () => {
+    for (const env of [PROD_ENV, { ENVIRONMENT: "dev", NEONBINDER_FAKE_BSC_URL: "http://127.0.0.1:59999", NEONBINDER_FAKE_BSC_KEY: "k" }]) {
+      const target = resolveEbayProbeTarget(env);
+      for (const e of EBAY_PROBE_ALLOWLIST) {
+        let seen;
+        const fetchImpl = async (url) => ((seen = new URL(url)), new Response("{}", { status: 200 }));
+        await probeGet(e, USER_TOKEN, { target, env, fetchImpl, now: () => Date.parse("2026-11-16T00:00:00Z"), timeoutMs: 1000, mintIdToken: async () => "t" });
+        const base = new URL(target.bases[e.host]);
+        assert.equal(seen.origin, base.origin, e.step);
+        assert.equal(seen.pathname, `${base.pathname.replace(/\/$/, "")}${e.path}`, e.step);
+        const want = Object.keys(e.query).sort();
+        assert.deepEqual([...seen.searchParams.keys()].sort(), want, e.step);
+        assert.equal(seen.hash, "");
+        assert.equal(seen.username + seen.password, "");
+      }
+    }
+  });
+});
+
+describe("ebay probe (adversarial): redirects and error causes", () => {
+  it("every request, GET and token grant, asks fetch to refuse redirects", async () => {
+    for (const env of [PROD_ENV, { ENVIRONMENT: "dev", NEONBINDER_FAKE_BSC_URL: "http://127.0.0.1:59999", NEONBINDER_FAKE_BSC_KEY: "k", [EBAY_PROBE_CREDENTIAL_KEY_ENV]: PROBE_KEY }]) {
+      const fake = env.NEONBINDER_FAKE_BSC_URL !== undefined;
+      const inner = stubEbay(fake ? { bases: ["http://127.0.0.1:59999/ebay/api", "http://127.0.0.1:59999/ebay/apiz"] } : {});
+      const inits = [];
+      const fetchImpl = async (url, init) => (inits.push(init), inner.fetchImpl(url, init));
+      const { router } = makeRouter({ env, stub: { fetchImpl, calls: inner.calls } });
+      const res = await call(router, fake ? { refreshToken: "fake-rt" } : {});
+      assert.equal(res.body.outcome, "ok");
+      assert.ok(inits.length >= 12);
+      for (const init of inits) assert.equal(init.redirect, "error");
+    }
+  });
+
+  it("a 3xx answer is read_failed and its Location is never fetched", async () => {
+    const inner = stubEbay();
+    const seen = [];
+    const fetchImpl = async (url, init) => {
+      const u = new URL(String(url));
+      seen.push(`${init?.method ?? "GET"} ${u.href}`);
+      if (u.pathname.endsWith("/oauth2/token")) return inner.fetchImpl(url, init);
+      return new Response(null, { status: 302, headers: { location: "https://evil.example.com/steal" } });
+    };
+    const { router } = makeRouter({ stub: { fetchImpl, calls: inner.calls } });
+    const res = await call(router);
+    assert.equal(res.body.outcome, "app_failed");
+    assert.equal(res.body.appLeg.outcome, "read_failed");
+    assert.ok(!seen.some((s) => s.includes("evil.example.com")));
+    assert.ok(!res.text.includes("evil.example.com"));
+  });
+
+  it("a thrown fetch error, with a cause that carries the request, never reaches the response or the logs", async () => {
+    const inner = stubEbay();
+    const leaky = () =>
+      Object.assign(new TypeError(`fetch failed ${USER_TOKEN} ${REFRESH_TOKEN}`), {
+        cause: Object.assign(new Error(`Authorization: Bearer ${APP_TOKEN} ${CLIENT_SECRET}`), { request: { headers: { Authorization: `Bearer ${USER_TOKEN}` } } }),
+      });
+    for (const failing of ["GET", "POST"]) {
+      const fetchImpl = async (url, init) => {
+        if ((init?.method ?? "GET") === failing && (failing === "GET" || new URLSearchParams(init.body).get("grant_type") === "refresh_token")) throw leaky();
+        return inner.fetchImpl(url, init);
+      };
+      const { router, logs } = makeRouter({ stub: { fetchImpl, calls: inner.calls }, deps: { minIntervalMs: 0 } });
+      const errors = [];
+      const orig = console.error;
+      console.error = (...a) => errors.push(a.map(String).join(" "));
+      let res;
+      try {
+        res = await call(router);
+      } finally {
+        console.error = orig;
+      }
+      assert.equal(res.status, 200, failing);
+      assertNoSecrets(res.text, `response (${failing})`);
+      assertNoSecrets(JSON.stringify(logs), `logs (${failing})`);
+      assertNoSecrets(errors.join("\n"), `console.error (${failing})`);
+    }
+  });
+
+  it("an unexpected throw (the pause lookup) is a fixed 500 with nothing but the target", async () => {
+    const { router } = makeRouter({ isPaused: async () => Promise.reject(new Error(`boom ${USER_TOKEN}`)) });
+    const errors = [];
+    const orig = console.error;
+    console.error = (...a) => errors.push(a.map(String).join(" "));
+    let res;
+    try {
+      res = await call(router);
+    } finally {
+      console.error = orig;
+    }
+    assert.equal(res.status, 500);
+    assert.deepEqual(res.body, { error: "eBay probe failed", ebayTarget: "real" });
+    assertNoSecrets(errors.join("\n"), "console.error");
+  });
+});
+
+describe("ebay probe (adversarial): the request cannot steer the probe", () => {
+  const FAKE_ORIGIN = "http://127.0.0.1:59999";
+  const FAKE_ENV = Object.freeze({ ENVIRONMENT: "dev", NEONBINDER_FAKE_BSC_URL: FAKE_ORIGIN, NEONBINDER_FAKE_BSC_KEY: "fake-caller-key-value" });
+  const FAKE_BASES = { api: `${FAKE_ORIGIN}/ebay/api`, apiz: `${FAKE_ORIGIN}/ebay/apiz` };
+  const fakeStub = () => stubEbay({ bases: [FAKE_BASES.api, FAKE_BASES.apiz] });
+
+  it("a fake refresh token full of form and path syntax stays one opaque form value", async () => {
+    const hostile = [
+      "x&grant_type=authorization_code&code=abc",
+      "x&scope=https://api.ebay.com/oauth/api_scope/sell.inventory",
+      "../../sell/inventory/v1/offer/1/publish",
+      "x%26grant_type%3Dauthorization_code",
+      "a=b;c=d#frag?q=1",
+    ];
+    for (const refreshToken of hostile) {
+      const stub = fakeStub();
+      const { router, calls } = makeRouter({ env: FAKE_ENV, stub });
+      const res = await call(router, { refreshToken });
+      assert.equal(res.status, 200, refreshToken);
+      assertOnlyPermittedCalls(calls, FAKE_BASES);
+      const refresh = calls.filter((c) => c.method === "POST" && c.body.includes("grant_type=refresh_token"));
+      assert.equal(refresh.length, 1, refreshToken);
+      const form = new URLSearchParams(refresh[0].body);
+      assert.deepEqual([...form.keys()].sort(), ["grant_type", "refresh_token", "scope"], refreshToken);
+      assert.equal(form.get("refresh_token"), refreshToken);
+      assert.equal(form.get("scope"), EBAY_READONLY_SCOPES.join(" "));
+      for (const c of calls.filter((x) => x.method === "POST")) {
+        assert.notEqual(new URLSearchParams(c.body).get("grant_type"), "authorization_code");
+      }
+    }
+  });
+
+  it("extra body fields (url, host, path, method, __proto__) change nothing", async () => {
+    const stub = fakeStub();
+    const { router, calls } = makeRouter({ env: FAKE_ENV, stub });
+    const raw = '{"refreshToken":"fake-rt","url":"https://evil.example.com","host":"evil.example.com","path":"/sell/inventory/v1/offer/1/publish","method":"POST","sku":"X","__proto__":{"method":"POST"}}';
+    const app = express();
+    app.use(express.json());
+    app.use(router);
+    const server = http.createServer(app);
+    await new Promise((r) => server.listen(0, "127.0.0.1", r));
+    try {
+      const res = await fetch(`http://127.0.0.1:${server.address().port}/probe/ebay`, { method: "POST", headers: { "Content-Type": "application/json" }, body: raw });
+      assert.equal(res.status, 200);
+    } finally {
+      server.close();
+    }
+    assertOnlyPermittedCalls(calls, FAKE_BASES);
+    assert.ok(calls.every((c) => new URL(c.url).origin === FAKE_ORIGIN));
+  });
+
+  it("a prod process with the fake URL set is refused (500) and contacts nobody", async () => {
+    const stub = fakeStub();
+    const { router, calls } = makeRouter({ env: { ...FAKE_ENV, ENVIRONMENT: "prod" }, stub });
+    const res = await call(router, { refreshToken: "fake-rt" });
+    assert.equal(res.status, 500);
+    assert.equal(calls.length, 0);
+  });
+
+  it("an over-long or non-printable fake refresh token is a 400", async () => {
+    const { router, calls } = makeRouter({ env: FAKE_ENV, stub: fakeStub() });
+    for (const refreshToken of ["a".repeat(4097), "tab\there", "nul\u0000", "é"]) {
+      assert.equal((await call(router, { refreshToken })).status, 400, JSON.stringify(refreshToken).slice(0, 20));
+    }
+    assert.equal(calls.length, 0);
+  });
+
+  it("real mode reads no body at all: an array, a nested object and a key all leave the call list as it was", async () => {
+    const baseline = makeRouter();
+    await call(baseline.router);
+    for (const body of [[1, 2], { key: "ebay-credentials-other", refreshToken: "BODY-RT", nested: { path: "/sell/x" } }]) {
+      const { router, calls, reads } = makeRouter();
+      const res = await call(router, body);
+      assert.equal(res.status, 200, JSON.stringify(body));
+      assert.deepEqual(reads, [PROBE_KEY]);
+      assert.deepEqual(
+        calls.map((c) => `${c.method} ${c.url}`),
+        baseline.calls.map((c) => `${c.method} ${c.url}`),
+      );
+      assert.ok(!calls.some((c) => (c.body ?? "").includes("BODY-RT")));
+    }
+  });
+});
+
+describe("ebay probe (adversarial): scope fallback and writes", () => {
+  it("falls back once, never loops: two refusals make exactly two refresh grants", async () => {
+    const stub = stubEbay({
+      token: (grant) => (grant === "client_credentials" ? [200, { access_token: APP_TOKEN, expires_in: 7200 }] : [400, { error: "invalid_scope" }]),
+    });
+    const { router, calls, logs } = makeRouter({ stub });
+    const res = await call(router);
+    assert.equal(res.body.accountLeg.outcome, "refresh_failed");
+    const refreshes = calls.filter((c) => c.method === "POST" && c.body.includes("refresh_token"));
+    assert.equal(refreshes.length, 2);
+    assert.equal(calls.filter((c) => c.method === "POST").length, 3, "app grant plus the two refresh grants");
+    assert.equal(logs.filter((l) => l.msg === "ebay_probe_scope_fallback").length, 1);
+    assert.equal(calls.filter((c) => c.method === "GET").length, 1, "only row 7 was read: no account token, no account reads");
+  });
+
+  it("a token minted with the consented (write-capable) scopes still reads only allowlisted GETs", async () => {
+    const stub = stubEbay({
+      token: (grant, scope) => {
+        if (grant === "client_credentials") return [200, { access_token: APP_TOKEN, expires_in: 7200 }];
+        return scope.includes("readonly") && scope.includes("sell.account.readonly") ? [400, { error: "invalid_scope" }] : [200, { access_token: USER_TOKEN, expires_in: 7200 }];
+      },
+    });
+    const { router, calls } = makeRouter({ stub });
+    const res = await call(router);
+    assert.equal(res.body.accountLeg.scopes, "consented");
+    assertOnlyPermittedCalls(calls);
+  });
+
+  it("writes nothing back: only getCredentials of Secret Manager runs, a rotated refresh token is dropped", async () => {
+    const { SecretsManagerService } = require("../dist/services/secrets-manager");
+    const proto = SecretsManagerService.prototype;
+    const touched = [];
+    const saved = new Map();
+    for (const name of Object.getOwnPropertyNames(proto)) {
+      if (name === "constructor" || typeof proto[name] !== "function") continue;
+      saved.set(name, proto[name]);
+      proto[name] = name === "getCredentials" ? async (key) => (touched.push(`${name}:${key}`), { refreshToken: REFRESH_TOKEN }) : async () => (touched.push(`WRITE-OR-OTHER:${name}`), undefined);
+    }
+    try {
+      const stub = stubEbay({
+        token: (grant) =>
+          grant === "client_credentials"
+            ? [200, { access_token: APP_TOKEN, expires_in: 7200 }]
+            : [200, { access_token: USER_TOKEN, expires_in: 7200, refresh_token: "ROTATED-RT-9999", refresh_token_expires_in: 99 }],
+      });
+      const router = createEbayProbeRouter({ env: PROD_ENV, fetchImpl: stub.fetchImpl, isPaused: async () => false, log: () => {} });
+      const res = await call(router);
+      assert.equal(res.body.outcome, "ok");
+      assert.deepEqual(touched, [`getCredentials:${PROBE_KEY}`]);
+      assert.ok(!res.text.includes("ROTATED-RT-9999"));
+    } finally {
+      for (const [name, fn] of saved) proto[name] = fn;
+    }
+  });
+});
+
+describe("ebay probe (adversarial): the rate window", () => {
+  it("five simultaneous requests: exactly one runs, four are 429, eBay is called once over", async () => {
+    const { router, calls } = makeRouter();
+    const all = await Promise.all([1, 2, 3, 4, 5].map(() => call(router)));
+    assert.deepEqual(all.map((r) => r.status).sort(), [200, 429, 429, 429, 429]);
+    assert.equal(calls.filter((c) => c.method === "POST").length, 2);
+    assert.equal(calls.filter((c) => c.method === "GET").length, EBAY_PROBE_ALLOWLIST.length);
+  });
+
+  it("a second request while the first is still talking to eBay is 429 and adds no call", async () => {
+    const inner = stubEbay();
+    let release;
+    const gate = new Promise((r) => (release = r));
+    let held = false;
+    const fetchImpl = async (url, init) => {
+      if (!held && new URL(String(url)).pathname.includes("get_item_aspects")) {
+        held = true;
+        await gate;
+      }
+      return inner.fetchImpl(url, init);
+    };
+    const { router } = makeRouter({ stub: { fetchImpl, calls: inner.calls } });
+    const first = call(router);
+    while (!held) await new Promise((r) => setTimeout(r, 5));
+    const before = inner.calls.length;
+    const second = await call(router);
+    assert.equal(second.status, 429);
+    assert.equal(inner.calls.length, before);
+    release();
+    assert.equal((await first).status, 200);
+  });
+
+  it("the window is exact, reopens at 60 s, and a clock that jumps back stays closed", async () => {
+    let t = 1_000_000;
+    const { router } = makeRouter({ deps: { now: () => t } });
+    assert.equal((await call(router)).status, 200);
+    t += 59_999;
+    const early = await call(router);
+    assert.equal(early.status, 429);
+    assert.equal(early.headers.get("retry-after"), "1");
+    t -= 3_600_000;
+    assert.equal((await call(router)).status, 429, "a backwards clock must not reopen the window");
+    t = 1_000_000 + 60_000;
+    assert.equal((await call(router)).status, 200);
+  });
+
+  it("the 409 (real target outside prod) and a 400 body do not consume the window", async () => {
+    const nonProd = makeRouter({ env: { ...PROD_ENV, ENVIRONMENT: "dev" } });
+    assert.equal((await call(nonProd.router)).status, 409);
+    assert.equal((await call(nonProd.router)).status, 409, "still 409, never 429");
+  });
+});

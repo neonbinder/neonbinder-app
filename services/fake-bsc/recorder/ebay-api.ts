@@ -142,14 +142,16 @@ export class EbayApi {
   private async send(label: string, url: string, init: RequestInit): Promise<EbayResponse> {
     await this.pace(label);
     let res: Response;
+    let buf: Buffer;
     try {
       res = await this.fetchImpl(url, { ...init, redirect: "error", signal: AbortSignal.timeout(EBAY_CALL_TIMEOUT_MS) });
+      // Reading the body can fail or time out too (the deadline covers it).
+      buf = Buffer.from(await res.arrayBuffer());
     } catch (err) {
       // The cause carries the request (headers included): dropped.
       const name = err instanceof Error ? err.name : "";
       throw new EbayStop(name === "TimeoutError" || name === "AbortError" ? "timeout" : "network", label, 0);
     }
-    const buf = Buffer.from(await res.arrayBuffer());
     if (buf.length > MAX_EBAY_BODY_BYTES) throw new EbayStop("too_large", label, res.status);
     let body: unknown = null;
     if (buf.length > 0) {

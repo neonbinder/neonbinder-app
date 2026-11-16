@@ -686,3 +686,210 @@ describe("fake eBay: captures", () => {
     }
   });
 });
+
+// ── Adversarial pass (NEO-555 PR A): isolation between namespaces and sellers ──
+
+describe("fake eBay tokens (adversarial): sealed, typed, expiring, instance-bound", () => {
+  const { createEbayTokens, ACCESS_TOKEN_TTL_S, REFRESH_TOKEN_TTL_S, AUTH_CODE_TTL_S, APP_TOKEN_TTL_S } = require("../dist/src/ebay/tokens.js");
+  const U = { ns: "tok-adv-a", seller: "alt" };
+
+  const make = (t) => {
+    const clock = { t };
+    return { clock, tokens: createEbayTokens({ secret: "s".repeat(40), now: () => clock.t }) };
+  };
+
+  it("each token kind opens only its own door", () => {
+    const { tokens } = make(1_000_000);
+    const { accessToken, refreshToken } = tokens.mintUserTokens(U);
+    const code = tokens.mintCode(U).code;
+    const app = tokens.mintApp();
+    const kinds = { access: accessToken, refresh: refreshToken, code, app };
+    const doors = {
+      access: (t) => tokens.userForAccess(t) !== null,
+      refresh: (t) => tokens.userForRefresh(t) !== null,
+      app: (t) => tokens.isApp(t),
+    };
+    assert.deepEqual(Object.entries(doors).map(([d, f]) => [d, Object.entries(kinds).filter(([, t]) => f(t)).map(([k]) => k)]), [
+      ["access", ["access"]],
+      ["refresh", ["refresh"]],
+      ["app", ["app"]],
+    ]);
+    assert.deepEqual(tokens.userForAccess(`Bearer ${accessToken}`), U, "the Bearer form opens the same door");
+    assert.equal(tokens.redeemCode(accessToken), null);
+    assert.deepEqual(tokens.redeemCode(code), U);
+  });
+
+  it("expires at the second: access 2 h, code 5 min, app 2 h, refresh about 18 months", () => {
+    const { tokens, clock } = make(1_000_000);
+    const t0 = clock.t;
+    const { accessToken, refreshToken } = tokens.mintUserTokens(U);
+    const code = tokens.mintCode(U).code;
+    const app = tokens.mintApp();
+    clock.t = t0 + AUTH_CODE_TTL_S * 1000 - 1;
+    assert.notEqual(tokens.redeemCode(code), null);
+    clock.t = t0 + ACCESS_TOKEN_TTL_S * 1000 - 1;
+    assert.notEqual(tokens.userForAccess(accessToken), null);
+    assert.equal(tokens.isApp(app), true);
+    clock.t = t0 + ACCESS_TOKEN_TTL_S * 1000;
+    assert.equal(tokens.userForAccess(accessToken), null);
+    assert.equal(APP_TOKEN_TTL_S, ACCESS_TOKEN_TTL_S);
+    assert.equal(tokens.isApp(app), false);
+    clock.t = t0 + REFRESH_TOKEN_TTL_S * 1000 - 1;
+    assert.notEqual(tokens.userForRefresh(refreshToken), null);
+    clock.t = t0 + REFRESH_TOKEN_TTL_S * 1000;
+    assert.equal(tokens.userForRefresh(refreshToken), null);
+    const expired = make(5_000_000);
+    const c = expired.tokens.mintCode(U).code;
+    expired.clock.t += AUTH_CODE_TTL_S * 1000;
+    assert.equal(expired.tokens.redeemCode(c), null);
+  });
+
+  it("a token from another instance (other key) is worthless, and so is any single flipped character", () => {
+    const a = make(1_000_000).tokens;
+    const b = createEbayTokens({ secret: "z".repeat(40), now: () => 1_000_000 });
+    const { accessToken } = a.mintUserTokens(U);
+    assert.equal(b.userForAccess(accessToken), null);
+    const head = "v^1.1#fake#";
+    for (let i = 0; i < accessToken.length - head.length; i += 7) {
+      const at = head.length + i;
+      const flipped = accessToken.slice(0, at) + (accessToken[at] === "A" ? "B" : "A") + accessToken.slice(at + 1);
+      assert.equal(a.userForAccess(flipped), null, `flip at ${at}`);
+    }
+    assert.equal(a.userForAccess(`${accessToken}${"A".repeat(5000)}`), null);
+    assert.equal(a.userForAccess(accessToken.slice(0, -1)), null);
+    for (const junk of [undefined, null, "", "Bearer", "Bearer ", "v^1.1#fake#", "v^1.1#fake#AAAA"]) assert.equal(a.userForAccess(junk), null);
+  });
+
+  it("a code is single use even when redeemed at the same instant, and revokeAll kills every kind", () => {
+    const { tokens } = make(1_000_000);
+    const code = tokens.mintCode(U).code;
+    assert.equal([tokens.redeemCode(code), tokens.redeemCode(code)].filter(Boolean).length, 1);
+    const { accessToken, refreshToken } = tokens.mintUserTokens(U);
+    const app = tokens.mintApp();
+    const unspent = tokens.mintCode(U).code;
+    tokens.revokeAll();
+    assert.equal(tokens.userForAccess(accessToken), null);
+    assert.equal(tokens.userForRefresh(refreshToken), null);
+    assert.equal(tokens.isApp(app), false);
+    assert.equal(tokens.redeemCode(unspent), null);
+  });
+});
+
+describe("fake eBay (adversarial): namespaces and the alt seller stay apart", () => {
+  let fake;
+  before(async () => (fake = await startFake()));
+  after(() => fake.close());
+
+  const mkItem = (sku) => item(sku, { availability: { shipToLocationAvailability: { quantity: 1 } } });
+  const put = (tok, sku) => ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: tok, body: { requests: [mkItem(sku)] } });
+
+  it("x-nb-fake-ns never re-points a user token: reads and writes stay in the token's own namespace", async () => {
+    const a = (await connect(fake, "adv-iso-a")).access;
+    const b = (await connect(fake, "adv-iso-b")).access;
+    assert.equal((await put(b, "NB2-b-only-NM")).status, 200);
+    const spoof = { "x-nb-fake-ns": "adv-iso-b" };
+    assert.equal((await ebay(fake, "GET", `${INV}/inventory_item/NB2-b-only-NM`, { token: a, extra: spoof })).status, 404, "A with B's header saw B's item");
+    assert.equal((await put(a, "NB2-a-spoof-NM")).status, 200);
+    assert.equal((await ebay(fake, "GET", `${INV}/inventory_item/NB2-a-spoof-NM`, { token: b })).status, 404);
+    // The spoofing write went to A, whichever header rode along.
+    assert.equal((await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: a, extra: spoof, body: { requests: [mkItem("NB2-a-header-NM")] } })).status, 200);
+    assert.equal((await ebay(fake, "GET", `${INV}/inventory_item/NB2-a-header-NM`, { token: a })).status, 200);
+    assert.equal((await ebay(fake, "GET", `${INV}/inventory_item/NB2-a-header-NM`, { token: b })).status, 404);
+    // Nor do misses: an unmodelled call by A with B's header is A's miss, not B's.
+    await ebay(fake, "GET", `${INV}/never_modelled_path`, { token: a, extra: spoof });
+    const forB = await fake.call("GET", "/__fake/misses?ns=adv-iso-b");
+    assert.ok(!JSON.stringify(forB.body).includes("never_modelled_path"));
+  });
+
+  it("a fault set for one namespace never hits another's token, spoofed header or not, and cannot be dodged by one", async () => {
+    const a = (await connect(fake, "adv-flt-a")).access;
+    const b = (await connect(fake, "adv-flt-b")).access;
+    const rule = { match: { method: "GET", pathTemplate: "ebay/apiz/commerce/identity/v1/user" }, kind: "429", times: 5 };
+    assert.equal((await fake.call("POST", "/__fake/faults", { body: { ns: "adv-flt-b", rules: [rule] } })).status, 200);
+    const me = (tok, extra = {}) => ebay(fake, "GET", "/ebay/apiz/commerce/identity/v1/user/", { token: tok, extra });
+    assert.equal((await me(a)).status, 200);
+    assert.equal((await me(a, { "x-nb-fake-ns": "adv-flt-b" })).status, 200, "a header must not pull in B's fault");
+    assert.equal((await me(b, { "x-nb-fake-ns": "adv-flt-a" })).status, 429, "a header must not dodge B's own fault");
+    assert.equal((await me(b, { "x-nb-fake-ns": "adv-flt-b-" })).status, 429);
+  });
+
+  it("the alt seller shares nothing with main: policies, items, offers, orders, images and ids", async () => {
+    const NS = "adv-alt-ns";
+    const main = (await connect(fake, NS)).access;
+    const alt = (await connect(fake, NS, "alt")).access;
+    const pol = await setUpSeller(fake, NS, main);
+    assert.equal((await put(main, "NB2-main-NM")).status, 200);
+    const off = await ebay(fake, "POST", `${INV}/bulk_create_offer`, { token: main, body: { requests: [offer("NB2-main-NM", pol)] } });
+    const offerId = off.body.responses[0].offerId;
+    assert.ok(offerId);
+    assert.equal((await fake.call("POST", "/__fake/ebay/orders", { body: { ns: NS, order: { lines: [{ title: "main only", quantity: 1, priceCents: 100 }] } } })).status, 200);
+
+    const total = async (tok, path) => (await ebay(fake, "GET", path, { token: tok })).body;
+    assert.equal((await total(alt, `${ACC}/payment_policy?marketplace_id=EBAY_US`)).total, 0);
+    assert.equal((await total(alt, `${ACC}/fulfillment_policy?marketplace_id=EBAY_US`)).total, 0);
+    assert.deepEqual(await total(alt, `${ACC}/program/get_opted_in_programs`), { programs: [] });
+    assert.equal((await ebay(fake, "GET", `${INV}/location/neonbinder-main`, { token: alt })).status, 404);
+    assert.equal((await ebay(fake, "GET", `${INV}/inventory_item/NB2-main-NM`, { token: alt })).status, 404);
+    assert.equal((await ebay(fake, "GET", `${INV}/offer?sku=NB2-main-NM&marketplace_id=EBAY_US&format=FIXED_PRICE&limit=5`, { token: alt })).status, 404);
+    assert.equal((await total(alt, `/ebay/api/sell/fulfillment/v1/order?filter=${encodeURIComponent(NB_FILTER)}&limit=100&offset=0`)).total, 0);
+    // Main's offer id, presented by alt, is not an offer at all; main's still is.
+    const pub = await ebay(fake, "POST", `${INV}/offer/${offerId}/publish`, { token: alt });
+    assert.equal(pub.status, 404);
+    assert.equal((await ebay(fake, "POST", `${INV}/offer/${offerId}/withdraw`, { token: alt })).status, 404);
+    assert.equal((await ebay(fake, "DELETE", `${INV}/inventory_item/NB2-main-NM`, { token: alt })).status, 404);
+    assert.equal((await ebay(fake, "GET", `${INV}/inventory_item/NB2-main-NM`, { token: main })).status, 200, "alt's delete touched main's item");
+    // The other way: alt's writes never appear on main.
+    assert.equal((await put(alt, "NB2-alt-NM")).status, 200);
+    assert.equal((await ebay(fake, "GET", `${INV}/inventory_item/NB2-alt-NM`, { token: main })).status, 404);
+  });
+
+  it("a refresh token keeps its seller: alt refreshes to alt, never to main, and the app token has no seller", async () => {
+    const NS = "adv-refresh-ns";
+    const main = await connect(fake, NS);
+    const alt = await connect(fake, NS, "alt");
+    const idOf = async (access) => (await ebay(fake, "GET", "/ebay/apiz/commerce/identity/v1/user/", { token: access })).body.userId;
+    const refreshed = await token(fake, { grant_type: "refresh_token", refresh_token: alt.refresh });
+    assert.equal(refreshed.status, 200);
+    assert.equal(await idOf(refreshed.body.access_token), await idOf(alt.access));
+    assert.notEqual(await idOf(refreshed.body.access_token), await idOf(main.access));
+  });
+
+  it("the consent door takes only main or alt, and a namespace named like an Object member pollutes nothing", async () => {
+    for (const seller of ["__proto__", "constructor", "ALT", " alt", "alt ", "main,alt", 1, null, [], {}]) {
+      const r = await fake.call("POST", "/__fake/ebay/consent", { body: { ns: "adv-bad-seller", seller } });
+      assert.equal(r.status, 400, JSON.stringify(seller));
+    }
+    for (const ns of ["__proto__", "Adv-Upper", "a b", "a/b", "../x", "", "x".repeat(101), 7, null]) {
+      assert.equal((await fake.call("POST", "/__fake/ebay/consent", { body: { ns } })).status, 400, JSON.stringify(ns));
+    }
+    const odd = (await connect(fake, "constructor")).access;
+    assert.equal((await ebay(fake, "GET", "/ebay/apiz/commerce/identity/v1/user/", { token: odd })).status, 200);
+    assert.equal({}.ebay, undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(Object.prototype, "main"), false);
+    const other = (await connect(fake, "adv-clean")).access;
+    assert.deepEqual((await ebay(fake, "GET", `${ACC}/program/get_opted_in_programs`, { token: other })).body, { programs: [] });
+  });
+
+  it("a code redeemed by six simultaneous requests yields one token set", async () => {
+    const c = await fake.call("POST", "/__fake/ebay/consent", { body: { ns: "adv-race" } });
+    const results = await Promise.all(
+      Array.from({ length: 6 }, () => token(fake, { grant_type: "authorization_code", code: c.body.code, redirect_uri: "nb-ru" })),
+    );
+    assert.deepEqual(results.map((r) => r.status).sort(), [200, 400, 400, 400, 400, 400]);
+  });
+
+  it("eBay tokens open nothing on the BSC API, and a refresh or auth-code string is no bearer token", async () => {
+    const { access, refresh } = await connect(fake, "adv-cross");
+    for (const t of [access, refresh]) {
+      assert.equal((await fake.call("GET", "/api/marketplace/user/profile", { bsc: t })).status, 401);
+    }
+    const c = (await fake.call("POST", "/__fake/ebay/consent", { body: { ns: "adv-cross" } })).body.code;
+    assert.equal((await ebay(fake, "GET", `${ACC}/program/get_opted_in_programs`, { token: refresh })).status, 401);
+    assert.equal((await ebay(fake, "GET", `${ACC}/program/get_opted_in_programs`, { token: c })).status, 401);
+  });
+
+  it("the control door needs the caller headers: no key, no consent", async () => {
+    const res = await fetch(`${fake.base}/__fake/ebay/consent`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ns: "adv-nokey" }) });
+    assert.ok(res.status === 401 || res.status === 403);
+  });
+});

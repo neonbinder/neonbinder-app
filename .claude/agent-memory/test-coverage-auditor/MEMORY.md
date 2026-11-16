@@ -21,3 +21,4 @@
 - [Fake-upstream fault proof gaps](fake-upstream-fault-injection-proof-gaps.md) — conditional/times:1 faults prove nothing; dropped log-shape tests; vacuous capture checks
 - [Budget sweep, GCS store untested](budget-sweep-and-gcs-store-untested.md) — removed/added expect pairing; cloud adapter tested via local store only; cold-start seed budgets
 - [Wildcard regex hides doubled words](wildcard-regex-around-a-label-hides-doubled-words.md) — `.*LABEL.*` passes a brand-doubled label; pin exact text for wording fixes
+- [Cross-service source-read tests vs path filters](cross-service-source-read-tests-vs-path-filters.md) — parity tests reading a sibling service only run if its lane's filter lists those paths, both ways

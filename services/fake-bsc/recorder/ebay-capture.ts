@@ -250,8 +250,42 @@ async function cleanupCall(api: EbayApi, call: EbayCall, done: (s: number) => bo
   return false;
 }
 
+/** Signals that would end the process (and skip the cleanup) while a listing may be live. */
+const GUARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
+
+/**
+ * The production capture is not interruptible: a signal that kills the
+ * process mid-run would leave the real listing live (`finally` does not run
+ * on a signal). Ctrl-C, a terminal close and `kill` are noted and ignored
+ * until the run, cleanup included, has finished. `kill -9` is the last resort.
+ */
 export async function runProdCapture(deps: ProdDeps): Promise<ProdOutcome> {
-  const { api, sink, sku, picture, report } = deps;
+  checkCaptureSku("production", deps.sku);
+  const onSignal = () => {
+    try {
+      deps.report("interrupt ignored: the cleanup must finish first (the listing may be live)");
+    } catch {
+      // nothing to do
+    }
+  };
+  for (const s of GUARDED_SIGNALS) process.on(s, onSignal);
+  try {
+    return await runProdCaptureGuarded(deps);
+  } finally {
+    for (const s of GUARDED_SIGNALS) process.off(s, onSignal);
+  }
+}
+
+async function runProdCaptureGuarded(deps: ProdDeps): Promise<ProdOutcome> {
+  const { api, sink, sku, picture } = deps;
+  // A report that throws (a closed stdout) must never skip the cleanup.
+  const report = (line: string): void => {
+    try {
+      deps.report(line);
+    } catch {
+      // dropped
+    }
+  };
   checkCaptureSku("production", sku);
   if (api.env !== "production") throw new Error("the production capture needs the production client");
   await api.grantUser();

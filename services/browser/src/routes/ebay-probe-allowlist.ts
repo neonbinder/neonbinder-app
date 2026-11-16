@@ -197,7 +197,10 @@ const OK = Object.freeze([200]);
 const OK_OR_ABSENT = Object.freeze([200, 404]);
 
 function entry(e: EbayProbeEntry): EbayProbeEntry {
-  return Object.freeze({ ...e, query: Object.freeze({ ...e.query }) });
+  // Freeze each query value too: `{ lastModifiedSinceDays }` is an object, and
+  // a shallow freeze of the query would leave it writable.
+  const query = Object.fromEntries(Object.entries(e.query).map(([k, v]) => [k, typeof v === "string" ? v : Object.freeze({ ...v })]));
+  return Object.freeze({ ...e, query: Object.freeze(query) });
 }
 
 /**

@@ -557,3 +557,269 @@ describe("ebay-undo", () => {
     assert.equal(state.item, false);
   });
 });
+
+// ── Adversarial pass (NEO-555 PR A): the production capture ────────────────
+
+describe("ebay-capture --prod (adversarial): the SKU gate", () => {
+  const bypasses = [
+    ["lower case", "nbcapture-prd-20261116"],
+    ["leading space", ` ${PRD_SKU}`],
+    ["trailing space", `${PRD_SKU} `],
+    ["trailing newline", `${PRD_SKU}\n`],
+    ["trailing NUL", `${PRD_SKU}\u0000`],
+    ["no-break space", `${PRD_SKU} `],
+    ["zero-width space inside", "NBCAPTURE-​PRD-20261116"],
+    ["full-width digits", "NBCAPTURE-PRD-２０２６１１１６"],
+    ["Arabic-Indic digits", "NBCAPTURE-PRD-٢٠٢٦١١١٦"],
+    ["Cyrillic B", "NВCAPTURE-PRD-20261116"],
+    ["seven digits", "NBCAPTURE-PRD-2026111"],
+    ["nine digits", "NBCAPTURE-PRD-202611161"],
+    ["suffix", `${PRD_SKU}-x`],
+    ["prefix", `x${PRD_SKU}`],
+    ["a path", `${PRD_SKU}/../NB2-realcard-NM`],
+    ["a query", `${PRD_SKU}?x=1`],
+    ["the sandbox form", SBX_SKU],
+    ["an NB listing SKU", "NB2-realcard-NM"],
+    ["empty", ""],
+  ];
+
+  it("refuses every look-alike in the prod capture and the prod undo, and sends nothing", async () => {
+    for (const [what, sku] of bypasses) {
+      const { routes } = prodRoutes();
+      const { api: a, stub } = api("production", routes);
+      await assert.rejects(() => runProdCapture({ api: a, sink: null, sku, picture: PICTURE, report: () => {} }), /refusing SKU/, what);
+      await assert.rejects(() => runEbayUndo(a, sku), /refusing SKU/, what);
+      assert.throws(() => checkCaptureSku("production", sku), /refusing SKU/, what);
+      assert.equal(stub.calls.length, 0, `${what}: a request was sent`);
+    }
+  });
+
+  it("the sandbox form is refused on production and the production form on the sandbox", () => {
+    assert.throws(() => checkCaptureSku("production", SBX_SKU), /refusing SKU/);
+    assert.throws(() => checkCaptureSku("sandbox", PRD_SKU), /refusing SKU/);
+    assert.doesNotThrow(() => checkCaptureSku("production", PRD_SKU));
+    assert.doesNotThrow(() => checkCaptureSku("sandbox", SBX_SKU));
+  });
+
+  it("the CLI refuses a --sku that is not today's, even a well-formed capture SKU from another day", async () => {
+    await assert.rejects(() => ebayCapture(parseArgs(["ebay-capture", "--prod", "--sku", "NBCAPTURE-PRD-20250101", "--yes"]).flags, () => NOW), /refusing SKU/);
+  });
+});
+
+describe("ebay-capture --prod (adversarial): at most one listing, always cleaned up", () => {
+  const publishesOf = (calls) => calls.filter((c) => c.method === "POST" && c.path.endsWith("/publish"));
+
+  it("the happy path sends exactly one publish and one bulk_create_offer", async () => {
+    const { routes } = prodRoutes();
+    const { api: a, stub } = api("production", routes);
+    const out = await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    assert.equal(out.ok, true);
+    assert.equal(publishesOf(stub.calls).length, 1);
+    assert.equal(stub.calls.filter((c) => c.path.endsWith("/bulk_create_offer")).length, 1);
+  });
+
+  it("a publish that answers 200 with no listingId still gets the offer withdrawn and the item deleted", async () => {
+    const { routes, state } = prodRoutes({
+      "POST /sell/inventory/v1/offer/777/publish": (_c, st) => ((st.live = true), { status: 200, body: { warnings: [] } }),
+    });
+    const { api: a, stub } = api("production", routes);
+    const s = sink();
+    const out = await runProdCapture({ api: a, sink: s, sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    assert.equal(out.ok, false);
+    assert.equal(out.stage, "write");
+    assert.equal(out.cleanedUp, true);
+    assert.equal(state.live, false, "the listing is still live");
+    assert.equal(state.item, false);
+    assert.equal(publishesOf(stub.calls).length, 1);
+    assert.deepEqual(s.stored, []);
+  });
+
+  it("a publish with an empty body (2xx) is the same", async () => {
+    const { routes, state } = prodRoutes({ "POST /sell/inventory/v1/offer/777/publish": (_c, st) => ((st.live = true), { status: 200 }) });
+    const { api: a } = api("production", routes);
+    const out = await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    assert.equal(out.cleanedUp, true);
+    assert.equal(state.live, false);
+  });
+
+  it("a timeout AFTER eBay published (the answer never arrives) still ends the listing", async () => {
+    const { routes, state } = prodRoutes({
+      "POST /sell/inventory/v1/offer/777/publish": (_c, st) => ((st.live = true), Object.assign(new Error("timed out"), { name: "TimeoutError" })),
+    });
+    const { api: a, stub } = api("production", routes);
+    const out = await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    assert.equal(out.ok, false);
+    assert.equal(out.cleanedUp, true);
+    assert.equal(state.live, false, "the listing is still live");
+    assert.equal(state.item, false);
+    assert.equal(publishesOf(stub.calls).length, 1, "the publish was not retried");
+  });
+
+  it("a network drop on the publish answer is the same", async () => {
+    const { routes, state } = prodRoutes({ "POST /sell/inventory/v1/offer/777/publish": (_c, st) => ((st.live = true), new TypeError("fetch failed")) });
+    const { api: a } = api("production", routes);
+    const out = await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    assert.equal(out.cleanedUp, true);
+    assert.equal(state.live, false);
+  });
+
+  it("a 401 on the main-path withdraw is recovered by the cleanup's one re-grant", async () => {
+    const { routes, state } = prodRoutes({
+      "POST /sell/inventory/v1/offer/777/withdraw": (ctx, st) => {
+        const grants = ctx.calls.filter((c) => c.path === "/identity/v1/oauth2/token").length;
+        if (grants < 2) return { status: 401, body: { errors: [{ errorId: 1001 }] } };
+        st.live = false;
+        return { status: 200, body: { listingId: "110000000001" } };
+      },
+    });
+    const { api: a, stub } = api("production", routes);
+    const out = await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    assert.equal(out.ok, false);
+    assert.equal(out.stage, "write");
+    assert.equal(out.cleanedUp, true);
+    assert.equal(state.live, false);
+    assert.equal(state.item, false);
+    assert.equal(stub.calls.filter((c) => c.path === "/identity/v1/oauth2/token").length, 2);
+    assert.equal(publishesOf(stub.calls).length, 1);
+  });
+
+  it("a 401 on the withdraw with a re-grant eBay refuses ends in an unverified cleanup carrying the listing id", async () => {
+    let grants = 0;
+    const { routes } = prodRoutes({
+      "POST /identity/v1/oauth2/token": () => (++grants === 1 ? tokenOk() : { status: 400, body: { error: "invalid_grant" } }),
+      "POST /sell/inventory/v1/offer/777/withdraw": () => ({ status: 401, body: { errors: [{ errorId: 1001 }] } }),
+      [`DELETE /sell/inventory/v1/inventory_item/${PRD_SKU}`]: () => ({ status: 401, body: { errors: [{ errorId: 1001 }] } }),
+    });
+    const { api: a } = api("production", routes);
+    const out = await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    assert.equal(out.ok, false);
+    assert.equal(out.cleanedUp, false);
+    assert.equal(out.listingId, "110000000001");
+    assert.match(prodFailureLines(out, PRD_SKU).join("\n"), /COULD NOT BE VERIFIED/);
+  });
+
+  it("a report callback that throws (a closed stdout) cannot skip the cleanup", async () => {
+    const { routes, state } = prodRoutes({ "POST /sell/inventory/v1/bulk_update_price_quantity": () => ({ status: 400, body: {} }) });
+    const { api: a } = api("production", routes);
+    const out = await runProdCapture({
+      api: a,
+      sink: sink(),
+      sku: PRD_SKU,
+      picture: PICTURE,
+      report: () => {
+        throw new Error("EPIPE");
+      },
+    });
+    assert.equal(out.ok, false);
+    assert.equal(out.cleanedUp, true);
+    assert.equal(state.live, false);
+    assert.equal(state.item, false);
+  });
+
+  it("a stop signal during the run is held off until the cleanup is done, and the handlers are removed after", async () => {
+    const signals = ["SIGINT", "SIGTERM", "SIGHUP"];
+    const before = signals.map((s) => process.listenerCount(s));
+    let during = null;
+    const lines = [];
+    const { routes } = prodRoutes({
+      "POST /sell/inventory/v1/bulk_update_price_quantity": () => {
+        during = signals.map((s) => process.listenerCount(s));
+        process.emit("SIGINT");
+        return { status: 200, body: { responses: [{ statusCode: 200 }] } };
+      },
+    });
+    const { api: a } = api("production", routes);
+    const out = await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: (l) => lines.push(l) });
+    assert.equal(out.ok, true);
+    assert.deepEqual(during, before.map((n) => n + 1));
+    assert.ok(lines.some((l) => /interrupt ignored/.test(l)));
+    assert.deepEqual(signals.map((s) => process.listenerCount(s)), before);
+  });
+
+  it("the handlers are removed even when the run throws", async () => {
+    const before = process.listenerCount("SIGINT");
+    const { routes } = prodRoutes({ "GET /sell/inventory/v1/location/neonbinder-main": () => ({ status: 401, body: {} }) });
+    const { api: a } = api("production", routes);
+    await assert.rejects(() => runProdCapture({ api: a, sink: null, sku: PRD_SKU, picture: PICTURE, report: () => {} }));
+    assert.equal(process.listenerCount("SIGINT"), before);
+  });
+});
+
+describe("ebay-capture --prod (adversarial): nothing secret in reports or errors", () => {
+  const SECRETS = [REFRESH, CERT, "ACCESS", Buffer.from(`NB-app-id:${CERT}`).toString("base64")];
+  const leaky = () =>
+    Object.assign(new TypeError(`fetch failed: Bearer v^1.1#ACCESS ${REFRESH} ${CERT}`), {
+      cause: Object.assign(new Error(`${REFRESH} ${CERT}`), { request: { headers: { authorization: "Bearer v^1.1#ACCESS" } } }),
+    });
+  const body = (t) => `${t.map(String).join("\n")}`;
+
+  async function runAndCollect(routes, over = {}) {
+    const { api: a } = api("production", routes, over);
+    const lines = [];
+    let out;
+    let thrown = null;
+    try {
+      out = await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: (l) => lines.push(l) });
+    } catch (err) {
+      thrown = err;
+    }
+    const failure = out && !out.ok ? prodFailureLines(out, PRD_SKU) : [];
+    const text = [...lines, ...failure, thrown ? `${thrown.name}: ${thrown.message}` : "", JSON.stringify(out ?? {})].join("\n");
+    a.forget();
+    return text;
+  }
+
+  it("a fetch error whose message and cause carry the token, cert and refresh token is reduced to a class", async () => {
+    for (const path of ["bulk_create_offer", "offer/777/publish", "offer/777/withdraw", "bulk_update_price_quantity"]) {
+      const { routes } = prodRoutes({ [`POST /sell/inventory/v1/${path}`]: (_c, st) => ((st.live = path.includes("publish") ? true : st.live), leaky()) });
+      const text = await runAndCollect(routes);
+      for (const v of SECRETS) assert.ok(!text.includes(v), `${path}: leaked ${v.slice(0, 8)}`);
+      assert.match(text, /network/);
+    }
+  });
+
+  it("a response body that fails mid-read (its error names the secrets) is a stop, not a raw error", async () => {
+    const { routes } = prodRoutes();
+    const stub = stubEbay({ "POST /identity/v1/oauth2/token": tokenOk, ...routes });
+    const fetchImpl = async (url, init) => {
+      if (new URL(url).pathname.endsWith("/publish")) {
+        return { status: 200, headers: new Headers(), arrayBuffer: async () => Promise.reject(new Error(`terminated ${REFRESH} ${CERT} Bearer v^1.1#ACCESS`)) };
+      }
+      return stub.fetchImpl(url, init);
+    };
+    const text = await runAndCollect(routes, { fetchImpl });
+    for (const v of SECRETS) assert.ok(!text.includes(v), `leaked ${v.slice(0, 8)}`);
+    assert.match(text, /network/);
+  });
+
+  it("a refused token grant names a status and nothing else", async () => {
+    const { routes } = prodRoutes({ "POST /identity/v1/oauth2/token": () => ({ status: 400, body: { error: "invalid_grant", error_description: `bad ${REFRESH}` } }) });
+    const { api: a } = api("production", routes);
+    let msg = "";
+    try {
+      await runProdCapture({ api: a, sink: null, sku: PRD_SKU, picture: PICTURE, report: () => {} });
+    } catch (err) {
+      msg = String(err.message);
+    }
+    assert.match(msg, /token_refused/);
+    for (const v of SECRETS) assert.ok(!msg.includes(v));
+    void body;
+  });
+
+  it("the production credential reader never quotes a value, even when the stored session is malformed", async () => {
+    const reads = [CERT, `{"refreshToken": "${REFRESH}" broken`];
+    let i = 0;
+    await assert.rejects(
+      () => readProductionCreds({ clientId: "NB-app-id", certSecret: "cert-secret", sessionSecret: "session-secret", project: "some-project-1", read: async () => reads[i++] }),
+      (err) => !SECRETS.some((v) => String(err.message).includes(v)) && /not JSON/.test(err.message),
+    );
+    for (const bad of ['{"refreshToken": "has space"}', '{"refreshToken": 7}', '{"refreshToken": ""}', "[]", "null"]) {
+      let n = 0;
+      await assert.rejects(
+        () => readProductionCreds({ clientId: "NB-app-id", certSecret: "cert-secret", sessionSecret: "session-secret", project: "some-project-1", read: async () => (n++ === 0 ? CERT : bad) }),
+        (err) => !SECRETS.some((v) => String(err.message).includes(v)),
+        bad,
+      );
+    }
+  });
+});
