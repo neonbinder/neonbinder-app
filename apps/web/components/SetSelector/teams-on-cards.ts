@@ -1,5 +1,6 @@
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+import { listingNamesAPlayer } from "../../convex/lib/cardPlayerDefaults";
 // Browser-safe: `features/cardAttention.ts` has no server imports (it is
 // already read by the attention walker in the browser).
 import { MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
@@ -331,6 +332,26 @@ export interface StoredPeople {
    * A review row in this sitting still wins over the record.
    */
   skippedTeamNames?: ReadonlySet<string>;
+  /**
+   * NEO-528 — the row's "Player on every card": preview positions of NEW
+   * cards the commit will give that player. Only a card whose listing names
+   * nobody gets them (`listingNamesAPlayer`): one that prints a name, even a
+   * name ruled "not a person" or still waiting for review, is left blank by
+   * the commit (Jason, 2026-11-15; invariant 8), so it is never theirs here
+   * either, whatever position the host passed. Such a card is that player's
+   * for the teams step, so its team is asked with their career as evidence,
+   * never filed under "Cards with no players". By id: the name is only what
+   * the line shows.
+   */
+  defaultPlayer?: DefaultPlayerForNewCards;
+}
+
+/** NEO-528 — see `StoredPeople.defaultPlayer`. */
+export interface DefaultPlayerForNewCards {
+  playerId: Id<"players">;
+  name: string;
+  /** Preview positions of the NEW cards (never a re-synced stored row). */
+  positions: ReadonlySet<number>;
 }
 
 /**
@@ -342,18 +363,50 @@ export function storedPeople(
   playerlessIndexes?: readonly number[],
   skippedPlayerNames?: readonly string[],
   skippedTeamNames?: readonly string[],
+  defaultPlayer?: DefaultPlayerWire,
 ): StoredPeople | undefined {
   const playerless =
     playerlessIndexes && playerlessIndexes.length > 0 ? new Set(playerlessIndexes) : undefined;
   const skipped = new Set((skippedPlayerNames ?? []).map(norm).filter(Boolean));
   const skippedTeams = new Set((skippedTeamNames ?? []).map(norm).filter(Boolean));
-  if (!playerless && skipped.size === 0 && skippedTeams.size === 0) return undefined;
+  const fallback =
+    defaultPlayer && defaultPlayer.positions.length > 0 && norm(defaultPlayer.name)
+      ? { playerId: defaultPlayer.playerId, name: defaultPlayer.name, positions: new Set(defaultPlayer.positions) }
+      : undefined;
+  if (!playerless && skipped.size === 0 && skippedTeams.size === 0 && !fallback) return undefined;
   return {
     ...(playerless ? { playerless } : {}),
     ...(skipped.size > 0 ? { skippedPlayerNames: skipped } : {}),
     ...(skippedTeams.size > 0 ? { skippedTeamNames: skippedTeams } : {}),
+    ...(fallback ? { defaultPlayer: fallback } : {}),
   };
 }
+
+/**
+ * NEO-528 — the preview positions a "Player on every card" default would
+ * land on: a card that does not re-sync a stored row (`existingIdByIndex` has
+ * no entry for its index) AND whose listing names nobody
+ * (`listingNamesAPlayer`; a blank-only list names nobody). Existing rows are
+ * never filled, and a new card the listing named someone on is left blank,
+ * the same test the commit's insert branch uses, so the wizard cannot plan a
+ * player the save leaves off. Positions index into `kept`, not into the
+ * diff's card indexes.
+ */
+export function defaultPlayerPositions(
+  kept: ReadonlyArray<{ card: Pick<PreviewCardForTeams, "players">; index: number }>,
+  existingIdByIndex: ReadonlyMap<number, unknown>,
+): number[] {
+  return kept.flatMap(({ card, index }, position) =>
+    existingIdByIndex.has(index) || listingNamesAPlayer(card.players) ? [] : [position],
+  );
+}
+
+/** NEO-528 — `DefaultPlayerForNewCards` as the host passes it (positions as an array). */
+export type DefaultPlayerWire = {
+  playerId: Id<"players">;
+  name: string;
+  positions: readonly number[];
+};
 
 interface NamesView {
   teamRowByKey: Map<string, TeamsReviewRow>;
@@ -361,6 +414,7 @@ interface NamesView {
   playerless: ReadonlySet<number>;
   skippedPlayerNames: ReadonlySet<string>;
   skippedTeamNames: ReadonlySet<string>;
+  defaultPlayer?: DefaultPlayerForNewCards;
 }
 
 const NOBODY: ReadonlySet<never> = new Set<never>();
@@ -381,6 +435,7 @@ function namesView(rows: readonly TeamsReviewRow[], people?: StoredPeople): Name
     playerless: people?.playerless ?? NOBODY,
     skippedPlayerNames: people?.skippedPlayerNames ?? NOBODY,
     skippedTeamNames: people?.skippedTeamNames ?? NOBODY,
+    ...(people?.defaultPlayer ? { defaultPlayer: people.defaultPlayer } : {}),
   };
 }
 
@@ -455,6 +510,21 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
     }
     // A row with no decision cannot reach the Teams step (every row is
     // decided there); a link with no id is malformed. Both are nobody.
+  }
+  // NEO-528 — a NEW card whose listing names nobody: the commit gives it the
+  // row's "Player on every card", so the teams step reads it as theirs. A
+  // card that prints any name never takes them, even when every name was
+  // ruled out or is still waiting for review: the commit leaves it blank
+  // (`listingNamedPlayer`, the same `listingNamesAPlayer` test), so it stays
+  // a card with no players here.
+  const fallback = view.defaultPlayer;
+  if (out.length === 0 && fallback?.positions.has(index) && !listingNamesAPlayer(card.players)) {
+    out.push({
+      kind: "server",
+      key: norm(fallback.name),
+      display: fallback.name,
+      request: { key: `id:${fallback.playerId}`, playerId: fallback.playerId },
+    });
   }
   return out;
 }

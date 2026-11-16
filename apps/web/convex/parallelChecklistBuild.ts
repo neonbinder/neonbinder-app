@@ -105,10 +105,14 @@ import { slotIds, type PlatformSide } from "./platformSlots";
 import { platformSideValidator } from "./selectorSyncStore";
 import { resolveCardSlots } from "./selectorOptions";
 import {
+  bornCardPlayers,
   copyFeaturesForParallel,
   insertCardRow,
   type CardRowSetContext,
 } from "./cardRowCreate";
+import { effectiveCardPlayerDefaults, newSelectorRowCache } from "./cardPlayersBulk";
+import { defaultTeamOnCardIds, inheritedTeamIds } from "./lib/selectorTeams";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
   cardKey,
   linkCardsToSide,
@@ -157,6 +161,17 @@ export const MAX_PARALLELS_PER_INSERT = 500;
  * calibrated to.
  */
 export const INSERT_COPIES_PER_PAGE = 150;
+/**
+ * NEO-528 round 3 — the writes one insert page makes before it hands the rest
+ * of its copies back (`processed`), as it does when the read budget runs low.
+ * A copy writes its row, its SKU and one index row per player, team and cameo;
+ * that is ~4 for a typical copy (150 copies ≈ 600, never stopped early), but a
+ * copy carrying a long cameo list ("Player on every card" defaults, or the
+ * source's own) writes up to ~45. Kept at the commit chunk's sizing budget.
+ */
+export const INSERT_PAGE_WRITE_BUDGET = 1200;
+/** The most one copy can write: row, SKU, and every player, team and cameo index row. */
+const MAX_COPY_WRITES = 2 + MAX_CARD_PLAYERS + MAX_CARD_TEAMS + MAX_CARD_PLAYERS;
 /**
  * Old cards deleted per transaction. Per card: one cross-listing lookup, one
  * variation-children lookup (plus a patch per child), one player-index lookup
@@ -1523,6 +1538,14 @@ function sameStrings(a: readonly string[], b: readonly string[]): boolean {
  * the linked SportLots card's only. `imageUrls` is never copied and no team
  * enrichment is queued.
  *
+ * NEO-528 round 3 — after the copy, the PARALLEL's "Player on every card"
+ * defaults (its own or the nearest row's above it) go through the per-card
+ * rule every new card follows (`cardRowCreate.bornCardPlayers`): its player on
+ * a copy that names nobody, its cameos after the copy's own. And its own
+ * set-level team (`teamIds`) on a copy with no team of its own, as the commit
+ * does for a card it inserts. A page also stops at `INSERT_PAGE_WRITE_BUDGET`
+ * writes and hands the rest back through `processed`.
+ *
  * `remap` carries the new ids of variation PARENTS copied on earlier pages; a
  * variation whose parent was not copied loses the link (and its manual flag)
  * together, never one without the other.
@@ -1660,15 +1683,45 @@ export const insertParallelCardsPage = internalMutation({
       return out;
     };
 
+    const readPlayerName = async (id: Id<"players">) => (await ctx.db.get(id))?.name ?? null;
+    const readTeamName = async (id: Id<"teams">) => {
+      const team = await ctx.db.get(id);
+      return team ? teamFullName(team) : null;
+    };
+
+    // NEO-528 round 3 — "Player on every card": the player and cameos a card
+    // born on THIS parallel gets (the nearest row up the parallel's own chain
+    // that stores each), read once per page, before the first copy. Applied
+    // to each copy after what it copies, through the same per-card rule every
+    // new card follows (`bornCardPlayers`).
+    const defaultsSport = args.copies.length > 0 ? await parallelSport() : undefined;
+    const parallelDefaults =
+      args.copies.length > 0
+        ? await effectiveCardPlayerDefaults(ctx, args.parallelId, {
+            ...(defaultsSport ? { sportId: defaultsSport } : {}),
+            cache: newSelectorRowCache(),
+          })
+        : null;
+    // NEO-528 round 3 — the Set Team gap: the parallel's own set-level team
+    // (`teamIds`, copied down at its creation) goes on a copy that arrives
+    // with no team of its own, as it does on a card the commit inserts. Read
+    // and named once per page.
+    const parallelTeamIds = inheritedTeamIds(parallel);
+    const parallelTeamNames = await namesOf(parallelTeamIds, teamName, readTeamName);
+
     const created: Array<{ from: Id<"cardChecklist">; to: Id<"cardChecklist"> }> = [];
     let missing = 0;
     let skippedChangedSource = 0;
     let processed = 0;
+    // NEO-528 round 3 — writes so far; see `INSERT_PAGE_WRITE_BUDGET`.
+    let writes = 0;
     // NEO-358 — every copy adds to the parallel's counts; flushed once below.
     const countLedger = createCardCountLedger();
     for (const copy of args.copies) {
       // NEO-321 (audit N1) — a source card's size is unknown until it is
       // read, so ask for room first; the rest of the page goes next call.
+      // NEO-528 — and room for the most one more copy can write.
+      if (processed > 0 && writes + MAX_COPY_WRITES > INSERT_PAGE_WRITE_BUDGET) break;
       if (processed > 0 && !(await roomToRead(ctx))) break;
       processed++;
       const source = await ctx.db.get(copy.sourceCardId);
@@ -1707,19 +1760,38 @@ export const insertParallelCardsPage = internalMutation({
         variation = { variationParentManual: source.variationParentManual };
       }
 
-      const playerNames = await namesOf(
-        source.playerIds,
-        playerName,
-        async (id) => (await ctx.db.get(id))?.name ?? null,
+      const playerNames = await namesOf(source.playerIds, playerName, readPlayerName);
+      const sourceTeamNames = await namesOf(source.teamOnCardIds, teamName, readTeamName);
+      // NEO-528 — the copy pictures the same people as the card it copies:
+      // its cameos travel with it (one no longer in NB is left off), then the
+      // parallel's defaults: its player on a copy that names nobody and holds
+      // no pending name (a copied cameo who is that player moves up), and its
+      // cameos added. A player the card names is never replaced. Nor is a
+      // card whose listing named someone (`listingNamedPlayer`, even a name
+      // ruled "not a person"): it stays blank, exactly as the commit left the
+      // card it copies (Jason, 2026-11-15). Its cameos still go on.
+      await namesOf(source.secondaryPlayerIds, playerName, readPlayerName);
+      const born = bornCardPlayers(
+        source,
+        { playerNames, cameoName: (id) => playerName.get(id as string) ?? null },
+        source.listingNamedPlayer === true && parallelDefaults
+          ? { ...parallelDefaults, playerId: null, player: null }
+          : parallelDefaults,
       );
-      const teamNames = await namesOf(
-        source.teamOnCardIds,
-        teamName,
-        async (id) => {
-          const team = await ctx.db.get(id);
-          return team ? teamFullName(team) : null;
-        },
-      );
+      // The Set Team gap, fill-empty only: never over a card's own team or a
+      // team name waiting for review (`defaultTeamOnCardIds`), never on a
+      // card an operator ruled teamless, and never where a listing named a
+      // team NB could not match (product invariant 8: that card is the
+      // operator's to settle).
+      const teamDefault =
+        source.teamNoneConfirmedAt === undefined && source.bscTeamName === undefined
+          ? defaultTeamOnCardIds(
+              { teamOnCardIds: source.teamOnCardIds, pendingTeamNames: source.pendingTeamNames },
+              parallelTeamIds ? { teamIds: parallelTeamIds } : null,
+            )
+          : { ids: undefined, defaulted: false };
+      const teamOnCardIds = teamDefault.defaulted ? teamDefault.ids : source.teamOnCardIds;
+      const teamNames = teamDefault.defaulted ? parallelTeamNames : sourceTeamNames;
 
       const newId = await insertCardRow(
         ctx,
@@ -1727,10 +1799,12 @@ export const insertParallelCardsPage = internalMutation({
           selectorOptionId: args.parallelId,
           cardNumber: source.cardNumber,
           cardName: source.cardName,
-          // NEO-254 — the pair, together.
-          playerIds: source.playerIds,
-          playerLinks: source.playerLinks,
-          teamOnCardIds: source.teamOnCardIds,
+          // NEO-254 — the pair, together (the source's, or the parallel's
+          // default player on a copy that had none).
+          playerIds: born.playerIds,
+          playerLinks: born.playerLinks,
+          cameos: born.cameos,
+          teamOnCardIds,
           attributes: source.attributes,
           isRookie: source.isRookie,
           isRelic: source.isRelic,
@@ -1743,9 +1817,13 @@ export const insertParallelCardsPage = internalMutation({
             ...(copy.sportlots ? { sportlots: copy.sportlots } : {}),
           }),
           pendingPlayerNames: source.pendingPlayerNames ?? [],
+          // NEO-528 round 3 — the copy comes from the same listing, so it
+          // carries the claim forward (a parallel of this parallel holds the
+          // default back too).
+          ...(source.listingNamedPlayer === true ? { listingNamedPlayer: true as const } : {}),
           pendingTeamNames: source.pendingTeamNames ?? [],
           sortOrder: source.sortOrder,
-          playerNames,
+          playerNames: born.playerNames,
           teamNames,
           // Hobby A4 — the insert card's own facts (an autograph, Signed By,
           // a short print) survive; the parallel's snapshot wins on what the
@@ -1773,6 +1851,11 @@ export const insertParallelCardsPage = internalMutation({
         { sport: parallelSport },
         countLedger,
       );
+      writes +=
+        (copy.keepSku ? 1 : 2) +
+        (born.playerIds?.length ?? 0) +
+        (teamOnCardIds?.length ?? 0) +
+        born.cameos.length;
       newIdOf.set(source._id, newId);
       created.push({ from: source._id, to: newId });
     }

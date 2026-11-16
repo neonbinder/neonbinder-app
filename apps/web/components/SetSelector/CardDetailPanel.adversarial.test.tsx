@@ -52,6 +52,10 @@ vi.mock("../../convex/_generated/api", () => ({
       setCardVariationParent: "setCardVariationParent",
       getCardChecklist: "getCardChecklist",
     },
+    // NEO-528: the Also pictured field's writer, called through useConvex().
+    cardSecondaryPlayers: {
+      setSecondaryPlayers: "cardSecondaryPlayers.setSecondaryPlayers",
+    },
   },
 }));
 
@@ -61,6 +65,8 @@ const mockSetVariationParent = vi.fn();
 const mockSiblingCards: Array<{ _id: string; cardNumber: string; cardName: string }> = [];
 
 vi.mock("convex/react", () => ({
+  // NEO-528: the Also pictured field reaches its writer through the client.
+  useConvex: () => ({ mutation: vi.fn() }),
   useMutation: (ref: string) => {
     if (ref === "updateCard") return mockUpdateCard;
     if (ref === "setCardFeature") return mockSetCardFeature;
@@ -94,9 +100,17 @@ vi.mock("./TeamPicker", () => ({
 vi.mock("./PlayerPicker", () => ({
   default: ({
     value,
+    labels,
   }: {
     value: string[];
-  }) => <div aria-label="Player picker (stub)">Players: {value.join(",")}</div>,
+    labels?: { root: string };
+  }) =>
+    // NEO-528: the drawer's second picker (Also pictured) is the labelled one.
+    labels ? (
+      <div aria-label={`${labels.root} (stub)`}>Also pictured: {value.join(",")}</div>
+    ) : (
+      <div aria-label="Player picker (stub)">Players: {value.join(",")}</div>
+    ),
 }));
 
 import CardDetailPanel from "./CardDetailPanel";

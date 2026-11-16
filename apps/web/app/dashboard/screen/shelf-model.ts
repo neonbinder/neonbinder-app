@@ -41,6 +41,12 @@ export interface ShelfBinder {
   /** Only when a smart binder's rule names a checklist. */
   checklist: { have: number; total: number; percent: number } | null;
   /**
+   * NEO-528 — a smart binder that includes cameos counts them apart from
+   * `checklist` (which is then its own players' cards only): the cameo cards
+   * filed, of all its cameo cards. Absent otherwise.
+   */
+  cameos?: { have: number; total: number };
+  /**
    * The spine label it wears on My Binders: the collector's own, else the
    * default (`labelOf`), so a binder looks the same on both shelves.
    */

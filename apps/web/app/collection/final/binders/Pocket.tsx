@@ -1,6 +1,8 @@
 import { useRef, type KeyboardEvent, type MouseEventHandler, type TouchEventHandler } from "react";
 import { useDraggable, useDroppable } from "@dnd-kit/core";
 import CardFace from "../../prototypes/_shared/CardFace";
+import { cameoPhrase } from "../cameo";
+import { PocketCameoTag } from "../CameoTag";
 import { cardCaption, cardNumberLine } from "../captions";
 import { cardLabel } from "../data/labels";
 import { isForSale } from "../data/store";
@@ -39,6 +41,13 @@ import NeonButton from "@/components/modules/NeonButton";
  * (`IdTooltip`): season, set, insert or parallel, then number and player.
  * In browse the slip hangs on the whole sleeve, so focusing its Add chip
  * shows it too.
+ *
+ * NEO-528 — a card a smart binder takes in only as a cameo (`pocket.cameo`)
+ * wears the Cameo brooch on the sleeve's left edge (`PocketCameoTag`), on a
+ * card it holds and on a need sleeve alike, in a binder and in browse, and
+ * its name says who: ", Dan Marino is a cameo on this card" ends the
+ * pocket's own name, or the Add chip's on a browse need sleeve (the one
+ * control that sleeve has).
  *
  * `ReadOnlyPocket` (NEO-444) is a visitor's sleeve on a share link: no drop,
  * no drag, nothing to fill or add. A filled pocket only opens the card; every
@@ -153,6 +162,8 @@ export default function Pocket({
   const ring = `${isOver ? " p2-sleeve--over" : ""}${aimed ? " p2-sleeve--target" : ""}${found ? " nb-sleeve--found" : ""}`;
   const where = `pocket ${index + 1} on page ${pageNumber}`;
   const slip = (card: Card) => <IdLines title={cardCaption(card)} lines={[cardNumberLine(card)]} />;
+  /** NEO-528 — ", Dan Marino is a cameo on this card", or nothing. */
+  const cameo = pocket.cameo ? `, ${cameoPhrase(pocket.cameo)}` : "";
 
   if (content.kind === "have") {
     const { card, copies } = content;
@@ -185,6 +196,7 @@ export default function Pocket({
             Outside the rule
           </span>
         )}
+        {pocket.cameo && <PocketCameoTag />}
       </>
     );
     if (variant === "browse") {
@@ -194,7 +206,7 @@ export default function Pocket({
             <button
               type="button"
               aria-haspopup="dialog"
-              aria-label={`${havePocketLabel(card, copies)}, have`}
+              aria-label={`${havePocketLabel(card, copies)}, have${cameo}`}
               onClick={open}
               className="relative block w-full rounded focus-visible:outline-none"
             >
@@ -211,7 +223,7 @@ export default function Pocket({
           ref={setNodeRef}
           type="button"
           aria-haspopup="dialog"
-          aria-label={`${havePocketLabel(card, copies)}${pocket.outside ? ", outside the rule" : ""}`}
+          aria-label={`${havePocketLabel(card, copies)}${pocket.outside ? ", outside the rule" : ""}${cameo}`}
           aria-keyshortcuts={lone ? "Alt+ArrowLeft Alt+ArrowRight" : undefined}
           aria-describedby={lone ? POCKET_MOVE_HINT_ID : undefined}
           data-found={found ? "true" : undefined}
@@ -234,7 +246,8 @@ export default function Pocket({
         <IdTooltip content={slip(card)}>
           <div ref={setNodeRef} className={`p2-sleeve${ring}`}>
             <CardFace model={card} size="fill" state="need" />
-            <AddChip label={`Add ${cardLabel(card)}`} text="Add" onClick={() => onAdd(card)} />
+            {pocket.cameo && <PocketCameoTag />}
+            <AddChip label={`Add ${cardLabel(card)}${cameo}`} text="Add" onClick={() => onAdd(card)} />
           </div>
         </IdTooltip>
       );
@@ -246,7 +259,9 @@ export default function Pocket({
           ref={setNodeRef}
           type="button"
           aria-label={
-            content.elsewhere ? `${cardLabel(card)}, in another binder. Move it here` : `${cardLabel(card)}, need. Add it`
+            content.elsewhere
+              ? `${cardLabel(card)}${cameo}, in another binder. Move it here`
+              : `${cardLabel(card)}${cameo}, need. Add it`
           }
           onClick={() => onAdd(card, slot, pocket.wantFor)}
           onKeyDown={onKeyDown}
@@ -257,6 +272,7 @@ export default function Pocket({
             <span className="p2-ghost-need">{content.elsewhere ? "Have" : "Need"}</span>
             <span className="p2-ghost-who">{who}</span>
           </span>
+          {pocket.cameo && <PocketCameoTag />}
         </button>
       </IdTooltip>
     );

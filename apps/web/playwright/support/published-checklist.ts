@@ -48,6 +48,16 @@ export const CHECKLISTS = {
   careerBestJumboJerseys2009: "2009-topps-insert-career-best-jumbo-jerseys",
   bowman2026Base: "2026-football-bowman-base",
   topps2014FootballBase: "2014-football-topps-base",
+  /** Football 1984 Topps Base: 396 cards; the cameo smart-binder spec's set (card #355 Fred Dean, NEO-528). */
+  topps1984FootballBase: "1984-football-topps-base",
+  /**
+   * Baseball 2011 Leaf Pete Rose Legacy Base: 75 cards (`1`, `2a`, `2b` ..), the commit-path
+   * "Player on every card" spec's set (NEO-528). Ten cards name no person ("1975 World
+   * Champions", "Former Teammates" ..); 11 rows say `No Team`, set by hand.
+   */
+  leafPeteRoseLegacy2011: "2011-leaf-pete-rose-legacy-base",
+  /** Baseball 2026 Topps Insert Profiles: 25 cards (`TP-1`..`TP-25`), the commit-path cameo spec's set (NEO-528). */
+  toppsProfiles2026: "2026-topps-insert-profiles",
   /** Baseball 2024 Topps Chrome Insert Future Stars: 20 cards (`FS-1`..`FS-20`), the setup's insert fetch. */
   futureStars2024: "2024-topps-chrome-insert-future-stars",
   /**

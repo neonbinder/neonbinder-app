@@ -11,7 +11,8 @@
  *      to a card that is gone;
  *   3. its variation children are PROMOTED, not deleted (NEO-189);
  *   4. its derived player index rows (NEO-313, `cardPlayerLinks`);
- *   5. its derived team index rows (NEO-358, `cardTeamLinks`);
+ *   5. its derived team index rows (NEO-358, `cardTeamLinks`), and its
+ *      also-pictured player index rows (NEO-528, `cardSecondaryPlayerLinks`);
  *   6. collectors' WANTS of it (NEO-359, `collectionWants.by_card`): deleted,
  *      never a refusal. A want is a wish, not a holding. Up to
  *      `WANT_SWEEP_BATCH` go in the caller's transaction, each owner's Want
@@ -43,6 +44,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { deleteCardPlayerLinks } from "./cardPlayerLinks";
 import { deleteCardTeamLinks } from "./cardTeamLinks";
+import { deleteCardSecondaryPlayerLinks } from "./cardSecondaryPlayers";
 import type { CardCountLedger } from "./cardCounts";
 import { collectedCardRefusal, type CollectorCount } from "../lib/collection/collectors";
 
@@ -215,6 +217,8 @@ export type RemovedCardRow = {
   crossListingIds: Array<Id<"cardCrossListings">>;
   playerLinkIds: Array<Id<"cardPlayerLinks">>;
   teamLinkIds: Array<Id<"cardTeamLinks">>;
+  /** NEO-528 — the also-pictured player index rows. */
+  secondaryLinkIds: Array<Id<"cardSecondaryPlayerLinks">>;
   /** NEO-359 — the wants deleted in this transaction (a continuation may sweep more). */
   wantIds: Array<Id<"collectionWants">>;
   /** NEO-359 — true when more wants were left to the scheduled continuation. */
@@ -246,6 +250,8 @@ export async function removeCardRow(
   const playerLinkIds = await deleteCardPlayerLinks(ctx, card._id);
   // 5. the team index
   const teamLinkIds = await deleteCardTeamLinks(ctx, card._id);
+  //    and the also-pictured player index (NEO-528)
+  const secondaryLinkIds = await deleteCardSecondaryPlayerLinks(ctx, card._id);
   // 6. collectors' wants of it: deleted, never a refusal (NEO-359)
   const wants = await sweepCardWants(ctx, card._id);
   if (wants.hasMore) {
@@ -264,6 +270,7 @@ export async function removeCardRow(
     crossListingIds,
     playerLinkIds,
     teamLinkIds,
+    secondaryLinkIds,
     wantIds: wants.wantIds,
     wantSweepScheduled: wants.hasMore,
   };

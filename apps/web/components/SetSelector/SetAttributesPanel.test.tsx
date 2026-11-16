@@ -277,6 +277,44 @@ vi.mock("./TeamPicker", () => ({
   ),
 }));
 
+/**
+ * NEO-528 — the "Player on every card" control owns its own Convex calls and
+ * has its own test file (EveryCardPlayerControl.test.tsx). Here it is a
+ * stand-in that reports what the panel handed it.
+ */
+vi.mock("./EveryCardPlayerControl", () => ({
+  default: ({
+    variantId,
+    level,
+    rowName,
+    sportId,
+    expanded,
+    onDismissedCollapsed,
+    ...rest
+  }: {
+    variantId: string;
+    level: string;
+    rowName: string;
+    sportId?: string;
+    expanded: boolean;
+    onDismissedCollapsed?: () => void;
+  }) => (
+    <div
+      aria-label="Player on every card control (stub)"
+      data-variant-id={variantId}
+      data-level={level}
+      data-row-name={rowName}
+      data-sport-id={sportId ?? ""}
+      data-expanded={String(expanded)}
+      data-other-props={Object.keys(rest).sort().join(",")}
+    >
+      <button type="button" onClick={() => onDismissedCollapsed?.()}>
+        Stub dismiss collapsed
+      </button>
+    </div>
+  ),
+}));
+
 // ---------------------------------------------------------------------------
 // Component under test — imported after mocks
 // ---------------------------------------------------------------------------
@@ -3864,4 +3902,77 @@ describe("SetAttributesPanel — set ⇄ parallel row actions (NEO-305)", () => 
       expect(screen.queryByRole("button", { name: "Promote to set" })).toBeNull();
     },
   );
+});
+
+describe("SetAttributesPanel — Player on every card (NEO-528)", () => {
+  const STUB = "Player on every card control (stub)";
+
+  it.each([
+    ["sport", "Baseball"],
+    ["year", "2024"],
+    ["manufacturer", "Topps"],
+    ["setName", "2024 Topps Chrome"],
+    ["variantType", "Base"],
+    // A non-Base variant type holds inserts, not cards: still a row a value can live on.
+    ["variantType", "Inserts"],
+    ["insert", "Diamond Kings"],
+    ["parallel", "Gold Refractor"],
+  ])("shows the section at every level: %s %s", (level, value) => {
+    currentRow = makeRow({ level, value });
+    renderPanel();
+    const stub = screen.getByLabelText(STUB);
+    expect(stub.getAttribute("data-variant-id")).toBe(SELECTOR_OPTION_ID);
+    expect(stub.getAttribute("data-level")).toBe(level);
+    expect(stub.getAttribute("data-row-name")).toBe(value);
+    expect(stub.getAttribute("data-sport-id")).toBe("sport-id");
+    expect(stub.getAttribute("data-expanded")).toBe("true");
+  });
+
+  it("sits directly under Team, ahead of every other attribute", () => {
+    currentRow = makeRow({ level: "insert", value: "Diamond Kings" });
+    renderPanel();
+    const stub = screen.getByLabelText(STUB);
+    const team = screen.getByRole("group", { name: "Team" });
+    // Team, then the section, with nothing between them.
+    expect(team.compareDocumentPosition(stub) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(team.nextElementSibling).toBe(stub);
+    // Every other attribute comes after it.
+    const prefix = screen.getByLabelText("Value for Card prefix");
+    expect(stub.compareDocumentPosition(prefix) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it("keeps its notes to itself: the panel hands it no toast (its status line sits beside its actions)", () => {
+    currentRow = makeRow({ level: "sport", value: "Baseball" });
+    renderPanel();
+    const stub = screen.getByLabelText(STUB);
+    expect(stub.getAttribute("data-other-props")).toBe("");
+  });
+
+  it("stays mounted while the panel is collapsed, told so (a running ledger must not vanish)", () => {
+    currentRow = makeRow({ level: "insert", value: "Diamond Kings" });
+    render(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed={true}
+      />,
+    );
+    expect(
+      screen.getByLabelText(STUB).getAttribute("data-expanded"),
+    ).toBe("false");
+  });
+
+  it("a ledger dismissed with the panel shut hands focus to Edit attributes", () => {
+    currentRow = makeRow({ level: "insert", value: "Diamond Kings" });
+    render(
+      <SetAttributesPanel
+        selectorOptionId={SELECTOR_OPTION_ID}
+        defaultCollapsed={true}
+      />,
+    );
+    const toggle = screen.getByRole("button", { name: "Edit attributes" });
+    const focus = vi.spyOn(toggle, "focus");
+    fireEvent.click(screen.getByRole("button", { name: "Stub dismiss collapsed" }));
+    expect(document.activeElement).toBe(toggle);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
 });

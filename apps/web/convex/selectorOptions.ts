@@ -57,10 +57,19 @@ import {
 } from "./listingTitleContext";
 import { generateSku } from "./sku";
 import {
+  bornCardPlayers,
   insertCardRow,
   requireCardSport,
   type CarriedCardFields,
 } from "./cardRowCreate";
+import {
+  effectiveCardPlayerDefaults,
+  newSelectorRowCache,
+  type EffectiveCardPlayerDefaults,
+} from "./cardPlayersBulk";
+import { bornSecondaryPlayerFields, bornSecondaryPlayers } from "./cardSecondaryPlayers";
+import { listingNamesAPlayer } from "./lib/cardPlayerDefaults";
+import { newStoredCardReadCache } from "./storedCardTitle";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import { blockedSideFailed, sideMissingFromRun } from "./parallelChecklistBuild";
 import {
@@ -353,12 +362,13 @@ import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
 // NEO-335 — the one rule for a listing short name and the one reading of a
 // chain's title facts, shared by every walk below and by listingTitleContext.ts.
 import {
+  findAncestorLabels,
   LISTING_SHORT_NAME_LEVELS,
   normalizeListingShortName,
   titleChainFacts,
   titleChainFactsFields,
-  type TitleChainFacts,
 } from "./listingShortName";
+export { findAncestorLabels };
 // Re-exported for callers that reached the ceiling through this module before
 // the rule moved; convex/cardNumberPrefix.ts is its home.
 export { MAX_CARD_NUMBER_PREFIX_LENGTH } from "./cardNumberPrefix";
@@ -2315,6 +2325,13 @@ export const getCardChecklist = query({
       // confirmed clean on prod + dev.
       team: v.optional(v.string()),
       playerIds: v.optional(v.array(v.id("players"))),
+      // NEO-528 — players pictured on the card who are not its subject
+      // ("Also pictured"). Listed because this validator is STRICT: a row
+      // carrying it would otherwise fail the whole checklist.
+      secondaryPlayerIds: v.optional(v.array(v.id("players"))),
+      // NEO-528 round 3 — the card's listing named a player (provenance, see
+      // schema.ts). Listed because this validator is STRICT.
+      listingNamedPlayer: v.optional(v.literal(true)),
       // NEO-254 — the name each card PRINTED for its players. The card detail
       // panel renders "As printed: Doc Gooden" beside a chip whose player is
       // filed under a different name. See schema.ts.
@@ -5349,86 +5366,9 @@ export const renameSelectorOption = mutation({
  * to typical marketplace card numbers (1-500), which matches user
  * expectations for an appended custom slot.
  */
-/**
- * Walk a selectorOptions node's parent chain ONCE, collecting everything
- * listing generation needs from above the card: the setName display value
- * ("Chrome"), the sport display value ("Baseball"), and — NEO-272 — whether NB
- * has identified the brand of the set at all (a ROLE off
- * `metadata.isBrandUnknown` on the manufacturer in between, never its name).
- *
- * NEO-101 widened this from `findSetNameValue`, which returned early at the
- * setName level. The sport node sits ABOVE setName, so a second helper would
- * have meant a second walk over the same chain for every card previewed or
- * hand-added — the walk is the cost here, not the comparison, so both values
- * come out of one pass.
- *
- * Still deliberately narrow rather than a general ancestor-chain utility:
- * every other consumer of the chain already had its own reason to walk it
- * (commitCardChecklist resolves both in the prelude, once per commit, and
- * hands them to the chunks). Depth-bounded like
- * `findSportForSelectorOption`, so a cyclic or corrupted `parentId` cannot
- * spin a query.
- */
-export async function findAncestorLabels(
-  ctx: { db: { get: (id: Id<"selectorOptions">) => Promise<any> } },
-  node: any,
-): Promise<
-  {
-    setName?: string;
-    sport?: string;
-    manufacturerBrandUnknown?: boolean;
-  } & TitleChainFacts
-> {
-  const labels: {
-    setName?: string;
-    sport?: string;
-    manufacturerBrandUnknown?: boolean;
-  } = {};
-  if (!node) return labels;
-  // NEO-335 — the rows from `node` up to and including the setName row, LEAF
-  // FIRST, for `titleChainFacts` (the insert role, a parallel leaf, the
-  // nearest short name). Collected on the way past: this walk already passes
-  // every one of them before it can stop.
-  const titleChain: any[] = [];
-  let current = node;
-  let depth = 0;
-  while (current && depth < 16) {
-    if (labels.setName === undefined) titleChain.push(current);
-    if (current.level === "setName" && labels.setName === undefined) {
-      labels.setName = current.value;
-    }
-    // NEO-272 — the manufacturer ROLE, not its name. Picked up on the way past
-    // rather than by a walk of its own: the chain is
-    // sport › year › manufacturer › setName › …, so walking UP from a card's
-    // parent reaches the manufacturer AFTER setName and BEFORE sport, and the
-    // break below waits for sport. Every chain that has a manufacturer level
-    // therefore passes through it before this loop can stop.
-    if (
-      current.level === "manufacturer" &&
-      labels.manufacturerBrandUnknown === undefined
-    ) {
-      labels.manufacturerBrandUnknown =
-        current.metadata?.isBrandUnknown === true;
-    }
-    if (current.level === "sport" && labels.sport === undefined) {
-      labels.sport = current.value;
-    }
-    // Deliberately NOT extended with `manufacturerBrandUnknown`. A chain with
-    // no manufacturer level at all — a setName hung straight off a sport, which
-    // is what most fixtures and some hand-built trees look like — would then
-    // never satisfy the condition and would walk to the depth cap, paying extra
-    // reads on every card previewed or hand-added to buy nothing. The value is
-    // already collected above by the time sport is reached, so stopping here
-    // loses nothing; leaving it absent is the same "no manufacturer role" answer
-    // as `false`, which is exactly how the generator reads it.
-    if (labels.setName !== undefined && labels.sport !== undefined) break;
-    const parentId: Id<"selectorOptions"> | undefined = current.parentId;
-    if (!parentId) break;
-    current = await ctx.db.get(parentId);
-    depth += 1;
-  }
-  return { ...labels, ...titleChainFacts(titleChain) };
-}
+// NEO-528 — `findAncestorLabels` moved to listingShortName.ts (beside
+// `titleChainFacts`, which it feeds), so `storedCardTitle.ts` can read it
+// without importing this module; re-exported below for existing callers.
 
 
 /**
@@ -6155,6 +6095,25 @@ export const addCustomCard = mutation({
       MAX_PENDING_TEAM_NAMES,
     );
 
+    // NEO-528 round 3 — "Player on every card": a card added with no player
+    // picked and no name typed is born with the default player of the nearest
+    // row up its chain that stores one; default cameos are added either way
+    // (`bornCardPlayers`, the rule every new card follows). A default whose
+    // player is gone, or plays another sport, was already dropped by the
+    // lookup: it never refuses the card.
+    const bornDefaults = bornCardPlayers(
+      { playerIds: args.playerIds, pendingPlayerNames: typedPlayerNames ?? [] },
+      { playerNames: [] },
+      await effectiveCardPlayerDefaults(ctx, args.selectorOptionId),
+    );
+    const requestedPlayerIds =
+      bornDefaults.player.kind === "fill" ? bornDefaults.playerIds ?? [] : args.playerIds ?? [];
+    const cameoFields = bornSecondaryPlayerFields(
+      { playerIds: requestedPlayerIds },
+      bornDefaults.cameos.map((c) => c.playerId),
+    );
+    const cameoNames = bornDefaults.cameos.map((c) => c.name);
+
     // NEO-220 — validated BEFORE anything is written, same as the teams below,
     // so a bad id (unknown, wrong sport, over the cap) leaves no half-created
     // card behind. The returned names are the rows this already read; the
@@ -6168,7 +6127,7 @@ export const addCustomCard = mutation({
       await resolvePlayerIdsForWrite(
         ctx,
         args.selectorOptionId,
-        args.playerIds ?? [],
+        requestedPlayerIds,
         nameOnCardMap(args.playerNamesOnCard),
       );
     const hasLinkedPlayers = playerIds.length > 0;
@@ -6356,11 +6315,14 @@ export const addCustomCard = mutation({
       // NEO-254: `playerLinks` is written in the same breath and is the same
       // list — see the note in schema.ts. Never one without the other.
       ...(hasLinkedPlayers ? { playerIds, playerLinks } : {}),
+      // NEO-528 round 3 — the default cameos (absent when none), named by
+      // their one writer.
+      ...cameoFields,
       ...(hasLinkedTeams ? { teamOnCardIds } : {}),
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
       ...(notes ? { notes } : {}),
       listingTitle: listingTitle.title,
-      listingDescription: generateListingDescription(listingInputs),
+      listingDescription: generateListingDescription(listingInputs, { cameoNames }),
       // NEO-101: recorded only when the core actually had to be cut — the
       // field is absent, not `false`, on the overwhelming majority of rows
       // that fit fine (mean real title length is 34 characters).
@@ -6377,6 +6339,18 @@ export const addCustomCard = mutation({
     // NEO-358 — and the team → cards index.
     if (hasLinkedTeams) {
       await syncCardTeamLinks(ctx, id, teamOnCardIds, { fresh: true });
+    }
+    // NEO-528 round 3 — and the cameo index, through the one writer (the
+    // names are known, so it reads no player).
+    if (cameoNames.length > 0) {
+      const names = newStoredCardReadCache();
+      for (const cameo of bornDefaults.cameos) names.players.set(cameo.playerId as string, cameo.name);
+      await bornSecondaryPlayers(
+        ctx,
+        id,
+        { ...cameoFields, playerIds, playerLinks, sportId: insertSportId },
+        names,
+      );
     }
     // NEO-358 — the row's counts: one more card, born a non-variation.
     const ledger = createCardCountLedger();
@@ -9096,6 +9070,8 @@ type SetBuilderResetResult = {
   cardPlayerLinksDeleted: number;
   /** NEO-358 — the derived team → cards index, drained before the cards. */
   cardTeamLinksDeleted: number;
+  /** NEO-528 — the derived also-pictured player → cards index, drained before the cards. */
+  cardSecondaryPlayerLinksDeleted: number;
   cardChecklistDeleted: number;
   crossListingsDeleted: number;
   /** NEO-294 — staged review rows, the residue that made CI's reset quadratic. */
@@ -9222,6 +9198,7 @@ async function runSetBuilderReset(
     selectorOptionsDeleted: 0,
     cardPlayerLinksDeleted: 0,
     cardTeamLinksDeleted: 0,
+    cardSecondaryPlayerLinksDeleted: 0,
     cardChecklistDeleted: 0,
     crossListingsDeleted: 0,
     entityReviewQueueDeleted: 0,
@@ -9243,7 +9220,8 @@ async function runSetBuilderReset(
   // tables it does drain — and every table that points INTO the skipped
   // eight (slSetReviews, selectorSyncStatus, collectionCopies, collectionWants,
   // collectionContainers, collectionBuildingSets, variantCommonPrices,
-  // the NEO-370 listing tables, cardPlayerLinks, cardTeamLinks, cardChecklist, cardCrossListings,
+  // the NEO-370 listing tables, cardPlayerLinks, cardTeamLinks, cardSecondaryPlayerLinks,
+  // cardChecklist, cardCrossListings,
   // entityReviewQueue, checklistCandidates) is among them.
   const allSteps: Array<[keyof typeof counts, ResetBatchRef]> = [
     // NEO-552 — the BSC call gate, FIRST of all: deployment-wide, it names no
@@ -9367,6 +9345,11 @@ async function runSetBuilderReset(
     [
       "cardTeamLinksDeleted",
       internal.selectorOptions.resetCardTeamLinksBatch,
+    ],
+    // NEO-528 — the also-pictured player → cards index, likewise before the cards.
+    [
+      "cardSecondaryPlayerLinksDeleted",
+      internal.selectorOptions.resetCardSecondaryPlayerLinksBatch,
     ],
     ["cardChecklistDeleted", internal.selectorOptions.resetCardChecklistBatch],
     // NEO-21: cardCrossListings rows outlive nothing on their own (they're
@@ -9619,6 +9602,8 @@ export const resetSetBuilderDataFromCli = internalAction({
     cardPlayerLinksDeleted: v.number(),
     // NEO-358 — the derived team → cards index.
     cardTeamLinksDeleted: v.number(),
+    // NEO-528 — the derived also-pictured player → cards index.
+    cardSecondaryPlayerLinksDeleted: v.number(),
     cardChecklistDeleted: v.number(),
     crossListingsDeleted: v.number(),
     // NEO-294 — the staging tables. Reported so the CI seed log carries the
@@ -10071,6 +10056,30 @@ export const resetCardTeamLinksBatch = internalMutation({
   handler: async (ctx) => {
     assertResetArmed();
     const rows = await ctx.db.query("cardTeamLinks").take(RESET_BATCH_SIZE);
+    for (const row of rows) {
+      await ctx.db.delete(row._id);
+    }
+    return { deleted: rows.length, hasMore: rows.length === RESET_BATCH_SIZE };
+  },
+});
+
+/**
+ * Internal: drain `cardSecondaryPlayerLinks`, looped by `runSetBuilderReset`
+ * BEFORE the cards. NEO-528. The derived also-pictured player → cards index;
+ * a row that outlived its card would keep naming it in a smart binder's walk.
+ * The one sanctioned reader and deleter of the table outside
+ * convex/cardSecondaryPlayers.ts — `cardSecondaryPlayers.pin.test.ts` checks
+ * it by name.
+ */
+export const resetCardSecondaryPlayerLinksBatch = internalMutation({
+  args: {},
+  returns: v.object({
+    deleted: v.number(),
+    hasMore: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    assertResetArmed();
+    const rows = await ctx.db.query("cardSecondaryPlayerLinks").take(RESET_BATCH_SIZE);
     for (const row of rows) {
       await ctx.db.delete(row._id);
     }
@@ -16542,6 +16551,82 @@ export const resolveChecklistEntities = action({
 export const CARDS_PER_COMMIT_CHUNK = 150;
 
 /**
+ * NEO-528 round 3 — the operations one chunk is sized for: the
+ * `CARDS_PER_COMMIT_CHUNK` calibration (~6 per card) plus room for two
+ * index-row inserts per card. A card born with "Player on every card"
+ * defaults costs one more insert for the player's index row and one per
+ * cameo, so a leaf with only a default player (or one cameo) still commits
+ * 150 cards per chunk, and one with a long cameo list commits fewer
+ * (`commitChunkSize`). At the cap (a player and `MAX_CARD_PLAYERS` cameos)
+ * that is 44 cards, about 1,200 operations, where 150 would be ~4,000.
+ */
+const COMMIT_CHUNK_OPS_PER_CARD = 6;
+export const COMMIT_CHUNK_OP_BUDGET = CARDS_PER_COMMIT_CHUNK * (COMMIT_CHUNK_OPS_PER_CARD + 2);
+
+/** Cards per commit chunk when every new card costs `extraWritesPerCard` more inserts. */
+export function commitChunkSize(extraWritesPerCard: number): number {
+  const perCard = COMMIT_CHUNK_OPS_PER_CARD + Math.max(0, extraWritesPerCard);
+  return Math.max(1, Math.min(CARDS_PER_COMMIT_CHUNK, Math.floor(COMMIT_CHUNK_OP_BUDGET / perCard)));
+}
+
+/**
+ * NEO-528 round 3 — the default index rows (player + cameos) ONE new card in
+ * a chunk may be born with. The action sizes the chunk from the defaults it
+ * read (`sizedWritesPerCard`, from `commitChunkDefaultWrites`), but the chunk
+ * re-reads them in its own transaction, so an operator who widens the cameo
+ * list between the two would otherwise send a chunk past the budget it was
+ * sized for. The allowance is the sized count, so every chunk of one commit
+ * agrees on it. A caller that sized nothing (absent) gets the room the
+ * chunk's own length leaves under `COMMIT_CHUNK_OP_BUDGET`.
+ */
+export function commitChunkDefaultAllowance(
+  chunkLength: number,
+  sizedWritesPerCard: number | undefined,
+): number {
+  if (sizedWritesPerCard !== undefined) return Math.max(0, Math.floor(sizedWritesPerCard));
+  return Math.max(
+    0,
+    Math.floor(COMMIT_CHUNK_OP_BUDGET / Math.max(1, chunkLength)) - COMMIT_CHUNK_OPS_PER_CARD,
+  );
+}
+
+/**
+ * The defaults a new card in the chunk is born with, cut to `allowance`
+ * index rows: the player first (one row), then the cameos in stored order.
+ * Only cameos are ever cut: a default player that appeared after the sizing
+ * costs one row per card, which the budget's two spare rows per card
+ * (`COMMIT_CHUNK_OP_BUDGET`) already hold, and dropping the card's one player
+ * for the sake of a cameo would be the wrong way round.
+ */
+export function capChunkPlayerDefaults(
+  defaults: EffectiveCardPlayerDefaults,
+  allowance: number,
+): EffectiveCardPlayerDefaults {
+  const cameoRoom = Math.max(0, allowance - (defaults.playerId ? 1 : 0));
+  if (defaults.cameoIds.length <= cameoRoom) return defaults;
+  return {
+    ...defaults,
+    cameoIds: defaults.cameoIds.slice(0, cameoRoom),
+    cameos: defaults.cameos.slice(0, cameoRoom),
+  };
+}
+
+/**
+ * NEO-528 round 3 — the index rows a new card under this leaf would be born
+ * with from its "Player on every card" defaults (1 for a default player, plus
+ * one per default cameo), for sizing the commit's chunks. The chunk re-reads
+ * the defaults itself; this only sizes them.
+ */
+export const commitChunkDefaultWrites = internalQuery({
+  args: { selectorOptionId: v.id("selectorOptions") },
+  returns: v.number(),
+  handler: async (ctx, args) => {
+    const defaults = await effectiveCardPlayerDefaults(ctx, args.selectorOptionId);
+    return (defaults.playerId ? 1 : 0) + defaults.cameoIds.length;
+  },
+});
+
+/**
  * NEO-203 — hard ceiling on how many rows one commit may be told to delete.
  *
  * Mirrors `MAX_CROSS_LISTING_CARD_NUMBERS` above and exists for the same
@@ -19699,6 +19784,13 @@ const commitChunkCardValidator = v.object({
   // them.
   listingTitle: v.optional(v.string()),
   listingTitleKept: v.optional(v.string()),
+  // NEO-528 round 3 — the checklist named a player for this card, whatever
+  // became of the name (resolved, pending, or ruled "not a person" in entity
+  // review, which leaves neither an id nor a pending name). A card the
+  // listing named someone on is never born with the "Player on every card"
+  // default (product invariant 8: a data claim holds back a guess). Only
+  // presence is sent; the name stays where it is.
+  listingNamedPlayer: v.optional(v.literal(true)),
 });
 
 /**
@@ -19797,6 +19889,11 @@ export const commitCardChecklistChunk = internalMutation({
     // it. Absent means no such answer is honoured: the flag is never written
     // without the operator it belongs to.
     operatorUserId: v.optional(v.string()),
+    // NEO-528 round 3 — the default index rows per new card the action sized
+    // this chunk for (`commitChunkDefaultWrites`). The chunk applies no more
+    // than `commitChunkDefaultAllowance` of them, so defaults widened after
+    // the sizing cannot push it past its budget.
+    defaultWritesPerCard: v.optional(v.number()),
   },
   returns: v.object({
     storedIds: v.array(v.id("cardChecklist")),
@@ -19919,6 +20016,26 @@ export const commitCardChecklistChunk = internalMutation({
     // once, after the loop.
     const countLedger = createCardCountLedger();
 
+    // NEO-528 round 3 — "Player on every card": the player and cameos a NEW
+    // card under this leaf is born with (the nearest row up its chain that
+    // stores each), read once per chunk and only when the chunk inserts. An
+    // existing card is never filled: that is NB content a re-sync may only
+    // suggest a change to.
+    let chunkPlayerDefaults: EffectiveCardPlayerDefaults | undefined;
+    const leafPlayerDefaults = async (): Promise<EffectiveCardPlayerDefaults> => {
+      if (!chunkPlayerDefaults) {
+        const sportId = await cardSport();
+        chunkPlayerDefaults = capChunkPlayerDefaults(
+          await effectiveCardPlayerDefaults(ctx, args.selectorOptionId, {
+            ...(sportId ? { sportId } : {}),
+            cache: newSelectorRowCache(),
+          }),
+          commitChunkDefaultAllowance(args.cards.length, args.defaultWritesPerCard),
+        );
+      }
+      return chunkPlayerDefaults;
+    };
+
     for (const card of args.cards) {
       // Deliberately `rowsById.get`, not `ctx.db.get`: the map is this
       // selectorOption's own snapshot, so an id that is foreign to this
@@ -19983,6 +20100,17 @@ export const commitCardChecklistChunk = internalMutation({
             field === "teamOnCardIds" &&
             !(Array.isArray(incoming.teamOnCardIds) &&
               incoming.teamOnCardIds.length > 0)
+          ) {
+            continue;
+          }
+          // NEO-528 — likewise the roster: an empty incoming player list never
+          // clears a stored one (a player set by hand or by "Player on every
+          // card" is NB content; a marketplace that names nobody is not a
+          // claim that nobody is on the card). Leaving `playerIds` out also
+          // leaves `playerLinks` and the card → player index untouched below.
+          if (
+            field === "playerIds" &&
+            !(Array.isArray(incoming.playerIds) && incoming.playerIds.length > 0)
           ) {
             continue;
           }
@@ -20319,6 +20447,26 @@ export const commitCardChecklistChunk = internalMutation({
           );
         }
 
+        // NEO-528 round 3 — a card that resolved no player and carries no
+        // name waiting for review is born with the leaf's default player (ids,
+        // printed name and the names the title and Signed By read, together);
+        // a resolved or pending player always wins. So does a name the
+        // checklist listed that entity review ruled out (`listingNamedPlayer`):
+        // the listing named someone, so the default is not a guess to make
+        // over it. Default cameos are added either way. Never a team.
+        const chunkDefaults = await leafPlayerDefaults();
+        const born = bornCardPlayers(
+          {
+            playerIds: card.playerIds,
+            playerLinks: card.playerLinks,
+            pendingPlayerNames: insertPendingPlayerNames,
+          },
+          { playerNames: card.playerNames },
+          card.listingNamedPlayer
+            ? { ...chunkDefaults, playerId: null, player: null }
+            : chunkDefaults,
+        );
+
         // NEO-312 — the row itself (features, Signed By, the write-once
         // listing title and description, the SKU) is built by the helper the
         // parallel build shares, so a copied card and a synced card are born
@@ -20329,8 +20477,11 @@ export const commitCardChecklistChunk = internalMutation({
             selectorOptionId: args.selectorOptionId,
             cardNumber: card.cardNumber,
             cardName: card.cardName,
-            playerIds: card.playerIds,
-            playerLinks: card.playerLinks,
+            // NEO-254 — the pair, together (NEO-528: the default's, on a card
+            // that had none).
+            playerIds: born.playerIds,
+            playerLinks: born.playerLinks,
+            cameos: born.cameos,
             // NEO-277: the card's own team, else the leaf's set-level default.
             teamOnCardIds: insertTeamOnCardIds,
             attributes: card.attributes,
@@ -20342,10 +20493,13 @@ export const commitCardChecklistChunk = internalMutation({
             platformData: toStoredPlatformData(card.platformData),
             pendingPlayerNames: insertPendingPlayerNames,
             pendingTeamNames: insertPendingTeamNames,
+            // NEO-528 round 3 — stored, so a parallel copied from this card
+            // later holds the default player back too.
+            ...(card.listingNamedPlayer ? { listingNamedPlayer: true as const } : {}),
             sortOrder: card.sortOrder,
             // Resolved in the prelude, once per player rather than once per
-            // card.
-            playerNames: card.playerNames,
+            // card (or the default player's, read once per chunk).
+            playerNames: born.playerNames,
             teamNames: insertTeamNames,
             // NEO-335 — written with the row rather than patched after it, so
             // an answered card costs this chunk no extra operation.
@@ -21832,11 +21986,21 @@ export const diffChecklistAgainstExisting = query({
        * Jays → —" row: a proposal to clear NB data on the strength of a lookup
        * that never returned. NB owns the team; only an explicit marketplace
        * team that differs is a suggestion worth an operator's time.
+       *
+       * NEO-528 — the same holds for the roster. A marketplace that lists no
+       * player for a card has made no claim about who is on it, and a card
+       * whose player NB set by hand (the Set Builder's "Player on every card",
+       * filled before the set was ever synced) must not be offered a
+       * "Players: Patrick Mahomes → —" row on every sync. A NON-empty roster
+       * that differs is still offered, as before.
        */
       const fields = comparisons
         .filter(({ name }) => !settledConflictFields.has(name))
         .filter(
           ({ name }) => name !== "teamOnCardIds" || incomingTeams.length > 0,
+        )
+        .filter(
+          ({ name }) => name !== "playerIds" || incomingPlayers.length > 0,
         )
         .filter(
           ({ stored, incoming, compare }) =>
@@ -23338,6 +23502,15 @@ export const commitCardChecklist = action({
           ...(match.existingIdByIndex[index] === undefined && c.listingTitleKept?.trim()
             ? { listingTitleKept: c.listingTitleKept.trim() }
             : {}),
+          // NEO-528 round 3 — the checklist named a player here. A name
+          // entity review ruled "not a person" reaches the chunk as neither an
+          // id nor a pending name (the skip keeps it out of the next review),
+          // so without this the card would look like nobody's and take the
+          // "Player on every card" default over the listing's own claim.
+          // The same test the client previews with (`listingNamesAPlayer`).
+          ...(listingNamesAPlayer(c.players)
+            ? { listingNamedPlayer: true as const }
+            : {}),
         },
       };
     });
@@ -23360,10 +23533,19 @@ export const commitCardChecklist = action({
     // NEO-246 — names the chunks' `boundPendingNames` dropped. Subtracted from
     // `stampedUnreviewedNames.size` below.
     let droppedPendingNameCount = 0;
-    const chunkCount = Math.ceil(chunkCards.length / CARDS_PER_COMMIT_CHUNK);
-    for (let start = 0; start < chunkCards.length; start += CARDS_PER_COMMIT_CHUNK) {
-      const slice = chunkCards.slice(start, start + CARDS_PER_COMMIT_CHUNK);
-      const index = Math.floor(start / CARDS_PER_COMMIT_CHUNK) + 1;
+    // NEO-528 round 3 — fewer cards per chunk when the leaf's "Player on
+    // every card" defaults give each new card many index rows; 150 otherwise.
+    const defaultWritesPerCard: number =
+      chunkCards.length > 0
+        ? await ctx.runQuery(internal.selectorOptions.commitChunkDefaultWrites, {
+            selectorOptionId: args.selectorOptionId,
+          })
+        : 0;
+    const chunkSize = commitChunkSize(defaultWritesPerCard);
+    const chunkCount = Math.ceil(chunkCards.length / chunkSize);
+    for (let start = 0; start < chunkCards.length; start += chunkSize) {
+      const slice = chunkCards.slice(start, start + chunkSize);
+      const index = Math.floor(start / chunkSize) + 1;
       const result: {
         storedIds: Array<Id<"cardChecklist">>;
         bscTeamEnrichmentIds: Array<Id<"cardChecklist">>;
@@ -23396,6 +23578,8 @@ export const commitCardChecklist = action({
             skippedTeamNames: prelude.skippedTeamNames,
             // NEO-335 — who a "No team on this card" answer is stamped as.
             operatorUserId,
+            // NEO-528 round 3 — what this chunk was sized for.
+            defaultWritesPerCard,
           }),
       );
       // The chunk returns one stored id per card it was given, in order.

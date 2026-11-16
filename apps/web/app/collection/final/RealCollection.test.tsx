@@ -324,9 +324,14 @@ function makeStore({
         goneCardIds: [],
         truncated: false,
       }),
-    useBinderNeeds: (id) => (id === null ? undefined : L({ cards: [], held: new Set<string>(), supported: true, truncated: false })),
-    useRuleMatches: (id, ids) => (id === null || ids === null ? undefined : L(new Set<string>())),
-    useFindCards: (id) => (id === null ? undefined : L({ copies: [], done: true, more: () => {} })),
+    useBinderNeeds: (id) =>
+      id === null
+        ? undefined
+        : L({ cards: [], held: new Set<string>(), secondary: new Set<string>(), supported: true, truncated: false }),
+    useRuleMatches: (id, ids) =>
+      id === null || ids === null ? undefined : L({ fits: new Set<string>(), secondary: new Set<string>() }),
+    useFindCards: (id) =>
+      id === null ? undefined : L({ copies: [], secondary: new Set<string>(), done: true, more: () => {} }),
     useDeclined: (id) => (id === null ? undefined : L([])),
     useRuleBrands: (id) => (id === null ? undefined : L([])),
     useCommonPrices: (ids) => (ids === null ? undefined : L({})),

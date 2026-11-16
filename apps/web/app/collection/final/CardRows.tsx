@@ -5,7 +5,7 @@ import NeonButton from "@/components/modules/NeonButton";
 import { FOCUS, QUIET_BUTTON, useLiverySurface } from "../prototypes/p1/ui";
 import {
   cardLabel,
-  playerNames,
+  cardSubject,
   printRunLabel,
   setAndVariant,
   shortCardName,
@@ -25,6 +25,7 @@ import {
   useWants,
 } from "./data/store";
 import type { Card, Copy, CopyId } from "./data/types";
+import { CameoTag } from "./CameoTag";
 import { FeatureBadges } from "./inventory/badges";
 import { InventorySearchHitRow } from "./inventory/QuantityRow";
 import { lineNames, lineSummary } from "./lineItems";
@@ -210,6 +211,7 @@ export default function CardRowGroup({
   onRowClick,
   onOpenChecklist,
   groupRef,
+  cameo,
 }: {
   card: Card;
   /** The collector's copies of this card in the collection (never one in a box), in the page's scope. */
@@ -225,6 +227,11 @@ export default function CardRowGroup({
   /** Search results: the keyboard opener for the card's checklist. */
   onOpenChecklist?: () => void;
   groupRef?: Ref<HTMLLIElement>;
+  /**
+   * NEO-528 — the card fits the scoped smart binder only as a cameo: who is
+   * pictured (`cameoNames`). The row wears the Cameo tag beside the players.
+   */
+  cameo?: readonly string[];
 }) {
   const capabilities = useCapabilities();
   const binders = useContainers();
@@ -247,6 +254,10 @@ export default function CardRowGroup({
   if (run) sub.push(run);
   if (card.cardVariation) sub.push(`${card.cardVariation} variation`);
   const stacked = lines.length > 1;
+  // NEO-528 — players, else the card's own name, else "With <cameo>". A
+  // cameo row never says "Player unknown": its Cameo tag already says why it
+  // is here, so with nothing else known the line is left to the tag.
+  const subject = cardSubject(card) || (cameo ? "" : "Player unknown");
   const rowClick =
     onRowClick ?? ((copyId?: CopyId) => actions.open(card, copyId, undefined, copyId !== undefined));
 
@@ -290,11 +301,17 @@ export default function CardRowGroup({
     <>
       <span className="w-12 shrink-0 text-right font-mono text-sm text-ink-3">#{card.cardNumber}</span>
       <div className="min-w-0 flex-1 max-sm:basis-[calc(100%-4rem)]">
-        <div className="flex min-w-0 items-baseline text-sm">
+        <div className="flex min-w-0 items-baseline gap-2 text-sm">
           <span className="min-w-0 sm:truncate">
-            <span className="font-medium text-ink">{playerNames(card) || "Player unknown"}</span>
-            {summary && <span className="text-neon-blue-text"> · {summary}</span>}
+            {subject && <span className="font-medium text-ink">{subject}</span>}
+            {summary && (
+              <span className="text-neon-blue-text">
+                {subject ? " · " : ""}
+                {summary}
+              </span>
+            )}
           </span>
+          {top && cameo && <CameoTag names={cameo} />}
         </div>
         <div className="min-h-[1rem] truncate text-xs text-ink-3">
           {team && (
