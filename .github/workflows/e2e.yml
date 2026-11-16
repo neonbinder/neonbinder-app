@@ -3013,7 +3013,7 @@ jobs:
               echo "None: every catalogue read was recorded."
             else
               echo "${count} unrecorded request(s), stored under the namespace prefix \`${CONVEX_NAME}-\` (this preview's Convex deployment name plus \"-\")."
-              echo "They persist in the fake's bucket for 30 days, so they can be recorded later with the local recorder in watch or --all mode (--prefix ${CONVEX_NAME}-)."
+              echo "They persist in the fake's bucket for 30 days: record them later with the local recorder, \`--prefix ${CONVEX_NAME}-\`, or \`--all\` once this preview is gone."
               echo
               echo '```json'
               jq -c '.misses[]' "$out" 2>/dev/null | head -n 100
