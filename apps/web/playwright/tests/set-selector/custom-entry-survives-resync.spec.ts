@@ -1,5 +1,6 @@
 // Origin: .maestro/flows/set-selector/custom-entry-survives-resync.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectStepWithSportLots } from "../../support/marketplace-wait";
 import { columnOption, columnSearch, setBuilderReady, addCustomEntry } from "../../support/set-builder";
 
 const PAUSE_NOTICE = "SportLots is on pause: nothing from SportLots was asked for or changed.";
@@ -39,8 +40,13 @@ test(
     // The panel stands in for the idle row: the pressed button is gone, so
     // the focus check below proves focus was handed back, not kept.
     await expect(syncSports).toHaveCount(0);
-    // A live marketplace Sports sync (the flow's 55 s), not our own server.
-    await expect(page.getByText("Syncing Sport Options")).toBeHidden({ timeout: 55_000 });
+    // A marketplace Sports sync, not our own server: the flow's 55 s while SportLots is live;
+    // paused, BSC alone under the panel's wait line (measured 0.8 s on the merge-group run).
+    await expectStepWithSportLots(page, page.getByText("Syncing Sport Options"), env, {
+      liveMs: 55_000,
+      what: "the Sports sync",
+      state: "hidden",
+    });
     // NEO-450 (a11y): the panel replaced the button the operator pressed, so
     // when the sync ends focus goes back to that button rather than <body>.
     await expect(syncSports).toBeFocused();

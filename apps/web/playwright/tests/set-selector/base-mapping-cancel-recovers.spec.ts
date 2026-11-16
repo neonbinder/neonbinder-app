@@ -2,6 +2,7 @@
 // Cancelling the Base-set picker leaves a message and a working Retry (no
 // dead end); Retry reopens the picker with its candidates. Read-only.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectStepWithSportLots } from "../../support/marketplace-wait";
 import { drillToSet, pick, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -18,10 +19,13 @@ test(
     const bsc = picker.getByRole("option", { name: /^BSC base candidate: / });
     const sl = picker.getByRole("option", { name: /^SportLots base candidate: / });
 
-    // Both the first open and the Retry show the candidates (live fetch, 60 s).
+    // Both the first open and the Retry show the candidates: a SportLots + BSC fetch, 60 s while
+    // SportLots is live; paused, BSC's candidates alone under the picker's wait line (measured
+    // 1.3 s at most on the merge-group run).
     async function expectCandidates() {
-      await expect(picker.getByRole("button", { name: "Confirm Base Set" })).toBeVisible({
-        timeout: 60_000,
+      await expectStepWithSportLots(page, picker.getByRole("button", { name: "Confirm Base Set" }), env, {
+        liveMs: 60_000,
+        what: "the Base picker's candidates",
       });
       if (!env.SL_PAUSED) {
         await expect(picker.getByText(/SportLots base/).first()).toBeVisible();

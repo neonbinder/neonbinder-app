@@ -21,7 +21,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import { columnSyncFailedMessage } from "../../components/SetSelector/column-sync-failed";
 import type { FlowEnv } from "./env";
-import { expectAfterMarketplace } from "./marketplace-wait";
+import { expectAfterMarketplace, expectStepWithSportLots } from "./marketplace-wait";
 
 export type Column =
   | "Sports"
@@ -273,7 +273,11 @@ export const DRILL_DEFAULTS = {
   set: "Topps Chrome",
 } as const;
 
-/** Variant types sync live on a set's first visit (the flow's 60 s). */
+/**
+ * Variant types sync on a set's first visit (the flow's 60 s). That is the ceiling a
+ * step that also drives a LIVE SportLots round trip keeps (`expectStepWithSportLots`);
+ * BuySportsCards alone is the fake and follows the wait-line rule (NEO-552).
+ */
 export const VARIANT_TYPES_SYNC = 60_000;
 
 /**
@@ -324,8 +328,10 @@ export async function drillToSet(page: Page, env: FlowEnv, target: DrillTarget =
   // Score): the marketplace rule, not a flat 7 s.
   await pickAfterBscSync(page, "Sets", set);
   await expect(columnHeading(page, "Variant Types")).toBeVisible();
-  await expect(columnOption(page, "Variant Types", "Base")).toBeVisible({
-    timeout: VARIANT_TYPES_SYNC,
+  // The Variant Types column's sync: its wait line covers it, so paused it is the marketplace rule.
+  await expectStepWithSportLots(page, columnOption(page, "Variant Types", "Base"), env, {
+    liveMs: VARIANT_TYPES_SYNC,
+    what: "Variant Types row Base",
   });
 }
 
@@ -353,9 +359,10 @@ export async function drillToBaseVariant(
   await expect(picker.or(page.getByRole("button", { name: /Re-map Base/ }))).toBeVisible();
 
   if (await picker.isVisible()) {
-    // The candidates are a live marketplace round trip (the flow's 45 s).
+    // The candidates are a marketplace round trip: the flow's 45 s while SportLots is
+    // live; paused it is BSC's candidates alone, under the picker's wait line.
     const confirm = picker.getByRole("button", { name: "Confirm Base Set" });
-    await expect(confirm).toBeVisible({ timeout: 45_000 });
+    await expectStepWithSportLots(page, confirm, env, { liveMs: 45_000, what: "the Base picker's candidates" });
     const bsc = picker.getByRole("option", { name: /^BSC base candidate: / });
     const sl = picker.getByRole("option", { name: /^SportLots base candidate: / });
     if (!env.SL_PAUSED) {
@@ -381,7 +388,10 @@ export async function drillToBaseVariant(
   await expect(syncChecklistButton(page)).toBeVisible();
 }
 
-/** A live two-sided (BSC + SportLots) insert-level fetch on data nothing synced yet: the flows' 240 s. */
+/**
+ * A two-sided (BSC + SportLots) insert-level fetch on data nothing synced yet: the flows' 240 s,
+ * kept while SportLots is live (`expectStepWithSportLots`). Paused it is BSC's fetch alone.
+ */
 export const INSERT_FETCH = 240_000;
 
 /**
@@ -399,17 +409,22 @@ export const INSERT_FETCH = 240_000;
  * is open (returned, not axe-checked: the caller names what it is about).
  * Never presses Sync Inserts on an empty column, so the cold path is unchanged.
  */
-export async function openInsertsReconcile(page: Page): Promise<Locator> {
+export async function openInsertsReconcile(page: Page, env: FlowEnv): Promise<Locator> {
   const reconcile = page.getByRole("dialog", { name: "Reconcile Inserts" });
-  await expect(reconcile.or(page.getByRole("listbox", { name: "Inserts" })).first()).toBeVisible({
-    timeout: INSERT_FETCH,
+  await expectStepWithSportLots(page, reconcile.or(page.getByRole("listbox", { name: "Inserts" })).first(), env, {
+    liveMs: INSERT_FETCH,
+    what: "the Inserts column's fetch",
   });
   if (!(await reconcile.isVisible())) await page.getByRole("button", { name: "Sync Inserts" }).click();
-  await expect(reconcile).toBeVisible({ timeout: INSERT_FETCH });
+  await expectStepWithSportLots(page, reconcile, env, { liveMs: INSERT_FETCH, what: "the Reconcile Inserts dialog" });
   return reconcile;
 }
 
-/** A never-synced level pays a cold marketplace sync (the flow's 150 s). */
+/**
+ * A never-synced level pays a cold marketplace sync (the flow's 150 s), the ceiling a
+ * step that also drives a LIVE SportLots round trip keeps (`expectStepWithSportLots`).
+ * Under a SportLots pause the level's wait is BuySportsCards alone (NEO-552).
+ */
 export const COLD_SYNC = 150_000;
 
 /**
@@ -429,8 +444,15 @@ export async function drillToColdManufacturer(
   await expect(columnSearch(page, "Sports")).toBeVisible({ timeout: 60_000 });
   await pick(page, "Sports", sport);
   await expect(columnHeading(page, "Years")).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByText("Syncing Year Options")).toBeHidden({ timeout: COLD_SYNC });
-  await expect(page.getByRole("listbox", { name: "Years" })).toBeVisible({ timeout: 60_000 });
+  await expectStepWithSportLots(page, page.getByText("Syncing Year Options"), env, {
+    liveMs: COLD_SYNC,
+    what: "the Years sync",
+    state: "hidden",
+  });
+  await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Years" }), env, {
+    liveMs: 60_000,
+    what: "the Years list",
+  });
 
   await pick(page, "Years", year);
   await expect(columnHeading(page, "Manufacturers")).toBeVisible({ timeout: 20_000 });
@@ -469,7 +491,11 @@ export async function drillToColdManufacturer(
     await selectOrCreate(page, "Manufacturers", manufacturer);
   }
   await expect(columnHeading(page, "Sets")).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByText("Syncing Sets")).toBeHidden({ timeout: COLD_SYNC });
+  await expectStepWithSportLots(page, page.getByText("Syncing Sets"), env, {
+    liveMs: COLD_SYNC,
+    what: "the Sets sync",
+    state: "hidden",
+  });
   // "Syncing Sets" hidden is NOT proof the sync finished: a cold column shows
   // its idle "Sync Sets" for a few queries before the sync's first write, so
   // the wait above can pass before the sync has started. What a user waits on
@@ -477,8 +503,12 @@ export async function drillToColdManufacturer(
   // has sets, so a listed row is the signal. Hand-made brands under paused
   // SportLots may be empty; pass `expectSets: false` for any other empty brand.
   if (expectSets ?? !env.SL_PAUSED) {
-    await expect(page.getByRole("listbox", { name: "Sets" }).getByRole("option").first()).toBeVisible({
-      timeout: COLD_SYNC,
+    // Measured on the merge-group run: the longest first Sets row took 5.8 s (a year-wide
+    // sync), so paused this is the marketplace rule (the Sets column's wait line), 7 s plus
+    // the seconds BSC is visibly holding it.
+    await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Sets" }).getByRole("option").first(), env, {
+      liveMs: COLD_SYNC,
+      what: "the first Sets row",
     });
   }
 }

@@ -60,6 +60,7 @@ Rules for never diagnosing timing, the 7 s budget, and the commit/stage boundari
 ## Collection, listing and photos
 - [Collection checklist, binders](patterns_collection_checklist_total_and_drawer.md) — totals, drawer, hidden empty levels, binder flakes, page names
 - [Collection optimistic writes](patterns_collection_optimistic_writes_wait_for_the_notice.md) — wait for the notice before leaving or pressing next
+- [BSC budget rules and the SportLots helper](patterns_bsc_budget_rules_and_sportlots_helper.md) — rules 1-3, expectStepWithSportLots, TSV mis-match trap
 - [Marketplace listing specs](patterns_marketplace_listing_spec_shape.md) — N listed, Sync status, eBay hop, step ledger, seller window
 - [Card photo specs](patterns_card_photo_viewer_specs.md) — viewer/tile names, served-file proof, crop drag, held vs saved box
 - [Add cards, caps and zip fixtures](patterns_add_cards_run_start_caps.md) — 12 starts/hour, pickIntakeSet first, flat oversize JPEGs

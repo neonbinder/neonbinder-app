@@ -26,6 +26,7 @@ import {
   type Column,
 } from "../../support/set-builder";
 import type { Locator, Page } from "@playwright/test";
+import { expectStepWithSportLots } from "../../support/marketplace-wait";
 
 const SPORT = "Baseball";
 const YEAR = "1990";
@@ -80,8 +81,13 @@ test(
     await expect(columnHeading(page, "Variant Types")).toBeVisible();
     await expect(columnSelection(page, "Manufacturers", BRAND)).toBeVisible();
     await expectAccessible(page, { label: "Set filed under the sync-created brand" });
-    // The set's first visit fires a cold variant-type sync (the flow's 60 s).
-    await expect(page.getByText("Syncing Variant Types")).toBeHidden({ timeout: 60_000 });
+    // The set's first visit fires a cold variant-type sync (the flow's 60 s while SportLots is
+    // live; paused, BSC alone under the column's wait line, measured 9 ms on the merge-group run).
+    await expectStepWithSportLots(page, page.getByText("Syncing Variant Types"), env, {
+      liveMs: 60_000,
+      what: "the variant-type sync",
+      state: "hidden",
+    });
     await expect(columnHeading(page, "Variant Types")).toBeVisible();
 
     // ── STEP 3: the operator moves it to Unknown.
@@ -114,13 +120,22 @@ test(
     // the SportLots side finishes), and a reload mid-sync shows the "Syncing
     // Sets" panel INSTEAD of the Sync Sets button; the drill's "Syncing Sets
     // hidden" check can pass before the status subscription answers. Wait for
-    // that first sync to finish (a cold-sync ceiling: marketplace round trips)
-    // so the click below starts a second, forced sync, after the move.
-    await expect(page.getByRole("button", { name: "Sync Sets" })).toBeVisible({ timeout: COLD_SYNC });
+    // that first sync to finish (a cold-sync ceiling while SportLots is live; paused, BSC
+    // alone under the column's wait line) so the click below starts a second, forced sync,
+    // after the move.
+    await expectStepWithSportLots(page, page.getByRole("button", { name: "Sync Sets" }), env, {
+      liveMs: COLD_SYNC,
+      what: "the first year-wide Sets sync finishing",
+    });
     await page.getByRole("button", { name: "Sync Sets" }).click();
     await expect(page.getByRole("heading", { name: "Syncing Sets" })).toBeVisible();
-    // The whole year again from BSC (the flow's 150 s).
-    await expect(page.getByRole("heading", { name: "Syncing Sets" })).toBeHidden({ timeout: COLD_SYNC });
+    // The whole year again from BSC (the flow's 150 s while SportLots is live; paused, 7 s plus
+    // the seconds BSC is visibly holding it: the longest run measured 3.3 s).
+    await expectStepWithSportLots(page, page.getByRole("heading", { name: "Syncing Sets" }), env, {
+      liveMs: COLD_SYNC,
+      what: "the forced Sets sync finishing",
+      state: "hidden",
+    });
     await expect(page.getByRole("button", { name: "Sync Sets" })).toBeVisible();
 
     await columnSearch(page, "Sets").fill(BRAND);

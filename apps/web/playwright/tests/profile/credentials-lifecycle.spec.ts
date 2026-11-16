@@ -7,9 +7,13 @@ import type { Page } from "@playwright/test";
 import { expectBscTestSuccess } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
-const SEED_BUDGET = 90_000; // seed-credentials performs a real marketplace sign-in
-const LIVE = 30_000; // live marketplace round trip
-const REJECTED = 120_000; // a rejected live sign-in (SportLots still is one; the fake BSC answers at once)
+// SportLots is the one live marketplace here: its steps keep their ceilings. BuySportsCards is
+// the fake (NEO-552) and takes the standard 7 s: the longest BSC step on the merge-group run
+// took 2.8 s (the seed hop), so `forSite` gives it no timeout of its own.
+const SEED_BUDGET = 90_000; // seed-credentials performs a real SportLots sign-in
+const LIVE = 30_000; // live SportLots round trip
+const REJECTED = 120_000; // a rejected live SportLots sign-in
+const forSite = (label: string, sportLotsMs: number): number | undefined => (label === "SportLots" ? sportLotsMs : undefined);
 /** NEO-552: the fake BuySportsCards' rejected-credentials pair: a well-formed fake user and the password it always refuses. */
 const FAKE_BSC_REJECTED_USER = "nb+e2e-rejected@fake.invalid";
 const FAKE_BSC_REJECTED_PASSWORD = "wrong-password";
@@ -17,7 +21,7 @@ const FAKE_BSC_REJECTED_PASSWORD = "wrong-password";
 async function seedAndOpen(page: Page, site: string, label: string): Promise<void> {
   await page.goto(`/testing/seed-credentials?sites=${site}&redirect=/profile/credentials`);
   await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({
-    timeout: SEED_BUDGET,
+    timeout: forSite(label, SEED_BUDGET),
   });
   await selectSite(page, label);
 }
@@ -33,19 +37,19 @@ async function selectSite(page: Page, label: string): Promise<void> {
 async function testStoredSession(page: Page, label: string, success: RegExp | "bsc"): Promise<void> {
   await expect(page.getByText(`Connected to ${label}`)).toBeVisible();
   const testButton = page.getByRole("button", { name: "Test Credentials" });
-  await expect(testButton).toBeVisible({ timeout: LIVE });
+  await expect(testButton).toBeVisible({ timeout: forSite(label, LIVE) });
   await testButton.click();
-  if (success === "bsc") await expectBscTestSuccess(page, LIVE);
+  if (success === "bsc") await expectBscTestSuccess(page);
   else await expect(page.getByText(success)).toBeVisible({ timeout: LIVE });
   await expectAccessible(page, { label: `Profile, ${label} credentials, tested` });
 }
 
 async function clearConnection(page: Page, label: string): Promise<void> {
   const clear = page.getByRole("button", { name: "Clear Credentials" });
-  await expect(clear).toBeVisible({ timeout: LIVE });
+  await expect(clear).toBeVisible({ timeout: forSite(label, LIVE) });
   await clear.click();
   await page.getByRole("button", { name: "Yes, Clear" }).click();
-  await expect(page.getByText(`Cleared your ${label} connection.`)).toBeVisible({ timeout: LIVE });
+  await expect(page.getByText(`Cleared your ${label} connection.`)).toBeVisible({ timeout: forSite(label, LIVE) });
 }
 
 async function failedSignIn(
@@ -56,11 +60,11 @@ async function failedSignIn(
   rejection: RegExp,
 ): Promise<void> {
   const username = page.getByLabel(new RegExp(`${label} Username`));
-  await expect(username).toBeVisible({ timeout: LIVE });
+  await expect(username).toBeVisible({ timeout: forSite(label, LIVE) });
   await username.fill(user);
   await page.getByLabel(new RegExp(`${label} Password`)).fill(pass);
   await page.getByRole("button", { name: "Connect", exact: true }).click();
-  await expect(page.getByText(rejection)).toBeVisible({ timeout: REJECTED });
+  await expect(page.getByText(rejection)).toBeVisible({ timeout: forSite(label, REJECTED) });
   await expectAccessible(page, { label: `Profile, ${label} sign-in rejected` });
   // Nothing was saved: the form only renders while the account is unconnected.
   await expect(username).toBeVisible();
@@ -98,12 +102,8 @@ test(
 
     // A fresh load still shows the connection; clear it for good.
     await page.goto("/profile/credentials");
-    await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({
-      timeout: LIVE,
-    });
-    await expect(page.getByRole("heading", { name: `${bsc} Credentials` })).toBeVisible({
-      timeout: LIVE,
-    });
+    await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: `${bsc} Credentials` })).toBeVisible();
     await clearConnection(page, bsc);
     await expect(page.getByLabel(/BuySportsCards Username/)).toBeVisible();
 

@@ -18,9 +18,10 @@ test(
     if (!env.SL_PAUSED) {
       await expect(banner).toBeVisible({ timeout: LAUNCH_GATE });
 
-      // The seed hop is a live marketplace round trip (the flow's 90 s).
+      // The seed hop is a BuySportsCards sign-in (the fake, NEO-552): BSC alone, no wait line,
+      // measured 3.3 s at most on the merge-group run, so the standard 7 s.
       await page.goto("/testing/seed-credentials?sites=buysportscards&redirect=/set-selector");
-      await expect(banner).toBeVisible({ timeout: 90_000 });
+      await expect(banner).toBeVisible();
 
       await expect(banner.getByText("SportLots", { exact: true })).toBeVisible();
       await expect(page.getByText("BuySportsCards")).toBeHidden();
@@ -33,8 +34,9 @@ test(
     } else {
       await expect(banner.or(panel)).toBeVisible({ timeout: LAUNCH_GATE });
 
+      // The same BuySportsCards-only hop, measured 3.3 s at most: the standard 7 s.
       await page.goto("/testing/seed-credentials?sites=buysportscards&redirect=/set-selector");
-      await expect(panel).toBeVisible({ timeout: 90_000 });
+      await expect(panel).toBeVisible();
       await expect(banner).toBeHidden();
 
       await expect(page.getByText(/SportLots is on pause\./)).toBeVisible();

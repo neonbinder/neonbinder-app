@@ -1,6 +1,7 @@
 // Origin: .maestro/flows/set-selector/base-parallels-build-from-section.yaml (Maestro suite retired in NEO-341; see git history)
 // Sole writer of the 2024 Topps Chrome base set's parallels build.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import { columnOption, columnSearch, drillToSet, pick, setBuilderReady } from "../../support/set-builder";
 
 test(
@@ -30,12 +31,13 @@ test(
     await page.getByRole("button", { name: "Replace and build" }).click();
 
     await page.getByRole("button", { name: "Stop after this one" }).click();
-    // GUIDE R5 exception, a live BSC round trip: building a parallel fetches its
-    // checklist from BSC before writing it. Run 41212224696 spent 4.8 s in that
-    // fetch (a BSC re-login inside it) plus 1.7 s writing the page, past 7 s.
-    await expect(
-      page.getByRole("heading", { name: new RegExp(`Base parallels — stopped after 1 of ${total}`) }),
-    ).toBeVisible({ timeout: 60_000 });
+    // Building a parallel fetches its checklist from BSC (the fake, NEO-552) before writing
+    // it, and the build shows "Waiting on BuySportsCards" while that call is out: 7 s of our
+    // own time plus the seconds the line is up (measured 3.4 s on the merge-group run).
+    await expectAfterMarketplace(page, page.getByRole("heading", { name: new RegExp(`Base parallels — stopped after 1 of ${total}`) }), {
+      platform: "BuySportsCards",
+      what: "the parallel build stopping after one",
+    });
 
     await expectAccessible(page, { label: "Base parallels build stopped after one" });
 

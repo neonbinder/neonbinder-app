@@ -10,7 +10,11 @@ import { expect, type Page } from "@playwright/test";
 import type { FlowEnv } from "./env";
 import { test } from "./fixtures";
 
-/** A cold marketplace login is a real ~22 s Puppeteer/SSO round trip (the flows' 30 s). */
+/**
+ * A live SportLots login is a real ~22 s Puppeteer/SSO round trip (the flows' 30 s).
+ * SportLots only: BuySportsCards is the fake (NEO-552), whose sign-in steps measured
+ * 1.3 s at most and take the standard 7 s.
+ */
 export const LIVE_LOGIN = 30_000;
 
 async function openCredentials(page: Page, gate = 10_000): Promise<void> {
@@ -25,9 +29,10 @@ async function openCredentials(page: Page, gate = 10_000): Promise<void> {
 
 async function pressTest(page: Page): Promise<void> {
   // While another credential op holds the lock the button reads
-  // "Testing..."; wait for the real label (the flows' 30 s).
+  // "Testing..."; wait for the real label. BSC only (the fake's sign-in:
+  // measured 5 ms at most), so the standard 7 s.
   const test = page.getByRole("button", { name: "Test Credentials" });
-  await expect(test).toBeVisible({ timeout: LIVE_LOGIN });
+  await expect(test).toBeVisible();
   await test.click();
 }
 
@@ -57,8 +62,10 @@ export const BSC_TEST_SUCCESS =
  * the confirmed branch (an unconfirmed one has no store to show, and says so).
  *
  * Contract: ENTRY the Test press was taken. EXIT a success message is on screen.
+ * The fake answers the sign-in at once (measured 2.8 s at most across the suite's Test
+ * presses, one with a cold token), so the standard 7 s.
  */
-export async function expectBscTestSuccess(page: Page, timeout = LIVE_LOGIN): Promise<"confirmed" | "unconfirmed"> {
+export async function expectBscTestSuccess(page: Page, timeout = 7_000): Promise<"confirmed" | "unconfirmed"> {
   await expect(page.getByText(BSC_TEST_SUCCESS).first()).toBeVisible({ timeout });
   const outcome = (await page.getByText(/BSC account authenticated successfully/i).first().isVisible()) ? "confirmed" : "unconfirmed";
   try {
@@ -105,8 +112,13 @@ export async function loginToSportLots(page: Page, env: FlowEnv): Promise<void> 
   await expect(page.getByLabel(/SportLots Username/i)).toBeHidden();
 }
 
-/** Saving a sign-in through the seed hop signs in live to the marketplace (the bootstrap's 90 s). */
-export const SEED_SIGN_IN = 90_000;
+/**
+ * Saving a sign-in through the seed hop signs in to BuySportsCards (the fake since
+ * NEO-552). Measured on the merge-group run that sized this: the longest hop took
+ * 13.4 s (the fake's first token of a run is cold, 7.5-9 s at the seed), so
+ * ceil(13.4 + 7) = 21 s. It was 90 s when the sign-in went to the real site.
+ */
+export const SEED_SIGN_IN = 21_000;
 
 /**
  * Remove the worker's BuySportsCards sign-in on Profile (Clear Credentials,
@@ -119,11 +131,12 @@ export async function removeBscSignIn(page: Page, gate?: number): Promise<void> 
   await openCredentials(page, gate);
   // BuySportsCards is the default tab.
   await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
+  // BSC only, measured 0.8 s and 1.3 s: the standard 7 s.
   const clear = page.getByRole("button", { name: "Clear Credentials" });
-  await expect(clear).toBeVisible({ timeout: LIVE_LOGIN });
+  await expect(clear).toBeVisible();
   await clear.click();
   await page.getByRole("button", { name: "Yes, Clear" }).click();
-  await expect(page.getByText("Cleared your BuySportsCards connection.")).toBeVisible({ timeout: LIVE_LOGIN });
+  await expect(page.getByText("Cleared your BuySportsCards connection.")).toBeVisible();
   await expect(page.getByLabel(/BuySportsCards Username/)).toBeVisible();
 }
 
@@ -143,7 +156,7 @@ export async function removeBscSignIn(page: Page, gate?: number): Promise<void> 
 export async function saveBscSignIn(page: Page, opts: { listing?: boolean } = {}): Promise<void> {
   const listing = opts.listing ? "&listing=on" : "";
   await page.goto(`/testing/seed-credentials?sites=buysportscards${listing}&redirect=/profile/credentials`);
-  // The hop signs in to BuySportsCards live (SEED_SIGN_IN, GUIDE hard rule 3).
+  // The hop signs in to BuySportsCards (SEED_SIGN_IN, GUIDE hard rule 3).
   // A hop that FAILS prints "Seed failed (...)" and goes nowhere: throw its
   // reason now instead of idling to the budget on a heading that never comes.
   const landed = page.getByRole("heading", { name: "Profile Settings" });

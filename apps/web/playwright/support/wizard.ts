@@ -31,7 +31,7 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 import { expectAccessible } from "./fixtures";
 import type { FlowEnv } from "./env";
-import { expectAfterMarketplace } from "./marketplace-wait";
+import { expectAfterMarketplace, expectStepWithSportLots } from "./marketplace-wait";
 import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistName } from "./published-checklist";
 import {
   columnHeading,
@@ -45,7 +45,11 @@ import {
   type DrillTarget,
 } from "./set-builder";
 
-/** A live marketplace fetch, or a whole batch's lookups (the flows' 120 s / 180 s). */
+/**
+ * A live marketplace fetch, or a whole batch's lookups (the flows' 120 s / 180 s). `FETCH` is the
+ * ceiling a step that also drives a LIVE SportLots round trip keeps (`expectStepWithSportLots`);
+ * BuySportsCards alone is the fake and takes the standard 7 s (NEO-552).
+ */
 const FETCH = 120_000;
 export const LOOKUPS = 180_000;
 
@@ -325,7 +329,10 @@ export async function fetchChecklistToWizard(
     await expect(page.getByText(/Match Cards/)).toBeHidden();
     await expect(confirmMatches).toBeHidden();
   }
-  await expect(reviewWizard(page)).toBeVisible({ timeout: FETCH });
+  // Live, the wizard opens after the pairing's Confirm (a live SportLots + BSC round trip's
+  // aftermath); paused, it opens once the solo fetch has landed above, our own work: measured
+  // 1.3 s at most on the merge-group run, so the standard 7 s.
+  await expectStepWithSportLots(page, reviewWizard(page), env, { liveMs: FETCH, what: "the tidy-up dialog opening", statusLine: false });
   // NEO-497: the dialog names the checklist it is tidying, read off the NB rows
   // this drill picked (the year and the set; a Base checklist's title leaves
   // "Base" out).
@@ -378,19 +385,26 @@ export async function openOneMarketplaceSetBase(
   // The drill's own "Syncing Sets" gate can report done while the year-wide
   // BSC phase is still storing, so the rows can still be one marketplace round
   // trip away (the util's 15 s, an R5 marketplace exception).
-  await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible({ timeout: 15_000 });
+  await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Sets" }), env, { liveMs: 15_000, what: "the Sets list" });
   await columnSearch(page, "Sets").fill(set);
   await columnOption(page, "Sets", set).click();
-  // Selecting the set fires its cold, BSC-only variant-type sync (measured ~15 s).
+  // Selecting the set fires its cold, BSC-only variant-type sync.
   await expect(columnHeading(page, "Variant Types")).toBeVisible({ timeout: 20_000 });
-  await expect(columnOption(page, "Variant Types", "Base")).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
+  await expectStepWithSportLots(page, columnOption(page, "Variant Types", "Base"), env, {
+    liveMs: VARIANT_TYPES_SYNC,
+    what: "Variant Types row Base",
+  });
 
   // An unmapped Base (`baseHasMapping` counts the SportLots slot only) opens the picker.
   await columnOption(page, "Variant Types", "Base").click();
   const picker = page.getByRole("dialog", { name: "Select Base Set" });
   await expect(picker).toBeVisible();
-  // The confirm reads "Loading…" until the picker's live SportLots + BSC round trip lands (measured ~8 s).
-  await expect(picker.getByRole("button", { name: "Confirm Base Set" })).toBeVisible({ timeout: 60_000 });
+  // The confirm reads "Loading…" until the picker's SportLots + BSC round trip lands (live: the
+  // old 60 s; paused it is BSC's candidates alone, under the picker's wait line).
+  await expectStepWithSportLots(page, picker.getByRole("button", { name: "Confirm Base Set" }), env, {
+    liveMs: 60_000,
+    what: "the Base picker's candidates",
+  });
   // R2 precondition: BSC really answers for this set, so the fetch is a real one-marketplace fetch.
   await expect(picker.getByRole("option", { name: /^BSC base candidate: / }).first()).toBeVisible();
   const slCandidates = picker.getByRole("option", { name: /^SportLots base candidate: / });
@@ -456,9 +470,10 @@ export async function fetchOneMarketplaceSetChecklistToWizard(
   });
 
   // Every fetched name the deployment does not hold is queued, each behind a
-  // lookup (measured ~0.8 s to open on a 25-card set; the flow's 60 s). Gated
-  // on the wizard's title, which names the set since NEO-497.
-  await expect(reviewWizard(page)).toBeVisible({ timeout: 60_000 });
+  // lookup (measured 3.3 s at most on the merge-group run, so the standard 7 s: the
+  // fetch has landed above, this is our own queueing). Gated on the wizard's title,
+  // which names the set since NEO-497.
+  await expect(reviewWizard(page)).toBeVisible();
   await expect(reviewWizard(page)).toHaveAccessibleName(
     tidyUpName({ year: target.year ?? ONE_MARKETPLACE_DEFAULTS.year, set: target.set }),
   );

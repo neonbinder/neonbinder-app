@@ -5,6 +5,7 @@
 // server-side, then warms both marketplace sessions (best effort).
 import { test, expect } from "../../support/fixtures";
 import { loginToBsc, loginToSportLots } from "../../support/credentials";
+import { expectStepWithSportLots } from "../../support/marketplace-wait";
 
 test(
   "Worker bootstrap — sign in as TEST_EMAIL_${WORKER_INDEX}, reset state, and seed BSC + SL creds",
@@ -13,11 +14,18 @@ test(
     await signIn(
       "/testing/reset?redirect=/testing/seed-credentials?redirect=/profile/credentials",
     );
-    // One wait covers the whole redirect chain; the seed may perform a real
-    // marketplace sign-in per platform (30-65 s each), hence the flow's 90 s.
-    await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({
-      timeout: 90_000,
+    // One wait covers the whole redirect chain. While SportLots is live the seed performs a real
+    // SportLots sign-in (30-65 s), hence the flow's 90 s. Paused, the chain is the fake
+    // BuySportsCards' sign-in alone: the longest run measured 6.4 s (the fake's cold first
+    // token), so ceil(6.4 + 7) = 14 s.
+    await expectStepWithSportLots(page, page.getByRole("heading", { name: "Profile Settings" }), env, {
+      liveMs: 90_000,
+      pausedMs: 14_000,
+      statusLine: false,
+      what: "the bootstrap's reset and credential seed",
     });
+    // The chain ends on the credentials page.
+    await expect(page).toHaveURL(/\/profile\/credentials/);
 
     // The warm-ups are an optimisation (`optional: true` in the flow): a
     // failure is logged, never fatal. The steps above stay mandatory. The BSC

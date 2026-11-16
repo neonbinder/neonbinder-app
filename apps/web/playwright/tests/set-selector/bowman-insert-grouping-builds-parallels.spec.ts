@@ -2,11 +2,13 @@
 // Fresh-only: it saves 2026 Bowman's inserts as sets, groups them, and builds
 // Anime Kanji's cards from Anime.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
 import {
   columnHeading,
   columnOption,
   columnSearch,
   drillToSet,
+  expectAfterBscSync,
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
@@ -85,14 +87,15 @@ test(
       await openInserts();
     } else {
       // Paused: SportLots offers no twin, so the sets come in without a reconcile.
-      await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: 240_000 });
+      // BSC alone (the fake, NEO-552): the column's own wait line covers its sync, so 7 s plus
+      // the seconds BSC is visibly holding it (measured 0.2 s for the heading, 1.8 s for the row).
+      await expectAfterBscSync(page, columnHeading(page, "Inserts"), "the Inserts column opening");
       await expect(reconcile).toBeHidden();
-      // GUIDE R5 exception, a live BSC round trip: the heading shows while the
-      // column's BSC sync is still running ("Syncing Inserts"), before Anime
-      // is written. Run 41212224696 searched at that moment and read "No
-      // matches found"; the sync finished 5 s later.
+      // The heading shows while the column's BSC sync is still running ("Syncing Inserts"),
+      // before Anime is written: searching at that moment reads "No matches found", so the row
+      // is waited on by the marketplace rule, not by a flat number.
       await columnSearch(page, "Inserts").fill("Anime");
-      await expect(columnOption(page, "Inserts", "Anime")).toBeVisible({ timeout: 60_000 });
+      await expectAfterBscSync(page, columnOption(page, "Inserts", "Anime"), "the Inserts row Anime");
     }
 
     // ── PART 2: both are inserts; Group Parallels nests Kanji under Anime ──
@@ -124,11 +127,14 @@ test(
     if (!env.SL_PAUSED) {
       await expect(reconcile).toBeVisible({ timeout: 240_000 });
     } else {
-      await expect(
+      // BSC alone: 7 s plus the seconds the column's wait line is up (measured 1.3 s).
+      await expectAfterMarketplace(
+        page,
         page.getByText(
           /Stored [0-9]+ variants \(single platform\)|Some variants were not stored|Sync failed: could not load variants/,
         ),
-      ).toBeVisible({ timeout: 240_000 });
+        { platform: "BuySportsCards", what: "the Inserts re-sync's result line" },
+      );
     }
     await expect(
       page.getByText(/[0-9]+ already grouped as (a parallel|parallels)\. Leaving (it|those) be\./),
@@ -155,10 +161,11 @@ test(
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowmanAnime2026);
     await syncChecklistButton(page).click();
 
-    // The cards come from BSC (and SportLots, paired, when it is live): the flow's 120 s.
+    // The cards come from BSC (and SportLots, paired, when it is live): the flow's 120 s while
+    // SportLots is live; paused, BSC alone under the fetch's wait line (measured 1.3 s).
     const matchCards = page.getByText(/Match Cards/).first();
     const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-    await expect(matchCards.or(kept)).toBeVisible({ timeout: 120_000 });
+    await expectStepWithSportLots(page, matchCards.or(kept).first(), env, { liveMs: 120_000, what: "the Anime checklist fetch" });
     if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
     if (await matchCards.isVisible()) {
       const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
@@ -177,7 +184,9 @@ test(
     // the teams / titles steps on their defaults and stops on the Save step.
     const wizard = reviewWizard(page);
     const saved = page.getByText(/Saved [0-9]+ cards/);
-    await expect(wizard.or(saved)).toBeVisible({ timeout: 60_000 });
+    // Live, the wizard opens after the pairing's Confirm (the flow's 60 s); paused, once the
+    // solo fetch has landed above: our own queueing, measured 1.8 s at most, the standard 7 s.
+    await expectStepWithSportLots(page, wizard.or(saved).first(), env, { liveMs: 60_000, what: "the tidy-up dialog or the save", statusLine: false });
     await expectTeamsFromChecklist(page, facts);
     if (await wizard.isVisible()) {
       await expectAccessible(page, { within: wizard, label: "Tidy-up wizard" });
@@ -202,9 +211,13 @@ test(
     await expect(
       page.getByText(/Building parallels of Anime — [0-9]+ of [0-9]+|Anime parallels — [^.]+/).first(),
     ).toBeVisible();
-    await expect(
+    // Building Kanji's cards fetches its checklist from BSC under the build's wait line: 7 s plus
+    // the seconds BSC is visibly holding it (measured 5.4 s at most).
+    await expectAfterMarketplace(
+      page,
       page.getByRole("heading", { name: /Anime parallels — [1-9][0-9]* built(, [0-9]+ (blocked|skipped|failed))*/ }),
-    ).toBeVisible({ timeout: 60_000 });
+      { platform: "BuySportsCards", what: "the Anime parallels build finishing" },
+    );
     // (a status line may repeat this for screen readers: any one of them will do)
     await expect(page.getByText(/Anime Kanji — Built [1-9][0-9]* cards?(, .+)?/).first()).toBeVisible();
     await expectAccessible(page, { label: "Anime parallels build ledger" });
