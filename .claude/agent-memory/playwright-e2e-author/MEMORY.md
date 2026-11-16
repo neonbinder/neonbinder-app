@@ -188,3 +188,4 @@
 - [NEO-535 description, walker, Regenerate specs](patterns_neo535_description_walker_and_regenerate_specs.md) — stale builder text, walker order, rename fan-out shape, mobile-only wrap, plant traps
 - [Bulk walk busy label toBeHidden is vacuous](patterns_bulk_walk_busy_label_toBeHidden_is_vacuous.md) — wait for "(0)" or Next/Confirm after "Add remaining players as new", not the busy label gone
 - [Shared fast pool read ceiling](patterns_shared_fast_pool_read_ceiling.md) — NEO-529: FAST_READ_CEILING for "All N photos read."; no fast-vs-heavy E2E spec
+- [Adopting specs need a real reseed for a planted break](pattern_adopting_specs_need_reseed_for_planted_break.md) — failed reseed = silent green; reseed before each plant

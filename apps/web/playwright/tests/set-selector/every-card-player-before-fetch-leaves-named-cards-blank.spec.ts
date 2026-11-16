@@ -27,9 +27,10 @@
 //   cards are saved. Already committed (a rerun on the same seed): the stored
 //   values are read back as they are. Both branches end on the same asserts.
 // - #10's and #18's drawers: no player, Johnny Bench under "Also on this
-//   card", the description's "Cameo: Johnny Bench" line, and a card title with
-//   no player before the number (the cameo may stand there). #4's drawer: Pete Rose as its player (its
-//   title names him), and the cameo.
+//   card", the description's "Cameo: Johnny Bench" line, and the exact card
+//   title with no player before the number (the cameo stands there, NEO-528 +
+//   NEO-535). #4's drawer: Pete Rose as its player (its title names him, then
+//   "& Johnny Bench"), and the cameo.
 // - Printing Plates Black is built from Base (or adopted, built): its #10 has
 //   no player and its #4 keeps Pete Rose.
 // - Back steps the drill out of the parallel.
@@ -68,6 +69,7 @@ import {
   cameoChip,
   cameoLine,
   cardDescription,
+  cardTitle,
   closeCardDrawer,
   openCardDrawer,
   openEveryCardPlayer,
@@ -112,13 +114,13 @@ const PLAYER = "Pete Rose";
 const CAMEO = "Johnny Bench";
 /** Cards whose listing names somebody entity review rules out (not a person). */
 const RULED_OUT = [
-  { number: "10", printed: "1975 World Champions" },
-  { number: "18", printed: "Former Teammates" },
+  // The committed titles (NEO-528 + NEO-535): no player, so the stored cameo
+  // stands where the player would; #18's team is "No Team", which a title omits.
+  { number: "10", printed: "1975 World Champions", title: `${SET_TITLE} ${CAMEO} #10 Cincinnati Reds Baseball` },
+  { number: "18", printed: "Former Teammates", title: `${SET_TITLE} ${CAMEO} #18 Baseball` },
 ] as const;
 /** The card whose listing names Pete Rose (and his father): it keeps its own Pete Rose. */
 const OWN = "4";
-/** The drawer's "Card title" (the listing title written at the commit). */
-const cardTitle = (drawer: Locator): Locator => drawer.getByRole("textbox", { name: "Card title", exact: true });
 /** The parallel built from Base (a Printing Plate: BSC lists one per colour). */
 const PARALLEL = "Printing Plates Black";
 
@@ -240,7 +242,7 @@ test(
     await expect(section.getByRole("button", { name: E.stopCameo(CAMEO), exact: true })).toBeVisible();
 
     // --- The ruled-out cards: no player, the cameo ---------------------------
-    for (const { number, printed } of RULED_OUT) {
+    for (const { number, printed, title } of RULED_OUT) {
       const drawer = await openCardDrawer(page, number);
       const description = cardDescription(drawer);
       // The card has loaded (its description, written at the commit, names the
@@ -254,14 +256,10 @@ test(
       // ...and no player: the stored Pete Rose was held back.
       await expect(drawer.getByRole("button", { name: "Add player", exact: true })).toBeVisible();
       await expect(anyPlayerChip(drawer)).toHaveCount(0);
-      // The committed title has no player between the set and the number:
-      // only the cameo, which a title names while it has room and drops first
-      // (NEO-528 + NEO-535): "<set> Johnny Bench #10 Cincinnati Reds Baseball".
-      // A player's card reads "<set> Pete Rose & Johnny Bench #4 ...", and the
-      // set's own name says Pete Rose, so the check is on that slot.
-      await expect(cardTitle(drawer)).toHaveValue(
-        new RegExp(`^${escapeRe(SET_TITLE)} (${escapeRe(CAMEO)} )?#?${number} `),
-      );
+      // The committed title, exact: no player between the set and the number,
+      // only the cameo (a title names it while it has room, and drops it first
+      // when over 80: NEO-528 + NEO-535).
+      await expect(cardTitle(drawer)).toHaveValue(title);
       if (number === RULED_OUT[0].number) {
         await expectAccessible(page, { within: drawer, label: "Card drawer, a ruled-out card with no player and a cameo" });
       }
@@ -275,7 +273,7 @@ test(
     await expect(anyPlayerChip(own)).toHaveCount(1);
     await expect(cameoChip(own, CAMEO)).toBeVisible();
     await expect(cardTitle(own)).toHaveValue(
-      new RegExp(`^${escapeRe(SET_TITLE)} ${escapeRe(PLAYER)}( & ${escapeRe(CAMEO)})? #?${OWN} `),
+      `${SET_TITLE} ${PLAYER} & ${CAMEO} #${OWN} Cincinnati Reds Baseball`,
     );
     await closeCardDrawer(own);
 

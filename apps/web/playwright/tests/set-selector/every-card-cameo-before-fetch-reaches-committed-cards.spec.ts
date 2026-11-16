@@ -18,7 +18,13 @@
 //   read back. Both branches end on the same asserts.
 // - TP-1's and TP-3's drawers: their own player (Shohei Ohtani, Hank Aaron),
 //   Griffey under "Also on this card", "Cameo: Ken Griffey Jr." in the
-//   description. Back steps the drill out of Profiles.
+//   description, and the exact card title (NEO-535: a title names a cameo after
+//   the card's players while it fits in 80 characters, and the cameo is the
+//   first meaningful thing cut when it does not). TP-3's title is short enough
+//   to keep "& Ken Griffey Jr."; TP-1's, with his name, would be 93 characters,
+//   so its title is the one it would have without him (sport, team, number and
+//   the "Insert" label all kept) while his chip and description line stay.
+//   Back steps the drill out of Profiles.
 // - The collector holds TP-1 in Main. A new smart binder "Player = Griffey,
 //   and Set = 2026 Topps" with "Include cameos" on: Find cards offers TP-1
 //   tagged as Griffey's cameo, it is added, and sorted by checklist with empty
@@ -43,6 +49,7 @@ import {
   cameoChip,
   cameoLine,
   cardDescription,
+  cardTitle,
   closeCardDrawer,
   openCardDrawer,
   openEveryCardPlayer,
@@ -70,8 +77,10 @@ const SET_LABEL = `${BUILD.year} ${BUILD.set}`;
 const CAMEO = "Ken Griffey Jr.";
 /** Two cards and their own players, checked in the set builder. */
 const OWN_CARDS = [
-  { number: "TP-1", player: "Shohei Ohtani" },
-  { number: "TP-3", player: "Hank Aaron" },
+  // Over 80 with the cameo (93): he is cut first, the rest of the title stays.
+  { number: "TP-1", player: "Shohei Ohtani", title: "2026 Topps Profiles Insert Shohei Ohtani #TP-1 Los Angeles Dodgers Baseball" },
+  // 78 with him once the "Insert" label (a no-loss cut) is gone: he stays.
+  { number: "TP-3", player: "Hank Aaron", title: "2026 Topps Profiles Hank Aaron & Ken Griffey Jr. #TP-3 Atlanta Braves Baseball" },
 ] as const;
 const CARDS = 25;
 
@@ -186,9 +195,10 @@ test(
     await expect(section.getByRole("button", { name: E.stopCameo(CAMEO), exact: true })).toBeVisible();
 
     // Each card keeps its own player and lists the cameo.
-    for (const { number, player } of OWN_CARDS) {
+    for (const { number, player, title } of OWN_CARDS) {
       const drawer = await openCardDrawer(page, number);
       await expect(cardDescription(drawer)).toHaveValue(cameoLine(CAMEO));
+      await expect(cardTitle(drawer)).toHaveValue(title);
       await expect(playerChip(drawer, player)).toBeVisible();
       await expect(playerChip(drawer, CAMEO)).toHaveCount(0);
       await expect(cameoChip(drawer, CAMEO)).toBeVisible();

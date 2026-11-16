@@ -1608,9 +1608,19 @@ describe("NEO-528 — the description names the card's cameos", () => {
     expect(readsAsGeneratedDescription(two)).toBe(true);
   });
 
-  test("the title never names a cameo: it takes no cameo argument at all", () => {
+  test("cameos ride in the inputs: the title and assessment take one argument and name them from it", () => {
     expect(generateListingTitle.length).toBe(1);
     expect(assessListingTitle.length).toBe(1);
+    const inputs: ListingCardInputs = {
+      year: "2024",
+      manufacturer: "Topps",
+      setName: "Chrome",
+      cardNumber: "17",
+      playerNames: ["Shohei Ohtani"],
+      cameoNames: ["Ken Griffey Jr."],
+    };
+    expect(generateListingTitle(inputs)).toBe("2024 Topps Chrome Shohei Ohtani & Ken Griffey Jr. #17");
+    expect(generateListingTitle({ ...inputs, cameoNames: undefined })).toBe("2024 Topps Chrome Shohei Ohtani #17");
   });
 });
 

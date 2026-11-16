@@ -284,6 +284,64 @@ describe("unresolved cards", () => {
   });
 });
 
+describe("cameos (NEO-528)", () => {
+  test("a card with a cameo gets the cameo line in its description, and its title fields are byte-identical", async () => {
+    const { t, fx } = await setup();
+    vi.stubEnv(ENV_FLAG, "1");
+    await t.run(async (ctx) => {
+      await ctx.db.patch(fx.strawberry2, { secondaryPlayerIds: [fx.goodenId] });
+    });
+    const before = (await allCards(t)).find((c) => c._id === fx.strawberry2)!;
+
+    const result = await t.action(internal.backfillListingDescriptions.run, REWRITE);
+    expect(result.counts.filled).toBe(1);
+
+    const after = (await allCards(t)).find((c) => c._id === fx.strawberry2)!;
+    expect((after.listingDescription ?? "").split("\n")).toContain("Cameo: Dwight Gooden.");
+    expect(untouched(after)).toEqual(untouched(before));
+    expect(after.secondaryPlayerIds).toEqual([fx.goodenId]);
+  });
+
+  test("a dangling cameo id skips the row: its stored description stays, and a dry run counts it unresolved", async () => {
+    const { t, fx } = await setup();
+    vi.stubEnv(ENV_FLAG, "1");
+    const gone = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("players", {
+        name: "Nobody At All",
+        nameNormalized: "nobody at all",
+        sportId: fx.sportId,
+        lastUpdated: 0,
+      });
+      await ctx.db.delete(id);
+      await ctx.db.patch(fx.gooden1, {
+        secondaryPlayerIds: [id],
+        listingDescription: "Kept as it is.",
+      });
+      return id;
+    });
+    expect(gone).toBeTruthy();
+
+    const dry = await t.action(internal.backfillListingDescriptions.run, { rewriteExisting: true });
+    expect(dry.counts.skippedUnresolved).toBe(1);
+
+    const result = await t.action(internal.backfillListingDescriptions.run, REWRITE);
+    expect(result.counts.skippedUnresolved).toBe(1);
+    const card = (await allCards(t)).find((c) => c._id === fx.gooden1)!;
+    expect(card.listingDescription).toBe("Kept as it is.");
+  });
+
+  test("planDescription reads a resolved cameo into the description it would write", async () => {
+    const { t, fx } = await setup();
+    const plan = await t.run(async (ctx) => {
+      await ctx.db.patch(fx.gooden1, { secondaryPlayerIds: [fx.strawberryId] });
+      const card = (await ctx.db.get(fx.gooden1))!;
+      return planDescription(ctx, card, newStoredCardReadCache(), { rewriteExisting: true });
+    });
+    expect(plan.action).toBe("rewritten");
+    expect(plan.next.split("\n")).toContain("Cameo: Darryl Strawberry.");
+  });
+});
+
 describe("parity with the commit path", () => {
   test("a card the commit chunk just wrote is already what the backfill writes", async () => {
     const { t, fx } = await setup();

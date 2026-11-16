@@ -935,3 +935,149 @@ describe("NEO-535 an insert's name enters the title on its ROLE, never on its na
     );
   });
 });
+
+describe("NEO-535 + NEO-528 cameos in the cut loop", () => {
+  const cameo = "Ken Griffey Jr.";
+
+  test("(a) an over-cap builder title is rebuilt from the box, and the cameo is the first thing the box version drops", () => {
+    const a = assessListingTitle({
+      ...ohtaniTrout,
+      insertName: "Update All-Star Game Dual Autographs",
+      setShortName: "2024 Topps Chrome ASG Dual Auto Gold Refractor",
+      cameoNames: [cameo],
+    });
+    expect(a.shortNameUsed).toBe(true);
+    expect(a.title).toBe(
+      "2024 Topps Chrome ASG Dual Auto Gold Refractor Shohei Ohtani & Mike Trout /50",
+    );
+    // The cameo is listed first; the box text carries no team or number.
+    expect(a.dropped).toEqual([cameo, "Los Angeles Angels", "Los Angeles Dodgers", "#DA-OT"]);
+    expect(a.firstNameLost).toBe(false);
+  });
+
+  test("(b) the box is still not used when it loses the same first name: the cameo goes first on both", () => {
+    const a = assessListingTitle({
+      ...leafMetal,
+      cardNumber: "91A-AR1",
+      playerNames: ["Alejandro Rosario"],
+      cameoNames: [cameo],
+      setShortName: "2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver Edition",
+    });
+    expect(a.shortNameUsed).toBeUndefined();
+    expect(a.title).toBe(
+      "2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver Rosario /5",
+    );
+    expect(a.dropped).toEqual([cameo, "#91A-AR1", "Alejandro"]);
+  });
+
+  test("refill: the sport is tried back before the cameo, so a title with room for one gets the sport", () => {
+    const a = assessListingTitle(
+      atFullLength(
+        {
+          year: "2001",
+          cardNumber: "7",
+          playerNames: ["Ichiro"],
+          cameoNames: ["Al Bo"],
+          teamNames: ["Los Angeles Dodgers"],
+          sport: "Baseball",
+        },
+        105,
+      ),
+    );
+    expect(a.title).toContain("Baseball");
+    expect(a.title).not.toContain("Al Bo");
+    expect(a.title).not.toContain("Dodgers");
+    expect(a.title.length).toBeLessThanOrEqual(80);
+    expect(a.dropped).toEqual(["Al Bo", "Los Angeles Dodgers"]);
+  });
+
+  test("refill: a repeat stays out while a cameo is still out", () => {
+    const a = assessListingTitle(
+      atFullLength(
+        {
+          ...ichiro,
+          setTail: "Autographs",
+          autographed: "On Card",
+          cameoNames: ["Zed Gggggggggggggg"],
+        },
+        90,
+      ),
+    );
+    expect(a.title).not.toMatch(/\bAUTO\b/);
+    expect(a.title).not.toContain("Zed");
+    expect(a.title.length).toBeLessThanOrEqual(80);
+    expect(a.dropped).toEqual(["Zed Gggggggggggggg"]);
+  });
+
+  test("a repeat goes before a cameo, which then stays in", () => {
+    const a = assessListingTitle(
+      atFullLength(
+        {
+          ...ichiro,
+          setTail: "Autographs",
+          autographed: "On Card",
+          cameoNames: ["Zed Gg"],
+        },
+        84,
+      ),
+    );
+    // Only the repeat AUTO had to go; the cameo never left, so nothing is out.
+    expect(a.title).toContain("Ichiro & Zed Gg #7");
+    expect(a.dropped).toEqual([]);
+  });
+
+  test("several cameos and a first name: both cameos go (last first), then the number, then the first name", () => {
+    const a = assessListingTitle(
+      atFullLength(
+        {
+          year: "2001",
+          cardNumber: "91A-AR1",
+          playerNames: ["Alejandro Rosario"],
+          cameoNames: [cameo, "Mike Trout"],
+        },
+        130,
+      ),
+    );
+    expect(a.title).not.toContain("Griffey");
+    expect(a.title).not.toContain("Trout");
+    expect(a.title).not.toContain("91A-AR1");
+    expect(a.title).toMatch(/ Rosario$/);
+    expect(a.firstNameLost).toBe(true);
+    expect(a.dropped).toEqual(["Mike Trout", cameo, "#91A-AR1", "Alejandro"]);
+  });
+});
+
+describe("NEO-535 + NEO-528 leftOutOfTitle lists a dropped cameo", () => {
+  const inputs: ListingCardInputs = {
+    year: "2024",
+    manufacturer: "Topps",
+    setName: "Chrome",
+    cardNumber: "17",
+    playerNames: ["Shohei Ohtani"],
+    teamNames: ["Los Angeles Dodgers"],
+    cameoNames: ["Ken Griffey Jr.", "Mike Trout"],
+  };
+  const text = "2024 Topps Chrome Shohei Ohtani";
+
+  test("each cameo the text lacks is listed, last first, before teams and the number", () => {
+    expect(leftOutOfTitle(inputs, text)).toEqual([
+      "Mike Trout",
+      "Ken Griffey Jr.",
+      "Los Angeles Dodgers",
+      "#17",
+    ]);
+  });
+
+  test("a cameo the text names is not listed", () => {
+    expect(leftOutOfTitle(inputs, `${text} & Ken Griffey Jr. #17 Dodgers`)).toEqual(["Mike Trout"]);
+  });
+
+  test("a cameo equal to the card's own player is never listed, and a repeated cameo is listed once", () => {
+    expect(
+      leftOutOfTitle(
+        { ...inputs, cameoNames: ["shohei ohtani", "Mike Trout", "mike trout"] },
+        `${text} #17 Dodgers`,
+      ),
+    ).toEqual(["Mike Trout"]);
+  });
+});

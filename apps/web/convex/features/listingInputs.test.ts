@@ -275,6 +275,23 @@ describe("mergeCardFeatures / listingInputsForCard", () => {
   });
 });
 
+describe("listingInputsForCard — cameos (NEO-528)", () => {
+  test("cameoNames are carried through in order", () => {
+    const inputs = listingInputsForCard({ cardNumber: "1" }, SET, {
+      playerNames: ["A B"],
+      cameoNames: ["C D", "E F"],
+    });
+    expect(inputs.cameoNames).toEqual(["C D", "E F"]);
+  });
+
+  test("an empty or absent cameo list leaves no cameoNames key at all", () => {
+    const empty = listingInputsForCard({ cardNumber: "1" }, SET, { playerNames: ["A B"], cameoNames: [] });
+    const absent = listingInputsForCard({ cardNumber: "1" }, SET, { playerNames: ["A B"] });
+    expect(empty).not.toHaveProperty("cameoNames");
+    expect(absent).toEqual(empty);
+  });
+});
+
 describe("leftOutOfTitle", () => {
   test("an over-cap title reports what was cut, never filler and never a description word", () => {
     const inputs = listingInputsForCard({ cardNumber: "300", isRookie: true }, LONG_SET, {

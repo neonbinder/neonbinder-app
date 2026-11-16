@@ -519,6 +519,16 @@ describe("addCustomCard — a hand-added card is born with the defaults", () => 
     expect(typed).not.toHaveProperty("listingNamedPlayer");
   });
 
+  test("a default cameo who is the player picked for the card is said once in the title and not stored as a cameo", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await store(t, fx.set, { defaultCameoIds: [fx.kelce, fx.allen] });
+    const card = await get(t, await add(t, fx, { playerIds: [fx.kelce] }));
+    expect(card.secondaryPlayerIds).toEqual([fx.allen]);
+    expect(card.listingTitle).toContain("Travis Kelce & Josh Allen");
+    expect((card.listingTitle.match(/Travis Kelce/g) ?? []).length).toBe(1);
+  });
+
   test("a default whose player was deleted is dropped and the card is still added", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
@@ -572,6 +582,26 @@ describe("titleSetFacts — the default player's name and id for the pre-save ti
     await t.run(async (ctx) => ctx.db.delete(fx.kelce));
     expect(await facts()).not.toHaveProperty("setPlayerId");
     expect((await facts()).setPlayerNames).toEqual([]);
+  });
+});
+
+describe("titleSetFacts — the default cameos for the pre-save titles (NEO-528 + NEO-535)", () => {
+  test("lists the effective cameos in stored order, omits the key when there are none, drops a deleted one", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    const facts = () =>
+      t.query(internal.listingTitleContext.titleSetFacts, { selectorOptionId: fx.base, sportId: fx.sport });
+    expect(await facts()).not.toHaveProperty("setCameoNames");
+    await store(t, fx.set, { defaultCameoIds: [fx.kelce, fx.allen] });
+    expect((await facts()).setCameoNames).toEqual(["Travis Kelce", "Josh Allen"]);
+    // Nearest wins, order kept.
+    await store(t, fx.base, { defaultCameoIds: [fx.allen, fx.kelce] });
+    expect((await facts()).setCameoNames).toEqual(["Josh Allen", "Travis Kelce"]);
+    // Another sport's player is dropped, as at the insert.
+    await store(t, fx.base, { defaultCameoIds: [fx.ohtani, fx.kelce] });
+    expect((await facts()).setCameoNames).toEqual(["Travis Kelce"]);
+    await t.run(async (ctx) => ctx.db.delete(fx.kelce));
+    expect(await facts()).not.toHaveProperty("setCameoNames");
   });
 });
 

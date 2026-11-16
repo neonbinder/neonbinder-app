@@ -27,3 +27,12 @@ Traps worth re-checking:
   [[patterns-neo411-retry-generation-and-dispatcher]].
 - Title doors disagree on character classes: the box normaliser refuses \p{Cf},
   the parallel own-title check refuses only Cc/Zl/Zp, updateCard refuses none.
+- A second index leg chained into the SAME run ("player links came back short, so
+  start the cameo links here") doubles the per-transaction card cap (just under two
+  pages), and per-card reads grow with it (players + cameos, before and after
+  caches). The fix is to give the second leg only the budget the first one left,
+  or schedule it. Check this whenever a fan-out gains a leg.
+- How to audit a merge resolution: `git show <merge> --cc` and keep the lines that
+  start with `++`/`--`. Those are new relative to BOTH parents. Then compare the
+  file-qualified `export const X = query|mutation|action(` sets: union(parents) vs
+  merge. Equal means the resolution added no public surface.

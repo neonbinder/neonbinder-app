@@ -239,22 +239,26 @@ async function linkPage(
 
 /**
  * NEO-528 — one page of a renamed player's cameo index rows, through the cameo
- * module's reader: the card ids, and the cursor after them, `null` when done.
+ * module's reader: up to `limit` card ids, and the cursor after them, `null`
+ * when done. `limit` is what the run has left of its card budget: a run that
+ * starts this leg after the player's own short page passes the remainder, so
+ * the two legs together never exceed `RENAME_DESCRIPTION_PAGE` cards.
  */
 async function cameoLinkPage(
   ctx: MutationCtx,
   playerId: Id<"players">,
   after: Extract<WalkState, { kind: "cameoLinks" }>["after"],
+  limit: number,
 ): Promise<{
   cardIds: Array<Id<"cardChecklist">>;
   next: Extract<WalkState, { kind: "cameoLinks" }> | null;
 }> {
-  const rows = await cardSecondaryPlayerLinkPageAfter(ctx, playerId, after, RENAME_DESCRIPTION_PAGE);
+  const rows = await cardSecondaryPlayerLinkPageAfter(ctx, playerId, after, limit);
   const last = rows[rows.length - 1];
   return {
     cardIds: rows.map((link) => link.cardChecklistId),
     next:
-      rows.length < RENAME_DESCRIPTION_PAGE
+      rows.length < limit
         ? null
         : { kind: "cameoLinks", after: { sportId: last.sportId, creationTime: last._creationTime } },
   };
@@ -413,18 +417,26 @@ async function scheduleNext(
   });
 }
 
-/** One page of the walk at `state`: the state after it, `null` when done. */
+/**
+ * One page of the walk at `state`: the state after it, `null` when done.
+ * `budget` is the cards this run may still visit; a run starts with
+ * `RENAME_DESCRIPTION_PAGE` and the cameo leg gets only what the player leg
+ * left of it.
+ */
 async function runPage(
   ctx: MutationCtx,
   target: RenameTarget,
   state: WalkState,
   visit: Visit,
+  budget: number = RENAME_DESCRIPTION_PAGE,
 ): Promise<WalkState | null> {
   if (state.kind === "subtree") return await subtreePage(ctx, state, visit);
   if (target.kind === "rows") return null;
   if (state.kind === "cameoLinks") {
     if (target.kind !== "player") return null;
-    const page = await cameoLinkPage(ctx, target.playerId, state.after);
+    // Nothing left of this run's cards: the chain takes the leg from here.
+    if (budget <= 0) return state;
+    const page = await cameoLinkPage(ctx, target.playerId, state.after, budget);
     for (const cardId of page.cardIds) {
       const card = await ctx.db.get(cardId);
       if (card) await visit(card);
@@ -438,11 +450,19 @@ async function runPage(
   }
   // NEO-528 — a player's own cards done, the cards picturing them as a cameo
   // come next (a card never holds one player as both, so none is read twice).
-  // Started in this same run, so an ordinary rename still schedules nothing:
-  // the player page came back short, so the two together stay within two
-  // pages of cards.
+  // Started in this same run on what the player page left of the run's card
+  // budget, so an ordinary rename still schedules nothing and a big one never
+  // spends more than one page of cards in one transaction (each card reads
+  // its players, cameos included, so two pages could near Convex's
+  // per-transaction read ceiling and roll back the operator's rename).
   if (page.next === null && target.kind === "player") {
-    return await runPage(ctx, target, { kind: "cameoLinks", after: null }, visit);
+    return await runPage(
+      ctx,
+      target,
+      { kind: "cameoLinks", after: null },
+      visit,
+      budget - page.cardIds.length,
+    );
   }
   return page.next;
 }

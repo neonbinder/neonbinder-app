@@ -18,7 +18,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Doc, Id } from "./_generated/dataModel";
-import { titleForStoredCard } from "./storedCardTitle";
+import { listingInputsForStoredCard, newStoredCardReadCache, titleForStoredCard } from "./storedCardTitle";
 import { normalizeEntityName } from "../lib/entities/normalize-name";
 import { insertTestCard } from "../lib/testing/card-row";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
@@ -320,5 +320,116 @@ describe("a stored title survives the set's move out of Unknown (NEO-527)", () =
     expect(regenerated.title).toBe(storedTitle);
     expect(regenerated.title).not.toMatch(/Unknown/i);
     expect(regenerated.title).not.toMatch(/Topps Topps/i);
+  });
+});
+
+/**
+ * NEO-528 + NEO-535 — cameos (`secondaryPlayerIds`) in the stored-card title.
+ * A card born with a cameo stores the title its insert path generated; the
+ * stored-card path must read the cameo back and give the same title.
+ */
+describe("cameos in titleForStoredCard and previewListingTitle", () => {
+  beforeEach(() => {
+    vi.stubEnv(PAUSED_PLATFORMS_ENV, "sportlots");
+    vi.spyOn(console, "log").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
+  });
+
+  test("a card born with a default cameo: the stored-card path gives the title the insert path stored", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const strawberry = await t.run(async (ctx) => {
+      const found = await ctx.db
+        .query("players")
+        .filter((q) => q.eq(q.field("name"), "Darryl Strawberry"))
+        .first();
+      await ctx.db.patch(s.base, { defaultCameoIds: [found!._id] });
+      return found!._id;
+    });
+    const cardId = await t
+      .withIdentity(ADMIN)
+      .mutation(api.selectorOptions.addCustomCard, {
+        selectorOptionId: s.base,
+        cardNumber: "40",
+        cardName: "Card 40",
+        playerIds: [s.gooden],
+      });
+    await cancelScheduled(t);
+    const card = await t.run(async (ctx) => (await ctx.db.get(cardId))!);
+    expect(card.secondaryPlayerIds).toEqual([strawberry]);
+    expect(card.listingTitle).toContain("Dwight Gooden & Darryl Strawberry");
+
+    const stored = await t.run(async (ctx) => titleForStoredCard(ctx, card));
+    const preview = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.previewListingTitle, { cardId });
+    expect(stored.title).toBe(card.listingTitle);
+    expect(preview.title).toBe(card.listingTitle);
+    expect(preview.inputs.cameoNames).toEqual(["Darryl Strawberry"]);
+  });
+
+  test("a dangling cameo id is counted unresolved and the title is not rewritten", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const { goner, withGoner } = await t.run(async (ctx) => {
+      const sport = (await ctx.db.get(s.base))!;
+      void sport;
+      const goner = await ctx.db.insert("players", {
+        name: "Gone Cameo",
+        nameNormalized: normalizeEntityName("Gone Cameo"),
+        sportId: s.sport,
+        lastUpdated: NOW,
+      });
+      await ctx.db.delete(goner);
+      const withGoner = await insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "41",
+        cardName: "Card 41",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: NOW,
+        playerIds: [s.gooden],
+        secondaryPlayerIds: [goner],
+        listingTitle: "Kept As Typed",
+      });
+      return { goner, withGoner };
+    });
+    expect(goner).toBeTruthy();
+    const read = await t.run(async (ctx) => {
+      const card = (await ctx.db.get(withGoner))!;
+      return listingInputsForStoredCard(ctx, card, newStoredCardReadCache());
+    });
+    expect(read.unresolved).toMatchObject({ cameos: 1, players: 0, teams: 0, parent: false });
+    // The dangling id names nobody: the card's own player is all the title says.
+    expect(read.inputs.cameoNames).toBeUndefined();
+  });
+
+  test("a cameo equal to the card's own player is said once", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seed(t);
+    const id = await t.run(async (ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "42",
+        cardName: "Card 42",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: NOW,
+        playerIds: [s.gooden],
+        secondaryPlayerIds: [s.gooden],
+        features: { season: "2024" },
+      }),
+    );
+    const read = await t.run(async (ctx) =>
+      listingInputsForStoredCard(ctx, (await ctx.db.get(id))!, newStoredCardReadCache()),
+    );
+    const stored = await t.run(async (ctx) => titleForStoredCard(ctx, (await ctx.db.get(id))!));
+    expect((stored.title.match(/Dwight Gooden/g) ?? []).length).toBe(1);
+    expect(stored.title).not.toContain("&");
+    expect(read.unresolved.cameos).toBe(0);
   });
 });
