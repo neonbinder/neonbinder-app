@@ -70,6 +70,7 @@ import type {
   SetRef as RawSetRef,
   VariantRef as RawVariantRef,
 } from "@/convex/lib/catalogView";
+import { setLabel } from "@/convex/lib/catalogView";
 import { isOptimisticId, OPTIMISTIC_ID_PREFIX } from "../lineKeys";
 import { finishForVariant } from "./finish";
 import { resizeCopyPhoto, type ResizedPhoto } from "@/lib/collection/copy-photo-resize";
@@ -136,6 +137,7 @@ import {
   type BinderSettings,
   type DeclinedCard,
   type FoundCards,
+  type RuleMatches,
   type SmartRule,
   type EbaySetupView,
   type ListingGateView,
@@ -263,6 +265,12 @@ function toCard(raw: CatalogCard, set: SetRef, variant: VariantRef): Card {
     variant,
     cardNumber: raw.cardNumber,
     players: raw.players.map((p) => ({ id: p._id, name: p.name, ...(p.nameOnCard ? { nameOnCard: p.nameOnCard } : {}) })),
+    // NEO-528 — "Also on this card": absent when the card pictures no one else.
+    ...(raw.secondaryPlayers?.length
+      ? { secondaryPlayers: raw.secondaryPlayers.map((p) => ({ id: p._id, name: p.name })) }
+      : {}),
+    // NEO-528 — names a card with no player (a cameo-only card): `cardSubject`.
+    ...(raw.cardName?.trim() ? { cardName: raw.cardName.trim() } : {}),
     teams: raw.teams.map((t) => ({
       id: t._id,
       name: t.name,
@@ -1065,15 +1073,18 @@ export const CONVEX_DATA: CollectionData = {
       if (!containerId || raw === undefined) return undefined;
       const cards: Card[] = [];
       const held = new Set<string>();
+      const secondary = new Set<string>();
       for (const need of raw.needs) {
         const card = toCardWithPath(need.card);
         if (!card) continue;
         cards.push(card);
         if (need.held) held.add(card.id);
+        if (need.secondary) secondary.add(card.id);
       }
       return {
         cards,
         held,
+        secondary,
         supported: raw.supported,
         truncated: raw.truncated,
         pending: raw.pending === true,
@@ -1089,21 +1100,25 @@ export const CONVEX_DATA: CollectionData = {
       return Object.fromEntries(
         chunk(ids, CARDS_PER_CALL).map((part, i) => [
           String(i),
-          { query: api.binderRules.matchingCards, args: { containerId: containerId!, cardIds: part } },
+          { query: api.binderRules.ruleFits, args: { containerId: containerId!, cardIds: part } },
         ]),
       );
     }, [key, containerId]);
     const results = useQueries(requests);
-    return useMemo(() => {
+    return useMemo((): RuleMatches | undefined => {
       if (key === null) return undefined;
-      const out = new Set<string>();
+      const fits = new Set<string>();
+      const secondary = new Set<string>();
       for (let i = 0; i < Object.keys(requests).length; i++) {
-        const part = results[String(i)] as string[] | undefined | Error;
+        const part = results[String(i)] as FunctionReturnType<typeof api.binderRules.ruleFits> | undefined | Error;
         if (part === undefined) return undefined;
         if (part instanceof Error) throw part;
-        for (const id of part) out.add(id);
+        for (const fit of part) {
+          fits.add(fit.cardId);
+          if (fit.secondary) secondary.add(fit.cardId);
+        }
       }
-      return out;
+      return { fits, secondary };
     }, [key, requests, results]);
   },
 
@@ -1127,6 +1142,7 @@ export const CONVEX_DATA: CollectionData = {
       if (!containerId || !homes || status === "LoadingFirstPage") return undefined;
       return {
         copies: results.map((r) => toCopy(r, homes)),
+        secondary: new Set(results.filter((r) => r.secondary).map((r) => r.cardId as string)),
         done: status === "Exhausted",
         more: () => {
           if (canLoadMore) loadMore(FIND_PAGE);
@@ -1328,7 +1344,7 @@ function suggestionsFrom(raw: RawSuggest): Suggestion[] {
       (s): Suggestion => ({
         kind: "set",
         id: s._id,
-        label: `${s.season} ${s.name}`,
+        label: setLabel(s),
         sport: s.sport?.name ?? "",
       }),
     ),

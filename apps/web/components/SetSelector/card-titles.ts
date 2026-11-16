@@ -1,5 +1,6 @@
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+import { listingNamesAPlayer } from "../../convex/lib/cardPlayerDefaults";
 import { teamFullName } from "../../lib/teams/team-name";
 // Browser-safe: pure feature derivations only, the same ones the insert runs.
 import {
@@ -191,10 +192,19 @@ function cardNames(
   index: NameIndex,
   context: TitleContext,
 ): { playerNames: string[]; teamNames: string[] } {
-  const playerNames: string[] = [];
+  let playerNames: string[] = [];
   for (const p of card.players ?? []) {
     const name = index.player(p);
     if (name) playerNames.push(name);
+  }
+  // NEO-528 — a new card whose listing names nobody is born with the row's
+  // "Player on every card", and its title names them, as the commit's will.
+  // A card that prints any name (even one ruled "not a person", or still
+  // waiting for review) is left blank by the commit, so its title names
+  // nobody (`listingNamesAPlayer`, the commit's own test; Jason, 2026-11-15).
+  // The name is the server's, never written onto the card here.
+  if (playerNames.length === 0 && !listingNamesAPlayer(card.players)) {
+    playerNames = [...(context.setPlayerNames ?? [])];
   }
   const fromIds = (teamAnswer?.teamIds ?? [])
     .map((id) => index.teamById(id))

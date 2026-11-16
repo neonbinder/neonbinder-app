@@ -322,6 +322,49 @@
   color: var(--on-neon-purple);
 }
 
+/*
+ * NEO-528: a card the smart binder takes in only as a cameo (its player is
+ * pictured, not the subject). Not a price sticker: an oval cameo brooch with a
+ * silhouette in it, pinned on the LEFT edge, apart from the price stickers on
+ * the right. Below the slab label (top 3%) and above the ×N count (bottom
+ * left); at a 320px phone's pocket it clears both. It never meets
+ * "Outside the rule" (a card the rule no longer takes is not a cameo) nor
+ * "For sale" or "Trade": those live only in the Up for Trade binder, which
+ * has no rule and so no cameos. (Forced together at 320px, the For sale
+ * sticker at 40% would graze it; there is no room above it with a slab
+ * label, so the brooch stays here.) A need sleeve wears it over its dashed
+ * ghost. Shape, word and place carry it, not the teal alone.
+ */
+.nb-cameo-tag {
+  position: absolute;
+  top: 24%;
+  left: -5px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 1px 7px 1px 5px;
+  border-radius: 999px;
+  background: var(--neon-teal);
+  color: var(--on-neon-teal);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.5;
+  white-space: nowrap;
+  /* The brooch's frame: a thin ink ring inside the teal, then the drop shadow the stickers share. */
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--on-neon-teal) 55%, transparent),
+    0 1px 2px rgb(0 0 0 / 0.5);
+  transform: rotate(-6deg);
+  pointer-events: none;
+}
+[data-theme="light"] .nb-cameo-tag {
+  box-shadow:
+    inset 0 0 0 1px color-mix(in oklab, var(--on-neon-teal) 55%, transparent),
+    0 0 0 1px var(--neon-teal-text),
+    0 1px 2px rgb(0 0 0 / 0.25);
+}
+
 /* ------------------------------------------------ the pocket a hunt found */
 
 /* Pink, so it never reads as the blue "filling this pocket" ring: two quick

@@ -203,6 +203,19 @@ export interface Card {
   cardNumber: string;
   /** In the card's own order: the first leads the face and the label. */
   players: CardPlayer[];
+  /**
+   * NEO-528 — players pictured on the card who are not its subject (a
+   * teammate on a team leaders card, a highlight's other star): "Also
+   * pictured" on the card's detail, and a smart binder's cameos. Never one of
+   * `players`; absent when there are none.
+   */
+  secondaryPlayers?: CardPlayer[];
+  /**
+   * NEO-528 — the card's own name in the checklist ("Dolphins Leaders"),
+   * trimmed; absent when blank. Read only to name a card that has no player
+   * (`cardSubject`), never in place of one.
+   */
+  cardName?: string;
   /** Teams printed on the card (the uniform), not every team the player had. */
   teams: CardTeam[];
   /** Numbered print run: 50 means "/50", 1 a 1/1; null = unnumbered. */
@@ -1307,6 +1320,12 @@ export interface BinderNeeds {
   cards: Card[];
   /** Of `cards`, the ones the collector has in another binder. */
   held: ReadonlySet<CardId>;
+  /**
+   * NEO-528 — of `cards`, the ones a smart binder's rule takes in only as a
+   * cameo (its cameo option is on, and the player is pictured, not the
+   * subject). Empty for every other binder.
+   */
+  secondary: ReadonlySet<CardId>;
   /** False when the rule names nothing NB can walk the catalog from (only years, features, ...). */
   supported: boolean;
   /** True when there are more than `cards` lists. */
@@ -1327,10 +1346,21 @@ export interface BinderNeeds {
 export interface FoundCards {
   /** Line items that fit, every home but this binder, in card order. */
   copies: Copy[];
+  /** NEO-528 — of the copies' cards, the ones that fit only as a cameo. */
+  secondary: ReadonlySet<CardId>;
   /** True when the whole collection has been looked through. */
   done: boolean;
   /** Look further through the collection. */
   more: () => void;
+}
+
+/**
+ * NEO-528 — which of some cards fit a smart binder's rule (`fits`), and of
+ * those, which fit only as a cameo (`secondary`, always inside `fits`).
+ */
+export interface RuleMatches {
+  fits: ReadonlySet<CardId>;
+  secondary: ReadonlySet<CardId>;
 }
 
 /** NEO-362 — a card declined for one smart binder, with the collector's copies of it. */

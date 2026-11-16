@@ -557,6 +557,37 @@ export const selectorOptionFields = {
    */
   teamCascadeStartedAt: v.optional(v.number()),
   /**
+   * NEO-528 round 3 — "Player on every card": the player every NEW card
+   * beneath this row is born with, when it arrives with no player of its own
+   * (no resolved player and no name waiting for review).
+   *
+   * Settable at ANY level (sport, year, manufacturer, set, variant type,
+   * insert, parallel) and LOOKED UP at card creation, never copied down: the
+   * card's checklist row and its ancestors are walked nearest first and the
+   * nearest row carrying this field wins, as a whole
+   * (`cardPlayersBulk.effectiveCardPlayerDefaults`). A parallel's walk also
+   * passes through the row it is a parallel of (an insert's parallels its
+   * insert; the inserts under a Parallel variant type the set's Base).
+   *
+   * An array for the shape cards use, capped at ONE by the only writer
+   * (`cardPlayersBulk.setCardPlayerDefault`): a new pick replaces it. ABSENT
+   * when empty; nothing to backfill. Clearing it edits no card, and a new pick
+   * never moves cards already carrying the old player.
+   *
+   * NB data only: no adapter or sync reads or writes it. Not named like a
+   * card's `playerIds`, which the player-link pin tests grep for.
+   */
+  defaultPlayerIds: v.optional(v.array(v.id("players"))),
+  /**
+   * NEO-528 round 3 — the cameos ("Also on this card") every NEW card beneath
+   * this row is born with. Same level rules, lookup and nearest-wins as
+   * `defaultPlayerIds`, resolved independently of it (a nearer row's cameos
+   * replace a farther row's; lists are never merged). Capped at
+   * `MAX_CARD_PLAYERS`; never holds this row's own `defaultPlayerIds` player.
+   * ABSENT when empty. NB data only.
+   */
+  defaultCameoIds: v.optional(v.array(v.id("players"))),
+  /**
    * NEO-358 — how many `cardChecklist` rows point at THIS row
    * (`by_selector_option`), stored so a collector's "1 of N" never reads a
    * whole checklist. Meaningful on the card-bearing levels (`variantType`,
@@ -948,6 +979,16 @@ export const collectionRuleValidator = v.object({
       test: collectionRuleLeafValidator,
     }),
   ),
+  /**
+   * NEO-528 — the collector's per-binder "also take cards where they are
+   * pictured but not the subject" switch, off (absent) by default. On, a
+   * positive `player` or `hallOfFame` line also reads the card's
+   * `secondaryPlayerIds`; `team`, `playedFor` and every negated line still
+   * read the card's own players only (`lib/collection/binder-rule.ts`
+   * `ruleFit`). `cleanRule` drops it from a rule with no positive player or
+   * Hall of Fame line, where it would mean nothing.
+   */
+  secondaryPlayers: v.optional(v.literal(true)),
 });
 
 /**
@@ -1704,6 +1745,38 @@ export default defineSchema({
     // which can drift in the offseason before sets are released.
     playerIds: v.optional(v.array(v.id("players"))),
     /**
+     * NEO-528 — players PICTURED on the card who are not its subject (a
+     * teammate in the dugout, a cameo on a highlight card). NB's own data,
+     * admin-entered only: never derived from a marketplace and never touched
+     * by a re-sync (it is not in `NB_CONTENT_FIELDS`). Absent when empty, and
+     * never holds an id that is in `playerIds` at write time.
+     *
+     * Kept OUT of listing titles, the sync diff, entity review, team
+     * suggestions, collector player search and the admin cards-for-player
+     * list, all of which read `playerIds`. Only a smart binder that turns its
+     * cameo option on reads it (`collectionRuleValidator.secondaryPlayers`).
+     *
+     * One writer, `setCardSecondaryPlayers` in convex/cardSecondaryPlayers.ts,
+     * which also keeps the `cardSecondaryPlayerLinks` index in step;
+     * `cardSecondaryPlayers.pin.test.ts` greps for any other.
+     */
+    secondaryPlayerIds: v.optional(v.array(v.id("players"))),
+    /**
+     * NEO-528 round 3 — the listing this card was born from named a player
+     * (`lib/cardPlayerDefaults.listingNamesAPlayer`), whatever became of the
+     * name: resolved, waiting for review, or ruled "not a person" in entity
+     * review (which leaves the card no id and no pending name). Provenance
+     * only, written once at birth: by the checklist commit's insert, and by a
+     * parallel copy of a card that carries it. A hand-added card has no
+     * listing and never carries it. Absent otherwise; no backfill.
+     *
+     * Read by exactly one thing: a card born from one that carries it never
+     * takes the "Player on every card" default player (Jason, 2026-11-15;
+     * product invariant 8: a data claim holds back a guess). Default cameos
+     * still apply. Never a marketplace value: only that a name was printed.
+     */
+    listingNamedPlayer: v.optional(v.literal(true)),
+    /**
      * ── NEO-254: which NAME this card printed for each player ────────────────
      *
      * Jason, 2026-09-08: a card has to record the name it actually carries. A
@@ -1778,11 +1851,14 @@ export default defineSchema({
     // A HINT, and only a hint. It is NOT a team, and nothing may treat it as
     // one: `features/cardAttention.ts` still badges the card "missing team",
     // and this is deliberately not `pendingTeamNames` (which the attention
-    // rule reads as the card HAVING a team). Written only by
-    // `cardChecklist.applyBscTeamResolution`, capped at 120 characters to
-    // match `MAX_TEAM_NAME_LENGTH`, and never read by any matching or
-    // creation logic — a marketplace string is input for a human, never a
-    // source of truth.
+    // rule reads as the card HAVING a team). Written by
+    // `cardChecklist.applyBscTeamResolution` and the commit's pre-save answer
+    // (`settleCardTeamAnswer`), capped at 120 characters to match
+    // `MAX_TEAM_NAME_LENGTH`. Code may read it only as a PRESENCE check that
+    // stops an automated team fill (product invariant 8: a listing that
+    // names a team holds back a guess, as the parallel build's Set Team fill
+    // does), never match it against a team and never write it as one — a
+    // marketplace string is input for a human, never a source of truth.
     bscTeamName: v.optional(v.string()),
     // NEO-102: an OPERATOR decided this card carries no team at all.
     //
@@ -2154,6 +2230,37 @@ export default defineSchema({
     teamId: v.id("teams"),
   })
     .index("by_team", ["teamId"])
+    .index("by_card", ["cardChecklistId"]),
+
+  /**
+   * ── NEO-528: the player → cards index for `cardChecklist.secondaryPlayerIds` ──
+   *
+   * The twin of `cardPlayerLinks`, for the players a card PICTURES without
+   * being about them. Convex cannot index array members, so the links are
+   * stored flat, one row per (card, player). DERIVED from the card's raw
+   * `secondaryPlayerIds` alone; if the two ever disagree the card wins.
+   * Kept apart from `cardPlayerLinks` on purpose: everything that reads that
+   * index (collector player search, the admin cards-for-player list, the
+   * sync) must never see a cameo.
+   *
+   * `sportId` is the CARD's sport, as on `cardPlayerLinks`, so the player
+   * sport-removal guard is one point read here too.
+   *
+   * Every write goes through convex/cardSecondaryPlayers.ts
+   * (`setCardSecondaryPlayers`, and `deleteCardSecondaryPlayerLinks` from
+   * `removeCardRow`); `cardSecondaryPlayers.pin.test.ts` greps for anything
+   * else.
+   */
+  cardSecondaryPlayerLinks: defineTable({
+    cardChecklistId: v.id("cardChecklist"),
+    playerId: v.id("players"),
+    // The CARD's sport, not the player's.
+    sportId: v.id("selectorOptions"),
+  })
+    // A smart binder's player walk (prefix playerId) and the sport-removal
+    // guard (both fields, `.first()`).
+    .index("by_player_and_sport", ["playerId", "sportId"])
+    // Every row for one card: the writer's diff and the card delete.
     .index("by_card", ["cardChecklistId"]),
 
   // Players — first-class entity. Created from BSC `players[]` / SL desc
@@ -4854,6 +4961,14 @@ export default defineSchema({
      * by every recompute.
      */
     held: v.optional(v.boolean()),
+    /**
+     * NEO-528 — the card fits only because the binder's cameo option let a
+     * positive player or Hall of Fame line read the card's
+     * `secondaryPlayerIds`. Absent means it fits on the card's own players.
+     * Rewritten by every recompute, so a card that comes to fit on its own
+     * players loses the mark.
+     */
+    secondary: v.optional(v.literal(true)),
   })
     // The empty-slots read and the stale sweep (prefix binderId).
     .index("by_binder_order", ["binderId", "order"])

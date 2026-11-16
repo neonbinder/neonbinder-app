@@ -161,6 +161,15 @@ Things that look like failures during the apps/web fast gates but are not.
    `bootstrap` project after any red that skipped the spec's self-cleaning
    (NEO-464).
 
+17. **Under load from OTHER worktrees, the full `test:unit` reds happy-dom
+   component files on the 5 s test timeout.** Several worktrees running their
+   own vitest or eslint at once (`ps -ef | grep "[v]itest\|[e]slint"` shows
+   paths outside yours) push slow `app/**` component tests past 5 s, and every
+   red is `Test timed out in 5000ms` in files your change does not touch. Rerun
+   just those files (`npx vitest run <files>`); green alone is the verdict.
+   Report the full-run counts and the isolated rerun, never raise a timeout
+   (NEO-528).
+
 **Why:** items 1-2 cost a round of head-scratching on NEO-278, items 3-4 on
 NEO-281, before the gates went green; none is a bug in the change.
 

@@ -33,6 +33,7 @@
  */
 
 import type { AttentionItem } from "./cardAttention";
+import type { Id } from "../_generated/dataModel";
 import {
   autographedFromFormat,
   deriveCardObservedFeatures,
@@ -106,6 +107,14 @@ export type ListingSetContext = {
 export type TitleContext = ListingSetContext & {
   /** Full names of the leaf's set-level teams, in stored order. */
   setTeamNames: string[];
+  /**
+   * NEO-528 round 3 — the NB name of the player a new card with no player of
+   * its own is born with ("Player on every card"), or empty. Optional: an
+   * older server sends none.
+   */
+  setPlayerNames?: string[];
+  /** NEO-528 round 3 — that player's id, beside the name; absent when none. */
+  setPlayerId?: Id<"players">;
   /** Printed spelling (trimmed, verbatim) → the resolved player's name. */
   players: Array<{ printed: string; name: string }>;
   /** Printed spelling (trimmed, verbatim) → the resolved team's full name. */

@@ -40,6 +40,7 @@ import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
 import PromoteToSetControl from "./PromoteToSetControl";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
+import EveryCardPlayerControl from "./EveryCardPlayerControl";
 import {
   ALL_SIDES,
   joinLabels,
@@ -262,11 +263,21 @@ export default function SetAttributesPanel({
   );
 
   const [expanded, setExpanded] = useState(!defaultCollapsed);
+  /**
+   * NEO-528 — the collapsed panel's "Edit attributes" toggle: where focus
+   * lands when the bulk control's finished ledger is dismissed with the panel
+   * shut (the ledger was all the control drew, so nothing of it is left).
+   */
+  const expandToggleRef = useRef<HTMLButtonElement | null>(null);
   // NEO-412 — the panel's two toasts, at most one showing: a confirmation or
   // progress line (`toast`, the polite status region) and a failure
   // (`failure`, the alert region). Raising either clears the other.
   const [toast, setToast] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  // NEO-528 — bumped on every raise and keyed onto the toast's box, so the
+  // same sentence raised twice (a second "Saved, every new card gets X") is
+  // a new node in the live region and is read again, not a no-op.
+  const [toastSeq, setToastSeq] = useState(0);
   // The one pending dismissal. Every toast replaces the one before it, so it
   // also cancels that toast's timer: otherwise "Saving…"'s timer (or an older
   // save's) wipes the "Saved" that followed it.
@@ -401,6 +412,7 @@ export default function SetAttributesPanel({
     toastTimer.current = null;
     setToast(kind === "status" ? message : null);
     setFailure(kind === "failure" ? message : null);
+    setToastSeq((n) => n + 1);
     if (dismissAfterMs !== undefined) {
       toastTimer.current = setTimeout(() => {
         toastTimer.current = null;
@@ -741,6 +753,7 @@ export default function SetAttributesPanel({
         ) : (
           <div className="flex items-center gap-2 shrink-0">
             <button
+              ref={expandToggleRef}
               type="button"
               onClick={() => setExpanded(true)}
               onKeyDown={(e) => activateOnEnter(e, () => setExpanded(true))}
@@ -858,14 +871,18 @@ export default function SetAttributesPanel({
       <div className="pointer-events-none fixed inset-x-4 top-20 z-50 flex flex-col items-center">
         <div role="status" aria-live="polite" aria-atomic="true" className="max-w-full">
           {toast && (
-            <div className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg">
+            <div
+              key={toastSeq}
+              className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-green-text/60 rounded text-xs text-neon-green-text shadow-lg">
               {toast}
             </div>
           )}
         </div>
         <div role="alert" aria-atomic="true" className="max-w-full">
           {failure && (
-            <div className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-pink-text/60 rounded text-xs text-neon-pink-text shadow-lg">
+            <div
+              key={toastSeq}
+              className="max-w-full wrap-anywhere px-4 py-2 bg-raised-deep border border-neon-pink-text/60 rounded text-xs text-neon-pink-text shadow-lg">
               {failure}
             </div>
           )}
@@ -898,7 +915,32 @@ export default function SetAttributesPanel({
               onFailed={showFailedToast}
             />
           )}
+        </>
+      )}
 
+      {/* NEO-528 — "Player on every card": the stored player and cameos every
+          new card beneath this row is born with, and the run that brings the
+          cards already here along. At EVERY level (a whole year of one
+          player's cards is a real thing), directly under Team: it is the
+          other attribute here that reaches every card. Outside the
+          `expanded` branch so a run's ledger stays on screen when the panel
+          is collapsed, until it is dismissed; the control draws its section
+          only while expanded. Keyed on the row so a confirm or a finished run
+          never carries over to the next one. Its "Saved…" / "Cleared…"
+          notes are its own status line, beside its actions, not this panel's
+          toast (pinned to the top of the viewport, a screen away on a phone). */}
+      <EveryCardPlayerControl
+        key={`every-card-player-${selectorOptionId}`}
+        variantId={selectorOptionId}
+        level={leafLevel}
+        rowName={row.value}
+        sportId={ancestorSportId}
+        expanded={expanded}
+        onDismissedCollapsed={() => expandToggleRef.current?.focus({ preventScroll: true })}
+      />
+
+      {expanded && (
+        <>
           {toggleFeatures.length > 0 && (
             <div
               className="flex flex-wrap items-center gap-2"
@@ -2074,7 +2116,7 @@ function SetTeamRow({
           whose save reaches beyond the row, and that has to be readable
           before the pick, not discoverable after it. gray-400 on this
           ground clears 4.5:1 (the pair every sub-line in this panel uses). */}
-      <p id={hintId} className="text-[10px] text-ink-3">
+      <p id={hintId} className="text-xs text-ink-3">
         {teamHintCopy(level)}
       </p>
       {confirm && (

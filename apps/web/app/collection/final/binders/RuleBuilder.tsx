@@ -5,9 +5,11 @@ import { Input } from "@/components/primitives/Input";
 import {
   MAX_RULE_TERMS,
   RULE_FEATURES,
+  ruleCanUseSecondaryPlayers,
   ruleProblem,
   type RuleFeature,
 } from "@/lib/collection/binder-rule";
+import { CameoGlyph } from "../CameoTag";
 import { useSearchText } from "../catalog/search";
 import { searchable, useDrill, useRuleBrands, useSuggestions } from "../data/store";
 import type { SmartRule, SmartRuleLeaf, SmartRuleTerm, Suggestion } from "../data/types";
@@ -19,6 +21,12 @@ import type { SmartRule, SmartRuleLeaf, SmartRuleTerm, Suggestion } from "../dat
  * around with "Leave these out". Every pick is an NB id from the catalog's
  * own type-ahead or lists; a name is only ever shown (`names`), never kept
  * as the rule (product invariant 4).
+ *
+ * NEO-528 — "Include cameos": the binder also takes cards a player it names
+ * is only pictured on (a teammate's card, a team leaders card). Shown only
+ * while a line could use it (a player or Hall of Famers line that is not
+ * turned around, `ruleCanUseSecondaryPlayers`); a draft that loses its last
+ * such line drops the option, as the server would.
  *
  * The builder only edits a draft. Its owner saves it, after `ruleProblem`
  * (the same check the server makes) says it is whole.
@@ -124,7 +132,23 @@ export function describeSmartRule(rule: SmartRule, names: Readonly<Record<string
     }
   };
   const lines = rule.terms.map((t: SmartRuleTerm) => (t.negate ? `not ${say(t.test)}` : say(t.test)));
-  return lines.join(rule.match === "all" ? ", and " : ", or ");
+  const text = lines.join(rule.match === "all" ? ", and " : ", or ");
+  return rule.secondaryPlayers && ruleCanUseSecondaryPlayers(rule) ? `${text}, cameos included` : text;
+}
+
+/** NEO-528 — said (politely) when an edit drops the cameo option with its last player line. */
+export const CAMEOS_DROPPED_NOTE = "Include cameos is off now: no line names a player or Hall of Famers.";
+
+/** NEO-528 — the rule with its cameo option dropped when no line could use it. */
+export function withCameoOption(rule: SmartRule): SmartRule {
+  if (!rule.secondaryPlayers || ruleCanUseSecondaryPlayers(rule)) return rule;
+  return withoutCameos(rule);
+}
+
+function withoutCameos(rule: SmartRule): SmartRule {
+  const rest = { ...rule };
+  delete rest.secondaryPlayers;
+  return rest;
 }
 
 const SELECT = "w-full rounded-md border border-field-rule bg-field px-3 py-2 text-base text-ink focus-outline";
@@ -132,6 +156,8 @@ const LABEL = "mb-1 block text-sm font-medium text-ink-2";
 const CHOICE =
   "flex cursor-pointer items-center gap-2 rounded-md border border-field-rule bg-field px-3 py-2 text-sm text-ink-2 has-[:checked]:border-selection has-[:checked]:text-ink has-[:focus-visible]:outline-2 has-[:focus-visible]:outline-offset-2 has-[:focus-visible]:outline-focus";
 const NUMBER = "w-24 rounded-md px-3 py-2 text-base";
+/** A choice with a line of help under its label (Include cameos). */
+const CHOICE_WITH_HINT = CHOICE.replace("items-center", "items-start");
 
 export default function RuleBuilder({
   rule,
@@ -148,10 +174,25 @@ export default function RuleBuilder({
 }) {
   const id = useId();
   const problem = ruleProblem(rule);
+  /**
+   * a11y (NEO-528) — set when an edit took away the last line Include cameos
+   * could use, so the option dropped with it: the checkbox vanishes, and the
+   * polite note below says why rather than leaving a silent gap.
+   */
+  const [cameosDropped, setCameosDropped] = useState(false);
+  const change = (next: SmartRule, more: Record<string, string>) => {
+    const kept = withCameoOption(next);
+    if (next.secondaryPlayers && !kept.secondaryPlayers) setCameosDropped(true);
+    else if (cameosDropped && ruleCanUseSecondaryPlayers(kept)) setCameosDropped(false);
+    onChange(kept, more);
+  };
   const setTerm = (i: number, term: SmartRuleTerm, more: Record<string, string> = {}) =>
-    onChange({ ...rule, terms: rule.terms.map((t, j) => (j === i ? term : t)) }, { ...names, ...more });
-  const removeTerm = (i: number) => onChange({ ...rule, terms: rule.terms.filter((_, j) => j !== i) }, { ...names });
-  const addTerm = () => onChange({ ...rule, terms: [...rule.terms, { test: blankLeaf("player") }] }, { ...names });
+    change({ ...rule, terms: rule.terms.map((t, j) => (j === i ? term : t)) }, { ...names, ...more });
+  const removeTerm = (i: number) => change({ ...rule, terms: rule.terms.filter((_, j) => j !== i) }, { ...names });
+  const addTerm = () => change({ ...rule, terms: [...rule.terms, { test: blankLeaf("player") }] }, { ...names });
+  const cameosApply = ruleCanUseSecondaryPlayers(rule);
+  const setCameos = (on: boolean) =>
+    change(on ? { ...rule, secondaryPlayers: true } : withoutCameos(rule), { ...names });
 
   return (
     <div className="space-y-3">
@@ -165,7 +206,7 @@ export default function RuleBuilder({
                 name={`${id}-match`}
                 className="h-4 w-4 accent-selection"
                 checked={rule.match === m}
-                onChange={() => onChange({ ...rule, match: m }, { ...names })}
+                onChange={() => change({ ...rule, match: m }, { ...names })}
               />
               {m === "all" ? "Cards that fit every line" : "Cards that fit any line"}
             </label>
@@ -192,6 +233,34 @@ export default function RuleBuilder({
           Add a line
         </NeonButton>
       )}
+      {cameosApply && (
+        <label className={CHOICE_WITH_HINT}>
+          <input
+            type="checkbox"
+            className="mt-0.5 h-4 w-4 shrink-0 accent-selection"
+            checked={rule.secondaryPlayers === true}
+            onChange={(e) => setCameos(e.target.checked)}
+            // Named by its title alone; the line under it is its description.
+            aria-labelledby={`${id}-cameos-name`}
+            aria-describedby={`${id}-cameos`}
+          />
+          <span className="min-w-0">
+            <span id={`${id}-cameos-name`} className="flex items-center gap-1.5 font-medium text-ink">
+              Include cameos
+              <CameoGlyph className="h-3.5 w-3 text-neon-teal-text" />
+            </span>
+            <span id={`${id}-cameos`} className="mt-0.5 block text-ink-2">
+              Pull in cards they only cameo on too, like a team leaders card or a teammate&apos;s highlight. Cameos
+              get their own count.
+            </span>
+          </span>
+        </label>
+      )}
+      {/* Mounted always, so the note is read when it fills (a live region
+          added with its text is often skipped). */}
+      <p role="status" className="text-sm text-ink-2 empty:hidden">
+        {cameosDropped && !cameosApply ? CAMEOS_DROPPED_NOTE : ""}
+      </p>
       <p role="alert" className="text-sm text-notice-warn-ink empty:hidden">
         {showProblems && problem ? problem : ""}
       </p>
