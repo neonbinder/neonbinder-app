@@ -16,6 +16,19 @@ or egress in an imported module. The pattern that holds (NEO-555 `/probe/ebay`):
   form-body check for the one POST. Exact `"GET"`/`"POST"` only; string input
   only (a Request/URL object carries its own method/body); force
   `redirect: "error"`; freeze the wrapper.
+- **Allowlist header names too, per request kind**, or an allowlisted GET
+  carries `X-HTTP-Method-Override: DELETE`. Accept only a plain object (refuse
+  a `Headers` instance, pairs, a foreign prototype), lower-case each name,
+  refuse duplicates across case (fetch joins them), and forward a fresh copy
+  read once via `Object.entries`, so a getter cannot pass the check and send
+  something else. Fake-only caller headers belong only to the fake target's set.
+- **Value-free shapes still leak by key presence.** A public shape artifact
+  must not report a key whose mere presence answers a private question (eBay
+  may omit `orders` on an empty page, `next` exists only past one result):
+  report paging keys only, and test with/empty/key-absent answers all equal.
+- **Break-check by mutating `dist/`, then rebuild** (tests require `../dist`):
+  sed/perl one line of the compiled JS, run the file, restore the `.bak`. No
+  `git checkout` needed, and the source-scan tests are untouched by it.
 - **Scan with per-pattern function scopes**: a write-method literal (regex `gi`)
   allowed only where a POST belongs, not in the GET helper. Forbid
   `.call/.apply/.bind` on fetch-ish names, `Reflect.apply`, `globalThis[`,

@@ -346,7 +346,7 @@ const FORBIDDEN_EVERYWHERE = [
 const PINNED_IMPORTS = {
   "node:crypto": ["default crypto"],
   express: ["Request", "Response", "Router"],
-  "../bsc-endpoints": ["BscEndpoints", "fakeBscCallerHeaders", "resolveBscEndpoints"],
+  "../bsc-endpoints": ["BscEndpoints", "FAKE_BSC_KEY_HEADER", "FAKE_ID_TOKEN_HEADER", "SERVERLESS_AUTH_HEADER", "fakeBscCallerHeaders", "resolveBscEndpoints"],
   "../bsc-shape": ["shapeMap"],
   "../canary-pause": ["CanaryPauseDeps", "shouldSkipCanary"],
   "../services/ebay-oauth": [
@@ -574,18 +574,25 @@ describe("ebay probe: the allowlist", () => {
     }
   });
 
-  it("row 13 reports the same top-level shape whether the seller had orders or not", () => {
+  it("row 13 reports the same shape with orders, with an empty orders list, and with no orders key at all", () => {
     const { shapeMap } = require("../dist/bsc-shape");
     const orders = EBAY_PROBE_ALLOWLIST.find((e) => e.row === 13);
     const withOrders = goodAnswers()["/sell/fulfillment/v1/order"]();
     withOrders.next = "https://api.ebay.com/sell/fulfillment/v1/order?offset=1&limit=1";
     withOrders.total = 7;
-    const none = { href: "h", limit: 1, offset: 0, total: 0, orders: [] };
-    const a = shapeMap({ href: "h", limit: 1, offset: 0, ...withOrders }, { allow: orders.shapePaths });
-    const b = shapeMap(none, { allow: orders.shapePaths });
-    assert.deepEqual(a, b);
-    assert.deepEqual(Object.keys(a).sort(), ["$", "href", "limit", "offset", "orders", "total"]);
-    for (const p of orders.shapePaths) assert.ok(!p.startsWith("orders[") && p !== "next" && p !== "prev", `row 13 reports ${p}`);
+    const page = { href: "h", limit: 1, offset: 0 };
+    const shapes = [
+      shapeMap({ ...page, ...withOrders }, { allow: orders.shapePaths }),
+      shapeMap({ ...page, total: 0, orders: [] }, { allow: orders.shapePaths }),
+      // eBay may omit `orders` on an empty page: its presence must say nothing.
+      shapeMap({ ...page, total: 0 }, { allow: orders.shapePaths }),
+    ];
+    assert.deepEqual(shapes[1], shapes[0], "with-orders and empty-orders differ");
+    assert.deepEqual(shapes[2], shapes[0], "with-orders and orders-key-absent differ");
+    assert.deepEqual(Object.keys(shapes[0]).sort(), ["$", "href", "limit", "offset", "total"]);
+    for (const p of orders.shapePaths) {
+      assert.ok(p !== "orders" && !p.startsWith("orders[") && !p.startsWith("orders.") && p !== "next" && p !== "prev", `row 13 reports ${p}`);
+    }
   });
 
   it("resolves the orders window to UTC midnight N days back", () => {
@@ -755,6 +762,87 @@ describe("ebay probe: the transport guard (createProbeTransport)", () => {
     await assert.rejects(fakeGuard(tu, { method: "POST", body: "grant_type=client_credentials" }), /refused/);
     assert.equal(seen.length, 0);
   });
+
+  // What probeGet and the token grant actually send (probeGet, ebay-oauth's tokenGrant).
+  const GET_SENT = () => ({ Authorization: "Bearer t", Accept: "application/json", "Accept-Language": "en-US", "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" });
+  const POST_SENT = () => ({ "Content-Type": "application/x-www-form-urlencoded", Authorization: "Basic x", Accept: "application/json" });
+  const CALLER_SENT = () => ({ "x-nb-fake-bsc-key": "k", "X-Serverless-Authorization": "Bearer id", "x-nb-fake-id-token": "id" });
+
+  it("forwards exactly the headers probeGet and the token grant send (plus the fake caller's on the fake), as a fresh copy", async () => {
+    for (const target of [REAL, FAKE]) {
+      const { seen, raw } = recorder();
+      const transport = createProbeTransport(raw, target, T);
+      const extra = target === FAKE ? CALLER_SENT() : {};
+      const getHeaders = { ...extra, ...GET_SENT() };
+      const postHeaders = { ...POST_SENT(), ...extra };
+      await transport(urlOf(13, target), { method: "GET", headers: getHeaders });
+      await transport(tokenUrl(target), { method: "POST", headers: postHeaders, body: "grant_type=refresh_token" });
+      assert.equal(seen.length, 2);
+      assert.deepEqual(seen[0].init.headers, getHeaders);
+      assert.deepEqual(seen[1].init.headers, postHeaders);
+      assert.notEqual(seen[0].init.headers, getHeaders, "the caller's own object was forwarded, not a copy");
+    }
+  });
+
+  it("refuses a method-override header, in any case, on a GET and on a token grant", async () => {
+    const { seen, raw } = recorder();
+    for (const target of [REAL, FAKE]) {
+      const transport = createProbeTransport(raw, target, T);
+      for (const name of ["X-HTTP-Method-Override", "x-http-method-override", "X-HTTP-METHOD-OVERRIDE", "x-HtTp-MeThOd-OvErRiDe", "X-HTTP-Method", "X-Method-Override"]) {
+        for (const value of ["DELETE", "PUT", "POST", "PATCH", "GET"]) {
+          await assert.rejects(transport(urlOf(10, target), { method: "GET", headers: { ...GET_SENT(), [name]: value } }), /refused/, `GET ${name}: ${value}`);
+          await assert.rejects(
+            transport(tokenUrl(target), { method: "POST", headers: { ...POST_SENT(), [name]: value }, body: "grant_type=client_credentials" }),
+            /refused/,
+            `POST ${name}: ${value}`,
+          );
+        }
+      }
+    }
+    assert.equal(seen.length, 0);
+  });
+
+  it("refuses any other header off the request kind's list, and headers it cannot read once as a plain object", async () => {
+    const { seen, raw } = recorder();
+    const transport = createProbeTransport(raw, REAL, T);
+    const get = (headers) => transport(urlOf(13), { method: "GET", headers });
+    const post = (headers) => transport(tokenUrl(REAL), { method: "POST", headers, body: "grant_type=refresh_token" });
+    for (const name of ["Cookie", "Host", "Content-Length", "Transfer-Encoding", "Origin", "Referer", "X-Forwarded-For", "X-Anything", "If-Match"]) {
+      await assert.rejects(get({ ...GET_SENT(), [name]: "x" }), /refused/, `GET ${name}`);
+      await assert.rejects(post({ ...POST_SENT(), [name]: "x" }), /refused/, `POST ${name}`);
+    }
+    // Each kind's list is its own: no Content-Type on a GET, no marketplace header on a grant.
+    await assert.rejects(get({ ...GET_SENT(), "Content-Type": "application/json" }), /refused/, "Content-Type on a GET");
+    await assert.rejects(post({ ...POST_SENT(), "X-EBAY-C-MARKETPLACE-ID": "EBAY_US" }), /refused/, "marketplace header on a grant");
+    // The fake caller's headers never go to the real target.
+    for (const [name, value] of Object.entries(CALLER_SENT())) {
+      await assert.rejects(get({ ...GET_SENT(), [name]: value }), /refused/, `${name} to real eBay`);
+      await assert.rejects(post({ ...POST_SENT(), [name]: value }), /refused/, `${name} to real eBay`);
+    }
+    // Forms fetch accepts but the guard does not read: a Headers instance, pairs, a class instance.
+    await assert.rejects(get(new Headers({ ...GET_SENT(), "X-HTTP-Method-Override": "DELETE" })), /refused/, "a Headers instance");
+    await assert.rejects(get(new Headers(GET_SENT())), /refused/, "a clean Headers instance");
+    await assert.rejects(get(Object.entries(GET_SENT())), /refused/, "an array of pairs");
+    await assert.rejects(get(Object.assign(Object.create({ "X-HTTP-Method-Override": "DELETE" }), GET_SENT())), /refused/, "a non-plain prototype");
+    await assert.rejects(get("Accept: x"), /refused/, "a string");
+    await assert.rejects(get(null), /refused/, "null");
+    // The same name twice (fetch would join them) and a non-string value.
+    await assert.rejects(get({ ...GET_SENT(), accept: "*/*" }), /refused/, "Accept twice");
+    await assert.rejects(get({ ...GET_SENT(), Accept: ["a", "b"] }), /refused/, "an array value");
+    assert.equal(seen.length, 0);
+  });
+
+  it("reads each header once: a getter cannot pass the check and send something else", async () => {
+    const { seen, raw } = recorder();
+    const transport = createProbeTransport(raw, REAL, T);
+    let reads = 0;
+    const headers = { ...GET_SENT() };
+    Object.defineProperty(headers, "Accept", { enumerable: true, get: () => (reads++ === 0 ? "application/json" : "text/html") });
+    await transport(urlOf(13), { method: "GET", headers });
+    assert.equal(reads, 1);
+    assert.equal(seen[0].init.headers.Accept, "application/json");
+    assert.ok(!Object.getOwnPropertyDescriptor(seen[0].init.headers, "Accept").get, "the getter itself was forwarded");
+  });
 });
 
 describe("ebay probe: digests and parity with the fake", () => {
@@ -813,8 +901,8 @@ describe("POST /probe/ebay (real target)", () => {
     }
     assert.equal(b.shapes["GET ebay/api/sell/inventory/v1/offer"]["errors[].errorId"], "number");
     assert.equal(b.statuses["GET ebay/api/sell/inventory/v1/offer"], 404);
-    // Row 13: top-level keys only. Never an order's fields, never `next`.
-    assert.deepEqual(b.shapes["GET ebay/api/sell/fulfillment/v1/order"], { $: "object", orders: "array", total: "number" });
+    // Row 13: paging keys only. Never `orders`, an order's fields or `next`.
+    assert.deepEqual(b.shapes["GET ebay/api/sell/fulfillment/v1/order"], { $: "object", total: "number" });
     assert.deepEqual(b.hashes, {
       "GET ebay/api/sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services": digestNames(SHIPPING_CODES),
       "GET ebay/api/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category": digestNames(ASPECT_NAMES),
@@ -832,6 +920,37 @@ describe("POST /probe/ebay (real target)", () => {
       }
     }
     assert.ok(!res.text.includes("buyer") && !res.text.includes("shipTo") && !res.text.includes("individualAccount"));
+  });
+
+  it("a clock that crosses UTC midnight mid-run still reads every GET: row 13 keeps the run start's window", async () => {
+    const T0 = Date.parse("2026-11-16T23:59:59.000Z");
+    const T1 = Date.parse("2026-11-17T00:00:01.000Z");
+    let clock = T0;
+    const stub = stubEbay();
+    const raw = stub.fetchImpl;
+    // The clock steps the moment the first request leaves: after the run
+    // started (and fixed its window), before any read, row 13's included.
+    const stepping = { calls: stub.calls, fetchImpl: async (url, init) => ((clock = T1), raw(url, init)) };
+    const { router } = makeRouter({ stub: stepping, deps: { now: () => clock } });
+    const res = await call(router);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.outcome, "ok", JSON.stringify(res.body.detail));
+    assert.deepEqual(res.body.appLeg, { ok: true, outcome: "ok" });
+    assert.deepEqual(res.body.accountLeg, { ok: true, outcome: "ok", scopes: "readonly" });
+    assert.equal(res.body.durationMs, T1 - T0, "the run did not start before the step");
+
+    const target = resolveEbayProbeTarget(PROD_ENV);
+    const gets = stub.calls.filter((c) => c.method === "GET").map((c) => c.url);
+    assert.equal(gets.length, EBAY_PROBE_ALLOWLIST.length);
+    for (const e of EBAY_PROBE_ALLOWLIST) {
+      assert.ok(gets.includes(probeEntryUrl(e, target, T0)), `${e.step} did not reach eBay at the run start's URL`);
+    }
+    const row13 = EBAY_PROBE_ALLOWLIST.find((e) => e.row === 13);
+    const sent = gets.find((u) => u.includes(row13.path));
+    assert.equal(sent, probeEntryUrl(row13, target, T0));
+    assert.notEqual(sent, probeEntryUrl(row13, target, T1), "the test no longer crosses a window boundary");
+    assert.equal(new URL(sent).searchParams.get("filter"), "lastmodifieddate:[2026-10-17T00:00:00.000Z..]");
+    assert.ok(stub.calls.every((c) => c.url !== probeEntryUrl(row13, target, T1)));
   });
 
   it("ignores the request body in real mode", async () => {

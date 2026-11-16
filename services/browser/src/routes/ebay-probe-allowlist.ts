@@ -20,7 +20,7 @@
  *    6  inventory location GET (NB's own key)
  *    7  taxonomy get_item_aspects_for_category (hashed: sorted aspect names; app token)
  *   10  offer?sku= (GET only; a SKU NB never mints, so the answer is the 404 shape)
- *   13  fulfillment orders, limit=1        (top-level keys only: never an order)
+ *   13  fulfillment orders, limit=1        (paging keys only: never an order, nor `orders`)
  *   15  commerce identity getUser (apiz host)
  *
  * SHAPES. Each entry reports only `shapePaths` (shapeMap's allowlist dialect):
@@ -167,13 +167,15 @@ export const EBAY_PROBE_SHAPE_PATHS = Object.freeze({
     "total",
     ...ERROR_PATHS,
   ]),
-  // Row 13: the page's TOP-LEVEL keys only. Never an `orders[]` element path,
-  // and not `next` (present only when more than one order matched): the prod
-  // shapes are a public artifact, and an element path, or `next`, would say
-  // whether the seller had orders in the window. `orders` itself reports as
-  // "array" whether it is empty or not. The fake's drift compare reads an
-  // `orders` array with no element paths as "says nothing about its items".
-  orders: Object.freeze(["href", "limit", "offset", "total", "orders", ...ERROR_PATHS]),
+  // Row 13: the page's paging keys only. Not `orders`, not an `orders[]`
+  // element path, not `next` (present only when more than one order
+  // matched): the prod shapes are a public artifact, and each of those can
+  // say whether the seller had orders in the window. `orders` would do it
+  // too, because eBay may omit the key on an empty page, so its presence
+  // alone would answer the question. The fake's drift compare (src/ebay/
+  // drift.ts) treats `orders`, `orders[]` and `next` as optional, so their
+  // absence here is never drift.
+  orders: Object.freeze(["href", "limit", "offset", "total", ...ERROR_PATHS]),
   // services/ebay-oauth.fetchEbayIdentity
   identity: Object.freeze(["userId", "username", ...ERROR_PATHS]),
 });

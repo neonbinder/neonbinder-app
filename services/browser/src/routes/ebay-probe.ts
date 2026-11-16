@@ -1,6 +1,13 @@
 import crypto from "node:crypto";
 import { Request, Response, Router } from "express";
-import { BscEndpoints, fakeBscCallerHeaders, resolveBscEndpoints } from "../bsc-endpoints";
+import {
+  BscEndpoints,
+  FAKE_BSC_KEY_HEADER,
+  FAKE_ID_TOKEN_HEADER,
+  SERVERLESS_AUTH_HEADER,
+  fakeBscCallerHeaders,
+  resolveBscEndpoints,
+} from "../bsc-endpoints";
 import { shapeMap } from "../bsc-shape";
 import { CanaryPauseDeps, shouldSkipCanary } from "../canary-pause";
 import {
@@ -37,7 +44,9 @@ import {
  *     by createProbeTransport, and only the wrapper is ever put in the
  *     context. The wrapper refuses every request but a GET of exactly one
  *     allowlist entry's URL on the target's base, or a POST of a
- *     client_credentials / refresh_token grant to the target's token URL. It
+ *     client_credentials / refresh_token grant to the target's token URL,
+ *     each carrying only its own header names (so no method-override
+ *     header turns an allowlisted GET into a write at eBay). It
  *     does not care how it is called (`.call`, `Reflect.apply`, an alias) or
  *     how the method is spelt: anything but the exact "GET" or "POST" is
  *     refused, so a lowercase "delete" that fetch would upper-case is too;
@@ -242,6 +251,43 @@ export function probeEntryUrl(entry: EbayProbeEntry, target: EbayProbeTarget, qu
 const TRANSPORT_REFUSED = "ebay probe transport: refused a request that is neither an allowlisted GET nor a token grant";
 
 /**
+ * The header names each request kind may carry, lower-case. Exactly what
+ * probeGet (GET) and the eBay OAuth client's token grant (POST) send; on the
+ * fake target, also fakeBscCallerHeaders' three. Anything else, a method
+ * override (`X-HTTP-Method-Override`, `X-HTTP-Method`, `X-Method-Override`)
+ * above all, is refused: an allowlisted GET must stay a GET at eBay too.
+ */
+const GET_HEADERS: readonly string[] = Object.freeze(["authorization", "accept", "accept-language", "x-ebay-c-marketplace-id"]);
+const POST_HEADERS: readonly string[] = Object.freeze(["authorization", "accept", "content-type"]);
+const FAKE_CALLER_HEADERS: readonly string[] = Object.freeze(
+  [FAKE_BSC_KEY_HEADER, SERVERLESS_AUTH_HEADER, FAKE_ID_TOKEN_HEADER].map((h) => h.toLowerCase()),
+);
+
+/**
+ * Check `headers` against `allowed` and return a fresh plain copy, read once,
+ * which is what gets forwarded (a getter cannot answer the check one way and
+ * fetch another). Absent headers are an empty copy. Refused: anything but a
+ * plain object (a Headers instance or an array of pairs), a name off the list
+ * in any case, the same name twice in different cases (fetch would join
+ * them), a non-string value.
+ */
+function allowedHeaders(headers: unknown, allowed: ReadonlySet<string>): Record<string, string> {
+  if (headers === undefined) return {};
+  if (headers === null || typeof headers !== "object") throw new Error(TRANSPORT_REFUSED);
+  const proto = Object.getPrototypeOf(headers);
+  if (proto !== Object.prototype && proto !== null) throw new Error(TRANSPORT_REFUSED);
+  const out: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const [name, value] of Object.entries(headers as Record<string, unknown>)) {
+    const lower = name.toLowerCase();
+    if (!allowed.has(lower) || seen.has(lower) || typeof value !== "string") throw new Error(TRANSPORT_REFUSED);
+    seen.add(lower);
+    out[name] = value;
+  }
+  return out;
+}
+
+/**
  * THE GUARD. Wraps the raw transport once per probe run; the route puts only
  * the result in the context, so every request the probe makes (probeGet, the
  * token grants, anything a later edit adds through `ctx.fetchImpl`) passes
@@ -253,26 +299,35 @@ const TRANSPORT_REFUSED = "ebay probe transport: refused a request that is neith
  * The method must be the exact string "GET" or "POST": a lowercase or
  * missing method is refused (fetch would upper-case "delete" to DELETE). The
  * URL must be a string (a Request or URL object, which can carry its own
- * method and body, is refused). Redirects are always refused. A refusal
- * throws before the raw transport is touched.
+ * method and body, is refused). Headers must be a plain object naming only
+ * the request kind's own headers (GET_HEADERS / POST_HEADERS, plus the fake
+ * caller's on the fake target), so no method-override header rides on an
+ * allowlisted GET. Redirects are always refused. A refusal throws before the
+ * raw transport is touched.
  */
 export function createProbeTransport(raw: typeof fetch, target: EbayProbeTarget, queryTimeMs: number): typeof fetch {
   const getUrls: ReadonlySet<string> = new Set(EBAY_PROBE_ALLOWLIST.map((e) => probeEntryUrl(e, target, queryTimeMs)));
   const tokenUrl = `${target.bases.api}${TOKEN_PATH}`;
+  const caller = target.kind === "fake" ? FAKE_CALLER_HEADERS : [];
+  const getHeaders: ReadonlySet<string> = new Set([...GET_HEADERS, ...caller]);
+  const postHeaders: ReadonlySet<string> = new Set([...POST_HEADERS, ...caller]);
   const guarded = async (input: unknown, init?: RequestInit): Promise<globalThis.Response> => {
     if (typeof input !== "string" || !init) throw new Error(TRANSPORT_REFUSED);
     const method = init.method;
+    let headers: Record<string, string>;
     if (method === "GET") {
       if (!getUrls.has(input) || (init.body !== undefined && init.body !== null)) throw new Error(TRANSPORT_REFUSED);
+      headers = allowedHeaders(init.headers, getHeaders);
     } else if (method === "POST") {
       if (input !== tokenUrl || typeof init.body !== "string") throw new Error(TRANSPORT_REFUSED);
       const form = new URLSearchParams(init.body);
       const grants = form.getAll("grant_type");
       if (grants.length !== 1 || !TOKEN_GRANT_TYPES.has(grants[0]) || form.has("code")) throw new Error(TRANSPORT_REFUSED);
+      headers = allowedHeaders(init.headers, postHeaders);
     } else {
       throw new Error(TRANSPORT_REFUSED);
     }
-    return raw(input, { ...init, redirect: "error" });
+    return raw(input, { ...init, headers, redirect: "error" });
   };
   return Object.freeze(guarded) as typeof fetch;
 }

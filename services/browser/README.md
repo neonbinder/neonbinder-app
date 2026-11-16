@@ -183,7 +183,10 @@ minute). Code: `src/routes/ebay-probe.ts` and `src/routes/ebay-probe-allowlist.t
   one entry of the frozen `EBAY_PROBE_ALLOWLIST` on the target (fixed host,
   path and query: rows 1, 3, 5, 6, 7, 10 GET, 13 with `limit=1`, 15 of the
   NEO-555 eBay surface) and a `POST` only when it is a `client_credentials` or
-  `refresh_token` grant to the target's token URL. Any other method, however
+  `refresh_token` grant to the target's token URL. Each may carry only the
+  header names its own sender uses (plus the fake caller's on the fake
+  target), so a method-override header such as `X-HTTP-Method-Override`
+  cannot ride on an allowlisted `GET`. Any other method, however
   spelt (a lowercase `delete` included) and however the wrapper is called, is
   refused before anything leaves the process. Every eBay read goes through
   `probeGet`, which accepts only an allowlist entry and takes no path, query or
@@ -216,14 +219,21 @@ minute). Code: `src/routes/ebay-probe.ts` and `src/routes/ebay-probe-allowlist.t
   `{refreshToken}` (a fake refresh token), else the account leg is skipped.
 - **Pause.** On the real target the eBay pause flag
   (`NEONBINDER_PAUSED_PLATFORMS`, site key `ebay`, the canary's lookup)
-  answers `outcome: "skipped_paused"` without calling eBay. The lookup fails
-  open like the canary's: when it cannot answer, the probe runs and the
-  failure is logged.
+  answers `outcome: "skipped_paused"` without calling eBay. This check is
+  **best-effort**: the lookup fails open like the canary's, so when it cannot
+  answer (Convex down, a token mint that fails, a malformed reply) the probe
+  runs against eBay and the failure is only logged. Do not rely on it to keep
+  the probe off a seller account. A real stop for the account leg is to
+  delete the `NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY` repository secret: the
+  next prod deploy clears the env var and the leg answers
+  `skipped_not_connected` without reading any credential. To stop every call,
+  also disable `bsc-drift.yml` (`gh workflow disable`); CI is the only caller.
 - **Answer.** `{ebayTarget, outcome, appLeg, accountLeg, shapes, statuses,
   hashes, steps, durationMs, detail?}`. `shapes` holds only each entry's
   `shapePaths` (the fields NB's parsers read; buyer and ship-to data never;
-  for row 13 the page's top-level keys only, so the public artifact never says
-  whether the seller had orders),
+  for row 13 the paging keys `href`, `limit`, `offset` and `total` only, not
+  even `orders`, which eBay may leave out of an empty page, so the public
+  artifact never says whether the seller had orders),
   and `shapes`, `statuses` and `hashes` are keyed by the fake's endpoint names,
   so they post to `/__fake/drift-compare {marketplace: "ebay"}` unchanged
   (`services/fake-bsc/CONTRACT.md`, "Drift"). The two hashes (rows 5 and 7)
