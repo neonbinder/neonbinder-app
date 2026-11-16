@@ -673,6 +673,10 @@ jobs:
           out="${RUNNER_TEMP}/fake-bsc-write-captures.json"
           npx --yes convex@1.39.1 run fakeBsc:writeCaptureStatus '{}' --deployment "$CONVEX_NAME" > "$out"
           if [ "$(jq -r '.ok' "$out")" != "true" ]; then
+            if [ "$(jq -r '.error // ""' "$out")" = "fake still loading" ]; then
+              echo "::error::The fake BSC was still loading its recordings and write captures after about 45 s (a cold start). Re-run the workflow; if it repeats, the fake's load is too slow or stuck: check its boot log."
+              exit 1
+            fi
             err=$(jq -r '"status=\(.status // "n/a") error=\(.error // "unknown")"' "$out" | head -c 300)
             echo "::error::Could not read the fake BSC's write-capture status (${err}). An older fake without writeCaptures in /__fake/health needs redeploying."
             exit 1

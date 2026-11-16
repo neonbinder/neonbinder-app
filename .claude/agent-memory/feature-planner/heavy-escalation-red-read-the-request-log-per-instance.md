@@ -49,3 +49,5 @@ Tell-tale: the red job's `preprocessProcessEntryFast` lines end long after its
 extract, with short `duration_ms`, while another jobId shows `error_class: timeout`
 at ~60 s. Cloud Run's request-log `latency` there excludes the pending time, so
 compare the request `timestamp` with the app's own lines for the same index.
+
+**No fault needed.** Ordinary cross-shard load on the preview's 3-slot fast pool is enough to break a tight read wait: a 50 MP intake spec on another shard held 2 slots for ~5.2 s, so a placeholder spec's photos 4–6 waited 2.1/4.5/6.0 s for a slot and its 7 s "All 6 photos read." wait missed by 0.5 s, with every call 200 and nothing cold. Start such a red by lining up the red spec against every other shard's placeholder and `add-cards-*` specs in each `results.json`, and compare each photo's upload-confirmed time with its fast-call start (the slot wait).

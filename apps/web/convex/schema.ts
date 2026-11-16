@@ -669,6 +669,29 @@ export const selectorOptionFields = {
    * NB data only: no adapter or sync reads or writes it.
    */
   hasCards: v.optional(v.boolean()),
+  /**
+   * NEO-532 — when a card last LANDED on this row (an insert, or a move in),
+   * as the landing mutation's `Date.now()`. Meaningful on the card-bearing
+   * levels (`variantType`, `insert`, `parallel`); absent elsewhere, never
+   * written on an ancestor.
+   *
+   * Kept by the same `CardCountLedger` flush as `cardCount`: every flush that
+   * lands a card on the row stamps it (even when the mutation also took one
+   * off, so the count is unchanged), and a flush that leaves `cardCount` at 0
+   * clears it, but only when that 0 is known (a row whose recount is skipped
+   * is never cleared). A flush that only takes cards off brings it down to
+   * the newest card left (clears it when none is left). It is still a
+   * discovery hint, never a time to show. ABSENT means no card has landed
+   * since the field existed and the armed backfill (`backfillLastCardAt`)
+   * has not reached the row.
+   *
+   * Read by New on NeonBinder (`dashboard.newSets`) through
+   * `by_last_card_at`, to find the variants with the newest cards without
+   * walking the whole checklist table.
+   *
+   * NB data only: no adapter or sync reads or writes it.
+   */
+  lastCardAt: v.optional(v.number()),
   lastUpdated: v.number(),
 };
 
@@ -724,11 +747,13 @@ export const saleItemFromValidator = v.object({
  * and variant words, read by the order poll at the sync boundary
  * (`lib/bscOrders.ts`, bounded there: an over-long value is dropped, never
  * truncated). It lets the Pick List name a line NB could not match ("2021
- * Score · Justin Fields · #TB2 · 1991 Throwback").
+ * Score · Justin Fields · #TB2 · 1991 Throwback"). NEO-520 adds eBay's line
+ * `title` (below).
  *
  * Kept on the SALE only. It is never written to an NB card, set, player or
- * team row, and nothing outside the Pick List's labels and walking order reads
- * it. `sportId` is NB's own sport row, resolved once when the line is stored
+ * team row, and nothing outside the Pick List's labels and walking order, and
+ * (NEO-520) the Sales tab's `listed.title` label read through
+ * `listingSync.publicSale`, reads it. `sportId` is NB's own sport row, resolved once when the line is stored
  * from the platform's item-level sport id against the sport rows'
  * `platformData.bsc` slots (exactly one match, else absent); `sport` is the
  * platform's own word, a fallback label only. Every field is optional: the
@@ -743,6 +768,17 @@ export const saleItemListedValidator = v.object({
   cardNo: v.optional(v.string()),
   variant: v.optional(v.string()),
   variantName: v.optional(v.string()),
+  /**
+   * NEO-520 — eBay only: the order line's own title as the buyer saw it
+   * (`lineItems[].title`), stored on every eBay line whose title was
+   * readable, and shown only where NB holds no card for the line (a listing
+   * NB did not make): the Pick List, and the Sales tab via
+   * `listingSync.publicSale`. Bounded at the
+   * sync boundary (`lib/ebayListing.ts`): trimmed, control characters
+   * refused, an over-long title dropped, never cut. Never parsed, matched or
+   * written to any NB row. BSC lines never carry it.
+   */
+  title: v.optional(v.string()),
 });
 
 /**
@@ -1521,6 +1557,10 @@ export default defineSchema({
     .index("by_parent", ["parentId"])
     .index("by_value", ["value"])
     .index("by_level_and_parent", ["level", "parentId"])
+    // NEO-532: New on NeonBinder (`dashboard.newSets`) reads the rows whose
+    // cards landed most recently, newest first. Rows without the stamp sort
+    // first and are ranged out (`gt 0`).
+    .index("by_last_card_at", ["lastCardAt"])
     // NEO-527: the collector's set column reads sets with cards (count > 0,
     // biggest first) and then the uncounted ones, so a brand with hundreds
     // of empty synced sets never pushes a set that holds cards past the cap.
@@ -5527,6 +5567,15 @@ export default defineSchema({
     ),
     /** When the poll last ran while the owner's credentials needed a fresh sign-in. */
     reauthPollAt: v.optional(v.number()),
+    /**
+     * NEO-520: which version of the platform's order read this row is caught
+     * up to (absent = 1). While it is below the platform's
+     * (`ORDER_READ_VERSION` in `listingSales.ts`), the poll reads from the
+     * earlier of the cursor and the platform's floor (eBay only) until a read
+     * completes or the catch-up runs out; the stored cursor never moves back.
+     * New rows are stamped at insert (`listingSync`). Never lowered.
+     */
+    orderReadVersion: v.optional(v.number()),
     lastUpdated: v.number(),
   })
     // Get-or-create and the drainer's claim (both fields, `.unique()`); the
@@ -5589,13 +5638,21 @@ export default defineSchema({
    * platform's status string, verbatim. Money is integer cents; each total
    * is absent when the platform did not report it.
    *
-   * Items: `platformCardId` is the platform's card id (BSC: `card.id`) and
-   * `sellerSku` the SKU NB pushed (it carries the NB card id and box); the
-   * poll resolves `cardId` from them, checked against the card's
-   * `platformData.<platform>.ref` (a point read, the exactly-one guard).
-   * `condition` is the platform's condition string. An order's items are
+   * Items: `platformCardId` is the platform's card id (BSC: `card.id`; eBay:
+   * the line's `legacyItemId`) and `sellerSku` the SKU NB pushed (it carries
+   * the NB card id and box); the poll resolves `cardId` from them, checked
+   * against the card's `platformData.<platform>.ref` (a point read, the
+   * exactly-one guard; eBay checks NB's link row for the SKU instead).
+   * `condition` is the platform's condition string (eBay: the SKU's bucket on
+   * an NB line, `""` on a line that is not NB's). An order's items are
    * well under Convex's 8,192-element array cap in practice; the poll refuses
    * (and reports) an order that is not.
+   *
+   * NEO-520 — eBay stores every readable line, NB's or not; a line with no NB
+   * SKU is refused as unmatched and lowers nothing. An eBay order with no NB
+   * line is stored only when placed on or after the state row's floor
+   * (`listingSales.ebayOrdersFloor`); one with an NB line is stored whatever
+   * its date.
    */
   marketplaceSales: defineTable({
     ownerId: v.string(),

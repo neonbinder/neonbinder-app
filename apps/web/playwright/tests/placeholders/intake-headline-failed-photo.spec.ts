@@ -9,8 +9,13 @@
 //
 // R7: writes only the account's own batch (the seed cancels the account's open
 // batches first, for the active-run cap). Self-cleaning: the batch is discarded
-// at the end.
+// at the end, and `afterEach` discards any batch still "running" if the body went red.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { discardIfStillOpen } from "../../support/placeholder-intake";
+
+test.afterEach(async ({ page }, testInfo) => {
+  await discardIfStillOpen(page, testInfo, { all: true });
+});
 
 test(
   "Placeholder intake: a batch whose photo failed says it couldn't be read, not that all were read",

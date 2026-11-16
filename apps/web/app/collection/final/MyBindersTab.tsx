@@ -141,7 +141,7 @@ import {
   type SmartRule,
 } from "./data/types";
 import { useCollectionParams, useGoToSide, useReplaceParams, useSetScope } from "./mode";
-import { usePageApi, type OpenCardOptions } from "./pageApi";
+import { startWrite, usePageApi, type OpenCardOptions } from "./pageApi";
 import type { GoToTabParams } from "./store";
 
 /**
@@ -233,7 +233,8 @@ export default function MyBindersTab({
   const capabilities = useCapabilities();
   const demo = useDemoExtension();
   const actions = useCollectionActions();
-  const { run } = usePageApi();
+  const pageApi = usePageApi();
+  const { run } = pageApi;
   const scope = useScope();
   const wants = useWants();
   const wide = useWideDesk();
@@ -1189,9 +1190,11 @@ export default function MyBindersTab({
   const createContainer = async (
     input: NewContainer,
   ): Promise<string | null> => {
+    // NEO-460: the line's last Undo goes now, never pressed while this saves.
+    const ticket = startWrite(pageApi);
     try {
       const result = await actions.createContainer(input);
-      notify(
+      ticket.done(
         input.rule
           ? `${input.name} is on the shelf. It fills itself.`
           : input.smartRule
@@ -1208,6 +1211,7 @@ export default function MyBindersTab({
       if (input.smartRule) setDialog("find");
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };
@@ -1230,15 +1234,17 @@ export default function MyBindersTab({
   ): Promise<string | null> => {
     if (!container) return null;
     const c = container;
+    const ticket = startWrite(pageApi);
     try {
       const result = await actions.updateContainer(c, patch);
       setDialog(null);
-      notify(
+      ticket.done(
         patch.name ? `${c.name} is now ${patch.name}.` : `Saved ${c.name}.`,
         result.undo,
       );
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };
@@ -1246,6 +1252,7 @@ export default function MyBindersTab({
   const deleteContainer = async (): Promise<string | null> => {
     if (!container) return null;
     const c = container;
+    const ticket = startWrite(pageApi);
     try {
       const { moved } = await actions.deleteContainer(c);
       setDialog(null);
@@ -1258,7 +1265,7 @@ export default function MyBindersTab({
       // (it draws the shelf again, so Back would seem to do nothing).
       replaceParams((p) => p.delete("b"));
       setScope("all");
-      notify(
+      ticket.done(
         moved === 0
           ? `${c.name} is off the shelf.`
           : c.kind === "box"
@@ -1267,6 +1274,7 @@ export default function MyBindersTab({
       );
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };
@@ -1316,14 +1324,15 @@ export default function MyBindersTab({
         notify(`Still loading ${c.name}. Try again in a moment.`);
         return;
       }
+      const ticket = startWrite(pageApi);
       try {
         const relaid = await actions.relayPockets(c, placements);
         const off = await actions.setBinderSettings(c, { sort: null });
-        notify(`${c.name} stays as it is now. Drag cards anywhere.`, () => {
+        ticket.done(`${c.name} stays as it is now. Drag cards anywhere.`, () => {
           void off.undo().then(() => relaid.undo());
         });
       } catch (error) {
-        notify(writeErrorMessage(error));
+        ticket.refused(writeErrorMessage(error));
       }
       return;
     }
@@ -1362,9 +1371,10 @@ export default function MyBindersTab({
   const saveRule = async (rule: SmartRule | null): Promise<string | null> => {
     if (!homeOpen) return null;
     const c = homeOpen;
+    const ticket = startWrite(pageApi);
     try {
       const result = await actions.setSmartRule(c, rule);
-      notify(
+      ticket.done(
         rule
           ? `${c.name} has its rule. Find cards pulls in the ones you have.`
           : `${c.name} has no rule now. Its cards stay put.`,
@@ -1372,6 +1382,7 @@ export default function MyBindersTab({
       );
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };

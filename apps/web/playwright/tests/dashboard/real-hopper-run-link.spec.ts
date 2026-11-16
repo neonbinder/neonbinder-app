@@ -6,10 +6,17 @@
 // property under test is the dashboard's link, not the reading.
 //
 // R7: writes only this account's own run, homed in Main (the seed cancels the
-// account's open runs first, for the active-run cap) and leaves it for the idle
-// sweep; the seed also sets aside the account's earlier open scans, so a repeat
-// run counts exactly one.
+// account's open runs first, for the active-run cap; it also sets aside the
+// account's earlier open scans, so a repeat run counts exactly one). The seeded
+// batch reads "running" on /print/placeholders and holds one of the account's
+// two batch slots, so `afterEach` discards it through that screen rather than
+// leave it to the idle sweep for the next spec on the worker to meet.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { discardIfStillOpen } from "../../support/placeholder-intake";
+
+test.afterEach(async ({ page }, testInfo) => {
+  await discardIfStillOpen(page, testInfo, { all: true });
+});
 
 test(
   "Dashboard hopper: an open scan shows as a run to finish and its link opens that run on Collection",

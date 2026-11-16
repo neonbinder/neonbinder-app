@@ -187,7 +187,7 @@
 - [Paginated query leaves Exhausted live](reference_paginated_query_leaves_exhausted_live.md) — a live update drops an Exhausted gate to Loading and unmounts dialogs; hold the last full read
 - [backdrop-filter makes a containing block](reference_backdrop_filter_makes_a_containing_block.md) — a "fixed" button in a blurred scroller scrolls away; blur a sibling. Also h-0 min-h-full
 - [Happy-dom XHR bypasses the fetch guard](reference_happy_dom_xhr_bypasses_fetch_guard.md) — photo uploads use XHR since NEO-466; stubbing fetch no longer covers them, inject `transport`; attach xhr.upload listeners before send()
-- [Live region text via ref, not state](reference_live_region_text_via_ref_not_state.md) — mount empty, write textContent in the effect; set-state-in-effect lint refuses setState
+- [Live region text via ref, not state](reference_live_region_text_via_ref_not_state.md) — mount empty, write textContent in the effect; same words twice = id-keyed clear + rAF
 - [dnd-kit droppables in their own scroll pane](reference_dndkit_droppables_in_their_own_scroll_pane.md) — two-pane drags need no measuring config (Rect tracks its pane's scroll); what autoscroll scrolls; grid-rows-1 + min-h-0
 - [react-hooks/refs flags helper arguments](reference_react_hooks_refs_flags_helper_arguments.md) — a ref-reading closure passed INTO renderRow() trips the lint; build it in the JSX prop instead
 - [dnd-kit disabled draggable is aria-disabled](reference_dndkit_disabled_draggable_is_aria_disabled.md) — useDraggable({disabled}) spreads aria-disabled onto the row and disables its nested buttons for AT and Playwright; override after the spread
@@ -209,6 +209,7 @@
 - [Wait line mounting breaks test mocks](reference_wait_line_mounting_breaks_test_mocks.md) — useQuery/watchQuery stubs, one-status pins, waitKey toEqual; 50 rows per key
 - [Long admin lists freeze whole-DOM scanners](reference_long_admin_lists_freeze_whole_dom_scanners.md) — 2,000 rows = 20k nodes, axe 10 s; a select INP report there is DOM size or popup-open time, not the handler
 - [Playwright harness mirrors the checklist parser](playwright-harness-mirrors-checklist-parser.md) — checklistFacts must share lib/checklists rules; check it on parser changes (NEO-489)
+- [break-words does not shrink a table cell](reference_break_words_does_not_shrink_a_table_cell.md) — auto-layout table + unspaced title: use wrap-anywhere; flex + min-w-0 is fine with break-words
 - [Unlayered text-wrap beats truncate](reference_unlayered_text_wrap_beats_truncate.md) — globals.css p/li/h text-wrap is unlayered, so `truncate` wraps; long names use min-w-0 + wrap-anywhere
 - [Centred fixed toast shrink-wraps to 50vw](reference_centred_fixed_toast_shrink_wraps_to_half_the_viewport.md) — use a fixed inset-x-4 flex band + max-w-full box; items-start + mt nudges keep one-line rows
 - [A name in a NeonButton needs free height](reference_a_name_in_a_neonbutton_needs_free_height.md) — Radix fixes height, not nowrap; h-auto min-h-8 py-1.5 max-w-full wrap-anywhere (size 1: min-h-6 py-1)
@@ -223,6 +224,8 @@
 - [t.run returns undefined as null](reference_convex_test_run_returns_undefined_as_null.md) — a bare optional field returned from t.run comes back null; `?? null` + toBeNull
 - [useConvex mock must be stable](reference_useconvex_mock_must_be_stable.md) — fresh client per render loops an effect listing `convex`; bare 5s timeout; hoist the mock client
 - [Split text into spans: RTL vs Playwright](reference_split_text_into_spans_breaks_rtl_gettext_not_playwright.md) — styled child spans keep Playwright getByText(exact) green, break RTL getByText; use a whole-text matcher
+- [Convex prod redacts plain Error text](reference_convex_prod_redacts_plain_error_messages.md) — never string-match a server refusal; coded ConvexError from a pure convex/lib module, read data.code
+- [Axe contrast red: read the attachment first](reference_axe_contrast_red_read_the_attachment_first.md) — blob report holds every node fg/bg; a role blended toward the bg = mid-fade frame, not a token bug
 - [Agent shell Node is not the apps/web pin](reference_agent_shell_node_is_not_the_apps_web_pin.md) — prepend nvm's $(cat .nvmrc) bin in the same call as each gate; print node --version
 - [New table naming a variant has six pins](reference_new_table_naming_a_variant_has_six_pins.md) — wipe graph, reset batch + exact count pin, cli.mjs list, test reset, api.d.ts, auth registry
 - [Inline-block is a reader group](reference_inline_block_is_a_reader_group.md) — inline-block span in a one-phrase <p> = Chrome AX generic; role="presentation" flattens it

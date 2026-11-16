@@ -29,11 +29,10 @@
 - [Adapter re-auth goes through refreshSiteToken](reference_adapter_reauth_goes_through_refresh_site_token.md) — never authenticate* from an adapter; one re-auth per session; the lock inserts a userProfiles row in convex-test
 - [Action promise races its subscription](reference_action_promise_races_subscription.md) — action resolves before useQuery sees its runMutation writes; last-chunk team loss; empty is never a diff claim
 - [Action stubs pin old shapes](reference_action_stubs_pin_old_return_shapes.md) — vi.mock stubs keep their own args/returns; a new arg or return shape must update every stub
-- [Agent Bash node ignores .nvmrc](reference_agent_bash_node_ignores_nvmrc.md) — `node` is the nvm default in agent Bash; prefix PATH with the .nvmrc version for every gate call
 - [Store working copies hide renames from db guards](reference_store_working_copies_hide_renames_from_db_guards.md) — stores patch in a final pass; a mid-loop ctx.db read misses same-call renames; suggestions apply patches in-loop
 - [Team names contain separators](reference_team_names_contain_separators.md) — teams split on comma only (Bodø/Glimt, "Korea, South"); players on , / |; resolve the whole raw value first
 - [Team resolution null is two answers](reference_team_resolution_null_is_two_answers.md) — teamId null = unknown OR ambiguous era; branch on candidates.length before any fallback (NEO-333 split bug)
-- [Agent shell node ignores .nvmrc](reference_agent_shell_node_ignores_nvmrc.md) — Bash-tool `node` is the nvm default; prepend $NVM_DIR/versions/node/v$(cat .nvmrc)/bin to PATH per gate call
+- [Agent shell node ignores .nvmrc](reference_agent_shell_node_ignores_nvmrc.md) — Bash-tool `node` is the nvm default; pin per gate call; a major-only .nvmrc ("22") needs the full dir
 - [Cross-adapter parity test](reference_cross_adapter_parity_test.md) — prove BSC/SL agreement by running both real fetch actions (fetch routed by URL) into card-name helpers; never replicate naming
 - [Action result beats its subscription](reference_action_result_beats_subscription.md) — a Convex action's promise resolves before the client's subscriptions show its writes; a gate reading a useQuery ref right after the await can act on a pre-write snapshot
 - [Probe BSC public search for card ids](reference_probe_bsc_public_search_for_card_ids.md) — shop/results answers unauthenticated with ids; card-listing playerAttribute is a comma string; teamName can be the label
@@ -81,6 +80,7 @@
 - [Convex doc-size budget counts framing](reference_convex_doc_size_budget_counts_framing.md) — getDocumentSize adds ~3 B/field + ~10 B/object; test both fat and many-tiny worst shapes
 - [Edit tool decodes \u escapes](reference_edit_tool_decodes_unicode_escapes.md) — format/bidi escapes land as literal chars; U+2028 in a regex = PARSE_ERROR; write via python, grep -P after
 - [Lint crashes beside a vitest run](reference_lint_crashes_beside_a_vitest_run.md) — eslint glob stack trace when .vitest/ vanishes mid-walk is not a result; rerun lint alone
+- [Date-cutoff rules need a frozen clock](reference_date_cutoff_rules_need_a_frozen_clock_in_convex_test.md) — _creationTime is real time; freeze Date per describe; ceil/floor fractional ms
 - [Every stored-session login runs setUpListing](reference_every_stored_session_login_runs_set_up_listing.md) — renewals reach setUpListing(save:false) hourly; user-only effects key on opts.save / transient
 - [Cloud Run strips the serverless-auth signature](reference_cloud_run_strips_serverless_auth_signature.md) — never trust it; verify a second signed-token header yourself; includeEmail for impersonated ADC
 - [Express 5 finish loggers see rewritten req.path](reference_express5_req_path_rewritten_by_mounted_routers.md) — capture req.originalUrl at entry; mounted routers strip the prefix
