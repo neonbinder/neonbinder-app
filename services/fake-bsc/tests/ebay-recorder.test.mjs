@@ -5,11 +5,12 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, writeFile, chmod, symlink, mkdir, rm } from "node:fs/promises";
-import { execFileSync } from "node:child_process";
+import { mkdtemp, writeFile, chmod, symlink, mkdir, rm, rename, open as openFile } from "node:fs/promises";
+import { execFileSync, spawn } from "node:child_process";
 import { PassThrough } from "node:stream";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { REFRESH, CERT, NOW, PRD_SKU, SBX_SKU, stubEbay, tokenOk, api, PICTURE, prodRoutes, sink } from "./ebay-stubs.mjs";
 
 const require = createRequire(import.meta.url);
 const { EbayApi, EbayStop, EBAY_SCOPES, MIN_EBAY_INTERVAL_MS } = require("../dist/recorder/ebay-api.js");
@@ -19,56 +20,6 @@ const { runProdCapture, runSandboxCapture, runEbayUndo, prodPlanLines, prodFailu
 const { askYes, askToType, typeOnTerminal, askOnTerminal } = require("../dist/recorder/confirm.js");
 const { ebayCapture, ebayUndo, parseArgs } = require("../dist/recorder/cli.js");
 const { canonicalRequest, requestKey } = require("../dist/src/requestKey.js");
-
-const REFRESH = "v^1.1#i^1#REFRESH-TOKEN-VALUE-never-printed";
-const CERT = "PRD-cert-id-value-never-printed";
-const NOW = Date.parse("2026-11-16T12:00:00.000Z");
-const PRD_SKU = "NBCAPTURE-PRD-20261116";
-const SBX_SKU = "NBCAPTURE-SBX-20261116";
-
-/**
- * A stub eBay. `routes` maps "METHOD /path" (no query) to a handler returning
- * {status, body?, location?}; unmatched requests answer 404. Every request is
- * recorded (method, path, query, body text) for assertions.
- */
-function stubEbay(routes) {
-  const calls = [];
-  const fetchImpl = async (url, init = {}) => {
-    const u = new URL(url);
-    const method = init.method ?? "GET";
-    let bodyText = "";
-    if (typeof init.body === "string") bodyText = init.body;
-    else if (init.body instanceof FormData) bodyText = "<multipart>";
-    calls.push({ method, host: u.hostname, path: u.pathname, query: Object.fromEntries(u.searchParams), body: bodyText, headers: init.headers });
-    const key = `${method} ${u.pathname}`;
-    const h = routes[key] ?? Object.entries(routes).find(([k]) => k.endsWith("*") && key.startsWith(k.slice(0, -1)))?.[1];
-    const out = h ? h({ method, path: u.pathname, query: u.searchParams, body: bodyText, calls }) : { status: 404, body: { errors: [{ errorId: 25710 }] } };
-    if (out instanceof Error) throw out;
-    const headers = new Headers(out.location ? { location: out.location } : {});
-    return new Response(out.body === undefined ? null : JSON.stringify(out.body), { status: out.status, headers });
-  };
-  return { calls, fetchImpl };
-}
-
-const tokenOk = () => ({ status: 200, body: { access_token: "v^1.1#ACCESS", expires_in: 7200, token_type: "User Access Token" } });
-
-function api(env, routes, over = {}) {
-  const stub = stubEbay({ "POST /identity/v1/oauth2/token": tokenOk, ...routes });
-  let t = NOW;
-  const sleeps = [];
-  const a = new EbayApi({
-    env,
-    creds: { clientId: "NB-app-id", certId: CERT, refreshToken: REFRESH },
-    fetchImpl: stub.fetchImpl,
-    now: () => t,
-    sleep: async (ms) => {
-      sleeps.push(ms);
-      t += ms;
-    },
-    ...over,
-  });
-  return { api: a, stub, sleeps };
-}
 
 /** Requests that change the account: anything but GET and the token endpoint. */
 const writesOf = (calls) => calls.filter((c) => c.method !== "GET" && c.path !== "/identity/v1/oauth2/token");
@@ -268,53 +219,6 @@ describe("ebay-record", () => {
 
 // ── Production capture ────────────────────────────────────────────────────
 
-const PICTURE = { filename: "front.jpg", contentType: "image/jpeg", bytes: Buffer.from("ffd8ffe000104a46494600010100000100010000ffd9", "hex") };
-
-/** A production account where everything works; `over` replaces routes. */
-function prodRoutes(over = {}) {
-  const state = { item: false, offer: false, live: false };
-  const routes = {
-    [`GET /sell/inventory/v1/inventory_item/${PRD_SKU}`]: () => (state.item ? { status: 200, body: { sku: PRD_SKU } } : { status: 404, body: { errors: [{ errorId: 25710 }] } }),
-    "GET /sell/inventory/v1/offer": () => (state.offer ? { status: 200, body: { offers: [{ offerId: "777", sku: PRD_SKU, status: state.live ? "PUBLISHED" : "UNPUBLISHED" }] } } : { status: 404, body: { errors: [{ errorId: 25713 }] } }),
-    "GET /sell/account/v1/payment_policy": () => ({ status: 200, body: { total: 1, paymentPolicies: [{ paymentPolicyId: "11", name: "p" }] } }),
-    "GET /sell/account/v1/return_policy": () => ({ status: 200, body: { total: 1, returnPolicies: [{ returnPolicyId: "22", name: "r" }] } }),
-    "GET /sell/account/v1/fulfillment_policy": () => ({ status: 200, body: { total: 1, fulfillmentPolicies: [{ fulfillmentPolicyId: "33", name: "f" }] } }),
-    "GET /sell/inventory/v1/location/neonbinder-main": () => ({ status: 200, body: { merchantLocationKey: "neonbinder-main", merchantLocationStatus: "ENABLED" } }),
-    "POST /commerce/media/v1_beta/image/create_image_from_file": () => ({ status: 201, body: { imageUrl: "https://i.ebayimg.com/x.jpg", expirationDate: "2026-12-16T00:00:00.000Z" }, location: "https://apim.ebay.com/commerce/media/v1_beta/image/IMG1" }),
-    "GET /commerce/media/v1_beta/image/IMG1": () => ({ status: 200, body: { imageUrl: "https://i.ebayimg.com/x.jpg", expirationDate: "2026-12-16T00:00:00.000Z" } }),
-    "POST /sell/inventory/v1/bulk_create_or_replace_inventory_item": () => {
-      state.item = true;
-      return { status: 200, body: { responses: [{ statusCode: 200, sku: PRD_SKU, locale: "en_US" }] } };
-    },
-    "POST /sell/inventory/v1/bulk_create_offer": () => {
-      state.offer = true;
-      return { status: 200, body: { responses: [{ statusCode: 201, sku: PRD_SKU, offerId: "777" }] } };
-    },
-    "POST /sell/inventory/v1/offer/777/publish": () => {
-      state.live = true;
-      return { status: 200, body: { listingId: "110000000001", warnings: [] } };
-    },
-    "POST /sell/inventory/v1/bulk_update_price_quantity": () => ({ status: 200, body: { responses: [{ statusCode: 200, sku: PRD_SKU, offerId: "777" }] } }),
-    "POST /sell/inventory/v1/offer/777/withdraw": () => {
-      if (!state.live) return { status: 404, body: { errors: [{ errorId: 25713 }] } };
-      state.live = false;
-      return { status: 200, body: { listingId: "110000000001", warnings: [] } };
-    },
-    [`DELETE /sell/inventory/v1/inventory_item/${PRD_SKU}`]: () => {
-      if (!state.item) return { status: 404 };
-      state.item = false;
-      state.offer = false;
-      return { status: 204 };
-    },
-  };
-  for (const [k, v] of Object.entries(over)) routes[k] = typeof v === "function" ? (ctx) => v(ctx, state, routes) : v;
-  return { routes, state };
-}
-
-function sink() {
-  const stored = [];
-  return { stored, uploadCapture: async (c) => (stored.push(c), { verdict: "ok", paths: [] }) };
-}
 
 describe("ebay-capture --prod: the plan", () => {
   it("the dry run prints exactly 7 requests that change the account, and sends nothing", async () => {
@@ -1180,5 +1084,173 @@ describe("ebay-capture --prod and ebay-undo --prod through the CLI (audit)", () 
     const run = await quietly(() => ebayUndo(parseArgs(["ebay-undo", "--prod", "--sku", PRD_SKU, "--yes"]).flags, { ebayApi: seam.make }));
     assert.equal(run.result, 2);
     assert.match(run.text, /NOT verified: end it in Seller Hub/);
+  });
+});
+
+// ── Audit round 2 (NEO-555): closed stdio, signal names, credential file races ──
+
+/**
+ * Runs `node <args>` with its stderr a pipe this side closes before the child
+ * writes. With `handshake`, the child waits for a line on stdin, sent only
+ * after the close. Answers the exit code, the signal and stdout.
+ */
+function runWithClosedStderr(args, { handshake = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, args, { stdio: ["pipe", "pipe", "pipe"], cwd: path.join(path.dirname(new URL(import.meta.url).pathname), "..") });
+    child.stderr.destroy();
+    let stdout = "";
+    child.stdout.on("data", (d) => (stdout += d));
+    child.on("error", reject);
+    child.on("close", (code, signal) => resolve({ code, signal, stdout }));
+    if (handshake) child.stdin.end("go\n");
+    else child.stdin.end();
+  });
+}
+
+describe("ebay-capture --prod (audit 2): a closed stderr or a hung-up terminal", () => {
+  it("a write to a closed stderr pipe during the run (with a SIGHUP once live) does not end the process: the cleanup and verification still run", async () => {
+    const r = await runWithClosedStderr(["tests/fixtures/prod-capture-closed-stderr.mjs"], { handshake: true });
+    assert.equal(r.signal, null);
+    assert.equal(r.code, 0, `the child died: ${r.stdout}`);
+    const out = JSON.parse(r.stdout);
+    // The guard was exercised: the child's stderr really failed with EPIPE.
+    assert.ok(out.stderrErrors.length > 0 && out.stderrErrors.every((c) => c === "EPIPE"), JSON.stringify(out.stderrErrors));
+    assert.ok(out.lines > 0);
+    assert.equal(out.ok, true);
+    assert.equal(out.live, false, "the listing was ended");
+    assert.equal(out.item, false, "the item was deleted");
+    const published = out.calls.indexOf("POST /sell/inventory/v1/offer/777/publish");
+    assert.ok(published > 0, out.calls.join("\n"));
+    const after = out.calls.slice(published + 1);
+    assert.ok(after.includes("POST /sell/inventory/v1/offer/777/withdraw"), after.join("\n"));
+    assert.ok(after.includes(`DELETE /sell/inventory/v1/inventory_item/${PRD_SKU}`), after.join("\n"));
+    assert.deepEqual(after.slice(-2), ["GET /sell/inventory/v1/offer", `GET /sell/inventory/v1/inventory_item/${PRD_SKU}`]);
+    // The no-op listeners belong to the run's window and are removed after it.
+    assert.equal(out.listenersAfter, out.listenersBefore);
+  });
+
+  it("the CLI entry holds stdio errors from its start: a dry run printing to a closed stderr still exits 0", async () => {
+    const r = await runWithClosedStderr(["dist/recorder/cli.js", "ebay-capture", "--prod"]);
+    assert.equal(r.signal, null);
+    assert.equal(r.code, 0);
+  });
+
+  it("the guard is attached during the run only, on both stderr and stdout", async () => {
+    const counts = () => [process.stderr.listenerCount("error"), process.stdout.listenerCount("error")];
+    const before = counts();
+    let during = null;
+    const { routes } = prodRoutes({
+      "POST /sell/inventory/v1/offer/777/publish": (_c, st) => {
+        st.live = true;
+        during = counts();
+        return { status: 200, body: { listingId: "110000000001" } };
+      },
+    });
+    const { api: a } = api("production", routes);
+    const out = await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: () => {}, exit: () => assert.fail("no exit") });
+    assert.equal(out.ok, true);
+    assert.deepEqual(during, before.map((n) => n + 1));
+    // Removed one turn of the event loop later, after any queued 'error' event.
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepEqual(counts(), before);
+  });
+});
+
+describe("ebay-capture --prod (audit 2): the signal named in the second-signal message", () => {
+  async function secondSignal(emit) {
+    const exits = [];
+    const lines = [];
+    const { routes } = prodRoutes({
+      "POST /sell/inventory/v1/offer/777/publish": (_c, st) => {
+        st.live = true;
+        emit();
+        return { status: 200, body: { listingId: "110000000001" } };
+      },
+    });
+    const { api: a } = api("production", routes);
+    await runProdCapture({ api: a, sink: sink(), sku: PRD_SKU, picture: PICTURE, report: (l) => lines.push(l), exit: (c) => exits.push(c) });
+    return { exits, text: lines.join("\n") };
+  }
+
+  for (const [what, arg] of [
+    ["no signal name", undefined],
+    ["a non-string", 42],
+    ["an over-long name", "SIG" + "X".repeat(14)],
+  ]) {
+    it(`${what} is printed as "stop signal", and exits 130`, async () => {
+      const { exits, text } = await secondSignal(() => {
+        process.emit("SIGINT", arg);
+        process.emit("SIGINT", arg);
+      });
+      assert.deepEqual(exits, [130]);
+      assert.match(text, /stopped by a second stop signal before the cleanup was verified/);
+      assert.ok(!text.includes("XXXX") && !/second 42/.test(text), text);
+    });
+  }
+
+  it("a second SIGHUP (a closed terminal) is named and exits 129", async () => {
+    const { exits, text } = await secondSignal(() => {
+      process.emit("SIGINT", "SIGINT");
+      process.emit("SIGHUP", "SIGHUP");
+    });
+    assert.deepEqual(exits, [129]);
+    assert.match(text, /stopped by a second SIGHUP before the cleanup was verified/);
+  });
+});
+
+describe("eBay recorder credentials (audit 2): the file changing under the open handle", () => {
+  let dir;
+  before(async () => (dir = await mkdtemp(path.join(tmpdir(), "nb-ebay-creds2-"))));
+  after(() => rm(dir, { recursive: true, force: true }));
+  const good = JSON.stringify({ clientId: "NB-app-id", certId: CERT, refreshToken: REFRESH });
+
+  it("a file swapped at the path after the open (the git check would look at another file) is refused", async () => {
+    const f = path.join(dir, "swap.json");
+    const other = path.join(dir, "other.json");
+    await writeFile(f, good, { mode: 0o600 });
+    await writeFile(other, good, { mode: 0o600 });
+    const swapAfterOpen = async (p, flags) => {
+      const fh = await openFile(p, flags);
+      await rename(other, p);
+      return fh;
+    };
+    const err = await readCredsFile(f, { open: swapAfterOpen }).catch((e) => e);
+    assert.match(err.message, /changed while being read/);
+    assert.ok(!err.message.includes(CERT));
+    // The same open, with nothing swapped, reads.
+    await writeFile(path.join(dir, "still.json"), good, { mode: 0o600 });
+    const c = await readCredsFile(path.join(dir, "still.json"), { open: (p, flags) => openFile(p, flags) });
+    assert.equal(c.refreshToken, REFRESH);
+  });
+
+  it("a file removed after the open is refused", async () => {
+    const f = path.join(dir, "gone.json");
+    await writeFile(f, good, { mode: 0o600 });
+    const removeAfterOpen = async (p, flags) => {
+      const fh = await openFile(p, flags);
+      await rm(p);
+      return fh;
+    };
+    await assert.rejects(() => readCredsFile(f, { open: removeAfterOpen }), /changed while being read/);
+  });
+
+  it("a file that grows past the limit after the fstat (small size reported, more bytes read) is refused", async () => {
+    const f = path.join(dir, "grows.json");
+    await writeFile(f, good, { mode: 0o600 });
+    let read = 0;
+    const growing = async (p, flags) => {
+      const fh = await openFile(p, flags);
+      return {
+        stat: () => fh.stat(),
+        read: async (buf, offset, length) => {
+          buf.fill(0x20, offset, offset + length);
+          read += length;
+          return { bytesRead: length, buffer: buf };
+        },
+        close: () => fh.close(),
+      };
+    };
+    await assert.rejects(() => readCredsFile(f, { open: growing }), /larger than a credentials file/);
+    assert.equal(read, 16 * 1024 + 1, "reads at most one byte past the limit");
   });
 });

@@ -49,8 +49,13 @@ export async function gitCheckoutOf(path: string): Promise<string | null> {
   return null;
 }
 
+/** The calls `readCredsFile` makes on the open handle. */
+export type CredsFileHandle = Pick<FileHandle, "stat" | "read" | "close">;
+
 export interface CredsFileDeps {
   uid?: number;
+  /** Opens the file (tests only: a handle whose size changes after the fstat). Default: `fs.promises.open`. */
+  open?: (path: string, flags: number) => Promise<CredsFileHandle>;
 }
 
 /**
@@ -59,12 +64,15 @@ export interface CredsFileDeps {
  * Opened once with O_NOFOLLOW (a link is refused by the kernel, not by an
  * earlier look that a swap could beat) and O_NONBLOCK (a FIFO cannot hang the
  * open); every check is then `fstat` on that handle, and the bytes come from
- * the same handle, at most one byte past the limit.
+ * the same handle, at most one byte past the limit. The git-checkout check
+ * needs the path's real location, so it resolves the path again; that
+ * resolution must name the file the handle holds (same device and inode), or
+ * the file was swapped after the open and is refused.
  */
 export async function readCredsFile(path: string, deps: CredsFileDeps = {}): Promise<EbayAppCredentials> {
-  let fh: FileHandle;
+  let fh: CredsFileHandle;
   try {
-    fh = await open(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+    fh = await (deps.open ?? open)(path, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException | null)?.code;
     if (code === "ENOENT" || code === "ENOTDIR") throw new Error("credentials file: not found");
@@ -79,7 +87,11 @@ export async function readCredsFile(path: string, deps: CredsFileDeps = {}): Pro
     if (uid >= 0 && st.uid !== uid) throw new Error("credentials file: not owned by you");
     if ((st.mode & 0o077) !== 0) throw new Error("credentials file: readable by others; chmod 600 it");
     if (st.size > MAX_CREDS_FILE_BYTES) throw new Error("credentials file: larger than a credentials file");
-    if (await gitCheckoutOf(await realpath(path))) throw new Error("credentials file: inside a git checkout; keep it outside every repository");
+    // The git check runs on the resolved path; it must be the file the handle holds.
+    const real = await realpath(path).catch(() => null);
+    const named = real === null ? null : await stat(real).catch(() => null);
+    if (real === null || !named || named.dev !== st.dev || named.ino !== st.ino) throw new Error("credentials file: changed while being read; try again");
+    if (await gitCheckoutOf(real)) throw new Error("credentials file: inside a git checkout; keep it outside every repository");
     // The size can change after the fstat: read at most one byte past the limit.
     const buf = Buffer.alloc(MAX_CREDS_FILE_BYTES + 1);
     let got = 0;
@@ -88,7 +100,10 @@ export async function readCredsFile(path: string, deps: CredsFileDeps = {}): Pro
       if (bytesRead === 0) break;
       got += bytesRead;
     }
-    if (got > MAX_CREDS_FILE_BYTES) throw new Error("credentials file: larger than a credentials file");
+    if (got > MAX_CREDS_FILE_BYTES) {
+      buf.fill(0);
+      throw new Error("credentials file: larger than a credentials file");
+    }
     text = buf.subarray(0, got).toString("utf8");
     buf.fill(0);
   } finally {

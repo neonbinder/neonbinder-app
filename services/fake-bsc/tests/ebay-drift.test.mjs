@@ -111,6 +111,8 @@ describe("eBay drift: compare", () => {
       ["top-level keys only", topLevel],
       ["with the element itself but none of its paths", { ...topLevel, "orders[]": "object" }],
       ["with no root entry", { total: "number", orders: "array" }],
+      // The browser probe stops reporting `orders` at all for row 13: href, limit, offset and total only.
+      ["without `orders` (href, limit, offset and total only)", { $: "object", href: "string", limit: "number", offset: "number", total: "number" }],
     ]) {
       const probe = cleanProbe();
       probe.shapes[ORDERS] = shape;
@@ -122,6 +124,16 @@ describe("eBay drift: compare", () => {
     const { total: _t, ...rest } = topLevel;
     noTotal.shapes[ORDERS] = rest;
     assert.deepEqual(compareEbayDrift(noTotal, recorded).result.paths, [`${ORDERS} total`]);
+    // With `orders` absent, a missing total is still drift.
+    const noOrdersNoTotal = cleanProbe();
+    noOrdersNoTotal.shapes[ORDERS] = { $: "object", href: "string", limit: "number", offset: "number" };
+    const nont = compareEbayDrift(noOrdersNoTotal, recorded).result;
+    assert.equal(nont.outcome, "shape_drift");
+    assert.deepEqual(nont.paths, [`${ORDERS} total`]);
+    // And a retyped total, with `orders` absent, is drift too.
+    const noOrdersRetyped = cleanProbe();
+    noOrdersRetyped.shapes[ORDERS] = { $: "object", href: "string", limit: "number", offset: "number", total: "string" };
+    assert.deepEqual(compareEbayDrift(noOrdersRetyped, recorded).result.paths, [`${ORDERS} total`]);
     const retyped = cleanProbe();
     retyped.shapes[ORDERS] = { ...topLevel, orders: "object" };
     assert.equal(compareEbayDrift(retyped, recorded).result.outcome, "shape_drift");

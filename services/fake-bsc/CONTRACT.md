@@ -1101,6 +1101,23 @@ GET ebay/apiz/commerce/identity/v1/user
   parent is present, never for an array's items. Row 13 (orders) reports the
   page's top-level keys only (an order carries buyer data), so no `orders[]`
   path is ever required there; one that is present is still type-checked.
+  `orders` itself is optional: the probe may report only `href`, `limit`,
+  `offset` and `total`, and that compares ok; a missing or retyped `total`
+  is still drift.
+- **Decision: row 13's blind spot is accepted, for privacy.** Because row 13
+  is compared on top-level keys only, drift does **not** catch eBay renaming
+  or retyping an order field NB's sales sync reads (`orderId`,
+  `lineItems[].sku`, the fee amounts such as `totalMarketplaceFee`, and the
+  rest of `orders[]`). Sending those paths would put shapes derived from
+  real buyers' orders into a public artifact, so the probe does not, by
+  design. The only guards for those fields are the order-sync unit tests
+  (against the fake's synthesised orders) and the recorder's captures. Of
+  those, only the sandbox capture (`ebay-capture` without `--prod`) reads
+  orders: one page, `limit 1`, and it shows an order's fields only when the
+  sandbox seller has an order in the last 30 days. The production capture
+  (`ebay-capture --prod`) lists and ends one item and reads no orders. A
+  change to how NB reads orders must be checked against eBay's documentation
+  by hand; drift stays green either way.
 - Statuses: a row compares only a 2xx body, with two exceptions. The probe
   reads the location (row 6) and the item (row 10) with keys that need not
   exist, so a 404 there compares eBay's error envelope (`errors[].errorId`,

@@ -257,6 +257,26 @@ async function cleanupCall(api: EbayApi, call: EbayCall, done: (s: number) => bo
 /** Signals that would end the process (and skip the cleanup) while a listing may be live. */
 export const GUARDED_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP"] as const;
 
+/**
+ * A write to a closed stderr or stdout (EPIPE: `2>&1 | tee` after tee died)
+ * or to a hung-up terminal (EIO, after SIGHUP) fails as an asynchronous
+ * 'error' event on the stream, not as a throw. With no listener that event
+ * ends the process, uncaught, and skips the cleanup with the listing live.
+ * Attaches a no-op listener to both streams (the lines are lost, the run goes
+ * on) and answers the function that removes it. The CLI attaches one for the
+ * whole process; `runProdCapture` attaches its own for its run, so a caller
+ * that is not the CLI is covered too.
+ */
+export function holdStdioErrors(): () => void {
+  const ignore = (): void => undefined;
+  process.stderr.on("error", ignore);
+  process.stdout.on("error", ignore);
+  return () => {
+    process.stderr.off("error", ignore);
+    process.stdout.off("error", ignore);
+  };
+}
+
 /** What a run has sent so far, for the second-interrupt exit. */
 interface Progress {
   writes: number;
@@ -275,7 +295,9 @@ function signalExitCode(signal: string): number {
  * run, cleanup and verification included, carries on. A second one stops at
  * once, after printing what may be left and the exact command that ends it
  * (`prodFailureLines`). The handlers cover the whole run, from before the
- * token grant until the captures are stored, and are removed afterwards.
+ * token grant until the captures are stored, and are removed afterwards. So
+ * does a no-op 'error' listener on stderr and stdout (`holdStdioErrors`): the
+ * terminal closing, or a pipe reader dying, must not end the run either.
  */
 export async function runProdCapture(deps: ProdDeps): Promise<ProdOutcome> {
   checkCaptureSku("production", deps.sku);
@@ -305,11 +327,16 @@ export async function runProdCapture(deps: ProdDeps): Promise<ProdOutcome> {
     for (const line of prodFailureLines(outcome, deps.sku)) say(line);
     exit(signalExitCode(signal));
   };
+  const releaseStdio = holdStdioErrors();
   for (const s of GUARDED_SIGNALS) process.on(s, onSignal);
   try {
     return await runProdCaptureGuarded(deps, progress);
   } finally {
     for (const s of GUARDED_SIGNALS) process.off(s, onSignal);
+    // A failed write's 'error' event is queued with process.nextTick, and a
+    // run whose awaits never yield to the event loop finishes before that
+    // queue drains: remove the listener only after it has.
+    setImmediate(releaseStdio);
   }
 }
 

@@ -92,3 +92,4 @@
 - [Fake-mode /health stub needs bscTarget](reference_fake_mode_health_stub_needs_bsc_target.md) — fake-mode convex-tests must serve bscTarget "fake" or every BSC credential call is refused; BSC keys carry the slug
 - [Test signal guards with process.emit](reference_test_signal_guards_with_process_emit.md) — emit with the name arg; inject exit; listenerCount per request
 - [Cloud Run: load before listen](reference_cloud_run_load_before_listen.md) — throttled CPU starves post-listen boot work; load first, budget optional loads; spy Server.prototype.listen
+- [Stdio EPIPE is a late 'error' event](reference_stdio_epipe_error_is_a_late_event.md) — closed pipe/tty kills Node via nextTick 'error'; release scoped listeners on setImmediate; spy emit

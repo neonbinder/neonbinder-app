@@ -31,6 +31,7 @@ import {
   runSandboxCapture,
   sandboxPlanLines,
   captureDate,
+  holdStdioErrors,
   type CaptureSink,
   type Picture,
 } from "./ebay-capture";
@@ -519,6 +520,8 @@ async function main(argv: string[]): Promise<number> {
 }
 
 if (require.main === module) {
+  // A closed pipe or hung-up terminal must not end the process mid-command.
+  holdStdioErrors();
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err: unknown) => {
