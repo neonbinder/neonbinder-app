@@ -63,3 +63,4 @@
 - [Heavy cold-start notice is order-dependent](heavy-cold-start-notice-is-order-dependent.md) — warm heavy (~2 s post-#454) resolves before the seed redirect; NEO-481 edit warm-up is FAST-only
 - [Fresh-load stall: find the user's cached-hit batch](fresh-load-stall-check-for-the-users-cached-hit-batch.md) — no batch + healthy probe = page never subscribed; set-builder heading shows before its BSC sync ends
 - [Browser secrets are per Clerk user](browser-secrets-are-per-clerk-user-not-per-deployment.md) — credKey is shared by every deployment signing in one test user; isolate via key + TTL, never a clash guard
+- [BSC sign-in is fetch, not Puppeteer](bsc-sign-in-is-fetch-not-puppeteer.md) — B2C PKCE over fetch + direct API profile read in services/browser; a BSC host seam must cover both services

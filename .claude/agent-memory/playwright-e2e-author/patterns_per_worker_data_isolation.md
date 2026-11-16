@@ -1,6 +1,8 @@
 ---
 name: patterns_per_worker_data_isolation
-description: "HARD RULE for every spec: CI runs 8 shards concurrently against ONE Convex preview and selectorOptions+cardChecklist+teams are GLOBAL (not per-user). Specs write only to a per-worker hand-made set and never to a shared real set; never assert a filtered result COUNT on a shared admin list. SET-REGISTRY.md is the authority."
+description: HARD RULE - per-worker data isolation under concurrent shards; splitting a flow over shared real data; picking a fixture-owned name
+metadata:
+  type: pattern
 ---
 
 # Per-worker data isolation (concurrent shards) — HARD RULE
@@ -55,4 +57,71 @@ on **the row** by its perceivable name (the Open/Create control for that name)
 rather than on a count. Teams and leagues use `{n} of {N}`, a client-side
 substring filter, which IS safe to compose with a count.
 
-See [[feedback_no_secrets_via_env]] for the other hard authoring rule.
+See [[patterns_credential_seeding]] for the other hard authoring rule.
+
+## Splitting a flow over shared real data
+
+When a sole-writer spec on a real brand-year gets too long and is split into
+specs the shards run CONCURRENTLY, the server-side write sets are rarely the
+problem; client-side SNAPSHOT SAVES are.
+
+**Why:** in the 2026 Bowman split, every server write was disjoint or a
+set-union, yet one pair still clobbered: `Sync <Type>s` opens a
+ReconciliationModal that seeds EVERY existing row of that variant type into
+Ready, and its save matches each item's `existingId` against that type's own
+children only. A Make insert of... that moved (created-new + deleted-source) one
+of those rows into another variant type while the dialog was open made the save
+re-create it: two NB rows on one marketplace link. It was a PRODUCT bug, not only
+a race (a plain later `Sync <Type>s` after the move re-created the row too);
+NEO-312 fixed it with a whole-set/brand held check at save. When a split exposes
+a cross-spec clobber, ask whether one spec alone can trigger it; if so, file it
+and write the regression step, and keep the sequencing anyway.
+
+**How to apply:**
+- List every brand/set-wide write in the spec and, per write, (a) the rows it
+  touches (cite file:line) and (b) whether its client computed a plan or list
+  before saving. (b) is where the overlaps hide: reconcile modals, Group
+  Parallels plans, any dialog's reactive target list.
+- A pair with a stale-snapshot clobber goes in ONE spec, in the order the merged
+  spec proved. A pair that only reshapes a reactive list under a click is a UI
+  race: retry the pick once, result-keyed (assert the fold/selection, clear the
+  filter before re-typing).
+- A brand-wide write BOTH halves need (Sync Sets + the SportLots review) moves
+  into the seed (`setup.spec.ts`), which runs alone; also give the seed the
+  paused-mode manufacturer row and Variant Types, and strip guarded creates from
+  the concurrent specs (two guarded creates can both create).
+Related: [[patterns_per_worker_data_isolation]].
+
+## Pick a fixture owned name by name
+
+**Rule:** a spec whose write is keyed on a NAME (a team alias, a created team, a
+career stint) picks that name explicitly, from names only its own fixture can
+raise. Never "whichever row the wizard presents first".
+
+**Why:** NEO-335, a CI run. The alias-saving spec linked the first team step on its
+own sole-writer set and saved it as an alias of its minted team. The first step
+was a STAGED CAREER TEAM (off a player's history), and the four read-only Big
+League specs stage the same name off their own players. An alias is resolved by
+every team lookup in the deployment, so while it was live their walk changed under
+them. Owning the SET does not mean owning the NAMES on its review: staged career
+teams and leagues come from players' histories, which cross sets.
+
+**How to apply:**
+- Previews answer wizard lookups from the committed recording
+  `apps/web/convex/adapters/__fixtures__/enrichment-lookups.json` (NEO-289). Grep
+  its `careerTeams`/`undatedCareerTeams` for the name: the players listed are every
+  recorded source of that step. A name staged by one player who is only on your
+  fixture is owned.
+- Confirm against history: search every archived run log for the name and count the
+  specs that touched it. A skip control's accessible name carries its row name
+  (`Skip <name> ...`), so any spec that ever walked the step shows up.
+- Walk to the chosen row with a read-then-skip loop whose click NAMES the row it
+  read (`Skip <escaped heading name> . (not a team|this team has no league)`), so
+  a guard/click race can never skip the row under test
+  ([[patterns_responsive_duplicates_and_text_locators]]). Skips are scoped to the set's
+  `selectorOptionId` (`entityReviewSkips`), so they leak nothing.
+- Card clubs are the BSC `teamName` facet of the set; they reach a ONE-marketplace
+  review only if the fetch waits for its team lookups (NEO-333), so check a run's
+  `Skip <club> (not a team)` steps before relying on one.
+
+Related: [[reference_neo284_team_alias_fixture]], [[patterns_per_worker_data_isolation]].

@@ -33,7 +33,7 @@ Independent/Other, no aria-label), nothing checked; `Add as New League`, the
 picker form's `Add league` and League Management's `Create league …` are
 `aria-disabled` until one is pressed (a press only focuses the group). Tap by
 text: `tapOn: "Minor"`. Drains use `set-selector/util-wizard-answer-step-as-new.yaml`
-([[branch-on-copied-button-text]]).
+(branch on copied button text).
 
 **Trap 1 — no sport default; "MLB" by abbreviation.** Since ae04f64 an
 unanswered League leaves a team league-less (dialog, wizard commit, bulk
@@ -62,5 +62,5 @@ Pirates, and once the client stopped name-filtering current answers (to admit
 alias hits) the row showed and `No matches.` never came — and tier sorts
 before prefix, so a tier-1 partial match beats the exact row for Enter.
 (b) A missing row that every fresh probe returns = the stale same-text search
-read set ([[convex-same-text-search-legs-go-stale]]), not held rows. Both are
+read set ([[patterns_convex_same_text_search_legs_go_stale]]), not held rows. Both are
 product findings; the ranking flow and link-team-saves-alias flow were right.
