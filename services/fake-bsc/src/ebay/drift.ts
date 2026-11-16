@@ -125,8 +125,10 @@ const SYNTH_ROWS: ReadonlyArray<{ op: EbayOp; read: readonly string[]; optional?
     // Row 13: the probe reports the page's top-level keys only (an order
     // carries buyer data, so no `orders[]` element path leaves eBay's answer).
     // Every element path is therefore optional: never drift when absent, still
-    // type-checked if one is ever present. The last page has no `next`.
-    optional: ["next", "orders[]"],
+    // type-checked if one is ever present. The last page has no `next`, and
+    // `orders` itself is optional so a page with no match (eBay may omit the
+    // key) never puts "this seller had no orders" in a public artifact.
+    optional: ["next", "orders", "orders[]"],
     optionalUnder: ["orders[]"],
   },
   { op: "identityUser", read: ["", "userId", "username"] },

@@ -6,8 +6,8 @@
  * one of these exact entries (by reference), so a forged copy with the same
  * fields is refused too.
  *
- * WHY. In prod the probe reads a real seller's eBay account (the operator's
- * own selling account; there is no separate prod test seller). It must be
+ * WHY. In prod the probe reads a real seller account on eBay (there is no
+ * separate prod test seller). It must be
  * read-only by construction, not by convention: no listing, no policy write,
  * no opt-in, no delete. tests/ebay-probe.test.mjs fails on any non-GET entry
  * here and on any egress in the probe modules outside probeGet and the token
@@ -20,7 +20,7 @@
  *    6  inventory location GET (NB's own key)
  *    7  taxonomy get_item_aspects_for_category (hashed: sorted aspect names; app token)
  *   10  offer?sku= (GET only; a SKU NB never mints, so the answer is the 404 shape)
- *   13  fulfillment orders, limit=1
+ *   13  fulfillment orders, limit=1        (top-level keys only: never an order)
  *   15  commerce identity getUser (apiz host)
  *
  * SHAPES. Each entry reports only `shapePaths` (shapeMap's allowlist dialect):
@@ -167,28 +167,13 @@ export const EBAY_PROBE_SHAPE_PATHS = Object.freeze({
     "total",
     ...ERROR_PATHS,
   ]),
-  // adapters/ebaySeller.getOrdersPage + lib/ebayListing.projectEbayOrder. NO
-  // buyer, no ship-to, no checkout notes: projectEbayOrder never reads them.
-  orders: Object.freeze([
-    "total",
-    "next",
-    "orders[].orderId",
-    "orders[].creationDate",
-    "orders[].lastModifiedDate",
-    "orders[].cancelStatus.cancelState",
-    "orders[].orderPaymentStatus",
-    "orders[].orderFulfillmentStatus",
-    ...amountPaths("orders[].pricingSummary.priceSubtotal"),
-    ...amountPaths("orders[].pricingSummary.deliveryCost"),
-    ...amountPaths("orders[].pricingSummary.total"),
-    ...amountPaths("orders[].totalMarketplaceFee"),
-    "orders[].lineItems[].legacyItemId",
-    "orders[].lineItems[].sku",
-    "orders[].lineItems[].quantity",
-    "orders[].lineItems[].title",
-    ...amountPaths("orders[].lineItems[].lineItemCost"),
-    ...ERROR_PATHS,
-  ]),
+  // Row 13: the page's TOP-LEVEL keys only. Never an `orders[]` element path,
+  // and not `next` (present only when more than one order matched): the prod
+  // shapes are a public artifact, and an element path, or `next`, would say
+  // whether the seller had orders in the window. `orders` itself reports as
+  // "array" whether it is empty or not. The fake's drift compare reads an
+  // `orders` array with no element paths as "says nothing about its items".
+  orders: Object.freeze(["href", "limit", "offset", "total", "orders", ...ERROR_PATHS]),
   // services/ebay-oauth.fetchEbayIdentity
   identity: Object.freeze(["userId", "username", ...ERROR_PATHS]),
 });

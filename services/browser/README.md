@@ -176,16 +176,23 @@ The prod deploy gate's eBay leg and the daily eBay drift source, built like
 `/probe/bsc` (same Cloud Run IAM auth, same global limiter, its own one call a
 minute). Code: `src/routes/ebay-probe.ts` and `src/routes/ebay-probe-allowlist.ts`.
 
-- **Read-only by construction.** In prod it reads a real seller's account (eBay
-  has no separate prod test seller), so every eBay read goes through
-  `probeGet`, which accepts only an entry of the frozen
-  `EBAY_PROBE_ALLOWLIST` (GET, fixed host, path and query: rows 1, 3, 5, 6, 7,
-  10 GET, 13 with `limit=1`, 15 of the NEO-555 eBay surface) and takes no
-  path, query or body of its own. The only POST is `tokenGrant`: a
-  `client_credentials` or `refresh_token` grant to eBay's token endpoint
-  through the existing `fetchApplicationToken` / `refreshAccessToken`.
-  `tests/ebay-probe.test.mjs` fails on egress anywhere else in either module,
-  on any Secret Manager write or credential lock, and on any non-GET entry.
+- **Read-only by construction.** In prod it reads a real seller account (eBay
+  has no separate prod test seller), so the raw transport is wrapped once per
+  run by `createProbeTransport` and only that wrapper reaches the code that
+  makes requests. The wrapper forwards a `GET` only when its URL is exactly
+  one entry of the frozen `EBAY_PROBE_ALLOWLIST` on the target (fixed host,
+  path and query: rows 1, 3, 5, 6, 7, 10 GET, 13 with `limit=1`, 15 of the
+  NEO-555 eBay surface) and a `POST` only when it is a `client_credentials` or
+  `refresh_token` grant to the target's token URL. Any other method, however
+  spelt (a lowercase `delete` included) and however the wrapper is called, is
+  refused before anything leaves the process. Every eBay read goes through
+  `probeGet`, which accepts only an allowlist entry and takes no path, query or
+  body of its own; the token grants go through `tokenGrant` and the existing
+  `fetchApplicationToken` / `refreshAccessToken`. `tests/ebay-probe.test.mjs`
+  fails on egress anywhere else in either module, on an aliased call
+  (`.call`, `.apply`, `.bind`, `Reflect.apply`), on a write-method literal in
+  any case, on a new import, on any Secret Manager write or credential lock,
+  and on any non-GET entry.
 - **Two legs.** The app leg (a `client_credentials` token, then the card
   category's item aspects, row 7) is hard: its failure is `outcome:
   "app_failed"`. The account leg (the seller's refresh token, then the
@@ -200,18 +207,23 @@ minute). Code: `src/routes/ebay-probe.ts` and `src/routes/ebay-probe-allowlist.t
   `EBAY_CLIENT_SECRET`, `EBAY_RU_NAME`. The refresh is in memory only: the
   minted token is never written back, no lock is taken, and a rotated refresh
   token would be dropped. The user token is asked for with the `.readonly`
-  scopes first (`EBAY_READONLY_SCOPES`) and with the consented scopes when
-  eBay refuses those (`accountLeg.scopes`, and an
-  `ebay_probe_scope_fallback` log line). Fake target (`NEONBINDER_FAKE_BSC_URL`
+  scopes first (`EBAY_READONLY_SCOPES`) and with the consented scopes only
+  when eBay answers `invalid_scope` (`accountLeg.scopes`, and an
+  `ebay_probe_scope_fallback` log line). Any other refusal, such as
+  `invalid_grant`, is `refresh_failed` with no second grant. Fake target (`NEONBINDER_FAKE_BSC_URL`
   set): the fake eBay at `<FAKE>/ebay/api|apiz/...` with the fake's fixed
   public client and the fake BSC's caller key and ID token; the body may be
   `{refreshToken}` (a fake refresh token), else the account leg is skipped.
 - **Pause.** On the real target the eBay pause flag
   (`NEONBINDER_PAUSED_PLATFORMS`, site key `ebay`, the canary's lookup)
-  answers `outcome: "skipped_paused"` without calling eBay.
+  answers `outcome: "skipped_paused"` without calling eBay. The lookup fails
+  open like the canary's: when it cannot answer, the probe runs and the
+  failure is logged.
 - **Answer.** `{ebayTarget, outcome, appLeg, accountLeg, shapes, statuses,
   hashes, steps, durationMs, detail?}`. `shapes` holds only each entry's
-  `shapePaths` (the fields NB's parsers read; buyer and ship-to data never),
+  `shapePaths` (the fields NB's parsers read; buyer and ship-to data never;
+  for row 13 the page's top-level keys only, so the public artifact never says
+  whether the seller had orders),
   and `shapes`, `statuses` and `hashes` are keyed by the fake's endpoint names,
   so they post to `/__fake/drift-compare {marketplace: "ebay"}` unchanged
   (`services/fake-bsc/CONTRACT.md`, "Drift"). The two hashes (rows 5 and 7)

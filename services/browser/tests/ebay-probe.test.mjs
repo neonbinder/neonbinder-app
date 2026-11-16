@@ -2,17 +2,23 @@
  * NEO-555: POST /probe/ebay (src/routes/ebay-probe.ts) and its allowlist
  * (src/routes/ebay-probe-allowlist.ts).
  *
- * Two kinds of test:
+ * Three kinds of test:
  *   1. Static guards over the SOURCE of both probe modules: the only egress is
- *      probeGet (GETs from the frozen allowlist) and tokenGrant (the token
- *      endpoint), there is no Secret Manager write, and every allowlist entry
- *      is a GET. These fail the build if someone adds a write path.
- *   2. The route end to end with eBay, the pause lookup and the credential
- *      read stubbed: every call recorded and checked against the allowlist.
+ *      probeGet (GETs from the frozen allowlist), tokenGrant (the token
+ *      endpoint) and the transport guard that wraps both; no aliased call, no
+ *      write-method literal in any case, no import beyond the pinned list, no
+ *      Secret Manager write, and every allowlist entry is a GET. Each guard is
+ *      also run against planted bypasses, to prove it still sees them.
+ *   2. The transport guard (createProbeTransport) on its own: what it
+ *      forwards and what it refuses, however it is called.
+ *   3. The route end to end with eBay, the pause lookup and the credential
+ *      read stubbed. Every stub registers itself and an afterEach hook checks
+ *      EVERY recorded call of EVERY test against the allowlist, not only the
+ *      happy path's.
  *
  * Nothing here contacts eBay or Secret Manager.
  */
-import { describe, it } from "node:test";
+import { describe, it, afterEach, after } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import http from "node:http";
@@ -29,6 +35,8 @@ const { EBAY_READONLY_SCOPES, EBAY_SCOPES } = require("../dist/services/ebay-oau
 
 const {
   createEbayProbeRouter,
+  createProbeTransport,
+  probeEntryUrl,
   probeGet,
   tokenGrant,
   digestNames,
@@ -148,15 +156,25 @@ function goodAnswers() {
  * A stub eBay. `token` decides each grant's answer:
  *   (grantType, scope) => [status, body]
  */
+/**
+ * Every stub eBay made by any test. The afterEach hook below drains it and
+ * checks every call each one received, so a test that forgets to call
+ * assertOnlyPermittedCalls is still covered.
+ */
+const STUBS = [];
+let stubsChecked = 0;
+
 function stubEbay({ answers = goodAnswers(), token, bases } = {}) {
   const calls = [];
+  const [api, apiz] = bases ?? ["https://api.ebay.com", "https://apiz.ebay.com"];
+  STUBS.push({ calls, bases: { api, apiz } });
   const tokenAnswer =
     token ??
     ((grant) =>
       grant === "client_credentials"
         ? [200, { access_token: APP_TOKEN, expires_in: 7200 }]
         : [200, { access_token: USER_TOKEN, expires_in: 7200 }]);
-  const roots = bases ?? ["https://api.ebay.com", "https://apiz.ebay.com"];
+  const roots = [api, apiz];
   const fetchImpl = async (url, init = {}) => {
     const u = new URL(String(url));
     const call = {
@@ -210,7 +228,8 @@ function makeRouter(overrides = {}) {
   const router = createEbayProbeRouter({
     env: overrides.env ?? PROD_ENV,
     fetchImpl: stub.fetchImpl,
-    isPaused: overrides.isPaused ?? (async () => false),
+    // `isPaused: null` leaves the route's default lookup (shouldSkipCanary) in place.
+    isPaused: overrides.isPaused === null ? undefined : (overrides.isPaused ?? (async () => false)),
     readCredential:
       overrides.readCredential ??
       (async (key) => {
@@ -234,6 +253,7 @@ function assertNoSecrets(text, where) {
 function assertOnlyPermittedCalls(calls, bases = { api: "https://api.ebay.com", apiz: "https://apiz.ebay.com" }) {
   for (const c of calls) {
     const u = new URL(c.url);
+    assert.ok(c.method === "GET" || c.method === "POST", `method ${JSON.stringify(c.method)} reached eBay`);
     if (c.method === "POST") {
       assert.equal(`${u.href}`, `${bases.api}/identity/v1/oauth2/token`, "a POST went somewhere but the token endpoint");
       const grant = new URLSearchParams(c.body).get("grant_type");
@@ -246,6 +266,19 @@ function assertOnlyPermittedCalls(calls, bases = { api: "https://api.ebay.com", 
     assert.ok(match, `GET ${u.pathname} is not in the allowlist`);
   }
 }
+
+afterEach(() => {
+  for (const s of STUBS.splice(0)) {
+    assertOnlyPermittedCalls(s.calls, s.bases);
+    stubsChecked++;
+  }
+});
+
+after(() => {
+  // The hook must actually have run over the route tests; if node:test ever
+  // stops applying a root afterEach to nested tests, this fails.
+  assert.ok(stubsChecked >= 40, `the afterEach permitted-call check ran over only ${stubsChecked} stubs`);
+});
 
 // ---------------------------------------------------------------------------
 // 1. Static guards
@@ -276,10 +309,13 @@ function functionRange(src, name) {
   throw new Error(`unbalanced braces in ${name}`);
 }
 
+/** Each egress pattern and the only functions it may appear in. */
 const EGRESS_PATTERNS = [
-  { re: /\bfetch\w*\s*\(/g, what: "a fetch call" },
-  { re: /\b(?:refreshAccessToken|fetchApplicationToken)\s*\(/g, what: "a token grant" },
-  { re: /["'`](?:POST|PUT|DELETE|PATCH)["'`]/g, what: "a write method literal" },
+  { re: /\bfetch\w*\s*\(/g, what: "a fetch call", only: ["probeGet", "tokenGrant", "createProbeTransport"] },
+  { re: /\b(?:refreshAccessToken|fetchApplicationToken)\s*\(/g, what: "a token grant", only: ["tokenGrant"] },
+  // Case-insensitive: fetch upper-cases a lowercase "delete" to DELETE. Not
+  // in probeGet: its one request is a GET.
+  { re: /["'`](?:POST|PUT|DELETE|PATCH)["'`]/gi, what: "a write method literal", only: ["tokenGrant", "createProbeTransport"] },
 ];
 const FORBIDDEN_EVERYWHERE = [
   /\bexchangeAuthorizationCode\b/,
@@ -293,52 +329,189 @@ const FORBIDDEN_EVERYWHERE = [
   /from\s+["']undici["']|require\(["']undici["']\)/,
   /\bbscFetch\b/,
   /\bXMLHttpRequest\b/,
+  // An aliased call slips past `fetch\w*(`: forbid the aliases outright.
+  /\b(?:fetch\w*|rawFetch|raw|transport)\s*(?:\?\.\s*|\.\s*)(?:call|apply|bind)\b/,
+  /\bReflect\s*\.\s*(?:apply|construct)\b/,
+  /\bglobalThis\s*\[/,
+  // Egress in an imported module: only the pinned static imports are allowed.
+  /\brequire\s*\(/,
+  /\bimport\s*\(/,
 ];
 
-describe("ebay probe: static read-only guards", () => {
-  const probeSrc = stripComments(readFileSync(join(SRC, "ebay-probe.ts"), "utf8"));
-  const allowSrc = stripComments(readFileSync(join(SRC, "ebay-probe-allowlist.ts"), "utf8"));
 
-  it("egress in ebay-probe.ts happens only inside probeGet and tokenGrant", () => {
-    const ranges = [functionRange(probeSrc, "probeGet"), functionRange(probeSrc, "tokenGrant")];
+/**
+ * ebay-probe.ts's imports, exactly. A new import is a new place egress could
+ * hide (a helper that POSTs), so adding one means reviewing it and this list.
+ */
+const PINNED_IMPORTS = {
+  "node:crypto": ["default crypto"],
+  express: ["Request", "Response", "Router"],
+  "../bsc-endpoints": ["BscEndpoints", "fakeBscCallerHeaders", "resolveBscEndpoints"],
+  "../bsc-shape": ["shapeMap"],
+  "../canary-pause": ["CanaryPauseDeps", "shouldSkipCanary"],
+  "../services/ebay-oauth": [
+    "EBAY_HOSTS",
+    "EBAY_READONLY_SCOPES",
+    "EBAY_SCOPES",
+    "EbayOAuthConfig",
+    "EbayOAuthError",
+    "EbayTokenResult",
+    "TOKEN_PATH",
+    "fetchApplicationToken",
+    "readEbayOAuthConfig",
+    "refreshAccessToken",
+  ],
+  "../services/secrets-manager": ["SecretsManagerService"],
+  "./ebay-probe-allowlist": ["EBAY_PROBE_ALLOWLIST", "EbayProbeEntry", "EbayProbeHashKind", "EbayProbeHost", "EbayProbeLeg", "resolveProbeQueryValue"],
+};
+
+/** module → sorted imported names ("default x" for a default import). */
+function importsOf(src) {
+  const out = {};
+  let statements = 0;
+  for (const m of src.matchAll(/^\s*import\s+([\s\S]*?)\s+from\s+["']([^"']+)["'];?/gm)) {
+    statements++;
+    const clause = m[1].trim();
+    const names = [];
+    const braces = clause.match(/\{([\s\S]*)\}/);
+    const outside = clause.replace(/\{[\s\S]*\}/, "").replace(/,/g, "").trim();
+    if (outside) names.push(`default ${outside.replace(/^type\s+/, "")}`);
+    if (braces) for (const n of braces[1].split(",")) if (n.trim()) names.push(n.trim().replace(/^type\s+/, ""));
+    out[m[2]] = [...(out[m[2]] ?? []), ...names].sort();
+  }
+  // Every `import` keyword at a statement start must be one of those.
+  const keywords = [...src.matchAll(/^\s*import\b/gm)].length;
+  return { imports: out, statements, keywords };
+}
+
+/**
+ * Every static-guard violation in the probe module's source (comments
+ * stripped). Empty for the real file; the planted-bypass tests below prove
+ * it is not empty when a bypass is added.
+ */
+function probeViolations(probeSrc) {
+  const out = [];
+  let seen = 0;
+  for (const { re, what, only } of EGRESS_PATTERNS) {
+    const ranges = only.map((n) => functionRange(probeSrc, n));
     const inside = (idx) => ranges.some(([a, b]) => idx >= a && idx < b);
-    let seen = 0;
-    for (const { re, what } of EGRESS_PATTERNS) {
-      for (const m of probeSrc.matchAll(re)) {
-        seen++;
-        assert.ok(inside(m.index), `${what} outside probeGet/tokenGrant: ${JSON.stringify(m[0])} at offset ${m.index}`);
-      }
+    for (const m of probeSrc.matchAll(re)) {
+      seen++;
+      if (!inside(m.index)) out.push(`${what} outside ${only.join("/")}: ${JSON.stringify(m[0])} at offset ${m.index}`);
     }
-    // The guard must actually be looking at something.
-    assert.ok(seen >= 4, "the scan found no egress at all; it has stopped testing");
+  }
+  if (seen < 5) out.push("the scan found almost no egress; it has stopped testing");
+  for (const re of FORBIDDEN_EVERYWHERE) if (re.test(probeSrc)) out.push(`matches ${re}`);
+
+  // The raw transport reaches the guard and nothing else.
+  const count = (re) => [...probeSrc.matchAll(re)].length;
+  if (count(/\bdeps\s*\.\s*fetchImpl\b/g) !== 1) out.push("deps.fetchImpl is read somewhere but the rawFetch line");
+  if (count(/\bglobalThis\s*\.\s*fetch\b/g) !== 1) out.push("globalThis.fetch is read somewhere but the rawFetch line");
+  if (!/const rawFetch: typeof fetch = deps\.fetchImpl \?\? globalThis\.fetch;/.test(probeSrc)) out.push("rawFetch is not the raw transport");
+  const rawUses = [...probeSrc.matchAll(/\brawFetch\b/g)].map((m) => probeSrc.slice(m.index - 22, m.index + 8));
+  if (rawUses.length !== 2 || !rawUses[1].endsWith("createProbeTransport(rawFetch")) out.push(`rawFetch is used other than by createProbeTransport: ${JSON.stringify(rawUses)}`);
+  // A bare `fetch` (not `typeof fetch`, not a property) is the global: forbidden.
+  for (const m of probeSrc.matchAll(/(?<![\w.$])fetch\b/g)) {
+    if (!/typeof\s+$/.test(probeSrc.slice(Math.max(0, m.index - 10), m.index))) out.push(`a bare fetch reference at offset ${m.index}`);
+  }
+  // The route puts only the guard in the context.
+  const [ra, rb] = functionRange(probeSrc, "createEbayProbeRouter");
+  const props = [...probeSrc.slice(ra, rb).matchAll(/\bfetchImpl\s*:\s*([^\n]*?),?[ \t]*$/gm)].map((m) => m[1].trim());
+  if (props.length !== 1 || props[0] !== "createProbeTransport(rawFetch, target, started)") out.push(`the route's context transport is not only the guard: ${JSON.stringify(props)}`);
+
+  const { imports, statements, keywords } = importsOf(probeSrc);
+  if (statements !== keywords) out.push("an import statement the pin cannot read");
+  try {
+    assert.deepEqual(imports, Object.fromEntries(Object.entries(PINNED_IMPORTS).map(([k, v]) => [k, [...v].sort()])));
+  } catch {
+    out.push(`the imports changed: ${JSON.stringify(imports)}`);
+  }
+  return out;
+}
+
+const PROBE_SRC = stripComments(readFileSync(join(SRC, "ebay-probe.ts"), "utf8"));
+const ALLOW_SRC = stripComments(readFileSync(join(SRC, "ebay-probe-allowlist.ts"), "utf8"));
+
+/** PROBE_SRC with `snippet` planted right after `anchor` (default: the route handler's first line). */
+function plantInHandler(snippet, anchor = 'router.post("/probe/ebay", async (req: Request, res: Response) => {') {
+  const at = PROBE_SRC.indexOf(anchor);
+  assert.ok(at >= 0, `the plant anchor moved: ${anchor}`);
+  const cut = at + anchor.length;
+  return `${PROBE_SRC.slice(0, cut)}\n    ${snippet}\n${PROBE_SRC.slice(cut)}`;
+}
+
+/** probeGet's first line, where the probeGet plants go. */
+const PROBE_GET_ANCHOR = "const href = probeEntryUrl(entry, ctx.target, ctx.queryTimeMs ?? ctx.now());";
+
+describe("ebay probe: static read-only guards", () => {
+  it("ebay-probe.ts has no violation: egress only in probeGet, tokenGrant and the guard; the raw fetch reaches only the guard; imports pinned", () => {
+    assert.deepEqual(probeViolations(PROBE_SRC), []);
   });
 
-  it("the token grant POST lives only in tokenGrant and only for the two grants", () => {
-    const [a, b] = functionRange(probeSrc, "tokenGrant");
-    const body = probeSrc.slice(a, b);
-    assert.match(body, /["']POST["']/);
-    assert.match(body, /TOKEN_GRANT_TYPES\.has\(grantType\)/);
+  it("the token grant POST lives only in tokenGrant and the guard, and only for the two grants", () => {
+    const [a, b] = functionRange(PROBE_SRC, "tokenGrant");
+    assert.match(PROBE_SRC.slice(a, b), /["']POST["']/);
+    assert.match(PROBE_SRC.slice(a, b), /TOKEN_GRANT_TYPES\.has\(grantType\)/);
+    const [c, d] = functionRange(PROBE_SRC, "createProbeTransport");
+    assert.match(PROBE_SRC.slice(c, d), /TOKEN_GRANT_TYPES\.has\(grants\[0\]\)/);
     assert.match(
-      probeSrc,
+      PROBE_SRC,
       /const TOKEN_GRANT_TYPES: ReadonlySet<string> = new Set\(\["client_credentials", "refresh_token"\]\);/,
       "the permitted grant set changed",
     );
-    assert.ok(!/authorization_code/.test(probeSrc), "the probe names the authorization_code grant");
+    assert.ok(!/authorization_code/.test(PROBE_SRC), "the probe names the authorization_code grant");
   });
 
-  it("the allowlist module makes no request and names no write method", () => {
+  it("the allowlist module imports nothing, makes no request and names no write method", () => {
+    assert.equal(importsOf(ALLOW_SRC).keywords, 0, "ebay-probe-allowlist.ts gained an import");
     for (const { re, what } of EGRESS_PATTERNS) {
-      assert.equal([...allowSrc.matchAll(re)].length, 0, `ebay-probe-allowlist.ts contains ${what}`);
+      assert.equal([...ALLOW_SRC.matchAll(re)].length, 0, `ebay-probe-allowlist.ts contains ${what}`);
     }
-    assert.ok(!/method:\s*["'](?!GET["'])/.test(allowSrc), "an allowlist entry names a method other than GET");
+    assert.ok(!/method:\s*["'`](?!GET["'`])/i.test(ALLOW_SRC), "an allowlist entry names a method other than GET");
   });
 
-  it("neither module touches a Secret Manager write, a credential lock, or another HTTP client", () => {
+  it("neither module touches a Secret Manager write, a credential lock, an alias, a dynamic import or another HTTP client", () => {
     for (const re of FORBIDDEN_EVERYWHERE) {
-      assert.ok(!re.test(probeSrc), `ebay-probe.ts matches ${re}`);
-      assert.ok(!re.test(allowSrc), `ebay-probe-allowlist.ts matches ${re}`);
+      assert.ok(!re.test(PROBE_SRC), `ebay-probe.ts matches ${re}`);
+      assert.ok(!re.test(ALLOW_SRC), `ebay-probe-allowlist.ts matches ${re}`);
     }
   });
+
+  // The S1 bypasses: each must be seen by the scan.
+  const PLANTS = {
+    "a .call-aliased fetch": 'await ctx.fetchImpl.call(null, "https://api.ebay.com/sell/inventory/v1/offer/1/publish", {});',
+    "an .apply-aliased fetch": 'await deps.fetchImpl?.apply(null, ["https://api.ebay.com/x", {}]);',
+    "a bound fetch": "const f = rawFetch.bind(null);",
+    "Reflect.apply": 'await Reflect.apply(rawFetch, undefined, ["https://api.ebay.com/x", {}]);',
+    "a lowercase delete": 'const init = { method: "delete" };',
+    "a mixed-case patch in a template": "const init = { method: `Patch` };",
+    "a raw fetch through an alias": 'const f = deps.fetchImpl; await f!("https://api.ebay.com/x", { method: "GET" });',
+    "the global fetch, bare": 'await fetch("https://api.ebay.com/x");',
+    "the global fetch, by index": 'await (globalThis["fet" + "ch"] as typeof fetch)("https://api.ebay.com/x");',
+    "a dynamic import": 'const m = await import("../services/easypost");',
+    "a require": 'const m = require("node:https");',
+    "a new static import": "",
+    "a second transport in the context": "const ctx2 = { fetchImpl: rawFetch };",
+  };
+  for (const [name, snippet] of Object.entries(PLANTS)) {
+    it(`the scan sees a planted bypass: ${name}`, () => {
+      const src =
+        name === "a new static import"
+          ? `import { postLabel } from "../services/easypost";\n${PROBE_SRC}`
+          : plantInHandler(snippet);
+      assert.ok(probeViolations(src).length > 0, `the scan missed ${name}`);
+    });
+  }
+  const PROBE_GET_PLANTS = {
+    "a POST in probeGet": 'await ctx.fetchImpl(href, { method: "POST" });',
+    "a lowercase delete in probeGet": 'await ctx.fetchImpl(href, { method: "delete" });',
+    "a token grant in probeGet": "await refreshAccessToken(config, rt, deps);",
+  };
+  for (const [name, snippet] of Object.entries(PROBE_GET_PLANTS)) {
+    it(`the scan sees a planted bypass: ${name}`, () => {
+      assert.ok(probeViolations(plantInHandler(snippet, PROBE_GET_ANCHOR)).length > 0, `the scan missed ${name}`);
+    });
+  }
 });
 
 describe("ebay probe: the allowlist", () => {
@@ -383,6 +556,36 @@ describe("ebay probe: the allowlist", () => {
         assert.ok(!/buyer|shipTo|fulfillmentStartInstructions|email|address|fullName|phone|individualAccount|businessAccount/i.test(p), `${e.step}: ${p}`);
       }
     }
+  });
+
+  it("EBAY_READONLY_SCOPES is frozen and holds only .readonly scopes or the bare api_scope", () => {
+    assert.ok(Object.isFrozen(EBAY_READONLY_SCOPES));
+    assert.throws(() => EBAY_READONLY_SCOPES.push("https://api.ebay.com/oauth/api_scope/sell.inventory"), TypeError);
+    assert.throws(() => {
+      EBAY_READONLY_SCOPES[1] = "https://api.ebay.com/oauth/api_scope/sell.inventory";
+    }, TypeError);
+    assert.ok(EBAY_READONLY_SCOPES.length > 0);
+    assert.equal(new Set(EBAY_READONLY_SCOPES).size, EBAY_READONLY_SCOPES.length);
+    for (const scope of EBAY_READONLY_SCOPES) {
+      assert.ok(
+        scope === "https://api.ebay.com/oauth/api_scope" || /^https:\/\/api\.ebay\.com\/oauth\/api_scope\/[a-z]+(\.[a-z_]+)*\.readonly$/.test(scope),
+        `${scope} is neither a .readonly scope nor the bare api_scope`,
+      );
+    }
+  });
+
+  it("row 13 reports the same top-level shape whether the seller had orders or not", () => {
+    const { shapeMap } = require("../dist/bsc-shape");
+    const orders = EBAY_PROBE_ALLOWLIST.find((e) => e.row === 13);
+    const withOrders = goodAnswers()["/sell/fulfillment/v1/order"]();
+    withOrders.next = "https://api.ebay.com/sell/fulfillment/v1/order?offset=1&limit=1";
+    withOrders.total = 7;
+    const none = { href: "h", limit: 1, offset: 0, total: 0, orders: [] };
+    const a = shapeMap({ href: "h", limit: 1, offset: 0, ...withOrders }, { allow: orders.shapePaths });
+    const b = shapeMap(none, { allow: orders.shapePaths });
+    assert.deepEqual(a, b);
+    assert.deepEqual(Object.keys(a).sort(), ["$", "href", "limit", "offset", "orders", "total"]);
+    for (const p of orders.shapePaths) assert.ok(!p.startsWith("orders[") && p !== "next" && p !== "prev", `row 13 reports ${p}`);
   });
 
   it("resolves the orders window to UTC midnight N days back", () => {
@@ -453,6 +656,107 @@ describe("ebay probe: probeGet and tokenGrant refuse anything off-list", () => {
   });
 });
 
+describe("ebay probe: the transport guard (createProbeTransport)", () => {
+  const T = Date.parse("2026-11-16T12:00:00.000Z");
+  const REAL = resolveEbayProbeTarget(PROD_ENV);
+  const FAKE = resolveEbayProbeTarget({ ENVIRONMENT: "dev", NEONBINDER_FAKE_BSC_URL: "http://127.0.0.1:59999", NEONBINDER_FAKE_BSC_KEY: "k" });
+  const recorder = () => {
+    const seen = [];
+    const raw = async (url, init) => (seen.push({ url, init }), new Response("{}", { status: 200 }));
+    return { seen, raw };
+  };
+  const tokenUrl = (target) => `${target.bases.api}/identity/v1/oauth2/token`;
+  const urlOf = (row, target = REAL, t = T) => probeEntryUrl(EBAY_PROBE_ALLOWLIST.find((e) => e.row === row), target, t);
+
+  it("forwards each allowlisted GET and the two token grants, always with redirects refused", async () => {
+    for (const target of [REAL, FAKE]) {
+      const { seen, raw } = recorder();
+      const transport = createProbeTransport(raw, target, T);
+      for (const e of EBAY_PROBE_ALLOWLIST) {
+        await transport(probeEntryUrl(e, target, T), { method: "GET", redirect: "follow" });
+      }
+      for (const grant of ["client_credentials", "refresh_token"]) {
+        await transport(tokenUrl(target), { method: "POST", body: `grant_type=${grant}&scope=x` });
+      }
+      assert.equal(seen.length, EBAY_PROBE_ALLOWLIST.length + 2);
+      for (const { init } of seen) assert.equal(init.redirect, "error");
+    }
+  });
+
+  it("refuses a lowercase delete (fetch would upper-case it), and every other method or spelling", async () => {
+    const { seen, raw } = recorder();
+    const transport = createProbeTransport(raw, REAL, T);
+    const target = urlOf(10);
+    for (const method of ["delete", "DELETE", "put", "PUT", "patch", "post", "get", "Get", "HEAD", "OPTIONS", "", undefined]) {
+      await assert.rejects(transport(target, { method }), /refused/, String(method));
+    }
+    await assert.rejects(transport(target), /refused/, "no init: fetch would default to GET");
+    await assert.rejects(transport(tokenUrl(REAL), { method: "post", body: "grant_type=refresh_token" }), /refused/);
+    assert.equal(seen.length, 0);
+  });
+
+  it("refuses a .call-, .apply- or Reflect.apply-aliased call to anything off the list (aliasing changes nothing)", async () => {
+    const { seen, raw } = recorder();
+    const transport = createProbeTransport(raw, REAL, T);
+    const publish = "https://api.ebay.com/sell/inventory/v1/offer/1/publish";
+    await assert.rejects(transport.call(null, publish, { method: "POST", body: "grant_type=refresh_token" }), /refused/);
+    await assert.rejects(transport.call({ fetchImpl: raw }, urlOf(10), { method: "delete" }), /refused/);
+    await assert.rejects(transport.apply(null, [publish, { method: "GET" }]), /refused/);
+    await assert.rejects(Reflect.apply(transport, undefined, [urlOf(13), { method: "DELETE" }]), /refused/);
+    await assert.rejects(transport.bind(null)(publish, { method: "GET" }), /refused/);
+    assert.equal(seen.length, 0);
+    assert.ok(Object.isFrozen(transport), "the guard can be patched");
+  });
+
+  it("refuses a GET that is not character for character an allowlisted URL, or that carries a body", async () => {
+    const { seen, raw } = recorder();
+    const transport = createProbeTransport(raw, REAL, T);
+    const offers = urlOf(10);
+    const bad = [
+      `${offers}&sku=OTHER`,
+      offers.replace("NBPROBE-ABSENT", "REAL-SKU"),
+      `${offers}#x`,
+      urlOf(13, REAL, T - 2 * 24 * 3600 * 1000),
+      "https://api.ebay.com/sell/inventory/v1/offer/1/publish",
+      "https://api.ebay.com/sell/inventory/v1/offer",
+      urlOf(15).replace("apiz.ebay.com", "api.ebay.com"),
+      urlOf(15, FAKE),
+      tokenUrl(REAL),
+    ];
+    for (const url of bad) await assert.rejects(transport(url, { method: "GET" }), /refused/, url);
+    await assert.rejects(transport(offers, { method: "GET", body: "x" }), /refused/);
+    await assert.rejects(transport(new URL(offers), { method: "GET" }), /refused/, "a URL object");
+    await assert.rejects(transport(new Request(offers), { method: "GET" }), /refused/, "a Request object");
+    assert.equal(seen.length, 0);
+  });
+
+  it("refuses a POST that is not one client_credentials or refresh_token grant to the target's own token URL", async () => {
+    const { seen, raw } = recorder();
+    const transport = createProbeTransport(raw, REAL, T);
+    const tu = tokenUrl(REAL);
+    const bad = [
+      [tu, "grant_type=authorization_code&code=abc"],
+      [tu, "grant_type=refresh_token&grant_type=authorization_code"],
+      [tu, "grant_type=refresh_token&code=abc"],
+      [tu, "scope=x"],
+      [tu, ""],
+      [tokenUrl(FAKE), "grant_type=refresh_token"],
+      [`${tu}?x=1`, "grant_type=refresh_token"],
+      ["https://api.ebay.com/sell/inventory/v1/offer/1/publish", "grant_type=refresh_token"],
+      [urlOf(10), "grant_type=refresh_token"],
+    ];
+    for (const [url, body] of bad) await assert.rejects(transport(url, { method: "POST", body }), /refused/, `${url} ${body}`);
+    await assert.rejects(transport(tu, { method: "POST", body: new URLSearchParams({ grant_type: "refresh_token" }) }), /refused/, "a non-string body");
+    await assert.rejects(transport(tu, { method: "POST" }), /refused/, "no body");
+    assert.equal(seen.length, 0);
+
+    // The fake target's guard refuses the REAL token URL.
+    const fakeGuard = createProbeTransport(raw, FAKE, T);
+    await assert.rejects(fakeGuard(tu, { method: "POST", body: "grant_type=client_credentials" }), /refused/);
+    assert.equal(seen.length, 0);
+  });
+});
+
 describe("ebay probe: digests and parity with the fake", () => {
   const FAKE = join(HERE, "..", "..", "fake-bsc");
 
@@ -509,7 +813,8 @@ describe("POST /probe/ebay (real target)", () => {
     }
     assert.equal(b.shapes["GET ebay/api/sell/inventory/v1/offer"]["errors[].errorId"], "number");
     assert.equal(b.statuses["GET ebay/api/sell/inventory/v1/offer"], 404);
-    assert.equal(b.shapes["GET ebay/api/sell/fulfillment/v1/order"]["orders[].lineItems[].sku"], "string");
+    // Row 13: top-level keys only. Never an order's fields, never `next`.
+    assert.deepEqual(b.shapes["GET ebay/api/sell/fulfillment/v1/order"], { $: "object", orders: "array", total: "number" });
     assert.deepEqual(b.hashes, {
       "GET ebay/api/sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services": digestNames(SHIPPING_CODES),
       "GET ebay/api/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category": digestNames(ASPECT_NAMES),
@@ -559,6 +864,74 @@ describe("POST /probe/ebay (real target)", () => {
     assert.equal(res.body.outcome, "skipped_paused");
     assert.equal(calls.length, 0);
     assert.equal(reads.length, 0);
+  });
+
+  /** Deps for the route's DEFAULT lookup: the real shouldSkipCanary with a stub Convex. */
+  const pauseLookup = (answer) => {
+    const seen = [];
+    const logs = [];
+    return {
+      seen,
+      logs,
+      deps: {
+        siteUrl: "https://pause-lookup.example.site",
+        mintIdToken: async () => "PAUSE-ID-TOKEN-VALUE",
+        fetch: async (url, init) => {
+          seen.push({ url, init });
+          return answer();
+        },
+        log: (line) => logs.push(line),
+        timeoutMs: 2000,
+      },
+    };
+  };
+
+  it("the default lookup (the real shouldSkipCanary) answering paused [\"ebay\"] is skipped_paused, nothing read", async () => {
+    const lookup = pauseLookup(() => new Response(JSON.stringify({ paused: ["ebay"] }), { status: 200 }));
+    const { router, calls, reads } = makeRouter({ isPaused: null, deps: { pauseLookup: lookup.deps } });
+    const res = await call(router);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.outcome, "skipped_paused");
+    assert.equal(res.body.appLeg.outcome, "skipped_paused");
+    assert.equal(res.body.accountLeg.outcome, "skipped_paused");
+    assert.equal(lookup.seen.length, 1);
+    assert.equal(lookup.seen[0].url, "https://pause-lookup.example.site/internal/marketplace-pause");
+    assert.equal(calls.length, 0);
+    assert.equal(reads.length, 0);
+    assert.ok(!res.text.includes("PAUSE-ID-TOKEN-VALUE"));
+
+    // Another platform paused is not eBay paused.
+    const other = pauseLookup(() => new Response(JSON.stringify({ paused: ["buysportscards", "sportlots"] }), { status: 200 }));
+    const run = makeRouter({ isPaused: null, deps: { pauseLookup: other.deps } });
+    assert.equal((await call(run.router)).body.outcome, "ok");
+  });
+
+  it("a pause lookup that fails FAILS OPEN: the probe runs and the failure is logged", async () => {
+    for (const [why, answer, reason] of [
+      ["a 503", () => new Response("down", { status: 503 }), "http_503"],
+      ["a network error", () => Promise.reject(new TypeError(`fetch failed ${USER_TOKEN}`)), "network_error"],
+      ["an unreadable body", () => new Response("not json", { status: 200 }), "bad_body"],
+    ]) {
+      const lookup = pauseLookup(answer);
+      const { router, calls, reads, logs } = makeRouter({ isPaused: null, deps: { pauseLookup: lookup.deps } });
+      const res = await call(router);
+      assert.equal(res.status, 200, why);
+      assert.equal(res.body.outcome, "ok", why);
+      assert.deepEqual(reads, [PROBE_KEY], why);
+      assert.equal(calls.filter((c) => c.method === "GET").length, EBAY_PROBE_ALLOWLIST.length, why);
+      assert.deepEqual(lookup.logs, [{ msg: "canary_pause_lookup_failed", platform: "ebay", reason }], why);
+      assertNoSecrets(JSON.stringify([lookup.logs, logs]), `logs (${why})`);
+    }
+  });
+
+  it("an injected lookup that throws also fails open: the probe runs, a value-free line is logged", async () => {
+    const { router, calls, logs } = makeRouter({ isPaused: async () => Promise.reject(new Error(`boom ${USER_TOKEN}`)) });
+    const res = await call(router);
+    assert.equal(res.status, 200);
+    assert.equal(res.body.outcome, "ok");
+    assert.equal(calls.filter((c) => c.method === "GET").length, EBAY_PROBE_ALLOWLIST.length);
+    assert.ok(logs.some((l) => l.msg === "ebay_probe_pause_lookup_failed" && l.error_class === "Error"));
+    assertNoSecrets(JSON.stringify(logs), "logs");
   });
 
   it("falls back to the consented scopes when eBay refuses the read-only ones, and logs it", async () => {
@@ -622,16 +995,23 @@ describe("POST /probe/ebay (real target)", () => {
     }
   });
 
-  it("a refresh token eBay refuses on both scope sets is refresh_failed, a warning", async () => {
-    const stub = stubEbay({
-      token: (grant) =>
-        grant === "client_credentials" ? [200, { access_token: APP_TOKEN, expires_in: 7200 }] : [400, { error: "invalid_grant" }],
-    });
-    const { router } = makeRouter({ stub });
-    const res = await call(router);
-    assert.equal(res.body.outcome, "account_warning");
-    assert.equal(res.body.accountLeg.outcome, "refresh_failed");
-    assert.match(res.body.accountLeg.detail, /^account\.token_consented: rejected, HTTP 400, invalid_grant$/);
+  it("invalid_grant on the read-only grant is refresh_failed, a warning, with NO second grant (fallback is invalid_scope only)", async () => {
+    for (const error of ["invalid_grant", "access_denied"]) {
+      const stub = stubEbay({
+        token: (grant) =>
+          grant === "client_credentials" ? [200, { access_token: APP_TOKEN, expires_in: 7200 }] : [400, { error }],
+      });
+      const { router, calls, logs } = makeRouter({ stub });
+      const res = await call(router);
+      assert.equal(res.body.outcome, "account_warning", error);
+      assert.equal(res.body.accountLeg.outcome, "refresh_failed", error);
+      assert.equal(res.body.accountLeg.scopes, null, error);
+      assert.match(res.body.accountLeg.detail, new RegExp(`^account\\.token_readonly: rejected, HTTP 400, ${error}$`), error);
+      const refreshes = calls.filter((c) => c.method === "POST" && new URLSearchParams(c.body).get("grant_type") === "refresh_token");
+      assert.deepEqual(refreshes.map((c) => new URLSearchParams(c.body).get("scope")), [EBAY_READONLY_SCOPES.join(" ")], error);
+      assert.ok(!logs.some((l) => l.msg === "ebay_probe_scope_fallback"), error);
+      assert.equal(calls.filter((c) => c.method === "GET").length, 1, `${error}: only row 7 was read`);
+    }
   });
 
   it("an app token eBay refuses fails the probe", async () => {
@@ -914,8 +1294,8 @@ describe("ebay probe (adversarial): redirects and error causes", () => {
     }
   });
 
-  it("an unexpected throw (the pause lookup) is a fixed 500 with nothing but the target", async () => {
-    const { router } = makeRouter({ isPaused: async () => Promise.reject(new Error(`boom ${USER_TOKEN}`)) });
+  it("an unexpected throw (an injected credential reader) is a fixed 500 with nothing but the target", async () => {
+    const { router } = makeRouter({ readCredential: async () => Promise.reject(new Error(`boom ${USER_TOKEN} ${REFRESH_TOKEN}`)) });
     const errors = [];
     const orig = console.error;
     console.error = (...a) => errors.push(a.map(String).join(" "));
@@ -1094,7 +1474,12 @@ describe("ebay probe (adversarial): the rate window", () => {
     };
     const { router } = makeRouter({ stub: { fetchImpl, calls: inner.calls } });
     const first = call(router);
-    while (!held) await new Promise((r) => setTimeout(r, 5));
+    // Bounded: a route that never reaches row 7 must fail this test, not hang the suite.
+    for (let i = 0; !held && i < 1000; i++) await new Promise((r) => setTimeout(r, 5));
+    if (!held) {
+      await first;
+      assert.fail("the probe never reached row 7");
+    }
     const before = inner.calls.length;
     const second = await call(router);
     assert.equal(second.status, 429);

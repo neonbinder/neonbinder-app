@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { Request, Response, Router } from "express";
 import { BscEndpoints, fakeBscCallerHeaders, resolveBscEndpoints } from "../bsc-endpoints";
 import { shapeMap } from "../bsc-shape";
-import { shouldSkipCanary } from "../canary-pause";
+import { CanaryPauseDeps, shouldSkipCanary } from "../canary-pause";
 import {
   EBAY_HOSTS,
   EBAY_READONLY_SCOPES,
@@ -31,11 +31,19 @@ import {
  * (Cloud Run IAM only, no app-layer check), same global limiter plus its own
  * one-a-minute window, same value-free shapes.
  *
- * READ-ONLY BY CONSTRUCTION. In prod this reads a real seller's account (the
- * operator's own; eBay offers no separate prod test seller), so:
- *   - every eBay request with a token goes through `probeGet`, which refuses
- *     anything but a GET entry of EBAY_PROBE_ALLOWLIST (by reference) and
- *     takes no path, query or body of its own;
+ * READ-ONLY BY CONSTRUCTION. In prod this reads a real seller account (eBay
+ * offers no separate prod test seller), so:
+ *   - the raw transport (global fetch, or the test's stub) is wrapped ONCE,
+ *     by createProbeTransport, and only the wrapper is ever put in the
+ *     context. The wrapper refuses every request but a GET of exactly one
+ *     allowlist entry's URL on the target's base, or a POST of a
+ *     client_credentials / refresh_token grant to the target's token URL. It
+ *     does not care how it is called (`.call`, `Reflect.apply`, an alias) or
+ *     how the method is spelt: anything but the exact "GET" or "POST" is
+ *     refused, so a lowercase "delete" that fetch would upper-case is too;
+ *   - every eBay read goes through `probeGet`, which refuses anything but a
+ *     GET entry of EBAY_PROBE_ALLOWLIST (by reference) and takes no path,
+ *     query or body of its own;
  *   - the only POST is `tokenGrant`: a refresh_token or client_credentials
  *     grant to eBay's token endpoint, through the existing refreshAccessToken
  *     / fetchApplicationToken. Its transport refuses any other URL, method or
@@ -43,10 +51,14 @@ import {
  *   - the minted access token lives in this request's memory only. Nothing is
  *     written back: no Secret Manager write, no credential lock, no cache;
  *   - the user token is asked for with the read-only scopes first
- *     (EBAY_READONLY_SCOPES), falling back to the consented scopes, logged as
- *     `ebay_probe_scope_fallback`, when eBay refuses them.
+ *     (EBAY_READONLY_SCOPES). Only when eBay answers `invalid_scope` does it
+ *     ask again with the consented scopes, logged as
+ *     `ebay_probe_scope_fallback`; any other refusal (invalid_grant: a revoked
+ *     or expired token) is the account warning, with no second grant.
  * tests/ebay-probe.test.mjs fails on egress anywhere else in this file or the
- * allowlist file, and on any non-GET allowlist entry.
+ * allowlist file, on an aliased call (`.call`/`.apply`/`.bind`,
+ * `Reflect.apply`), on a write-method literal in any case, on an import this
+ * file did not have, and on any non-GET allowlist entry.
  *
  * TWO LEGS.
  *   - App leg (hard): a client_credentials token, then row 7 (the card
@@ -79,7 +91,11 @@ import {
  * LIMITS. One probe a minute per process (429 + Retry-After). On the real
  * target the eBay pause flag (NEONBINDER_PAUSED_PLATFORMS, the canary's
  * lookup, site key "ebay") answers `outcome: "skipped_paused"` without
- * calling eBay. The account leg stops at the first 429/5xx/timeout.
+ * calling eBay. The lookup FAILS OPEN, like the canary's: a lookup that
+ * cannot answer means "not paused", so the probe runs (shouldSkipCanary logs
+ * `canary_pause_lookup_failed`; an injected lookup that throws is logged as
+ * `ebay_probe_pause_lookup_failed`). The account leg stops at the first
+ * 429/5xx/timeout.
  */
 
 /** Env var naming the prod probe account's credential key (`ebay-credentials-<id>`). */
@@ -189,10 +205,76 @@ export function resolveEbayProbeTarget(env: Env): EbayProbeTarget {
 export interface EbayProbeContext {
   target: EbayProbeTarget;
   env: Env;
+  /** In the route: ALWAYS the createProbeTransport wrapper, never a raw fetch. */
   fetchImpl: typeof fetch;
   now: () => number;
   timeoutMs: number;
   mintIdToken?: (audience: string) => Promise<string>;
+  /**
+   * The clock the allowlist's date-window queries resolve against (row 13).
+   * The route fixes it at the start of a run so probeGet and the transport
+   * wrapper build the same URL. Absent: `now()`.
+   */
+  queryTimeMs?: number;
+}
+
+/** The two grants the probe may make. Never authorization_code. */
+const TOKEN_GRANT_TYPES: ReadonlySet<string> = new Set(["client_credentials", "refresh_token"]);
+
+/**
+ * The one URL an allowlist entry reads on `target`: the target's fixed base
+ * for the entry's host, the entry's fixed path, its fixed query resolved
+ * against `queryTimeMs`. probeGet and createProbeTransport both build it here,
+ * so the two cannot disagree.
+ */
+export function probeEntryUrl(entry: EbayProbeEntry, target: EbayProbeTarget, queryTimeMs: number): string {
+  const base = target.bases[entry.host];
+  const url = new URL(`${base}${entry.path}`);
+  for (const [k, v] of Object.entries(entry.query)) {
+    url.searchParams.set(k, resolveProbeQueryValue(v, queryTimeMs));
+  }
+  if (!url.href.startsWith(`${base}/`)) {
+    throw new Error("probeEntryUrl: refused a URL outside the target's base");
+  }
+  return url.href;
+}
+
+const TRANSPORT_REFUSED = "ebay probe transport: refused a request that is neither an allowlisted GET nor a token grant";
+
+/**
+ * THE GUARD. Wraps the raw transport once per probe run; the route puts only
+ * the result in the context, so every request the probe makes (probeGet, the
+ * token grants, anything a later edit adds through `ctx.fetchImpl`) passes
+ * through here, however it is invoked. It forwards exactly:
+ *   - `GET <url>` where `<url>` is, character for character, one
+ *     EBAY_PROBE_ALLOWLIST entry's probeEntryUrl on `target`, with no body;
+ *   - `POST <target's token URL>` whose form body names exactly one
+ *     grant_type, client_credentials or refresh_token, and no `code`.
+ * The method must be the exact string "GET" or "POST": a lowercase or
+ * missing method is refused (fetch would upper-case "delete" to DELETE). The
+ * URL must be a string (a Request or URL object, which can carry its own
+ * method and body, is refused). Redirects are always refused. A refusal
+ * throws before the raw transport is touched.
+ */
+export function createProbeTransport(raw: typeof fetch, target: EbayProbeTarget, queryTimeMs: number): typeof fetch {
+  const getUrls: ReadonlySet<string> = new Set(EBAY_PROBE_ALLOWLIST.map((e) => probeEntryUrl(e, target, queryTimeMs)));
+  const tokenUrl = `${target.bases.api}${TOKEN_PATH}`;
+  const guarded = async (input: unknown, init?: RequestInit): Promise<globalThis.Response> => {
+    if (typeof input !== "string" || !init) throw new Error(TRANSPORT_REFUSED);
+    const method = init.method;
+    if (method === "GET") {
+      if (!getUrls.has(input) || (init.body !== undefined && init.body !== null)) throw new Error(TRANSPORT_REFUSED);
+    } else if (method === "POST") {
+      if (input !== tokenUrl || typeof init.body !== "string") throw new Error(TRANSPORT_REFUSED);
+      const form = new URLSearchParams(init.body);
+      const grants = form.getAll("grant_type");
+      if (grants.length !== 1 || !TOKEN_GRANT_TYPES.has(grants[0]) || form.has("code")) throw new Error(TRANSPORT_REFUSED);
+    } else {
+      throw new Error(TRANSPORT_REFUSED);
+    }
+    return raw(input, { ...init, redirect: "error" });
+  };
+  return Object.freeze(guarded) as typeof fetch;
 }
 
 export interface ProbeGetResult {
@@ -219,14 +301,7 @@ export async function probeGet(
   if (!EBAY_PROBE_ALLOWLIST.includes(entry) || entry.method !== "GET") {
     throw new Error("probeGet: refused a request that is not an allowlisted GET");
   }
-  const base = ctx.target.bases[entry.host];
-  const url = new URL(`${base}${entry.path}`);
-  for (const [k, v] of Object.entries(entry.query)) {
-    url.searchParams.set(k, resolveProbeQueryValue(v, ctx.now()));
-  }
-  if (!url.href.startsWith(`${base}/`)) {
-    throw new Error("probeGet: refused a URL outside the target's base");
-  }
+  const href = probeEntryUrl(entry, ctx.target, ctx.queryTimeMs ?? ctx.now());
   let status = 0;
   try {
     // Fake only (empty for the real target). A missing caller key or a failed
@@ -235,7 +310,7 @@ export async function probeGet(
       env: ctx.env,
       mintIdToken: ctx.mintIdToken,
     });
-    const res = await ctx.fetchImpl(url.href, {
+    const res = await ctx.fetchImpl(href, {
       method: "GET",
       headers: {
         ...caller,
@@ -262,12 +337,10 @@ export async function probeGet(
   }
 }
 
-/** The two grants the probe may make. Never authorization_code. */
+/** The two grants the probe may make (TOKEN_GRANT_TYPES). */
 export type ProbeGrant =
   | { grant: "client_credentials" }
   | { grant: "refresh_token"; refreshToken: string; scopes: readonly string[] };
-
-const TOKEN_GRANT_TYPES: ReadonlySet<string> = new Set(["client_credentials", "refresh_token"]);
 
 /**
  * THE ONLY POST: one grant at eBay's token endpoint, through the existing
@@ -354,10 +427,13 @@ export type ProbeCredentialRead =
 export interface EbayProbeDeps {
   env?: Env;
   now?: () => number;
+  /** The RAW transport. Never put in the context: createProbeTransport wraps it. */
   fetchImpl?: typeof fetch;
   mintIdToken?: (audience: string) => Promise<string>;
-  /** The eBay pause lookup. Default: shouldSkipCanary("ebay"). */
+  /** The eBay pause lookup. Default: shouldSkipCanary("ebay", pauseLookup). */
   isPaused?: () => Promise<boolean>;
+  /** Deps for the default pause lookup (its own fetch, minter, site URL, log). */
+  pauseLookup?: CanaryPauseDeps;
   /** Read the probe account's refresh token. Default: Secret Manager, read only. */
   readCredential?: (key: string) => Promise<ProbeCredentialRead>;
   minIntervalMs?: number;
@@ -405,6 +481,8 @@ export function createEbayProbeRouter(deps: EbayProbeDeps = {}): Router {
   const minInterval = deps.minIntervalMs ?? EBAY_PROBE_MIN_INTERVAL_MS;
   const readTimeoutMs = deps.readTimeoutMs ?? EBAY_PROBE_READ_TIMEOUT_MS;
   const log = deps.log ?? defaultLog;
+  // The raw transport. It is handed to createProbeTransport and nowhere else.
+  const rawFetch: typeof fetch = deps.fetchImpl ?? globalThis.fetch;
   let lastStartedAt: number | undefined;
 
   router.post("/probe/ebay", async (req: Request, res: Response) => {
@@ -450,10 +528,13 @@ export function createEbayProbeRouter(deps: EbayProbeDeps = {}): Router {
     const ctx: EbayProbeContext = {
       target,
       env,
-      fetchImpl: deps.fetchImpl ?? globalThis.fetch,
+      // Only the guard: every request of this run is checked against the
+      // allowlist and the token grant, whoever makes it and however.
+      fetchImpl: createProbeTransport(rawFetch, target, started),
       now,
       timeoutMs: readTimeoutMs,
       mintIdToken: deps.mintIdToken,
+      queryTimeMs: started,
     };
     const body: EbayProbeResponseBody = {
       ebayTarget: target.kind,
@@ -555,7 +636,19 @@ export function createEbayProbeRouter(deps: EbayProbeDeps = {}): Router {
     try {
       // --- Pause flag (real target only; the lookup is off outside prod) ---
       if (target.kind === "real") {
-        const paused = await (deps.isPaused ?? (() => shouldSkipCanary("ebay")))();
+        // FAIL OPEN, like the canary: a lookup that cannot answer is "not
+        // paused". shouldSkipCanary never throws (it logs its own failure);
+        // an injected lookup that does is logged here and the probe runs.
+        let paused = false;
+        try {
+          paused = (await (deps.isPaused ?? (() => shouldSkipCanary("ebay", deps.pauseLookup)))()) === true;
+        } catch (err) {
+          log({
+            msg: "ebay_probe_pause_lookup_failed",
+            ebay_target: target.kind,
+            error_class: err instanceof Error ? err.name : "unknown",
+          });
+        }
         if (paused) {
           body.outcome = "skipped_paused";
           body.appLeg = { ok: false, outcome: "skipped_paused" };
@@ -633,11 +726,20 @@ export function createEbayProbeRouter(deps: EbayProbeDeps = {}): Router {
           refreshToken,
           scopes: EBAY_READONLY_SCOPES,
         });
-        if ("error" in got && got.error instanceof EbayOAuthError && got.error.kind === "rejected") {
+        // Fall back ONLY when eBay refused the scopes themselves. Any other
+        // refusal (invalid_grant: the token is revoked or expired) would fail
+        // the same way with the consented scopes, so a second grant would
+        // only spend a call on the seller's token.
+        if (
+          "error" in got &&
+          got.error instanceof EbayOAuthError &&
+          got.error.kind === "rejected" &&
+          got.error.oauthError === "invalid_scope"
+        ) {
           log({
             msg: "ebay_probe_scope_fallback",
             ebay_target: target.kind,
-            reason: got.error.oauthError ?? "rejected",
+            reason: "invalid_scope",
           });
           scopes = "consented";
           got = await grantStep("account.token_consented", "account", config, {
