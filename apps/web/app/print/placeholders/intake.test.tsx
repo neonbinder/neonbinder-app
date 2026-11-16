@@ -10,7 +10,7 @@
  * wrong job id.
  */
 
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { batchNotCollecting } from "@/convex/lib/placeholderRefusals";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -266,6 +266,81 @@ describe("CardIntake", () => {
     expect(
       await screen.findByRole("heading", { name: /Your cards/ }),
     ).not.toBeNull();
+  });
+
+  describe("one selection delivered twice (drop and input change for the same files)", () => {
+    /** The drop target is the div wrapping the label that owns the input. */
+    function dropTarget() {
+      const input = screen.getByLabelText(/Drag your card photos here/) as HTMLInputElement;
+      return input.closest("label")!.parentElement as HTMLElement;
+    }
+    function twoFiles() {
+      return ["front.jpg", "back.jpg"].map(
+        (name) => new File(["bytes"], name, { type: "image/jpeg" }),
+      );
+    }
+    function changeWith(files: File[]) {
+      const input = screen.getByLabelText(/Drag your card photos here/) as HTMLInputElement;
+      Object.defineProperty(input, "files", { value: files, configurable: true });
+      fireEvent.change(input);
+    }
+
+    it("opens one session and says 'Uploaded 2 of 2 images.' once when a change follows the drop of the same files", async () => {
+      renderPage();
+      const files = twoFiles();
+      // Two separate DOM events back to back, the way a browser delivers them:
+      // each fireEvent is its own act(), which flushes `uploading` (and the
+      // Dropzone's `disabled`) before the change arrives. So this pins the
+      // STATE check and passes with or without the in-flight ref; the ref is
+      // pinned by the same-act() test below.
+      fireEvent.drop(dropTarget(), { dataTransfer: { files } });
+      changeWith(files);
+
+      await waitFor(() =>
+        expect(screen.getByText("Uploaded 2 of 2 images.")).not.toBeNull(),
+      );
+      expect(mocks.fns[REFS.start]).toHaveBeenCalledTimes(1);
+      expect(screen.getAllByText("Uploaded 2 of 2 images.")).toHaveLength(1);
+    });
+
+    it("opens one session when the drop and the change arrive in the same render batch", async () => {
+      renderPage();
+      const files = twoFiles();
+      // Both events inside ONE act(): React has not re-rendered between them,
+      // so the second call still reads `uploading` as false and the Dropzone is
+      // not yet disabled. Only the in-flight ref can turn it away.
+      act(() => {
+        fireEvent.drop(dropTarget(), { dataTransfer: { files } });
+        changeWith(files);
+      });
+
+      await waitFor(() =>
+        expect(screen.getByText("Uploaded 2 of 2 images.")).not.toBeNull(),
+      );
+      expect(mocks.fns[REFS.start]).toHaveBeenCalledTimes(1);
+      expect(screen.getAllByText("Uploaded 2 of 2 images.")).toHaveLength(1);
+    });
+
+    it("lets the next selection send after a refused start", async () => {
+      // The in-flight guard must clear on the early return too, or one refusal
+      // would turn away every later drop on the page.
+      mocks.fns[REFS.start] = vi
+        .fn()
+        .mockResolvedValueOnce({
+          started: false,
+          reason: "you already have 2 active batches (limit 2) — wait for one to finish",
+        })
+        .mockResolvedValue({ started: true, jobId: "job-1234abcd" });
+      renderPage();
+      selectFiles(["front.jpg", "back.jpg"]);
+      await screen.findByText(/Couldn't start a scan session/);
+
+      selectFiles(["front.jpg", "back.jpg"]);
+      await waitFor(() =>
+        expect(screen.getByText("Uploaded 2 of 2 images.")).not.toBeNull(),
+      );
+      expect(mocks.fns[REFS.start]).toHaveBeenCalledTimes(2);
+    });
   });
 
   it("says why a session could not be started", async () => {

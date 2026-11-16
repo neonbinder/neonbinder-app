@@ -22,6 +22,7 @@ import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtu
 import { intakeDropzone } from "../../support/collection";
 import {
   discardIfStillOpen,
+  discardLeftoverBatches,
   discardRunningBatches,
   placeholderScans,
   startPlaceholderBatch,
@@ -40,6 +41,11 @@ test(
     const scans = placeholderScans("placeholder-fixtures");
 
     // --- (a) A drop on the open batch joins it ------------------------------
+    // R7: an earlier spec on this account may have left a batch "running" (a
+    // seeded run holds a cap slot and reads "running"). Clear those BEFORE the
+    // drop, so the counts below are this spec's own and nothing is discarded
+    // after it: the counts then still catch a drop that started two batches.
+    await discardLeftoverBatches(page);
     await startPlaceholderBatch(page, scans);
     // The run is open ("Discard this batch" is offered only while it can take
     // more), so the next drop is an add, not a new batch.

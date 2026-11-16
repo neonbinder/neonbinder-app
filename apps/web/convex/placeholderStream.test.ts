@@ -275,6 +275,32 @@ describe("startPlaceholderStream", () => {
     expect(result.jobId).toBeUndefined();
   });
 
+  test("two back-to-back starts make two distinct jobs and the third is refused by the cap", async () => {
+    // The intake page's double-delivery guard is a client state check; this is
+    // the server half: each start that gets through is its own job, and the
+    // cap (DEFAULT_MAX_ACTIVE_JOBS_PER_USER = 2) is what stops a third.
+    const t = convexTest(schema, modules);
+    const asA = t.withIdentity(USER_A);
+    const first = await asA.mutation(api.placeholderStream.startPlaceholderStream, {});
+    const second = await asA.mutation(api.placeholderStream.startPlaceholderStream, {});
+    const third = await asA.mutation(api.placeholderStream.startPlaceholderStream, {});
+
+    expect(first.started).toBe(true);
+    expect(second.started).toBe(true);
+    expect(second.jobId).not.toBe(first.jobId);
+    expect(third.started).toBe(false);
+    expect(third.reason).toMatch(/you already have 2 active batches \(limit 2\)/);
+    expect(third.jobId).toBeUndefined();
+
+    const jobs = await t.run(async (ctx) =>
+      ctx.db
+        .query("placeholderJobs")
+        .withIndex("by_user", (q) => q.eq("userId", USER_A.subject))
+        .collect(),
+    );
+    expect(jobs.map((j) => j.jobId).sort()).toEqual([first.jobId, second.jobId].sort());
+  });
+
   test("a collecting stream job blocks a zip batch from starting too", async () => {
     // The other direction of the same cap.
     const t = convexTest(schema, modules);

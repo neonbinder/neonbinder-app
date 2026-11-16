@@ -22,3 +22,8 @@ metadata:
   convex CLI (`--include-values` unknown, so agent-convex.sh's env copy fails). Clone a current worktree's node_modules (`cp -cR`).
 - The first fast-path batch of a cold local session can leave one photo "Processing" at the 7 s mark ("Reading your cards — 5 of 6 done"); an
   immediate rerun was green. Thin headroom, report it, never raise the wait.
+- A seeded run (hopper, loose photos, failed photo, saved-photo failure, shelf) leaves a `collecting` placeholderJobs row: "running" in Recent runs and one of
+  the cap's 2 slots for the next spec on the worker. Seeding specs tidy with `afterEach` `discardIfStillOpen(page, testInfo, { all: true })`; a spec that counts
+  its own "running" rows calls `discardLeftoverBatches(page)` BEFORE its first drop (never after: a post-drop discard, even keep-filtered, can discard a
+  double-create that sits older than the followed run and hide it). "Recent runs" is absent on a clean account, so no region = none. Discarding the job
+  does not clear the dashboard hopper's scan (it reads intakeRuns); the next seed sets it aside.

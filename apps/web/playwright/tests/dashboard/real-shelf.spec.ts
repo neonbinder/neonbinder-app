@@ -21,10 +21,16 @@
 // out of intake, so it counts as SORTED today: the hopper shows its stat line
 // and no run to finish. (Setting scans aside leaves the run's last activity
 // alone, so the seeded run, made just now, is "this week" whatever else the
-// account holds.)
+// account holds.) The seeded batch still reads "running" and holds a cap slot, so
+// `afterEach` discards it through /print/placeholders.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addCardViaForm } from "../../support/cards";
 import { customSport, drillToCustom, selectOrCreate, setBuilderReady } from "../../support/set-builder";
+import { discardIfStillOpen } from "../../support/placeholder-intake";
+
+test.afterEach(async ({ page }, testInfo) => {
+  await discardIfStillOpen(page, testInfo, { all: true });
+});
 
 test("Dashboard shows the collector's own binder shelf", { tag: ["@smoke", "@dashboard"] }, async ({ page, signIn, env }) => {
   // R7: a hand-made set of this worker's own, in its own sport, with a Base type and one card:

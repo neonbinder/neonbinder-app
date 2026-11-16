@@ -211,6 +211,11 @@ export default function CardIntake() {
     jobId ? { jobId } : "skip",
   );
 
+  // The guard against a second send. `uploading` is React state, so two calls
+  // in one render batch (a drop and an input change for the same files) both
+  // read it as false; a ref is set before the first await and seen at once.
+  const uploadInFlight = useRef(false);
+
   /**
    * Selecting files IS starting the upload — there is no confirm step.
    *
@@ -240,79 +245,84 @@ export default function CardIntake() {
    */
   const handleUpload = useCallback(
     async (chosen: File[]) => {
-    if (chosen.length === 0 || uploading) return;
-    setNotice(null);
+      if (chosen.length === 0 || uploading || uploadInFlight.current) return;
+      uploadInFlight.current = true;
+      try {
+        setNotice(null);
 
-    const addingTo =
-      jobId !== null &&
-      job?.status === "collecting" &&
-      classifyIntake(chosen).kind === "images"
-        ? jobId
-        : undefined;
+        const addingTo =
+          jobId !== null &&
+          job?.status === "collecting" &&
+          classifyIntake(chosen).kind === "images"
+            ? jobId
+            : undefined;
 
-    try {
-      // Label the run web-originated (NEO-170); the cardlister CLI passes
-      // "scanner" on its own start path.
-      let outcome = await upload(chosen, { source: "web", jobId: addingTo });
-      let startedFresh = false;
-      if (addingTo && outcome.ok && outcome.batchClosed && outcome.uploaded === 0) {
-        outcome = await upload(chosen, { source: "web" });
-        startedFresh = true;
-      }
+        try {
+          // Label the run web-originated (NEO-170); the cardlister CLI passes
+          // "scanner" on its own start path.
+          let outcome = await upload(chosen, { source: "web", jobId: addingTo });
+          let startedFresh = false;
+          if (addingTo && outcome.ok && outcome.batchClosed && outcome.uploaded === 0) {
+            outcome = await upload(chosen, { source: "web" });
+            startedFresh = true;
+          }
 
-      if (!outcome.ok) {
-        // Clear the tray: nothing was sent, and the tray's line under a
-        // refusal would otherwise read "6 photos sent." beside it.
-        setFiles([]);
-        setNotice({
-          tone: "error",
-          text: `Couldn't start a scan session — ${outcome.reason}.`,
-        });
-        return;
-      }
+          if (!outcome.ok) {
+            // Clear the tray: nothing was sent, and the tray's line under a
+            // refusal would otherwise read "6 photos sent." beside it.
+            setFiles([]);
+            setNotice({
+              tone: "error",
+              text: `Couldn't start a scan session — ${outcome.reason}.`,
+            });
+            return;
+          }
 
-      // Put a new session in the URL so the run view is shareable and
-      // survives a reload, and so the back button leaves the run rather than
-      // silently keeping it. Photos added to the run already on screen are not
-      // a move, so they push no history entry.
-      if (outcome.jobId !== jobId) setSearchParams({ jobId: outcome.jobId });
-      // Clear the tray: these are on the server now, and leaving them listed
-      // as "ready to upload" invites a second, duplicate send. That holds when
-      // the batch closed part-way too: dropping the whole pile again would send
-      // the ones that already landed a second time.
-      setFiles([]);
-      if (outcome.batchClosed) {
-        setNotice({
-          tone: "error",
-          text: `This batch was finished while your photos were going up. ${outcome.uploaded} of ${outcome.total} got in. Start a new batch for the other ${outcome.failed}.`,
-          action: "new-batch",
-        });
-        parkOnSessionHeading(true);
-        return;
+          // Put a new session in the URL so the run view is shareable and
+          // survives a reload, and so the back button leaves the run rather than
+          // silently keeping it. Photos added to the run already on screen are not
+          // a move, so they push no history entry.
+          if (outcome.jobId !== jobId) setSearchParams({ jobId: outcome.jobId });
+          // Clear the tray: these are on the server now, and leaving them listed
+          // as "ready to upload" invites a second, duplicate send. That holds when
+          // the batch closed part-way too: dropping the whole pile again would send
+          // the ones that already landed a second time.
+          setFiles([]);
+          if (outcome.batchClosed) {
+            setNotice({
+              tone: "error",
+              text: `This batch was finished while your photos were going up. ${outcome.uploaded} of ${outcome.total} got in. Start a new batch for the other ${outcome.failed}.`,
+              action: "new-batch",
+            });
+            parkOnSessionHeading(true);
+            return;
+          }
+          const tally =
+            outcome.failed === 0
+              ? `Uploaded ${outcome.uploaded} of ${outcome.total} images.`
+              : `Uploaded ${outcome.uploaded} of ${outcome.total} images — ${outcome.failed} failed.`;
+          if (startedFresh) {
+            // Not a success to celebrate: the photos went somewhere other than
+            // where they were dropped, and that is news, so it is info-toned.
+            setNotice({
+              tone: outcome.failed === 0 ? "info" : "error",
+              text: `That batch was already finished, so these started a new one. ${tally}`,
+            });
+            parkOnSessionHeading(false);
+            return;
+          }
+          setNotice({ tone: outcome.failed === 0 ? "success" : "error", text: tally });
+        } catch (error) {
+          console.error("Placeholder upload failed", error);
+          setFiles([]);
+          setNotice({
+            tone: "error",
+            text: "Couldn't upload these scans. Please try again.",
+          });
+        }
+      } finally {
+        uploadInFlight.current = false;
       }
-      const tally =
-        outcome.failed === 0
-          ? `Uploaded ${outcome.uploaded} of ${outcome.total} images.`
-          : `Uploaded ${outcome.uploaded} of ${outcome.total} images — ${outcome.failed} failed.`;
-      if (startedFresh) {
-        // Not a success to celebrate: the photos went somewhere other than
-        // where they were dropped, and that is news, so it is info-toned.
-        setNotice({
-          tone: outcome.failed === 0 ? "info" : "error",
-          text: `That batch was already finished, so these started a new one. ${tally}`,
-        });
-        parkOnSessionHeading(false);
-        return;
-      }
-      setNotice({ tone: outcome.failed === 0 ? "success" : "error", text: tally });
-    } catch (error) {
-      console.error("Placeholder upload failed", error);
-      setFiles([]);
-      setNotice({
-        tone: "error",
-        text: "Couldn't upload these scans. Please try again.",
-      });
-    }
     },
     [job?.status, jobId, parkOnSessionHeading, setSearchParams, upload, uploading],
   );

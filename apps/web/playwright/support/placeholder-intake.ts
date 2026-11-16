@@ -114,6 +114,33 @@ export async function discardRunningBatches(page: Page): Promise<void> {
   throw new Error("discardRunningBatches: still running batches after eight discards");
 }
 
+/**
+ * Call BEFORE the spec's first drop: on a second page, discard the batches that
+ * read "running" on this account now (a seeded run an earlier spec left holds a
+ * cap slot and counts in the spec's own "running" tallies). Nothing is discarded
+ * after the drop, so the spec's own counts stay the live proof against a drop
+ * that started more than one batch.
+ *
+ * "Recent runs" renders nothing both while its list loads and when the list is
+ * empty (an account that never ran a batch), and the page's heading paints
+ * before the list answers. So the region gets the standard 7 s to appear; only
+ * an account with no history pays that wait, and then "no region" is the
+ * legitimate "none". A leftover the wait still missed would show as a loud red
+ * on the spec's first "running" count, never a silent pass.
+ */
+export async function discardLeftoverBatches(page: Page): Promise<void> {
+  const tidy = await page.context().newPage();
+  try {
+    await tidy.goto("/print/placeholders");
+    await expect(tidy.getByRole("heading", { name: "Upload your cards" })).toBeVisible();
+    const present = await recentRuns(tidy).waitFor({ timeout: 7_000 }).then(() => true, () => false);
+    if (!present) return;
+    await discardRunningBatches(tidy);
+  } finally {
+    await tidy.close();
+  }
+}
+
 const CAP_ALERT = /Couldn't start a scan session — you already have \d+ active batches/;
 const OTHER_REFUSAL = /Couldn't start a scan session|Couldn't upload these scans|Uploaded \d+ of \d+ images — /;
 

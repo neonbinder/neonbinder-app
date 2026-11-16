@@ -24,8 +24,9 @@
 // manuallyPairPlaceholderImages' unit tests own that order.
 //
 // R7: writes only the account's own seeded run (the seed cancels the account's
-// open runs first, for the active-run cap). The run stands open until the idle
-// sweep or the next seed; the pairs it makes are on that run only.
+// open runs first, for the active-run cap). The seeded batch reads "running" and
+// holds a cap slot, so `afterEach` discards it through /print/placeholders rather
+// than leave it to the idle sweep; the pairs it makes are on that run only.
 //
 // NEO-481: one loose photo is opened in the card photo viewer: view-only, with
 // the reason, no tools; Escape gives the keyboard back to its thumbnail.
@@ -33,6 +34,11 @@
 // R5: every wait is the standard 7 s; the first load goes through the sign-in
 // hop and the seed, so its gate is LAUNCH_GATE.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { discardIfStillOpen } from "../../support/placeholder-intake";
+
+test.afterEach(async ({ page }, testInfo) => {
+  await discardIfStillOpen(page, testInfo, { all: true });
+});
 
 /** What the viewer says of a scan whose file is gone (`PHOTO_EDIT_COPY.scanGone`, convex/photoEditRows.ts). */
 const SCAN_GONE = "This scan has aged out, so there's nothing left to crop.";
