@@ -59,9 +59,11 @@
 - [Pairing modal absorbs only teams](checklist-pairing-modal-absorbs-only-teams.md) — post-stream answers apply to PairingResult cards client-side, not candidate rows (NEO-490)
 - [Publisher checklist is a Match Cards source](publisher-checklist-is-a-match-cards-source.md) — third column in CardPairingModal; rows discardable, marketplace cards never (NEO-490)
 - [BSC poll re-reads open orders](bsc-poll-rereads-open-orders-so-sale-fields-self-fill.md) — new recordOrder fields self-fill open orders within one poll; check before planning a backfill; sportId→sport slot
+- [eBay poll widening needs floor + rewind](ebay-order-poll-widening-needs-floor-and-rewind.md) — read is "modified since": storing more lines needs a creation floor and a versioned cursor rewind; sandbox orders via raw-order seed (NEO-520)
 - [Leftover copy red = unconfirmed final Remove](leftover-copy-red-is-an-unconfirmed-final-remove.md) — earlier spec on the worker ended on optimistic Remove; count removeCopy completions in its window; dismiss between identical notices
 - [Heavy cold-start notice is order-dependent](heavy-cold-start-notice-is-order-dependent.md) — warm heavy (~2 s post-#454) resolves before the seed redirect; NEO-481 edit warm-up is FAST-only
 - [Fresh-load stall: find the user's cached-hit batch](fresh-load-stall-check-for-the-users-cached-hit-batch.md) — no batch + healthy probe = page never subscribed; set-builder heading shows before its BSC sync ends
+- [E2E accounts are all admins](e2e-accounts-are-all-admins.md) — admin-only queues of all users show on every real spec; non-admin view is unit-only; numberMismatch only via seedMyTestSync
 - [Browser secrets are per Clerk user](browser-secrets-are-per-clerk-user-not-per-deployment.md) — credKey is shared by every deployment signing in one test user; isolate via key + TTL, never a clash guard
 - [BSC sign-in is fetch, not Puppeteer](bsc-sign-in-is-fetch-not-puppeteer.md) — B2C PKCE over fetch + direct API profile read in services/browser; a BSC host seam must cover both services
 - [Shape probes see one account state](shape-probes-see-one-account-state.md) — probe account has no listings: listed-only keys are optional in drift; fake empty row and root form must match the probe

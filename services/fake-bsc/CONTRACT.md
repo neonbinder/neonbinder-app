@@ -624,7 +624,11 @@ host itself. It never bundles or copies the browser source.
   {missing: [<write endpoint>, ...]}}`. `missing` lists the write endpoints
   (`PUT seller/bulk-upload`, the photo-upload POST) that have no stored
   capture; the boot also logs `write_captures_missing`. The E2E seed fails on
-  a non-empty list (see "Convex internal action for CI").
+  a non-empty list (see "Convex internal action for CI"). While `loading` is
+  true the captures are not in yet, so health answers `writeCaptures:
+  {loading: true}` with no `missing` field: a cold start never names an
+  endpoint as missing, and a reader that ignores `loading` finds no list and
+  fails closed rather than reading "none missing".
 
 ## Storage layout (bucket or local directory)
 
@@ -752,7 +756,11 @@ CI calls it with the preview deploy key so no admin key is on the runner.
 `/__fake/health` (caller auth only) and returns `{ok: true, skipped, missing:
 [<write endpoint>]}` (`skipped: true` outside fake mode), or `{ok: false,
 status?, error}`, which includes a health answer with no `writeCaptures` field
-(an older fake: never read as "none missing"). The E2E `seed` job runs it
+(an older fake: never read as "none missing"). While the health answer
+says `loading: true` (or `writeCaptures.loading: true`), the action asks
+again with a bounded backoff (about 45 s of pauses in all); a fake still
+loading after that is `{ok: false, error: "fake still loading"}`, never a
+missing list and never "none missing". The E2E `seed` job runs it
 before seeding and fails with an `::error::` naming `recorder capture-write`
 when `missing` is not empty. The Convex control fetch (`fakeBscControlFetch`)
 therefore needs no special case: the health route is under `__fake/...`.

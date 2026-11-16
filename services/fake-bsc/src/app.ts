@@ -160,16 +160,20 @@ export function createApp(deps: AppDeps): express.Express {
 
   // Not `/healthz`: Cloud Run's frontend reserves that path (and any ending in `z`) and answers 404 itself.
   app.get("/__fake/health", caller, (_req, res) => {
+    const loading = isLoading();
     res.json({
       ok: true,
-      loading: isLoading(),
+      loading,
       instanceId: deps.instanceId,
       revision: config.revision,
       manifestVersion: deps.catalogue.manifestVersion,
       allowlistVersion: SANITISE_ALLOWLIST_VERSION,
       recordings: deps.catalogue.size,
       // The write endpoints with no stored real capture (CONTRACT.md, "Write capture").
-      writeCaptures: { missing: deps.captures.missing() },
+      // While loading the captures are not in yet, so every endpoint would read
+      // as missing: say "loading" and send no list. No `missing` field also makes
+      // a reader that ignores `loading` fail closed, never read "none missing".
+      writeCaptures: loading ? { loading: true } : { missing: deps.captures.missing() },
     });
   });
 

@@ -315,14 +315,39 @@ export const reportMisses = internalAction({
   },
 });
 
-/** The write endpoints named in the fake's `/__fake/health`, narrowed: fixed vocabulary only. */
+/**
+ * True when the fake's `/__fake/health` says its recordings and write captures
+ * are still loading (`loading: true`, or `writeCaptures.loading: true`). Only a
+ * boolean true counts: a body without it reads as loaded, as before.
+ */
+export function healthIsLoading(body: unknown): boolean {
+  if (typeof body !== "object" || body === null) return false;
+  if ((body as { loading?: unknown }).loading === true) return true;
+  const wc = (body as { writeCaptures?: unknown }).writeCaptures;
+  return typeof wc === "object" && wc !== null && (wc as { loading?: unknown }).loading === true;
+}
+
+/** The most write endpoints a health answer may list; a longer list is unreadable, never cut short. */
+const MAX_MISSING_CAPTURES = 20;
+
+/**
+ * The write endpoints named in the fake's `/__fake/health`, narrowed: fixed
+ * vocabulary only. Null when the list is absent, longer than
+ * `MAX_MISSING_CAPTURES`, holds any entry that is not an endpoint name, or the
+ * answer is still loading: a loading fake has not read its captures, so its
+ * list (empty or full) is never an answer.
+ */
 export function narrowMissingCaptures(body: unknown): string[] | null {
+  if (healthIsLoading(body)) return null;
   const wc = typeof body === "object" && body !== null ? (body as { writeCaptures?: unknown }).writeCaptures : undefined;
   const missing = typeof wc === "object" && wc !== null ? (wc as { missing?: unknown }).missing : undefined;
-  if (!Array.isArray(missing)) return null;
-  return missing
-    .filter((m): m is string => typeof m === "string" && /^[A-Z]{3,7} [A-Za-z0-9/_.:-]{1,128}$/.test(m))
-    .slice(0, 20);
+  if (!Array.isArray(missing) || missing.length > MAX_MISSING_CAPTURES) return null;
+  const named = missing.filter(
+    (m): m is string => typeof m === "string" && /^[A-Z]{3,7} [A-Za-z0-9/_.:-]{1,128}$/.test(m),
+  );
+  // One unreadable entry makes the whole list unreadable: dropping it could
+  // turn a real "missing" into "none missing".
+  return named.length === missing.length ? named : null;
 }
 
 const writeCapturesResult = v.union(
@@ -334,29 +359,69 @@ type WriteCapturesResult =
   | { ok: false; status?: number; error: string };
 
 /**
+ * The pauses between health reads while the fake says it is still loading
+ * (a cold start reads every recording and capture from its bucket before it
+ * can answer). 45 s of pauses in all; the reads themselves add a little.
+ */
+export const HEALTH_LOADING_PAUSES_MS: readonly number[] = [1_000, 2_000, 4_000, 8_000, 10_000, 10_000, 10_000];
+/** A wall-clock stop as well, so slow health reads cannot stretch the wait past the pauses' budget. */
+const HEALTH_LOADING_BUDGET_MS = HEALTH_LOADING_PAUSES_MS.reduce((a, b) => a + b, 0);
+
+/**
  * Which BSC write endpoints the fake has no real capture for
  * (`/__fake/health` `writeCaptures.missing`; CONTRACT.md, "Write capture"). CI runs
  * it with the preview deploy key before seeding (`npx convex run
  * fakeBsc:writeCaptureStatus`) and fails when `missing` is not empty. Skipped
  * outside fake mode. A health body without the field is an error, never "none missing".
+ * While the fake answers `loading: true` its list means nothing (the captures
+ * are not read yet), so this asks again on `HEALTH_LOADING_PAUSES_MS`; still
+ * loading after that is `fake still loading`, never a missing list.
  */
 export const writeCaptureStatus = internalAction({
   args: {},
   returns: writeCapturesResult,
   handler: async (): Promise<WriteCapturesResult> => {
-    let res: Response | null;
-    try {
-      res = await controlFetch("__fake/health", "health", () => ({ method: "GET" }));
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.name : "unknown" };
+    const startedAt = Date.now();
+    for (let read = 0; ; read += 1) {
+      let res: Response | null;
+      try {
+        res = await controlFetch("__fake/health", "health", () => ({ method: "GET" }));
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.name : "unknown" };
+      }
+      if (res === null) return { ok: true, skipped: true, missing: [] };
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => undefined);
+        return { ok: false, status: res.status, error: "http" };
+      }
+      const body: unknown = await res.json().catch(() => null);
+      if (healthIsLoading(body)) {
+        const elapsed = Date.now() - startedAt;
+        const pause = HEALTH_LOADING_PAUSES_MS[read];
+        if (pause === undefined || elapsed >= HEALTH_LOADING_BUDGET_MS) {
+          logHealthLoading(read + 1, elapsed, true);
+          return { ok: false, error: "fake still loading" };
+        }
+        logHealthLoading(read + 1, elapsed, false);
+        await fakeBscControlClock.sleep(Math.min(pause, HEALTH_LOADING_BUDGET_MS - elapsed));
+        continue;
+      }
+      const missing = narrowMissingCaptures(body);
+      if (missing === null) return { ok: false, error: "health answer has no writeCaptures" };
+      return { ok: true, skipped: false, missing };
     }
-    if (res === null) return { ok: true, skipped: true, missing: [] };
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => undefined);
-      return { ok: false, status: res.status, error: "http" };
-    }
-    const missing = narrowMissingCaptures(await res.json().catch(() => null));
-    if (missing === null) return { ok: false, error: "health answer has no writeCaptures" };
-    return { ok: true, skipped: false, missing };
   },
 });
+
+function logHealthLoading(read: number, elapsedMs: number, gaveUp: boolean): void {
+  console.log(
+    JSON.stringify({
+      msg: "fake_bsc_health_loading",
+      platform: "bsc",
+      operation: "health",
+      read,
+      gaveUp,
+      ms: elapsedMs,
+    }),
+  );
+}

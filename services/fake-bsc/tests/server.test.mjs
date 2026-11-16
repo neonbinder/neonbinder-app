@@ -793,6 +793,20 @@ describe("cold start: listening before the recordings are in", () => {
     assert.equal((await cold.call("GET", "/__fake/health")).body.loading, false);
   });
 
+  it("never names a write endpoint as missing while loading", async () => {
+    const cold = await startCold();
+    const during = (await cold.call("GET", "/__fake/health")).body;
+    assert.equal(during.loading, true);
+    assert.deepEqual(during.writeCaptures, { loading: true }, "no missing list until the captures are in");
+    cold.finish();
+    await cold.loaded;
+    const afterLoad = (await cold.call("GET", "/__fake/health")).body;
+    assert.equal(afterLoad.loading, false);
+    assert.deepEqual(afterLoad.writeCaptures, {
+      missing: ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"],
+    });
+  });
+
   it("refuses admin uploads at once while loading; run controls work at once", async () => {
     const cold = await startCold();
     for (const [p, body] of [

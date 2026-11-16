@@ -23,6 +23,7 @@ Rules for never diagnosing timing, the 7 s budget, and the commit/stage boundari
 - [Fake a Convex query over the WebSocket](patterns_fake_a_convex_query_value_over_the_websocket.md) — routeWebSocket, udfPath+args key
 
 ## Fake BSC and running locally
+- [Sibling edits reload a local Vite run](patterns_sibling_edits_reload_a_local_vite_run.md) — one-off local red green on rerun: check the Vite log for an HMR/page reload at that time
 - [Fake BSC faults and the breaker job](patterns_fake_bsc_faults_and_the_breaker_job.md) — bscFake fixture, deployment-wide gate, @bsc-breaker
 - [Worktree deployment onto the fake BSC](patterns_worktree_deployment_onto_the_fake_bsc.md) — script sets the fake env; reportMisses; recorder must
 - [Local run backend, Vite, previews](patterns_local_run_backend_and_vite.md) — function-spec check, one Vite per worktree, CI seed resets
