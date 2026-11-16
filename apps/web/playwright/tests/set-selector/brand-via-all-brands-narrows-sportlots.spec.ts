@@ -1,6 +1,7 @@
 // Origin: .maestro/flows/set-selector/brand-via-all-brands-narrows-sportlots.yaml (Maestro suite retired in NEO-341; see git history)
 // Fresh-only: it creates the "SPx" brand under Hockey / 1997, which then exists.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectStepWithSportLots } from "../../support/marketplace-wait";
 import { columnHeading, columnOption, columnSearch, columnSelection, drillToColdManufacturer, setBuilderReady, drillToCustom, COLD_SYNC } from "../../support/set-builder";
 
 const BRAND = "SPx";
@@ -22,12 +23,17 @@ test(
     // Unknown". The idle "Sync Sets" button shows before the sync starts, so
     // it proves nothing (drillToColdManufacturer waits for listed sets too).
     await columnSearch(page, "Sets").fill(BRAND);
-    await expect(
+    // The year-wide sets sync asks SportLots too (COLD_SYNC while it is live); paused, BSC alone
+    // under the column's wait line (measured 3.8 s at most on the #487 merge-group run (GUIDE)).
+    await expectStepWithSportLots(
+      page,
       page
         .getByRole("listbox", { name: "Sets" })
         .getByRole("option", { name: new RegExp(`^${BRAND}( .*)?`, "i") })
         .first(),
-    ).toBeVisible({ timeout: COLD_SYNC });
+      env,
+      { liveMs: COLD_SYNC, what: "the year-wide Sets sync filing the SPx sets" },
+    );
     const skipped = page.getByText("SportLots skipped: no SportLots ids on this path.");
     if (env.SL_PAUSED) {
       await expect(skipped).toBeVisible();
@@ -64,13 +70,18 @@ test(
     // Opening a set through All Brands selects its own brand.
     await expect(columnSelection(page, "Manufacturers", BRAND)).toBeVisible();
 
-    // Its Base set mapping offers candidates from both marketplaces (live, the flow's 60 s).
+    // Its Base set mapping offers candidates from both marketplaces (live, the flow's 60 s);
+    // paused, BSC's variant-type sync and candidates alone, under their wait lines (measured
+    // 3.8 s and 1.3 s on the #487 merge-group run (GUIDE)).
     const base = columnOption(page, "Variant Types", "Base");
-    await expect(base).toBeVisible({ timeout: 60_000 });
+    await expectStepWithSportLots(page, base, env, { liveMs: 60_000, what: "Variant Types row Base" });
     await base.click();
     const picker = page.getByRole("dialog", { name: "Select Base Set" });
     await expect(picker).toBeVisible();
-    await expect(picker.getByRole("button", { name: "Confirm Base Set" })).toBeVisible({ timeout: 60_000 });
+    await expectStepWithSportLots(page, picker.getByRole("button", { name: "Confirm Base Set" }), env, {
+      liveMs: 60_000,
+      what: "the Base picker's candidates",
+    });
     await expect(picker.getByRole("option", { name: /^BSC base candidate: / }).first()).toBeVisible();
     if (!env.SL_PAUSED) {
       await expect(picker.getByRole("option", { name: /^SportLots base candidate: / }).first()).toBeVisible();

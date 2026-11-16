@@ -115,6 +115,41 @@ describe("the seller client's calls", () => {
     expect(r.value.rows.map((x) => x.bscCardId)).toEqual(["c1"]);
   });
 
+  test("NEO-552: the wrapped sheet `{results: [rows]}` real BSC sends reads the same as a bare array, blank rows with no seller keys included", async () => {
+    // An unlisted row carries no sellerSku / sellerImgFront / sellerImgBack at all.
+    const blank = (id: string, over: Record<string, unknown> = {}) => ({
+      productId: `p-${id}`,
+      productType: "raw",
+      cardId: id,
+      price: "0",
+      condition: "near_mint",
+      availableQuantity: 0,
+      card: { id, cardNo: "1" },
+      ...over,
+    });
+    const rows = [blank("c1"), blank("c2", { sellerSku: "1|2", sellerImgFront: "/Images/DefaultFront.gif", availableQuantity: 3, price: "0.50" }), { junk: true }];
+    const read = async (body: unknown) => {
+      vi.stubGlobal("fetch", (async () => Response.json(body)) as typeof fetch);
+      return readBscSellerSheet(ctx, session(), { filters: {}, condition: "near_mint" });
+    };
+    const wrapped = await read({ results: rows });
+    expect(wrapped.ok).toBe(true);
+    if (!wrapped.ok) return;
+    expect(wrapped.value).toMatchObject({ kind: "narrowed", total: 3, unreadable: 1 });
+    expect(wrapped.value.rows.map((x) => x.bscCardId)).toEqual(["c1", "c2"]);
+    expect(await read(rows)).toEqual(wrapped);
+  });
+
+  test("NEO-552: a wrapped sheet with no rows is an empty sheet, and an object with no results array is unreadable", async () => {
+    vi.stubGlobal("fetch", (async () => Response.json({ results: [] })) as typeof fetch);
+    const empty = await readBscSellerSheet(ctx, session(), { filters: {}, condition: "near_mint" });
+    expect(empty).toMatchObject({ ok: true, value: { kind: "narrowed", total: 0, unreadable: 0, rows: [] } });
+    for (const body of [{ results: "nope" }, { rows: [] }, { results: { 0: {} } }]) {
+      vi.stubGlobal("fetch", (async () => Response.json(body)) as typeof fetch);
+      expect(await readBscSellerSheet(ctx, session(), { filters: {}, condition: "near_mint" })).toMatchObject({ ok: false, failure: { kind: "bad_response" } });
+    }
+  });
+
   test("NEO-552: a listing PUT's answer is never read, so any JSON shape (object, array, empty) succeeds", async () => {
     // The real answer's shape is not what the fake first guessed (a write
     // capture found an object root, not an array). NB must not depend on it:

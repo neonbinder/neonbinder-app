@@ -37,4 +37,4 @@ Coverage after NEO-335 retired Fill teams (which used to carry both paths):
   `card-player-picker-cross-sport`;
 - drawer create: `player-picker-create-custom-card`.
 
-Related: [[patterns-exact-match-proof-is-the-demoted-create]].
+Related: [[patterns_button_name_substring_hides_demoted_variants]].

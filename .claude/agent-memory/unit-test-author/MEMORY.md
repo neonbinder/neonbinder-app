@@ -44,3 +44,4 @@
 - [NEO-500 pick list apply tests](reference_neo500_pick_list_apply_tests.md) — truncated-read fixture + boundary control, getDocumentSize cap proof, cleared-literal check
 - [NEO-527 paused mint + title fixture](reference_neo527_paused_mint_and_title_fixture.md) — stub PAUSED_PLATFORMS_ENV, resume-links-onto-NB-row recipe, copy-features-down so leaks reach titles
 - [NEO-483 background chain tests](reference_neo483_background_chain_test_patterns.md) — scheduled args array, stub arg widening, timeout retry doubles reads, token-guard break-checks
+- [Fake-BSC miss store tests](reference_fake_bsc_miss_store_test_patterns.md) — unref timer hang, owner reachability, dist break-checks, sheet drift fixtures

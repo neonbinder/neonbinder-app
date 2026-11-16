@@ -25,4 +25,4 @@ logs artifact, not the screenshot (the pair grid can be below the fold).
 - Classification identical across pass/fail runs (same labels, textCounts, card
   numbers) rules the preprocess/classifier out.
 
-Related: [[measure-a-fixture-from-ci-artifacts]]
+Related: [[patterns_record_a_fixture_sets_lookups]]

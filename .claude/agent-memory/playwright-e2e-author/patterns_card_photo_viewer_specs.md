@@ -1,8 +1,8 @@
 ---
-name: card-photo-viewer-specs
-description: NEO-481 card photo viewer spec handles - tile/viewer names, orientation proven by the served file's header (servedPhotoSize), held photos view-only, what cannot pass on a worktree deployment, and an img inside a named button is still locatable
+name: patterns_card_photo_viewer_specs
+description: Card photo specs - NEO-481 viewer, NEO-431 held vs saved photo box and expectPhotoServed
 metadata:
-  type: reference
+  type: pattern
 ---
 
 Every card photo opens one dialog, `Front of <label>` / `Back of <label>` (`support/photo-viewer.ts` `photoViewer`). Photo-box tiles are buttons `Open front of <line>` / `Open back of <line>` (the old `..., full size (opens a new tab)` links are gone); a line's thumbnail is `Open photos of <line>`. Add cards: `Open photo <file>` (loose/reading), `Open front of <tile>`, `Open saved photo of <card>`, `Crop by hand: <file>` on a failed photo. Box runs only: textbox `Price, <tile label>`; `p` focuses it on the FOCUSED card.
@@ -28,4 +28,16 @@ Every card photo opens one dialog, `Front of <label>` / `Back of <label>` (`supp
 **Why:** NEO-481 replaced the photo links with buttons and made edits async; the first drafts asserted tile geometry and would have passed on any orientation.
 **How to apply:** for any photo-edit assertion, read the served file; scope "Touching it up…" to the tile or viewer (the drawer tile shows its own chip).
 
-Related: [[copy-photo-specs]], [[patterns_finally_cleanup_without_an_isvisible_branch]]
+Related: [[patterns_card_photo_viewer_specs]], [[patterns_failure_hook_that_finishes_every_step]]
+
+## Copy photo specs
+
+The photo box (`CopyPhotosField.tsx`) is one widget in three places: a line's Edit form (saves on pick), the drawer's Add form (held until Add) and Request a card (held until Send). Handles shared by all: region `Photos`, file inputs by label `Front photo file` / `Back photo file`, buttons `Open front of <line>` (NEO-481; the full-size link is gone), `Remove front`, `Replace front`, `Swap front and back`. The `<line>` is `your new copy` (Add form), `this card` (Request) or the line name (`Raw, Excellent`, with `×2`, `, in <home>, line N` when twins).
+
+- A HELD photo's link href is a `blob:` address; a saved one is `/copy-photo/<32 hex>/image` (thumb `/thumb`). That difference is the perceivable-ish proof that "nothing saved yet".
+- No role/name handle says an image decoded. `support/collection.ts` `expectPhotoServed(page, locator, "src"|"href")` fetches the address a new tab would open and checks an image comes back. Use it instead of `evaluate` + `naturalWidth` (the older copy-photos spec still has the evaluate form).
+- On /inventory Checklists, `Details for <card>` opens the drawer ALREADY EDITING the card's one box line (so the thumb is replaced by the form's photo box); with no line it opens "Add a copy". On /collection the Details button opens the plain list view; a click on the row text opens it editing.
+- NEO-431 rule: a photo alone does not set a line apart for the quick count (field reads 1, no "also here"); an Add with photos never folds (`keepsOwnLine`); a + stacks onto the photo line only when every plain line has photos.
+
+**Why:** the first draft of the inventory spec asserted the thumb after reopening the drawer and would have failed on the editing state.
+**How to apply:** when a spec reopens a drawer from an inventory row, expect the Edit form and read photos from its box.

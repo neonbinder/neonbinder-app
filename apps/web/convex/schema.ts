@@ -4502,41 +4502,10 @@ export default defineSchema({
   }).index("by_owner_and_run", ["ownerId", "runKey"]),
 
   /**
-   * RETIRED (NEO-552): nothing reads or writes this table any more; the BSC
-   * call gate (`marketplaceCallGates` below) replaced it. The definition stays
-   * so rows already stored still validate, and the Set Builder reset still
-   * drains it. What it did:
-   *
-   * PR 451 (NEO-487) — a deployment-wide pause on one BSC endpoint after it
-   * answered 429. BSC's edge blocks per IP and every Convex deployment egresses
-   * from shared IPs, so one caller's 429 is everyone's: the fetch-time lookup
-   * and the background queue both read this before every wave and make no
-   * call while `until` is in the future.
-   *
-   * One row per (platform, endpoint), written only on a 429
-   * (the former `marketplaceCooldowns.record429`) and on the first success after one:
-   * zero writes on the healthy path.
-   * `streak` counts 429 windows in a row (15 s doubling to 120 s, or BSC's
-   * Retry-After when longer, up to 10 min); it resets to 0 on the first
-   * successful answer after a window closes (`recordSuccess`, NEO-482), or
-   * once 15 min pass with no 429. A 429 inside a live window does not
-   * escalate it.
-   */
-  marketplaceCooldowns: defineTable({
-    platform: v.literal("bsc"),
-    endpoint: v.literal("cardListing"),
-    until: v.number(),
-    last429At: v.number(),
-    streak: v.number(),
-    updatedAt: v.number(),
-  }).index("by_platform_endpoint", ["platform", "endpoint"]),
-
-  /**
    * NEO-552 — the deployment-wide BSC call gate: the breaker and token bucket
    * every BuySportsCards call passes through (`bscFetch`, `bscCallGate.ts`;
-   * policy in `lib/bscCallGatePolicy.ts`). It replaces `marketplaceCooldowns`,
-   * which nothing reads or writes any more (its definition stays until prod
-   * holds no rows).
+   * policy in `lib/bscCallGatePolicy.ts`). It replaced the PR 451 per-endpoint
+   * 429 cooldown table, whose definition is gone.
    *
    * One row per (platform, scope). No ids, no user data: counters and times.
    *  - `tokens` / `refilledAt`: a debt bucket (may go negative: that is a wait

@@ -3,7 +3,7 @@
  * loader's endpoints (admin). See CONTRACT.md, "Who may call it".
  */
 import express, { type NextFunction, type Request, type Response, type Router } from "express";
-import { checkRecording, type Catalogue, type Recording } from "../catalogue";
+import { CatalogueFullError, checkRecording, type Catalogue, type Recording } from "../catalogue";
 import { Captures, checkCapture, readCapture } from "../captures";
 import { compareDrift } from "../drift";
 import { readFaultRules } from "../faults";
@@ -19,14 +19,29 @@ export interface ControlDeps {
   state: StateStore;
   now: () => number;
   requireAdmin: (req: Request, res: Response, next: NextFunction) => void;
+  /**
+   * Holds a request until the durable misses are restored (503 `loading`
+   * past the cap). `POST /recordings` and `POST /reset-all` run behind it, so
+   * the restore cannot put back a miss they removed. Absent: no hold.
+   */
+  afterMissesRestore?: (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
   /** Drops identity sessions; only `/__fake/reset-all` calls it. */
   resetIdentity?: (sel: NamespaceSelector) => void;
 }
 
 export const MAX_RECORDINGS_PER_UPLOAD = 50;
+/** Most entries `GET /__fake/misses?all=1` answers (oldest first), with `truncated: true` past it. */
+export const ALL_MISSES_CAP = 2000;
+/** How long a miss read waits for the TTL sweep's deletes. */
+export const MISS_SWEEP_BUDGET_MS = 5000;
+/** How long a stored recording waits for its misses' objects to go. */
+export const MISS_CLEAR_BUDGET_MS = 10_000;
+/** How long `/__fake/reset-all` waits for every kept miss to go. */
+export const MISS_RESET_ALL_BUDGET_MS = 60_000;
 
 export function controlRouter(deps: ControlDeps): Router {
   const { catalogue, captures, state, now, requireAdmin } = deps;
+  const afterMissesRestore = deps.afterMissesRestore ?? ((_req: Request, _res: Response, next: NextFunction) => next());
   const router = express.Router();
   const small = express.json({ limit: "1mb" });
   // Recordings: one sanitised 5000-row results answer is a few MB; the
@@ -93,15 +108,38 @@ export function controlRouter(deps: ControlDeps): Router {
     res.json({ ok: true, ...(added.length === 1 ? { orderId: added[0].orderId } : {}), orderIds: added.map((o) => o.orderId), orders: added });
   });
 
-  router.get("/misses", (req, res) => {
-    const ns = typeof req.query.ns === "string" ? req.query.ns : undefined;
-    const prefix = typeof req.query.prefix === "string" ? req.query.prefix : undefined;
-    const sel = readSelector(ns !== undefined ? { ns } : { prefix });
+  // `?all=1` lists every owner's misses and is admin-only (CONTRACT.md,
+  // "Durable misses"); `?ns=` / `?prefix=` need only caller auth.
+  const adminForAll = (req: Request, res: Response, next: NextFunction): void => {
+    if (req.query.all === undefined) next();
+    else requireAdmin(req, res, next);
+  };
+
+  router.get("/misses", adminForAll, async (req, res) => {
+    let sel: NamespaceSelector | null;
+    if (req.query.all !== undefined) {
+      if (req.query.all !== "1" || req.query.ns !== undefined || req.query.prefix !== undefined) {
+        res.status(400).json({ error: "all takes only the value 1, and no ns or prefix" });
+        return;
+      }
+      sel = {};
+    } else {
+      const ns = typeof req.query.ns === "string" ? req.query.ns : undefined;
+      const prefix = typeof req.query.prefix === "string" ? req.query.prefix : undefined;
+      sel = readSelector(ns !== undefined ? { ns } : { prefix });
+    }
     if (!sel) {
       res.status(400).json({ error: "query needs ns or prefix (prefix at least 3 characters)" });
       return;
     }
-    const misses = state.listMisses(sel).map((m) => ({
+    state.expireMisses();
+    await state.flushMisses(MISS_SWEEP_BUDGET_MS);
+    // `?all=1` spans every owner (up to 2,000 namespaces × 500): only what the
+    // recorder would replay, the oldest 2,000, so each session makes progress.
+    const everyOwner = req.query.all !== undefined;
+    const page = everyOwner ? state.oldestReplayable(ALL_MISSES_CAP) : { misses: state.listMisses(sel), truncated: false };
+    const truncated = page.truncated;
+    const misses = page.misses.map((m) => ({
       ns: m.ns,
       ...(m.prefix !== undefined ? { prefix: m.prefix } : {}),
       key: m.key,
@@ -115,22 +153,24 @@ export function controlRouter(deps: ControlDeps): Router {
       lastSeen: m.lastSeen,
       ...(m.nearMiss ? { nearMiss: m.nearMiss } : {}),
     }));
-    res.json({ misses, allowlistVersion: SANITISE_ALLOWLIST_VERSION });
+    res.json({ misses, allowlistVersion: SANITISE_ALLOWLIST_VERSION, ...(everyOwner ? { truncated } : {}) });
   });
 
   // ── Admin ──────────────────────────────────────────────────────────────
 
-  router.post("/reset-all", requireAdmin, (_req, res) => {
+  router.post("/reset-all", requireAdmin, afterMissesRestore, async (_req, res) => {
     const cleared = state.resetAll();
     deps.resetIdentity?.({});
-    res.json({ ok: true, cleared });
+    // The kept misses go too; `missesRemoved: false` means some deletes were still running.
+    const missesRemoved = await state.flushMisses(MISS_RESET_ALL_BUDGET_MS);
+    res.json({ ok: true, cleared, missesRemoved });
   });
 
   router.get("/recordings", requireAdmin, (_req, res) => {
     res.json({ manifestVersion: catalogue.manifestVersion, allowlistVersion: SANITISE_ALLOWLIST_VERSION, recordings: catalogue.size });
   });
 
-  router.post("/recordings", requireAdmin, large, async (req, res) => {
+  router.post("/recordings", requireAdmin, afterMissesRestore, large, async (req, res) => {
     const b = (req.body ?? {}) as Record<string, unknown>;
     const raw = Array.isArray(b.recordings) ? b.recordings : null;
     if (!raw || raw.length === 0 || raw.length > MAX_RECORDINGS_PER_UPLOAD) {
@@ -151,9 +191,16 @@ export function controlRouter(deps: ControlDeps): Router {
     try {
       const out = await catalogue.add(checked);
       for (const r of checked) state.clearMiss(r.key);
+      await state.flushMisses(MISS_CLEAR_BUDGET_MS);
       log("recordings_promoted", { added: out.added, manifestVersion: out.version, ms: Date.now() - started });
       res.json({ ok: true, manifestVersion: out.version, keys: checked.map((r) => r.key) });
     } catch (err) {
+      if (err instanceof CatalogueFullError) {
+        // Counts only: no keys, paths or bodies.
+        log("recordings_refused", { reason: "catalogue_full", uploaded: checked.length, total: err.total, max: err.max, ms: Date.now() - started });
+        res.status(409).json({ error: "catalogue full", total: err.total, max: err.max });
+        return;
+      }
       log("recordings_store_failed", { error: err instanceof Error ? err.name : "unknown", ms: Date.now() - started });
       res.status(503).json({ error: "could not store recordings" });
     }
