@@ -98,7 +98,7 @@
 - [Local re-seed keeps the catalogue](patterns_local_reseed_keeps_the_reference_catalogue.md) — plain baseline reset wipes it; use e2e-seed-reset.sh + bundle; who needs a re-seed between projects; --output keeps artifacts
 - [Binder page names and async radio](patterns_binder_page_names_and_async_radio.md) — `Page 2, A fresh page`; gate a key on Next enabled; check() vs a save-moved radio; image load without evaluate; bootstrap after a red
 - [Custom sport hosts minted players](patterns_custom_sport_player_specs_skip_lookups.md) — minted player names in customSport(env): no lookup, no clashes; count rows by exact name; goBack restores the drill
-- [Finally cleanup without an isVisible branch](patterns_finally_cleanup_without_an_isvisible_branch.md) — flag after the Done click, tidy() collects errors, body failure not masked; lane overflow axe signature
+- [Finally cleanup without an isVisible branch](patterns_finally_cleanup_without_an_isvisible_branch.md) — flag after Done, tidy() collects errors; undo a chip by a value loaded with the doc
 - [Route only one of two concurrent PUTs](patterns_route_only_one_of_two_concurrent_puts.md) — match by pathname, host compare as booleans, event-based console waits, clock jumps
 - [Custom-sport player fixture makes no lookup](patterns_custom_sport_player_fixture_makes_no_lookup.md) — NEO-462: minted players in the custom sport, no_match log is a refusal, birth-year forks, Back is an exit
 - [dnd-kit drag autoscroll + aria-disabled rows](patterns_dndkit_drag_autoscroll_and_aria_disabled_rows.md) — park inside the scroller edge, wait toBeInViewport; aria-disabled row; debounced status duplicates a count; Enter-on-box proof
@@ -127,3 +127,5 @@
 - [Planted red for server-side behaviour](patterns_planted_red_for_server_side_behaviour.md) — no backend push: plant a wrong expectation, read the snapshot for the real value, hand the convex patch to the coordinator
 - [Brand-unknown row fixtures + All Brands option names](patterns_brand_unknown_row_fixtures_and_all_brands_option_names.md) — "<set> <brand>" option names need a regex; assert Unknown listed before drilling to it; host collector fixtures on Hockey 1995
 - [First seller press may wait for the seller account](patterns_first_seller_press_may_wait_for_the_seller_account.md) — NEO-483: expectRunOrSellerWait + claim wait capped at SELLER_ACCOUNT_CAP_MS; both orders end in the same asserts
+- [Commit-path default player needs a nameless card](reference_commit_path_default_player_needs_a_nameless_card.md) — NEO-528: listed/ruled-out names hold the default back; uploads cannot clear names
+- [selectOrCreate brand re-homes a year's sets](patterns_select_or_create_brand_rehomes_a_years_sets.md) — old-seed deployment: hand-made brand + Unknown sets moved; read state first

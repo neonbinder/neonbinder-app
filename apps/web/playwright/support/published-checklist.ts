@@ -48,6 +48,8 @@ export const CHECKLISTS = {
   careerBestJumboJerseys2009: "2009-topps-insert-career-best-jumbo-jerseys",
   bowman2026Base: "2026-football-bowman-base",
   topps2014FootballBase: "2014-football-topps-base",
+  /** Football 1984 Topps Base: 396 cards; the cameo smart-binder spec's set (card #355 Fred Dean, NEO-528). */
+  topps1984FootballBase: "1984-football-topps-base",
   /** Baseball 2024 Topps Chrome Insert Future Stars: 20 cards (`FS-1`..`FS-20`), the setup's insert fetch. */
   futureStars2024: "2024-topps-chrome-insert-future-stars",
   /**
