@@ -115,4 +115,4 @@
 - [Neo483 background chain re-arm](patterns_neo483_background_chain_rearm.md) — capped chain re-armed by a cron is perpetual; upstream "no" terminal
 - [Neo535 rename fan-out + title chain](patterns_neo535_rename_fanout_and_title_chain.md) — per-row probe × row cap in budget doors
 - [Neo552 fake upstream](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; probe leaks; TOCTOU
-- [Live-account probe and capture](patterns_live_account_probe_and_capture.md) — egress scan bypasses (.call, lowercase method); wrap transport
+- [Live-account probe and capture](patterns_live_account_probe_and_capture.md) — wrap transport; signal guard; stderr EPIPE/EIO kills it; scripts need checkout
