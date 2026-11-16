@@ -239,6 +239,12 @@
 - [Convex prod redacts plain Error text](reference_convex_prod_redacts_plain_error_messages.md) — never string-match a server refusal; coded ConvexError from a pure convex/lib module, read data.code
 - [Axe contrast red: read the attachment first](reference_axe_contrast_red_read_the_attachment_first.md) — blob report holds every node fg/bg; a role blended toward the bg = mid-fade frame, not a token bug
 - [Agent shell Node is not the apps/web pin](reference_agent_shell_node_is_not_the_apps_web_pin.md) — prepend nvm's $(cat .nvmrc) bin in the same call as each gate; print node --version
+- [Card description follows facts](reference_card_description_follows_facts.md) — card-fact writers call refreshedListingDescription; renames via cardDescriptionFanOut (overlay before-reads)
+- [Cross-sibling jump via a store](reference_cross_sibling_jump_via_store.md) — walker door to SetAttributesPanel: targets + closers store, door only when reachable, focus a frame late
+- [Title year and maker come from features](reference_title_year_and_maker_come_from_features.md) — convex-test trees need features.season/manufacturer or titles drop the year and length boundaries shift
+- [Nested ConfirmDialog leaks Escape/Tab](reference_nested_confirmdialog_leaks_escape_and_tab.md) — wrap it to stop Escape/Tab; count-gated door stays mounted while busy
+- [Spec arithmetic: old vs new probe](reference_spec_arithmetic_old_vs_new_probe.md) — zzold_ copy of HEAD + CSV probe; OLD must reproduce the spec first
+- [Tokens scan reads state variants](reference_tokens_scan_reads_state_variants.md) — aria-disabled:/disabled: classes are scanned; ink-3 on button-neutral fails dark, held fields use ink-2
 - [New table naming a variant has six pins](reference_new_table_naming_a_variant_has_six_pins.md) — wipe graph, reset batch + exact count pin, cli.mjs list, test reset, api.d.ts, auth registry
 - [Inline-block is a reader group](reference_inline_block_is_a_reader_group.md) — inline-block span in a one-phrase <p> = Chrome AX generic; role="presentation" flattens it
 - [convex-test: stub a module via the glob map](reference_convex_test_stub_a_module_via_the_glob_map.md) — add a "./x.ts" key to the modules map; check {ok:false} results; mutation→action flip breaks .mutation() call sites repo-wide
@@ -246,3 +252,5 @@
 - [Focus park after ConfirmDialog races its restore](reference_focus_park_after_confirmdialog_races_its_restore.md) — setTimeout loses to the unmount restore; focus-request effect + layout effect on disabled
 - [Late scheduled jobs cross convex-test instances](reference_late_scheduled_jobs_cross_convex_test_instances.md) — an undrained job lands in a later test's spy; ids repeat across instances
 - [Stacked branch merge after parent squash](reference_stacked_branch_merge_after_parent_squash.md) — merge base predates the parent: clean hunks duplicate code; re-merge with merge-tree base
+- [New listing problem reason: hand lists](reference_new_listing_problem_reason_has_hand_lists.md) — SYNC_HELD_REASONS, REPORTABLE_SYNC_REASONS judgement, test Reason union, spec copy literals
+- [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators

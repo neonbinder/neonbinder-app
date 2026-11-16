@@ -2,10 +2,11 @@
  * NEO-101 — the card detail drawer's title length limits.
  *
  * Kept out of `CardDetailPanel.test.tsx` because it needs a `useQuery` mock
- * that answers `previewListingTitle` and, critically, honours `"skip"`: the
- * Regenerate button's whole point is that nothing is fetched until it is
- * pressed, and a mock that returns a preview regardless would make the lazy
- * path untestable while still passing every other assertion here.
+ * that answers `previewListingTitle`. NEO-535: the drawer subscribes to it as
+ * it opens (no more `"skip"` until Regenerate), so "Left out to fit" and the
+ * "Title built from" chips read the stored title from the start; the mock
+ * still honours `"skip"` so a regression to the lazy path shows up as missing
+ * chips here.
  *
  * What this file locks in:
  *   1. Over the 80-character cap the title REFUSES TO COMMIT and says why,
@@ -58,7 +59,6 @@ vi.mock("convex/react", () => ({
   },
   useQuery: (ref: string, args: unknown) => {
     if (ref === "getCardChecklist") return [];
-    // The lazy contract: `"skip"` until the operator asks for a preview.
     if (ref === "previewListingTitle") {
       return args === "skip" ? undefined : previewResult;
     }
@@ -107,7 +107,7 @@ function renderPanel(card = makeCard()) {
 }
 
 const titleInput = () =>
-  screen.getByLabelText("Card title") as HTMLInputElement;
+  screen.getByLabelText("Card title") as HTMLTextAreaElement;
 
 /**
  * Focus a reactive field the way a person does. BOTH the real `.focus()` and
@@ -132,7 +132,7 @@ function blurField(el: HTMLElement): void {
  * that tracker, so the subsequent event looks like a no-change and React skips
  * `onChange` — which is what drives the live character counter here.
  */
-async function editAndCommit(el: HTMLInputElement, text: string): Promise<void> {
+async function editAndCommit(el: HTMLInputElement | HTMLTextAreaElement, text: string): Promise<void> {
   await act(async () => {
     focusField(el);
     fireEvent.change(el, { target: { value: text } });
@@ -276,8 +276,10 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
   it("Regenerate replaces a clean field, persists it, and shows the facts the title was built from", async () => {
     renderPanel(makeCard({ listingTitle: "stale title" }));
 
-    // Nothing is fetched until asked: no chips before the click.
-    expect(screen.queryByLabelText("Title built from")).toBeNull();
+    // NEO-535: subscribed from the start, so the chips and "Left out to fit"
+    // read the stored title before any Regenerate.
+    expect(screen.getByLabelText("Title built from")).toBeTruthy();
+    expect(screen.getByText(/^Left out to fit: /)).toBeTruthy();
 
     await act(async () => {
       fireEvent.click(screen.getByLabelText("Regenerate card title"));
@@ -359,11 +361,14 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     );
   });
 
-  it("reports the tokens the generator had to leave out", async () => {
+  it("reports what the title in the field leaves out of the card's facts (NEO-535)", async () => {
+    const base = previewResult as { inputs: Record<string, unknown> } & Record<string, unknown>;
     previewResult = {
-      ...(previewResult as Record<string, unknown>),
+      ...base,
       coreFits: false,
-      dropped: ["SP", "/99"],
+      // The server's own list is never what the note shows any more.
+      dropped: ["stale server list"],
+      inputs: { ...base.inputs, printRun: 99 },
     };
     renderPanel(makeCard({ listingTitle: "stale" }));
 
@@ -372,8 +377,24 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     });
 
     await waitFor(() =>
-      expect(screen.getByText("Left out to fit: SP, /99")).toBeTruthy(),
+      expect(
+        screen.getByText(
+          "Left out to fit: Seattle Mariners, SP, Image Variation; Wearing sunglasses, /99",
+        ),
+      ).toBeTruthy(),
     );
+    expect(screen.queryByText(/stale server list/)).toBeNull();
+
+    // Retyping a cut thing takes it off the note, keystroke by keystroke.
+    await act(async () => {
+      focusField(titleInput());
+      fireEvent.change(titleInput(), {
+        target: { value: "2024 Topps Chrome Julio Rodriguez #300b SP /99" },
+      });
+    });
+    expect(
+      screen.getByText("Left out to fit: Seattle Mariners, Image Variation; Wearing sunglasses"),
+    ).toBeTruthy();
   });
 
   /**
@@ -463,8 +484,11 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
       expect(titleInput().value).toBe("2024 Topps Chrome Julio Rodriguez #300b"),
     );
     expect(screen.queryByRole("alert")).toBeNull();
-    // Nothing to write: the value on screen is the value on the server.
-    expect(mockUpdateCard).not.toHaveBeenCalled();
+    // Nothing to write: the value on screen is the value on the server. The
+    // only call is NEO-535's description rebuild, which the server decides.
+    expect(mockUpdateCard.mock.calls.map((c) => c[0])).toEqual([
+      { id: CARD_ID, regenerateDescription: true },
+    ]);
   });
 
   it("replaces the old refusal with the new one when the regenerated title is also refused", async () => {
@@ -495,14 +519,104 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
       true,
     );
     expect(alerts.some((t) => t.includes("77 over"))).toBe(false);
-    expect(mockUpdateCard).not.toHaveBeenCalled();
+    // No title was written; the description rebuild still goes (NEO-535).
+    expect(mockUpdateCard.mock.calls.map((c) => c[0])).toEqual([
+      { id: CARD_ID, regenerateDescription: true },
+    ]);
   });
 
   it("says so when the stored auto-title was cut short", () => {
+    // No facts in hand yet, so no "Left out to fit" line to say it instead.
+    previewResult = undefined;
     renderPanel(
       makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
     );
     expect(screen.getByText("Auto title was cut short — rewrite it")).toBeTruthy();
+  });
+
+  it("NEO-535: a cut-short title says what was cut instead, and an over-cap one only that it is too long", () => {
+    renderPanel(
+      makeCard({ listingTitle: titleOfLength(78), listingTitleTruncated: true }),
+    );
+    expect(screen.getByText(/^Left out to fit: /)).toBeTruthy();
+    expect(screen.queryByText("Auto title was cut short — rewrite it")).toBeNull();
+  });
+
+  it("NEO-535: an over-cap title is never also called cut short", () => {
+    previewResult = undefined;
+    renderPanel(
+      makeCard({ listingTitle: titleOfLength(90), listingTitleTruncated: true }),
+    );
+    expect(screen.getByRole("alert").textContent).toContain("10 over the 80-character limit");
+    expect(screen.queryByText("Auto title was cut short — rewrite it")).toBeNull();
+  });
+
+  it("NEO-535: Regenerate asks the server to rebuild the description as well", async () => {
+    renderPanel(makeCard({ listingTitle: "stale title" }));
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+    await waitFor(() =>
+      expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, regenerateDescription: true }),
+    );
+  });
+
+  it("NEO-535 (a11y): a rebuilt description is said on the drawer's status line", async () => {
+    const stale = makeCard({ listingTitle: "stale title", listingDescription: "old words" });
+    const props = {
+      ancestorSport: "Baseball",
+      onClose: vi.fn(),
+      onPrev: vi.fn(),
+      onNext: vi.fn(),
+      hasPrev: false,
+      hasNext: false,
+    };
+    const { rerender } = render(<CardDetailPanel card={stale} {...props} />);
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText("Regenerate card title"));
+    });
+    expect(screen.queryByText(/Description rebuilt/)).toBeNull();
+    // The rebuilt description arrives on the subscription.
+    rerender(<CardDetailPanel card={{ ...stale, listingDescription: "new words" }} {...props} />);
+    const status = await screen.findByText(/Description rebuilt/);
+    expect(status.closest('[role="status"]')).not.toBeNull();
+  });
+
+  it("NEO-535 (a11y): an unchanged description says nothing, and a later change is not called a rebuild", async () => {
+    const card = makeCard({ listingTitle: "stale title", listingDescription: "my own words" });
+    const props = {
+      ancestorSport: "Baseball",
+      onClose: vi.fn(),
+      onPrev: vi.fn(),
+      onNext: vi.fn(),
+      hasPrev: false,
+      hasNext: false,
+    };
+    const { rerender } = render(<CardDetailPanel card={card} {...props} />);
+    // A description no Regenerate asked for changes: not a rebuild.
+    rerender(<CardDetailPanel card={{ ...card, listingDescription: "edited elsewhere" }} {...props} />);
+    expect(screen.queryByText(/Description rebuilt/)).toBeNull();
+  });
+
+  it("NEO-535 (a11y): the title field says Enter saves", () => {
+    renderPanel(makeCard({ listingTitle: "short" }));
+    const ids = (titleInput().getAttribute("aria-describedby") ?? "").split(" ");
+    const said = ids.map((id) => document.getElementById(id)?.textContent ?? "").join(" ");
+    expect(said).toContain("Enter saves it.");
+  });
+
+  it("NEO-535: the title is a wrapping one-line field; Enter saves and a pasted line break is a space", async () => {
+    renderPanel(makeCard({ listingTitle: "short" }));
+    const field = titleInput();
+    expect(field.tagName).toBe("TEXTAREA");
+    await act(async () => {
+      focusField(field);
+      fireEvent.change(field, { target: { value: "2024 Topps\nChrome #1" } });
+      fireEvent.keyDown(field, { key: "Enter" });
+    });
+    await waitFor(() =>
+      expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, listingTitle: "2024 Topps Chrome #1" }),
+    );
   });
 
   it("cardVariation at exactly 65 is fine; 66 warns — the boundary itself, not just an over-by-5 case", () => {

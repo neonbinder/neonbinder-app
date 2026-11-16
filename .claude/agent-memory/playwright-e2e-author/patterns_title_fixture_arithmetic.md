@@ -1,14 +1,9 @@
 ---
 name: title-fixture-arithmetic
-description: Compute expected listingTitles by running the real generator (esbuild-bundle it) — and know that a spec's typed player name never reaches the title via the Card name field
+description: Compute expected listingTitles by running the real generator (esbuild-bundle it); NEO-535 cut order, pad minted names to a fixed length so the arithmetic is exact on every runner, and the typed card name never reaches the title
 metadata:
   type: reference
 ---
-
-Listing titles **fill toward 80** (core, then `#number`, then AUTO/RELIC/parallel/
-printRun/variation/RC/SP, then each team name, then "Rookie", then sport), so any
-spec that types into `Card title`, or asserts a generated one, has a length budget
-worth computing rather than eyeballing.
 
 **Compute it, don't estimate it.** The generator is pure and has no Convex
 imports, so bundle and call it (from `apps/web`, output to the scratchpad):
@@ -17,20 +12,32 @@ imports, so bundle and call it (from `apps/web`, output to the scratchpad):
 npx esbuild convex/features/generateListing.ts --bundle --format=esm \
   --platform=node --outfile=<scratch>/gen.mjs
 node -e 'import("<scratch>/gen.mjs").then(m=>console.log(m.assessListingTitle({
-  cardNumber:"101-r2-a1-20133", year:"2024", manufacturer:"Topps",
-  setName:"tlf-2-r2-a1-20133", sport:"Baseball", teamNames:["New York Yankees"]})))'
+  cardNumber:"C1", year:"2024", manufacturer:"Topps", setName:"ttl...",
+  insertName:"Base", sport:"Baseball", playerNames:["George Brett"], teamNames:[]})))'
 ```
 
-It returns `{title, coreFits, dropped}`: check the length AND `coreFits`, since a
-cut core stamps `listingTitleTruncated`, which adds an extra **attention item**
-and changes what the walker's fixer says.
+It returns `{title, fits, firstNameLost, dropped, coreFits, shortNameUsed?}`;
+`leftOutOfTitle(inputs, text)` is the drawer's "Left out to fit" note.
 
-**The trap that makes hand-arithmetic wrong:** the player name typed through the
-hand-made card helper (`addCustomCard` in `support/cards.ts`) goes into the
-**Card name** field (whose placeholder merely reads "Player name"); the
-generator's `playerNames` come from the separate **"Players"** field, which the
-helper leaves empty, so a hand-added card has `pendingPlayerNames: []`. What a
-hand-made card DOES contribute is the typed **Team** (`pendingTeamNames`) and the
-**sport ancestor's value** (e.g. a 16-character hand-made sport name), appended
-last. A minted name built from `ATTEMPT_TOKEN` has its own length; measure the
-real value in the run rather than assuming.
+**NEO-535 rules a fixture leans on:** the description (year, maker, set,
+insert, parallel), surnames and `/N` are NEVER cut; a title still over 80 after
+every cut is kept over the cap (drawer alert "over the 80-character limit")
+unless the row chain has a "Set name in titles", which then opens the title
+verbatim. Cut order: repeats, "Insert"/"Parallel" labels, sport, second
+Rookie, teams, number, first names, SP, RC, RELIC, variation, AUTO; a title at
+exactly 81 loses only the "#". The refill tries the number (with "#", then
+bare) before the sport and labels, so an operator can never retype a dropped
+number into 80 characters without cutting something the note would report.
+
+**A hand-made `Insert` > `Base` row is an insert by role:** its title says
+"<set> Base Insert" (label cut first). The quick-add PlayerPicker's linked
+player DOES reach the title; the free "Card name" field never does.
+
+**Exact on every runner:** `ATTEMPT_TOKEN` length varies (worker digits, a
+random tail of 1-5 digits), so pad the minted set name and any minted card
+number to a fixed length (`padEnd`) and assert the lengths in the spec.
+Example: `card-title-uses-short-name-for-titles`.
+
+The collector's "Find a card" (`collectionCatalog.search`) reads the card's
+DESCRIPTION, which keeps every fact; to prove it, search a single token only
+the description holds (the number the title dropped).

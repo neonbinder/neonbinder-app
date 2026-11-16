@@ -702,6 +702,44 @@ describe("search: unquoted words are terms, quoted text is a phrase", () => {
   });
 });
 
+describe("search reads the listing description, not the title (NEO-535)", () => {
+  test("a word only the description holds finds the card", async () => {
+    const { t, as, fx } = await setup();
+    await t.run(async (ctx) => {
+      await ctx.db.patch(fx.strawberry2, {
+        listingDescription: "2024 Topps Chrome card of Darryl Strawberry, #2.\nRookie Card (RC).\nTeam: New York Mets.\nSport: Baseball.",
+      });
+    });
+    // "Baseball" and "York" are in the description and not in the title.
+    const hits = await as.query(api.collectionCatalog.search, { q: "strawberry baseball york" });
+    expect(hits.cards.map((c) => c._id)).toEqual([fx.strawberry2]);
+    const phrase = await as.query(api.collectionCatalog.search, { q: '"rookie card (rc)"' });
+    expect(phrase.cards.map((c) => c._id)).toEqual([fx.strawberry2]);
+  });
+
+  test("a word only the title holds does not", async () => {
+    const { t, as, fx } = await setup();
+    await t.run(async (ctx) => {
+      // The title still says "Strawberry Mets RC"; the description names him
+      // without the team.
+      await ctx.db.patch(fx.strawberry2, { listingDescription: "Card #2 of Darryl Strawberry." });
+    });
+    const hits = await as.query(api.collectionCatalog.search, { q: "strawberry mets" });
+    expect(hits.cards).toEqual([]);
+    const byName = await as.query(api.collectionCatalog.search, { q: "strawberry" });
+    expect(byName.cards.map((c) => c._id)).toEqual([fx.strawberry2]);
+  });
+
+  test("a card with no description is never found, whatever its title says", async () => {
+    const { t, as, fx } = await setup();
+    await t.run(async (ctx) => {
+      await ctx.db.patch(fx.strawberry2, { listingDescription: undefined });
+    });
+    const hits = await as.query(api.collectionCatalog.search, { q: "strawberry" });
+    expect(hits.cards).toEqual([]);
+  });
+});
+
 describe("a player's and a team's cards", () => {
   test("cardsByPlayer pages through every linked card", async () => {
     const { as, fx } = await setup();

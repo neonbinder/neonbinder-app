@@ -125,6 +125,27 @@ export async function cardIdsForTeam(
 }
 
 /**
+ * NEO-535 — one page of a team's link rows, oldest first, strictly after the
+ * `_creationTime` cursor (`null` for the first page): the rename fan-out's walk
+ * (`cardDescriptionFanOut.ts`). A READ that lives here for the same reason
+ * `cardIdsForTeam` does. A cursor, not `.paginate()`, so a caller that is a
+ * public mutation keeps its one paginate.
+ */
+export async function cardTeamLinkPage(
+  ctx: Pick<QueryCtx, "db">,
+  teamId: Id<"teams">,
+  after: number | null,
+  limit: number,
+): Promise<Array<Doc<"cardTeamLinks">>> {
+  return await ctx.db
+    .query("cardTeamLinks")
+    .withIndex("by_team", (q) =>
+      after === null ? q.eq("teamId", teamId) : q.eq("teamId", teamId).gt("_creationTime", after),
+    )
+    .take(limit);
+}
+
+/**
  * Every row for one card, removed. Called by `removeCardRow`, beside the card
  * delete, in the same transaction, so the index never names a card that is
  * gone. Returns the ids for a caller that logs every row it deletes.

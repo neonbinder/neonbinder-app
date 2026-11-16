@@ -57,6 +57,18 @@
 - [Transient notice behind a seed redirect](patterns_transient_notice_behind_a_seed_redirect.md) — upload-then-redirect seed hides a window that closes mid-upload; line up confirm/heavy/first query
 - [Placeholder real-intake specs](patterns_placeholder_real_intake_specs.md) — NEO-529: drop on /print/placeholders, cap recovery via Recent runs, second-page tidy, ESM path, stale node_modules
 - [Sibling edits reload a local Vite run](patterns_sibling_edits_reload_a_local_vite_run.md) — one-off red on a step green on rerun: check Vite log for hmr/page reload at that time; eBay unmatched row names
+- [Failure PNG shows the finally end state](patterns_failure_screenshot_shows_the_finally_end_state.md) — self-cleaning specs: the screenshot is post-cleanup; read the blob error-context ARIA snapshot (NEO-481)
+- [Brand-unknown row fixtures + All Brands option names](patterns_brand_unknown_row_fixtures_and_all_brands_option_names.md) — "<set> <brand>" option names need a regex; assert Unknown listed before drilling to it; host collector fixtures on Hockey 1995
+- [First seller press may wait for the seller account](patterns_first_seller_press_may_wait_for_the_seller_account.md) — NEO-483: expectRunOrSellerWait + claim wait capped at SELLER_ACCOUNT_CAP_MS; both orders end in the same asserts
+- [Fake BSC faults and the breaker job](patterns_fake_bsc_faults_and_the_breaker_job.md) — NEO-552: bscFake fixture, hop page, deployment-wide gate, @bsc-breaker…
+- [Worktree deployment onto the fake BSC](patterns_worktree_deployment_onto_the_fake_bsc.md) — NEO-552: set browser URL to the tagged revision, reportMisses, misses arrive in levels
+- [eBay hold spec on a hand-made set](patterns_ebay_hold_spec_on_a_handmade_set.md) — NEO-535: over-80 title fixture, hold-only run shape, tagged seller spec vs shard-plan
+- [Re-run a fresh-only spec w/o reseed](patterns_rerun_a_fresh_only_spec_without_a_reseed.md) — gcloud expired: restore spec + reset --except-reference-seed; push a break to prove stored-title asserts
+- [Parallel titles dialog specs](patterns_parallel_titles_dialog_specs.md) — NEO-535: builder-engineered names, box beats carry, sr-only duplicate status, Vite reload false red
+- [NEO-535 description, walker, Regenerate specs](patterns_neo535_description_walker_and_regenerate_specs.md) — stale builder text, walker order, rename fan-out shape, mobile-only wrap, plant traps
+- [Bulk walk busy label toBeHidden is vacuous](patterns_bulk_walk_busy_label_toBeHidden_is_vacuous.md) — wait for "(0)" or Next/Confirm after "Add remaining players as new", not the busy label gone
+- [Shared fast pool read ceiling](patterns_shared_fast_pool_read_ceiling.md) — NEO-529: FAST_READ_CEILING for "All N photos read."; no fast-vs-heavy E2E spec
+- [Adopting specs need a real reseed for a planted break](pattern_adopting_specs_need_reseed_for_planted_break.md) — failed reseed = silent green; reseed before each plant
 - [Shared fast pool read ceiling](patterns_shared_fast_pool_read_ceiling.md) — NEO-529: FAST_READ_CEILING for "All N photos read."; no fast-vs-heavy E2E spec
 - [Probe Vite from a HEAD snapshot](patterns_probe_vite_from_a_head_snapshot.md) — builders' edits HMR-crash a worktree Vite (multiple ClerkProvider, black PNG); git-archive…
 - [Compare a publisher checklist with BSC facets](reference_compare_a_publisher_checklist_with_bsc_facets.md) — one aggregation call lists every BSC section; insert parallels are…

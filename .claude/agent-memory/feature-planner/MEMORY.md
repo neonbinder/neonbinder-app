@@ -66,6 +66,8 @@
 - [Photo red with upstream 502s](photo-red-with-upstream-502s-read-the-preprocess-traceback.md) — 502 "pipeline upstream failure" bursts: read preprocess traceback tails (anthropic.* = provider), status feed; never raise ceilings
 - [Photo red triage starts with the branch](photo-red-triage-starts-with-the-branch.md) — bucket sweep reds by branch + before/after the fixing merge; [a-z0-9-] for project names; pre-load axe on photo boxes
 - [Heavy cold-start notice is order-dependent](heavy-cold-start-notice-is-order-dependent.md) — warm heavy (~2 s post-#454) resolves before the seed redirect; NEO-481 edit warm-up is FAST-only
+- [Listing title is the collector search text](listing-title-is-the-collector-search-text.md) — search reads listingDescription (NEO-535); description carries every fact; ebayListingText refuses titles over 80
+- [Players have one display name field](players-have-one-display-name-field.md) — no first/last split; name-part rules are token rules over `name` (name-fragment.ts); family-name-first is the known miss
 - [Fresh-load stall: find the user's cached-hit batch](fresh-load-stall-check-for-the-users-cached-hit-batch.md) — no batch + healthy probe = page never subscribed; set-builder heading shows before its BSC sync ends
 - [E2E accounts are all admins](e2e-accounts-are-all-admins.md) — admin-only queues of all users show on every real spec; non-admin view is unit-only; numberMismatch only via seedMyTestSync
 - [Browser secrets are per Clerk user](browser-secrets-are-per-clerk-user-not-per-deployment.md) — credKey is shared by every deployment signing in one test user; isolate via key + TTL, never a clash guard

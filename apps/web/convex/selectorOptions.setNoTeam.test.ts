@@ -646,6 +646,48 @@ describe("NEO-556 updateCard teamNone", () => {
     expect(after!.listingDescription ?? "").not.toContain("Bulls");
   });
 
+  test("a title rebuilt without the team queues the card for eBay, as an edit does (NEO-535)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const bulls = await seedTeam(t, sportId, { location: "Durham", name: "Bulls" });
+    const tree = await seedTree(t, sportId);
+    const id = await addBullsCard(t, tree.variantTypeId, bulls);
+    const seller = "collector_no_team_retitle";
+    await t.run(async (ctx) => {
+      const now = Date.now();
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: seller,
+        platform: "ebay",
+        listingStartedAt: now,
+        lastUpdated: now,
+      });
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: seller,
+        kind: "box",
+        name: "Box 1",
+        lastUpdated: now,
+      });
+      await ctx.db.insert("collectionCopies", {
+        ownerId: seller,
+        cardId: id,
+        variantId: tree.variantTypeId,
+        setId: tree.setNameId,
+        homeId,
+        quantity: 1,
+        lastUpdated: now,
+      });
+    });
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, { id, teamNone: true });
+
+    expect((await getCard(t, id))!.listingTitle).not.toContain("Bulls");
+    const outbox = await t.run(async (ctx) => await ctx.db.query("listingOutbox").collect());
+    expect(outbox.map((r) => ({ ownerId: r.ownerId, platform: r.platform, cardId: r.cardId }))).toEqual([
+      { ownerId: seller, platform: "ebay", cardId: id },
+    ]);
+  });
+
   test("a typed title is kept; the panel re-sending the stored title still regenerates it", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);

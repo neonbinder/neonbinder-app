@@ -175,6 +175,15 @@ export function cardDescription(drawer: Locator): Locator {
   return drawer.getByRole("textbox", { name: "Card description", exact: true });
 }
 
+/**
+ * The drawer's "Card title": the listing title the server writes at the commit
+ * (the card's own players, then its cameos while the title has room, and the
+ * cameos are the first meaningful words cut when it is over 80 characters).
+ */
+export function cardTitle(drawer: Locator): Locator {
+  return drawer.getByRole("textbox", { name: "Card title", exact: true });
+}
+
 /** The drawer's "Cameo: <name>" line, as a pattern over its description. */
 export function cameoLine(name: string): RegExp {
   // Not a word boundary: a name can end in punctuation ("Ken Griffey Jr."), and the line ends with it.

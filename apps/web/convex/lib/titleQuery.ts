@@ -4,9 +4,14 @@
  * Jason's rule for the free-text card search:
  *
  *   - Unquoted words are separate TERMS. Every one must appear somewhere in the
- *     card's listing title, in any order.
+ *     card's listing description, in any order.
  *   - Quoted text is a PHRASE. That exact string (case-insensitive) must appear
- *     in the title.
+ *     in the description.
+ *
+ * NEO-535: the text searched is the listing DESCRIPTION (every fact NB knows
+ * about the card), not the title, which is cut to fit 80 characters. The
+ * helpers keep their NEO-358 "title" names; the text they are handed is the
+ * description.
  *
  * Convex full-text search is OR over the query's words with relevance ranking,
  * so it cannot express either rule by itself. The reader
@@ -21,7 +26,7 @@
  */
 
 export type TitleQuery = {
-  /** Unquoted words, lower-cased. Each must appear in the title. */
+  /** Unquoted words, lower-cased. Each must appear in the description. */
   terms: string[];
   /** Quoted strings, lower-cased, inner whitespace collapsed. Each must appear verbatim. */
   phrases: string[];
@@ -65,7 +70,7 @@ export function searchTextFor(query: TitleQuery): string {
   return [...query.terms, ...query.phrases].join(" ");
 }
 
-/** Does `title` satisfy every term and every phrase? */
+/** Does `title` (the card's listing description, NEO-535) satisfy every term and every phrase? */
 export function titleMatches(title: string, query: TitleQuery): boolean {
   const folded = foldTitleText(title);
   return (

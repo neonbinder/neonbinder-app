@@ -23,3 +23,12 @@ when the stored description is still the generator's.
 (cardPlayersBulk `putPlayerOnCard` pattern); description refresh = the helper.
 Treat a value the caller re-sent unchanged (CardDetailPanel re-sends the title
 on every save) as untouched. Related: [[convex-typecheck-excludes-test-files]].
+
+Since NEO-535, `cardDescriptionRefresh.refreshedListingDescription(ctx,
+before, patch)` does the same job generically for any patch that names a
+description fact (`patchNamesDescriptionFacts`, teams included), and
+`updateCard` runs it after its own blocks whenever no description was set
+yet. A new team-changing path should prefer that helper; the NEO-556 one
+stays for the No Team branch. Also: a regenerated TITLE must set
+`updateCard`'s `titleChanged` so the card is requeued for eBay
+(`queueRetitledCardNow`).

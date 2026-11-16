@@ -337,10 +337,19 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
     await expect(noCards).toBeVisible();
     await page.getByRole("button", { name: "Build from Base", exact: true }).click();
     // One BSC read; the checklist fills when the build lands.
-    await expectAfterMarketplace(page, page.getByRole("status").filter({ hasText: /^Chrome — Built [0-9]+ cards/ }), {
+    const builtNotice = page.getByRole("status").filter({ hasText: /^Chrome — Built [0-9]+ cards/ });
+    await expectAfterMarketplace(page, builtNotice, {
       platform: BSC,
       what: "the Chrome build's BSC read",
     });
+    // NEO-535: Chrome's copies take the builder's own titles, which fit once the
+    // Card prefix is set, so the notice names no title to fix, the checklist
+    // offers no "Fix card titles" button and the Card titles dialog never opens
+    // by itself. Nothing here tolerates one: the notice above is the positive
+    // that the build has landed.
+    await expect(builtNotice).not.toContainText(/titles? needs? a fix/);
+    await expect(page.getByRole("button", { name: "Fix card titles", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("dialog", { name: "Card titles" })).toHaveCount(0);
   }
   await expect(someCard).toBeVisible();
   await expectAccessible(page, { label: "Set Builder, Chrome built from Base with its Card prefix" });

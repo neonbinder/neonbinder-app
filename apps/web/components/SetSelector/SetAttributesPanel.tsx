@@ -1,4 +1,5 @@
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
+import { useSetNameInTitlesTarget } from "./set-name-in-titles-jump";
 import { PencilSquareIcon, TrashIcon } from "@heroicons/react/24/outline";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import { useConvex, useMutation, useQuery } from "convex/react";
@@ -36,6 +37,8 @@ import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps
 import CardPrefixRow from "./CardPrefixRow";
 import RenameEntityControl from "./RenameEntityControl";
 import { variantTypeKind } from "../../convex/variantRole";
+import { titleChainFacts } from "../../convex/listingShortName";
+import { setDescriptionForTitles } from "../../convex/features/listingInputs";
 import MoveSetToBrandControl from "./MoveSetToBrandControl";
 import MakeParallelControl, { type ReshapeStep } from "./MakeParallelControl";
 import MakeInsertControl from "./MakeInsertControl";
@@ -165,7 +168,7 @@ function showsCardPrefix(level: Level, value: string): boolean {
 }
 
 /**
- * NEO-335 — where "Short name for titles" is edited: the set row, and the
+ * NEO-335 — where "Set name in titles" is edited: the set row, and the
  * levels cards hang from (`showsCardPrefix`). The title reads the nearest
  * self-or-ancestor short name up to the set, so a set-wide name lives on the
  * set and an insert can carry its own.
@@ -174,8 +177,6 @@ function showsShortNameRow(level: Level, value: string): boolean {
   return level === "setName" || showsCardPrefix(level, value);
 }
 
-/** Set-side levels, root to leaf: which ancestor is nearest. */
-const SET_SIDE_ORDER: readonly string[] = ["setName", "variantType", "insert", "parallel"];
 
 /**
  * NEO-277 — where the Team row is editable. Sport, year and manufacturer are
@@ -402,6 +403,45 @@ export default function SetAttributesPanel({
     return chain.find((c) => c.level === "sport")?._id;
   }, [chain]);
 
+  // NEO-535 — the walker's "Trim Set name in titles" door lands here: the
+  // panel opens and the row's box takes focus (`set-name-in-titles-jump`).
+  // Counted rather than flagged, so a second trip re-runs the effect. Focused
+  // a frame late: the walker closing restores focus to its opener first. A
+  // collapsed panel may take a few frames to draw the box, so the look is
+  // retried for `SHORT_NAME_FRAMES`; if the box never shows, focus lands on
+  // the panel itself rather than staying wherever the walker left it.
+  const regionRef = useRef<HTMLDivElement | null>(null);
+  const [shortNameTrips, setShortNameTrips] = useState(0);
+  const openShortName = useCallback(() => {
+    setExpanded(true);
+    setShortNameTrips((n) => n + 1);
+  }, []);
+  useEffect(() => {
+    if (shortNameTrips === 0) return;
+    let frame = 0;
+    let tries = 0;
+    const look = () => {
+      const region = regionRef.current;
+      const field = region?.querySelector<HTMLElement>(
+        `[data-feat-key="${SHORT_NAME_FEATURE.key}"]`,
+      );
+      if (field) {
+        field.scrollIntoView({ block: "center" });
+        field.focus({ preventScroll: true });
+        return;
+      }
+      tries += 1;
+      if (tries < SHORT_NAME_FRAMES) {
+        frame = requestAnimationFrame(look);
+        return;
+      }
+      region?.scrollIntoView({ block: "start" });
+      region?.focus({ preventScroll: true });
+    };
+    frame = requestAnimationFrame(look);
+    return () => cancelAnimationFrame(frame);
+  }, [shortNameTrips]);
+
   const applicable = useMemo(() => {
     return EXPECTED_FEATURES.filter((f) => {
       if (f.hiddenAtLevels?.includes("set")) return false;
@@ -441,18 +481,13 @@ export default function SetAttributesPanel({
   const showTeamRow = TEAM_LEVELS.has(leafLevel);
   const showCardPrefixRow = showsCardPrefix(leafLevel, row.value);
   const cardNumberPrefix = row.metadata?.cardNumberPrefix;
-  // NEO-335 — this row's own short name, and the one it inherits (the
-  // nearest ancestor's, up to the set) for the field's placeholder.
+  // NEO-335/535 — this row's own "Set name in titles", and the description
+  // this row's cards get without one, for the field's placeholder.
   const showShortNameRow = showsShortNameRow(leafLevel, row.value);
   const listingShortName = row.metadata?.listingShortName;
-  const leafDepth = SET_SIDE_ORDER.indexOf(leafLevel);
-  const inheritedShortName = chain
-    .filter((c) => {
-      const depth = SET_SIDE_ORDER.indexOf(c.level);
-      return depth >= 0 && depth < leafDepth && !!c.metadata?.listingShortName?.trim();
-    })
-    .sort((a, b) => SET_SIDE_ORDER.indexOf(b.level) - SET_SIDE_ORDER.indexOf(a.level))[0]
-    ?.metadata?.listingShortName?.trim();
+  const titlesDescription = showShortNameRow
+    ? setNameInTitlesFor(row, chain, features)
+    : undefined;
   // NEO-237: manufacturer rows only, and never the year's Unknown row — that
   // row holds the sets whose brand is NOT known, so a prefix on it is a
   // contradiction, and the server refuses one.
@@ -636,10 +671,10 @@ export default function SetAttributesPanel({
   };
 
   /**
-   * NEO-335 — the "Short name for titles" row's save. The card prefix's
+   * NEO-335 — the "Set name in titles" row's save. The card prefix's
    * shape: no-op on an unchanged value, "Saving…" until the write lands, the
    * server's own sentence on a refusal. The server trims, refuses
-   * control/invisible characters and anything past 60, and treats `""` as
+   * control/invisible characters and anything past 80, and treats `""` as
    * "remove the key". Existing titles are not rewritten; Regenerate reads the
    * new name, which is why "Saved" waits for the server (NEO-412): a
    * Regenerate pressed on an early "Saved" read the old name.
@@ -759,10 +794,15 @@ export default function SetAttributesPanel({
 
   return (
     <div
-      className="border border-rule-strong rounded-lg bg-raised-deep/60 p-4 space-y-3"
+      className="border border-rule-strong rounded-lg bg-raised-deep/60 p-4 space-y-3 focus-outline"
+      ref={regionRef}
+      // NEO-535: the "Trim Set name in titles" jump's fallback focus target;
+      // never a Tab stop.
+      tabIndex={-1}
       role="region"
       aria-label="Set attributes panel"
     >
+      {showShortNameRow && <SetNameInTitlesTarget open={openShortName} />}
       {/* Breadcrumb header (fixes QA #2 — which level/column applies). */}
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -1169,7 +1209,7 @@ export default function SetAttributesPanel({
             {showShortNameRow && (
               <ShortNameRow
                 value={listingShortName}
-                inherited={inheritedShortName}
+                inherited={titlesDescription}
                 onSave={handleSaveListingShortName}
               />
             )}
@@ -1197,22 +1237,85 @@ export default function SetAttributesPanel({
 }
 
 /**
- * NEO-335 — the set's shorter name for listing titles, as a row in the
- * Attributes panel. `metadata.listingShortName`, its own mutation, and
- * `CardPrefixRow`'s shape exactly (hydration, clear on empty, the hint in
- * the DOM as the input's description). Maestro targets the input as
- * `Value for Short name for titles`; the wrapper is
- * `Set feature Short name for titles`.
+ * NEO-335/535 — "Set name in titles", as a row in the Attributes panel: the
+ * WHOLE set description a title opens with (year, brand, set, insert,
+ * parallel), used as typed. `metadata.listingShortName`, its own mutation,
+ * and `CardPrefixRow`'s shape exactly (hydration, clear on empty, the hint in
+ * the DOM as the input's description). E2E targets the input as
+ * `Value for Set name in titles`; the wrapper is
+ * `Set feature Set name in titles`.
  *
- * A row with no name of its own shows the one it inherits as the
- * placeholder: that is the name its new cards' titles use.
+ * A row with no value of its own shows, as the placeholder, the description
+ * its cards get: the value it inherits (with its insert and parallel names
+ * added, `titleChainFacts`), else the builder's own (`setDescriptionForTitles`).
  */
+/** Frames the "Set name in titles" jump waits for the box before focusing the panel. */
+const SHORT_NAME_FRAMES = 10;
+
 const SHORT_NAME_FEATURE: ExpectedFeature = {
   key: "listingShortName",
-  label: "Short name for titles",
+  label: "Set name in titles",
   inputType: "text",
-  hint: "Used in card titles when the full name won't fit. New cards only.",
+  hint: "How titles name this set: year, brand, set, insert, parallel. Only steps in when a title runs long or drops a first name. New cards only.",
 };
+
+/**
+ * NEO-535 — the description a row's new cards open their titles with when the
+ * row has no "Set name in titles" of its own: the nearest ancestor's (as the
+ * builder reads the chain), else the builder's own description. `chain` is
+ * root first; the row itself may or may not end it.
+ */
+function setNameInTitlesFor(
+  row: { _id: string; level: string; value: string },
+  chain: ReadonlyArray<{
+    _id: string;
+    level: string;
+    value: string;
+    metadata?: { listingShortName?: string; isBrandUnknown?: boolean } | null;
+  }>,
+  features: Record<string, string>,
+): string | undefined {
+  // The row's own value is what the field shows; the placeholder is what the
+  // cards get without it, so the row is read with no value of its own.
+  const above = chain.filter((c) => c._id !== row._id).reverse();
+  const facts = titleChainFacts([
+    { level: row.level, value: row.value },
+    ...above.map(asChainRow),
+  ]);
+  if (facts.listingShortName) return facts.listingShortName;
+  const at = (level: string) => chain.find((c) => c.level === level);
+  const manufacturer = at("manufacturer");
+  const description = setDescriptionForTitles({
+    sportValue: at("sport")?.value ?? "",
+    setNameValue: at("setName")?.value,
+    ...(manufacturer?.metadata?.isBrandUnknown ? { manufacturerBrandUnknown: true } : {}),
+    inheritedFeatures: {
+      ...(at("year") ? { season: at("year")!.value } : {}),
+      ...(manufacturer ? { manufacturer: manufacturer.value } : {}),
+      ...features,
+    },
+    ...facts,
+  });
+  return description || undefined;
+}
+
+function asChainRow(row: {
+  level: string;
+  value: string;
+  metadata?: { listingShortName?: string } | null;
+}) {
+  return {
+    level: row.level,
+    value: row.value,
+    ...(row.metadata?.listingShortName ? { metadata: { listingShortName: row.metadata.listingShortName } } : {}),
+  };
+}
+
+/** Registers this panel as where "Set name in titles" lives, while mounted. */
+function SetNameInTitlesTarget({ open }: { open: () => void }) {
+  useSetNameInTitlesTarget(open);
+  return null;
+}
 
 function ShortNameRow({
   value,
@@ -1221,7 +1324,7 @@ function ShortNameRow({
 }: {
   /** The row's stored `metadata.listingShortName`; `undefined` when absent. */
   value: string | undefined;
-  /** The nearest ancestor's short name, up to the set, if any. */
+  /** The description this row's cards get without a value of their own. */
   inherited: string | undefined;
   /** `""` clears. Trimming and validation are the server's. */
   onSave: (value: string) => Promise<unknown>;

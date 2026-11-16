@@ -189,7 +189,7 @@ import CardDetailPanel, {
 import { ALSO_PICTURED_PICKER_LABELS } from "./player-picker-labels";
 // NEO-272: the drawer-geometry block below reads the character budget from the
 // server's own constant rather than restating 80.
-import { LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
+import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import type { Id } from "../../convex/_generated/dataModel";
 
 // ---------------------------------------------------------------------------
@@ -710,6 +710,116 @@ describe("CardDetailPanel — per-field autosave (NEO-216)", () => {
       id: CARD_ID,
       listingDescription: "line one\nline two",
     });
+  });
+
+  it("NEO-535: a cleared description is not saved; the stored one comes back with the reason", async () => {
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "   ");
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(description.value).toBe("Stored copy");
+    expect(
+      await screen.findByText(
+        "A card needs a description. It's what collectors search, so type one in.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("NEO-535: a description over the cap is not saved; the text stays with the reason, and one at the cap saves", async () => {
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+    const over = "x".repeat(LISTING_DESCRIPTION_MAX + 1);
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, over);
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(description.value).toBe(over);
+    expect(
+      await screen.findByText(
+        "Not saved — that description runs 4,001 characters, past the 4,000 limit. Trim it down and save again.",
+      ),
+    ).toBeTruthy();
+    expect(description.getAttribute("aria-invalid")).toBe("true");
+
+    const atCap = "y".repeat(LISTING_DESCRIPTION_MAX);
+    await act(async () => {
+      focusField(description);
+      typeInto(description, atCap);
+      blurField(description);
+    });
+    await waitFor(() => expect(mockUpdateCard).toHaveBeenCalledTimes(1));
+    expect(mockUpdateCard).toHaveBeenCalledWith({ id: CARD_ID, listingDescription: atCap });
+  });
+
+  it("NEO-535: typing the stored description back after an over-cap refusal clears the alert and aria-invalid", async () => {
+    // E2E found it: nothing needs saving once the field is back at the stored
+    // text, so the hook returned at its no-op guard and the refusal stayed up
+    // beside a valid description.
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+    const refusal =
+      "Not saved — that description runs 4,001 characters, past the 4,000 limit. Trim it down and save again.";
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "x".repeat(LISTING_DESCRIPTION_MAX + 1));
+      blurField(description);
+    });
+    expect(await screen.findByText(refusal)).toBeTruthy();
+    expect(description.getAttribute("aria-invalid")).toBe("true");
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "Stored copy");
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(screen.queryByText(refusal)).toBeNull();
+    expect(description.hasAttribute("aria-invalid")).toBe(false);
+  });
+
+  it("NEO-535: the blank-description reason survives the blur after a Cmd+Enter refusal", async () => {
+    // The refusal puts the stored description back, so the blur that follows
+    // commits an unchanged field. That must not wipe the reason it came back.
+    renderPanel({ card: makeCard({ listingDescription: "Stored copy" }) });
+    const description = screen.getByLabelText(
+      "Card description",
+    ) as HTMLTextAreaElement;
+    const reason =
+      "A card needs a description. It's what collectors search, so type one in.";
+
+    await act(async () => {
+      focusField(description);
+      typeInto(description, "");
+      fireEvent.keyDown(description, { key: "Enter", metaKey: true });
+    });
+    expect(await screen.findByText(reason)).toBeTruthy();
+    expect(description.value).toBe("Stored copy");
+
+    await act(async () => {
+      blurField(description);
+    });
+
+    expect(mockUpdateCard).not.toHaveBeenCalled();
+    expect(screen.getByText(reason)).toBeTruthy();
+    expect(description.getAttribute("aria-invalid")).toBe("true");
   });
 
   it("NEO-367: notes commit only `notes`, keep line breaks, and clearing sends \"\"", async () => {

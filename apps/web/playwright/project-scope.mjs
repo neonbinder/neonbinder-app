@@ -11,9 +11,14 @@ export const PROJECT_IGNORE = {
   // NEO-453, TEMPORARY, Jason 2026-11-06: eBay's sandbox refuses every publish
   // (400 / 25002) for any seller on our keyset, so this spec cannot pass. Restore
   // it, its entry in SELLER_SPECS and its seller tag as soon as publish works.
-  e2e: ["collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts"],
+  e2e: [
+    "collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts",
+    // NEO-453, TEMPORARY, same cause: its step is a publish ("1 listed"). Restore it with the spec above.
+    "collection/inventory-ebay-sandbox-listing-title-over-80-lists-once-shortened.spec.ts",
+  ],
   "e2e-mobile": [
     "collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts",
+    "collection/inventory-ebay-sandbox-listing-title-over-80-lists-once-shortened.spec.ts",
   ],
 };
 
@@ -37,9 +42,9 @@ export function ignoredSpecs(project) {
 // NEO-552: BuySportsCards is NOT shared any more. Every test user has a fake BSC
 // account of their own (a namespace), so the two BSC listing specs left this
 // list and run in the ordinary shards: two PRs, or two shards of one, cannot
-// clobber each other's listings. The list is empty until the eBay sandbox spec
-// is restored (see PROJECT_IGNORE above); the seller jobs then have nothing to
-// run and say so.
+// clobber each other's listings. Only eBay sandbox specs remain: the NEO-535
+// title hold, which lists nothing, and later the eBay listing spec once it is
+// restored (see PROJECT_IGNORE above).
 //
 // Each listed spec carries the tag below; shard-plan.mjs refuses to plan if the
 // tag and this list disagree in either direction, so a new seller spec cannot
@@ -47,7 +52,10 @@ export function ignoredSpecs(project) {
 // relative to playwright/tests/.
 export const SELLER_TAG = "@marketplace-seller";
 /** @type {string[]} */
-export const SELLER_SPECS = [];
+export const SELLER_SPECS = [
+  // NEO-535: the eBay hold (a title over 80 characters) and its re-queue; needs no publish.
+  "collection/inventory-ebay-sandbox-listing-title-over-80-is-held-then-requeued.spec.ts",
+];
 
 // Specs that open the BSC call gate (NEO-552). Convex holds ONE gate per
 // deployment (`convex/bscCallGate.ts`): a breaker that a 429, or a run of five

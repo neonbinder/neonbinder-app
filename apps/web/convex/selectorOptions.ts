@@ -42,7 +42,7 @@ import {
   generateListingDescription,
   type ListingCardInputs,
 } from "./features/generateListing";
-import { LISTING_TITLE_MAX } from "./features/listingLimits";
+import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./features/listingLimits";
 import {
   checkTitleAnswer,
   listingInputsForCard,
@@ -289,6 +289,16 @@ import { collectedCardIds, countCollectors, removeCardRow } from "./cardRowDelet
 import { mergeCollectorCounts, type CollectorCount } from "../lib/collection/collectors";
 import { newRowSubtreeCounts, createCardCountLedger } from "./cardCounts";
 import { titleForStoredCard } from "./storedCardTitle";
+import {
+  patchNamesDescriptionFacts,
+  refreshedListingDescription,
+  regeneratedDescription,
+} from "./cardDescriptionRefresh";
+import { queueRetitledCardNow } from "./listingTitleRequeue";
+import {
+  DESCRIBED_ROW_LEVELS,
+  refreshDescriptionsAfterRename,
+} from "./cardDescriptionFanOut";
 import {
   MAX_TEAM_ALIASES,
   MAX_TEAM_ALIAS_LENGTH,
@@ -5402,6 +5412,18 @@ export const renameSelectorOption = mutation({
       ...(plan.sportConfig ? { sportConfig: plan.sportConfig } : {}),
       lastUpdated: Date.now(),
     });
+    // NEO-535 — a card's description names its set, insert and parallel, and
+    // collector search reads it. The cards beneath whose description is still
+    // the builder's follow the new name; one an operator wrote is left alone.
+    // The first page here, any rest on a scheduled chain. Other levels: see
+    // convex/cardDescriptionFanOut.ts.
+    if (DESCRIBED_ROW_LEVELS.has(row.level) && plan.value !== row.value) {
+      await refreshDescriptionsAfterRename(
+        ctx,
+        { kind: "rows", rows: [{ rowId: row._id, before: { value: row.value } }] },
+        { inline: true },
+      );
+    }
     return { success: true, message: `Renamed to "${plan.value}"` };
   },
 });
@@ -5423,7 +5445,8 @@ export const renameSelectorOption = mutation({
  */
 // NEO-528 — `findAncestorLabels` moved to listingShortName.ts (beside
 // `titleChainFacts`, which it feeds), so `storedCardTitle.ts` can read it
-// without importing this module; re-exported below for existing callers.
+// without importing this module; re-exported above for existing callers.
+// (NEO-535 had moved it to storedCardTitle.ts for the same import cycle.)
 
 
 /**
@@ -6282,13 +6305,21 @@ export const addCustomCard = mutation({
     // inheritance. Precedence = that snapshot < card-observed facts (a fact
     // seen on THIS card, e.g. it's a rookie, wins).
     const inheritedFeatures: Record<string, string> = parentNode?.features ?? {};
+    // The chain's facts: read here, before the merge, because a card on a
+    // parallel leaf is born naming that leaf (NEO-535, `mergeCardFeatures`).
+    const {
+      setName: setNameValue,
+      sport: sportValue,
+      manufacturerBrandUnknown,
+      ...chainFacts
+    } = await findAncestorLabels(ctx, parentNode);
     // NEO-345 — through `mergeCardFeatures`, the merge every other new card
     // goes through: the leaf's node-only `autographFormat` is stripped from
     // the card, and an AU card under a leaf that has one is born
     // `autographed` with it (fill-empty).
     const mergedFeatures: Record<string, string> = mergeCardFeatures(
       { cardNumber: args.cardNumber, attributes: args.attributes },
-      { sportValue: "", inheritedFeatures },
+      { sportValue: "", inheritedFeatures, parallelLeafValue: chainFacts.parallelLeafValue },
     );
     // NEO-345 — and Signed By seeded, by the rule `buildCardRowForInsert` and
     // `setCardFeature` apply: only when autographed just became non-None and
@@ -6318,12 +6349,6 @@ export const addCustomCard = mutation({
     // confirmed, via commitCardChecklist), but the operator typed a real name,
     // so it's the right thing to show regardless of reconciliation state.
     // Either way the title says what the operator meant.
-    const {
-      setName: setNameValue,
-      sport: sportValue,
-      manufacturerBrandUnknown,
-      ...chainFacts
-    } = await findAncestorLabels(ctx, parentNode);
     /*
      * NEO-335 — built by `listingInputsForCard`, the mapping the commit's
      * insert, the parallel build and the pre-save Card titles step share,
@@ -6365,6 +6390,9 @@ export const addCustomCard = mutation({
       {
         playerNames: (hasLinkedPlayers ? linkedPlayerNames : pendingPlayerNames) ?? [],
         teamNames: hasLinkedTeams ? linkedTeamNames : pendingTeamNames,
+        // NEO-528 — the default cameos it is born with: named in the title
+        // while there is room (dropped first), and in the description.
+        cameoNames,
       },
       mergedFeatures,
     );
@@ -6592,6 +6620,13 @@ export const updateCard = mutation({
     pendingTeamNames: v.optional(v.array(v.string())),
     listingTitle: v.optional(v.string()),
     listingDescription: v.optional(v.string()),
+    /**
+     * NEO-535 — the card detail panel's Regenerate: rebuild the description
+     * from the card's facts now, unless an operator wrote it
+     * (`regeneratedDescription`). Not stored; ignored when the same call
+     * sends `listingDescription`.
+     */
+    regenerateDescription: v.optional(v.literal(true)),
     // NEO-367 — NB's own note about the card. "" clears it, like every other
     // string here; see `normalizeCardNotes`.
     notes: v.optional(v.string()),
@@ -6634,10 +6669,12 @@ export const updateCard = mutation({
      */
     //
     // NEO-556 — `teamNone` likewise: it asks for a stamp the server writes.
+    // NEO-535 — and `regenerateDescription`: a request, not a column.
     const {
       id,
       playerNamesOnCard: _printedNames,
       teamNone: teamNoneArg,
+      regenerateDescription,
       ...updates
     } = args;
     const teamNone = teamNoneArg === true;
@@ -6721,12 +6758,15 @@ export const updateCard = mutation({
       return storedCard;
     };
 
+    // NEO-535 — set when the stored title actually changes; queues the card
+    // for eBay after the patch (`listingTitleRequeue`).
+    let titleChanged = false;
     if (typeof filtered.listingTitle === "string") {
       const trimmedTitle = filtered.listingTitle.trim();
-      // NEO-358 — a card's title is what a collector searches
-      // (`search_listing_title`), so it is never stored blank. Refused, never
-      // regenerated: the operator cleared it, and only they can say what it
-      // should read instead. The panel shows this and puts the title back.
+      // NEO-358 — a card's title is never stored blank (Jason: a card's title
+      // is required). Refused, never regenerated: the operator cleared it, and
+      // only they can say what it should read instead. The panel shows this
+      // and puts the title back.
       if (trimmedTitle.length === 0) {
         throw new ConvexError(BLANK_LISTING_TITLE_REFUSAL);
       }
@@ -6751,7 +6791,27 @@ export const updateCard = mutation({
       const existingTitle = (await loadStoredCard()).listingTitle;
       if (trimmedTitle !== existingTitle) {
         filtered.listingTitleTruncated = undefined;
+        titleChanged = true;
       }
+    }
+
+    // NEO-535 — the description is what a collector's card search reads
+    // (`search_listing_description`), so, like the title, it is never stored
+    // blank. Refused, never regenerated; the panel shows this and puts the
+    // stored description back. Trimmed, as the panel already sends it. Held
+    // to `LISTING_DESCRIPTION_MAX` (eBay's description cap) like the title:
+    // the message carries the length and the cap, never the text.
+    if (typeof filtered.listingDescription === "string") {
+      const trimmedDescription = filtered.listingDescription.trim();
+      if (trimmedDescription.length === 0) {
+        throw new ConvexError(BLANK_LISTING_DESCRIPTION_REFUSAL);
+      }
+      if (trimmedDescription.length > LISTING_DESCRIPTION_MAX) {
+        throw new ConvexError(
+          `Listing description is ${trimmedDescription.length} characters; the limit is ${LISTING_DESCRIPTION_MAX}.`,
+        );
+      }
+      filtered.listingDescription = trimmedDescription;
     }
 
     // NEO-367 — trimmed, capped, and blank deletes the field (`undefined` in a
@@ -6858,13 +6918,19 @@ export const updateCard = mutation({
       if (stored.teamNoneConfirmedAt === undefined) {
         Object.assign(filtered, stampNoTeam(operatorUserId, Date.now()));
       }
-      Object.assign(
-        filtered,
-        await regeneratedTextWithoutTeams(ctx, stored, {
-          title: filtered.listingTitle as string | undefined,
-          description: filtered.listingDescription as string | undefined,
-        }),
-      );
+      const regenerated = await regeneratedTextWithoutTeams(ctx, stored, {
+        title: filtered.listingTitle as string | undefined,
+        description: filtered.listingDescription as string | undefined,
+      });
+      Object.assign(filtered, regenerated);
+      // NEO-535 — a title rebuilt without the team is new eBay item content
+      // too, so it queues the card like an operator's edit does.
+      if (
+        regenerated.listingTitle !== undefined &&
+        regenerated.listingTitle !== stored.listingTitle
+      ) {
+        titleChanged = true;
+      }
     }
 
     // NEO-556 — `teamNone: false`, the operator taking "No Team" back. Both
@@ -6925,6 +6991,27 @@ export const updateCard = mutation({
       if (Array.isArray(value) && value.length === 0) filtered[key] = undefined;
     }
 
+    // NEO-535 — the description follows the facts. A write that changes a
+    // fact the description carries rebuilds it, but only when the stored one
+    // is what the builder made from the facts BEFORE this write (never a
+    // hand-edited one), in this same patch (`cardDescriptionRefresh`).
+    // Regenerate asks for a rebuild outright; it still leaves an operator's
+    // own description alone. A description sent in this call wins either way.
+    if (
+      filtered.listingDescription === undefined &&
+      (regenerateDescription || patchNamesDescriptionFacts(filtered))
+    ) {
+      const stored = await loadStoredCard();
+      const description = regenerateDescription
+        ? await regeneratedDescription(ctx, stored)
+        : await refreshedListingDescription(
+            ctx,
+            stored,
+            filtered as Partial<Doc<"cardChecklist">>,
+          );
+      if (description !== undefined) filtered.listingDescription = description;
+    }
+
     if (Object.keys(filtered).length > 0) {
       await ctx.db.patch(id, { ...filtered, lastUpdated: Date.now() });
     }
@@ -6945,6 +7032,15 @@ export const updateCard = mutation({
         filtered.teamOnCardIds as Array<Id<"teams">>,
       );
     }
+    // NEO-535 — a new title is new eBay item content (and the way out of an
+    // over-80 `titleTooLong` hold): queue the card for eBay for every owner
+    // who holds it in a box, so it is listed without a Sync press. Inline for
+    // a card with a page of copies or fewer, a scheduled paged chain beyond
+    // that (`listingTitleRequeue`), so the save stays light however many
+    // collectors hold the card.
+    if (titleChanged) {
+      await queueRetitledCardNow(ctx, id);
+    }
     return null;
   },
 });
@@ -6956,6 +7052,15 @@ export const updateCard = mutation({
  */
 export const BLANK_LISTING_TITLE_REFUSAL =
   "A card needs a title. Type one in, or hit Regenerate for a fresh one.";
+
+/**
+ * NEO-535 — `updateCard`'s refusal of a blank listing description (what the
+ * collector's card search reads). The card detail panel
+ * (`CardDetailPanel.tsx`, `BLANK_DESCRIPTION_MESSAGE`) says the same sentence
+ * without the round trip; keep the two in step.
+ */
+export const BLANK_LISTING_DESCRIPTION_REFUSAL =
+  "A card needs a description. It's what collectors search, so type one in.";
 
 /**
  * NEO-101 — what the generator WOULD title this stored card today, plus the
@@ -6997,11 +7102,23 @@ export const previewListingTitle = query({
   args: { cardId: v.id("cardChecklist") },
   returns: v.object({
     title: v.string(),
+    // NEO-535 — the title is at most 80 characters; false is the STOP (the
+    // description is never cut, so the operator fixes it by hand).
+    fits: v.boolean(),
+    // NEO-535 — the title lost a player's first name to fit.
+    firstNameLost: v.boolean(),
+    // NEO-535 — built from the set's box text ("Set name in titles").
+    shortNameUsed: v.optional(v.boolean()),
+    // NEO-535 — false: the card belongs in the Card titles dialog for a first
+    // name or the box (`ListingTitleAssessment.coreFits`).
     coreFits: v.boolean(),
     dropped: v.array(v.string()),
     inputs: v.object({
       cardNumber: v.string(),
       playerNames: v.array(v.string()),
+      // NEO-528 + NEO-535 — the cameos, which the title names while it has
+      // room; the client re-assesses these inputs, so they must ride along.
+      cameoNames: v.optional(v.array(v.string())),
       year: v.optional(v.string()),
       manufacturer: v.optional(v.string()),
       // NEO-272: reaches the client so the operator-facing "Maker" source chip
@@ -7036,8 +7153,17 @@ export const previewListingTitle = query({
     if (!card) throw new ConvexError("previewListingTitle: no such card");
     // NEO-358 — the body moved, unchanged, to `storedCardTitle.ts` (for the
     // NEO-358 title backfill, retired in NEO-363).
-    const { title, coreFits, dropped, inputs } = await titleForStoredCard(ctx, card);
-    return { title, coreFits, dropped, inputs };
+    const { title, fits, firstNameLost, shortNameUsed, coreFits, dropped, inputs } =
+      await titleForStoredCard(ctx, card);
+    return {
+      title,
+      fits,
+      firstNameLost,
+      ...(shortNameUsed ? { shortNameUsed: true } : {}),
+      coreFits,
+      dropped,
+      inputs,
+    };
   },
 });
 
@@ -8248,6 +8374,7 @@ export const cascadeSelectorOptionTeams = internalMutation({
     let nodeIndex = nextDefault.kind === "noTeam" ? nodeIds.length : (args.nodeIndex ?? 0);
     let cursor: number | undefined = args.cursor;
     let budget = TEAM_CASCADE_CARD_PAGE;
+    const descriptionCache = newStoredCardReadCache();
     while (nodeIndex < nodeIds.length && budget > 0) {
       const nodeId = nodeIds[nodeIndex];
       const after = cursor;
@@ -8263,8 +8390,18 @@ export const cascadeSelectorOptionTeams = internalMutation({
       for (const card of rows) {
         budget -= 1;
         if (cardTeamFollowVerdict(card, previous, next) !== "follow") continue;
+        // NEO-535 — the card's description names its team: an unedited one
+        // follows it, in the same write. One lookup cache per page, so the
+        // chain and the teams are read once.
+        const listingDescription = await refreshedListingDescription(
+          ctx,
+          card,
+          { teamOnCardIds: [...next] },
+          descriptionCache,
+        );
         await ctx.db.patch(card._id, {
           teamOnCardIds: [...next],
+          ...(listingDescription !== undefined ? { listingDescription } : {}),
           lastUpdated: Date.now(),
         });
         // NEO-358 — the team → cards index follows the card.
@@ -8351,8 +8488,12 @@ export const setCardFeature = mutation({
       }
     }
 
+    // NEO-535 — an autograph, short print or parallel the description carries
+    // rebuilds an unedited description in the same write.
+    const listingDescription = await refreshedListingDescription(ctx, card, { features });
     await ctx.db.patch(args.cardChecklistId, {
       features,
+      ...(listingDescription !== undefined ? { listingDescription } : {}),
       lastUpdated: Date.now(),
     });
     return null;
@@ -21833,6 +21974,14 @@ export const commitCardChecklistFinalize = internalMutation({
         // re-offered on every later fetch, which is exactly the loop
         // `entityReviewSkips` exists to break, and the skip would only half-work:
         // suppressed for marketplace names, still nagging for custom-card ones.
+        //
+        // NEO-535 — and the card's `listingDescription` is deliberately NOT
+        // rebuilt here. The description reads pending names only for a side
+        // with no linked ids (linked ids win; `addCustomCard` writes one or
+        // the other), and this pass links nothing. So a rebuild could only
+        // DROP a player or team the stored description still names, which
+        // collector search would then miss. The description follows when ids
+        // are linked, through the writer that links them.
         const patch: {
           pendingPlayerNames?: string[];
           pendingTeamNames?: string[];

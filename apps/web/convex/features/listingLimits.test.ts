@@ -16,10 +16,12 @@
 import { describe, expect, test } from "vitest";
 import {
   ASPECT_VALUE_MAX,
+  LISTING_DESCRIPTION_MAX,
   LISTING_TITLE_MAX,
   LISTING_TITLE_MOBILE_CLIP,
   LISTING_TITLE_SEARCH_CLIP,
 } from "./listingLimits";
+import { EBAY_DESCRIPTION_MAX } from "../lib/ebayListing";
 
 describe("listing limits", () => {
   test("the confirmed values (2026-09-02)", () => {
@@ -53,5 +55,10 @@ describe("listing limits", () => {
       expect(Number.isInteger(limit)).toBe(true);
       expect(limit).toBeGreaterThan(0);
     }
+  });
+
+  test("NEO-535: the stored description cap is eBay's description cap", () => {
+    expect(LISTING_DESCRIPTION_MAX).toBe(4000);
+    expect(LISTING_DESCRIPTION_MAX).toBe(EBAY_DESCRIPTION_MAX);
   });
 });

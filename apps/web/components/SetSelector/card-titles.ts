@@ -7,14 +7,17 @@ import {
   assessNewCardListing,
   checkShortNameAnswer,
   leftOutOfTitle,
+  LISTING_TITLE_KEPT_MAX,
+  setDescriptionForTitles,
   type TitleAttentionItem,
   type TitleContext,
 } from "../../convex/features/listingInputs";
+import type { ListingCardInputs } from "../../convex/features/generateListing";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
 } from "../../convex/features/listingLimits";
-import { MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
+import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
 import type { TeamAnswer } from "./teams-on-cards";
 
 /**
@@ -27,7 +30,9 @@ import type { TeamAnswer } from "./teams-on-cards";
  * ## Same rules as after save, by construction
  *
  * A card is on the step exactly when the row it is about to become would carry
- * `titleTruncated` or `aspectValueOverLimit`: `assessNewCardListing`
+ * `titleOverLimit` (NEO-535: the builder stopped over the cap rather than cut
+ * description words), `titleTruncated` (it lost a first name, or its title
+ * came from the set's box text) or `aspectValueOverLimit`: `assessNewCardListing`
  * (convex/features/listingInputs.ts) runs the insert's own feature merge and
  * title generator, and `titleAttentionItems` is the function
  * `deriveCardAttention` calls on a stored row. What this module adds is only
@@ -81,7 +86,7 @@ export type TitleAnswer = {
 export type TitleCommitFields = {
   listingTitle?: string;
   /**
-   * The trimmed title the step showed and the operator kept. The server
+   * The generated title the step showed and the operator kept. The server
    * regenerates the title and skips the cut-short flag only when it comes
    * out as exactly this text.
    */
@@ -191,7 +196,7 @@ function cardNames(
   teamAnswer: TeamAnswer | undefined,
   index: NameIndex,
   context: TitleContext,
-): { playerNames: string[]; teamNames: string[] } {
+): { playerNames: string[]; teamNames: string[]; cameoNames: string[] } {
   let playerNames: string[] = [];
   for (const p of card.players ?? []) {
     const name = index.player(p);
@@ -216,7 +221,14 @@ function cardNames(
     teamNames = Array.from(new Set(teamNames)).slice(0, MAX_CARD_TEAMS);
   }
   if (teamNames.length === 0) teamNames = [...context.setTeamNames];
-  return { playerNames, teamNames };
+  // NEO-528 + NEO-535 — the row's default cameos go on every new card, never
+  // as one of its own players (the commit's `planDefaultCameos`), so its
+  // title names them while it has room, as the insert's will.
+  const own = new Set(playerNames.map((n) => normalizeEntityName(n)));
+  const cameoNames = (context.setCameoNames ?? [])
+    .filter((n) => !own.has(normalizeEntityName(n)))
+    .slice(0, MAX_CARD_PLAYERS);
+  return { playerNames, teamNames, cameoNames };
 }
 
 /** The variation the card will be saved with: a valid trimmed answer, else its own. */
@@ -244,28 +256,39 @@ export interface CardTitleAssessment {
   index: number;
   cardNumber: string;
   cardName: string;
-  /** The generated title — what "keep it" keeps. */
-  title: string;
-  coreFits: boolean;
-  /** "Left out to fit: …", in the generator's priority order. */
-  leftOut: string[];
   /**
-   * The part of `leftOut` that names this card's OWN players or teams. Read
-   * apart from the rest because it differs card to card: grouping on it would
-   * give every card of a long-named set a line of its own.
+   * The generated title, built with the box draft when there is one — what
+   * "keep it" keeps. Over the cap when the builder stopped (NEO-535: it never
+   * cuts description words to force a fit).
    */
-  ownLeftOut: string[];
-  /** The rest — what the trim cost every card it shares a line with. */
-  sharedLeftOut: string[];
+  title: string;
+  /** `title` is at most `LISTING_TITLE_MAX`. */
+  fits: boolean;
+  /**
+   * The generator's inputs for this card as shown (the box draft and the
+   * variation answer applied). "Left out to fit" is read from these against
+   * whatever text the card's field holds now (`leftOutOfTitle`).
+   */
+  inputs: ListingCardInputs;
+  /**
+   * The words this card's own players, teams and number are made of. What a
+   * card leaves out of these is its own business, never what its group shares
+   * (`groupKey`).
+   */
+  ownWords: ReadonlySet<string>;
+  /**
+   * The variation when it is over the aspect cap. It has its own field on the
+   * step, so "Left out to fit" never repeats it.
+   */
+  overCapVariation?: string;
+  /**
+   * Which group the card sits in. Read from the GENERATED title without any
+   * of the operator's drafts (box text, variation or title), so the groups
+   * never reshuffle under the operator's typing.
+   */
+  groupKey: string;
   /** The kinds the row would be born with, read with the card's ORIGINAL variation. */
   items: TitleAttentionItem[];
-  /**
-   * NEO-335 — the short name made this card's generated title fit, and it is
-   * on the list ONLY because the operator wrote their own title for it. An
-   * operator's title is never dropped silently: it stays, and is sent, until
-   * they choose the generated one.
-   */
-  fitsNow?: true;
 }
 
 /** Options shared by every entry point. */
@@ -276,12 +299,23 @@ export interface TitleReviewOptions {
   /** The operator's edits; only a variation answer changes what is generated. */
   answers?: ReadonlyArray<TitleAnswer | undefined>;
   /**
-   * NEO-335 — the short name the operator is giving the set on this step,
-   * ALREADY CHECKED (`validShortName`). Titles are generated with it as the
-   * set's short name, so the list empties as titles fit and the commit's
-   * kept titles are the ones the server will generate with it.
+   * NEO-535 — the "Set name in titles" box draft, ALREADY CHECKED
+   * (`validShortName`) and only when the operator edited the box. Passed to
+   * the builder as-is, as the leaf's whole description; the builder decides
+   * which cards it rewrites (those over the cap or short a first name), so
+   * the titles shown and the titles kept are the ones the server will
+   * generate with it. It never changes which cards are on the step.
    */
   listingShortName?: string;
+}
+
+/**
+ * NEO-535 — a title (or the "Set name in titles" box) is one line. Its field
+ * wraps so the whole text stays in view, but a newline (a paste, say) is
+ * never part of the value: each run of line breaks reads as one space.
+ */
+export function oneLine(raw: string): string {
+  return raw.replace(/\s*[\r\n]+\s*/g, " ");
 }
 
 /**
@@ -294,9 +328,18 @@ export function validShortName(draft: string | undefined): string | undefined {
 }
 
 /**
- * NEO-335 — does the step ask for a short name? Only when it lists titles
- * trimmed to fit (read WITHOUT any draft, so the field never vanishes under
- * the operator's typing) and the set carries no short name yet.
+ * NEO-535 — the "Set name in titles" box's starting text: the set's stored
+ * box text (already carrying its insert and parallel names when it sits above
+ * them), else the builder's own full description for this set's cards.
+ */
+export function setNameInTitlesPrefill(titleContext: TitleContext): string {
+  return titleContext.listingShortName?.trim() || setDescriptionForTitles(titleContext);
+}
+
+/**
+ * NEO-535 — does the step show the "Set name in titles" box? Whenever it lists
+ * titles. Read WITHOUT any draft, so the box never vanishes under the
+ * operator's typing.
  */
 export function shortNameFieldApplies(
   cards: readonly PreviewCardForTitles[],
@@ -304,10 +347,12 @@ export function shortNameFieldApplies(
   teamAnswers?: ReadonlyArray<TeamAnswer | undefined>,
   options?: Omit<TitleReviewOptions, "answers" | "listingShortName">,
 ): boolean {
-  if (titleContext.listingShortName?.trim()) return false;
-  return assessAll(cards, titleContext, teamAnswers, options).some((a) =>
-    a.items.some((i) => i.kind === "titleTruncated"),
-  );
+  return assessAll(cards, titleContext, teamAnswers, options).some(isTitleCard);
+}
+
+/** On the step for its title: over the cap, or short a first name / on the box. */
+export function isTitleCard(a: Pick<CardTitleAssessment, "items">): boolean {
+  return a.items.some((i) => i.kind === "titleOverLimit" || i.kind === "titleTruncated");
 }
 
 function assessAll(
@@ -316,16 +361,16 @@ function assessAll(
   teamAnswers: ReadonlyArray<TeamAnswer | undefined> | undefined,
   options: TitleReviewOptions | undefined,
 ): CardTitleAssessment[] {
-  // NEO-335 — the operator's short name stands in for the set's own.
-  const context = options?.listingShortName
+  // NEO-535 — the box draft stands in for the set's own box text.
+  const drafted = options?.listingShortName
     ? { ...titleContext, listingShortName: options.listingShortName }
     : titleContext;
-  const index = nameIndex(context, options?.names);
+  const index = nameIndex(titleContext, options?.names);
   const existing = new Set(options?.existingIndexes ?? []);
   const out: CardTitleAssessment[] = [];
   cards.forEach((card, i) => {
     if (existing.has(i)) return;
-    const names = cardNames(card, teamAnswers?.[i], index, context);
+    const names = cardNames(card, teamAnswers?.[i], index, titleContext);
     const facts = {
       cardNumber: card.cardNumber,
       isRookie: card.isRookie,
@@ -334,70 +379,63 @@ function assessAll(
       attributes: card.attributes,
       printRun: card.printRun,
     };
-    // Membership is read with the card's OWN variation, so trimming it on
-    // the step never takes the card off the step under the operator's cursor.
-    const own = assessNewCardListing({ ...facts, cardVariation: card.cardVariation }, context, names);
-    let fitsNow = false;
-    if (own.items.length === 0) {
-      // NEO-335 — fits with the short name. Gone from the list, unless the
-      // operator wrote their own title for it while it was trimmed.
-      // Any draft at all keeps the row: one typed back to the generated
-      // title must not vanish from under the operator's cursor.
-      const draft = options?.answers?.[i]?.listingTitle;
-      if (!options?.listingShortName || draft === undefined) return;
-      const before = assessNewCardListing(
-        { ...facts, cardVariation: card.cardVariation },
-        titleContext,
-        names,
-      );
-      if (!before.items.some((it) => it.kind === "titleTruncated")) return;
-      fitsNow = true;
-    }
+    // Membership is read with the card's OWN variation and without the box
+    // draft, so nothing the operator types on the step takes a card off it.
+    const own = assessNewCardListing({ ...facts, cardVariation: card.cardVariation }, titleContext, names);
+    if (own.items.length === 0) return;
     const variation = effectiveVariation(card, options?.answers?.[i]);
     const shown =
-      variation === card.cardVariation
+      variation === card.cardVariation && drafted === titleContext
         ? own
-        : assessNewCardListing({ ...facts, cardVariation: variation }, context, names);
+        : assessNewCardListing({ ...facts, cardVariation: variation }, drafted, names);
     // A variation over the aspect cap has its own field on the step; the
-    // title list does not repeat it as a loss as well.
+    // title notes do not repeat it as a loss as well.
     const overCapVariation = own.items.some((it) => it.kind === "aspectValueOverLimit")
-      ? variation?.trim()
+      ? card.cardVariation?.trim()
       : undefined;
-    const leftOut = leftOutOfTitle(shown.inputs, shown.assessment).filter(
-      (entry) => entry !== overCapVariation,
-    );
-    const ownWords = new Set(
-      [...names.playerNames, ...names.teamNames].flatMap((n) => n.toLowerCase().split(/\s+/)),
-    );
-    const isOwn = (entry: string) =>
-      entry
-        .toLowerCase()
-        .split(/\s+/)
-        .filter(Boolean)
-        .every((w) => ownWords.has(w));
+    const ownWords = ownWordsOf(names, card.cardNumber);
     out.push({
       index: i,
       cardNumber: card.cardNumber,
       cardName: card.cardName,
       title: shown.assessment.title,
-      coreFits: shown.assessment.coreFits,
-      leftOut,
-      ownLeftOut: leftOut.filter(isOwn),
-      sharedLeftOut: leftOut.filter((e) => !isOwn(e)),
+      fits: shown.assessment.fits,
+      inputs: shown.inputs,
+      ownWords,
+      ...(overCapVariation ? { overCapVariation } : {}),
+      groupKey: titleGroupKey(own.inputs, own.assessment.title, ownWords, overCapVariation),
       items: own.items,
-      ...(fitsNow ? { fitsNow: true as const } : {}),
     });
   });
   return out;
 }
 
+/** `entries` without an over-cap variation (it has its own field). */
+function withoutVariation(entries: string[], variation: string | undefined): string[] {
+  return variation ? entries.filter((e) => e !== variation) : entries;
+}
+
+/** Every word of `entry` is one of the card's own player/team/number words. */
+function isOwnEntry(entry: string, ownWords: ReadonlySet<string>): boolean {
+  const words = entry.toLowerCase().split(/\s+/).filter(Boolean);
+  return words.length > 0 && words.every((w) => ownWords.has(w));
+}
+
+/**
+ * NEO-535 — "Left out to fit" for one card, from the text its field holds NOW
+ * (the operator's own words included): retyping a cut word takes it off the
+ * note. Never from the generator's own assessment.
+ */
+export function leftOutOfCardTitle(card: CardTitleAssessment, text: string): string[] {
+  return withoutVariation(leftOutOfTitle(card.inputs, text.trim()), card.overCapVariation);
+}
+
 /**
  * The preview positions the "Card titles" step asks about, ascending: NEW
- * cards whose row would be born flagged `titleTruncated` or
+ * cards whose row would be born flagged `titleOverLimit`, `titleTruncated` or
  * `aspectValueOverLimit`. Empty → no step. Recomputed from the team answers
  * (the team is part of the title); never from the step's own answers — nor
- * its short-name draft, so a name that makes every title fit does not take
- * the step away while the operator is on it.
+ * its box draft, so the list holds still while the operator is on it.
  */
 export function cardsNeedingTitleReview(
   cards: readonly PreviewCardForTitles[],
@@ -416,16 +454,28 @@ export interface VariationGroup {
   cards: Array<{ index: number; cardNumber: string; cardName: string }>;
 }
 
+/** One title row: the card, and what its field's text leaves out beyond its group's line. */
+export interface TitleRowView extends CardTitleAssessment {
+  /** The text in the card's field now: the operator's draft, else `title`. */
+  text: string;
+  /** "Left out to fit" under this row: what it lacks that its group line does not say. */
+  leftOut: string[];
+}
+
 /**
- * Cards whose titles left out the same words share one line. "The same" is
- * read without each card's own player and team names (`sharedLeftOut`), which
- * the row states for itself.
+ * Cards whose generated titles left out the same words share one line. "The
+ * same" is read without each card's own players, teams and number, and from
+ * the generated titles before any draft (`groupKey`), so a group never
+ * reshuffles while the operator types.
  */
 export interface TitleGroup {
   key: string;
-  /** What every card on the line lost. May be empty. */
+  /**
+   * What every card on the line is missing NOW, read from each field's
+   * current text. Empty for a one-card group: that card's row says it all.
+   */
   leftOut: string[];
-  cards: CardTitleAssessment[];
+  cards: TitleRowView[];
 }
 
 /** The step's two lists, each in the order of its first card. */
@@ -436,8 +486,8 @@ export function buildTitleGroups(
   options?: TitleReviewOptions,
 ): { variationGroups: VariationGroup[]; titleGroups: TitleGroup[] } {
   const variationGroups = new Map<string, VariationGroup>();
-  const titleGroups = new Map<string, TitleGroup>();
-  for (const a of assessAll(cards, titleContext, teamAnswers, options)) {
+  const assessments = assessAll(cards, titleContext, teamAnswers, options);
+  for (const a of assessments) {
     if (a.items.some((i) => i.kind === "aspectValueOverLimit")) {
       const variation = (cards[a.index].cardVariation ?? "").trim();
       const group = variationGroups.get(variation) ?? {
@@ -448,17 +498,89 @@ export function buildTitleGroups(
       group.cards.push({ index: a.index, cardNumber: a.cardNumber, cardName: a.cardName });
       variationGroups.set(variation, group);
     }
-    if (a.fitsNow || a.items.some((i) => i.kind === "titleTruncated")) {
-      const key = `left:${a.sharedLeftOut.join("\u0000")}`;
-      const group = titleGroups.get(key) ?? { key, leftOut: a.sharedLeftOut, cards: [] };
-      group.cards.push(a);
-      titleGroups.set(key, group);
-    }
   }
   return {
     variationGroups: [...variationGroups.values()],
-    titleGroups: [...titleGroups.values()],
+    titleGroups: groupTitleAssessments(assessments, options?.answers),
   };
+}
+
+/**
+ * NEO-535 — the grouping half of `buildTitleGroups`, over any assessed cards:
+ * the wizard's preview cards, or a parallel's stored cards in the Card titles
+ * dialog (`parallel-titles.ts`). Only the cards on the step for their TITLE
+ * are grouped; each row's text is the operator's draft, else the title.
+ */
+export function groupTitleAssessments(
+  assessments: readonly CardTitleAssessment[],
+  answers?: ReadonlyArray<TitleAnswer | undefined>,
+): TitleGroup[] {
+  const byKey = new Map<string, Array<{ card: CardTitleAssessment; text: string; missing: string[] }>>();
+  for (const a of assessments) {
+    if (!isTitleCard(a)) continue;
+    const draft = answers?.[a.index]?.listingTitle;
+    const text = draft !== undefined && draft.trim() ? draft : a.title;
+    const list = byKey.get(a.groupKey) ?? [];
+    list.push({ card: a, text, missing: leftOutOfCardTitle(a, text) });
+    byKey.set(a.groupKey, list);
+  }
+  const titleGroups: TitleGroup[] = [];
+  for (const [key, members] of byKey) {
+    // What every card is missing, in the first card's order.
+    const shared =
+      members.length > 1
+        ? members[0].missing.filter((entry) => members.every((m) => m.missing.includes(entry)))
+        : [];
+    titleGroups.push({
+      key,
+      leftOut: shared,
+      cards: members.map(({ card, text, missing }) => ({
+        ...card,
+        text,
+        leftOut: missing.filter((entry) => !shared.includes(entry)),
+      })),
+    });
+  }
+  return titleGroups;
+}
+
+/**
+ * The words a card's own players, teams and number are made of
+ * (`CardTitleAssessment.ownWords`).
+ */
+export function ownWordsOf(
+  names: {
+    playerNames: readonly string[];
+    teamNames: readonly string[];
+    cameoNames?: readonly string[];
+  },
+  cardNumber: string,
+): Set<string> {
+  return new Set(
+    [
+      ...names.playerNames,
+      ...(names.cameoNames ?? []),
+      ...names.teamNames,
+      cardNumber,
+      `#${cardNumber}`,
+    ].flatMap((n) =>
+      n.toLowerCase().split(/\s+/).filter(Boolean),
+    ),
+  );
+}
+
+/**
+ * The group a card sits in, read from the title it was given (never a
+ * draft): what that title leaves out beyond the card's own names and number.
+ */
+export function titleGroupKey(
+  inputs: ListingCardInputs,
+  title: string,
+  ownWords: ReadonlySet<string>,
+  overCapVariation?: string,
+): string {
+  const baseline = withoutVariation(leftOutOfTitle(inputs, title), overCapVariation);
+  return `left:${baseline.filter((e) => !isOwnEntry(e, ownWords)).join("\u0000")}`;
 }
 
 /** Where an operator's title draft stands against the generated title. */
@@ -478,12 +600,15 @@ export function titleDraftState(draft: string | undefined, generated: string): T
  * What each card sends to the commit, positionally aligned with `cards`
  * (undefined = nothing; the card commits exactly as it did before the step).
  *
- *  - A card on the step for its TITLE sends its own title when the operator
- *    wrote one that fits, else `listingTitleKept` carrying the title the
- *    step showed — keeping is the answer, and the walker does not ask again
- *    after save as long as the server generates that same title. A
- *    draft over the cap sends neither: the server titles the card itself and
- *    flags it, and the walker picks it up (the step never blocks a save).
+ *  - A card on the step for its TITLE (over the cap, or short a first name)
+ *    sends its own title when the operator wrote one that fits, else
+ *    `listingTitleKept` carrying the title the step showed (built with the
+ *    box draft, when there is one) — keeping is the answer, and the walker
+ *    does not ask about the first name again after save as long as the
+ *    server generates that same title. A kept title over the cap is still
+ *    flagged by its length after save. A draft over the cap sends neither:
+ *    the server titles the card itself and flags it, and the walker picks it
+ *    up (the step never blocks a save).
  *  - A card on the step for its VARIATION sends the trimmed variation when it
  *    fits the aspect cap; otherwise nothing, and the warn-only item stays.
  */
@@ -497,15 +622,12 @@ export function titleAnswersForCommit(
   for (const a of assessAll(cards, titleContext, teamAnswers, options)) {
     const answer = options?.answers?.[a.index];
     const fields: TitleCommitFields = {};
-    if (a.items.some((i) => i.kind === "titleTruncated")) {
+    if (isTitleCard(a)) {
       const state = titleDraftState(answer?.listingTitle, a.title);
       if (state.kind === "own") fields.listingTitle = state.title;
-      else if (state.kind === "kept") fields.listingTitleKept = a.title;
-    } else if (a.fitsNow) {
-      // NEO-335 — fits as generated, but the operator wrote their own: send
-      // theirs. Kept (or over the cap) sends nothing; the generated one fits.
-      const state = titleDraftState(answer?.listingTitle, a.title);
-      if (state.kind === "own") fields.listingTitle = state.title;
+      else if (state.kind === "kept" && a.title.length <= LISTING_TITLE_KEPT_MAX) {
+        fields.listingTitleKept = a.title;
+      }
     }
     if (a.items.some((i) => i.kind === "aspectValueOverLimit")) {
       const variation = validVariationAnswer(cards[a.index], answer);
@@ -543,4 +665,30 @@ export function teamIdNamesFromRefs(
   const out = new Map<string, string>();
   for (const ref of refs) if (ref.teamId && !out.has(ref.teamId)) out.set(ref.teamId, ref.label);
   return out;
+}
+
+/**
+ * NEO-535 — where a `CardTitlesStep` gets its cards. The wizard's step reads
+ * the preview cards it is given (its default); the parallel Card titles
+ * dialog hands it a parallel's stored cards (`parallel-titles.ts`). Keep the
+ * object stable across renders (memoise it): the step recomputes its groups
+ * whenever it changes.
+ */
+export interface CardTitlesSource {
+  /** Positions the step's answers are aligned with. */
+  count: number;
+  /** What the "Set name in titles" box opens with. */
+  prefill: string;
+  /** The step's two lists for these drafts and this checked box draft. */
+  groups(options: {
+    answers: ReadonlyArray<TitleAnswer | undefined>;
+    listingShortName?: string;
+  }): { variationGroups: VariationGroup[]; titleGroups: TitleGroup[] };
+  /** Cards beyond the ones listed, and the line that says so. */
+  more?: { count: number; line: string };
+  /**
+   * Names the step's controls apart from another step's on the same screen
+   * (one per parallel in the dialog): "Title for Gold Refractor #12 …".
+   */
+  scope?: string;
 }

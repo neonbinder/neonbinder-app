@@ -37,6 +37,7 @@
 - [NEO-452 held intake test patterns](reference_neo452_held_intake_test_patterns.md) — realZone switch, two-frame pick, double-layer guards, aria-disabled "false", break-check by inverse replace
 - [RealAddCardsTab harness](reference_realaddcardstab_test_harness.md) — mocked Dropzone, status-role noise, runExtract fetch stub shape
 - [Axe break-check plant](reference_axe_break_check_plant.md) — plant aria-live="bogus" not aria-hidden (RTL skips hidden); hash-guarded restore in shared worktrees
+- [NEO-535 title cut loop test patterns](reference_neo535_title_cut_loop_test_patterns.md) — tsx for exact strings, STOP-era fuzz invariants, box-seeded commit fixtures, leftOutOfTitle takes text
 - [XHR guard and fake XHR](xhr-guard-and-fake-xhr.md) — guard refuses XHR; installFakeXhr; R2-env convex-test needs fetch stub + cancelScheduled
 - [NEO-450 sync failure box tests](reference_neo450_sync_failure_box_tests.md) — locate via aria-describedby, stored vs fresh alert mocks, thenable for re-throw/null handlers
 - [NEO-487 lane/wait test patterns](reference_neo487_bsc_lane_wait_test_patterns.md) — stop-rule/cooldown/wait-edge recipes, ledger chain timing, safe shared-worktree mutation runner

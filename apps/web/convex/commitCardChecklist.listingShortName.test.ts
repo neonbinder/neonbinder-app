@@ -53,7 +53,7 @@ type Ids = {
   leafId: Id<"selectorOptions">;
 };
 
-/** Long enough that every card's title core is cut with the full names. */
+/** Long enough that every card's builder title is over the cap after every cut. */
 const LONG_SET_NAME =
   "Chrome Update Series Sapphire Edition Platinum Anniversary Collectors Box Hobby Exclusive";
 const FEATURES = { manufacturer: "Topps", season: "2026" };
@@ -185,10 +185,12 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
     const ids = await seedTree(t);
     const seededAt = (await t.run(async (ctx) => ctx.db.get(ids.leafId)))!.lastUpdated;
     const shown = await shownTitle(t, ids, "1", "Topps Sapphire");
-    // The premise: with the full names the core is cut, the short name fixes it.
-    expect((await shownTitle(t, ids, "1")).coreFits).toBe(false);
+    // The premise (NEO-535): the builder's title is over the cap after every
+    // cut, so the box text is used, verbatim, and the card is on the step.
+    expect((await shownTitle(t, ids, "1")).fits).toBe(false);
     expect(shown.shortNameUsed).toBe(true);
-    expect(shown.title).toContain("Topps Sapphire");
+    expect(shown.coreFits).toBe(false);
+    expect(shown.title).toBe("Topps Sapphire #1 Baseball");
 
     await commit(t, ids, [card({ cardNumber: "1", listingTitleKept: shown.title })], "  Topps Sapphire ");
 
@@ -201,17 +203,31 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
     await settle(t);
   });
 
-  test("control: the same kept title WITHOUT the short name is not what the server generates, so it is flagged", async () => {
+  test("control: the same kept title WITHOUT the batch's short name is not what the server generates, so it is flagged", async () => {
+    // The set carries a different box, so the server still builds from a box
+    // (the card is on the step) but not the one the operator was shown.
     const t = convexTest(schema, modules);
-    const ids = await seedTree(t);
+    const ids = await seedTree(t, { setNameMetadata: { listingShortName: "Topps Other" } });
     const shown = await shownTitle(t, ids, "1", "Topps Sapphire");
 
     await commit(t, ids, [card({ cardNumber: "1", listingTitleKept: shown.title })]);
 
     expect(await leafMetadata(t, ids)).toBeUndefined();
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
+    expect(row.listingTitle).toBe("Topps Other Hologram Heroes #1 Baseball");
     expect(row.listingTitle).not.toBe(shown.title);
     expect(row.listingTitleTruncated).toBe(true);
+    await settle(t);
+  });
+
+  test("no box anywhere: the over-cap builder title is written whole, flagged by its length not as truncated", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedTree(t);
+    await commit(t, ids, [card({ cardNumber: "1" })]);
+    const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
+    expect(row.listingTitle).toBe(`2026 Topps ${LONG_SET_NAME} Hologram Heroes`);
+    expect(row.listingTitle!.length).toBeGreaterThan(80);
+    expect(row.listingTitleTruncated).toBeUndefined();
     await settle(t);
   });
 
@@ -237,9 +253,11 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
     const ids = await seedTree(t, {
       setNameMetadata: { listingShortName: "Topps Sapphire" },
     });
-    expect((await setFacts(t, ids)).listingShortName).toBe("Topps Sapphire");
+    // NEO-535: stored above the insert row, so the insert's name is added.
+    expect((await setFacts(t, ids)).listingShortName).toBe("Topps Sapphire Hologram Heroes");
     const shown = await shownTitle(t, ids, "1");
     expect(shown.shortNameUsed).toBe(true);
+    expect(shown.title).toBe("Topps Sapphire Hologram Heroes #1 Baseball");
 
     await commit(t, ids, [card({ cardNumber: "1", listingTitleKept: shown.title })]);
     const row = (await rowsByNumber(t, ids.leafId)).get("1")!;
@@ -251,7 +269,7 @@ describe("commitCardChecklist — the batch's short name for titles (NEO-335)", 
   });
 
   test.each([
-    ["over the cap", "s".repeat(MAX_LISTING_SHORT_NAME_LENGTH + 1), /at most 60 characters/],
+    ["over the cap", "s".repeat(MAX_LISTING_SHORT_NAME_LENGTH + 1), /tops out at 80 characters/],
     ["a line break", "Topps\nSapphire", /line breaks or control characters/],
     ["a zero-width character", "Topps\u200BSapphire", /zero-width or invisible/],
     ["a right-to-left override", "Topps\u202ESapphire", /zero-width or invisible/],
@@ -364,15 +382,18 @@ describe("every title walk reports the insert's name only on the insert ROLE (NE
       cardName: "Card 9",
     });
     const before = await t.run(async (ctx) => ctx.db.get(cardId));
-    expect(before!.listingTitleTruncated).toBe(true);
+    // NEO-535: born over the cap (no box yet), flagged by its length.
+    expect(before!.listingTitle!.length).toBeGreaterThan(80);
 
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionListingShortName, {
       id: ids.setNameId,
       listingShortName: "Topps Sapphire",
     });
     const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
-    expect(preview.inputs.setShortName).toBe("Topps Sapphire");
-    expect(preview.title).toContain("Topps Sapphire");
+    // Stored on the set, above the insert: the insert's name is added.
+    expect(preview.inputs.setShortName).toBe("Topps Sapphire Hologram Heroes");
+    expect(preview.shortNameUsed).toBe(true);
+    expect(preview.title).toBe("Topps Sapphire Hologram Heroes #9 Baseball");
     // Write-once: the stored title is not touched by the edit.
     expect((await t.run(async (ctx) => ctx.db.get(cardId)))!.listingTitle).toBe(before!.listingTitle);
     await settle(t);

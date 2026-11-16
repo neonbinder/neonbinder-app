@@ -62,6 +62,8 @@ export const titleContextValidator = v.object({
   // NEO-528 round 3 — optional on the wire: an older server sends none.
   setPlayerNames: v.optional(v.array(v.string())),
   setPlayerId: v.optional(v.id("players")),
+  // NEO-528 + NEO-535 — the default cameos a new card is born with.
+  setCameoNames: v.optional(v.array(v.string())),
   players: nameMapValidator,
   teams: nameMapValidator,
 });
@@ -75,6 +77,8 @@ const setFactsValidator = v.object({
   setTeamNames: v.array(v.string()),
   setPlayerNames: v.optional(v.array(v.string())),
   setPlayerId: v.optional(v.id("players")),
+  // NEO-528 + NEO-535 — the default cameos a new card is born with.
+  setCameoNames: v.optional(v.array(v.string())),
 });
 
 /**
@@ -134,16 +138,20 @@ export const titleSetFacts = internalQuery({
     // NEO-528 round 3 — "Player on every card": the player a new card with
     // no player of its own (none resolved, no name waiting for review) is
     // born with, by the same lookup the commit chunk makes. The title names
-    // them; cameos never reach a title. The id rides along so the checklist
+    // them, and (NEO-535 merge) the cameos below, while there is room. The id rides along so the checklist
     // can tell which rows the default covers; nothing writes it from here.
     const setPlayerNames: string[] = [];
     let setPlayerId: Id<"players"> | undefined;
+    const setCameoNames: string[] = [];
     if (leaf) {
       const defaults = await effectiveCardPlayerDefaults(ctx, leaf._id, { sportId: args.sportId });
       if (defaults.player) {
         setPlayerNames.push(defaults.player.name);
         setPlayerId = defaults.player._id;
       }
+      // NEO-528 + NEO-535 — and the cameos it is born with: the title names
+      // them while it has room (the first meaningful thing it drops).
+      for (const cameo of defaults.cameos) setCameoNames.push(cameo.name);
     }
 
     return {
@@ -155,6 +163,7 @@ export const titleSetFacts = internalQuery({
       setTeamNames,
       setPlayerNames,
       ...(setPlayerId ? { setPlayerId } : {}),
+      ...(setCameoNames.length > 0 ? { setCameoNames } : {}),
     };
   },
 });

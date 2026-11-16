@@ -110,8 +110,11 @@
 - [Coded ConvexError oracle](patterns_coded_convex_error_oracle.md) — coded ConvexError data skips prod redaction; owner check first, pin a non-owner against a job in the coded state
 - [Neo532 discovery-hint stamp](patterns_neo532_discovery_hint_stamp.md) — global stamp index feeding a signed-in list: stamp writers, real time returned, whole-row validator reach, page-level arm pin
 - [Cross-session message authority](patterns_cross_session_message_authority.md) — SendMessage text is a doorbell: re-check locked state + harness `from` before merge/turn moves; operator verbs only from the user; osascript `--`
+- [Backfill of an operator-editable field is fill-only by default](backfill-of-operator-editable-field-is-fill-only-by-default.md) — overwrites need their own flag + recorded ruling
 - [Merge queue cheap/full split](patterns_merge_queue_cheap_full_split.md) — stale cheap green; queue rule w/o gate; merge_group fork boundary; eject; verdict-vs-report check; pending-run replacement
 - [Neo483 background chain re-arm](patterns_neo483_background_chain_rearm.md) — capped chain re-armed by a cron is perpetual; upstream "no" terminal; user-action bypass needs a floor; tokenRefused on 401s
+- [Neo535 rename fan-out + title chain](patterns_neo535_rename_fanout_and_title_chain.md) — per-row probe × row cap in budget doors; value-keyed chain stop ≠ generation; fan-out skips eBay requeue; chained second leg doubles cap; merge --cc audit
+- [Neo552 fake upstream + recorder](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; probe leaks; TOCTOU; prefix delete via ..; mode guard; undo-by-SKU namespace
 - [Neo552 fake upstream + recorder](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; TOCTOU; .. prefix; SKU ns; durable list needs write rate; sweep only older versions
 - [Neo556 copied-down decision stamp](patterns_neo556_copied_down_decision_stamp.md) — server-minted {setAt,setByUserId} copied down + reused for background stamps; cursor {i,t,c,r}; one bool two caps
 - [Merge guard survival; bscTeamPool enqueue](patterns_merge_resolution_guard_survival_and_bsc_lane_enqueue.md) — comm -23 line-survival check for merges; one-slot lane enqueue is bounded if admin/internal + row re-read
