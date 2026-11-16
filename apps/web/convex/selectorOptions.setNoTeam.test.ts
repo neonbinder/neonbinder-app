@@ -688,6 +688,93 @@ describe("NEO-556 updateCard teamNone", () => {
     ]);
   });
 
+  /** An eBay seller with a boxed copy of the card, so a queued retitle would show in the outbox. */
+  async function addEbaySellerCopy(
+    t: T,
+    cardId: Id<"cardChecklist">,
+    tree: { variantTypeId: Id<"selectorOptions">; setNameId: Id<"selectorOptions"> },
+    seller: string,
+  ) {
+    await t.run(async (ctx) => {
+      const now = Date.now();
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: seller,
+        platform: "ebay",
+        listingStartedAt: now,
+        lastUpdated: now,
+      });
+      const homeId = await ctx.db.insert("collectionContainers", {
+        ownerId: seller,
+        kind: "box",
+        name: "Box 1",
+        lastUpdated: now,
+      });
+      await ctx.db.insert("collectionCopies", {
+        ownerId: seller,
+        cardId,
+        variantId: tree.variantTypeId,
+        setId: tree.setNameId,
+        homeId,
+        quantity: 1,
+        lastUpdated: now,
+      });
+    });
+  }
+
+  test("an operator-typed title is kept and does not queue the card for eBay (NEO-535)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const bulls = await seedTeam(t, sportId, { location: "Durham", name: "Bulls" });
+    const tree = await seedTree(t, sportId);
+    const id = await addBullsCard(t, tree.variantTypeId, bulls);
+    await asAdmin.mutation(api.selectorOptions.updateCard, {
+      id,
+      listingTitle: "My own Bulls title",
+    });
+    // The seller's copy arrives after the typed edit, so nothing is queued yet.
+    await addEbaySellerCopy(t, id, tree, "collector_typed_title");
+    expect(await t.run(async (ctx) => await ctx.db.query("listingOutbox").collect())).toEqual([]);
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, { id, teamNone: true });
+
+    const card = await getCard(t, id);
+    expect(card!.teamNoneConfirmedAt).toEqual(expect.any(Number));
+    expect(card!.listingTitle).toBe("My own Bulls title");
+    expect(await t.run(async (ctx) => await ctx.db.query("listingOutbox").collect())).toEqual([]);
+  });
+
+  test("a card that never had a team is stamped without queuing eBay (NEO-535)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const tree = await seedTree(t, sportId);
+    const id = await seedCard(t, tree.variantTypeId, "1");
+    await addEbaySellerCopy(t, id, tree, "collector_teamless");
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, { id, teamNone: true });
+
+    expect((await getCard(t, id))!.teamNoneConfirmedAt).toEqual(expect.any(Number));
+    expect(await t.run(async (ctx) => await ctx.db.query("listingOutbox").collect())).toEqual([]);
+  });
+
+  test("a card already stamped No Team, re-saved, does not queue eBay (NEO-535)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const tree = await seedTree(t, sportId);
+    const id = await seedCard(t, tree.variantTypeId, "1", {
+      teamNoneConfirmedAt: 5,
+      teamNoneConfirmedByUserId: "admin_earlier",
+    });
+    await addEbaySellerCopy(t, id, tree, "collector_restamped");
+
+    await asAdmin.mutation(api.selectorOptions.updateCard, { id, teamNone: true });
+
+    expect((await getCard(t, id))!.teamNoneConfirmedAt).toBe(5);
+    expect(await t.run(async (ctx) => await ctx.db.query("listingOutbox").collect())).toEqual([]);
+  });
+
   test("a typed title is kept; the panel re-sending the stored title still regenerates it", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
