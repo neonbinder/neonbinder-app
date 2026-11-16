@@ -26,7 +26,7 @@
 - [Reference field marker class is two classes and mangles camelcase](reference_field_marker_class_is_two_classes_and_mangles_camelcase.md) — An apps/web Input carries TWO mb-field-* classes (the primitive's own plus the caller's fieldClass key), and useFieldTestClass mangles a camelCase key — "cardNumber" b…
 - [Fresh worktree missing env local](reference_fresh_worktree_missing_env_local.md) — A fresh apps/web worktree has no .env.local, so every route renders a blank black page and the only clue is a ClerkProviderBase warning — not a code bug
 - [Load only network guard trip is a delayed tail](reference_load_only_network_guard_trip_is_a_delayed_tail.md) — A NEO-188 guard trip that fails only in the full parallel suite and passes in isolation is usually a self-rescheduling DELAYED scheduled tail that drainScheduled canno…
-- [Known full-suite unit flakes](reference_playermanagement_deeplink_test_flakes_under_load.md) — PlayerManagement deep link, ScannerJoin timer, bscSeller clock digits, panelLink 5 s ceiling; rerun the file alone
+- [Known full-suite unit flakes](reference_playermanagement_deeplink_test_flakes_under_load.md) — PlayerManagement deep link, ScannerJoin timer, bscSeller clock digits, panelLink 5 s ceiling, dashboard renders under high load; rerun alone, --testTimeout
 - [Review batch rows the batch stages itself](reference_review_batch_rows_the_batch_stages_itself.md) — A row the review batch stages for itself (entityReviewQueue.source) is invisible to the incoming name list, so startBatch's resume reconciliation deletes it — and any…
 - [Search index is or so longest token fallback is dead](reference_search_index_is_or_so_longest_token_fallback_is_dead.md) — Both Convex and convex-test full-text search are OR over query terms, so the `if (hits.length === 0) retry with longestToken(name)` fallback in teams.nearMatches and p…
 - [Teardown leak attribution](reference_teardown_leak_attribution.md) — How to attribute and fix a convex-test EnvironmentTeardownError — the trace's third frame names the test file, the module name is a red herring, it reproduces ~1 full…
@@ -180,7 +180,7 @@
 - [Failure PNG is viewport-only](reference_failure_png_is_viewport_only.md) — under-card content is off a 629px frame; read error-context in the blob zip; grep templated locators too
 - [Clipboard write with a promise](reference_clipboard_write_with_a_promise.md) — copy text that lands after awaits: start clipboard.write in the click with a promise; headless shell denies writes, so specs stub it
 - [useEffectEvent does not evade set-state-in-effect](reference_effect_event_does_not_evade_set_state_rule.md) — compiler traces through it; justified disable for a one-edge effect; rAF is FIFO after close(); one-shot intent → adjust state while rendering
-- [Always-mounted live region in space-y](reference_always_mounted_live_region_in_space_y.md) — empty region still takes the gap; nest beside a min-h line; no sr-only copy of a getByText line
+- [Always-mounted live region in space-y](reference_always_mounted_live_region_in_space_y.md) — empty region still takes the gap; nest beside a min-h line, or mb-0 / empty:-mt-*; no sr-only copy of a getByText line
 - [Failed dynamic import is cached per document](reference_failed_dynamic_import_is_cached_per_document.md) — Chromium: re-import or lazy retry cannot recover, only a reload; prefetch failures poison the route
 - [Paginated query leaves Exhausted live](reference_paginated_query_leaves_exhausted_live.md) — a live update drops an Exhausted gate to Loading and unmounts dialogs; hold the last full read
 - [backdrop-filter makes a containing block](reference_backdrop_filter_makes_a_containing_block.md) — a "fixed" button in a blurred scroller scrolls away; blur a sibling. Also h-0 min-h-full
@@ -207,6 +207,7 @@
 - [Wait line mounting breaks test mocks](reference_wait_line_mounting_breaks_test_mocks.md) — useQuery/watchQuery stubs, one-status pins, waitKey toEqual; 50 rows per key
 - [Long admin lists freeze whole-DOM scanners](reference_long_admin_lists_freeze_whole_dom_scanners.md) — 2,000 rows = 20k nodes, axe 10 s; a select INP report there is DOM size or popup-open time, not the handler
 - [Playwright harness mirrors the checklist parser](playwright-harness-mirrors-checklist-parser.md) — checklistFacts must share lib/checklists rules; check it on parser changes (NEO-489)
+- [break-words does not shrink a table cell](reference_break_words_does_not_shrink_a_table_cell.md) — auto-layout table + unspaced title: use wrap-anywhere; flex + min-w-0 is fine with break-words
 - [Unlayered text-wrap beats truncate](reference_unlayered_text_wrap_beats_truncate.md) — globals.css p/li/h text-wrap is unlayered, so `truncate` wraps; long names use min-w-0 + wrap-anywhere
 - [Centred fixed toast shrink-wraps to 50vw](reference_centred_fixed_toast_shrink_wraps_to_half_the_viewport.md) — use a fixed inset-x-4 flex band + max-w-full box; items-start + mt nudges keep one-line rows
 - [A name in a NeonButton needs free height](reference_a_name_in_a_neonbutton_needs_free_height.md) — Radix fixes height, not nowrap; h-auto min-h-8 py-1.5 max-w-full wrap-anywhere (size 1: min-h-6 py-1)
@@ -219,5 +220,6 @@
 - [Convex prod redacts plain Error text](reference_convex_prod_redacts_plain_error_messages.md) — never string-match a server refusal; coded ConvexError from a pure convex/lib module, read data.code
 - [Axe contrast red: read the attachment first](reference_axe_contrast_red_read_the_attachment_first.md) — blob report holds every node fg/bg; a role blended toward the bg = mid-fade frame, not a token bug
 - [Agent shell Node is not the apps/web pin](reference_agent_shell_node_is_not_the_apps_web_pin.md) — prepend nvm's $(cat .nvmrc) bin in the same call as each gate; print node --version
+- [New table naming a variant has six pins](reference_new_table_naming_a_variant_has_six_pins.md) — wipe graph, reset batch + exact count pin, cli.mjs list, test reset, api.d.ts, auth registry
 - [Inline-block is a reader group](reference_inline_block_is_a_reader_group.md) — inline-block span in a one-phrase <p> = Chrome AX generic; role="presentation" flattens it
 - [convex-test: stub a module via the glob map](reference_convex_test_stub_a_module_via_the_glob_map.md) — add a "./x.ts" key to the modules map; check {ok:false} results; mutation→action flip breaks .mutation() call sites repo-wide
