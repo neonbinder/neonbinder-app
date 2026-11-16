@@ -281,11 +281,18 @@ describe("replay, misses and uploads", () => {
 describe("seller synthesis", () => {
   let fake;
   const sellerId = async () => (await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC })).body.sellerProfile.sellerId;
-  const sheet = (condition) =>
-    fake.call("POST", "/api/seller/bulk-upload/results", {
+  // The sheet is answered as `{results: [...]}`, like real BSC; on a 200 the
+  // helper checks that root and hands back the rows.
+  const sheet = async (condition) => {
+    const r = await fake.call("POST", "/api/seller/bulk-upload/results", {
       bsc: BSC,
       body: { condition, currentListings: true, productType: "raw", page: 0, size: 5000, sort: "default", filters: FILTERS },
     });
+    if (r.status !== 200) return r;
+    assert.deepEqual(Object.keys(r.body), ["results"], "the sheet is wrapped in {results}");
+    assert.ok(Array.isArray(r.body.results));
+    return { ...r, body: r.body.results };
+  };
 
   beforeEach(async () => {
     if (fake) await fake.close();
@@ -326,7 +333,8 @@ describe("seller synthesis", () => {
       assert.equal(row.availableQuantity, 0);
       assert.equal(row.price, "0");
       assert.equal(row.condition, "near_mint");
-      assert.ok(row.sellerImgFront.includes("Default"));
+      // A blank row carries none of the listed-only keys (real BSC leaves them out).
+      for (const k of ["sellerSku", "sellerImgFront", "sellerImgBack"]) assert.equal(k in row, false, k);
     }
     const again = (await sheet("near_mint")).body;
     assert.notEqual(again[0].productId, first[0].productId, "a template mints a new productId on each read");
@@ -353,6 +361,9 @@ describe("seller synthesis", () => {
     assert.equal(listed.availableQuantity, 3);
     assert.equal(listed.price, "0.50");
     assert.equal(listed.sellerSku, "303|1");
+    // A listed row with no photo carries BSC's default-image strings.
+    assert.ok(listed.sellerImgFront.includes("Default"));
+    assert.ok(listed.sellerImgBack.includes("Default"));
     assert.equal(listed.card.cardNo, "1");
     const stable = (await sheet("near_mint")).body.find((r) => r.cardId === "c1");
     assert.equal(stable.productId, listed.productId, "a listing keeps its productId");

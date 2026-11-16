@@ -105,6 +105,15 @@ export class FakeClient {
     return Array.isArray(out?.misses) ? (out.misses as MissEntry[]) : [];
   }
 
+  /**
+   * Every owner's misses (`GET /__fake/misses?all=1`, admin only), for a
+   * session whose preview is gone (CONTRACT.md, "Durable misses").
+   */
+  async allMisses(): Promise<MissEntry[]> {
+    const out = (await this.call("GET", "/__fake/misses?all=1", true)) as { misses?: unknown };
+    return Array.isArray(out?.misses) ? (out.misses as MissEntry[]) : [];
+  }
+
   async uploadRecording(recording: unknown): Promise<{ manifestVersion: number }> {
     return (await this.call("POST", "/__fake/recordings", true, { recordings: [recording] })) as { manifestVersion: number };
   }

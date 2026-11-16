@@ -11,7 +11,7 @@ import { canonicalRequest, diffRequestPaths, normalisePath, requestKey, type Can
 import { catalogueEndpointFor, type CatalogueEndpoint } from "../sanitise";
 import { ATTACHMENT_RE, ORDER_DETAIL_RE, templatesFor } from "../paths";
 import type { MissOwner, StateStore } from "../state";
-import { applyPhotoUpload, applyPut, catalogueRequestFor, profileAnswer, readSheetRequest, synthSheet } from "../synth/sheet";
+import { applyPhotoUpload, applyPut, catalogueRequestFor, profileAnswer, readSheetRequest, sheetAnswer, synthSheet } from "../synth/sheet";
 import { orderDetail, orderHistory } from "../synth/orders";
 import { readHeaderScope } from "../namespace";
 
@@ -25,6 +25,13 @@ export const UNRECORDED_HEADER = "x-nb-fake";
 export const PUT_BODY_LIMIT = 2 * 1024 * 1024;
 export const API_BODY_LIMIT = 64 * 1024;
 export const PHOTO_BODY_LIMIT = 4 * 1024 * 1024;
+
+/**
+ * How long a 501 waits for its miss to be kept in the bucket (CONTRACT.md,
+ * "Durable misses"): Cloud Run throttles CPU outside a request, so the write
+ * happens inside it. A slower or failed write still answers the 501.
+ */
+export const MISS_WRITE_BUDGET_MS = 2000;
 
 export function bearerToken(req: Request): string | null {
   const h = req.get("authorization");
@@ -81,7 +88,7 @@ export function apiRouter(deps: { catalogue: Catalogue; state: StateStore; ns: N
     res.status(501).set(UNRECORDED_HEADER, "unrecorded").json({ error: "unrecorded", key });
   };
 
-  const missCatalogue = (res: Response, owner: MissOwner, endpoint: CatalogueEndpoint, req: CanonicalRequest): void => {
+  const missCatalogue = async (res: Response, owner: MissOwner, endpoint: CatalogueEndpoint, req: CanonicalRequest): Promise<void> => {
     const key = requestKey(req);
     state.recordMiss(owner, {
       key,
@@ -92,10 +99,11 @@ export function apiRouter(deps: { catalogue: Catalogue; state: StateStore; ns: N
       request: req,
       nearMiss: nearMiss(catalogue, endpoint, req),
     });
+    await state.flushMisses(MISS_WRITE_BUDGET_MS);
     unrecorded(res, key);
   };
 
-  router.use((req: Request, res: Response) => {
+  router.use(async (req: Request, res: Response) => {
     const method = req.method.toUpperCase();
     const path = normalisePath(req.path);
     const tokenNs = deps.ns.fromToken(req);
@@ -117,7 +125,7 @@ export function apiRouter(deps: { catalogue: Catalogue; state: StateStore; ns: N
       const creq = canonicalRequest({ method, path, query: queryString(req), body: method === "GET" ? undefined : req.body });
       const rec = catalogue.get(requestKey(creq));
       if (!rec) {
-        missCatalogue(res, owner, endpoint, creq);
+        await missCatalogue(res, owner, endpoint, creq);
         return;
       }
       if (rec.response.status === 200) res.status(200).json(rec.response.body);
@@ -143,11 +151,11 @@ export function apiRouter(deps: { catalogue: Catalogue; state: StateStore; ns: N
       const creq = catalogueRequestFor(sheet.filters);
       const rec = catalogue.resultsFor(sheet.filters);
       if (!rec) {
-        missCatalogue(res, { ns }, "results", creq);
+        await missCatalogue(res, { ns }, "results", creq);
         return;
       }
       const rows = Array.isArray(rec.response.body) ? rec.response.body : [];
-      res.json(synthSheet(rows, state.get(ns), sheet.condition, now()));
+      res.json(sheetAnswer(synthSheet(rows, state.get(ns), sheet.condition, now())));
       return;
     }
 

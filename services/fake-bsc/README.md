@@ -94,7 +94,8 @@ curl "${H[@]}" -X POST "$FAKE/__fake/orders" -d '{"ns":"<ns>","order":{"items":[
 curl "${H[@]}" "$FAKE/__fake/misses?prefix=<convexSlug>-"
 ```
 
-`/__fake/reset-all` (admin) clears every namespace and every sign-in.
+`/__fake/reset-all` (admin) clears every namespace, every sign-in and every
+kept miss.
 
 An unrecorded catalogue request answers **501 with `x-nb-fake: unrecorded`**
 and lands on the namespace's miss list with the nearest recorded request's
@@ -105,11 +106,20 @@ A catalogue miss stays listed until its recording is uploaded: `/__fake/reset`
 (which runs before every E2E seed) clears listings, photos, orders, faults and
 `needs-model` misses, but keeps catalogue misses, because they are the
 recorder's to-do list and change no answer. Only an upload, `/__fake/reset-all`,
-the list caps or a restart of the fake's instance remove one.
+the list caps or the 30-day TTL remove one.
 
-The miss list lives only in memory and the service scales to zero, so a restart
-(an idle scale-down or a deploy) empties it. That is accepted: run the specs
-again to list the misses, then record them.
+The service scales to zero, so the catalogue misses the recorder could replay
+(facet slugs or a hex card id, the same allowlist it applies) are also kept in
+the recordings bucket, one small object per owner and request under
+`misses/v<allowlistVersion>/`, written once inside the 501 and restored at
+boot. `needs-model` misses and anything the allowlist refuses stay in memory
+and go with a restart. At most 2,000 are kept in all; CONTRACT.md, "Durable
+misses", has the rest.
+
+The seller sheet (`POST seller/bulk-upload/results`) answers `{results:
+[...]}`, as real BSC does. A blank row (no listing) carries no `sellerSku`,
+`sellerImgFront` or `sellerImgBack` key; a listed row carries all three
+(CONTRACT.md, "The seller sheet").
 
 ## First rollout
 
@@ -143,7 +153,7 @@ re-applies the allowlist and refuses anything outside it.
 
 Any caller-key holder (every PR's Convex) can write the miss list, so the
 recorder trusts none of it: each miss must pass the request allowlist in
-`recorder/replay-allowlist.ts` (the exact body shapes NB sends, facet slugs
+`src/replayAllowlist.ts`, re-exported by `recorder/replay-allowlist.ts` (the exact body shapes NB sends, facet slugs
 only, no query string, hex card ids, 4 KB at most) or it is refused and
 reported by reason, never sent. Misses with no namespace and no prefix are
 skipped unless `--include-anon`. Before it reads a credential or contacts
@@ -174,6 +184,11 @@ FAKE_BSC_CALLER_KEY="$(gcloud secrets versions access latest --secret=<caller-ke
 FAKE_BSC_ADMIN_KEY="$(gcloud secrets versions access latest --secret=<admin-key secret> --project=<dev project>)" \
   sh -c 'bw get item <bitwarden item id> | node dist/recorder/cli.js record --fake <fake url> --prefix <convexSlug>-'
 ```
+
+- `--all` in place of `--prefix <p>` reads every owner's misses (the
+  admin-only `GET /__fake/misses?all=1`), so a session after the preview is
+  gone needs no slug. The allowlist, the `--include-anon` rule and the typed
+  confirmation are the same.
 
 - BSC credentials come **only** from stdin (a Bitwarden item, `{username,
   password}` JSON, or two lines) or, on a terminal, a prompt with the password

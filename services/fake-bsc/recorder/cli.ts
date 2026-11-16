@@ -2,7 +2,7 @@
 /**
  * The fake-BSC recorder. Run by a person, on their own machine, never in CI.
  *
- *   bw get item <id> | node dist/recorder/cli.js record --fake <url> --prefix <p> [--watch] [--max N] [--include-anon] [--yes]
+ *   bw get item <id> | node dist/recorder/cli.js record --fake <url> (--prefix <p> | --all) [--watch] [--max N] [--include-anon] [--yes]
  *   bw get item <id> | node dist/recorder/cli.js capture-write --fake <url> --request put.json [--file img.jpg] --yes
  *   bw get item <id> | node dist/recorder/cli.js undo-write --request put.json --yes
  *
@@ -71,16 +71,37 @@ function fakeClient(flags: Map<string, string | true>): FakeClient {
 
 const say = (line: string) => process.stderr.write(`${line}\n`);
 
+/**
+ * Which misses a session reads: `--prefix <p>` (one deployment, caller auth)
+ * or `--all` (every owner, the admin-only `?all=1`). Exactly one.
+ */
+export function readMissScope(flags: Map<string, string | true>): { prefix: string } | { all: true } {
+  const all = flags.get("--all");
+  const prefix = flags.get("--prefix");
+  if (all !== undefined) {
+    if (all !== true) throw new Error("--all takes no value");
+    if (prefix !== undefined) throw new Error("use --prefix or --all, not both");
+    return { all: true };
+  }
+  if (typeof prefix !== "string" || prefix.length < 3) throw new Error("--prefix <convexSlug-> (at least 3 characters) or --all is required");
+  return { prefix };
+}
+
 async function record(flags: Map<string, string | true>): Promise<number> {
-  const prefix = str(flags, "--prefix");
-  if (!prefix || prefix.length < 3) throw new Error("--prefix <convexSlug-> is required (at least 3 characters)");
+  const scope = readMissScope(flags);
   const max = readMax(flags.get("--max"));
   const includeAnon = flags.get("--include-anon") === true;
   const watch = flags.get("--watch") === true;
   const fake = fakeClient(flags);
+  // The one miss source for the plan and the session; `--all` reads every owner.
+  const source =
+    "all" in scope
+      ? { misses: () => fake.allMisses(), uploadRecording: (r: unknown) => fake.uploadRecording(r) }
+      : { misses: (p: string) => fake.misses(p), uploadRecording: (r: unknown) => fake.uploadRecording(r) };
+  const prefix = "all" in scope ? "(all)" : scope.prefix;
 
   // Plan first, before any credential is read or BSC is contacted.
-  const plan = planMisses(await fake.misses(prefix), { includeAnon });
+  const plan = planMisses(await source.misses(prefix), { includeAnon });
   for (const r of plan.refused) say(`refused (never sent): ${r.label}`);
   if (plan.anonSkipped) say(`${plan.anonSkipped} anonymous miss(es) left alone (--include-anon to replay them)`);
   const cap = max ?? MAX_REQUESTS_PER_SESSION;
@@ -115,7 +136,7 @@ async function record(flags: Map<string, string | true>): Promise<number> {
   const result = await runRecordSession({
     prefix,
     watch,
-    fake,
+    fake: source,
     bsc: bscCaller({ apiBase: browser.apiBase, token: () => session.token(), headers: (t) => browser.apiHeaders(t) }),
     tokenExpiresAt: session.expiresAt(),
     renewToken: () => session.renew(),
@@ -257,7 +278,7 @@ async function main(argv: string[]): Promise<number> {
   if (command === "capture-write") return captureWrite(flags);
   if (command === "undo-write") return undoWrite(flags);
   say(
-    "usage: cli.js record --fake <url> --prefix <p> [--watch] [--max N] [--include-anon] [--yes]\n" +
+    "usage: cli.js record --fake <url> (--prefix <p> | --all) [--watch] [--max N] [--include-anon] [--yes]\n" +
       "     | capture-write --fake <url> --request <file> [--file <img>] [--yes]\n" +
       "     | undo-write --request <file> [--yes]",
   );

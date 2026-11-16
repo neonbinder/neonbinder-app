@@ -1,7 +1,9 @@
 /**
  * Per-namespace, in-memory run state (CONTRACT.md, "Accounts and per-run
- * isolation"): listings, photos, orders, faults and misses. Nothing here is
- * persisted; a restart is a reset (the boot log line makes one visible).
+ * isolation"): listings, photos, orders, faults and misses. Run state is not
+ * persisted; a restart is a reset (the boot log line makes one visible). The
+ * one exception is replayable catalogue misses, which a `MissPersistence`
+ * (src/missStore.ts) also keeps in the bucket (CONTRACT.md, "Durable misses").
  */
 import { createHash, randomBytes } from "node:crypto";
 import type { CanonicalRequest } from "./requestKey";
@@ -63,6 +65,33 @@ export const MAX_PREFIX_MISS_LISTS = 200;
 /** Who a miss belongs to: one namespace, a deployment prefix, or nobody (no token, no header). */
 export type MissOwner = { ns: string } | { prefix: string } | null;
 
+/** Catalogue misses older than this (from `firstSeen`) leave memory and the bucket. */
+export const MISS_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Where catalogue misses are kept durably (CONTRACT.md, "Durable misses").
+ * The StateStore calls it as its lists change; every method settles and
+ * never rejects (a failure is logged and leaves memory as it is).
+ */
+export interface MissPersistence {
+  /** Keeps a catalogue miss, once per owner and key, if the replay allowlist accepts it. */
+  save(owner: MissOwner, miss: Miss): Promise<void>;
+  /** Removes one owner's object for a key. */
+  remove(owner: MissOwner, key: string): Promise<void>;
+  /** Removes every owner's object for a key (its recording was stored). */
+  removeKey(key: string): Promise<void>;
+  /** Removes every kept miss (`/__fake/reset-all`). */
+  removeAll(): Promise<void>;
+  /** Removes every kept miss first seen before `cutoffMs` (the TTL). */
+  expire(cutoffMs: number): Promise<void>;
+  /**
+   * Boot: the kept misses that are still valid, current and unrecorded.
+   * Anything expired, invalid, of another allowlist version, past a cap or
+   * already recorded is deleted instead.
+   */
+  restore(nowMs: number, isRecorded: (key: string) => boolean): Promise<Array<{ owner: MissOwner; miss: Miss }>>;
+}
+
 export function listingKey(cardId: string, condition: string): string {
   return `${cardId}|${condition}`;
 }
@@ -92,7 +121,43 @@ export class StateStore {
   /** Misses from requests scoped by a deployment prefix, keyed by that prefix. */
   private readonly prefixMisses = new Map<string, Map<string, Miss>>();
 
-  constructor(private readonly now: () => number = Date.now) {}
+  /** Persistence work started by list changes, awaited by `flushMisses`. */
+  private readonly inflight = new Set<Promise<void>>();
+
+  constructor(
+    private readonly now: () => number = Date.now,
+    private readonly persistence?: MissPersistence,
+  ) {}
+
+  private track(work: Promise<void> | undefined): void {
+    if (!work) return;
+    const p = work.catch(() => undefined).finally(() => this.inflight.delete(p));
+    this.inflight.add(p);
+  }
+
+  /**
+   * Waits for the persistence work started so far, at most `timeoutMs`.
+   * True when it all settled in time. Never rejects: a slow store never
+   * turns an answer into an error (the work carries on regardless).
+   */
+  async flushMisses(timeoutMs: number): Promise<boolean> {
+    if (this.inflight.size === 0) return true;
+    let timer: NodeJS.Timeout | undefined;
+    const settled = await Promise.race([
+      Promise.all([...this.inflight]).then(() => true),
+      new Promise<boolean>((r) => {
+        timer = setTimeout(() => r(false), timeoutMs);
+        timer.unref();
+      }),
+    ]);
+    clearTimeout(timer);
+    return settled;
+  }
+
+  /** Persistence work still running (tests). */
+  get pendingMissWrites(): number {
+    return this.inflight.size;
+  }
 
   /** The namespace's state, created on first use (evicting the least recent past the cap). */
   get(ns: string): NamespaceState {
@@ -161,11 +226,13 @@ export class StateStore {
     return n;
   }
 
+  /** Clears everything, kept misses included (their removal is tracked: `flushMisses`). */
   resetAll(): number {
     const n = this.spaces.size;
     this.spaces.clear();
     this.anonMisses.clear();
     this.prefixMisses.clear();
+    this.track(this.persistence?.removeAll());
     return n;
   }
 
@@ -204,10 +271,16 @@ export class StateStore {
     }
     if (map.size >= MAX_MISSES_PER_NAMESPACE) {
       const first = map.keys().next().value;
-      if (first !== undefined) map.delete(first);
+      if (first !== undefined) {
+        const evicted = map.get(first);
+        map.delete(first);
+        if (evicted?.kind === "catalogue") this.track(this.persistence?.remove(owner, first));
+      }
     }
     const m: Miss = { ...miss, count: 1, firstSeen: at, lastSeen: at };
     map.set(miss.key, m);
+    // Kept once per owner and key; the 501 awaits it (`flushMisses`).
+    if (m.kind === "catalogue") this.track(this.persistence?.save(owner, m));
     return m;
   }
 
@@ -216,7 +289,12 @@ export class StateStore {
     if (!map) {
       if (this.prefixMisses.size >= MAX_PREFIX_MISS_LISTS) {
         const first = this.prefixMisses.keys().next().value;
-        if (first !== undefined) this.prefixMisses.delete(first);
+        if (first !== undefined) {
+          for (const [k, m] of this.prefixMisses.get(first) ?? []) {
+            if (m.kind === "catalogue") this.track(this.persistence?.remove({ prefix: first }, k));
+          }
+          this.prefixMisses.delete(first);
+        }
       }
       map = new Map();
       this.prefixMisses.set(prefix, map);
@@ -224,11 +302,60 @@ export class StateStore {
     return map;
   }
 
-  /** Drops a miss everywhere once it has been recorded. */
+  /** Drops a miss everywhere once it has been recorded, kept copies included (tracked). */
   clearMiss(key: string): void {
     this.anonMisses.delete(key);
     for (const m of this.prefixMisses.values()) m.delete(key);
     for (const s of this.spaces.values()) s.misses.delete(key);
+    this.track(this.persistence?.removeKey(key));
+  }
+
+  /**
+   * Drops catalogue misses first seen more than `MISS_TTL_MS` ago, from
+   * memory and (tracked) from the bucket. Returns how many.
+   */
+  expireMisses(): number {
+    const cutoff = this.now() - MISS_TTL_MS;
+    let n = 0;
+    const sweep = (map: Map<string, Miss>): void => {
+      for (const [k, m] of [...map]) {
+        if (m.kind !== "catalogue") continue;
+        const seen = Date.parse(m.firstSeen);
+        if (Number.isNaN(seen) || seen >= cutoff) continue;
+        map.delete(k);
+        n += 1;
+      }
+    };
+    sweep(this.anonMisses);
+    for (const map of this.prefixMisses.values()) sweep(map);
+    for (const s of this.spaces.values()) sweep(s.misses);
+    // The bucket's own sweep also reaches objects with no list entry in memory.
+    this.track(this.persistence?.expire(cutoff));
+    return n;
+  }
+
+  /**
+   * Boot: puts the kept misses back on their owners' lists (CONTRACT.md,
+   * "Durable misses"). A miss already listed (seen again before the restore
+   * finished) keeps its count and the earlier `firstSeen`. Never rejects; a
+   * failed restore leaves memory as it is.
+   */
+  async restoreMisses(isRecorded: (key: string) => boolean): Promise<number> {
+    if (!this.persistence) return 0;
+    const kept = await this.persistence.restore(this.now(), isRecorded);
+    let n = 0;
+    for (const { owner, miss } of kept) {
+      const map = owner === null ? this.anonMisses : "ns" in owner ? this.get(owner.ns).misses : this.prefixList(owner.prefix);
+      const prev = map.get(miss.key);
+      if (prev) {
+        if (miss.firstSeen < prev.firstSeen) prev.firstSeen = miss.firstSeen;
+        continue;
+      }
+      if (map.size >= MAX_MISSES_PER_NAMESPACE) continue;
+      map.set(miss.key, { ...miss });
+      n += 1;
+    }
+    return n;
   }
 
   /**

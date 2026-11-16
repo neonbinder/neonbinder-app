@@ -13,10 +13,11 @@ import { ConfigError, readConfig } from "./config";
 import { log } from "./log";
 import { SANITISE_ALLOWLIST_VERSION } from "./sanitise";
 import { StateStore } from "./state";
+import { DurableMisses } from "./missStore";
 import { GcsStore } from "./store/gcs";
 import * as identityModule from "./identity";
 import { LocalDirStore, MemoryStore } from "./store/local";
-import type { ObjectStore } from "./store/types";
+import type { MissObjectStore, ObjectStore } from "./store/types";
 
 /**
  * The identity module (CONTRACT.md, "Identity"), checked at boot so a
@@ -39,7 +40,7 @@ async function main(): Promise<void> {
     throw new ConfigError("the fake never runs with ENVIRONMENT=prod");
   }
   const config = readConfig(env);
-  const store: ObjectStore =
+  const store: ObjectStore & MissObjectStore =
     config.store.kind === "gcs"
       ? new GcsStore(config.store.bucket)
       : config.store.kind === "local"
@@ -59,16 +60,24 @@ async function main(): Promise<void> {
   let loading = true;
   let markLoaded: () => void = () => undefined;
   const loadDone = new Promise<void>((r) => (markLoaded = r));
+  // Durable misses restore after the recordings (CONTRACT.md, "Durable
+  // misses"), on their own promise: only the miss list waits for them.
+  let missesLoading = true;
+  let markMissesLoaded: () => void = () => undefined;
+  const missesDone = new Promise<void>((r) => (markMissesLoaded = r));
+  const state = new StateStore(Date.now, new DurableMisses(store));
   const app = createApp({
     config,
     catalogue,
     captures,
-    state: new StateStore(),
+    state,
     identity,
     verifyIdToken: googleIdTokenVerifier(),
     instanceId,
     loading: () => loading,
     loaded: loadDone,
+    missesLoading: () => missesLoading,
+    missesLoaded: missesDone,
   });
 
   await new Promise<void>((resolve) => {
@@ -93,6 +102,17 @@ async function main(): Promise<void> {
 
   loading = false;
   markLoaded();
+  const missesStarted = Date.now();
+  state
+    .restoreMisses((key) => catalogue.get(key) !== undefined)
+    .then(
+      (restored) => log("misses_restore_done", { restored, ms: Date.now() - missesStarted }),
+      (err: unknown) => log("misses_restore_failed", { error: err instanceof Error ? err.name : "unknown", ms: Date.now() - missesStarted }),
+    )
+    .finally(() => {
+      missesLoading = false;
+      markMissesLoaded();
+    });
   log("boot", {
     instanceId,
     revision: config.revision,

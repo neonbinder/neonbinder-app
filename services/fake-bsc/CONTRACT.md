@@ -24,7 +24,8 @@ first, then in code.
 2. The caller secret in the header `x-nb-fake-bsc-key` on every request
    (env `FAKE_BSC_CALLER_KEY` on the fake).
 3. Admin endpoints (`/__fake/recordings`, `/__fake/drift-compare`,
-   `/__fake/write-captures`, `/__fake/reset-all`) also need
+   `/__fake/write-captures`, `/__fake/reset-all`, and `GET
+   /__fake/misses?all=1`, every owner's misses at once) also need
    `x-nb-fake-bsc-admin-key` (env `FAKE_BSC_ADMIN_KEY`) AND a caller identity
    on `FAKE_BSC_ADMIN_CALLERS` (the loader SA and the dev deployer).
    Run-scoped endpoints (`/__fake/reset`, `/__fake/faults`, `/__fake/orders`)
@@ -59,8 +60,8 @@ first, then in code.
   orders, faults and `needs-model` misses. It keeps catalogue misses: they are
   the recorder's to-do list, change no answer, and leave only when their
   recording is stored (`POST /__fake/recordings`), on `/__fake/reset-all`,
-  past the list caps, or when the instance restarts (accepted: the list is in
-  memory only; the specs list them again). It never drops the
+  past the list caps, or 30 days after they were first seen. Most survive a
+  restart too (see "Durable misses"). It never drops the
   namespace's tokens or sessions. The E2E seed reuses a stored BSC session that is still renewable
   rather than signing in again, and both resets run just before that seed
   (Convex `testing.resetMyTestState` per user, `e2e-baseline.sh reset` per
@@ -109,7 +110,7 @@ first, then in code.
 |---|---|
 | POST `search/bulk-upload/filters`, POST `search/bulk-upload/results`, GET `marketplace/card/:id/card-listing` | Recorded (field allowlist) |
 | GET `marketplace/user/profile` | Synthesised per namespace |
-| POST `seller/bulk-upload/results` | Synthesised from the recorded catalogue results for the same filters, overlaid with the namespace's listings |
+| POST `seller/bulk-upload/results` | Synthesised from the recorded catalogue results for the same filters, overlaid with the namespace's listings; answered as `{results: [...rows]}`, the form real BSC sends (see "The seller sheet") |
 | PUT `seller/bulk-upload`, POST attachment | Synthesised from state; response shapes come from write captures |
 | POST `seller/order/history`, GET `seller/order/:id` | Synthesised; empty plus orders injected with `/__fake/orders` |
 | Identity endpoints | Synthesised (PKCE S256, lenient refresh rotation, SSO cookie; stateless tokens) |
@@ -123,6 +124,82 @@ first, then in code.
 - An unrecorded request answers 501 with header `x-nb-fake: unrecorded` and is
   added to the namespace's miss list. Never forwarded anywhere. It stays
   listed until its recording is stored (see the reset above).
+
+### The seller sheet (`POST seller/bulk-upload/results`)
+
+Real BSC answers `{results: [...]}` (the daily drift probe, 2026-11). The fake
+answers the same, so every spec exercises the branch production takes in
+`readBscSellerSheet` (`apps/web/convex/adapters/bscSeller.ts`, which still
+also reads a bare array).
+
+- Every row: `productId`, `productType`, `cardId`, `price` (a dollar string),
+  `condition`, `availableQuantity`, `active`, `sellerId`, `updatedTimestamp`,
+  `card` (`id`, `cardNo`, and the recorded card fields).
+- A blank row (no listing for that card and condition, and every row of a
+  `""`/`"all"` read) has **no** `sellerSku`, `sellerImgFront` or
+  `sellerImgBack` key at all: the probe of an account with no listings shows
+  them absent, not null.
+- A listed row carries all three: `sellerSku` as the PUT stored it, and the
+  stored image paths or BSC's default-image strings (`/Images/DefaultFront.gif`,
+  `/Images/DefaultBack.gif`) when the listing has no photo, as the PUT write
+  capture shows.
+- NB narrows absent, null and `Default…` the same (`bscSheetPlan.ts`
+  `narrowBscSheetRow`, `rowNeedsSellerPhoto`; `listingDrain.ts`), so dropping
+  the keys changes no NB behaviour. The probe's read-path list
+  (`READ_PATHS` in `src/drift.ts`, `SHAPE_PATHS` in services/browser) is
+  unchanged: no browser-service change and no contract bump.
+
+### Durable misses
+
+Catalogue misses are the recorder's to-do list, and the fake scales to zero,
+so the ones the recorder could replay are also kept in the recordings bucket.
+
+- **What is kept:** only a `catalogue` miss whose request passes the
+  recorder's replay allowlist (`src/replayAllowlist.ts`, re-exported by
+  `recorder/replay-allowlist.ts`: facet slugs or a hex card id, at most 4 KB).
+  `needs-model` misses and refused requests stay in memory only.
+- **Object:** one per (owner, request key):
+  `misses/v<allowlistVersion>/ns/<ns>/<key>.json`,
+  `misses/v<allowlistVersion>/prefix/<prefix>/<key>.json` or
+  `misses/v<allowlistVersion>/anon/<key>.json`, holding `{schema: 1,
+  allowlistVersion, owner: {ns}|{prefix}|null, key, endpoint, method, path,
+  request: {method, path, query, body}, firstSeen}`. No count, no near miss,
+  no header, nothing else from the request.
+- **Write once:** the first miss of a key for an owner creates its object
+  (create-only precondition); repeats change only the in-memory count. The
+  write is awaited inside the 501 (Cloud Run throttles CPU outside a
+  request), bounded at 2 s; a failed or slow write is logged
+  (`miss_persist_failed`, with the error class and timing only) and the
+  answer is still the 501, never a 5xx.
+- **Bounds:** 30 days from `firstSeen` (memory and bucket); 2,000 objects in
+  all (past it, the oldest object is removed, and that miss stays listed in
+  memory until a restart); the existing 500 per owner (an evicted miss's
+  object is removed too).
+- **Removal:** when a recording for the key is stored (every owner's object),
+  on `/__fake/reset-all` (every object under `misses/`), at the TTL, on
+  per-owner eviction, and at boot for any object under another allowlist
+  version or one that fails validation. `/__fake/reset` keeps them, as it
+  keeps the in-memory catalogue misses. Namespace eviction (past 2,000
+  namespaces) drops only the in-memory list; the objects come back at the
+  next boot.
+- **Generation-specific deletes:** the bucket is versioned, and a plain delete
+  would leave a noncurrent version the lifecycle rule never reaps, so every
+  delete names the object's generation. No Terraform change, no new spend.
+- **Boot:** after the recordings and write captures load, misses are restored
+  on their own promise (expired and invalid objects are deleted as they are
+  read). `/api` is not held for it; `GET /__fake/misses` is held until both
+  loads finish (same 25 s cap, then 503 `x-nb-fake: loading`). The two admin
+  writes that remove misses in bulk, `POST /__fake/recordings` and `POST
+  /__fake/reset-all`, are held the same way (after the admin check) until the
+  restore is done: run during it, the restore would put back a miss they had
+  just removed (one it read before the recording was stored, or before
+  reset-all deleted its object). A failed
+  restore is logged (`misses_restore_failed`) and the fake carries on with
+  what it has. A restored miss has `count: 1` and `lastSeen = firstSeen`.
+- **Every owner at once:** `GET /__fake/misses?all=1` (admin, 403 without the
+  admin key and an admin caller) lists every namespace's, prefix's and
+  anonymous miss, so a later session needs no slug of a preview that is gone.
+  Any other `all` value is a 400.
 
 ## Faults
 
@@ -151,7 +228,7 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
   catalogue endpoints are fetched; anything else is listed as "needs a fake
   model".
 - The miss list is written by any caller-key holder, so before anything is
-  sent each miss passes a request-side allowlist (`recorder/replay-allowlist.ts`):
+  sent each miss passes a request-side allowlist (`src/replayAllowlist.ts`):
   filters `{filters}` and results `{filters, condition?, page?, size?, sort?}`
   only, `filters` holding only `sport|year|setName|variant|variantName` as
   1-50 slugs (`^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$`), `condition` `"all"`,
@@ -160,6 +237,9 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
   never sent and is reported by reason, endpoint and key prefix, never value.
 - Anonymous misses (no namespace and no prefix) are left alone unless
   `--include-anon`.
+- `--all` in place of `--prefix` reads every owner's misses through the
+  admin-only `GET /__fake/misses?all=1`, for a session whose preview is gone.
+  The same allowlist, `--include-anon` rule and typed confirmation apply.
 - Before any credential is read or BSC contacted, it prints every request it
   will send (endpoint and facet slugs, or the hex card id) and needs the word
   `yes` typed on the terminal, or `--yes`. Only those keys are confirmed: a
@@ -501,13 +581,17 @@ host itself. It never bundles or copies the browser source.
 - Cold start: the server listens before it loads the recordings and write
   captures from the store (`/__fake/health` `loading: true` until they are in).
   Meanwhile `/api/*` and `GET /__fake/misses` are HELD, after auth, until the
-  load finishes, and then answered normally: a 503 on `/api` would count
+  load finishes (the miss list also waits for the durable misses to be
+  restored), and then answered normally: a 503 on `/api` would count
   against Convex's BSC call gate, and recording loads take seconds. Only a
   hold past 25 s answers 503 with `x-nb-fake: loading` and `Retry-After: 2`.
   The admin uploads that read the loaded state (`/__fake/recordings`,
-  `/__fake/write-captures`, `/__fake/drift-compare`) answer that 503 at once.
-  `/__fake/reset`, `/__fake/reset-all`, `/__fake/faults`, `/__fake/orders`
-  and the identity endpoints work at once. A load failure exits the process.
+  `/__fake/write-captures`, `/__fake/drift-compare`) answer that 503 at once;
+  after the load, `/__fake/recordings` is held until the durable misses are
+  restored, and `/__fake/reset-all` is held from boot until then ("Durable
+  misses", the same 25 s cap).
+  `/__fake/reset`, `/__fake/faults`, `/__fake/orders` and the identity
+  endpoints work at once. A load failure exits the process.
 - `FAKE_BSC_LOCAL_DEV_BYPASS=1` skips the ID-token check only (keys are
   still required); the server refuses to boot with it when `K_SERVICE` is set.
 - `/__fake/health` needs the ID token and caller key like the rest (Cloud Run's
@@ -528,6 +612,8 @@ host itself. It never bundles or copies the browser source.
 - `recordings/v<allowlistVersion>/<key>.json`: `{key, allowlistVersion,
   request:{method,path,query,body}, response:{status, body}, recordedAt}`.
 - `write-captures/<endpoint slug>.json`: the latest capture per write endpoint.
+- `misses/v<allowlistVersion>/{ns/<ns>|prefix/<prefix>|anon}/<key>.json`:
+  durable catalogue misses (see "Durable misses"), deleted by generation.
 - Recordings of another allowlist version, or whose key does not recompute,
   are skipped at boot and logged as a count.
 
@@ -614,6 +700,11 @@ Built in `services/browser/src/routes/bsc-probe.ts`.
   wrapped form is unwrapped (`results` → root, `results[]…` → `[]…`) before
   it is compared, so either form is `ok` and drift paths are named in the
   bare form. An object root without a `results` array is drift.
+- The sheet's served shape has two parts. Paths every row carries (a blank
+  row's) are required: missing from the probe while their parent is present
+  is drift. Paths only a listed row carries (`[].sellerSku`,
+  `[].sellerImgFront`, `[].sellerImgBack`) are type-checked when the probe
+  has them and never required, since the probe account lists nothing.
 
 ### Fake service environment (set by Terraform)
 
