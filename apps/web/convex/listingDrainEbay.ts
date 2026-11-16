@@ -1113,7 +1113,25 @@ async function syncEbayVariant(
       });
       continue;
     }
-    const text = ebayListingText(f);
+    const said = ebayListingText(f);
+    if (!said.ok) {
+      // NEO-535: never cut a title to fit (a cut would chop the print run).
+      // The card is held back as NB's own hold, `titleTooLong`, never as an
+      // eBay refusal; the web says why. It keeps any live listing as it is
+      // (it is still a target).
+      console.log(
+        JSON.stringify({
+          msg: "ebay_title_over_limit",
+          platform: "ebay",
+          operation: "plan",
+          cardId: t.cardId,
+          titleLength: said.titleLength,
+        }),
+      );
+      addHold({ cardId: t.cardId, reason: "titleTooLong", conditionCode: t.conditionCode });
+      continue;
+    }
+    const text = said.text;
     const priceCents = t.priceCents as number;
     const slot = fulfillmentSlotFor(priceCents);
     const fulfillmentPolicyId = slot === "twentyPlus" ? settings.fulfillmentPolicy20PlusId : settings.fulfillmentPolicyUnder20Id;

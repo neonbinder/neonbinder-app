@@ -114,7 +114,19 @@ import {
   copyFeaturesForParallel,
   insertCardRow,
   type CardRowSetContext,
+  type NewCardRow,
 } from "./cardRowCreate";
+import { assessNewCardListing } from "./features/listingInputs";
+import {
+  assessParallelCopyTitle,
+  carriedTitleRest,
+  storedTitleFails,
+  type ParallelCopyTitle,
+} from "./features/carriedTitle";
+import {
+  listingInputsForStoredCard,
+  newStoredCardReadCache,
+} from "./storedCardTitle";
 import { effectiveCardPlayerDefaults, newSelectorRowCache } from "./cardPlayersBulk";
 import { defaultTeamOnCardIds, inheritedTeamIds } from "./lib/selectorTeams";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
@@ -1605,8 +1617,8 @@ const copyLinkValidator = v.object({
 });
 
 /** Set-level values for the parallel's new rows, resolved once per page. */
-async function parallelSetContext(
-  ctx: { db: MutationCtx["db"] },
+export async function parallelSetContext(
+  ctx: { db: QueryCtx["db"] },
   parallel: Doc<"selectorOptions">,
 ): Promise<CardRowSetContext> {
   const { rows } = await loadChain(ctx, parallel._id);
@@ -1720,6 +1732,13 @@ export const insertParallelCardsPage = internalMutation({
      * its source no longer resolves as the action linked it (audit S1).
      */
     changed: v.boolean(),
+    /**
+     * NEO-535 — copies born with a title that still fails (over 80 after every
+     * cut, or short a first name, and no hand edit on the source to carry):
+     * the Card titles dialog's count. Optional so a page answered across a
+     * deploy still validates.
+     */
+    titlesToFix: v.optional(v.number()),
   }),
   handler: async (ctx, args) => {
     // NEO-321 (security audit S1) — by the time a page runs, the parallel's
@@ -1782,8 +1801,13 @@ export const insertParallelCardsPage = internalMutation({
     const newIdOf = new Map<string, Id<"cardChecklist">>();
     for (const { from, to } of args.remap) newIdOf.set(from, to);
 
-    const playerName = new Map<string, string | null>();
-    const teamName = new Map<string, string | null>();
+    // NEO-535 — one lookup cache for the page: the copies' names below, and
+    // the source cards' stored inputs when a copy's title needs the source's
+    // hand edit (`listingInputsForStoredCard` reads the same maps the same
+    // way, so a name is read once per page whichever asks first).
+    const lookup = newStoredCardReadCache();
+    const playerName = lookup.players;
+    const teamName = lookup.teams;
     const namesOf = async <T extends "players" | "teams">(
       ids: Array<Id<T>> | undefined,
       cache: Map<string, string | null>,
@@ -1828,6 +1852,7 @@ export const insertParallelCardsPage = internalMutation({
     let missing = 0;
     let skippedChangedSource = 0;
     let processed = 0;
+    let titlesToFix = 0;
     // NEO-528 round 3 — writes so far; see `INSERT_PAGE_WRITE_BUDGET`.
     let writes = 0;
     // NEO-358 — every copy adds to the parallel's counts; flushed once below.
@@ -1908,60 +1933,101 @@ export const insertParallelCardsPage = internalMutation({
       const teamOnCardIds = teamDefault.defaulted ? teamDefault.ids : source.teamOnCardIds;
       const teamNames = teamDefault.defaulted ? parallelTeamNames : sourceTeamNames;
 
+      const card: NewCardRow = {
+        selectorOptionId: args.parallelId,
+        cardNumber: source.cardNumber,
+        cardName: source.cardName,
+        // NEO-254 — the pair, together (the source's, or the parallel's
+        // default player on a copy that had none).
+        playerIds: born.playerIds,
+        playerLinks: born.playerLinks,
+        cameos: born.cameos,
+        teamOnCardIds,
+        attributes: source.attributes,
+        isRookie: source.isRookie,
+        isRelic: source.isRelic,
+        printRun: copy.printRun,
+        cardVariation: source.cardVariation,
+        // A legacy row may still carry it; observed only, never stored.
+        autographType: source.autographType,
+        platformData: toStored({
+          ...(copy.bsc ? { bsc: copy.bsc } : {}),
+          ...(copy.sportlots ? { sportlots: copy.sportlots } : {}),
+        }),
+        pendingPlayerNames: source.pendingPlayerNames ?? [],
+        // NEO-528 round 3 — the copy comes from the same listing, so it
+        // carries the claim forward (a parallel of this parallel holds the
+        // default back too).
+        ...(source.listingNamedPlayer === true ? { listingNamedPlayer: true as const } : {}),
+        pendingTeamNames: source.pendingTeamNames ?? [],
+        sortOrder: source.sortOrder,
+        playerNames: born.playerNames,
+        teamNames,
+        // Hobby A4 — the insert card's own facts (an autograph, Signed By,
+        // a short print) survive; the parallel's snapshot wins on what the
+        // parallel IS.
+        baseFeatures: copyFeaturesForParallel({
+          insertSnapshot: sourceRow.features,
+          parallelSnapshot,
+          insertCardFeatures: source.features,
+        }),
+        // NEO-321 — the copy is a card OF this parallel: its parallelName
+        // (and so its listing title) is the parallel row's own NB name.
+        parallelName: parallel.value,
+        ...(copy.keepSku ? { keepSku: copy.keepSku } : {}),
+        carried: {
+          teamCheckDoneAt: source.teamCheckDoneAt,
+          // NEO-345 — the stamp's reason travels with the stamp.
+          teamCheckOutcome: source.teamCheckOutcome,
+          bscTeamName: source.bscTeamName,
+          teamNoneConfirmedAt: source.teamNoneConfirmedAt,
+          teamNoneConfirmedByUserId: source.teamNoneConfirmedByUserId,
+          ...variation,
+        },
+      };
+
+      // NEO-535 — the copy's title, in Jason's order (features/carriedTitle):
+      // the builder's own for the parallel card; else the source's hand edit,
+      // re-headed; else the builder's flagged result, counted for the Card
+      // titles dialog. The assessment is the one `insertCardRow` makes from
+      // the same card and set, so "fits" here is "fits" there. The source's
+      // stored inputs are read only for a copy that fails.
+      // NEO-528 — the names the copy is born with (its default player and
+      // its cameos included), the ones `insertCardRow` titles it from.
+      const { inputs, assessment } = assessNewCardListing(card, set, {
+        playerNames: card.playerNames,
+        teamNames: card.teamNames,
+        cameoNames: born.cameos.map((c) => c.name),
+      });
+      let outcome: ParallelCopyTitle | undefined =
+        assessment.fits && !assessment.firstNameLost
+          ? { ...assessment, failing: false }
+          : undefined;
+      if (outcome === undefined) {
+        const { inputs: sourceInputs } = await listingInputsForStoredCard(ctx, source, lookup);
+        outcome = assessParallelCopyTitle(
+          inputs,
+          carriedTitleRest({
+            sourceTitle: source.listingTitle,
+            sourceFlagged: storedTitleFails(source),
+            sourceInputs,
+          }),
+        );
+      }
+      if (outcome.failing) {
+        titlesToFix++;
+      } else if (outcome.carried) {
+        // The operator's own words, so never flagged (NEO-335's rule).
+        card.listingTitle = outcome.title;
+      } else if (!outcome.coreFits) {
+        // Built from the box and fits with full names: the box was the
+        // answer, so the copy is not flagged cut short.
+        card.listingTitleKept = outcome.title;
+      }
+
       const newId = await insertCardRow(
         ctx,
-        {
-          selectorOptionId: args.parallelId,
-          cardNumber: source.cardNumber,
-          cardName: source.cardName,
-          // NEO-254 — the pair, together (the source's, or the parallel's
-          // default player on a copy that had none).
-          playerIds: born.playerIds,
-          playerLinks: born.playerLinks,
-          cameos: born.cameos,
-          teamOnCardIds,
-          attributes: source.attributes,
-          isRookie: source.isRookie,
-          isRelic: source.isRelic,
-          printRun: copy.printRun,
-          cardVariation: source.cardVariation,
-          // A legacy row may still carry it; observed only, never stored.
-          autographType: source.autographType,
-          platformData: toStored({
-            ...(copy.bsc ? { bsc: copy.bsc } : {}),
-            ...(copy.sportlots ? { sportlots: copy.sportlots } : {}),
-          }),
-          pendingPlayerNames: source.pendingPlayerNames ?? [],
-          // NEO-528 round 3 — the copy comes from the same listing, so it
-          // carries the claim forward (a parallel of this parallel holds the
-          // default back too).
-          ...(source.listingNamedPlayer === true ? { listingNamedPlayer: true as const } : {}),
-          pendingTeamNames: source.pendingTeamNames ?? [],
-          sortOrder: source.sortOrder,
-          playerNames: born.playerNames,
-          teamNames,
-          // Hobby A4 — the insert card's own facts (an autograph, Signed By,
-          // a short print) survive; the parallel's snapshot wins on what the
-          // parallel IS.
-          baseFeatures: copyFeaturesForParallel({
-            insertSnapshot: sourceRow.features,
-            parallelSnapshot,
-            insertCardFeatures: source.features,
-          }),
-          // NEO-321 — the copy is a card OF this parallel: its parallelName
-          // (and so its listing title) is the parallel row's own NB name.
-          parallelName: parallel.value,
-          ...(copy.keepSku ? { keepSku: copy.keepSku } : {}),
-          carried: {
-            teamCheckDoneAt: source.teamCheckDoneAt,
-            // NEO-345 — the stamp's reason travels with the stamp.
-            teamCheckOutcome: source.teamCheckOutcome,
-            bscTeamName: source.bscTeamName,
-            teamNoneConfirmedAt: source.teamNoneConfirmedAt,
-            teamNoneConfirmedByUserId: source.teamNoneConfirmedByUserId,
-            ...variation,
-          },
-        },
+        card,
         set,
         { sport: parallelSport },
         countLedger,
@@ -1975,7 +2041,14 @@ export const insertParallelCardsPage = internalMutation({
       created.push({ from: source._id, to: newId });
     }
     await countLedger.flush(ctx);
-    return { created, missing, skippedChangedSource, processed, changed: false };
+    return {
+      created,
+      missing,
+      skippedChangedSource,
+      processed,
+      changed: false,
+      titlesToFix,
+    };
   },
 });
 
@@ -1999,6 +2072,8 @@ export type BuildParallelResult = {
   legacyLinksRemoved: SideCounts;
   skippedChangedSource: number;
   deletedCount?: number;
+  /** NEO-535 — copies whose title still fails: the Card titles dialog's count. */
+  titlesToFix?: number;
   extraOnMarketplace: {
     bsc: { count: number; cards: string[] };
     sportlots: { count: number; cards: string[] };
@@ -2113,6 +2188,13 @@ export const buildParallelChecklist = action({
     skippedChangedSource: v.number(),
     /** Old cards deleted — present on a block that fired mid-delete. */
     deletedCount: v.optional(v.number()),
+    /**
+     * NEO-535 — copies born with a title that still fails (over 80 after
+     * every cut, or short a first name, with no hand edit on the source to
+     * carry). Present on a build; the client offers the Card titles dialog
+     * when it is above zero.
+     */
+    titlesToFix: v.optional(v.number()),
     /**
      * Per fetched side: the parallel's marketplace cards no insert card
      * matched. The count is exact; `cards` names at most `MAX_LISTED_CARDS`.
@@ -2645,6 +2727,8 @@ export const buildParallelChecklist = action({
     let firstCreatedId: Id<"cardChecklist"> | undefined;
     let missing = 0;
     let changedSources = 0;
+    // NEO-535 — summed across pages: the build is paged, never one call.
+    let titlesToFix = 0;
     // NEO-321 (audit N1) — a page may stop early on its read budget; the
     // next page starts where it stopped (`processed`), never skipping a copy.
     for (let i = 0; i < copies.length; ) {
@@ -2689,6 +2773,8 @@ export const buildParallelChecklist = action({
       }
       missing += page.missing;
       changedSources += page.skippedChangedSource;
+      // A refused page (`changed`) carries no count; this one was not refused.
+      titlesToFix += "titlesToFix" in page ? (page.titlesToFix ?? 0) : 0;
       // Every page that was not `changed` consumes at least its first copy;
       // the floor keeps a misbehaving page from spinning this loop.
       i += Math.max(1, page.processed);
@@ -2720,6 +2806,7 @@ export const buildParallelChecklist = action({
       stillListedNotRelinked: final.listed,
       legacyLinksRemoved: final.legacy,
       skippedChangedSource: missing + changedSources,
+      titlesToFix,
       extraOnMarketplace,
       cards: lists,
       rebuilt: deletedTotal > 0,
@@ -2941,6 +3028,8 @@ function logBuild(
       stillListedNotRelinked: result.stillListedNotRelinked,
       legacyLinksRemoved: result.legacyLinksRemoved,
       skippedChangedSource: result.skippedChangedSource,
+      // NEO-535 — a count only, never a title.
+      ...(result.titlesToFix !== undefined ? { titlesToFix: result.titlesToFix } : {}),
       extraOnMarketplace: {
         bsc: result.extraOnMarketplace.bsc.count,
         sportlots: result.extraOnMarketplace.sportlots.count,

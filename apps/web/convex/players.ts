@@ -68,6 +68,8 @@ import {
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 import { clampSearchQuery } from "./lib/searchQueryClamp";
+// NEO-535 — a rename reaches the descriptions of the player's cards.
+import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
 // NEO-528: the also-pictured index, for the sport-removal guard.
 import { cardSecondaryPlayerLinkPage } from "./cardSecondaryPlayers";
 // NEO-463: a one-word name that is a fuller-named player's first or last name.
@@ -3830,6 +3832,17 @@ export const savePlayerFields = mutation({
     }
 
     await ctx.db.patch(args.id, patch);
+    // NEO-535 — a card's description names its players, and collector search
+    // reads it. The cards whose description is still the builder's follow the
+    // new name (a description an operator wrote is left alone); the first page
+    // here, any rest on a scheduled chain.
+    if (patch.name !== undefined && patch.name !== existing.name) {
+      await refreshDescriptionsAfterRename(
+        ctx,
+        { kind: "player", playerId: args.id, before: { name: existing.name } },
+        { inline: true },
+      );
+    }
     // NEO-313 — `playerSports.nameNormalized` is a denormalised copy, so a
     // rename rewrites it through the table's one writer (same list, so the
     // sport set is unchanged and only the stale copies are patched).

@@ -165,6 +165,53 @@ describe("previewListingTitle (NEO-101)", () => {
     });
   });
 
+  test("NEO-535: a stored card on a parallel leaf names the leaf, not the name its features inherited", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { setNameId } = await seedSubtree(t);
+    const leafId = await t.run(async (ctx) => {
+      const inserts = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Inserts",
+        platformData: {},
+        parentId: setNameId,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const anime = await ctx.db.insert("selectorOptions", {
+        level: "insert",
+        value: "Anime",
+        platformData: {},
+        parentId: inserts,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      const red = await ctx.db.insert("selectorOptions", {
+        level: "parallel",
+        value: "Anime Red Refractors",
+        platformData: {},
+        features: { manufacturer: "Topps", season: "2024", parallelName: "Base" },
+        parentId: anime,
+        children: [],
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.patch(inserts, { children: [anime] });
+      await ctx.db.patch(anime, { children: [red] });
+      return red;
+    });
+    // Committed before NEO-535: its features carry the leaf's inherited "Base".
+    const cardId = await insertCard(t, leafId, {
+      cardNumber: "BA-3",
+      pendingPlayerNames: ["Murakami"],
+      features: { season: "2024", manufacturer: "Topps", parallelName: "Base" },
+    });
+
+    const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
+    expect(preview.inputs.parallelName).toBe("Anime Red Refractors");
+    // The insert's word is said once (the parallel's leading "Anime").
+    expect(preview.title.startsWith("2024 Topps Chrome Anime Insert Red Refractors Parallel Murakami")).toBe(true);
+  });
+
   test("falls back to pendingPlayerNames when a custom card has no resolved players", async () => {
     // A hand-added card carries the names the operator TYPED until the next
     // sync reconciles them into `players` rows. Those are the operator's
@@ -212,14 +259,16 @@ describe("previewListingTitle (NEO-101)", () => {
     const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, {
       cardId,
     });
+    // NEO-535: the parallel ("Gold") is part of the description, before the
+    // number; the tail keeps its order.
     expect(preview.title).toBe(
-      "2024 Topps Chrome #300b AUTO RELIC Gold /25 Image Variation SP Baseball",
+      "2024 Topps Chrome Gold #300b AUTO RELIC /25 Image Variation SP Baseball",
     );
     expect(preview.inputs.printRun).toBe(25);
     expect(preview.inputs.cardVariation).toBe("Image Variation");
   });
 
-  test("reports coreFits: false and the dropped tokens when the row cannot fit", async () => {
+  test("reports fits: false, coreFits: false and what was left out when the row cannot fit", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const { sportId, variantTypeId } = await seedSubtree(t);
@@ -244,14 +293,16 @@ describe("previewListingTitle (NEO-101)", () => {
     const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, {
       cardId,
     });
+    // NEO-535, end to end: every cut is made (number, first name, RC, AUTO),
+    // the surname part is never cut, and the title STOPs over the cap.
     expect(preview.coreFits).toBe(false);
-    // "skip, don't stop", end to end: the 5-character " AUTO" did not fit, the
-    // 3-character " RC" behind it did, and the result lands exactly on the cap.
-    expect(preview.dropped).toEqual(["AUTO", "Rookie", "Baseball"]);
+    expect(preview.fits).toBe(false);
+    expect(preview.firstNameLost).toBe(true);
+    expect(preview.dropped).toEqual(["#99999", "An", "RC", "AUTO"]);
     expect(preview.title).toBe(
-      "2024 Topps Chrome An Absurdly Long Player Full Name That Alone Exceeds #99999 RC",
+      "2024 Topps Chrome Absurdly Long Player Full Name That Alone Exceeds The Entire Title Budget",
     );
-    expect(preview.title.length).toBe(80);
+    expect(preview.title.length).toBeGreaterThan(80);
     expect(preview.title).not.toContain("…");
   });
 
@@ -305,7 +356,14 @@ describe("previewListingTitle (NEO-101)", () => {
     );
     expect(widePreview.inputs.playerNames).toHaveLength(MAX_CARD_PLAYERS);
     expect(widePreview.inputs.playerNames[0]).toBe("Player 00");
-    expect(widePreview.title.length).toBeLessThanOrEqual(80);
+    // Twenty players lose every first name ("Player") and the title still
+    // STOPs over the cap (NEO-535): each surname part stays, none is sliced.
+    expect(widePreview.fits).toBe(false);
+    expect(widePreview.title.length).toBeGreaterThan(80);
+    for (let i = 0; i < MAX_CARD_PLAYERS; i++) {
+      expect(widePreview.title).toContain(String(i).padStart(2, "0"));
+    }
+    expect(widePreview.title).not.toContain("Player");
   });
 
   test("resolves team names from teamOnCardIds, deduped and bounded", async () => {

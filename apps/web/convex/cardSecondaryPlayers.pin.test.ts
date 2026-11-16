@@ -136,9 +136,14 @@ describe("NEO-528: only cardSecondaryPlayers.ts writes the cameo list and its in
     // The parallel build hands each copy's cameos (its source's, then the
     // parallel's defaults) to that insert.
     const parallel = read("parallelChecklistBuild.ts");
+    // NEO-535: the copy's row is built first (its title is assessed from it)
+    // and that same object is what `insertCardRow` is handed.
+    const cardAt = parallel.indexOf("const card: NewCardRow = {");
+    expect(cardAt).toBeGreaterThan(0);
+    expect(parallel.slice(cardAt, cardAt + 1500)).toContain("cameos: born.cameos,");
     const insertAt = parallel.indexOf("const newId = await insertCardRow(");
-    expect(insertAt).toBeGreaterThan(0);
-    expect(parallel.slice(insertAt, insertAt + 1500)).toContain("cameos: born.cameos,");
+    expect(insertAt).toBeGreaterThan(cardAt);
+    expect(parallel.slice(insertAt, insertAt + 200)).toMatch(/insertCardRow\(\s*ctx,\s*card,/);
     expect(parallel).not.toMatch(/setCardSecondaryPlayers\(/);
 
     // The commit chunk's insert branch does too.
@@ -197,23 +202,32 @@ describe("NEO-528: the cameo list stays out of everything that reads a card's ow
         "parallelChecklistBuild.ts",
         "schema.ts",
         "selectorOptions.ts",
+        // NEO-528 + NEO-535 merge (Jason): a stored card's title and
+        // description name its cameos, read here once for every title and
+        // description path (Regenerate, the refresh, the backfill).
+        "storedCardTitle.ts",
       ].sort(),
     );
   });
 
-  test("the listing TITLE never sees a cameo; only the description names them, from names it is handed", () => {
-    // The title helpers never mention the field, so no title can be built
-    // from it (the allowlist above already keeps them out; this says why).
-    for (const name of ["storedCardTitle.ts", "features/generateListing.ts", "features/listingInputs.ts"]) {
+  test("the listing title names cameos only through its own input, and drops them first", () => {
+    // Jason (NEO-528 + NEO-535 merge): "secondary names should be dropped
+    // before we drop anything else with meaning". The title reads cameos from
+    // one input (`cameoNames`), never the card's field, and cuts them right
+    // after the no-loss cuts (repeats and labels), before the sport.
+    for (const name of ["features/generateListing.ts", "features/listingInputs.ts"]) {
       expect(read(name), name).not.toMatch(/secondaryPlayerIds/);
     }
-    // The generator takes cameos as a separate argument of the DESCRIPTION
-    // only; the title's inputs have no cameo field.
     const gen = read("features/generateListing.ts");
     const inputsType = gen.slice(gen.indexOf("export type ListingCardInputs"), gen.indexOf("\n};", gen.indexOf("export type ListingCardInputs")));
-    expect(inputsType).not.toMatch(/cameo/i);
-    const titleFn = gen.slice(gen.indexOf("export function assessListingTitle"), gen.indexOf("export function generateListingTitle"));
-    expect(titleFn).not.toMatch(/cameo/i);
+    expect(inputsType).toMatch(/cameoNames\?: string\[\];/);
+    const plan = gen.slice(gen.indexOf("function planCuts("), gen.indexOf("const LAST_FIRST"));
+    const parallelLabel = plan.indexOf("state.parallelLabelIn = false");
+    const cameoCut = plan.indexOf("cameo.in = false");
+    const sportCut = plan.indexOf('tokens("sport")');
+    expect(parallelLabel).toBeGreaterThan(0);
+    expect(cameoCut).toBeGreaterThan(parallelLabel);
+    expect(sportCut).toBeGreaterThan(cameoCut);
     expect(gen).toMatch(/export function generateListingDescription\(\s*inputs: ListingCardInputs,\s*extras: \{ cameoNames\?/);
   });
 

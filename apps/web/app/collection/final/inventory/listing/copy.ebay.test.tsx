@@ -41,6 +41,32 @@ describe("listing copy, per platform (NEO-415)", () => {
     expect(problemCopyReadOnly("ebay").noPhoto).toContain("eBay listings need one");
   });
 
+  it("NEO-535: titleTooLong is NB's hold, said as NB's 80-character limit, never pinned on eBay; the collector's line says it's on us", () => {
+    const line =
+      "Its title is over the 80-character limit for listings, and we won't chop it. Once we shorten it on our end, it goes up on the next sync.";
+    expect(problemCopy("ebay").titleTooLong).toBe(line);
+    expect(problemSentence({ reason: "titleTooLong" }, false, "ebay")).toBe(line);
+    // A stray detail never changes it.
+    expect(problemSentence({ reason: "titleTooLong", detail: "x" }, false, "ebay")).toBe(line);
+    expect(problemCopyReadOnly("ebay").titleTooLong).toBe(
+      "Its title is over the 80-character limit for listings, so it's held back until it's shortened in the set builder.",
+    );
+    for (const sentence of [problemCopy("ebay").titleTooLong, problemCopyReadOnly("ebay").titleTooLong]) {
+      expect(sentence).not.toMatch(/turned this one down/);
+      // The hold is NB's: the sentence never attributes it to the marketplace.
+      expect(sentence).not.toMatch(/eBay/);
+      // A title edit re-queues the card itself (listingTitleRequeue), so nobody is told to press Sync.
+      expect(sentence).not.toMatch(/press Sync/i);
+    }
+    // NEO-536: only the crew can shorten a title, so the collector is never sent to a set builder they can't open.
+    expect(problemCopy("ebay").titleTooLong).not.toMatch(/set builder/i);
+    expect(problemCopy("bsc").titleTooLong).not.toMatch(/set builder/i);
+    // eBay's 80 is never claimed for another platform.
+    for (const sentence of [problemCopy("bsc").titleTooLong, problemCopyReadOnly("bsc").titleTooLong]) {
+      expect(sentence).not.toMatch(/80/);
+    }
+  });
+
   it("missingAspect names the detail the server gave, and says eBay", () => {
     expect(problemSentence({ reason: "missingAspect", detail: "Team, Set" }, false, "ebay")).toBe(
       "eBay wants this card's Team, Set, and we don't have it yet, so it's held back.",

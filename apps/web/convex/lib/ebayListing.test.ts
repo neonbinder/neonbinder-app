@@ -4,6 +4,7 @@ import {
   EBAY_ASPECT_VALUE_MAX,
   EBAY_DESCRIPTOR_VALUE,
   EBAY_DEFAULT_CARD_WEIGHT_OZ,
+  EBAY_DESCRIPTION_MAX,
   EBAY_ENVELOPE_PACKAGE,
   EBAY_ESE_CARRIER,
   EBAY_ESE_SERVICE_CODE,
@@ -573,10 +574,37 @@ describe("money helpers (NEO-415)", () => {
     expect(ebayValueToCents(12)).toBeNull();
   });
 
-  test("ebayListingText caps the title at 80 and falls back to the title for a blank description", () => {
-    const out = ebayListingText({ listingTitle: ` ${"t".repeat(100)} `, listingDescription: "  " });
-    expect(out.title).toHaveLength(80);
-    expect(out.description).toBe(out.title);
+  test("ebayListingText sends the trimmed title and falls back to the title for a blank description", () => {
+    expect(ebayListingText({ listingTitle: "  2021 Topps #1 Mike Trout  ", listingDescription: "  " })).toEqual({
+      ok: true,
+      text: { title: "2021 Topps #1 Mike Trout", description: "2021 Topps #1 Mike Trout" },
+    });
+    expect(ebayListingText({ listingTitle: "T", listingDescription: " Desc " })).toEqual({
+      ok: true,
+      text: { title: "T", description: "Desc" },
+    });
+  });
+
+  test("NEO-535: a title of exactly 80 characters (after trimming) goes as it is", () => {
+    const title = `2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver Aiva Arquette /5`;
+    expect(title).toHaveLength(80);
+    const out = ebayListingText({ listingTitle: `  ${title}  ` });
+    expect(out).toEqual({ ok: true, text: { title, description: title } });
+  });
+
+  test("NEO-535: a title over 80 is refused, never cut (the print run at its end survives)", () => {
+    // Worked example 5 from the plan: 88 characters after every cut, stored flagged.
+    const title = "2024 Topps Chrome Update All-Star Game Dual Autographs Gold Refractor Ohtani & Trout /50";
+    expect(title.length).toBeGreaterThan(80);
+    expect(ebayListingText({ listingTitle: title })).toEqual({ ok: false, reason: "titleTooLong", titleLength: title.length });
+    expect(ebayListingText({ listingTitle: `${"t".repeat(80)}1` })).toEqual({ ok: false, reason: "titleTooLong", titleLength: 81 });
+    // Surrounding spaces are not counted.
+    expect(ebayListingText({ listingTitle: ` ${"t".repeat(80)} ` })).toMatchObject({ ok: true });
+  });
+
+  test("the description is still capped to eBay's limit", () => {
+    const out = ebayListingText({ listingTitle: "T", listingDescription: "d".repeat(EBAY_DESCRIPTION_MAX + 10) });
+    expect(out.ok && out.text.description).toHaveLength(EBAY_DESCRIPTION_MAX);
   });
 
   test("contentFingerprint ignores key order and changes with content", () => {

@@ -1,9 +1,11 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import { Input } from "../primitives/Input";
+import { Textarea } from "../primitives/Textarea";
 import NeonButton from "../modules/NeonButton";
+import { ConfirmDialog } from "../modules/confirm-dialog";
 import { attentionItemLabel } from "./card-attention";
 import {
   ASPECT_VALUE_MAX,
@@ -14,6 +16,11 @@ import {
   titleLengthState,
 } from "./TitleLengthMeter";
 import { useTitlePreview } from "./useTitlePreview";
+import { oneLine } from "./card-titles";
+import {
+  goToSetNameInTitles,
+  useSetNameInTitlesReachable,
+} from "./set-name-in-titles-jump";
 import type { AttentionFixerProps } from "./cardAttentionRegistry";
 
 /**
@@ -65,6 +72,22 @@ import type { AttentionFixerProps } from "./cardAttentionRegistry";
  * pattern failure class this codebase has hit and fixed several times
  * (NEO-152, NEO-189, NEO-102's own Fixer siblings).
  */
+/** NEO-535 copy, in the NB voice. */
+export const TOO_LONG = "Too long to list as-is. Trim it here, or shorten the set name for the whole row.";
+/** Said when the title drops back under the cap. */
+export const FITS_NOW = "Fits now. Enter saves it.";
+const SET_NAME_HOGGING = "Set name hogging it?";
+export const TRIM_SET_NAME = "Trim Set name in titles";
+/** "Trim Set name in titles" with a typed title that can't be saved first. */
+export const TOSS_TYPED_TITLE = "Toss what you typed?";
+const TOSS_TYPED_DESCRIPTION =
+  "The title's still too long to save, so your typing won't come along. This card keeps what it has now.";
+export const TOSS_TYPED_CONFIRM = "Toss it and go";
+const TOSS_TYPED_BUSY = "Heading over…";
+
+/** Over the cap, the way the meter and the save guard both count it. */
+const overCap = (text: string) => titleLengthState(text.length, LISTING_TITLE_MAX, true).over;
+
 export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps) {
   const updateCard = useMutation(api.selectorOptions.updateCard);
 
@@ -72,19 +95,46 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
   const [variation, setVariation] = useState(row.cardVariation ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const titleRef = useRef<HTMLInputElement>(null);
+  const titleRef = useRef<HTMLTextAreaElement>(null);
   const uid = useId();
   const titleAlertId = `${uid}-title-limit`;
+  const saveHintId = `${uid}-save-hint`;
   const variationAlertId = `${uid}-variation-limit`;
 
-  const preview = useTitlePreview(row._id, setTitle);
+  // a11y (NEO-535) — the over-cap line is always mounted. It speaks politely
+  // when a card arrives over the cap (the field's description reads it too),
+  // as an alert only when the operator's own keystroke takes the title over,
+  // and politely again ("Fits now.") when the title drops back under.
+  const [overByKeystroke, setOverByKeystroke] = useState(false);
+  const [fitsNow, setFitsNow] = useState(false);
+  const latestTitle = useRef(title);
+  const changeTitle = useCallback((next: string, byKeystroke: boolean) => {
+    const wasOver = overCap(latestTitle.current);
+    const nowOver = overCap(next);
+    latestTitle.current = next;
+    if (nowOver && !wasOver) setOverByKeystroke(byKeystroke);
+    if (nowOver) setFitsNow(false);
+    else if (wasOver) setFitsNow(true);
+    setTitle(next);
+  }, []);
+  const applyGenerated = useCallback((next: string) => changeTitle(next, false), [changeTitle]);
+  const [confirmingTrim, setConfirmingTrim] = useState(false);
+
+  const preview = useTitlePreview(row._id, applyGenerated);
 
   // Only the fields the card was actually flagged for get edited — and written.
   const fixesVariation = items.some((i) => i.kind === "aspectValueOverLimit");
-  const wasTruncated = items.some((i) => i.kind === "titleTruncated");
+  // NEO-535 — an over-cap title is also flagged "cut short" when it was built
+  // from the box; "cut short" beside "too long" contradicts itself, so the
+  // longer problem speaks for both.
+  const isOverLimit = items.some((i) => i.kind === "titleOverLimit");
+  const reasons = isOverLimit ? items.filter((i) => i.kind !== "titleTruncated") : items;
+  const canGoToSetName = useSetNameInTitlesReachable();
 
   const titleState = titleLengthState(title.length, LISTING_TITLE_MAX, true);
+  const leftOut = useMemo(() => preview.leftOutOf(title), [preview, title]);
   const titleDirty = title !== (row.listingTitle ?? "");
+  const variationDirty = fixesVariation && variation !== (row.cardVariation ?? "");
   const canSave = !busy && !titleState.over;
 
   // Focus the field the operator is here to edit. The walker remounts this
@@ -120,10 +170,22 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
     }
   };
 
+  /**
+   * NEO-535 (a11y) — "Trim Set name in titles" closes the walker, which would
+   * drop anything typed here. Untouched: go. Typed: ask first (Toss / Cancel).
+   * Never save-first: the door shows only while the title is over the cap,
+   * so what was typed can never be saved as it stands.
+   */
+  const trimSetName = () => {
+    if (busy) return;
+    if (titleDirty || variationDirty) setConfirmingTrim(true);
+    else goToSetNameInTitles();
+  };
+
   return (
     <div className="space-y-3">
       {error && (
-        <p role="alert" className="text-xs text-neon-pink-text">
+        <p role="alert" className="text-xs text-notice-danger-ink">
           {error}
         </p>
       )}
@@ -136,17 +198,17 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             role in Safari + VoiceOver. `role="list"` restores it so a screen
             reader still announces "list, N items" for the reasons below. */}
         <ul role="list" className="mt-0.5 list-none text-xs text-ink-3">
-          {items.map((item) => (
+          {reasons.map((item) => (
             <li key={item.kind}>{attentionItemLabel(item)}</li>
           ))}
         </ul>
       </div>
 
       <div>
-        <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3">
+        <div className="mb-1 flex items-center justify-between gap-2 text-xs uppercase tracking-wide text-ink-3">
           <span>Card title</span>
           <span className="flex items-center gap-2">
-            <TitleLengthMeter length={title.length} soft surface="dark" />
+            <TitleLengthMeter length={title.length} soft />
             <button
               type="button"
               onClick={() => preview.request(titleDirty)}
@@ -166,8 +228,8 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
               aria-describedby={
                 preview.confirming ? `${uid}-regen-confirm` : undefined
               }
-              // a11y (2.5.8): min-h-6 lifts the 15px label line to a 24px
-              // target; the 10px caption type stays as it was.
+              // a11y (2.5.8): min-h-6 lifts the label line to a 24px target;
+              // the caption type stays as it was.
               className="inline-flex min-h-6 items-center rounded px-1 uppercase tracking-wide text-neon-blue-text underline decoration-dotted focus-outline hover:text-ink"
             >
               {preview.loading
@@ -178,13 +240,17 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             </button>
           </span>
         </div>
-        <Input
+        {/* NEO-535: the drawer's title field shape — wraps and grows with
+            its text (two lines to start), so a long title is in view whole on
+            a phone. Enter still saves, and a pasted line break reads as a
+            space: a title is one line. */}
+        <Textarea
           bare
           ref={titleRef}
-          type="text"
+          rows={2}
           value={title}
           onChange={(e) => {
-            setTitle(e.target.value);
+            changeTitle(oneLine(e.target.value), true);
             preview.cancelConfirm();
           }}
           onKeyDown={(e) => {
@@ -194,13 +260,19 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           }}
           // No maxLength: a pasted over-length title must stay visible to be
           // fixable. See the same note in CardDetailPanel.
-          className={`w-full p-1.5 text-sm ${busy ? "opacity-60" : ""}`}
+          // The held look (readOnly + aria-disabled while busy) is the
+          // Textarea primitive's own; no fade here.
+          className="block w-full resize-none p-1.5 text-sm [field-sizing:content]"
           // Anchored to the card number so it cannot collide with the drawer's
           // own "Card title" field in a selector — Maestro's `id:` matcher
           // takes a regex, so `Card title for #.*` still targets it.
           aria-label={`Card title for #${row.cardNumber}`}
           aria-invalid={titleState.over || undefined}
-          aria-describedby={titleState.over ? titleAlertId : undefined}
+          // The save hint says Enter saves: a wrapping field reads as one
+          // where Enter makes a new line.
+          aria-describedby={[titleState.over ? titleAlertId : null, saveHintId]
+            .filter(Boolean)
+            .join(" ")}
           // a11y (audit fix): native `disabled` here would strand focus. Enter
           // in THIS field is what sets `busy` — the moment it goes native-
           // disabled, the browser force-blurs the very input that had focus,
@@ -213,25 +285,52 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           aria-disabled={busy || undefined}
           readOnly={busy}
         />
-        <TitleLengthAlert id={titleAlertId} length={title.length} surface="dark" />
+        {/* NEO-535 — ONE message for a title past the cap, where there used
+            to be three (the length alert, "cut short" and "Left out to
+            fit"). Its text never changes while the operator trims; the meter
+            above carries the count. Always mounted (a11y): polite on arrival,
+            an alert only when a keystroke crosses the cap, and "Fits now."
+            when the title drops back under. */}
+        <p
+          id={titleAlertId}
+          role={titleState.over && overByKeystroke ? "alert" : "status"}
+          aria-atomic="true"
+          className={`mt-1 text-xs empty:hidden ${titleState.over ? "text-notice-danger-ink" : "text-neon-green-text"}`}
+        >
+          {titleState.over ? TOO_LONG : fitsNow ? FITS_NOW : ""}
+        </p>
+        {titleState.over && (
+          <div className="mt-0.5">
+            {canGoToSetName && (
+              // The lead, then the way out of it: a quiet neutral action
+              // (DESIGN.md: `secondary outline`), size 1 for a 24px target.
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <p className="text-xs text-ink-2">{SET_NAME_HOGGING}</p>
+                <NeonButton variant="secondary" outline size="1" type="button" onClick={trimSetName}>
+                  {TRIM_SET_NAME}
+                </NeonButton>
+              </div>
+            )}
+          </div>
+        )}
         {preview.confirming && (
           <p
             id={`${uid}-regen-confirm`}
             role="status"
             aria-atomic="true"
-            className="mt-1 text-[10px] text-neon-blue-text"
+            className="mt-1 text-xs text-neon-blue-text"
           >
             Regenerate again to replace the title you have typed.
           </p>
         )}
-        {wasTruncated && (
-          <TitleFieldNote surface="dark">
-            Auto title was cut short — rewrite it
-          </TitleFieldNote>
-        )}
-        {preview.dropped.length > 0 && (
-          <TitleFieldNote surface="dark">
-            Left out to fit: {preview.dropped.join(", ")}
+        {/* NEO-535: read from the text in the field now, so retyping a
+            cut word takes it off the note. Not over the cap: there the one
+            message above says what to do, and what else the title lacks
+            only matters once it fits. It also says what "cut short" meant,
+            so that note is gone. */}
+        {!titleState.over && leftOut.length > 0 && (
+          <TitleFieldNote>
+            Left out to fit: {leftOut.join(", ")}
           </TitleFieldNote>
         )}
         {preview.chips.length > 0 && (
@@ -239,7 +338,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             {preview.chips.map((chip, idx) => (
               <li
                 key={`${chip.label}-${chip.value}-${idx}`}
-                className="rounded-full border border-rule-strong bg-raised/60 px-2 py-0.5 text-[10px] text-ink-2"
+                className="rounded-full border border-rule-strong bg-raised/60 px-2 py-0.5 text-xs text-ink-2"
               >
                 <span className="mr-1 uppercase tracking-wide text-ink-3">
                   {chip.label}
@@ -253,9 +352,9 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
 
       {fixesVariation && (
         <div>
-          <div className="mb-1 flex items-center justify-between gap-2 text-[10px] uppercase tracking-wide text-ink-3">
+          <div className="mb-1 flex items-center justify-between gap-2 text-xs uppercase tracking-wide text-ink-3">
             <span>Variation</span>
-            <TitleLengthMeter length={variation.length} max={ASPECT_VALUE_MAX} surface="dark" />
+            <TitleLengthMeter length={variation.length} max={ASPECT_VALUE_MAX} />
           </div>
           <Input
             bare
@@ -273,11 +372,14 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
               e.preventDefault();
               void save();
             }}
-            className={`w-full p-1.5 text-sm ${busy ? "opacity-60" : ""}`}
+            className="w-full p-1.5 text-sm"
             aria-label={`Card variation for #${row.cardNumber}`}
-            aria-describedby={
-              variation.length > ASPECT_VALUE_MAX ? variationAlertId : undefined
-            }
+            aria-describedby={[
+              variation.length > ASPECT_VALUE_MAX ? variationAlertId : null,
+              saveHintId,
+            ]
+              .filter(Boolean)
+              .join(" ")}
             // a11y (audit fix): same reasoning as the title field above — this
             // field can now also trigger `save()` on Enter while it holds
             // focus, so native `disabled` here is the same stranding hazard.
@@ -290,7 +392,6 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             max={ASPECT_VALUE_MAX}
             what="Variation"
             blocking={false}
-            surface="dark"
           />
         </div>
       )}
@@ -298,7 +399,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
       <div className="flex flex-wrap items-center gap-2">
         <NeonButton
           aria-disabled={canSave ? undefined : true}
-          aria-describedby={titleState.over ? titleAlertId : `${uid}-save-hint`}
+          aria-describedby={titleState.over ? titleAlertId : saveHintId}
           onClick={() => void save()}
         >
           {busy ? "Saving…" : "Save (Enter)"}
@@ -307,11 +408,34 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
       {/* gray-400, not gray-500: 500 measures 3.67:1 on this dialog's
           bg-gray-900 and fails 1.4.3 — the recurring bug logged in
           accessibility-auditor/contrast-reference.md. */}
-      <p id={`${uid}-save-hint`} className="text-xs text-ink-3">
+      <p id={saveHintId} className="text-xs text-ink-3">
         {fixesVariation
-          ? "Saves the title and variation on this card."
-          : "Saves the title on this card."}
+          ? "Enter saves the title and variation on this card."
+          : "Enter saves the title on this card."}
       </p>
+      {confirmingTrim && (
+        // Not portalled: it sits inside the walker. Its Escape and Tab stop
+        // here, so the walker's own Escape (close) and Tab trap never see
+        // them while it is up.
+        <div
+          onKeyDown={(event) => {
+            if (event.key === "Escape" || event.key === "Tab") event.stopPropagation();
+          }}
+        >
+          <ConfirmDialog
+            title={TOSS_TYPED_TITLE}
+            description={TOSS_TYPED_DESCRIPTION}
+            confirmLabel={TOSS_TYPED_CONFIRM}
+            busyLabel={TOSS_TYPED_BUSY}
+            busy={false}
+            onConfirm={() => {
+              setConfirmingTrim(false);
+              goToSetNameInTitles();
+            }}
+            onCancel={() => setConfirmingTrim(false)}
+          />
+        </div>
+      )}
     </div>
   );
 }

@@ -71,10 +71,11 @@ describe("the 'kept' default carries the title the step showed", () => {
     const after = shown(card("1"), context(), withTeam, { names })!.title;
     const [kept] = titleAnswersForCommit([card("1")], context(), withTeam, { names });
     expect(kept?.listingTitleKept).toBe(after);
-    // The long team can only make the title shorter or leave it alone; whichever,
-    // 'kept' is what the step now shows, not what it showed before the answer.
-    expect(after.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
-    expect(before.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+    // NEO-535: the team is the first real cut, so the long team leaves the
+    // title as it was; whichever, 'kept' is what the step now shows. Neither
+    // is ever cut into the description to force a fit.
+    expect(after).toBe(before);
+    expect(after).toContain(LONG_SET);
   });
 
   test("a valid variation answer changes the title; 'kept' is the title with the trimmed variation", () => {
@@ -222,8 +223,10 @@ describe("recompute on team change", () => {
     const cards = [card("1"), card("2")];
     const split = buildTitleGroups(cards, context(), [{ teamIds: [tid(1)] }, undefined], opts).titleGroups;
     expect(split).toHaveLength(1);
-    expect(split[0].cards[0].ownLeftOut).toContain("Los Angeles Dodgers");
-    expect(split[0].cards[1].ownLeftOut).not.toContain("Los Angeles Dodgers");
+    // NEO-535: the row line says what the group line does not.
+    expect(split[0].leftOut).not.toContain("Los Angeles Dodgers");
+    expect(split[0].cards[0].leftOut).toContain("Los Angeles Dodgers");
+    expect(split[0].cards[1].leftOut).not.toContain("Los Angeles Dodgers");
   });
 
   test("two cards given the SAME team answer stay on one line", () => {

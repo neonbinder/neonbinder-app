@@ -89,6 +89,12 @@ export const CHECKLISTS = {
    */
   bowmanAnime2026: "2026-bowman-insert-anime",
   /**
+   * Baseball 1996 Score Insert Dugout Collection Artist's Proofs Series 1 (NEO-535): all 110 cards,
+   * numbers `1`..`110`, a team on every row. The inserts-1996-score spec's SportLots-paused branch
+   * uploads it so BSC is asked for no card one by one.
+   */
+  dugoutArtistsProofs1996Series1: "1996-score-insert-dugout-collection-artists-proofs-series-1",
+  /**
    * Hockey 1995 Halifax Mooseheads QMJHL Base, ALL 26 cards. No spec uploads it whole: it is the
    * source of the trimmed copy below (made from it with `--omit-number`).
    */

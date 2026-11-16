@@ -609,6 +609,135 @@ describe("useReactiveField", () => {
 
       expect(screen.queryByTestId("error")).toBeNull();
     });
+
+    // NEO-535 (E2E): a refusal describes the value it refused. Once the field
+    // is back at the stored value there is nothing to save and nothing wrong,
+    // so the no-op commit must take the refusal down with it.
+    it("clears a refusal when the operator types the stored value back and commits", async () => {
+      const onSave = vi.fn().mockRejectedValue(new Error("too long"));
+      render(<Harness currentValue="stored" onSave={onSave} />);
+      const input = screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
+
+      focusInput(input);
+      typeInto(input, "way too long");
+      await act(async () => {
+        blurInput(input);
+      });
+      expect(screen.getByTestId("error").textContent).toBe("too long");
+
+      focusInput(input);
+      typeInto(input, "  stored  ");
+      await act(async () => {
+        blurInput(input);
+      });
+
+      expect(onSave).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId("error")).toBeNull();
+    });
+
+    it("clears a refusal on Enter too when the field is back at compareBaseline", async () => {
+      const onSave = vi.fn().mockRejectedValue(new Error("refused"));
+      render(
+        <Harness currentValue="inherited" compareBaseline="override" onSave={onSave} />,
+      );
+      const input = screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
+
+      focusInput(input);
+      typeInto(input, "bad");
+      await act(async () => {
+        fireEvent.keyDown(input, { key: "Enter" });
+      });
+      expect(screen.getByTestId("error")).toBeDefined();
+
+      typeInto(input, "override");
+      await act(async () => {
+        fireEvent.keyDown(input, { key: "Enter" });
+      });
+
+      expect(onSave).toHaveBeenCalledTimes(1);
+      expect(screen.queryByTestId("error")).toBeNull();
+    });
+
+    it("keeps a refusal while the field still holds the refused text", async () => {
+      const onSave = vi.fn().mockRejectedValue(new Error("refused"));
+      render(<Harness currentValue="stored" onSave={onSave} />);
+      const input = screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
+
+      focusInput(input);
+      typeInto(input, "bad");
+      await act(async () => {
+        fireEvent.keyDown(input, { key: "Enter" });
+      });
+      await act(async () => {
+        blurInput(input);
+      });
+
+      expect(screen.getByTestId("error").textContent).toBe("refused");
+    });
+
+    it("clears a refusal when a cleared field reverts to the stored value (no onEmptyCommit)", async () => {
+      const onSave = vi.fn().mockRejectedValue(new Error("refused"));
+      render(<Harness currentValue="stored" onSave={onSave} />);
+      const input = screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
+
+      focusInput(input);
+      typeInto(input, "bad");
+      await act(async () => {
+        blurInput(input);
+      });
+      expect(screen.getByTestId("error")).toBeDefined();
+
+      focusInput(input);
+      typeInto(input, "");
+      await act(async () => {
+        blurInput(input);
+      });
+
+      expect(input.value).toBe("stored");
+      expect(screen.queryByTestId("error")).toBeNull();
+    });
+
+    it("keeps an onEmptyCommit refusal that put the stored value back, through the blur that follows", async () => {
+      // The card drawer's blank-title and blank-description refusals restore
+      // the stored text and THEN throw. The next commit sees an unchanged
+      // field, and must leave that explanation alone.
+      const onSave = vi.fn();
+      function Restoring() {
+        const field = useReactiveField({
+          value: "stored",
+          onSave,
+          onEmptyCommit: () => {
+            const el = document.querySelector<HTMLInputElement>(
+              'input[aria-label="field"]',
+            );
+            if (el) el.value = "stored";
+            throw new Error("can't be blank");
+          },
+        });
+        return (
+          <>
+            <input aria-label="field" {...field.inputProps} />
+            {field.error && <span data-testid="error">{field.error}</span>}
+          </>
+        );
+      }
+      render(<Restoring />);
+      const input = screen.getByRole("textbox", { name: "field" }) as HTMLInputElement;
+
+      focusInput(input);
+      typeInto(input, "");
+      await act(async () => {
+        fireEvent.keyDown(input, { key: "Enter" });
+      });
+      expect(screen.getByTestId("error").textContent).toBe("can't be blank");
+
+      await act(async () => {
+        blurInput(input);
+      });
+
+      expect(onSave).not.toHaveBeenCalled();
+      expect(screen.getByTestId("error").textContent).toBe("can't be blank");
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -882,5 +1011,42 @@ describe("useReactiveField — a commit while busy is reported, not swallowed", 
 
     expect(onSave).toHaveBeenLastCalledWith("second");
     expect(screen.queryByTestId("error")).toBeNull();
+  });
+
+  it("drops the busy message when the operator puts the in-flight value back", async () => {
+    // The dropped edit is gone from the field, so nothing is being lost any
+    // more: the field shows exactly what is being saved.
+    let release: (() => void) | undefined;
+    const onSave = vi
+      .fn()
+      .mockImplementation(
+        () => new Promise<void>((resolve) => (release = resolve)),
+      );
+
+    render(<Harness currentValue="old" onSave={onSave} />);
+    const el = field();
+
+    focusInput(el);
+    typeInto(el, "first");
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter" });
+    });
+    typeInto(el, "second");
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter" });
+    });
+    expect(screen.getByTestId("error").textContent).toBe(BUSY_MESSAGE);
+
+    typeInto(el, "first");
+    await act(async () => {
+      fireEvent.keyDown(el, { key: "Enter" });
+    });
+
+    expect(onSave).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("error")).toBeNull();
+
+    await act(async () => {
+      release?.();
+    });
   });
 });

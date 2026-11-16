@@ -1,14 +1,14 @@
 /**
- * NEO-335 title rules — the wizard carries the Card titles step's short name
- * to the commit (`onListingShortNameChange`, the commit's batch-level
- * `listingShortName`) ONLY when the step was shown, asked for one, and the
- * operator typed one or took the suggestion — and the kept titles it reports
- * are the ones generated with that same name.
+ * NEO-535 — the wizard carries the Card titles step's "Set name in titles"
+ * box to the commit (`onListingShortNameChange`, the commit's batch-level
+ * `listingShortName`) ONLY when the step was shown and the operator edited
+ * the box away from its prefill — and the kept titles it reports are the
+ * ones generated with that same text.
  *
  * The real CardTitlesStep renders here; its own behaviour is pinned in
  * CardTitlesStep.shortName.test.tsx.
  */
-import { act, fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -34,8 +34,8 @@ vi.mock("./EntityLinkSearch", () => ({ default: () => null }));
 
 import EntityReviewWizard from "./EntityReviewWizard";
 
-const LABEL = "Shorter set name for titles";
-/** Long enough that every new card's title is trimmed. */
+const LABEL = "Set name in titles";
+/** Long enough that every new card's title runs over the cap. */
 const LONG_TITLES = {
   sportValue: "Baseball",
   setNameValue: "Chrome Update Series Sapphire Edition Platinum Anniversary Collectors Box",
@@ -44,6 +44,8 @@ const LONG_TITLES = {
   players: [],
   teams: [],
 };
+const PREFILL = `2026 Topps ${LONG_TITLES.setNameValue}`;
+const BOX = "2026 Topps Sapphire";
 const CARDS = [{ cardNumber: "1", cardName: "Base", players: ["Pete Rose"], teams: ["Reds"] }];
 
 function setup(props: Record<string, unknown> = {}) {
@@ -71,61 +73,54 @@ function setup(props: Record<string, unknown> = {}) {
   return { onListingShortNameChange, onTitleAnswersChange, sent };
 }
 
-describe("the short name reaches the commit only when the step collected it", () => {
-  it("typed on the titles step: reported, and the cards it fits send no kept title", () => {
+describe("the box reaches the commit only when the step collected an edit", () => {
+  it("edited on the titles step: reported, and the kept titles are the ones built with it", () => {
     const { onListingShortNameChange, onTitleAnswersChange } = setup();
-    // Before anything is typed, the trimmed title is kept.
-    expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]?.[0]?.listingTitleKept).toContain(
-      "Chrome Update",
-    );
+    // Before anything is typed, the over-cap title is kept as shown.
+    expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]?.[0]?.listingTitleKept).toContain(PREFILL);
     const field = screen.getByRole("textbox", { name: LABEL });
-    fireEvent.change(field, { target: { value: "Topps Sapphire" } });
+    fireEvent.change(field, { target: { value: BOX } });
     fireEvent.blur(field);
-    expect(onListingShortNameChange).toHaveBeenLastCalledWith("Topps Sapphire");
-    expect(onTitleAnswersChange).toHaveBeenLastCalledWith([undefined]);
+    expect(onListingShortNameChange).toHaveBeenLastCalledWith(BOX);
+    expect(onTitleAnswersChange).toHaveBeenLastCalledWith([
+      { listingTitleKept: `${BOX} #1 Baseball` },
+    ]);
   });
 
-  it("a title the operator wrote before the short name still rides on the commit", () => {
+  it("a title the operator wrote before the box edit still rides on the commit", () => {
     const { onTitleAnswersChange } = setup();
     const own = screen.getByRole("textbox", { name: /^Title for #1/ });
     fireEvent.change(own, { target: { value: "My Pete Rose title #1" } });
     fireEvent.blur(own);
     const field = screen.getByRole("textbox", { name: LABEL });
-    fireEvent.change(field, { target: { value: "Topps Sapphire" } });
+    fireEvent.change(field, { target: { value: BOX } });
     fireEvent.blur(field);
     expect(onTitleAnswersChange).toHaveBeenLastCalledWith([
       { listingTitle: "My Pete Rose title #1" },
     ]);
   });
 
-  it("'Use suggestion' is reported the same way", () => {
-    const { onListingShortNameChange } = setup();
-    act(() => {
-      fireEvent.click(screen.getByRole("button", { name: "Use suggestion" }));
-    });
-    expect(onListingShortNameChange).toHaveBeenLastCalledWith("Topps Chrome");
-  });
-
-  it("the field shown but left empty: nothing is sent (a suggestion is never stored on its own)", () => {
+  it("the box shown but left as prefilled: nothing is sent", () => {
     const { sent } = setup();
-    expect(screen.getByRole("textbox", { name: LABEL })).toBeTruthy();
-    expect(sent()).toEqual([]);
-  });
-
-  it("a name the server would refuse is not sent, and the titles stay the full-name ones", () => {
-    const { sent, onTitleAnswersChange } = setup();
-    const field = screen.getByRole("textbox", { name: LABEL });
-    fireEvent.change(field, { target: { value: "Topps​Sapphire" } });
+    const field = screen.getByRole("textbox", { name: LABEL }) as HTMLInputElement;
+    expect(field.value).toBe(PREFILL);
     fireEvent.blur(field);
     expect(sent()).toEqual([]);
-    expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]?.[0]?.listingTitleKept).toContain(
-      "Chrome Update",
-    );
   });
 
-  it("a short name already stored: no field, nothing sent", () => {
-    const { sent } = setup({ titleContext: { ...LONG_TITLES, listingShortName: "Topps Sapphire" } });
-    expect(screen.queryByRole("textbox", { name: LABEL })).toBeNull();
+  it("a value the server would refuse is not sent, and the titles stay the builder's", () => {
+    const { sent, onTitleAnswersChange } = setup();
+    const field = screen.getByRole("textbox", { name: LABEL });
+    fireEvent.change(field, { target: { value: "Topps\u200bSapphire" } });
+    fireEvent.blur(field);
+    expect(sent()).toEqual([]);
+    expect(onTitleAnswersChange.mock.calls.at(-1)?.[0]?.[0]?.listingTitleKept).toContain(PREFILL);
+  });
+
+  it("a stored value: the box shows it, and nothing is sent until it is edited", () => {
+    const stored = `${PREFILL} Plus`;
+    const { sent } = setup({ titleContext: { ...LONG_TITLES, listingShortName: stored } });
+    expect((screen.getByRole("textbox", { name: LABEL }) as HTMLInputElement).value).toBe(stored);
     expect(sent()).toEqual([]);
   });
 

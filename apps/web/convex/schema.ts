@@ -324,8 +324,26 @@ export const selectorOptionMetadataFields = {
    * `""`, refuse control characters and cap at
    * `MAX_LISTING_SHORT_NAME_LENGTH`. Absent means "use the full names".
    * Existing titles are never rewritten when it changes (write-once titles).
+   * NEO-535 — one exception: a PARALLEL's Card titles dialog
+   * (`parallelCopyTitles.saveTitleFixes`) writes it on the parallel row and
+   * rewrites that parallel's still-failing cards with it; see the next field.
    */
   listingShortName: v.optional(v.string()),
+  /**
+   * NEO-535 — when the parallel Card titles dialog last saved
+   * `listingShortName` (ms since epoch), and so the run id of the background
+   * chain that save started (`parallelCopyTitles.rewriteFailingTitlesPage`).
+   * A chain runs only while this still holds its run id AND the box is still
+   * the one it writes with, so saving A, then B, then A again leaves one live
+   * chain, not two.
+   *
+   * Written only by `saveTitleFixes`, beside the box. Every other writer of
+   * `listingShortName` (the attributes panel, the wizard commit, the
+   * short-name backfill) spreads `metadata` and leaves it as it is: none of
+   * them starts a chain, and a box they change stops the live one by itself.
+   * Absent on every row the dialog never saved; no backfill.
+   */
+  listingShortNameSavedAt: v.optional(v.number()),
 };
 
 export const selectorOptionFields = {
@@ -1073,6 +1091,10 @@ export const ebayConditionCodeValidator = v.union(v.literal("NM"), v.literal("EX
  *                  eBay needs one
  *   setupIncomplete (eBay) the collector's eBay settings (shipping, payment,
  *                  returns, location) are not complete, so nothing was sent
+ *   titleTooLong   (eBay, NEO-535) the card's stored title is over eBay's 80
+ *                  characters; NB never cuts it (a cut would chop the print
+ *                  run), so the card waits for a shorter title in the set
+ *                  builder. NB's own hold, not a platform refusal
  * A new reason widens this union (additive, deploy before writing it).
  * Removing one needs every row carrying it cleared first: the listing tables
  * here and, since NEO-536, `syncReports.cards[].reason` (a collector's report
@@ -1091,6 +1113,7 @@ export const listingProblemReasonValidator = v.union(
   v.literal("missingAspect"),
   v.literal("noPhoto"),
   v.literal("setupIncomplete"),
+  v.literal("titleTooLong"),
 );
 
 /** NEO-536 — where a collector's sync report stands. `open` until an admin closes it. */
@@ -2066,14 +2089,22 @@ export default defineSchema({
     // eBay-specific.
     //
     // NEO-363: REQUIRED, and never blank (Jason: a card's title is required).
-    // It is what a collector searches (`search_listing_title` below). Every
-    // insert writes one: `insertCardRow` and `addCustomCard` generate it
+    // Every insert writes one: `insertCardRow` and `addCustomCard` generate it
     // (`assessListingTitle` always ends in `#<cardNumber>`, so it cannot come
     // out empty) unless the operator's own pre-save title rides on the card.
     // After insert only `updateCard` writes it, and it refuses a blank one
     // (`BLANK_LISTING_TITLE_REFUSAL`). The NEO-358 backfill filled every
     // older row before this flipped.
     listingTitle: v.string(),
+    // NEO-535: every fact NB knows about the card, in prose
+    // (`generateListingDescription`), and what a collector's free-text card
+    // search reads (`search_listing_description` below): the title is cut to
+    // fit 80 characters, the description never is. Written at insert by
+    // `insertCardRow` and `addCustomCard`; after insert only `updateCard`
+    // writes it, and it refuses a blank one
+    // (`BLANK_LISTING_DESCRIPTION_REFUSAL`). Optional: a row the NEO-535
+    // backfill (`backfillListingDescriptions`) has not reached may lack it,
+    // and such a row is not found by the search until it is filled.
     listingDescription: v.optional(v.string()),
     // NEO-101: the auto-generated title's CORE (year / manufacturer / set /
     // players) did not fit inside eBay's 80-character cap at creation time, so
@@ -2154,8 +2185,8 @@ export default defineSchema({
     /**
      * NEO-358 — the SPORT this card belongs to: the root of its
      * `selectorOptionId` ancestor chain (`findSportForSelectorOption`),
-     * denormalised so the collector's title search can filter by sport
-     * (`search_listing_title`). Set once at insert and never changed: a card
+     * denormalised so the collector's card search can filter by sport
+     * (`search_listing_description`). Set once at insert and never changed: a card
      * only ever moves between rows under one brand, so its sport is fixed.
      *
      * Writers: `insertCardRow` (convex/cardRowCreate.ts) and `addCustomCard`.
@@ -2183,9 +2214,13 @@ export default defineSchema({
     // re-checks every hit: every unquoted word must appear and every quoted
     // phrase must appear verbatim (case-insensitive). Convex caps a search at
     // 1024 results, which is why set and entity suggestions exist beside it.
-    .searchIndex("search_listing_title", {
-      searchField: "listingTitle",
-      filterFields: ["sportId", "selectorOptionId"],
+    // NEO-535: searches the listing DESCRIPTION, not the title. The title is
+    // cut to fit eBay's 80 characters and may lose a first name or a team;
+    // the description keeps every fact, in long and short forms. Filtered by
+    // sport only (no reader filters by row).
+    .searchIndex("search_listing_description", {
+      searchField: "listingDescription",
+      filterFields: ["sportId"],
     }),
 
   // NEO-21: cross-release guest appearances. Some cards complete one set's

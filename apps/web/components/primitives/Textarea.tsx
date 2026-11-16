@@ -1,6 +1,7 @@
 import React from "react";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
 import NeonButton from "@/components/modules/NeonButton";
+import { FIELD_OFF } from "./field-off";
 
 /**
  * NEO-44 — the app's shared multi-line text field. The `<textarea>` counterpart
@@ -40,9 +41,10 @@ export interface TextareaProps
  * Visual identity only — geometry is the caller's in `bare` mode (see Input).
  * Colours are the field roles (NEO-356): the well, its 3:1 edge in light, the
  * field's own ink, and the focus outline. Same as Input's default surface.
+ * Off (`disabled`, or `aria-disabled` on a `readOnly` field) is
+ * {@link FIELD_OFF}; a caller never fades the field itself.
  */
-const BASE_TEXTAREA =
-  "rounded-md border border-field-rule bg-field text-ink placeholder:text-ink-3 focus-outline disabled:cursor-not-allowed disabled:opacity-50";
+const BASE_TEXTAREA = `rounded-md border border-field-rule bg-field text-ink placeholder:text-ink-3 focus-outline ${FIELD_OFF}`;
 
 // `resize-none` lives here, not in BASE: resize behaviour is geometry, and a
 // caller that wants `resize-y` could not override it from `className` (Tailwind
@@ -129,7 +131,7 @@ export const Textarea = React.forwardRef<HTMLTextAreaElement, TextareaProps>(
 
         {(helperText || error) && (
           <p
-            className={`text-sm ${error ? "text-neon-pink-text" : "text-ink-3"}`}
+            className={`text-sm ${error ? "text-notice-danger-ink" : "text-ink-3"}`}
           >
             {error || helperText}
           </p>

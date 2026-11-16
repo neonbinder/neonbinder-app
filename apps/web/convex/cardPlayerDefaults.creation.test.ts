@@ -260,7 +260,7 @@ describe("commitCardChecklistChunk — a new card is born with the defaults", ()
     expect(await cameoIndex(t, card._id)).toEqual([{ playerId: fx.kelce, sportId: fx.sport }]);
   });
 
-  test("cameos are born with their index rows and the description line, in stored order, never in the title", async () => {
+  test("cameos are born with their index rows and the description line, in stored order, and named in a title with room", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
     await store(t, fx.base, { defaultPlayerIds: [fx.mahomes], defaultCameoIds: [fx.kelce, fx.allen] });
@@ -272,7 +272,9 @@ describe("commitCardChecklistChunk — a new card is born with the defaults", ()
       { playerId: fx.allen, sportId: fx.sport },
     ]);
     expect(card.listingDescription!.split("\n")).toContain("Cameos: Travis Kelce, Josh Allen.");
-    expect(card.listingTitle).not.toMatch(/Kelce|Allen/);
+    // Jason (NEO-528 + NEO-535 merge): cameos are in the title while it has
+    // room, after the card's own player; the first meaningful thing it drops.
+    expect(card.listingTitle).toContain("Patrick Mahomes & Travis Kelce & Josh Allen");
   });
 
   test("a default whose player is gone, or plays another sport, is left off; the card is still born", async () => {
@@ -495,8 +497,7 @@ describe("addCustomCard — a hand-added card is born with the defaults", () => 
     expect(await playerIndex(t, id)).toEqual([fx.mahomes]);
     expect(card.secondaryPlayerIds).toEqual([fx.kelce]);
     expect(await cameoIndex(t, id)).toEqual([{ playerId: fx.kelce, sportId: fx.sport }]);
-    expect(card.listingTitle).toContain("Patrick Mahomes");
-    expect(card.listingTitle).not.toContain("Kelce");
+    expect(card.listingTitle).toContain("Patrick Mahomes & Travis Kelce");
     expect(card.listingDescription).toContain("Cameo: Travis Kelce.");
     expect(card.teamOnCardIds).toBeUndefined();
   });
@@ -516,6 +517,16 @@ describe("addCustomCard — a hand-added card is born with the defaults", () => 
     // typed name or not.
     expect(picked).not.toHaveProperty("listingNamedPlayer");
     expect(typed).not.toHaveProperty("listingNamedPlayer");
+  });
+
+  test("a default cameo who is the player picked for the card is said once in the title and not stored as a cameo", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await store(t, fx.set, { defaultCameoIds: [fx.kelce, fx.allen] });
+    const card = await get(t, await add(t, fx, { playerIds: [fx.kelce] }));
+    expect(card.secondaryPlayerIds).toEqual([fx.allen]);
+    expect(card.listingTitle).toContain("Travis Kelce & Josh Allen");
+    expect((card.listingTitle.match(/Travis Kelce/g) ?? []).length).toBe(1);
   });
 
   test("a default whose player was deleted is dropped and the card is still added", async () => {
@@ -571,6 +582,26 @@ describe("titleSetFacts — the default player's name and id for the pre-save ti
     await t.run(async (ctx) => ctx.db.delete(fx.kelce));
     expect(await facts()).not.toHaveProperty("setPlayerId");
     expect((await facts()).setPlayerNames).toEqual([]);
+  });
+});
+
+describe("titleSetFacts — the default cameos for the pre-save titles (NEO-528 + NEO-535)", () => {
+  test("lists the effective cameos in stored order, omits the key when there are none, drops a deleted one", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    const facts = () =>
+      t.query(internal.listingTitleContext.titleSetFacts, { selectorOptionId: fx.base, sportId: fx.sport });
+    expect(await facts()).not.toHaveProperty("setCameoNames");
+    await store(t, fx.set, { defaultCameoIds: [fx.kelce, fx.allen] });
+    expect((await facts()).setCameoNames).toEqual(["Travis Kelce", "Josh Allen"]);
+    // Nearest wins, order kept.
+    await store(t, fx.base, { defaultCameoIds: [fx.allen, fx.kelce] });
+    expect((await facts()).setCameoNames).toEqual(["Josh Allen", "Travis Kelce"]);
+    // Another sport's player is dropped, as at the insert.
+    await store(t, fx.base, { defaultCameoIds: [fx.ohtani, fx.kelce] });
+    expect((await facts()).setCameoNames).toEqual(["Travis Kelce"]);
+    await t.run(async (ctx) => ctx.db.delete(fx.kelce));
+    expect(await facts()).not.toHaveProperty("setCameoNames");
   });
 });
 

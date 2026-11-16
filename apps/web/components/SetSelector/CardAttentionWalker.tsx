@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
+import { useClosesForSetNameInTitles } from "./set-name-in-titles-jump";
 import { createPortal } from "react-dom";
 import { Theme } from "@radix-ui/themes";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -193,6 +194,9 @@ export default function CardAttentionWalker({
   //                 would flash back on screen in between.
   //  - `seen`     — every card that has been in the walk this sitting, for
   //                 "Step x of y" (see `walkStep`). Only ever grows.
+  // NEO-535 — TitleFixer's "Trim Set name in titles" door closes the walker
+  // so the Attributes panel behind it can take focus.
+  useClosesForSetNameInTitles(onClose);
   const [skipped, setSkipped] = useState<Set<string>>(() => new Set());
   const [answered, setAnswered] = useState<Set<string>>(() => new Set());
   const dialogRef = useRef<HTMLDivElement | null>(null);

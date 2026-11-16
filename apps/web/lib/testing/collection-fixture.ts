@@ -154,6 +154,9 @@ export async function seedCollectionCatalog(t: T) {
         playerLinks: [{ playerId, nameOnCard }],
         teamOnCardIds: teamIds,
         listingTitle,
+        // NEO-535 — the card search reads the description. The title stands
+        // in for it; a test that needs them apart passes its own in `extra`.
+        listingDescription: listingTitle,
         sportId,
         platformData: { bsc: { ref: "bsc-ref-" + cardNumber, src: "b0" } },
         isCustom: false,

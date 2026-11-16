@@ -157,8 +157,10 @@ export type NewCardRow = {
    * written verbatim instead of the generated one. Already trimmed and held
    * to `LISTING_TITLE_MAX` by the caller (`listingInputs.checkTitleAnswer`).
    * A human authored it, so `listingTitleTruncated` is never written beside
-   * it — the same rule `updateCard` applies to an operator title edit. Only
-   * the commit's insert branch passes it.
+   * it — the same rule `updateCard` applies to an operator title edit. The
+   * commit's insert branch passes it, and (NEO-535) the parallel build, for a
+   * copy whose builder title fails but whose source's hand edit, re-headed
+   * with the parallel's description, fits (`features/carriedTitle`).
    */
   listingTitle?: string;
   /**
@@ -168,8 +170,11 @@ export type NewCardRow = {
    * cut short" flag is skipped only when the generated title is exactly this
    * text: then the question it raises was asked and answered before save. A
    * title that came out differently is one nobody saw, so it is flagged as
-   * before (security audit, NEO-335). Only the commit's insert branch passes
-   * it, already trimmed and capped (`listingInputs.checkTitleAnswer`).
+   * before (security audit, NEO-335). The commit's insert branch passes it,
+   * already trimmed and capped (`listingInputs.checkTitleAnswer`), and
+   * (NEO-535) the parallel build, with the title it just generated for a copy
+   * built from the box that fits with every first name: the box was the
+   * operator's answer, so the copy is not flagged cut short.
    */
   listingTitleKept?: string;
 };
@@ -325,19 +330,23 @@ export function buildCardRowForInsert(
   // at creation time, then freely editable afterward. `previewListingTitle`
   // must be given the same inputs, or a regenerated title disagrees with the
   // one written here.
+  // NEO-528 round 3 — the cameos it is born with, exactly as stored: the
+  // description names them, and the title names them while it has room (they
+  // are the first meaningful thing it gives up, NEO-535's order).
+  const cameos = bornCameoList(card);
   const listingInputs = listingInputsForCard(
     card,
     set,
-    { playerNames, teamNames: card.teamNames },
+    { playerNames, teamNames: card.teamNames, cameoNames: cameos.map((c) => c.name) },
     mergedFeatures,
   );
   const listingTitle = assessListingTitle(listingInputs);
-  // NEO-528 round 3 — the cameos it is born with, named in the description
-  // exactly as stored (never in the title).
-  const cameos = bornCameoList(card);
   // NEO-335 — the operator's answer from the "Card titles" step, when one
   // rode on the card: their own words, or the trimmed title kept. Either way
   // the cut-short question was put before save, so the flag is not written.
+  // NEO-535 — `coreFits` is false when the title lost a first name or was
+  // built from the set's box text; an over-cap title is flagged by its length
+  // (`titleOverLimit`), whatever this says.
   const operatorTitle = card.listingTitle?.trim();
   const flagTruncated =
     !listingTitle.coreFits &&
@@ -369,15 +378,16 @@ export function buildCardRowForInsert(
     // its one writer (`cardSecondaryPlayers.ts`).
     ...bornSecondaryPlayerFields(card, cameos.map((c) => c.playerId)),
     ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
-    // NEO-363 — required and never blank: the generated title always ends in
-    // `#<cardNumber>` (`assessListingTitle`'s guarantee 2), and a blank
-    // operator answer falls through to it.
+    // NEO-363 — required and never blank: the generated title always carries
+    // the description or the card number (NEO-535 cuts the number only from a
+    // title that is over the cap without it), and a blank operator answer
+    // falls through to it.
     listingTitle: operatorTitle || listingTitle.title,
     listingDescription: generateListingDescription(listingInputs, {
       cameoNames: cameos.map((c) => c.name),
     }),
-    // NEO-101: only when the core was actually cut (see schema.ts), and
-    // NEO-335: never over an operator's pre-save answer.
+    // NEO-535: only when a first name was lost or the box text was used
+    // (see schema.ts), and NEO-335: never over an operator's pre-save answer.
     ...(flagTruncated ? { listingTitleTruncated: true } : {}),
     // NEO-221 / NEO-246 — omitted entirely when empty, so a fully-reviewed
     // commit writes exactly the row it wrote before these fields existed.

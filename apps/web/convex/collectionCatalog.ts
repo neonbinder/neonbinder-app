@@ -857,10 +857,16 @@ export const suggest = query({
 // ───────────────────────────────────────────────────────────────────────────
 
 /**
- * Cards whose listing title holds every unquoted word (anywhere, any order)
- * and every quoted phrase (verbatim, case-insensitive). The index is searched
- * on the words; the rule is applied to the top `SEARCH_SCAN` hits.
+ * Cards whose listing description holds every unquoted word (anywhere, any
+ * order) and every quoted phrase (verbatim, case-insensitive). The index is
+ * searched on the words; the rule is applied to the top `SEARCH_SCAN` hits.
  * `truncated` says more may exist than were returned.
+ *
+ * NEO-535: the description, not the title. The title is cut to fit eBay's 80
+ * characters (a first name, a team, the sport can go); the description keeps
+ * every fact NB knows, in long and short forms ("Rookie Card (RC)", `/99`,
+ * `#16`). A card with no description yet (the backfill has not reached it) is
+ * not in the index and is not found.
  */
 export const search = query({
   args: {
@@ -885,12 +891,12 @@ export const search = query({
     const text = searchTextFor(parsed);
     const hits = await ctx.db
       .query("cardChecklist")
-      .withSearchIndex("search_listing_title", (q) => {
-        const s = q.search("listingTitle", text);
+      .withSearchIndex("search_listing_description", (q) => {
+        const s = q.search("listingDescription", text);
         return sportId ? s.eq("sportId", sportId) : s;
       })
       .take(SEARCH_SCAN);
-    const matches = hits.filter((c) => titleMatches(c.listingTitle, parsed));
+    const matches = hits.filter((c) => titleMatches(c.listingDescription ?? "", parsed));
     const reader = new CatalogReader(ctx);
     const cards = [];
     for (const row of matches.slice(0, limit)) cards.push(await reader.cardWithPath(row));

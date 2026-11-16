@@ -13,7 +13,11 @@
  * `convex/syncReports.ts` decides what a report copies with the same rule.
  */
 
-/** Reasons only the admin team can fix: the card's link, its sheet row, or what the platform said. */
+/**
+ * Reasons only the admin team can fix: the card's link, its sheet row, what
+ * the platform said, or its title (`titleTooLong`, NEO-535: a title over the
+ * listing limit is shortened in the set builder, which is the admin team's).
+ */
 export const REPORTABLE_SYNC_REASONS = [
   "noLink",
   "sharedLink",
@@ -21,6 +25,7 @@ export const REPORTABLE_SYNC_REASONS = [
   "notOnSheet",
   "rejected",
   "missingAspect",
+  "titleTooLong",
 ] as const;
 
 export type ReportableSyncReason = (typeof REPORTABLE_SYNC_REASONS)[number];
@@ -60,7 +65,8 @@ export const SYNC_REPORT_GROUP_COUNT_CAP = 20;
  * The detail a report keeps for one held-back card: what the platform said
  * (`rejected`) or the field it asked for (`missingAspect`), trimmed and cut
  * to `MAX_SYNC_REPORT_DETAIL`. Display-only for the admin, never NB data.
- * Every other reason keeps none.
+ * Every other reason keeps none: `titleTooLong` is NB's own hold and its sync
+ * records no detail (the admin reads the title itself in the set builder).
  */
 export function syncReportDetail(reason: string, detail: string | undefined): string | undefined {
   if (reason !== "rejected" && reason !== "missingAspect") return undefined;

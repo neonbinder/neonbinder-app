@@ -101,6 +101,11 @@ describe("which held-back sets the crew fixes", () => {
     expect(crewFixOf({ failed: false, cards: [card("noPrice")] })).toEqual({});
   });
 
+  it("a title too long to list is the crew's to fix: alone it is all, beside a collector fix it is some", () => {
+    expect(crewFixOf({ failed: false, cards: [card("titleTooLong")] })).toEqual({ crewFix: "all" });
+    expect(crewFixOf({ failed: false, cards: [card("titleTooLong"), card("noPrice")] })).toEqual({ crewFix: "some" });
+  });
+
   it("never a set whose last sync failed", () => {
     expect(crewFixOf({ failed: true, cards: [card("noLink")] })).toEqual({});
   });
