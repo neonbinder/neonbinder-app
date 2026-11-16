@@ -199,10 +199,14 @@ so the ones the recorder could replay are also kept in the recordings bucket.
 - **Generation-specific deletes:** the bucket is versioned, and a plain delete
   would leave a noncurrent version the lifecycle rule never reaps, so every
   delete names the object's generation. No Terraform change, no new spend.
-- **Boot:** after the recordings and write captures load, misses are restored
-  on their own promise (expired and invalid objects are deleted as they are
-  read). `/api` is not held for it; `GET /__fake/misses` is held until both
-  loads finish (same 25 s cap, then 503 `x-nb-fake: loading`). The two admin
+- **Boot:** after the recordings and write captures load, and before the
+  server listens, misses are restored (expired and invalid objects are
+  deleted as they are read), so on the normal path nothing is held for them.
+  The boot waits at most 30 s for the restore; past that (a pathologically
+  slow bucket, logged `misses_restore_deferred`) the server listens and the
+  restore finishes in the background. Then `/api` is not held for it, and
+  `GET /__fake/misses` is held until it is done (25 s cap, then 503
+  `x-nb-fake: loading`). The two admin
   writes that remove misses in bulk, `POST /__fake/recordings` and `POST
   /__fake/reset-all`, are held the same way (after the admin check) until the
   restore is done: run during it, the restore would put back a miss they had
@@ -602,20 +606,27 @@ host itself. It never bundles or copies the browser source.
   is also sent. The doc says only that `X-Serverless-Authorization` is the
   one checked. The first deploy must confirm it (a profile read through the
   fake proves it).
-- Cold start: the server listens before it loads the recordings and write
-  captures from the store (`/__fake/health` `loading: true` until they are in).
-  Meanwhile `/api/*` and `GET /__fake/misses` are HELD, after auth, until the
-  load finishes (the miss list also waits for the durable misses to be
-  restored), and then answered normally: a 503 on `/api` would count
-  against Convex's BSC call gate, and recording loads take seconds. Only a
-  hold past 25 s answers 503 with `x-nb-fake: loading` and `Retry-After: 2`.
-  The admin uploads that read the loaded state (`/__fake/recordings`,
+- Cold start: the server loads the recordings and write captures from the
+  store, restores the durable misses ("Durable misses"), and only then
+  listens. Cloud Run gives a container full CPU until its port opens and
+  holds requests until then, while work done after `listen` runs only while
+  a request is in flight; loading first keeps the boot inside the startup
+  probe and means no request is answered from a half-loaded state. A
+  recordings or captures load failure exits the process without listening.
+  The app still supports a `loading` state (`/__fake/health` `loading: true`)
+  for a server that listens before its load finishes (tests, any future async
+  load); the boot never uses it today, so health answers `loading: false`
+  from the first request. In that state `/api/*` and `GET /__fake/misses`
+  are HELD, after auth, until the load finishes, and then answered normally
+  (a 503 on `/api` would count against Convex's BSC call gate). Only a hold
+  past 25 s answers 503 with `x-nb-fake: loading` and `Retry-After: 2`. The
+  admin uploads that read the loaded state (`/__fake/recordings`,
   `/__fake/write-captures`, `/__fake/drift-compare`) answer that 503 at once;
-  after the load, `/__fake/recordings` is held until the durable misses are
-  restored, and `/__fake/reset-all` is held from boot until then ("Durable
-  misses", the same 25 s cap).
+  while the durable misses are still restoring (only after a deferred
+  restore), `/__fake/recordings` and `/__fake/reset-all` are held until it is
+  done ("Durable misses", the same 25 s cap).
   `/__fake/reset`, `/__fake/faults`, `/__fake/orders` and the identity
-  endpoints work at once. A load failure exits the process.
+  endpoints never wait.
 - `FAKE_BSC_LOCAL_DEV_BYPASS=1` skips the ID-token check only (keys are
   still required); the server refuses to boot with it when `K_SERVICE` is set.
 - `/__fake/health` needs the ID token and caller key like the rest (Cloud Run's

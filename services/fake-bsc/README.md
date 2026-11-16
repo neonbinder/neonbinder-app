@@ -18,7 +18,7 @@ recorder (a person)      ──► <FAKE>/__fake/recordings     sanitised catalo
 
 | Path | What |
 |---|---|
-| `src/index.ts` | Boot: config, load recordings and write captures, listen. Logs one `boot` line (instance id, manifest version). |
+| `src/index.ts` | Boot: config, load recordings and write captures, restore durable misses, then listen (loading before `listen` runs in Cloud Run's full-CPU startup phase). A load failure exits without listening. Logs one `boot` line (instance id, manifest version, ms). |
 | `src/app.ts` | HTTP wiring: auth, faults, `/api`, `/identity`, `/__fake` (health at `/__fake/health`). |
 | `src/auth.ts`, `src/config.ts` | Caller key, admin key, ID-token identity. Fails closed. |
 | `src/requestKey.ts` | The one recording key: method + path + sorted query + canonical body, SHA-256. Shared with the recorder. |
