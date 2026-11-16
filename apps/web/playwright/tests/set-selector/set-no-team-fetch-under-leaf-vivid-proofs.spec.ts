@@ -128,6 +128,7 @@ test(
     await confirm.getByRole("button", { name: "Yes, set No Team" }).click();
     await expect(toggle(true)).toBeVisible();
     await expect(panel.getByRole("button", { name: "Mark 2 teamless cards No Team" })).toBeVisible();
+    await expectAccessible(page, { within: panel, label: "Attributes panel, No Team on, offer to mark teamless cards" });
 
     // ── STEP 3: the same fetch again. The Proof row copied the answer, the wizard still lists the
     // cards (each may be answered one by one) but no longer hints at a set team.
@@ -174,11 +175,13 @@ test(
     await expect(replace.or(page.getByRole("button", { name: "Stop after this one" })).first()).toBeVisible();
     if (await replace.isVisible()) await replace.click();
     await page.getByRole("button", { name: "Stop after this one" }).click();
-    // GUIDE R5 exception as base-parallels-build-from-section: the build fetches each parallel's
-    // checklist from BSC before writing it.
-    await expect(page.getByRole("heading", { name: /^Base parallels — stopped after [1-9][0-9]* of [0-9]+/ })).toBeVisible({
-      timeout: 60_000,
-    });
+    // The build fetches each parallel's checklist from BSC before writing it, and the screen shows
+    // "Waiting on BuySportsCards…" meanwhile: BSC's time plus 7 s of our own (GUIDE hard rule 3).
+    await expectAfterMarketplace(
+      page,
+      page.getByRole("heading", { name: /^Base parallels — stopped after [1-9][0-9]* of [0-9]+/ }),
+      { platform: "BuySportsCards", what: "the parallels build stopping" },
+    );
     await expect(
       page.getByText(new RegExp(`^${FIRST_PARALLEL} — Built ${BASE_CARDS.length} cards?`)),
     ).toBeVisible();

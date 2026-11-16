@@ -21,7 +21,7 @@ metadata:
 - A parallel row has no "Sync card checklist": it is populated only by "Build N parallels from Base" on the Parallel type, which
   pairs Base cards to the parallel's marketplace cards (by number, else player). Real Base cards need not appear in a parallel at
   all ("Nothing copied - none of Base's N cards turned up"). Copies carry the source's lookup state; a copy of a card whose
-  lookup never ran is "Still looking up teams" with nothing scheduled to run it.
+  lookup never ran reads "Still looking up teams" until the team lane (scheduled by the build) answers it, see below.
 - A checklist row is virtualised (about ten rows in the DOM): reach a card with the searchbox "Search cards", never by scrolling.
 
 Parallel copies owe their own card-listing lookup (NEO-556 fix): after "Build N parallels from Base" the copies join the one-slot team lane, and each copy's own BSC card id is a fresh `marketplace/card/<id>/card-listing` read. On the fake an unrecorded one 501s on both attempts and the lane retries only after 60 s, so a "No Team" assertion on the copies cannot be green until the recorder has captured those reads (`reportMisses` lists them). Once recorded, a replay is instant and the lane settles each copy in a couple of seconds. Check the misses list before blaming the product.

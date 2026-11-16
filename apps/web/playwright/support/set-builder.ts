@@ -151,6 +151,8 @@ export const CUSTOM_CONFIRM: Record<Column, string> = {
   "Variant Types": "Create variant type",
   Inserts: "Create insert",
   Parallels: "Create insert",
+  // Unused by any spec so far; the label is read from VariantSelector, which opens this column at
+  // the insert level (like "Parallels"), so EntityColumn's `Create ${noun}` says "Create insert".
   Proofs: "Create insert",
 };
 
