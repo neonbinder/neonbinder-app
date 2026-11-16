@@ -12,6 +12,7 @@
 // a `finally` so a red body still lets go of it, or the parallel would stay
 // blocked for the next run on the same deployment).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import { columnOption, columnSearch, drillToSet, pick, setBuilderReady } from "../../support/set-builder";
 import {
   TOPPS_CHROME_2024,
@@ -58,12 +59,13 @@ test(
     await page.getByRole("button", { name: "Replace and build" }).click();
 
     await page.getByRole("button", { name: "Stop after this one" }).click();
-    // GUIDE R5 exception, a live BSC round trip: building a parallel fetches its
-    // checklist from BSC before writing it. Run 41212224696 spent 4.8 s in that
-    // fetch (a BSC re-login inside it) plus 1.7 s writing the page, past 7 s.
-    await expect(
-      page.getByRole("heading", { name: `Base parallels — stopped after 1 of ${parallels}` }),
-    ).toBeVisible({ timeout: 60_000 });
+    // Building a parallel fetches its checklist from BSC (the fake, NEO-552) before writing
+    // it, and the build shows "Waiting on BuySportsCards" while that call is out: 7 s of our
+    // own time plus the seconds the line is up (measured 3.4 s on the #487 merge-group run (GUIDE)).
+    await expectAfterMarketplace(page, page.getByRole("heading", { name: `Base parallels — stopped after 1 of ${parallels}` }), {
+      platform: "BuySportsCards",
+      what: "the parallel build stopping after one",
+    });
 
     await expectAccessible(page, { label: "Base parallels build stopped after one" });
 
@@ -157,11 +159,12 @@ test(
       await blockedLine.scrollIntoViewIfNeeded();
       await expect(blockedLine).toBeInViewport();
       await page.getByRole("button", { name: "Stop after this one" }).click();
-      // GUIDE R5 exception, the same live BSC round trip as the first run: the
-      // next parallel in order is fetched and written before the run stops.
-      await expect(
-        page.getByRole("heading", { name: `Base parallels — stopped after 1 of ${parallels}` }),
-      ).toBeVisible({ timeout: 60_000 });
+      // The same BSC round trip as the first run (the fake, NEO-552): the next parallel in
+      // order is fetched and written before the run stops, with the wait line up meanwhile.
+      await expectAfterMarketplace(page, page.getByRole("heading", { name: `Base parallels — stopped after 1 of ${parallels}` }), {
+        platform: "BuySportsCards",
+        what: "the second parallel build stopping after one",
+      });
       await expect(blockedLine).toBeVisible();
       await expect(
         section.getByRole("listitem").filter({ hasText: `${parallel} — Built` }),

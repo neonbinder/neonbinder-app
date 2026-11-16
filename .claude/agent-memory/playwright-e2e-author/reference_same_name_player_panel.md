@@ -56,4 +56,4 @@ lower-numbered rows whose lookups land a moment later (a #7 pick step opened
 ahead of #1 on a 10-card set). `walkToPlayerRow({ readyToCreate: true })` does
 not pass a pick step, so a spec that needs a career editor stops on it unless
 the walk learns to.
-Related: [[catalogue-seeded-wizard-staging]].
+Related: [[patterns_record_a_fixture_sets_lookups]].

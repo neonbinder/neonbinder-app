@@ -497,7 +497,6 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(result).toEqual({
       marketplaceCallGatesDeleted: 0,
-      marketplaceCooldownsDeleted: 0,
       marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 2,
       selectorSyncStatusDeleted: 3,
@@ -633,7 +632,6 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
 
     expect(await runReset(t)).toEqual({
       marketplaceCallGatesDeleted: 0,
-      marketplaceCooldownsDeleted: 0,
       marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 0,
       selectorSyncStatusDeleted: 0,
@@ -693,7 +691,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
 
     expect(result.complete).toBe(false);
     // The first table in the order holding rows is slSetReviews (NEO-306:
-    // it points at selectorOptions, so it drains first; PR 451's cooldown and
+    // it points at selectorOptions, so it drains first; the BSC call-gate and
     // wait tables come before it but are empty here, and an empty batch never
     // spends the budget); that batch ran and finished before the budget check
     // could stop anything.
@@ -719,7 +717,6 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     let complete = false;
     const totals = {
       marketplaceCallGatesDeleted: 0,
-      marketplaceCooldownsDeleted: 0,
       marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 0,
       selectorSyncStatusDeleted: 0,
@@ -769,7 +766,6 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
     // double-counts or skips a table.
     expect(totals).toEqual({
       marketplaceCallGatesDeleted: 0,
-      marketplaceCooldownsDeleted: 0,
       marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 2,
       selectorSyncStatusDeleted: 3,
@@ -1524,7 +1520,6 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
 
     expect(await runScoped(t, "exceptReferenceSeed")).toEqual({
       marketplaceCallGatesDeleted: 0,
-      marketplaceCooldownsDeleted: 0,
       marketplaceWaitsDeleted: 0,
       slSetReviewsDeleted: 2,
       selectorSyncStatusDeleted: 3,
@@ -1654,17 +1649,17 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
 });
 
 /**
- * PR 451 (NEO-482) — the global reset clears the BSC lane and the 429 cooldown.
+ * PR 451 (NEO-482) / NEO-552 — the global reset clears the BSC call gate and
+ * the BSC lane.
  *
- * Both are deployment-wide. A cooldown window the previous run opened (up to
- * 10 minutes), or team checks it left queued on the one-slot lane (pushed back
- * for up to 30 minutes), would otherwise stand in front of the next seed's
- * cards. The wait rows go too, so no "Waiting on BuySportsCards…" figure
- * outlives its run. None of the three is a reference-seed table, so every
+ * Both are deployment-wide. A breaker the previous run opened, or team checks
+ * it left queued on the one-slot lane (pushed back for up to 30 minutes),
+ * would otherwise stand in front of the next seed's cards. The wait rows go
+ * too, so no "Waiting on BuySportsCards…" figure outlives its run. None of the three is a reference-seed table, so every
  * scope clears them. (The per-user `/testing/reset` must not: eight shards
  * run it at once.)
  */
-describe("PR 451 / NEO-552: the reset clears the BSC call gate, the cooldown, the wait rows and the team lane", () => {
+describe("PR 451 / NEO-552: the reset clears the BSC call gate, the wait rows and the team lane", () => {
   async function seedBscLaneState(t: ReturnType<typeof convexTest>) {
     await t.run(async (ctx) => {
       // NEO-552 — one call-gate row with its breaker open and a probe lease.
@@ -1682,16 +1677,7 @@ describe("PR 451 / NEO-552: the reset clears the BSC call gate, the cooldown, th
         probeLeaseUntil: Date.now() + 30_000,
         updatedAt: Date.now(),
       });
-      // One cooldown row (the table holds one per endpoint) with a window
-      // still open, and two wait rows, so the two counts cannot be swapped.
-      await ctx.db.insert("marketplaceCooldowns", {
-        platform: "bsc",
-        endpoint: "cardListing",
-        until: Date.now() + 10 * 60_000,
-        last429At: Date.now(),
-        streak: 4,
-        updatedAt: Date.now(),
-      });
+      // Two wait rows, so the gate and wait counts cannot be swapped.
       for (const runKey of ["run-a", "run-b"]) {
         await ctx.db.insert("marketplaceWaits", {
           ownerId: "user",
@@ -1708,8 +1694,6 @@ describe("PR 451 / NEO-552: the reset clears the BSC call gate, the cooldown, th
   const laneTableCounts = (t: ReturnType<typeof convexTest>) =>
     t.run(async (ctx) => ({
       marketplaceCallGates: (await ctx.db.query("marketplaceCallGates").collect()).length,
-      marketplaceCooldowns: (await ctx.db.query("marketplaceCooldowns").collect())
-        .length,
       marketplaceWaits: (await ctx.db.query("marketplaceWaits").collect()).length,
     }));
 
@@ -1721,7 +1705,7 @@ describe("PR 451 / NEO-552: the reset clears the BSC call gate, the cooldown, th
     );
 
   test.each(["all", "exceptReferenceSeed"] as const)(
-    "scope %s deletes the call gate, cooldown and wait rows, reports the counts, and schedules the lane cancel",
+    "scope %s deletes the call gate and wait rows, reports the counts, and schedules the lane cancel",
     async (scope) => {
       vi.stubEnv("ALLOW_RESET_SET_BUILDER_DATA", "true");
       const t = convexTest(schema, modules);
@@ -1735,11 +1719,9 @@ describe("PR 451 / NEO-552: the reset clears the BSC call gate, the cooldown, th
 
       expect(result.complete).toBe(true);
       expect(result.marketplaceCallGatesDeleted).toBe(1);
-      expect(result.marketplaceCooldownsDeleted).toBe(1);
       expect(result.marketplaceWaitsDeleted).toBe(2);
       expect(await laneTableCounts(t)).toEqual({
         marketplaceCallGates: 0,
-        marketplaceCooldowns: 0,
         marketplaceWaits: 0,
       });
       const jobs = await cancelJobs(t);
@@ -1773,7 +1755,6 @@ describe("PR 451 / NEO-552: the reset clears the BSC call gate, the cooldown, th
 
     expect(await laneTableCounts(t)).toEqual({
       marketplaceCallGates: 1,
-      marketplaceCooldowns: 1,
       marketplaceWaits: 2,
     });
     expect(await cancelJobs(t)).toEqual([]);
@@ -1781,7 +1762,6 @@ describe("PR 451 / NEO-552: the reset clears the BSC call gate, the cooldown, th
 
   test.each([
     "resetMarketplaceCallGatesBatch",
-    "resetMarketplaceCooldownsBatch",
     "resetMarketplaceWaitsBatch",
   ] as const)(
     "%s refuses when unarmed, even called directly, and deletes nothing",
@@ -1795,7 +1775,6 @@ describe("PR 451 / NEO-552: the reset clears the BSC call gate, the cooldown, th
 
       expect(await laneTableCounts(t)).toEqual({
         marketplaceCallGates: 1,
-        marketplaceCooldowns: 1,
         marketplaceWaits: 2,
       });
     },

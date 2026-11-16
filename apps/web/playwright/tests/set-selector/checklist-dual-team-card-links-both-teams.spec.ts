@@ -32,7 +32,7 @@ import {
   columnSearch,
   drillToColdManufacturer,
   drillToSet,
-  INSERT_FETCH,
+  expectAfterBscSync,
   openInsertsReconcile,
   pick,
   setBuilderReady,
@@ -40,13 +40,13 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { expectTeamsLoaded, teamsCounter } from "../../support/players";
-import { bscLookupOutcome } from "../../support/marketplace-wait";
+import { bscLookupOutcome, expectStepWithSportLots } from "../../support/marketplace-wait";
 import { CHECKLISTS, confirmChecklistMatchCards, matchCardsDialog, usePublishersChecklist } from "../../support/published-checklist";
 import { advanceToSave, confirmSaveButton, newStepHeading, personSkip, reviewWizard } from "../../support/wizard";
 
 const INSERT = "Prospect Dual Autographs";
 const BOWMAN_DRAFT = { sport: "Baseball", year: "2025", manufacturer: "Bowman", set: "Bowman Draft" };
-/** A live BSC (+ SportLots) checklist round trip (the cold insert-level fetch is `INSERT_FETCH`). */
+/** A live BSC (+ SportLots) checklist round trip, the ceiling kept while SportLots is live (`expectStepWithSportLots`). */
 const CHECKLIST_FETCH = 120_000;
 /** The wizard opens behind the live lookups the batch queues. */
 const WIZARD_OPENS = 60_000;
@@ -69,13 +69,16 @@ test(
     await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2025", manufacturer: "Bowman" });
     // The Sets column's LISTBOX renders only once it holds a row. The helper
     // waited the sync out with SportLots live; paused, BSC's sets can still be
-    // landing, so this carries the helper's own cold-sync ceiling.
-    await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible({ timeout: COLD_SYNC });
+    // landing, so this waits by the marketplace rule (measured 0.2 s on the #487 merge-group run (GUIDE)).
+    await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Sets" }), env, {
+      liveMs: COLD_SYNC,
+      what: "the Sets list",
+    });
     await pick(page, "Sets", "Bowman Draft");
     await expect(columnHeading(page, "Variant Types")).toBeVisible();
     // Selecting the set fires its COLD variant-type sync (BSC + SportLots).
     const insertType = columnOption(page, "Variant Types", "Insert");
-    await expect(insertType).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
+    await expectStepWithSportLots(page, insertType, env, { liveMs: VARIANT_TYPES_SYNC, what: "Variant Types row Insert" });
 
     // ── STEP 2: make the insert an NB set: the Inserts reconcile (sole writer) ──
     await insertType.click();
@@ -87,7 +90,7 @@ test(
       // its own insert in this same column, so when it ran first the column is
       // already saved and the dialog opens from "Sync Inserts" instead
       // (`openInsertsReconcile` takes either). REQUIRED either way.
-      await openInsertsReconcile(page);
+      await openInsertsReconcile(page, env);
 
       // Narrow both lists to the insert; the Save still writes every Ready set.
       await reconcile.getByRole("textbox", { name: "Filter NeonBinder sets" }).fill(INSERT);
@@ -118,7 +121,8 @@ test(
     } else {
       // Paused: one marketplace, nothing to reconcile; the column fills
       // straight from BSC (the same cold fetch).
-      await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: INSERT_FETCH });
+      // BSC alone: 7 s plus the seconds the column's wait line is up (measured 0.2 s on the #487 merge-group run (GUIDE)).
+      await expectAfterBscSync(page, columnHeading(page, "Inserts"), "the Inserts column opening");
       await expect(reconcile).toBeHidden();
     }
 
@@ -145,9 +149,9 @@ test(
     // the helper keeps every BSC-only card, proves the teams line and confirms. A fetch that
     // lost the BSC side would carry no BSC team values, and STEP 6's row read fails it by name.
     const matchCards = matchCardsDialog(page);
-    await expect(matchCards).toBeVisible({ timeout: CHECKLIST_FETCH });
-    await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible({
-      timeout: CHECKLIST_FETCH,
+    await expectStepWithSportLots(page, matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }), env, {
+      liveMs: CHECKLIST_FETCH,
+      what: "the insert checklist fetch",
     });
     await expect(matchCards.getByRole("heading", { name: `Match Cards — ${INSERT}` })).toBeVisible();
     await expectAccessible(page, { within: matchCards, label: "Match Cards dialog (Prospect Dual Autographs)" });

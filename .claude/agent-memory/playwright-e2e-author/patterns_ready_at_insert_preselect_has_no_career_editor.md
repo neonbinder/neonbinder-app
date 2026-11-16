@@ -23,4 +23,4 @@ so a row that was creatable on one seed can be a preselect on the next.
 - A skip can land on a team step or a lookup wait, so re-run the walk over the
   team/league steps after it rather than asserting the next player at once.
 - A pick step ("Which <name> is this?") has no career editor either.
-- See [[patterns-button-name-substring-hides-demoted-variants]].
+- See [[patterns_button_name_substring_hides_demoted_variants]].

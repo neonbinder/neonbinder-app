@@ -1,6 +1,6 @@
 ---
-name: patterns-credential-seeding
-description: How credential specs work post-NEO-29 — fake creds for form coverage, /testing/seed-credentials for real-auth coverage, needsReauth fixture and its restore
+name: patterns_credential_seeding
+description: Credentials and sign-in - fake creds for forms, seed-credentials for real auth, needsReauth fixture, redirect chains, never pass secrets via env
 metadata:
   type: project
 ---
@@ -39,3 +39,47 @@ seeds its shard's account. No credential typing; everything is server-side.
 - The reauth notice's dismissal is `sessionStorage` per tab: click its link BEFORE
   Dismiss, because Dismiss hides the whole strip (link included) for the tab
   session; get back to the Set Builder with a fresh navigation.
+
+## Patterns url redirect chains
+
+## How redirect chains work
+`signIn("/dest")` opens `/testing/sign-in?redirect=<dest>&worker=<n>`, signs the
+worker in, then forwards to `<dest>`. A nested hop keeps its `?` literal and
+writes a nested `&` as `%26`:
+
+```ts
+await signIn("/testing/seed-credentials?redirect=/profile");           // seed only
+await signIn("/testing/seed-credentials?sites=label-scans%26redirect=/print/labels");
+```
+
+- **Seed-only**: the spec needs real credentials available (set-selector specs,
+  real-auth credential specs).
+- **Reset then seed**: only the `bootstrap` project wipes before seeding; a spec
+  never resets (R4, R7).
+- **Isolated account**: `signIn(dest, { account: "new-profile" })` for a spec that
+  must start from an empty profile.
+
+Always let `signIn` build the URL (it adds the `worker=` parameter that selects
+the Clerk user); never hand-assemble the chain.
+
+## Feedback no secrets via env
+
+Hard rule (from NEO-29, carried over): marketplace usernames and passwords must
+NEVER appear in a spec file, a test argument, a logged value or a run
+artifact, and never be typed from a variable a CI step exports for the spec.
+
+**Why:** the previous harness serialised its entire env map into debug output
+that was uploaded as a PUBLIC CI artifact, and real marketplace passwords
+leaked that way. The same applies to Playwright traces (they record Clerk
+testing tokens and request bodies): never upload or commit traces, videos or
+HTML reports with data in them.
+
+**How to apply:**
+- Credential FORM specs (save, setup, clear-then-setup): type fake literals
+  and assert the "saved but authentication failed" state.
+- Real-auth coverage: route sign-in through `/testing/seed-credentials`
+  (GUIDE "Worker-state seeding"), which seeds server-side from the deployment's
+  env; or use `support/credentials.ts`.
+- Never add a `wip` tag to work around this; fix the underlying security issue.
+
+See [[patterns_credential_seeding]] for the implementation patterns.

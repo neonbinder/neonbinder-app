@@ -58,16 +58,16 @@ export function stubIdentity() {
   };
 }
 
-export async function startFake({ store = new MemoryStore(), configOver = {}, now, sleep } = {}) {
+export async function startFake({ store = new MemoryStore(), configOver = {}, now, sleep, persistence, appOver = {} } = {}) {
   setLogSink(() => {});
   const config = testConfig(configOver);
   const catalogue = new Catalogue(store);
   await catalogue.load();
   const captures = new Captures(store);
   await captures.load();
-  const state = new StateStore(now);
+  const state = new StateStore(now, persistence);
   const identity = stubIdentity();
-  const app = createApp({ config, catalogue, captures, state, identity, verifyIdToken: stubVerifier, instanceId: "test-instance", now, sleep });
+  const app = createApp({ config, catalogue, captures, state, identity, verifyIdToken: stubVerifier, instanceId: "test-instance", now, sleep, ...appOver });
   const server = await new Promise((resolve) => {
     const s = app.listen(0, "127.0.0.1", () => resolve(s));
   });

@@ -65,7 +65,7 @@
 // other one-marketplace real sets, which lists it whatever brand files it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import type { Page } from "@playwright/test";
-import { expectAfterMarketplace } from "../../support/marketplace-wait";
+import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
 import {
   CHECKLISTS,
   nameFallbackFacts,
@@ -225,9 +225,15 @@ test(
       .getByRole("listbox", { name: "Sets" })
       .getByRole("option", { name: /^Donruss \S+$/ })
       .click();
-    await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
+    await expectStepWithSportLots(page, columnOption(page, "Variant Types", "Insert"), env, {
+      liveMs: VARIANT_TYPES_SYNC,
+      what: "Variant Types row Insert",
+    });
     await columnOption(page, "Variant Types", "Insert").click();
-    await expect(columnHeading(page, "Inserts")).toBeVisible({ timeout: INSERT_FETCH });
+    await expectStepWithSportLots(page, columnHeading(page, "Inserts"), env, {
+      liveMs: INSERT_FETCH,
+      what: "the Inserts column opening",
+    });
     await columnSearch(page, "Inserts").fill("Retro 1997");
     await columnOption(page, "Inserts", INSERT).click();
     // R2 precondition: nothing is fetched yet (a re-run fails here, by name: re-seed first).

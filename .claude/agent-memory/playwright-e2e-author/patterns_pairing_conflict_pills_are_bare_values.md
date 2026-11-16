@@ -27,7 +27,7 @@ are `disabled` until a BSC row is selected, but their aria-label is readable.
 **Asserting:**
 - the pill: `getByRole("radio", { name: \`${v} — use this name for ${scope}\`, exact: true })`
   (a runtime value goes in as a string with `exact: true`, never a raw regex:
-  [[runtime-names-need-regex-escaping]]) plus `toHaveText(/^(✓ )?<escaped v>$/)`
+  [[patterns_responsive_duplicates_and_text_locators]]) plus `toHaveText(/^(✓ )?<escaped v>$/)`
   for the visible half;
 - checked: `toBeChecked()` works on the `role="radio"` button
   (aria-checked); also prove it by the row's `Unlink #<n> <value>`, which
@@ -35,14 +35,14 @@ are `disabled` until a BSC row is selected, but their aria-label is readable.
 - no source named: `getByRole("radio", { name: /^(BSC|SportLots|Custom): / })`
   and `getByRole("radio").filter({ hasText: /^(✓ )?(BSC|SportLots|Custom): / })`
   both `toHaveCount(0)`, plus `getByText(/These marketplaces/)` count 0, each
-  riding on a positive pill assert ([[negative-asserts-pass-on-a-dead-page]]);
+  riding on a positive pill assert ([[patterns_negative_asserts_pass_on_a_dead_page]]);
 - scopes prefix each other (`#FS-1` vs `#FS-10`): every group/radiogroup/
   textbox name lookup uses `exact: true`, and a regex on `Edit name for #FS-1 `
   keeps the trailing space.
 
 **Big sets:** the dialog body is not virtualised, so `click()` and
 `toBeVisible()` reach any matched row. The committed checklist IS virtualised
-and opens at its last row ([[committed-checklist-opens-mid-list]]); since
+and opens at its last row ([[patterns_entity_column_shapes_and_cold_sync]]); since
 NEO-343 use the checklist search (`searchbox` "Search cards", status `<n> of
 <total> cards`, number terms are PREFIX matches) to reach a saved row instead
 of choosing fixture cards by list position. Worked examples:

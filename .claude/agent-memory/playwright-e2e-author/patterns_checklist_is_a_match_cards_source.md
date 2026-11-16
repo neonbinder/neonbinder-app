@@ -78,3 +78,15 @@ passes against any break. The solo line "Kept all N cards from BSC. Nothing to
 match, no other marketplace attached." has no live E2E coverage (only
 CardChecklist.test.tsx). Before adding an assert to a branch, plant a break on
 it and watch it go RED; a pass means the branch is dead.
+
+Name-fallback pairing (a published checklist whose numbers match no card): equal
+row/card counts pair by unique player name on the server; different counts apply
+nothing and pre-link the name pairs as suggestions. Since NEO-496 the dialog
+opens either way with Keep controls (no solo mode). Equal counts with ONE
+misspelled name: the server pairs it too, by a near name (a "Checklist #n" chip
+plus a "Name match NN%" chip in the collapsed Matched list). Linking a pair
+whose spellings differ makes the wizard open on "Checklist says otherwise"
+FIRST (`expectChecklistDisagreementFirst`, `pickDisagreementSide`, then Next).
+Match Cards "Cancel" with decisions made opens a "Discard N pairing?" confirm;
+click "Discard N pairing" too. Derive counts from the CSV through
+`nameFallbackFacts`, never hard-code.

@@ -19,4 +19,5 @@
 - [Inverted skip path loses its live proof](inverted-skip-path-loses-its-live-proof.md) — a rule flip rewrites the skip specs; the unchanged case survives only as an .or(); grep removed sentences
 - [Two-order spec helper](two-order-spec-helper-hook-and-pin-widening.md) — instant-or-wait helpers: check failure hooks, widened success regexes, dropped underWay gate
 - [Fake-upstream fault proof gaps](fake-upstream-fault-injection-proof-gaps.md) — conditional/times:1 faults prove nothing; dropped log-shape tests; vacuous capture checks
+- [Budget sweep, GCS store untested](budget-sweep-and-gcs-store-untested.md) — removed/added expect pairing; cloud adapter tested via local store only; cold-start seed budgets
 - [Wildcard regex hides doubled words](wildcard-regex-around-a-label-hides-doubled-words.md) — `.*LABEL.*` passes a brand-doubled label; pin exact text for wording fixes
