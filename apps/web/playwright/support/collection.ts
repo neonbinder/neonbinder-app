@@ -627,7 +627,7 @@ async function stepLands(
  * `{ "Go live": 15_000 }`. Only a ceiling Jason has signed off belongs here,
  * recorded at the call site (GUIDE hard rule 3); every other step keeps the
  * config's budget, and a step not named in `slow` is never given more. `slow`
- * may also be a function of the label (`bscReadCeiling`). `marketplace` (NEO-487,
+ * may also be a function of the label. `marketplace` (NEO-487,
  * "BuySportsCards") makes every OTHER step wait 7 s plus the time the
  * marketplace's "Waiting on ..." status is up (`expectAfterMarketplace`).
  */
@@ -714,19 +714,23 @@ const MAX_REST_PASSES = 45;
  * queued and reads "Waiting on BuySportsCards...") and a spaced background read
  * asks BuySportsCards again; the run starts on its own the moment the answer
  * lands. The read's delays are 30 s, 60 s, then 120 s (`BSC_SELLER_ID_FETCH_DELAYS_MS`
- * in convex/bscSellerId.ts), so the third try lands 210 s after the chain starts.
- * That covers the longest BuySportsCards stall measured (150 s) with room to
- * spare, plus the 20 s one try's read may hold and the 7 s of our own time every
- * step is allowed (`expectAfterMarketplace`): 210 + 20 + 7 = 237 s, rounded up to
- * 240 s.
+ * in convex/bscSellerId.ts).
  *
- * Measured and derived on 2026-11-13 (NEO-483). VOID if those delays, the 20 s
- * read, or the 150 s worst stall change: re-derive it then. A ceiling past the
- * 180 s default of `expectAfterMarketplace` needs Jason's sign-off (GUIDE hard
- * rule 3): it is listed in NEO-483's morning report for him to approve.
+ * NEO-552 follow-up (Jason approved tightening every BSC wait to the fake's pace on
+ * 2026-11-15). BuySportsCards is the fake: it answers the seller profile at once and
+ * never stalls, so the first background try (30 s after the chain starts) lands the
+ * account. That try's read may hold for up to 20 s (the read's own timeout) and every
+ * step is allowed 7 s of our own time (`expectAfterMarketplace`): 30 + 20 + 7 = 57 s,
+ * rounded up to 60 s. Measured on the #487 merge-group run (GUIDE) that sized this: the one press
+ * of four that met the wait was held 20.3 s. The old 240 s was the real BSC's worst
+ * stall (150 s) plus all three tries; the fake has no such stall, and a spec that
+ * wants the wait longer holds the read itself (`bscFault.slow`, shorter than the
+ * 20 s read timeout), which this still covers.
+ *
+ * VOID if the first delay, the 20 s read, or the fake's answer-at-once change.
  * Used for the CLAIM wait only; every later step keeps the default.
  */
-export const SELLER_ACCOUNT_CAP_MS = 240_000;
+export const SELLER_ACCOUNT_CAP_MS = 60_000;
 
 /** The state word Sync status gives a platform whose seller account lists from another NeonBinder account. */
 const SELLER_CONFLICT_WORD = "Seller account in use";

@@ -952,8 +952,7 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetVariantCommonPricesBatch",
     // NEO-552 — the BSC call gate.
     "resetMarketplaceCallGatesBatch",
-    // PR 451 (NEO-482) — the BSC 429 cooldown and the BSC wait rows.
-    "resetMarketplaceCooldownsBatch",
+    // PR 451 (NEO-482) — the BSC wait rows.
     "resetMarketplaceWaitsBatch",
   ])("%s is declared internalMutation, not mutation", (fn) => {
     // These do the actual deleting, and they carry no identity check —

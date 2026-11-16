@@ -101,14 +101,65 @@ function isManifest(v: unknown): v is Manifest {
   return m.schema === 1 && typeof m.version === "number" && typeof m.entries === "object" && m.entries !== null;
 }
 
+/**
+ * Most entries a manifest may hold (CONTRACT.md, "Storage layout"). The boot
+ * reads every recording before the server listens, so an unbounded catalogue
+ * could outlast the startup probe; this many is roughly 10-20 s of reads.
+ * Enforced at upload, never at boot (a boot refusal would only crash-loop).
+ */
+export const MAX_RECORDINGS_TOTAL = 5000;
+
+/** An upload that would add keys past the manifest cap. Carries counts only. */
+export class CatalogueFullError extends Error {
+  constructor(
+    readonly total: number,
+    readonly max: number,
+  ) {
+    super("the catalogue is full");
+    this.name = "CatalogueFullError";
+  }
+}
+
+export interface CatalogueOptions {
+  /** Test seam for `MAX_RECORDINGS_TOTAL`. */
+  maxEntries?: number;
+}
+
+/**
+ * The manifest's entry count after an upload, and whether the upload adds a
+ * key it does not hold yet. A replaced key, or one repeated within the
+ * upload, counts once.
+ */
+function countAfter(entries: Record<string, ManifestEntry>, recordings: readonly Recording[]): { total: number; adds: number } {
+  const fresh = new Set<string>();
+  for (const r of recordings) if (!Object.prototype.hasOwnProperty.call(entries, r.key)) fresh.add(r.key);
+  return { total: Object.keys(entries).length + fresh.size, adds: fresh.size };
+}
+
 export class Catalogue {
   private byKey = new Map<string, Recording>();
   private resultsByFilters = new Map<string, Recording>();
   private manifest: Manifest | null = null;
   private generation: string | null = null;
   private writeChain: Promise<unknown> = Promise.resolve();
+  private readonly maxEntries: number;
 
-  constructor(private readonly store: ObjectStore) {}
+  constructor(
+    private readonly store: ObjectStore,
+    opts: CatalogueOptions = {},
+  ) {
+    this.maxEntries = opts.maxEntries ?? MAX_RECORDINGS_TOTAL;
+  }
+
+  /**
+   * Refuses an upload that adds a key past the cap. One that only replaces
+   * keys is let through even on a manifest already over it (re-recording
+   * never grows the boot).
+   */
+  private checkRoom(entries: Record<string, ManifestEntry>, recordings: readonly Recording[]): void {
+    const { total, adds } = countAfter(entries, recordings);
+    if (adds > 0 && total > this.maxEntries) throw new CatalogueFullError(total, this.maxEntries);
+  }
 
   get manifestVersion(): number {
     return this.manifest?.version ?? 0;
@@ -189,9 +240,14 @@ export class Catalogue {
   }
 
   private async addNow(recordings: Recording[]): Promise<{ version: number; added: number }> {
+    // Checked here, inside the write chain, so concurrent uploads in this
+    // process cannot both take the last room; checked again against a
+    // re-read manifest after a conflict (another writer may have filled it).
+    this.checkRoom(this.manifest?.entries ?? {}, recordings);
     for (const r of recordings) await this.store.write(objectName(r.key), r);
     for (let attempt = 0; attempt < 2; attempt++) {
       const base = this.manifest;
+      if (attempt > 0) this.checkRoom(base?.entries ?? {}, recordings);
       const next: Manifest = {
         schema: 1,
         version: (base?.version ?? 0) + 1,

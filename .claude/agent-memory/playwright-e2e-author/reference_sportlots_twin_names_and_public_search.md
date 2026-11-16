@@ -75,4 +75,4 @@ fields; the Ready title inputs have distinct accessible names, so address each b
 `NeonBinder set name for <label>`. Read the commit back from the OTHER row's chip
 dropping its `(#id)`.
 
-Related: [[measure-a-fixture-from-ci-artifacts]].
+Related: [[patterns_record_a_fixture_sets_lookups]].
