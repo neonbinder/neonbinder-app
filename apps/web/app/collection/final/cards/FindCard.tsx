@@ -6,7 +6,7 @@ import { useLiverySurface } from "../../prototypes/p1/ui";
 import { useSearchText } from "../catalog/search";
 import { SkeletonBars } from "../catalog/Skeleton";
 import Suggestions from "../catalog/Suggestions";
-import { playerNames, printRunLabel, setLabel, teamNames, teamTextColor, variantLabel } from "../data/labels";
+import { cardSubject, playerNames, printRunLabel, setLabel, teamNames, teamTextColor, variantLabel } from "../data/labels";
 import { collectionCopiesIn, searchable, useCopiesOf, useReadOnlyAll, useScope, useSearch } from "../data/store";
 import type { Card } from "../data/types";
 import { useMyCards } from "./context";
@@ -118,7 +118,9 @@ function Hit({ card }: { card: Card }) {
   const team = card.teams[0];
   // The name starts with the words on the button (label in name), then the
   // number, which tells two of one player's cards apart, then what it does.
-  const shown = `${players || "Player unknown"}${team ? ` ${teamNames(card)}` : ""}, ${setLabel(card.set)}, ${row}${variation}${
+  // NEO-528 — a card with no player leads with its own name, or "With <cameo>".
+  const subject = cardSubject(card) || "Player unknown";
+  const shown = `${subject}${team ? ` ${teamNames(card)}` : ""}, ${setLabel(card.set)}, ${row}${variation}${
     run ? `, ${run}` : ""
   }`;
   return (
@@ -138,7 +140,7 @@ function Hit({ card }: { card: Card }) {
         className={`min-w-0 flex-1 rounded-md text-left hover:text-neon-blue-text ${FOCUS}`}
       >
         <span className="block truncate text-sm font-bold text-ink">
-          {players || "Player unknown"}{" "}
+          {subject}{" "}
           {team && (
             <span className="font-normal" style={{ color: teamTextColor(team, sheet) }}>
               {teamNames(card)}

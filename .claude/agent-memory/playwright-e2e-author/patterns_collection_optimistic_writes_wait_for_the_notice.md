@@ -1,6 +1,6 @@
 ---
-name: collection-optimistic-writes-wait-for-the-notice
-description: /collection flips Have and Remove optimistically, so leaving the page, or pressing the next Remove in the same list, races the write; wait for the server-confirmed notice first
+name: patterns_collection_optimistic_writes_wait_for_the_notice
+description: Collection writes are optimistic - wait for the notice; a goto right after an optimistic tick loses it
 metadata:
   type: pattern
 ---
@@ -16,3 +16,28 @@ On `/collection`, Have, Add and Remove copy use Convex optimistic updates: the p
 Other facts from the NEO-358 delete-refusal spec: a hand-made card has no player, so the collector sees only `#<number>` (names are `Have #<n>`, `Details for #<n>`), the checklist region is `2024 <set> Base`, and the cascade column under a hand-made `Insert` type is titled `Insert` (pick `Base` there). Refusal copy for one collector reads "Hold up! A collector has this card, so it stays in the catalog."; the planted break that proves the spec is skipping the Have step (the delete then succeeds and the alert never shows).
 
 **Third shape, the same notice twice (NEO-526, 2026-11-13):** every "Removed <short>, Raw, Excellent · Main" notice reads the same, so a `^Removed` wait only tells the FIRST Remove apart; the 2nd and 3rd waits pass on the stale notice, and a press lost to the reflow goes unseen (the next spec on the worker then found the card already Have). The page-level notice also outlives a closed drawer (10 s), so a Remove in the next drawer visit can be satisfied by the previous card's notice. Fix: `confirmRemoved(drawer)` in `support/collection.ts` after EVERY Remove (wait `^Removed `, press `Dismiss message`, expect the status empty), the last one included, before the next press or closing the drawer. In a `finally` it sits inside the best-effort try, so a miss is annotated and never masks the body's error. A spec that has run only on optimistic state is "green" with a Remove that never reached the server.
+
+## Optimistic tick then navigate reads from a second tab
+
+Seen on the NEO-500 Pick List: "Pull these 2" ticked both rows and posted its
+notice at once (optimistic), the spec went straight to `page.goto(<ship hop>)`,
+and after the load both lines were back, unpulled. With the page left open
+the same pull was on the server within the 7 s budget.
+
+**Why:** the notice and `aria-pressed` are client state; the screen has no
+perceivable "saved" signal, so leaving the page can beat the mutation.
+
+**How to apply:** before a reload or navigation that must read a just-ticked
+write, open a second page in the same context on the same screen and assert
+the server's state there (web-first, 7 s; it subscribes live). Then reload the
+main page. Report the missing "saved" signal as a product gap; never a sleep.
+
+Second trap from the same spec: order numbers `<token>` and `<token>b` made
+`Pulled Card NB couldn't match, BSC <token>` (a `^`-prefix regex) match both
+orders' rows. Mint sibling ids with disjoint suffixes (`<token>a`, `<token>b`).
+
+Also: a failure cleanup that navigates the failing page wipes the failure
+screenshot and error-context (both are taken at teardown). Do it on
+`context.newPage()` instead.
+
+Related: [[patterns_collection_optimistic_writes_wait_for_the_notice]], [[patterns_responsive_duplicates_and_text_locators]].

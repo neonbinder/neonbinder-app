@@ -41,5 +41,5 @@ args tuple and gets the stale answer. A never-typed prefix is fresh.
 - Run the watcher with `run_in_background`: two Bash calls in one message
   run SEQUENTIALLY, so a foreground watcher never sees the Maestro run.
 
-Related: [[capture-browser-console-with-cdp]], [[probe-a-fixture-without-draining-it]],
-[[present-in-failure-dump-means-late-arrival]], [[neo331-team-picker-ranking]].
+Related: capture browser console with cdp, probe a fixture without draining it,
+present in failure dump means late arrival, [[reference_neo331_team_picker_ranking]].

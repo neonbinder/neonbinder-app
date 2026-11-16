@@ -39,6 +39,7 @@ import LabelEditorDialog from "./binders/LabelEditorDialog";
 import {
   binderLayout,
   binderPages,
+  type CameoOf,
   cardPages,
   cardsOnPages,
   firstPocketVariant,
@@ -89,6 +90,7 @@ import PackTray, {
 import Shelf, { InventoryShelf } from "./binders/Shelf";
 import SmartFitsStatus from "./binders/SmartFitsStatus";
 import { keepClearOfTray, trackInputModality } from "./binders/trayClear";
+import { cameoNames, cameosOn } from "./cameo";
 import { useSearchText } from "./catalog/search";
 import { shortCardName } from "./data/labels";
 import {
@@ -139,7 +141,7 @@ import {
   type SmartRule,
 } from "./data/types";
 import { useCollectionParams, useGoToSide, useReplaceParams, useSetScope } from "./mode";
-import { usePageApi, type OpenCardOptions } from "./pageApi";
+import { startWrite, usePageApi, type OpenCardOptions } from "./pageApi";
 import type { GoToTabParams } from "./store";
 
 /**
@@ -231,7 +233,8 @@ export default function MyBindersTab({
   const capabilities = useCapabilities();
   const demo = useDemoExtension();
   const actions = useCollectionActions();
-  const { run } = usePageApi();
+  const pageApi = usePageApi();
+  const { run } = pageApi;
   const scope = useScope();
   const wants = useWants();
   const wide = useWideDesk();
@@ -423,7 +426,17 @@ export default function MyBindersTab({
     binderSettings && homeOpen?.smartRule ? homeOpen.id : null,
     homeOpen?.smartRule ? listCardIds : null,
   );
-  const fits = matches ? (id: CardId) => matches.has(id) : undefined;
+  const fits = matches ? (id: CardId) => matches.fits.has(id) : undefined;
+  // NEO-528 — a card the rule takes in only as a cameo: one it holds
+  // (`matches`), or an empty slot's (`needs`). Who is pictured, else undefined.
+  const smartRule = homeOpen?.smartRule;
+  const cameoOf: CameoOf | undefined =
+    smartRule && cameosOn(smartRule)
+      ? (card) =>
+          matches?.secondary.has(card.id) || needs?.secondary.has(card.id)
+            ? cameoNames(card, smartRule)
+            : undefined
+      : undefined;
 
   // NEO-410 — a smart binder's empty-slot status line (`SmartFitsStatus`).
   const fitsWatched = !!(homeOpen?.smartRule && layout?.sort && layout.emptySlots);
@@ -476,6 +489,7 @@ export default function MyBindersTab({
           needs: needs?.cards,
           heldElsewhere: needs?.held,
           fits,
+          cameo: cameoOf,
         });
       else
         pages = markOutside(
@@ -489,6 +503,7 @@ export default function MyBindersTab({
               layout && !layout.emptySlots ? () => true : ownedAnywhere,
           }),
           fits,
+          cameoOf,
         );
     }
     loading =
@@ -551,8 +566,19 @@ export default function MyBindersTab({
     if (layout?.sort && layout.emptySlots && needs && listCopies) {
       // Sorted with empty slots: the sleeves still to fill.
       if (!needs.truncated && !listPage?.truncated) {
-        tally.have = new Set(listCopies.map((c) => c.cardId)).size;
-        tally.need = needs.cards.length;
+        const held = new Set(listCopies.map((c) => c.cardId));
+        if (!cameoOf) {
+          tally.have = held.size;
+          tally.need = needs.cards.length;
+        } else if (matches) {
+          // NEO-528 — two counts: the cards it takes in on their own players,
+          // and the cameos, each "have, need" on its own.
+          const cameoHave = [...held].filter((id) => matches.secondary.has(id)).length;
+          const cameoNeed = needs.cards.filter((c) => needs.secondary.has(c.id)).length;
+          tally.have = held.size - cameoHave;
+          tally.need = needs.cards.length - cameoNeed;
+          tally.cameos = { have: cameoHave, need: cameoNeed };
+        }
       }
     } else if (followed && listCopies && followedCopies) {
       const t = followedTally(listCopies, followed, ownedAnywhere);
@@ -1164,9 +1190,11 @@ export default function MyBindersTab({
   const createContainer = async (
     input: NewContainer,
   ): Promise<string | null> => {
+    // NEO-460: the line's last Undo goes now, never pressed while this saves.
+    const ticket = startWrite(pageApi);
     try {
       const result = await actions.createContainer(input);
-      notify(
+      ticket.done(
         input.rule
           ? `${input.name} is on the shelf. It fills itself.`
           : input.smartRule
@@ -1183,6 +1211,7 @@ export default function MyBindersTab({
       if (input.smartRule) setDialog("find");
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };
@@ -1205,15 +1234,17 @@ export default function MyBindersTab({
   ): Promise<string | null> => {
     if (!container) return null;
     const c = container;
+    const ticket = startWrite(pageApi);
     try {
       const result = await actions.updateContainer(c, patch);
       setDialog(null);
-      notify(
+      ticket.done(
         patch.name ? `${c.name} is now ${patch.name}.` : `Saved ${c.name}.`,
         result.undo,
       );
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };
@@ -1221,6 +1252,7 @@ export default function MyBindersTab({
   const deleteContainer = async (): Promise<string | null> => {
     if (!container) return null;
     const c = container;
+    const ticket = startWrite(pageApi);
     try {
       const { moved } = await actions.deleteContainer(c);
       setDialog(null);
@@ -1233,7 +1265,7 @@ export default function MyBindersTab({
       // (it draws the shelf again, so Back would seem to do nothing).
       replaceParams((p) => p.delete("b"));
       setScope("all");
-      notify(
+      ticket.done(
         moved === 0
           ? `${c.name} is off the shelf.`
           : c.kind === "box"
@@ -1242,6 +1274,7 @@ export default function MyBindersTab({
       );
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };
@@ -1291,14 +1324,15 @@ export default function MyBindersTab({
         notify(`Still loading ${c.name}. Try again in a moment.`);
         return;
       }
+      const ticket = startWrite(pageApi);
       try {
         const relaid = await actions.relayPockets(c, placements);
         const off = await actions.setBinderSettings(c, { sort: null });
-        notify(`${c.name} stays as it is now. Drag cards anywhere.`, () => {
+        ticket.done(`${c.name} stays as it is now. Drag cards anywhere.`, () => {
           void off.undo().then(() => relaid.undo());
         });
       } catch (error) {
-        notify(writeErrorMessage(error));
+        ticket.refused(writeErrorMessage(error));
       }
       return;
     }
@@ -1337,9 +1371,10 @@ export default function MyBindersTab({
   const saveRule = async (rule: SmartRule | null): Promise<string | null> => {
     if (!homeOpen) return null;
     const c = homeOpen;
+    const ticket = startWrite(pageApi);
     try {
       const result = await actions.setSmartRule(c, rule);
-      notify(
+      ticket.done(
         rule
           ? `${c.name} has its rule. Find cards pulls in the ones you have.`
           : `${c.name} has no rule now. Its cards stay put.`,
@@ -1347,6 +1382,7 @@ export default function MyBindersTab({
       );
       return null;
     } catch (error) {
+      ticket.refusedElsewhere();
       return writeErrorMessage(error);
     }
   };

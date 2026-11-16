@@ -11,11 +11,11 @@ metadata:
 League* > Base, BSC only, through the fetch-to-wizard helper. 200 players + 8 clubs
 unknown; 211 rows settle (a staged league + 2 staged career teams) after ~144 s of LIVE
 lookups. All 211 are now in the NEO-289 recording, so re-measure the settle time from CI
-(see [[record-a-fixture-sets-lookups]]). The walk reads every team/league heading and acts
+(see [[patterns_record_a_fixture_sets_lookups]]). The walk reads every team/league heading and acts
 on one checklist club BY NAME (Navegantes, an alias link), skipping the rest; branching on
 the heading text is free in a Playwright spec. The past-era claims (Tigres, the catalogue's
 single `Pittsburgh Crawfords`) moved to the past-era team-link spec, see
-[[past-era-team-fixture]]. The alias-clash holder (`Pca`) now lives on the minted `Loc Ali`
+[[reference_reaching_the_missing_team_fixer]]. The alias-clash holder (`Pca`) now lives on the minted `Loc Ali`
 team. Until NEO-330 the fixture was the 4-card Rickwood Field set below, whose clubs the
 reference catalogue now holds; the Rickwood history follows.
 
@@ -48,7 +48,7 @@ team link. Read it back with the `Back to previous decision` control after the l
 live deployment-wide between commit and cleanup, so the linked string must be one no
 other spec can look up: "whichever club comes first" once linked "Montreal Royals", a
 career team the Big League specs also stage, and changed their walks (see
-[[pick-a-fixture-owned-name-by-name]]). On the Venezuelan set that is Navegantes, a BSC
+[[patterns_per_worker_data_isolation]]). On the Venezuelan set that is Navegantes, a BSC
 card club no other spec's set carries. The walk's skip click is built from the heading
 it just read (`Skip <escaped name> . (not a team|this team has no league)`): a bare
 `Skip .*` click issued while the previous skip lands can hit the NEXT row, which may be
@@ -82,4 +82,4 @@ search box empty and the wizard's "Shows as:" gone, the Team name input is the o
 full-name node under its caption; `New Team: <row>` (raw name, never the draft) proves
 the walk did not move.
 
-Related: [[patterns_draft_echo_is_not_a_read_back]], [[neo255-one-marketplace-surfaces]].
+Related: [[patterns_draft_echo_is_not_a_read_back]], [[reference_neo255_one_marketplace_surfaces]].

@@ -43,6 +43,13 @@ export interface AppDeps {
   loading?: () => boolean;
   /** Resolves when loading is done; held requests wait on it. */
   loaded?: Promise<void>;
+  /**
+   * True while the durable misses are being restored (after the recordings).
+   * Only `GET /__fake/misses` waits for it; `/api` does not. Absent: never.
+   */
+  missesLoading?: () => boolean;
+  /** Resolves when the misses restore is done (failed included). */
+  missesLoaded?: Promise<void>;
   /** How long a held request waits for the load before a 503 (default 25 s). */
   loadWaitMs?: number;
 }
@@ -105,23 +112,46 @@ export function createApp(deps: AppDeps): express.Express {
    * start answers normally (a 503 here would count against Convex's BSC call
    * gate). Only a load longer than `loadWaitMs` answers 503 loading.
    */
-  const holdWhileLoading = async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
-    if (!isLoading()) {
-      next();
-      return;
-    }
-    let timer: NodeJS.Timeout | undefined;
-    await Promise.race([
-      deps.loaded ?? new Promise<void>(() => undefined),
-      new Promise<void>((r) => {
-        timer = setTimeout(r, loadWaitMs);
-        timer.unref();
-      }),
-    ]);
-    clearTimeout(timer);
-    if (isLoading()) loadingAnswer(res);
-    else next();
-  };
+  const holdUntil =
+    (busy: () => boolean, done: Promise<unknown> | undefined) =>
+    async (_req: Request, res: Response, next: NextFunction): Promise<void> => {
+      if (!busy()) {
+        next();
+        return;
+      }
+      let timer: NodeJS.Timeout | undefined;
+      await Promise.race([
+        done ?? new Promise<void>(() => undefined),
+        new Promise<void>((r) => {
+          timer = setTimeout(r, loadWaitMs);
+          timer.unref();
+        }),
+      ]);
+      clearTimeout(timer);
+      if (busy()) loadingAnswer(res);
+      else next();
+    };
+  const holdWhileLoading = holdUntil(isLoading, deps.loaded);
+  /**
+   * The admin writes that change the miss list in bulk (a stored recording
+   * clears its misses, reset-all clears them all) wait for the misses restore:
+   * run during it, the restore would put back what they removed (CONTRACT.md,
+   * "Durable misses"). Run after the admin check, inside the control router.
+   */
+  const holdForMisses = holdUntil(
+    deps.missesLoading ?? (() => false),
+    deps.missesLoaded ?? (deps.missesLoading ? new Promise<void>(() => undefined) : Promise.resolve()),
+  );
+  // The miss list also waits for the durable misses (restored after the recordings).
+  const missesBusy = deps.missesLoading ?? (() => false);
+  const holdMisses = holdUntil(
+    () => isLoading() || missesBusy(),
+    // A busy flag with no promise waits out the cap, as `holdWhileLoading` does.
+    Promise.all([
+      deps.loaded ?? (deps.loading ? new Promise<void>(() => undefined) : Promise.resolve()),
+      deps.missesLoaded ?? (deps.missesLoading ? new Promise<void>(() => undefined) : Promise.resolve()),
+    ]),
+  );
 
   const tokenNs = (req: Request): string | null => {
     const t = bearerToken(req);
@@ -130,16 +160,20 @@ export function createApp(deps: AppDeps): express.Express {
 
   // Not `/healthz`: Cloud Run's frontend reserves that path (and any ending in `z`) and answers 404 itself.
   app.get("/__fake/health", caller, (_req, res) => {
+    const loading = isLoading();
     res.json({
       ok: true,
-      loading: isLoading(),
+      loading,
       instanceId: deps.instanceId,
       revision: config.revision,
       manifestVersion: deps.catalogue.manifestVersion,
       allowlistVersion: SANITISE_ALLOWLIST_VERSION,
       recordings: deps.catalogue.size,
       // The write endpoints with no stored real capture (CONTRACT.md, "Write capture").
-      writeCaptures: { missing: deps.captures.missing() },
+      // While loading the captures are not in yet, so every endpoint would read
+      // as missing: say "loading" and send no list. No `missing` field also makes
+      // a reader that ignores `loading` fail closed, never read "none missing".
+      writeCaptures: loading ? { loading: true } : { missing: deps.captures.missing() },
     });
   });
 
@@ -147,13 +181,14 @@ export function createApp(deps: AppDeps): express.Express {
     "/__fake",
     caller,
     (req: Request, res: Response, next: NextFunction) =>
-      LOADING_REFUSED_CONTROL.has(req.path) ? refuseWhileLoading(req, res, next) : LOADING_HELD_CONTROL.has(req.path) && req.method === "GET" ? holdWhileLoading(req, res, next) : next(),
+      LOADING_REFUSED_CONTROL.has(req.path) ? refuseWhileLoading(req, res, next) : LOADING_HELD_CONTROL.has(req.path) && req.method === "GET" ? holdMisses(req, res, next) : next(),
     controlRouter({
       catalogue: deps.catalogue,
       captures: deps.captures,
       state,
       now,
       requireAdmin: admin,
+      afterMissesRestore: holdForMisses,
       resetIdentity: identity.resetIdentity ? (sel) => identity.resetIdentity!(sel) : undefined,
     }),
   );

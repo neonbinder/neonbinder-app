@@ -1,0 +1,397 @@
+number,player,team
+1,Eric Dickerson,Los Angeles Rams
+2,Ali Haji-Sheikh,New York Giants
+3,Franco Harris,Pittsburgh Steelers
+4,Mark Moseley,Washington Redskins
+5,John Riggins,Washington Redskins
+6,Jan Stenerud,Green Bay Packers
+7,1983 AFC Championship CCG,No Team
+8,1983 NFC Championship CCG,No Team
+9,Super Bowl XVIII SBXVIII,No Team
+10,Colts Team Leaders - Curtis Dickey,Baltimore Colts
+11,Raul Allegre,Baltimore Colts
+12,Curtis Dickey,Baltimore Colts
+13,Ray Donaldson,Baltimore Colts
+14,Nesby Glasgow,Baltimore Colts
+15,Chris Hinton,Baltimore Colts
+16,Vernon Maxwell,Baltimore Colts
+17,Randy McMillan,Baltimore Colts
+18,Mike Pagel,Baltimore Colts
+19,Rohn Stark,Baltimore Colts
+20,Leo Wisniewski,Baltimore Colts
+21,Bills Team Leaders - Joe Cribbs,Buffalo Bills
+22,Jerry Butler,Buffalo Bills
+23,Joe Danelo,Buffalo Bills
+24,Joe Ferguson,Buffalo Bills
+25,Steve Freeman,Buffalo Bills
+26,Roosevelt Leaks,Buffalo Bills
+27,Frank Lewis,Buffalo Bills
+28,Eugene Marve,Buffalo Bills
+29,Booker Moore,Buffalo Bills
+30,Fred Smerlas,Buffalo Bills
+31,Ben Williams,Buffalo Bills
+32,Bengals Team Leaders - Cris Collinsworth,Cincinnati Bengals
+33,Charles Alexander,Cincinnati Bengals
+34,Ken Anderson,Cincinnati Bengals
+35,Ken Anderson,Cincinnati Bengals
+36,Jim Breech,Cincinnati Bengals
+37,Cris Collinsworth,Cincinnati Bengals
+38,Cris Collinsworth,Cincinnati Bengals
+39,Isaac Curtis,Cincinnati Bengals
+40,Eddie Edwards,Cincinnati Bengals
+41,Ray Horton,Cincinnati Bengals
+42,Pete Johnson,Cincinnati Bengals
+43,Steve Kreider,Cincinnati Bengals
+44,Max Montoya,Cincinnati Bengals
+45,Anthony Munoz,Cincinnati Bengals
+46,Reggie Williams,Cincinnati Bengals
+47,Browns Team Leaders - Mike Pruitt,Cleveland Browns
+48,Matt Bahr,Cleveland Browns
+49,Chip Banks,Cleveland Browns
+50,Tom Cousineau,Cleveland Browns
+51,Joe DeLamielleure,Cleveland Browns
+52,Doug Dieken,Cleveland Browns
+53,Bob Golic,Cleveland Browns
+54,Bobby Jones,Cleveland Browns
+55,Dave Logan,Cleveland Browns
+56,Clay Matthews,Cleveland Browns
+57,Paul McDonald,Cleveland Browns
+58,Ozzie Newsome,Cleveland Browns
+59,Ozzie Newsome,Cleveland Browns
+60,Mike Pruitt,Cleveland Browns
+61,Broncos Team Leaders - Steve Watson,Denver Broncos
+62,Barney Chavous,Denver Broncos
+63,John Elway,Denver Broncos
+64,Steve Foley,Denver Broncos
+65,Tom Jackson,Denver Broncos
+66,Rich Karlis,Denver Broncos
+67,Luke Prestridge,Denver Broncos
+68,Zach Thomas,Denver Broncos
+69,Rick Upchurch,Denver Broncos
+70,Steve Watson,Denver Broncos
+71,Sammy Winder,Denver Broncos
+72,Louis Wright,Denver Broncos
+73,Oilers Team Leaders - Tim Smith,Houston Oilers
+74,Jesse Baker,Houston Oilers
+75,Gregg Bingham,Houston Oilers
+76,Robert Brazile,Houston Oilers
+77,Steve Brown,Houston Oilers
+78,Chris Dressel,Houston Oilers
+79,Doug France,Houston Oilers
+80,Florian Kempf,Houston Oilers
+81,Carl Roaches,Houston Oilers
+82,Tim Smith,Houston Oilers
+83,Willie Tullis,Houston Oilers
+84,1983 Team Leaders Chiefs - Carlos Carson,Kansas City Chiefs
+85,Mike Bell,Kansas City Chiefs
+86,Theotis Brown,Kansas City Chiefs
+87,Carlos Carson,Kansas City Chiefs
+88,Carlos Carson,Kansas City Chiefs
+89,Deron Cherry,Kansas City Chiefs
+90,Gary Green,Kansas City Chiefs
+91,Billy Jackson,Kansas City Chiefs
+92,Bill Kenney,Kansas City Chiefs
+93,Bill Kenney,Kansas City Chiefs
+94,Nick Lowery,Kansas City Chiefs
+95,Henry Marshall,Kansas City Chiefs
+96,Art Still,Kansas City Chiefs
+97,Raiders Team Leaders - Todd Christensen,Los Angeles Raiders
+98,Marcus Allen,Los Angeles Raiders
+99,Marcus Allen,Los Angeles Raiders
+100,Lyle Alzado,Los Angeles Raiders
+101,Lyle Alzado,Los Angeles Raiders
+102,Chris Bahr,Los Angeles Raiders
+103,Malcolm Barnwell,Los Angeles Raiders
+104,Cliff Branch,Los Angeles Raiders
+105,Todd Christensen,Los Angeles Raiders
+106,Todd Christensen,Los Angeles Raiders
+107,Ray Guy,Los Angeles Raiders
+108,Frank Hawkins,Los Angeles Raiders
+109,Lester Hayes,Los Angeles Raiders
+110,Ted Hendricks,Los Angeles Raiders
+111,Howie Long,Los Angeles Raiders
+112,Rod Martin,Los Angeles Raiders
+113,Vann McElroy,Los Angeles Raiders
+114,Jim Plunkett,Los Angeles Raiders
+115,Greg Pruitt,Los Angeles Raiders
+116,Dolphins Team Leaders - Mark Duper,Miami Dolphins
+117,Bob Baumhower,Miami Dolphins
+118,Doug Betters,Miami Dolphins
+119,A.J. Duhe,Miami Dolphins
+120,Mark Duper,Miami Dolphins
+121,Andra Franklin,Miami Dolphins
+122,William Judson,Miami Dolphins
+123,Dan Marino,Miami Dolphins
+124,Dan Marino,Miami Dolphins
+125,Nat Moore,Miami Dolphins
+126,Ed Newman,Miami Dolphins
+127,Reggie Roby,Miami Dolphins
+128,Gerald Small,Miami Dolphins
+129,Dwight Stephenson,Miami Dolphins
+130,Uwe Von Schamann,Miami Dolphins
+131,Patriots Team Leaders - Tony Collins,New England Patriots
+132,Rich Camarillo,New England Patriots
+133,Tony Collins,New England Patriots
+134,Tony Collins,New England Patriots
+135,Bob Cryder,New England Patriots
+136,Steve Grogan,New England Patriots
+137,John Hannah,New England Patriots
+138,Brian Holloway,New England Patriots
+139,Roland James,New England Patriots
+140,Stanley Morgan,New England Patriots
+141,Rick Sanford,New England Patriots
+142,Mosi Tatupu,New England Patriots
+143,Andre Tippett,New England Patriots
+144,Jets Team Leaders - Wesley Walker,New York Jets
+145,Jerome Barkum,New York Jets
+146,Mark Gastineau,New York Jets
+147,Mark Gastineau,New York Jets
+148,Bruce Harper,New York Jets
+149,Johnny 'Lam' Jones,New York Jets
+150,Joe Klecko,New York Jets
+151,Pat Leahy,New York Jets
+152,Freeman McNeil,New York Jets
+153,Lance Mehl,New York Jets
+154,Marvin Powell,New York Jets
+155,Darrol Ray,New York Jets
+156,Pat Ryan,New York Jets
+157,Kirk Springs,New York Jets
+158,Wesley Walker,New York Jets
+159,Steelers Team Leaders - Franco Harris,Pittsburgh Steelers
+160,Walter Abercrombie,Pittsburgh Steelers
+161,Gary Anderson,Pittsburgh Steelers
+162,Terry Bradshaw,Pittsburgh Steelers
+163,Craig Colquitt,Pittsburgh Steelers
+164,Bennie Cunningham,Pittsburgh Steelers
+165,Franco Harris,Pittsburgh Steelers
+166,Franco Harris,Pittsburgh Steelers
+167,Jack Lambert,Pittsburgh Steelers
+168,Jack Lambert,Pittsburgh Steelers
+169,Frank Pollard,Pittsburgh Steelers
+170,Donnie Shell,Pittsburgh Steelers
+171,Mike Webster,Pittsburgh Steelers
+172,Keith Willis,Pittsburgh Steelers
+173,Rick Woods,Pittsburgh Steelers
+174,Chargers Team Leaders - Kellen Winslow,San Diego Chargers
+175,Rolf Benirschke,San Diego Chargers
+176,James Brooks,San Diego Chargers
+177,Maury Buford,San Diego Chargers
+178,Wes Chandler,San Diego Chargers
+179,Dan Fouts,San Diego Chargers
+180,Dan Fouts,San Diego Chargers
+181,Charlie Joiner,San Diego Chargers
+182,Linden King,San Diego Chargers
+183,Chuck Muncie,San Diego Chargers
+184,Billy Ray Smith,San Diego Chargers
+185,Danny Walters,San Diego Chargers
+186,Kellen Winslow,San Diego Chargers
+187,Kellen Winslow,San Diego Chargers
+188,Seahawks Team Leaders - Curt Warner,Seattle Seahawks
+189,Steve August,Seattle Seahawks
+190,Dave Brown,Seattle Seahawks
+191,Zachary Dixon,Seattle Seahawks
+192,Kenny Easley,Seattle Seahawks
+193,Jacob Green,Seattle Seahawks
+194,Norm Johnson,Seattle Seahawks
+195,Dave Krieg,Seattle Seahawks
+196,Steve Largent,Seattle Seahawks
+197,Steve Largent,Seattle Seahawks
+198,Curt Warner,Seattle Seahawks
+199,Curt Warner,Seattle Seahawks
+200,Jeff West,Seattle Seahawks
+201,Charle Young,Seattle Seahawks
+202,1983 Passing Leaders - Dan Marino; Steve Bartkowski LL,No Team
+203,1983 Receiving Leaders - Todd Christensen; Charlie Brown; Earnest Gray; Roy Green LL,No Team
+204,1983 Rushing Leaders - Curt Warner; Eric Dickerson LL,No Team
+205,1983 Scoring Leaders - Gary Anderson; Mark Moseley LL,No Team
+206,1983 Interception Leaders - Vann McElroy; Ken Riley; Mark Murphy LL,No Team
+207,1983 Punting Leaders - Rich Camarillo; Greg Coleman LL,No Team
+208,Falcons Team Leaders - William Andrews,Atlanta Falcons
+209,William Andrews,Atlanta Falcons
+210,William Andrews,Atlanta Falcons
+211,Stacey Bailey,Atlanta Falcons
+212,Steve Bartkowski,Atlanta Falcons
+213,Steve Bartkowski,Atlanta Falcons
+214,Ralph Giacomarro,Atlanta Falcons
+215,Billy Johnson,Atlanta Falcons
+216,Mike Kenn,Atlanta Falcons
+217,Mick Luckhurst,Atlanta Falcons
+218,Gerald Riggs,Atlanta Falcons
+219,R.C. Thielemann,Atlanta Falcons
+220,Jeff Van Note,Atlanta Falcons
+221,Bears Team Leaders - Walter Payton,Chicago Bears
+222,Jim Covert,Chicago Bears
+223,Leslie Frazier,Chicago Bears
+224,Willie Gault,Chicago Bears
+225,Mike Hartenstine,Chicago Bears
+226,Noah Jackson,Chicago Bears
+227,Jim McMahon,Chicago Bears
+228,Walter Payton,Chicago Bears
+229,Walter Payton,Chicago Bears
+230,Mike Richardson,Chicago Bears
+231,Terry Schmidt,Chicago Bears
+232,Mike Singletary,Chicago Bears
+233,Matt Suhey,Chicago Bears
+234,Bob Thomas,Chicago Bears
+235,Cowboys Team Leaders - Tony Dorsett,Dallas Cowboys
+236,Bob Breunig,Dallas Cowboys
+237,Doug Cosbie,Dallas Cowboys
+238,Tony Dorsett,Dallas Cowboys
+239,Tony Dorsett,Dallas Cowboys
+240,John Dutton,Dallas Cowboys
+241,Tony Hill,Dallas Cowboys
+242,Ed 'Too Tall' Jones,Dallas Cowboys
+243,Drew Pearson,Dallas Cowboys
+244,Rafael Septien,Dallas Cowboys
+245,Ron Springs,Dallas Cowboys
+246,Dennis Thurman,Dallas Cowboys
+247,Everson Walls,Dallas Cowboys
+248,Danny White,Dallas Cowboys
+249,Randy White,Dallas Cowboys
+250,Lions Team Leaders - Billy Sims,Detroit Lions
+251,Jeff Chadwick,Detroit Lions
+252,Garry Cobb,Detroit Lions
+253,Doug English,Detroit Lions
+254,William Gay,Detroit Lions
+255,Eric Hipple,Detroit Lions
+256,James Jones,Detroit Lions
+257,Bruce McNorton,Detroit Lions
+258,Ed Murray,Detroit Lions
+259,Ulysses Norris,Detroit Lions
+260,Billy Sims,Detroit Lions
+261,Billy Sims,Detroit Lions
+262,Leonard Thompson,Detroit Lions
+263,Packers Team Leaders - James Lofton,Green Bay Packers
+264,John Anderson,Green Bay Packers
+265,Paul Coffman,Green Bay Packers
+266,Lynn Dickey,Green Bay Packers
+267,Gerry Ellis,Green Bay Packers
+268,John Jefferson,Green Bay Packers
+269,John Jefferson,Green Bay Packers
+270,Ezra Johnson,Green Bay Packers
+271,Tim Lewis,Green Bay Packers
+272,James Lofton,Green Bay Packers
+273,James Lofton,Green Bay Packers
+274,Larry McCarren,Green Bay Packers
+275,Jan Stenerud,Green Bay Packers
+276,Rams Team Leaders - Eric Dickerson,Los Angeles Rams
+277,Mike Barber,Los Angeles Rams
+278,Jim Collins,Los Angeles Rams
+279,Nolan Cromwell,Los Angeles Rams
+280,Eric Dickerson,Los Angeles Rams
+281,Eric Dickerson,Los Angeles Rams
+282,George Farmer,Los Angeles Rams
+283,Vince Ferragamo,Los Angeles Rams
+284,Kent Hill,Los Angeles Rams
+285,John Misko,Los Angeles Rams
+286,Jackie Slater,Los Angeles Rams
+287,Jack Youngblood,Los Angeles Rams
+288,Vikings Team Leaders - Darrin Nelson,Minnesota Vikings
+289,Ted Brown,Minnesota Vikings
+290,Greg Coleman,Minnesota Vikings
+291,Steve Dils,Minnesota Vikings
+292,Tony Galbreath,Minnesota Vikings
+293,Tommy Kramer,Minnesota Vikings
+294,Doug Martin,Minnesota Vikings
+295,Darrin Nelson,Minnesota Vikings
+296,Benny Ricardo,Minnesota Vikings
+297,John Swain,Minnesota Vikings
+298,John Turner,Minnesota Vikings
+299,Saints Team Leaders - George Rogers,New Orleans Saints
+300,Morten Andersen,New Orleans Saints
+301,Russell Erxleben,New Orleans Saints
+302,Jeff Groth,New Orleans Saints
+303,Rickey Jackson,New Orleans Saints
+304,Johnnie Poe,New Orleans Saints
+305,George Rogers,New Orleans Saints
+306,Richard Todd,New Orleans Saints
+307,Jim Wilks,New Orleans Saints
+308,Dave Wilson,New Orleans Saints
+309,Wayne Wilson,New Orleans Saints
+310,Giants Team Leaders - Earnest Gray,New York Giants
+311,Leon Bright,New York Giants
+312,Scott Brunner,New York Giants
+313,Rob Carpenter,New York Giants
+314,Harry Carson,New York Giants
+315,Earnest Gray,New York Giants
+316,Ali Haji-Sheikh,New York Giants
+317,Mark Haynes,New York Giants
+318,Dave Jennings,New York Giants
+319,Brian Kelley,New York Giants
+320,Phil Simms,New York Giants
+321,Lawrence Taylor,New York Giants
+322,Lawrence Taylor,New York Giants
+323,Brad Van Pelt,New York Giants
+324,Butch Woolfolk,New York Giants
+325,Eagles Team Leaders - Mike Quick,Philadelphia Eagles
+326,Harold Carmichael,Philadelphia Eagles
+327,Herman Edwards,Philadelphia Eagles
+328,Michael Haddix,Philadelphia Eagles
+329,Dennis Harrison,Philadelphia Eagles
+330,Ron Jaworski,Philadelphia Eagles
+331,Wilbert Montgomery,Philadelphia Eagles
+332,Hubie Oliver,Philadelphia Eagles
+333,Mike Quick,Philadelphia Eagles
+334,Jerry Robinson,Philadelphia Eagles
+335,Max Runager,Philadelphia Eagles
+336,Michael Williams,Philadelphia Eagles
+337,Cardinals Team Leaders - Ottis Anderson,St. Louis Cardinals
+338,Ottis Anderson,St. Louis Cardinals
+339,Al Baker,St. Louis Cardinals
+340,Carl Birdsong,St. Louis Cardinals
+341,David Galloway,St. Louis Cardinals
+342,Roy Green,St. Louis Cardinals
+343,Roy Green,St. Louis Cardinals
+344,Curtis Greer,St. Louis Cardinals
+345,Neil Lomax,St. Louis Cardinals
+346,Doug Marsh,St. Louis Cardinals
+347,Stump Mitchell,St. Louis Cardinals
+348,Lionel Washington,St. Louis Cardinals
+349,49ers Team Leaders - Dwight Clark,San Francisco 49ers
+350,Dwaine Board,San Francisco 49ers
+351,Dwight Clark,San Francisco 49ers
+352,Dwight Clark,San Francisco 49ers
+353,Roger Craig,San Francisco 49ers
+354,Fred Dean,San Francisco 49ers
+355,Fred Dean,San Francisco 49ers
+356,Dwight Hicks,San Francisco 49ers
+357,Ronnie Lott,San Francisco 49ers
+358,Joe Montana,San Francisco 49ers
+359,Joe Montana,San Francisco 49ers
+360,Freddie Solomon,San Francisco 49ers
+361,Wendell Tyler,San Francisco 49ers
+362,Ray Wersching,San Francisco 49ers
+363,Eric Wright,San Francisco 49ers
+364,Buccaneers Team Leaders - Kevin House,Tampa Bay Buccaneers
+365,Gerald Carter,Tampa Bay Buccaneers
+366,Hugh Green,Tampa Bay Buccaneers
+367,Kevin House,Tampa Bay Buccaneers
+368,Michael Morton,Tampa Bay Buccaneers
+369,James Owens,Tampa Bay Buccaneers
+370,Booker Reese,Tampa Bay Buccaneers
+371,Lee Roy Selmon,Tampa Bay Buccaneers
+372,Jack Thompson,Tampa Bay Buccaneers
+373,James Wilder,Tampa Bay Buccaneers
+374,Steve Wilson,Tampa Bay Buccaneers
+375,Redskins Team Leaders - John Riggins,Washington Redskins
+376,Jeff Bostic,Washington Redskins
+377,Charlie Brown,Washington Redskins
+378,Charlie Brown,Washington Redskins
+379,Dave Butz,Washington Redskins
+380,Darrell Green,Washington Redskins
+381,Russ Grimm,Washington Redskins
+382,Joe Jacoby,Washington Redskins
+383,Dexter Manley,Washington Redskins
+384,Art Monk,Washington Redskins
+385,Mark Moseley,Washington Redskins
+386,Mark Murphy,Washington Redskins
+387,Mike Nelms,Washington Redskins
+388,John Riggins,Washington Redskins
+389,John Riggins,Washington Redskins
+390,Joe Theismann,Washington Redskins
+391,Joe Theismann,Washington Redskins
+392,Don Warren,Washington Redskins
+393,Joe Washington,Washington Redskins
+394,Checklist 1-132 CL,No Team
+395,Checklist 133-264 CL,No Team
+396,Checklist 265-396 CL,No Team

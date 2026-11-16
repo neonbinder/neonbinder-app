@@ -43,7 +43,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { dropOwnerPhotos } from "./copyPhotos";
 import { addOne, applyCopyChanges, defaultConditionOf, getOrCreateMain } from "./collection";
 import { ListingGate } from "./listingGate";
-import { intakePhotoFailureValidator, listingPlatformValidator } from "./schema";
+import { intakePhotoFailureValidator, listingPlatformValidator, listingProblemReasonValidator } from "./schema";
 import { DRAIN_LEASE_MS } from "./listingDrain";
 import { LISTING_PLATFORMS, listingStateOf, listsAnywhere, newToken, pushesCounts } from "./listingOutbox";
 import { VISIT_GAP_MS } from "./dashboard";
@@ -51,10 +51,12 @@ import type { ActionCtx } from "./_generated/server";
 import {
   applySaleLinesCore,
   eraOfVariant,
+  projectEbayOrderForRecord,
   recordOrderCore,
   SALE_ITEMS_PER_APPLY,
   type ProjectedOrder,
 } from "./listingSales";
+import { ebayLineTitle, projectEbayOrder } from "./lib/ebayListing";
 import { TEST_OUTBOX_SEQ, TEST_SALE_ORDER_PREFIX, TEST_SYNC_MARK } from "./lib/testSeedMarks";
 import { bscConditionFor, type BscEra } from "./lib/bscConditions";
 import { buildListingSku } from "./lib/listingSku";
@@ -232,6 +234,7 @@ const resetCountsFields = {
   variantCommonPrices: v.number(),
   // NEO-370: the caller's marketplace listing rows, all four tables
   // (outbox, per-variant syncs, per-platform states, sales) summed.
+  // NEO-536: the caller's sync reports fold in here too.
   marketplaceListing: v.number(),
 };
 
@@ -434,7 +437,20 @@ export const resetMyTestStateRows = internalMutation({
       .query("ebaySellerSettings")
       .withIndex("by_owner", (q) => q.eq("ownerId", userId))
       .collect();
-    for (const row of [...listingOutbox, ...listingSyncs, ...listingStates, ...sales, ...listingLinks, ...ebaySettings]) {
+    // NEO-536 — the caller's sync reports, every status (prefix owner).
+    const syncReports = await ctx.db
+      .query("syncReports")
+      .withIndex("by_owner_status_closed", (q) => q.eq("ownerId", userId))
+      .collect();
+    for (const row of [
+      ...listingOutbox,
+      ...listingSyncs,
+      ...listingStates,
+      ...sales,
+      ...listingLinks,
+      ...ebaySettings,
+      ...syncReports,
+    ]) {
       await ctx.db.delete(row._id);
     }
 
@@ -454,7 +470,8 @@ export const resetMyTestStateRows = internalMutation({
         listingStates.length +
         sales.length +
         listingLinks.length +
-        ebaySettings.length,
+        ebaySettings.length +
+        syncReports.length,
     };
   },
 });
@@ -2057,9 +2074,11 @@ export { TEST_SALE_ORDER_PREFIX, TEST_SYNC_MARK, TEST_OUTBOX_SEQ };
  * `progress` ledger without clearing `lastError`, and a run that dies keeps
  * the mark under `status: "error"` with the ledger and any conditions it
  * pushed. Such a record is the drain's, so the seed never replaces it and the
- * clear never deletes it. The seed writes two shapes, both marked: a failed
- * set (`status: "error"`) and a recovered one (`status: "idle"`, a later clean
- * run: the mark rides on `lastError`, which a real finish always clears).
+ * clear never deletes it. The seed writes three shapes, all marked: a failed
+ * set (`status: "error"`), a recovered one (`status: "idle"`, a later clean
+ * run: the mark rides on `lastError`, which a real finish always clears) and
+ * (NEO-536) a held one (`status: "idle"` with one card held back, the mark on
+ * `lastError` likewise).
  */
 function isUntouchedTestSyncRecord(record: Doc<"marketplaceListingSyncs">): boolean {
   return (
@@ -2209,10 +2228,23 @@ export const seedMyTestSale = mutation({
  * more: it put itself right) and, like the failed seed, is left alone where a
  * real record stands, and cleared by the same clear.
  *
+ * `held` (NEO-536, instead of `error` or `recovered`, never with them): the
+ * set's last sync went through but held the card back for that reason, so
+ * the dashboard lists it as holding a card back and, for a reason only the
+ * admin team can fix, offers to report it. Written as an idle record (no
+ * `lastSuccessAt`, the mark on `lastError` as for a recovered set) whose one
+ * problem names the card with that reason; `rejected` and `missingAspect`
+ * carry a marked detail. Replaced and left alone, and cleared, as the others.
+ *
  * Safety as `seedMyTestSale`: production refuses it; caller only.
  */
 export const seedMyTestSync = mutation({
-  args: { pending: v.boolean(), error: v.boolean(), recovered: v.optional(v.boolean()) },
+  args: {
+    pending: v.boolean(),
+    error: v.boolean(),
+    recovered: v.optional(v.boolean()),
+    held: v.optional(listingProblemReasonValidator),
+  },
   returns: v.object({
     platforms: v.array(
       v.object({
@@ -2220,6 +2252,7 @@ export const seedMyTestSync = mutation({
         pending: v.boolean(),
         error: v.boolean(),
         recovered: v.optional(v.boolean()),
+        held: v.optional(v.boolean()),
         note: v.optional(v.string()),
       }),
     ),
@@ -2234,6 +2267,9 @@ export const seedMyTestSync = mutation({
     }
     if (args.error && args.recovered) {
       throw new Error("Ask for a failed set or a recovered one: a recovered set is one a later sync put right.");
+    }
+    if (args.held !== undefined && (args.error || args.recovered)) {
+      throw new Error("Ask for a held set on its own: it is one set's last sync, and so is a failed or recovered one.");
     }
     const copy = await seedCopyOf(ctx, userId);
     if (!copy) {
@@ -2265,8 +2301,9 @@ export const seedMyTestSync = mutation({
         }
       }
       let recovered = false;
-      if (args.error || args.recovered) {
-        const asked = args.recovered ? "recovered set" : "failed set";
+      let held = false;
+      if (args.error || args.recovered || args.held !== undefined) {
+        const asked = args.held !== undefined ? "held set" : args.recovered ? "recovered set" : "failed set";
         const existing = await ctx.db
           .query("marketplaceListingSyncs")
           .withIndex("by_owner_variant_platform", (q) =>
@@ -2280,35 +2317,59 @@ export const seedMyTestSync = mutation({
               : `no ${asked}: that set already has a real sync record here`,
           );
         } else {
-          const record = args.recovered
-            ? {
-                ownerId: userId,
-                variantId: copy.variantId,
-                platform,
-                status: "idle" as const,
-                lastRunAt: now - 60_000,
-                // The mark stays on a finished-clean record so the clear finds it; a real finish clears `lastError`.
-                lastError: `${TEST_SYNC_MARK}A sync failed here once, and a later one went through.`,
-                problems: [],
-                problemsTotal: 0,
-                conditionsPushed: [],
-                lastUpdated: now,
-              }
-            : {
-                ownerId: userId,
-                variantId: copy.variantId,
-                platform,
-                status: "error" as const,
-                lastRunAt: now - 10 * 60_000,
-                lastError: `${TEST_SYNC_MARK}The marketplace didn't answer, so this set didn't sync. NB tries again on the next sync.`,
-                problems: [{ cardId: copy.cardId, reason: "noPrice" as const, detail: `${TEST_SYNC_MARK}No price set.` }],
-                problemsTotal: 1,
-                conditionsPushed: [],
-                lastUpdated: now,
-              };
+          const heldDetail =
+            args.held === "rejected"
+              ? `${TEST_SYNC_MARK}The marketplace turned this card down.`
+              : args.held === "missingAspect"
+                ? `${TEST_SYNC_MARK}Year Manufactured`
+                : undefined;
+          const record =
+            args.held !== undefined
+              ? {
+                  ownerId: userId,
+                  variantId: copy.variantId,
+                  platform,
+                  status: "idle" as const,
+                  lastRunAt: now - 5 * 60_000,
+                  // The mark rides on `lastError` as on a recovered record, so the clear finds it.
+                  lastError: `${TEST_SYNC_MARK}This set synced and held one card back.`,
+                  problems: [
+                    { cardId: copy.cardId, reason: args.held, ...(heldDetail !== undefined ? { detail: heldDetail } : {}) },
+                  ],
+                  problemsTotal: 1,
+                  conditionsPushed: [],
+                  lastUpdated: now,
+                }
+              : args.recovered
+                ? {
+                    ownerId: userId,
+                    variantId: copy.variantId,
+                    platform,
+                    status: "idle" as const,
+                    lastRunAt: now - 60_000,
+                    // The mark stays on a finished-clean record so the clear finds it; a real finish clears `lastError`.
+                    lastError: `${TEST_SYNC_MARK}A sync failed here once, and a later one went through.`,
+                    problems: [],
+                    problemsTotal: 0,
+                    conditionsPushed: [],
+                    lastUpdated: now,
+                  }
+                : {
+                    ownerId: userId,
+                    variantId: copy.variantId,
+                    platform,
+                    status: "error" as const,
+                    lastRunAt: now - 10 * 60_000,
+                    lastError: `${TEST_SYNC_MARK}The marketplace didn't answer, so this set didn't sync. NB tries again on the next sync.`,
+                    problems: [{ cardId: copy.cardId, reason: "noPrice" as const, detail: `${TEST_SYNC_MARK}No price set.` }],
+                    problemsTotal: 1,
+                    conditionsPushed: [],
+                    lastUpdated: now,
+                  };
           if (existing) await ctx.db.replace(existing._id, record);
           else await ctx.db.insert("marketplaceListingSyncs", record);
-          if (args.recovered) recovered = true;
+          if (args.held !== undefined) held = true;
+          else if (args.recovered) recovered = true;
           else error = true;
         }
       }
@@ -2317,6 +2378,7 @@ export const seedMyTestSync = mutation({
         pending,
         error,
         ...(args.recovered ? { recovered } : {}),
+        ...(args.held !== undefined ? { held } : {}),
         ...(notes.length > 0 ? { note: notes.join("; ") } : {}),
       });
     }
@@ -2594,6 +2656,167 @@ export const seedMyTestPickOrder = mutation({
     }
 
     const recorded = await recordOrderCore(ctx, { ownerId, platform: "bsc", order }, { skipPollGate: true });
+    if (recorded.saleId === null) throw new Error("The order was not recorded");
+    let applied = 0;
+    for (let i = 0; i < recorded.toApply.length; i += SALE_ITEMS_PER_APPLY) {
+      const r = await applySaleLinesCore(
+        ctx,
+        { ownerId, saleId: recorded.saleId, indexes: recorded.toApply.slice(i, i + SALE_ITEMS_PER_APPLY) },
+        { skipPollGate: true },
+      );
+      applied += r.applied;
+    }
+    return { saleId: recorded.saleId, lines: order.items.length, applied };
+  },
+});
+
+// ── NEO-520: an eBay order NB didn't list, for the unmatched-sale spec ─────
+
+/** Lines one seeded eBay order may carry, and copies one line may sell. */
+const EBAY_SEED_MAX_LINES = 3;
+const EBAY_SEED_MAX_QUANTITY = 10;
+
+/**
+ * A line's quantity, bounded in the validator: one of the whole numbers
+ * 1..`EBAY_SEED_MAX_QUANTITY`, so a zero, fractional or huge quantity is
+ * refused before the handler runs (typed `number` for the caller). The
+ * line count and the title cannot be bounded by a Convex validator, so
+ * `ebaySeedLinesProblem` checks them first thing in the handler.
+ */
+const ebaySeedQuantityValidator = v.union(
+  ...Array.from({ length: EBAY_SEED_MAX_QUANTITY }, (_, i) => v.literal(i + 1)),
+);
+
+/**
+ * Why `lines` is out of bounds, or null: at most `EBAY_SEED_MAX_LINES`
+ * lines, each quantity a whole number 1..`EBAY_SEED_MAX_QUANTITY` (again,
+ * beside the validator), each title one `ebayLineTitle` keeps (bounded,
+ * no control or format character). Runs before any read, on every call that
+ * names lines (a retry or `ship` included), so nothing unbounded goes
+ * further. Whether a new order names at least one line is checked where the
+ * order is built.
+ */
+function ebaySeedLinesProblem(lines: ReadonlyArray<{ title?: string; quantity: number }>): string | null {
+  if (lines.length > EBAY_SEED_MAX_LINES) return `lines must name 1-${EBAY_SEED_MAX_LINES} lines`;
+  for (let i = 0; i < lines.length; i += 1) {
+    const { quantity, title } = lines[i];
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > EBAY_SEED_MAX_QUANTITY) {
+      return `quantity must be 1-${EBAY_SEED_MAX_QUANTITY}`;
+    }
+    if (title !== undefined && ebayLineTitle(title) === null) return `lines[${i}].title is not a title NB would keep`;
+  }
+  return null;
+}
+
+/**
+ * NEO-520 — an eBay order on the CALLER's account whose every line is one
+ * NeonBinder didn't list (no NB SKU), recorded and applied exactly as the
+ * order poll would, for the unmatched-sale spec. A real sandbox order can't
+ * be made on cue, so this builds the raw Fulfillment `Order` the poll reads
+ * and runs it through the poll's own path: `projectEbayOrder` (the real
+ * projection, title bounds included) → `projectEbayOrderForRecord` (with no
+ * date floor) → `recordOrderCore` → `applySaleLinesCore`, skipping only the
+ * poll gate (whether the account's listing state polls sales).
+ *
+ * The order: PAID, NOT_STARTED, created now, `orderId` =
+ * `TEST_SALE_ORDER_PREFIX` + `orderNo` (so the poll never re-reads it from
+ * eBay; the order number shown is the spec's own token). One line per
+ * `lines` entry (1-3): legacy item id `nb-test-item-<n>`, SKU
+ * `nb-test-other-<n>` (not NB's, so the apply refuses it as unmatched and
+ * touches no box), the given quantity at $1.00 each, and the given title (a
+ * title the projection would drop is refused here instead, so the spec never
+ * lands on the no-title words by accident; an absent title sends none). No
+ * buyer, ship-to or any other buyer field is written.
+ * Seeding an `orderNo` that exists records the stored order again as it is;
+ * `ship` re-records it as FULFILLED, which takes it off the Pick List.
+ *
+ * Safety, in the same shape as `seedMyTestPickOrder`:
+ *   - fails closed in production (`TESTING_RESET_SECRET` is unset there);
+ *   - only the CALLER's rows (no owner argument to spoof);
+ *   - calls no marketplace, and refuses outright while the caller pushes
+ *     counts to any platform (`listsAnywhere`);
+ *   - every argument is bounded before any read: the quantity in the
+ *     validator, the order number, line count and titles first thing in the
+ *     handler.
+ */
+export const seedMyTestEbayOrder = mutation({
+  args: {
+    orderNo: v.string(),
+    lines: v.optional(v.array(v.object({ title: v.optional(v.string()), quantity: ebaySeedQuantityValidator }))),
+    ship: v.optional(v.boolean()),
+  },
+  returns: v.object({ saleId: v.id("marketplaceSales"), lines: v.number(), applied: v.number() }),
+  handler: async (ctx, args) => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("The eBay order seed is not enabled on this deployment");
+    }
+    const ownerId = await getCurrentUserId(ctx);
+    if (!ownerId) throw new Error("Not authenticated");
+    if (!PICK_SEED_ORDER_NO_RE.test(args.orderNo)) throw new Error("orderNo must be one token (letters, digits, - or _)");
+    const linesProblem = args.lines !== undefined ? ebaySeedLinesProblem(args.lines) : null;
+    if (linesProblem !== null) throw new Error(linesProblem);
+    if (await listsAnywhere(ctx, ownerId)) {
+      throw new Error("The eBay order seed refuses an account that pushes to a marketplace");
+    }
+    const orderId = `${TEST_SALE_ORDER_PREFIX}${args.orderNo}`;
+    const existing = await ctx.db
+      .query("marketplaceSales")
+      .withIndex("by_owner_platform_order", (q) => q.eq("ownerId", ownerId).eq("platform", "ebay").eq("orderId", orderId))
+      .unique();
+
+    let order: ProjectedOrder;
+    if (args.ship && !existing) throw new Error(`No seeded eBay order ${args.orderNo} to ship`);
+    if (existing) {
+      // Seeded before: record the stored order again (a retried hop, or `ship`).
+      order = {
+        orderId,
+        orderNo: existing.orderNo,
+        orderDate: existing.orderDate,
+        status: args.ship ? "FULFILLED" : existing.status,
+        totals: existing.totals,
+        items: existing.items.map((item) => ({
+          platformCardId: item.platformCardId,
+          condition: item.condition,
+          quantity: item.quantity,
+          priceCents: item.priceCents,
+          ...(item.sellerSku !== undefined ? { sellerSku: item.sellerSku } : {}),
+          graded: false,
+        })),
+      };
+    } else {
+      // Bounded above (`ebaySeedLinesProblem`); a new order needs a line.
+      const lines = args.lines ?? [];
+      if (lines.length === 0) throw new Error(`lines must name 1-${EBAY_SEED_MAX_LINES} lines`);
+      const lineItems = lines.map((line, i) => ({
+        lineItemId: `nb-test-line-${i + 1}`,
+        legacyItemId: `nb-test-item-${i + 1}`,
+        sku: `nb-test-other-${i + 1}`,
+        ...(line.title !== undefined ? { title: line.title } : {}),
+        quantity: line.quantity,
+        lineItemCost: { value: line.quantity.toFixed(2), currency: "USD" },
+      }));
+      const subtotal = lines.reduce((sum, line) => sum + line.quantity, 0).toFixed(2);
+      const created = new Date().toISOString();
+      const raw = {
+        orderId,
+        creationDate: created,
+        lastModifiedDate: created,
+        orderPaymentStatus: "PAID",
+        orderFulfillmentStatus: "NOT_STARTED",
+        pricingSummary: {
+          priceSubtotal: { value: subtotal, currency: "USD" },
+          total: { value: subtotal, currency: "USD" },
+        },
+        lineItems,
+      };
+      const projected = projectEbayOrder(raw);
+      const recordable = projected ? projectEbayOrderForRecord(projected, { otherOrdersFrom: null }) : null;
+      if (!recordable) throw new Error("The seeded eBay order did not project");
+      // eBay shows the order id as its number; the spec reads its own token.
+      order = { ...recordable, orderNo: args.orderNo };
+    }
+
+    const recorded = await recordOrderCore(ctx, { ownerId, platform: "ebay", order }, { skipPollGate: true });
     if (recorded.saleId === null) throw new Error("The order was not recorded");
     let applied = 0;
     for (let i = 0; i < recorded.toApply.length; i += SALE_ITEMS_PER_APPLY) {

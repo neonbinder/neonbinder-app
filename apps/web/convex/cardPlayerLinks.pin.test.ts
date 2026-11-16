@@ -151,6 +151,14 @@ describe("NEO-313: every playerIds writer and every card delete reaches the help
     expect(body).toContain("syncCardPlayerLinks(");
   });
 
+  test("NEO-528: the \"Player on every card\" add syncs the index right after its patch", () => {
+    const src = read("cardPlayersBulk.ts");
+    const fn = src.slice(src.indexOf("async function putPlayerOnCard"), src.indexOf("export async function runBulkPage"));
+    const patch = fn.indexOf("await ctx.db.patch(card._id, {\n    playerIds:");
+    expect(patch).toBeGreaterThan(0);
+    expect(fn.slice(patch)).toMatch(/syncCardPlayerLinks\(ctx, card\._id, \[player\._id\], card\.sportId\)/);
+  });
+
   test("the re-sync's accepted playerIds write syncs the index", () => {
     const start = SRC.indexOf("export const commitCardChecklistChunk = internalMutation(");
     const body = SRC.slice(start, SRC.indexOf("\n});", start));

@@ -1382,3 +1382,51 @@ describe("brandedSetName (NEO-464) — the set as its cards' titles name it", ()
     expect(title.startsWith(`1993 ${brandedSetName({ manufacturer: "Topps", setName: "Finest" })} `)).toBe(true);
   });
 });
+
+describe("NEO-528 — the description names the card's cameos", () => {
+  const profiles = {
+    cardNumber: "TP-1",
+    year: "2026",
+    manufacturer: "Topps",
+    setName: "Profiles",
+    playerNames: ["Shohei Ohtani"],
+    teamNames: ["Los Angeles Dodgers"],
+  };
+
+  test("one cameo: its own line, right after the team, without a doubled full stop", () => {
+    expect(generateListingDescription(profiles, { cameoNames: ["Ken Griffey Jr."] })).toBe(
+      "2026 Topps Profiles card of Shohei Ohtani, #TP-1.\nTeam: Los Angeles Dodgers.\nCameo: Ken Griffey Jr.",
+    );
+  });
+
+  test("several cameos: plural, in the order given", () => {
+    const desc = generateListingDescription(
+      { ...profiles, isRookie: true },
+      { cameoNames: ["Mookie Betts", "Freddie Freeman"] },
+    );
+    expect(desc.split("\n")).toEqual([
+      "2026 Topps Profiles card of Shohei Ohtani, #TP-1.",
+      "Team: Los Angeles Dodgers.",
+      "Cameos: Mookie Betts, Freddie Freeman.",
+      "This is a Rookie Card.",
+    ]);
+  });
+
+  test("none (absent, empty or blank names): no cameo line, the description unchanged", () => {
+    const plain = generateListingDescription(profiles);
+    expect(plain).not.toMatch(/Cameo/);
+    expect(generateListingDescription(profiles, { cameoNames: [] })).toBe(plain);
+    expect(generateListingDescription(profiles, { cameoNames: ["  "] })).toBe(plain);
+  });
+
+  test("a card with no team still states its cameo after the identity line", () => {
+    expect(
+      generateListingDescription({ ...profiles, teamNames: [] }, { cameoNames: ["Ken Griffey Jr."] }),
+    ).toBe("2026 Topps Profiles card of Shohei Ohtani, #TP-1.\nCameo: Ken Griffey Jr.");
+  });
+
+  test("the title never names a cameo: it takes no cameo argument at all", () => {
+    expect(generateListingTitle.length).toBe(1);
+    expect(assessListingTitle.length).toBe(1);
+  });
+});

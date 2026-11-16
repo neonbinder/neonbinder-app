@@ -34,9 +34,10 @@
 
 // WHAT IT PROVES, IN ORDER:
 //   1. The screen says "Waiting on BuySportsCards..." after the Sync click (asserted,
-//      axe runs while it shows) and the line is gone once the fetch lands. The fetch
+//      axe runs while it shows) and the line is gone once the fetch is handed on. The fetch
 //      lands within 7 s of our own time plus any seconds that line is up
-//      (`expectAfterMarketplace`). The
+//      (`expectAfterMarketplace`); with the checklist uploaded it lands in Match Cards
+//      (NEO-496), where the five BSC-only cards are kept and confirmed. The
 //      three hung cards hold the screen for about ten seconds (NeonBinder's 5 s
 //      timeout, a short pause, one retry), all of it BSC's: a stall retried card
 //      by card would blow the budget with our own time. The result line then says the
@@ -69,8 +70,8 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { editCardButton } from "../../support/cards";
-import { bscLookupOutcome, expectAfterMarketplace, waitingOn } from "../../support/marketplace-wait";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
+import { bscLookupOutcome, waitingOn } from "../../support/marketplace-wait";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
 import { setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 import {
   advanceToSave,
@@ -107,13 +108,12 @@ test(
     // The line mounts after 1.5 s of waiting, within the 7 s budget.
     await expect(waitingOn(page, "BuySportsCards")).toBeVisible();
     await expectAccessible(page, { label: "Checklist fetch waiting on BuySportsCards during a stall" });
-    await expectAfterMarketplace(page, page.getByText(new RegExp(`Kept all ${CARDS} cards from BSC`)), {
-      platform: "BuySportsCards",
-      what: "the fetch's kept-cards line",
-    });
-    // The fetch landed, so the wait line is gone (a positive, the kept-cards line, came first).
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens.
+    // The helper waits on it with `expectAfterMarketplace` (7 s of ours plus BSC's), proves the
+    // teams line, keeps the five BSC cards the file leaves out and confirms: all 26 go on.
+    await confirmChecklistMatchCards(page, { facts, what: "the Halifax fetch" });
+    // The fetch was handed on, so the wait line is gone (a positive, the dialog's confirm, came first).
     await expect(waitingOn(page, "BuySportsCards")).toHaveCount(0);
-    await expectTeamsFromChecklist(page, facts);
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();
 

@@ -8,7 +8,7 @@ import { FOCUS, LABEL, QUIET_BUTTON, SELECT } from "../../prototypes/p3/classes"
 import { useRoving } from "../../prototypes/p3/hooks";
 import { compareNumbers } from "../../prototypes/p1/ui";
 import { LoadingNote, SkeletonBars } from "../catalog/Skeleton";
-import { cardLabel, compareCards, playerNames, setAndVariant, teamNames } from "../data/labels";
+import { cardLabel, cardSubject, compareCards, setAndVariant, teamNames } from "../data/labels";
 import {
   boxesOf,
   systemContainer,
@@ -662,7 +662,7 @@ function ItemRow({
       : places.map((p) => `${p.quantity} in ${p.name}`).join(", ");
   const slab = slabTag(row, slabsOnly);
   const trade = showTrade && row.upForTrade;
-  const players = playerNames(card);
+  const subject = cardSubject(card);
   const teams = teamNames(card);
   // Read the way it looks: the "×N" tag first, then the card, then its tags.
   const label = `×${quantity} ${cardLabel(card)}, ${where}${slab ? `, ${slab.toLowerCase()}` : ""}${
@@ -687,7 +687,7 @@ function ItemRow({
         </span>
         <span aria-hidden="true" className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium text-ink">
-            #{card.cardNumber} {players || "Player unknown"}
+            #{card.cardNumber} {subject || "Player unknown"}
             {card.cardVariation ? `, ${card.cardVariation} variation` : ""}
           </span>
           <span className="block truncate text-xs text-ink-3">

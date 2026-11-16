@@ -30,4 +30,4 @@ variant's level against `setAndVariantLabel` before reusing TITLE.
 Price traps: a BSC seller spec lists at $900 (under BSC_MAX_PRICE_CENTS $999) so a killed
 run's leftover never sells. The eBay sandbox spec must stay UNDER $20: $20+ routes to the
 calculated "NB Tracked" policy the sandbox cannot rate (publish 25007). See
-[[marketplace-listing-spec-shape]], [[ebay-listing-spec-shape]].
+[[patterns_marketplace_listing_spec_shape]], [[patterns_marketplace_listing_spec_shape]].

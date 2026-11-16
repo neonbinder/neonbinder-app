@@ -39,10 +39,12 @@
 // of the parallel, and Sync status read "0 listed, 2 skipped" and "2 held back".
 //
 // Waits. The Set Builder's cold drill, the Base fetch and the Chrome build are
-// live BSC round trips on data nothing synced yet (GUIDE hard rule 3, first
-// exception); each carries the helpers' own ceiling. Sync is walked one ledger
-// step at a time within the standard 7 s (`followRunToEnd`). The one other wait
-// above 7 s is the seed hop's sign-in when the sign-in is saved again. The first
+// BSC round trips on data nothing synced yet (the fake, NEO-552): each waits 7 s
+// plus the seconds "Waiting on BuySportsCards" is up (`expectAfterMarketplace`), and
+// the drill helpers keep their old ceilings only while SportLots is live
+// (`expectStepWithSportLots`). Sync is walked one ledger step at a time
+// (`followRunToEnd`). The one other wait above 7 s is the seed hop's sign-in when
+// the sign-in is saved again (`SEED_SIGN_IN`). The first
 // press can also meet a worker whose BuySportsCards seller account NeonBinder is
 // still waiting to hear (NEO-483): Sync status says BuySportsCards is slow to confirm the seller account
 // and the run starts by itself; the walk's claim wait allows that
@@ -83,8 +85,8 @@ import {
 import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { bscReadCeiling, expectAfterMarketplace } from "../../support/marketplace-wait";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
+import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist } from "../../support/published-checklist";
 import {
   columnOption,
   columnSearch,
@@ -237,7 +239,6 @@ async function clearCommonPrice(page: Page, checklist: Locator, was: string): Pr
  */
 async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
   const wizard = reviewWizard(page);
-  const pairing = page.getByRole("dialog", { name: /^Match Cards/ });
   const noCards = page.getByText("No cards in this checklist yet.");
   const someCard = page.getByText(/^#[0-9]/).first();
 
@@ -255,23 +256,12 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
     // card one by one; the bulk checklist itself is still a live BSC round trip.
     const facts = await usePublishersChecklist(page, CHECKLISTS.bowman2026Base);
     await syncChecklistButton(page).click();
-    await expectAfterMarketplace(page, pairing.or(wizard).or(page.getByText(/Kept all [0-9]+ cards? from BSC/)).first(), {
-      platform: BSC,
-      what: "the Base fetch landing",
-    });
-    if (await pairing.isVisible()) {
-      // SportLots live: two sides to pair. Keep every card only one side has, then confirm.
-      const confirm = pairing.getByRole("button", { name: "Confirm card matches", disabled: false });
-      await expectAfterMarketplace(page, confirm, { platform: BSC, what: "the pairing dialog's Confirm" });
-      for (const side of ["BSC", "SportLots"]) {
-        const unmatched = pairing.getByRole("heading", { name: new RegExp(`^${side} only \\([1-9][0-9]*\\)$`) });
-        if (await unmatched.isVisible()) await pairing.getByRole("button", { name: `Keep all ${side}-only cards` }).click();
-      }
-      await confirm.click();
-      await expect(pairing).toBeHidden();
-    }
+    // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards
+    // opens with SportLots paused or live. The helper waits on it with
+    // `expectAfterMarketplace`, proves the teams line while it is open (the line is gone
+    // once the wizard takes over), keeps every card only one marketplace has, confirms.
+    await confirmChecklistMatchCards(page, { facts, what: "the Base fetch" });
     await expect(wizard).toBeVisible();
-    await expectTeamsFromChecklist(page, facts);
     // The names the catalogue does not know: added as new, in bulk, then any
     // team, league or pick step one at a time (the seed's walk).
     await wizard.getByRole("button", { name: /^Add remaining players as new/ }).click();
@@ -308,7 +298,12 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
   await pick(page, "Variant Types", VARIANT_TYPE, { search: false });
   const reconcile = page.getByRole("dialog", { name: "Reconcile Parallels" });
   const chrome = columnOption(page, "Parallels", PARALLEL);
-  await expect(reconcile.or(page.getByRole("listbox", { name: "Parallels" })).first()).toBeVisible({ timeout: INSERT_FETCH });
+  // The Parallels column's first visit: the two-sided fetch's INSERT_FETCH while SportLots is live;
+  // paused, BSC alone under the column's wait line (measured 1.8 s on the #487 merge-group run (GUIDE)).
+  await expectStepWithSportLots(page, reconcile.or(page.getByRole("listbox", { name: "Parallels" })).first(), env, {
+    liveMs: INSERT_FETCH,
+    what: "the Parallels column's fetch",
+  });
   if (await reconcile.isVisible()) {
     // SportLots live: the column's first visit reconciles BSC's and SportLots' sets; save every ready one.
     await reconcile.getByRole("button", { name: /^Save [0-9]+ sets/ }).click();
@@ -368,7 +363,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         await clean.goto("/inventory?tab=sync");
         await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
         const before = syncStatus(clean);
-        await followRunToEnd(before.platform, syncRun(before.platform, SET_LABEL, BSC), undefined, bscReadCeiling, BSC);
+        await followRunToEnd(before.platform, syncRun(before.platform, SET_LABEL, BSC), undefined, {}, BSC);
         await clean.goto("/inventory?tab=checklists");
         await expect(clean.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
         const checklist = await drillToChrome(clean);
@@ -387,7 +382,7 @@ test.afterEach(async ({ context, isMobile }, testInfo) => {
         // so a run held for the seller account does not fail the hook on a flat 7 s gate.
         // A walk that stalls is tried again, and the hook rethrows what it could not do.
         cleanupFailure = await walkForCleanup(async () => {
-          await followRunToRest(zeroing.platform, zeroingRun, queueSettled(zeroing.platform, SET_LABEL), bscReadCeiling, BSC);
+          await followRunToRest(zeroing.platform, zeroingRun, queueSettled(zeroing.platform, SET_LABEL), {}, BSC);
           await expect(zeroing.row.getByText(/^0 listed/)).toBeVisible();
         });
       }
@@ -570,8 +565,9 @@ test(
     // it already finished); the walk then waits for the step the run is on to
     // land, again and again, until the press's queued cards are gone and the
     // platform is idle, which proves a run that started after the press has
-    // finished. A BSC read keeps its signed-off ceiling; every other step gets 7 s
-    // plus the seconds BSC is visibly holding it (support/marketplace-wait.ts).
+    // finished. Every step gets 7 s plus the seconds BSC is visibly holding it
+    // (support/marketplace-wait.ts): a read has no ceiling of its own any more (the fake
+    // answers the sheet in 0.8 s at most).
     //
     // NEO-483: this is the worker's first press on a freshly saved sign-in, so
     // NeonBinder may still be waiting for BuySportsCards to name the seller account.
@@ -586,7 +582,7 @@ test(
     const resultLine = row.getByText(/^\d+ listed/);
     const settled = queueSettled(platform, SET_LABEL);
     await expectRunOrSellerWait(platform, run, settled, { marketplace: BSC, label: "Inventory Sync status, waiting on BuySportsCards for the seller account" });
-    await followRunToRest(platform, run, settled, bscReadCeiling, BSC);
+    await followRunToRest(platform, run, settled, {}, BSC);
     await expect(run.last).toBeVisible();
     await expect(run.gathered()).toBeVisible();
     await expect(resultLine).toBeVisible();
@@ -626,7 +622,7 @@ test(
     await expect(takeDown.underWay(takenLine.or(row.getByText(/^0 listed/)).first())).toBeVisible();
     // The walk ends only when the press's queued cards are gone and the platform
     // is idle, so the row read next is a run that started after the press, finished.
-    await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL), bscReadCeiling, BSC);
+    await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL), {}, BSC);
     await expect(takeDown.last).toBeVisible();
     await expect(takeDown.gathered()).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);

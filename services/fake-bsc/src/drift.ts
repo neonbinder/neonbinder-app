@@ -39,7 +39,7 @@ export interface DriftResult {
   endpoints: DriftEndpointResult[];
 }
 
-type Synth = "profile" | "sheet" | "orderHistory";
+export type Synth = "profile" | "sheet" | "orderHistory";
 
 /** The paths NeonBinder reads from each synthesised endpoint. */
 const READ_PATHS: Record<Synth, readonly string[]> = {
@@ -107,7 +107,13 @@ function parentOf(path: string): string {
   return i === -1 ? "" : path.slice(0, i);
 }
 
-function compare(probe: Shape, served: Shape, allow: (p: string) => boolean): string[] {
+/**
+ * `required`: the served paths the probe must have whenever their parent is
+ * present. Absent: every served path. A served path outside it (the seller
+ * sheet's listed-only keys) is type-checked when the probe has it, never
+ * required.
+ */
+function compare(probe: Shape, served: Shape, allow: (p: string) => boolean, required?: ReadonlySet<string>): string[] {
   const out: string[] = [];
   const nonNull = (ts: readonly string[]) => ts.filter((t) => t !== "null");
   for (const p of Object.keys(probe)) {
@@ -120,6 +126,7 @@ function compare(probe: Shape, served: Shape, allow: (p: string) => boolean): st
   }
   for (const p of Object.keys(served)) {
     if (!allow(p) || probe[p] || p.endsWith("[]")) continue;
+    if (required && !required.has(p)) continue;
     if (probe[parentOf(p)]) out.push(p);
   }
   return [...new Set(out)].sort();
@@ -138,13 +145,30 @@ const SAMPLE_STATE = (): NamespaceState => ({
   lastSeen: 0,
 });
 
-/** What the fake serves for a synthesised endpoint, filled with one sample row. */
-function synthShape(which: Synth): Shape {
+/** What the fake serves for a synthesised endpoint, and which of its paths every answer carries. */
+export interface SynthShape {
+  served: Shape;
+  /** Paths every answer has (required in the probe). The rest appear only on some rows. */
+  required: ReadonlySet<string>;
+}
+
+const SAMPLE_SHEET_ROWS = [{ id: "c1", cardNo: "1", players: "x" }, { id: "c2", cardNo: "2", players: "y" }];
+
+/**
+ * What the fake serves for a synthesised endpoint, filled with sample rows.
+ * The seller sheet is built twice: blank rows only (an account with no
+ * listings, which is what the probe reads), whose paths are required, and
+ * with one listed row, which adds the listed-only keys (`sellerSku`,
+ * `sellerImgFront`, `sellerImgBack`) as optional.
+ */
+export function synthShape(which: Synth): SynthShape {
+  const all = (served: Shape): SynthShape => ({ served, required: new Set(Object.keys(served)) });
   const state = SAMPLE_STATE();
   switch (which) {
     case "profile":
-      return shapeOf(profileAnswer(state));
+      return all(shapeOf(profileAnswer(state)));
     case "sheet": {
+      const blank = shapeOf(synthSheet(SAMPLE_SHEET_ROWS, SAMPLE_STATE(), "near_mint", 0));
       state.listings.set("c1|near_mint", {
         cardId: "c1",
         condition: "near_mint",
@@ -157,19 +181,20 @@ function synthShape(which: Synth): Shape {
         updatedTimestamp: "2026-01-01T00:00:00.000000",
         card: null,
       });
-      const rows = [{ id: "c1", cardNo: "1", players: "x" }, { id: "c2", cardNo: "2", players: "y" }];
-      return shapeOf(synthSheet(rows, state, "near_mint", 0));
+      const listed = shapeOf(synthSheet(SAMPLE_SHEET_ROWS, state, "near_mint", 0));
+      return { served: mergeShapes([blank, listed]), required: new Set(Object.keys(blank)) };
     }
     case "orderHistory":
       addOrder(state, { items: [{ cardId: "c1", condition: "near_mint", quantity: 1 }] }, 0);
-      return shapeOf(orderHistory(state, {}));
+      return all(shapeOf(orderHistory(state, {})));
   }
 }
 
 /**
  * The seller sheet's two root forms. bscSeller.ts `fetchBscSellerSheet`
- * reads a bare array, or `{results: [...]}` "in case the seller route wraps
- * it", and the probe may report either. Both are one answer to NB, so a
+ * reads a bare array, or `{results: [...]}`; real BSC sends the wrapped form
+ * (and so does the fake, `sheetAnswer`), and the probe may report either.
+ * Both are one answer to NB, so a
  * wrapped probe is unwrapped to the bare form (`results` → root,
  * `results[]...` → `[]...`) before it is compared; nothing else in a wrapped
  * root is read by NB.
@@ -214,7 +239,8 @@ export function compareDrift(input: unknown, catalogue: Catalogue): { ok: true; 
     if (target.kind === "synth") {
       const read = READ_PATHS[target.which];
       const asServed = target.which === "sheet" ? unwrapSheetRoot(probe) : probe;
-      const paths = compare(asServed, synthShape(target.which), (p) => read.includes(p));
+      const synth = synthShape(target.which);
+      const paths = compare(asServed, synth.served, (p) => read.includes(p), synth.required);
       results.push({ endpoint: name, verdict: paths.length ? "shape_drift" : "ok", paths });
       continue;
     }

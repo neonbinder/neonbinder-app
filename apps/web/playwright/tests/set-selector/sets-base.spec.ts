@@ -1,6 +1,7 @@
 // Origin: .maestro/flows/set-selector/sets-base.yaml (Maestro suite retired in NEO-341; see git history)
 // Sole writer of 2024 Topps Heritage's base mapping.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import { drillToSet, pick, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
 
 test(
@@ -47,9 +48,10 @@ test(
       await expect(picker.getByText(/Choose the SportLots and BSC sets/)).toBeVisible();
       await expect(picker.getByText(/SportLots base/).first()).toBeVisible();
       await expect(picker.getByText(/BSC base/).first()).toBeVisible();
-      // "Loading…" becomes "Confirm Base Set" once the BSC round trip lands.
-      await expect(confirm).toBeVisible({ timeout: 45_000 });
-      await expect(picker.getByText(/^SportLots returned no base set for /)).toBeVisible();
+      // "Loading…" becomes "Confirm Base Set" once the BSC round trip lands (BSC alone while
+      // SportLots is paused, under the picker's wait line: measured 0.8 s on the #487 merge-group run (GUIDE)).
+      await expectAfterMarketplace(page, confirm, { platform: "BuySportsCards", what: "the Base picker's candidates" });
+      await expect(picker.getByText(/^SportLots wasn't asked: /)).toBeVisible();
       await expect(bsc.first()).toBeVisible();
       await expect(sl).toHaveCount(0);
       await expectAccessible(page, { within: picker, label: "Select Base Set dialog (SportLots paused)" });

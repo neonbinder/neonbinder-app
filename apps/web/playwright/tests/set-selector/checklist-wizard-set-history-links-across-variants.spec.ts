@@ -63,12 +63,12 @@
 import type { Page } from "@playwright/test";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import {
-  COLD_SYNC,
   columnHeading,
   columnOption,
   columnSearch,
   drillToColdManufacturer,
   drillToSet,
+  expectAfterBscSync,
   openInsertsReconcile,
   pick,
   setBuilderReady,
@@ -76,8 +76,8 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { addPlayerByHand, expectPlayersLoaded, PLAYERS_MATCHES, playersCounter } from "../../support/players";
-import { expectAfterMarketplace } from "../../support/marketplace-wait";
-import { CHECKLISTS, expectTeamsFromChecklist, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
+import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName } from "../../support/published-checklist";
 import {
   answerPlayerAsNew,
   advanceToSave,
@@ -147,12 +147,14 @@ const CHECKLIST_OF: Readonly<Record<string, ChecklistName | undefined>> = {
   [PRIOR]: CHECKLISTS.careerBestJumboJerseys2009,
 };
 /**
- * GUIDE hard rule 3, the exception "a step that directly drives a live
- * BSC/SportLots round trip on data that is not pre-synced": a fetch of an
- * insert never fetched before, and the column's first sync. Only those waits
- * carry it; the wizard opening afterwards is our own backend at the 7 s default.
- * The fetch itself (the bulk checklist, one BSC round trip) is waited on with
- * `expectAfterMarketplace` (NEO-487): 7 s plus the seconds BSC is visibly holding it.
+ * GUIDE hard rule 3, the exception "a step that directly drives a live SportLots round trip
+ * on data that is not pre-synced": the cold year's first Sets sync, which also asks SportLots.
+ * It is the ceiling kept while SportLots is live (`expectStepWithSportLots`); paused, BSC alone
+ * is the fake (NEO-552) and the wait is the marketplace rule: 7 s plus the seconds
+ * "Waiting on BuySportsCards" is up (measured 6.3 s at most on the #487 merge-group run (GUIDE)). The wizard
+ * opening afterwards is our own backend at the 7 s default. The fetch itself (the bulk
+ * checklist, one BSC round trip) is waited on inside `confirmChecklistMatchCards` with
+ * `expectAfterMarketplace` (NEO-487).
  */
 const LIVE_BSC_FETCH = 60_000;
 
@@ -298,7 +300,7 @@ async function fetchInsertToWizard(
   const dialog = page.getByRole("dialog", { name: "Reconcile Inserts" });
   await columnOption(page, "Variant Types", "Insert").click();
   if (!env.SL_PAUSED && reconcile) {
-    await openInsertsReconcile(page);
+    await openInsertsReconcile(page, env);
     for (const insert of inserts) {
       await dialog.getByRole("textbox", { name: "Filter NeonBinder sets" }).fill(insert);
       await dialog.getByRole("textbox", { name: "Filter BSC items" }).fill(insert);
@@ -318,34 +320,26 @@ async function fetchInsertToWizard(
     await expect(dialog).toBeHidden();
   }
   // The paused column fills from BSC when it is opened (the live one was saved
-  // above): the listed row is the sync's proof, a live round trip.
+  // above): the listed row is the sync's proof, a BSC round trip under the column's wait
+  // line (measured 2.3 s at most on the #487 merge-group run (GUIDE)), so 7 s plus the seconds BSC is visibly holding it.
   await columnSearch(page, "Inserts").fill(name);
-  await expect(columnOption(page, "Inserts", name)).toBeVisible({ timeout: LIVE_BSC_FETCH });
+  await expectAfterBscSync(page, columnOption(page, "Inserts", name), `Inserts row ${name}`);
   await columnOption(page, "Inserts", name).click();
   // The empty-checklist assert makes the saved cards below THIS fetch's (fresh-only guard).
   await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
   const checklist = CHECKLIST_OF[name];
-  const published = checklist === undefined ? undefined : await usePublishersChecklist(page, checklist);
+  // Every insert this spec fetches has its captured checklist (NEO-489, checklists first), so
+  // no fetch here takes the no-checklist path; a name without one is a spec error.
+  if (checklist === undefined) throw new Error(`${name} has no captured checklist in CHECKLIST_OF`);
+  const published = await usePublishersChecklist(page, checklist);
   await syncChecklistButton(page).click();
 
-  // A SportLots set paired with the insert opens "Match Cards"; one source takes
-  // the one-marketplace path. NEO-287: paused, the dialog is the bug.
-  const matchCards = page.getByText(/Match Cards/).first();
-  const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-  await expectAfterMarketplace(page, matchCards.or(kept).or(wizard).first(), {
-    platform: "BuySportsCards",
-    what: `${name}'s fetch landing`,
-  });
-  if (env.SL_PAUSED) await expect(matchCards).toBeHidden();
-  if (await matchCards.isVisible()) {
-    const confirm = page.getByRole("button", { name: "Confirm card matches", disabled: false });
-    await expect(confirm).toBeVisible({ timeout: LIVE_BSC_FETCH });
-    await confirm.click();
-    await expect(page.getByText(/Match Cards/)).toBeHidden();
-  }
+  // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
+  // with SportLots paused or live. The helper waits on it (7 s of ours plus BSC's), proves the
+  // teams line while it is open, keeps any card the file leaves out, and confirms.
+  await confirmChecklistMatchCards(page, { facts: published, what: `${name}'s fetch` });
   // Our own backend after the live fetch: the 7 s default.
   await expect(wizard, `${name}'s sync opens the tidy-up wizard`).toBeVisible();
-  if (published !== undefined) await expectTeamsFromChecklist(page, published);
 }
 
 test(
@@ -367,11 +361,17 @@ test(
     // manufacturer row: nothing syncs the brand list from SportLots, and this
     // spec is that row's only writer.
     await drillToColdManufacturer(page, env, { sport: TARGET.sport, year: TARGET.year, manufacturer: TARGET.manufacturer });
-    // The Sets column's LISTBOX renders only once it holds a row (GUIDE hard rule 3, a live BSC round trip).
-    await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible({ timeout: LIVE_BSC_FETCH });
+    // The Sets column's LISTBOX renders only once it holds a row (the cold year's first sync).
+    await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Sets" }), env, {
+      liveMs: LIVE_BSC_FETCH,
+      what: "the Sets list",
+    });
     await pick(page, "Sets", TARGET.set);
     await expect(columnHeading(page, "Variant Types")).toBeVisible();
-    await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
+    await expectStepWithSportLots(page, columnOption(page, "Variant Types", "Insert"), env, {
+      liveMs: VARIANT_TYPES_SYNC,
+      what: "Variant Types row Insert",
+    });
 
     // FIRST. Its one unknown name is STAR; he is a FOOTBALL player on a Baseball card.
     await fetchInsertToWizard(page, env, FIRST, { reconcile: true });
@@ -542,11 +542,17 @@ test(
       year: TARGET_2009.year,
       manufacturer: TARGET_2009.manufacturer,
     });
-    // The Sets listbox renders only once it holds a row (GUIDE hard rule 3, a live BSC round trip).
-    await expect(page.getByRole("listbox", { name: "Sets" })).toBeVisible({ timeout: LIVE_BSC_FETCH });
+    // The Sets listbox renders only once it holds a row (the cold year's first sync).
+    await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Sets" }), env, {
+      liveMs: LIVE_BSC_FETCH,
+      what: "the Sets list",
+    });
     await pick(page, "Sets", TARGET_2009.set);
     await expect(columnHeading(page, "Variant Types")).toBeVisible();
-    await expect(columnOption(page, "Variant Types", "Insert")).toBeVisible({ timeout: VARIANT_TYPES_SYNC });
+    await expectStepWithSportLots(page, columnOption(page, "Variant Types", "Insert"), env, {
+      liveMs: VARIANT_TYPES_SYNC,
+      what: "Variant Types row Insert",
+    });
     await fetchInsertToWizard(page, env, PRIOR, { reconcile: true, target: TARGET_2009, inserts: [PRIOR] });
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
     // Two Chris Carpenters are on file (b. 1975, Cardinals 2004-2012; b. 1985, Cubs 2011 and Red Sox

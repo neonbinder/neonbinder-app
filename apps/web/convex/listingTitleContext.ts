@@ -15,8 +15,9 @@
  * from: the leaf's own `features` snapshot, the NEAREST `setName` ancestor's
  * value, that set's parent manufacturer ROLE (NEO-272), the sport row's value,
  * the chain's insert role, parallel leaf and short name (NEO-335,
- * `listingShortName.titleChainFacts`), and (NEO-277, in the chunk) the leaf's
- * set-level teams. `titleSetFacts`
+ * `listingShortName.titleChainFacts`), (NEO-277, in the chunk) the leaf's
+ * set-level teams, and (NEO-528 round 3, in the chunk) the leaf's default
+ * player ("Player on every card"). `titleSetFacts`
  * reads exactly those, the same way, so a title shown before save is the
  * title written at insert.
  *
@@ -39,6 +40,7 @@ import type { TitleContext } from "./features/listingInputs";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { titleChainFacts, titleChainFactsFields } from "./listingShortName";
+import { effectiveCardPlayerDefaults } from "./cardPlayersBulk";
 
 /** Player ids read per `playerNamesByIds` call: one transaction's budget. */
 export const TITLE_CONTEXT_PLAYER_PAGE = 200;
@@ -57,6 +59,9 @@ export const titleContextValidator = v.object({
   // NEO-335 — the insert role, a parallel leaf, the nearest short name.
   ...titleChainFactsFields,
   setTeamNames: v.array(v.string()),
+  // NEO-528 round 3 — optional on the wire: an older server sends none.
+  setPlayerNames: v.optional(v.array(v.string())),
+  setPlayerId: v.optional(v.id("players")),
   players: nameMapValidator,
   teams: nameMapValidator,
 });
@@ -68,6 +73,8 @@ const setFactsValidator = v.object({
   inheritedFeatures: v.optional(v.record(v.string(), v.string())),
   ...titleChainFactsFields,
   setTeamNames: v.array(v.string()),
+  setPlayerNames: v.optional(v.array(v.string())),
+  setPlayerId: v.optional(v.id("players")),
 });
 
 /**
@@ -121,6 +128,21 @@ export const titleSetFacts = internalQuery({
       if (team) setTeamNames.push(teamFullName(team));
     }
 
+    // NEO-528 round 3 — "Player on every card": the player a new card with
+    // no player of its own (none resolved, no name waiting for review) is
+    // born with, by the same lookup the commit chunk makes. The title names
+    // them; cameos never reach a title. The id rides along so the checklist
+    // can tell which rows the default covers; nothing writes it from here.
+    const setPlayerNames: string[] = [];
+    let setPlayerId: Id<"players"> | undefined;
+    if (leaf) {
+      const defaults = await effectiveCardPlayerDefaults(ctx, leaf._id, { sportId: args.sportId });
+      if (defaults.player) {
+        setPlayerNames.push(defaults.player.name);
+        setPlayerId = defaults.player._id;
+      }
+    }
+
     return {
       sportValue: sportRow?.value ?? "",
       ...(setNameNode?.value !== undefined ? { setNameValue: setNameNode.value } : {}),
@@ -128,6 +150,8 @@ export const titleSetFacts = internalQuery({
       ...(inheritedFeatures ? { inheritedFeatures } : {}),
       ...titleChainFacts(titleChain),
       setTeamNames,
+      setPlayerNames,
+      ...(setPlayerId ? { setPlayerId } : {}),
     };
   },
 });

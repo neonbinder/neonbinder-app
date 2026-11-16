@@ -177,7 +177,9 @@ export default function PrivacyPage() {
               <P>
                 When a card sells on a marketplace you&apos;ve connected, we pull the order back so your
                 counts stay right: the order number, date, status, the cards sold, their prices and the
-                totals. We don&apos;t store the buyer&apos;s name, address, email or phone number.
+                totals. Things you sell on eBay that NeonBinder didn&apos;t list come back too, so you can
+                pack them. For those we keep the order number and the listing&apos;s title, quantity and
+                price. We don&apos;t store the buyer&apos;s name, address, email or phone number.
               </P>
             </Sub>
             <Sub title="Card photos">
@@ -239,6 +241,15 @@ export default function PrivacyPage() {
                 display name, photo, tagline, links and payment handles. Your trade shelf and the cards
                 you have for sale show there too, and photos of the copies they show; each shelf has a
                 switch to make it private.
+              </P>
+            </Sub>
+            <Sub title="Set checklists">
+              <P>
+                NeonBinder admins can add a card maker&apos;s official checklist to a set, as a
+                spreadsheet, PDF, text file or pasted text. The file is read right in the admin&apos;s
+                browser and the file itself is never uploaded. We keep only what it lists (section names,
+                card numbers, players and teams), plus the file&apos;s name and type, who added it and
+                when. It lives in our app database at Convex and is never sent to a marketplace.
               </P>
             </Sub>
           </Section>
@@ -312,7 +323,10 @@ export default function PrivacyPage() {
                 read your business policies and ship-from location, and create NeonBinder&apos;s standard
                 ones on your account if you press &ldquo;Set me up&rdquo;;
               </li>
-              <li>read your orders, so sales come back to your boxes;</li>
+              <li>
+                read your orders, so sales come back to your boxes. We read every order on the account,
+                including ones for listings NeonBinder didn&apos;t make, so you can pack those too;
+              </li>
               <li>read your eBay user id and username, so we know which account is yours.</li>
             </List>
             <P>
@@ -349,7 +363,10 @@ export default function PrivacyPage() {
               are deleted after two days, apart from the photos we make from them for a card you save,
               which stay on that copy. Photos you replace or remove are deleted from storage soon
               after. Photos of a copy that sold stay with the sale until you delete your account or ask
-              us to remove them. When you ask us to delete your account, we delete it and the data tied to it.
+              us to remove them. A set&apos;s checklist stays until an admin replaces or removes it, and
+              then it&apos;s deleted; one left half-added for an hour is deleted too. The notes that tie a
+              set&apos;s inserts and parallels to parts of its checklist go when those are rebuilt or
+              deleted. When you ask us to delete your account, we delete it and the data tied to it.
               PostHog and Sentry keep analytics and error reports for their own standard periods.
             </P>
           </Section>

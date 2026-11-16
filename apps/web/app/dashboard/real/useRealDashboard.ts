@@ -76,6 +76,7 @@ import type {
   Want,
 } from "@/app/collection/final/data/types";
 import { problemSentence } from "@/app/collection/final/inventory/listing/copy";
+import { hasReportableCard, isReportableSyncReason } from "@/lib/collection/sync-report";
 import { dashSetLabel, setRefLabel, toDash, type DashCard } from "../dash-card";
 import type {
   AddedCard,
@@ -167,7 +168,8 @@ function percentOf(have: number, total: number): number {
 /** What a spine carries beyond its container: the news since the last visit, a smart binder's checklist count and its could-fit cards. */
 export interface SpineExtras {
   newCards?: DashCard[];
-  checklist?: { have: number; total: number } | null;
+  /** NEO-528 — `secondary`: the cameo count, when the binder includes cameos. */
+  checklist?: { have: number; total: number; secondary?: { have: number; total: number } } | null;
   couldFit?: CouldFitCards;
 }
 
@@ -202,6 +204,10 @@ export function shelfBinderOf(container: Container, pockets: Pocket[] = [], extr
     couldFit: smart ? (extras.couldFit?.cards ?? []) : [],
     ...(smart && extras.couldFit ? { couldFitTotal: { count: extras.couldFit.count, more: extras.couldFit.more } } : {}),
     checklist: list ? { have: list.have, total: list.total, percent: percentOf(list.have, list.total) } : null,
+    // NEO-528 — the cameos' own count, kept apart (even when the binder's own players fill none of it).
+    ...(smart && extras.checklist?.secondary && extras.checklist.secondary.total > 0
+      ? { cameos: { have: extras.checklist.secondary.have, total: extras.checklist.secondary.total } }
+      : {}),
     ...labelled(labelOf(container)),
     pockets,
     checklistCards: null,
@@ -503,6 +509,17 @@ export function heldBackReason(
 }
 
 /**
+ * NEO-536: who has to fix a set's held-back cards. "all" when every card the
+ * read names is one only the crew can fix, "some" when such cards sit beside
+ * ones the collector fixes, nothing when there are none. A failed last sync
+ * is never a report (NB runs it again on its own), so it gets nothing.
+ */
+export function crewFixOf(set: Pick<SyncAlertsRaw["sets"][number], "failed" | "cards">): { crewFix?: "all" | "some" } {
+  if (set.failed || !hasReportableCard(set.cards)) return {};
+  return { crewFix: set.cards.every((c) => isReportableSyncReason(c.reason)) ? "all" : "some" };
+}
+
+/**
  * The sync status from its read: null when nothing is waiting and nothing is
  * wrong, so no section shows (the widget rule). A held-back card not
  * hydrated yet (or gone from the catalog) is still counted, just not named.
@@ -521,6 +538,8 @@ export function syncStatusOf(raw: SyncAlertsRaw | undefined, cards: CardsById | 
         const card = cards?.get(c.cardId as CardId);
         return card ? [{ card: toDash(card), reason: heldBackReason(c, set.platform), code: c.reason }] : [];
       }),
+      variantId: set.variantId,
+      ...crewFixOf(set),
     })),
     more: raw.more,
   };

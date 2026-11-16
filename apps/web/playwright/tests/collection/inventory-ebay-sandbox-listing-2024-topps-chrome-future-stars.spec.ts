@@ -224,9 +224,8 @@ const SCAN_PAIR_FIXTURES = path.join(path.dirname(fileURLToPath(import.meta.url)
 const SCAN_PAIR = ["01-vorkle-front.jpg", "02-vorkle-back.jpg"] as const;
 /**
  * The scan pair's crop, read, pairing and match on the preprocess service's
- * FAST path (frame-filling scans; no heavy escalation). The same ceiling
- * pipeline-fast-crops-inset-scans gives six photos on that path; a real model
- * read cannot fit the 7 s budget, so this is the placeholder pipeline's own
+ * FAST path (frame-filling scans; no heavy escalation). A real model read
+ * cannot fit the 7 s budget, so this is the placeholder pipeline's own
  * exception, as the real-scans spec's PIPELINE is. Every collector action
  * around it runs at 7 s. Signed off by Jason, 2026-11-03.
  */

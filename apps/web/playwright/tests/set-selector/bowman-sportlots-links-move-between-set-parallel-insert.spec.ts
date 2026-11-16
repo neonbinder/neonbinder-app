@@ -16,11 +16,13 @@
 // review fixture is consumed by the moves). Paused SportLots has its own
 // branches, both ending in hard asserts.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
   columnOption,
   columnSearch,
   drillToColdManufacturer,
   drillToSet,
+  openAttributesPanel,
   setBuilderReady,
 } from "../../support/set-builder";
 import type { Page } from "@playwright/test";
@@ -34,7 +36,11 @@ const NEW_PARALLEL = "Red Ink";
 const TYPE_PARALLEL = "Parallel";
 const TYPE_INSERT = "Insert";
 
-/** The live marketplace round trip of a Parallels sync (the flow's 240 s). */
+/**
+ * The live two-sided round trip of a Parallels sync (the flow's 240 s), kept while SportLots is
+ * live. Paused it is BuySportsCards alone (the fake, NEO-552) and waited on by the marketplace
+ * rule: 7 s plus the seconds the column's "Waiting on BuySportsCards" line is up.
+ */
 const PARALLELS_FETCH = 240_000;
 
 const drillBowman = (page: Page, env: Parameters<typeof drillToSet>[1]) =>
@@ -73,8 +79,10 @@ test(
       await reconcile.getByRole("button", { name: /Save [0-9]+ sets/ }).click();
       await expect(reconcile).toBeHidden();
     } else {
-      await expect(page.getByRole("listbox", { name: `${TYPE_PARALLEL}s` })).toBeVisible({
-        timeout: PARALLELS_FETCH,
+      // Measured 1.8 s at most on the #487 merge-group run (GUIDE).
+      await expectAfterMarketplace(page, page.getByRole("listbox", { name: `${TYPE_PARALLEL}s` }), {
+        platform: "BuySportsCards",
+        what: "the Parallels column's sync",
       });
       await expect(reconcile).toBeHidden();
     }
@@ -169,7 +177,11 @@ test(
       // store had nothing to report (the usual re-sync); a store with something
       // to say keeps its message instead. Either way: it ran, and did not fail.
       await expect(page.getByText("Syncing Parallels")).toBeVisible();
-      await expect(page.getByText("Syncing Parallels")).toBeHidden({ timeout: PARALLELS_FETCH });
+      await expectAfterMarketplace(page, page.getByText("Syncing Parallels"), {
+        platform: "BuySportsCards",
+        what: "the Parallels re-sync finishing",
+        state: "hidden",
+      });
       await expect(page.getByText(/Sync failed: could not load (variants|parallels)/)).toBeHidden();
       await expect(
         syncParallels.or(page.getByText(/Stored [0-9]+ (variants|parallels) \(single platform\)|Some (variants|parallels) were not stored/)).first(),
@@ -204,6 +216,8 @@ test(
       await expect(page.getByRole("button", { name: "Add custom Sub-Variants" })).toBeVisible();
       await expect(page.getByRole("button", { name: "Sync Sub-Variants" })).toBeHidden();
 
+      // NEO-496: the sources live inside the attributes panel, closed below the set.
+      await openAttributesPanel(page);
       await expect(page.getByText("Multi-source sets")).toBeVisible();
       const chip = page.getByRole("button", { name: new RegExp(`^Remove .*${NEW_PARALLEL}$`) });
       await chip.click();

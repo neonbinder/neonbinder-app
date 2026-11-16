@@ -119,10 +119,16 @@ export const SELECTOR_DEPENDANT_TABLES = [
   // before the selector rows and the cards.
   "listingOutbox",
   "marketplaceListingSyncs",
+  // NEO-536 — a collector's report of a held-back set (variantId). Drained
+  // by the same reset batch (`resetMarketplaceListingBatch`).
+  "syncReports",
   // NEO-509 — a sale line's description names NB's sport row
   // (`items[].listed.sportId`). Drained by the same reset batch.
   "marketplaceSales",
   "cardPlayerLinks",
+  // NEO-528 — the also-pictured player index (sportId, the card's sport).
+  // Drained by the reset (`resetCardSecondaryPlayerLinksBatch`), before the cards.
+  "cardSecondaryPlayerLinks",
   "cardChecklist",
   "cardCrossListings",
   "entityReviewQueue",
@@ -130,6 +136,12 @@ export const SELECTOR_DEPENDANT_TABLES = [
   // NEO-402 — a fetch's stored player answers (selectorOptionId, sportId).
   // Drained by the reset (`resetChecklistNameResolutionsBatch`).
   "checklistNameResolutions",
+  // NEO-496 — a set's publisher checklist (setId) and the rows' section links
+  // (setId, selectorOptionId). Both drained by the reset, before the selector
+  // rows; the sections and chunks hold no selector id. None of the four is
+  // ever in the reference-seed bundle.
+  "publishedChecklists",
+  "publishedChecklistLinks",
 ];
 export const SELECTOR_DEPENDANT_UNDRAINED_TABLES = ["entityReviewSkips"];
 const COUNTED_DEPENDANT_TABLES = [...SELECTOR_DEPENDANT_TABLES, ...SELECTOR_DEPENDANT_UNDRAINED_TABLES];

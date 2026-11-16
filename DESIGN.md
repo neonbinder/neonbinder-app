@@ -220,6 +220,13 @@ In dark these tiles are light greys, and `ink-3` and the pink and violet `-text`
 
 `notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink. Danger is red in both modes: dark's red-900 family, and in light a pale red ground (#FDECEE), deep red ink (#A3001A) and a red rule (#C4001F). A notice is not a button: buttons never borrow its red.
 
+A notice ink also stands alone as text on a dialog's `raised-deep` ground, with no tinted ground under it. Measured pairs that screens rely on, pinned by name in `tokens.test.tsx` (the adversarial sweep there covers every other text-on-surface pair):
+
+| Text | Ground | Where | Dark | Light |
+|---|---|---|---|---|
+| `notice-warn-ink` | `raised-deep` | Reconcile's paused and unasked pane | 12.26:1 | 7.74:1 |
+| `neon-green-text` | `raised-deep` | Match Cards' outline Keep buttons on a column | 9.01:1 | 5.46:1 |
+
 ### State that differs by mode
 
 - **`selection-line`**: transparent in dark, #006DA6 in light. Where a selection is otherwise a fill, a tint alone is a colour-only mark on paper (WCAG 1.4.1), so light adds a line. Applied through the `selection-edge` utility.
@@ -309,7 +316,7 @@ Crisp, solid and few. One neon fill per decision. Every action button is `NeonBu
 - **`variant="primary"`:** Binder Green fill, black ink. Hover is `neon-green-hover`.
 - **`variant="secondary"`:** Marquee Cyan fill, black ink.
 - **`variant="tertiary"`:** Profile Violet fill, black ink.
-- **`variant="negative"`:** Show-Sign Pink fill, black ink. Cancel and destructive alike. A quiet destructive link or × is `ink-3` that turns `text-neon-pink-text` under the pointer. In a confirm dialog the pink confirm sits beside a cyan (`secondary`) Cancel, so the two read apart.
+- **`variant="negative"`:** Show-Sign Pink fill, black ink. Cancel and destructive alike. A quiet destructive link or × is `ink-3` that turns `text-neon-pink-text` under the pointer. In a confirm dialog (`ConfirmDialog`) the pink confirm sits beside a cyan (`secondary`) Cancel, so the two read apart. A confirm that adds or applies rather than takes away passes `confirmVariant="primary"`: a green confirm beside a pink Cancel. Below Tailwind's `sm` (640px) the dialog's two buttons stack full width, so a long label never runs past the dialog's edge on a phone.
 - **`outline`:** any of the four as an outline: the hue's `-text` role as text and a 1px edge on a clear ground, filling with the neon and its black ink under the pointer. A quiet neutral action (Back, Swap sides, Check for new scans) is `secondary outline`.
 - **Neutral:** `button-neutral` fill, `ink` or `ink-2` text, `button-neutral-hover` under the pointer.
 - **Disabled:** keyed off `disabled` and `aria-disabled` alike, so a button can stay in the tab order and still read as not live. A fill swaps to the `button-neutral` fill and `ink-3` ink in both modes: a dimmed neon (dark once used 45% opacity) still reads as the same hue and looks pressable, and on white a faded neon reads as a pale, still-pressable button. An outline fades to 50%. Not-allowed cursor in both.

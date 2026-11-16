@@ -54,10 +54,21 @@ Reference specs that show the patterns below:
    longer waits, each passed on that one call as `toBeVisible({ timeout: 60_000 })`
    and commented at the site with which exception it is:
    - a step that directly drives a live SportLots round trip on data that is
-     not pre-synced (BuySportsCards is the fake since NEO-552: deterministic,
-     so its steps get the standard 7 s; the longer waits on BSC steps in older
-     specs and helpers predate it and come down once a green run has measured
-     them, never on a guess);
+     not pre-synced. BuySportsCards is the fake since NEO-552: deterministic, and
+     Jason (2026-11-15: "we should be fast always from the bsc mock server")
+     approved bringing every BSC wait down to its pace. The rule for a BSC step:
+     (1) a step the screen's "Waiting on BuySportsCards" line covers uses
+     `expectAfterMarketplace` / `pickAfterBscSync`, no flat number; (2) a BSC-only
+     step with no such line gets the standard 7 s when its longest measured run was
+     3.5 s or less, else ceil(longest + 7 s), the measurement in a comment at the
+     site; (3) a step that ALSO drives SportLots keeps its old ceiling while
+     SportLots is live and follows (1) and (2) while it is paused, through
+     `expectStepWithSportLots` (`support/marketplace-wait.ts`), the one place a
+     budget branches on `env.SL_PAUSED`. Never invent a number: a measurement from
+     a green run, plus 7 s. The measurements in the site comments ("measured on
+     the #487 merge-group run (GUIDE)") come from the #487 merge-group run,
+     GitHub Actions run 43725066956. If a tightened step goes red in CI, restore that one
+     site to its longest measured run plus 7 s; never revert the sweep;
    - the seed's cold syncs (`setup.spec.ts` is exempt as a class: it is a
      data-loading track, and its ceilings are the measured COLD-path values.
      A measurement means nothing until you know which branch, warm or cold,
@@ -66,7 +77,7 @@ Reference specs that show the patterns below:
    - the one live Wikidata proof (`player-live-wikidata-enrichment`);
    - a ceiling Jason has signed off, with the date, the measurement and what
      would void it recorded in the spec's own comment (`SELLER_ACCOUNT_CAP_MS`,
-     240 s, is one: see "The seller account" under Worker-state seeding).
+     60 s, is one: see "The seller account" under Worker-state seeding).
    Never invent a number, never raise one because a run was slow.
 4. **No sleeps, no settle waits (R10).** No `waitForTimeout`, no
    `waitForLoadState("networkidle")`, no polling loops around `isVisible`.
@@ -244,8 +255,15 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   (`slow`, `tooManyRequests`, `unavailable`, `hangs`, `dropsConnection`), and the
   `BscFake` class behind the `bscFake` fixture (`setFaults`, `addOrder`, `clear`;
   teardown is automatic). See "BuySportsCards is the fake" under Worker-state seeding.
+- `support/marketplace-wait.ts` (NEO-487, NEO-552): `expectAfterMarketplace(page, target,
+  { platform, what, state? })` (7 s of our own time plus every second the "Waiting on
+  <platform>" line is up; a hard cap of 180 s), `expectStepWithSportLots(page, target, env,
+  { liveMs, what, pausedMs?, statusLine?, state? })` (a step that also drives SportLots: `liveMs`
+  while it is live, the marketplace rule while it is paused), `waitingOn`, and
+  `bscLookupOutcome`. There is no per-step BSC ceiling any more (`bscReadCeiling` is gone).
 - `support/credentials.ts`: `openBscCredentials(page)` (opens the page, no Test press; the seed uses it), `loginToBsc(page)`, `loginToSportLots(page, env)`,
-  `LIVE_LOGIN`, the BSC sign-in seed pair (`removeBscSignIn`,
+  `LIVE_LOGIN` (SportLots' live login only: 30 s; BSC steps take the standard 7 s), `SEED_SIGN_IN`
+  (the BSC seed hop, 21 s: measured 13.4 s plus 7 s), the BSC sign-in seed pair (`removeBscSignIn`,
   `saveBscSignIn`) and eBay's (`saveEbayConnection`, `removeEbayConnection`,
   `expectEbayHookedUp`, which FAILS a spec loudly, naming the missing setup,
   when the deployment has no eBay wiring; NEO-415).
@@ -256,6 +274,9 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `drillToBaseVariant`, `drillToColdManufacturer`, `drillToCustom`,
   `drillToCustomSet`, `customSport`, `readAttachedTwinId`. Overrides are an
   options object: `drillToSet(page, env, { set: "Topps Stars of MLB Network" })`.
+  `openAttributesPanel(page)` opens the selected row's attributes panel when it
+  is closed (NEO-496): it opens itself at the set level only, and a row's
+  "Multi-source sets" panel lives inside it, so open it before reaching those.
 - `support/column-sync-fault.ts`: `faultColumnSyncStatus(page)` (NEO-450), the one
   WebSocket fault: installed before `signIn`, it sits on the Convex sync socket
   and makes ONE set-builder column's status query read as a failed sync
@@ -289,9 +310,12 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `shipPickOrder` (`/testing/seed-pick-order`, the caller's own box, no
   marketplace call; it refuses an account that lists anywhere), with
   `bscOrder` / `unmatchedLine` for how the list names an order and a line NB
-  could not tie to a card. A tick is optimistic and the list shows no
+  could not tie to a card; `seedEbayOrder` / `shipEbayOrder` / `ebayOrder`
+  (NEO-520, `platform=ebay`) seed an eBay order NB did not list, lines given
+  as a quantity and an optional title, touching no box. A tick is optimistic and the list shows no
   "saved" state, so a spec that reloads or navigates after a pull first reads
   the list in a second tab (`inventory-pick-list`'s `fromServer`).
+- `support/placeholder-intake.ts`: the placeholder tool's real intake at `/print/placeholders` (NEO-529); the `placeholders/pipeline-*`, `flip-edge` and join-and-refusal specs drop the committed scans (`public/placeholder-fixtures{,-corner,-fullbleed}/`, order from each `manifest.json`) on the drop zone: `placeholderScans(set, { backFirst })` (absolute paths; back-first swaps each adjacent pair in one `setInputFiles` call), `startPlaceholderBatch(page, files)` (drop, then the run view or the active-batch cap alert; on the cap it discards the running batches through "Recent runs" and drops again; any other refusal, the 12-starts-an-hour limit included, fails by name), `discardRunningBatches`, `finishPlaceholderBatch(page, pairs)` (axe on the dialog, "N pairs ready to print."), and `discardIfStillOpen(page, testInfo, { all })` for each spec's `afterEach` (works on a second page so the red run's screenshot stays whole; `all` discards every running batch, for a spec that starts runs on more than one page). Three Jason-approved ceilings, recorded with their measurements in the file (2026-11-13, and the fast read 2026-11-15): `UPLOAD_CEILING` 18 s (drop to "Uploaded 6 of 6 images.", measured 4.1-10.6 s), `HEAVY_CEILING` 80 s (escalating state to "Finish the batch" on the heavy path, measured 6.4-73.2 s; a heavy call is 2.0-3.5 s warm, 25.6-27.6 s cold), and `FAST_READ_CEILING` 15 s ("Uploaded 6 of 6 images." to "All 6 photos read." on the fast path: about 3.2 s alone, 7.9 s observed with 2 of the preview's 3 fast slots held by another shard, about 10.5 s worst case; void if the preview's fast pool width changes). Everything else a placeholder spec waits for is 7 s. No placeholder spec proves fast versus heavy; that split is covered by the preprocess service's pytest. The batch-level cold-start notice is proven by unit tests, not E2E (the escalating state outlasts the upload by only 3-4 s on a warm pool).
 - `support/players.ts`: `/admin/players` (`expectPlayersLoaded`,
   `emptyListAndPickSport`, `addPlayerByHand`).
 - `support/profile.ts`: `fillPublicProfile`.
@@ -477,9 +501,9 @@ The one exception is `playwright/project-scope.mjs` (NEO-389): a spec listed
 there is left out of that project entirely (the config's `testIgnore`, the
 shard plan and the gate all read it), so it is not planned rather than
 skipped. A listing needs a reason in the file: the other project's run must
-add no UI coverage. Today only `pipeline-escalation-cold-start` is
-desktop-only, because it spends minutes waiting on the preprocess model's
-cold start, not on the UI.
+add no UI coverage. Today only the eBay sandbox listing spec is listed (NEO-453,
+temporary, both projects); `pipeline-escalation-cold-start` was desktop-only
+until NEO-529 took its minutes-long cold-start wait out, and runs on both.
 
 - **Write one spec for both.** Role, label and text locators do not care
   about the viewport, and `click()` scrolls by itself. Most specs need no
@@ -570,7 +594,12 @@ await expectAccessible(page, { within: dialog, label: "New Team dialog" });
   axe checks whatever is in the DOM at that moment, and a half-faded element
   measures as a contrast failure that no user sees. A dialog opening, a
   wizard step, an error state and an empty state are each a state. It runs on both projects
-  with the same call, so the phone layout is checked too.
+  with the same call, so the phone layout is checked too. `expectAccessible`
+  also re-checks (up to three passes in all) a pass that has violations AND saw a
+  finite animation or transition start while axe ran (a row fading into a live
+  list), because axe read a half-faded frame; a green pass, or a red on a screen
+  that held still, is final, and the last pass is what it reports, so a
+  violation the settled screen really has is never hidden.
 - **Helpers.** A `support/` helper whose product is a screen, dialog or
   wizard it opens and returns with showing (`fetchChecklistToWizard`,
   `openCrossListForm`) runs `expectAccessible` itself on arrival, so every
@@ -633,7 +662,7 @@ set `WORKER_INDEX` and run the `bootstrap` project for it.
 **The seed's Base fetch uploads a publisher's checklist (NEO-478/482).** Before
 its Base Sync, `setup.spec.ts` uploads `fixtures/checklists/2024-topps-chrome-base.csv`
 (BSC's own per-card answers for 2024 Topps Chrome Base, with card #300's row
-left out) through "Add the publisher's checklist", asserts the result line
+left out) through "Add the official checklist", asserts the result line
 `Teams from your checklist: N of M cards` (N read off the file by
 `checklistFacts`), and fails by name if the wizard opens on "Checklist says
 otherwise". So the seed asks BSC for the bulk checklist and for ONE card, and
@@ -770,19 +799,22 @@ How a spec handles it, all in `support/collection.ts`:
   press is held).
 - `followRunToRest(platform, run, settled, slow, marketplace)` with `marketplace` given
   waits for the claim with `expectAfterMarketplace(..., { cap: SELLER_ACCOUNT_CAP_MS })`:
-  7 s of our own time plus every second the wait line is up, and a hard stop at 240 s.
+  7 s of our own time plus every second the wait line is up, and a hard stop at 60 s.
   Pass the marketplace on every press that could be the worker's first run; a
   press after a run has already landed in the same spec may omit it. Without it
   (eBay) the claim is the plain 7 s.
-- `SELLER_ACCOUNT_CAP_MS` (240 s) is a ceiling Jason signed off on 2026-11-13,
-  derived from the product's own read chain: the third try lands 210 s after the
-  chain starts (30 + 60 + 120 s), plus 20 s for the try's read and 7 s of our own
-  time. It was sized against the real BSC's worst stall (150 s); the fake never
-  stalls beyond a spec's own 15 s hold, so a green run will show a wait far below
-  it. **Void if the read's delays change** (`BSC_SELLER_ID_FETCH_DELAYS_MS`,
-  convex/bscSellerId.ts). Past it the spec is red whatever the status says; whether
-  to tighten it once a green fake run has measured the wait is Jason's call, never
-  a number to change here.
+- `SELLER_ACCOUNT_CAP_MS` (60 s) is the claim wait's hard stop. Jason signed off a 240 s
+  ceiling on 2026-11-13, sized against the real BSC's worst stall (150 s) and all three
+  background tries (30 + 60 + 120 s); he approved tightening every BSC wait to the fake's pace
+  on 2026-11-15. The fake answers the seller profile at once and never stalls, so the first
+  background try (30 s after the chain starts) lands the account: 30 s, plus the 20 s one
+  try's read may hold, plus 7 s of our own time, is 57 s, rounded up to 60 s. Measured on the
+  merge-group run: the one press of four that met the wait was held 20.3 s. The two BSC
+  listing specs hold the profile read 15 s on purpose (`bscFault.slow`), which lands the
+  account about 45 s after the save, inside the cap. **Void if the read's delays change**
+  (`BSC_SELLER_ID_FETCH_DELAYS_MS`, convex/bscSellerId.ts), if the read's 20 s timeout changes,
+  or if a spec holds the profile read past 20 s. Past the cap the spec is red whatever the
+  status says.
 - The Future Stars failure hook walks its zeroing press the same way (`walkForCleanup`
   around `followRunToRest`, marketplace passed), so a hook that meets the wait can spend
   up to the cap on each of its three tries. A hook only runs after the body wrote a
@@ -966,9 +998,11 @@ timeout (`selectOrCreate` does this and never hand-makes a row over a failed
 sync). Search for the brand instead and make it on "No matches found"
 (`selectOrCreate`); a brand's Sets column ends "done" with "SportLots
 skipped: no SportLots ids on this path."; the base picker's SportLots pane
-shows "SportLots returned no base set for <set>"; checklist fetches take the
+shows "SportLots wasn't asked: <set> has no SportLots link."; checklist fetches take the
 one-marketplace path ("Kept all N cards from BSC. Nothing to match, no other
-marketplace attached.").
+marketplace attached.") unless a publisher's checklist is in play (pasted, or
+the set's stored one): BSC plus the checklist are two sources, so Match Cards
+opens even paused (NEO-496; `confirmChecklistMatchCards`).
 Paused branches below Years assert THAT state, never the paused sentence.
 Consequences for drills: the Manufacturers column holds only the pinned "All
 Brands" view entry on a fresh deployment (see `SET-REGISTRY.md` -> "When
@@ -1124,6 +1158,13 @@ npx playwright test --project=bootstrap --retries=0
 npx playwright test --project=e2e --no-deps <path-substring>
 ```
 
+**Run `setup` and `bootstrap` first, locally, before the spec you are checking.** The fake
+BuySportsCards cold-starts: the first BSC step of a deployment (its first token, 7.5-9 s
+measured at the seed) can take longer than 7 s, and the BSC budgets are sized for a warm
+fake. A spec run on a deployment that has not just been through `setup` and `bootstrap` can
+fail its first BSC step on the cold start alone. That is the local order, not a licence to
+raise a budget: run them, then run the spec.
+
 A worker with no `TEST_EMAIL_<n>` falls back to `TEST_EMAIL`, so a different
 worker number does not give you a different user. `@marketplace-seller` specs
 (eBay only since NEO-552: BuySportsCards is the fake, one account per test user)
@@ -1253,6 +1294,12 @@ otherwise). Locally run them alone, on your own deployment.
    usually visibly different from what is there.
 4. Check the run's `PAUSED_PLATFORMS: ` line and, for enrichment, the
    `convex-logs-*-a<attempt>` artifacts, before deciding which branch the spec took.
+   A burst of 502 "preprocess pipeline upstream failure" across several jobs
+   is an outside-service signature: read the preprocess tracebacks (Cloud
+   Logging, the fast and the heavy service) and the LLM provider's status feed
+   before blaming our code. NEO-538 was an Anthropic API incident (5xx on
+   classify, 2026-11-13 12:51-13:26 UTC) and the pool's retries behaved
+   correctly.
 5. A red during a `pr-queue` turn (or a merge-queue eject) is never rerun
    inside the turn. The turn passes at once, and the `pr-queue` skill's triage
    decides what happens next: a known `ci-fail` failure goes again unchanged

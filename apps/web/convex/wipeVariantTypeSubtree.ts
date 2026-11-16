@@ -136,6 +136,7 @@ import {
   removeCardRow,
 } from "./cardRowDelete";
 import { createCardCountLedger } from "./cardCounts";
+import { MAX_LINKS_PER_ROW } from "./lib/publishedChecklistSections";
 
 // ───────────────────────────────────────────────────────────────────────────
 // The reference graph
@@ -176,6 +177,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     fields: ["cardChecklistId"],
     handling:
       "NEO-358 derived index: a wiped card's rows are deleted with it, in the same transaction",
+  },
+  cardSecondaryPlayerLinks: {
+    fields: ["cardChecklistId", "sportId"],
+    handling:
+      "NEO-528 derived index of a card's also-pictured players: a wiped card's rows are deleted with it, in the same transaction; sportId is sport-level",
   },
   collectionCopies: {
     fields: ["cardId", "variantId", "setId"],
@@ -242,6 +248,11 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "NEO-415 NB's link to a card-level listing it made (eBay). Never refuses the wipe and is untouched: a card a collector still owns a copy of already refuses it (collectionCopies), so a wiped card's listing was withdrawn when its last copy went (and the drainer withdraws a gone card's live listing when it settles the card's queued row); a sale naming the gone card is left unmatched",
   },
+  syncReports: {
+    fields: ["variantId", "cards[].cardId"],
+    handling:
+      "NEO-536 a collector's report of a held-back set. Never refuses the wipe and is untouched: label is a snapshot; readers skip a card or variant that is gone.",
+  },
   privateSets: {
     fields: ["sportId"],
     handling: "NEO-361 sport-level only. Untouched",
@@ -307,6 +318,16 @@ export const SUBTREE_REFERENCE_GRAPH = {
     handling:
       "year- and brand-level only (NEO-306); a subtree row is never a year or a brand. Untouched",
   },
+  publishedChecklists: {
+    fields: ["setId"],
+    handling:
+      "NEO-496 the set's publisher checklist: set-level, above the subtree. Untouched (its sections and chunks name only the checklist)",
+  },
+  publishedChecklistLinks: {
+    fields: ["setId", "selectorOptionId"],
+    handling:
+      "NEO-496 a row's links to checklist sections: links on wiped rows are deleted with the row, in the same transaction (at most 50 per row). The variant type's own links stay with it; setId is set-level",
+  },
 } as const;
 
 /** The tables this wipe deletes rows from. */
@@ -318,10 +339,14 @@ export const WIPED_TABLES = [
   "cardPlayerLinks",
   // NEO-358 — likewise.
   "cardTeamLinks",
+  // NEO-528 — likewise.
+  "cardSecondaryPlayerLinks",
   "entityReviewQueue",
   "checklistCandidates",
   "entityReviewSkips",
   "selectorSyncStatus",
+  // NEO-496 — a wiped row's checklist-section links, deleted with the row.
+  "publishedChecklistLinks",
 ] as const;
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -1219,6 +1244,7 @@ export const wipeCardsPage = internalMutation({
     const deletedLinks: string[] = [];
     const deletedPlayerLinks: string[] = [];
     const deletedTeamLinks: string[] = [];
+    const deletedSecondaryLinks: string[] = [];
     const dropCard = async (card: Doc<"cardChecklist">): Promise<void> => {
       // NEO-358 — the one card delete: guard, cross-listings, variations
       // (already gone here: children are dropped first), player and team
@@ -1227,16 +1253,19 @@ export const wipeCardsPage = internalMutation({
       deletedLinks.push(...removed.crossListingIds);
       deletedPlayerLinks.push(...removed.playerLinkIds);
       deletedTeamLinks.push(...removed.teamLinkIds);
+      deletedSecondaryLinks.push(...removed.secondaryLinkIds);
       deleted.add(card._id);
       deletedCards.push(card._id);
-      // 8: the fixed reads and the delete, the want-index read included;
-      // each want swept costs 3 (its delete, its owner's Want List read and
-      // patch); scheduling the continuation costs 1.
+      // 9: the fixed reads and the delete, the want-index read and (NEO-528)
+      // the also-pictured index read included; each want swept costs 3 (its
+      // delete, its owner's Want List read and patch); scheduling the
+      // continuation costs 1.
       ops +=
-        8 +
+        9 +
         removed.crossListingIds.length +
         removed.playerLinkIds.length +
         removed.teamLinkIds.length +
+        removed.secondaryLinkIds.length +
         3 * removed.wantIds.length +
         (removed.wantSweepScheduled ? 1 : 0);
     };
@@ -1298,6 +1327,7 @@ export const wipeCardsPage = internalMutation({
     logDeleted(args.variantTypeId, "cardCrossListings", deletedLinks);
     logDeleted(args.variantTypeId, "cardPlayerLinks", deletedPlayerLinks);
     logDeleted(args.variantTypeId, "cardTeamLinks", deletedTeamLinks);
+    logDeleted(args.variantTypeId, "cardSecondaryPlayerLinks", deletedSecondaryLinks);
     logDeleted(args.variantTypeId, "cardChecklist", deletedCards);
     return {
       cardChecklist: deletedCards.length,
@@ -1525,6 +1555,7 @@ export const deleteEmptyNodes = internalMutation({
     const notEmpty: Id<"selectorOptions">[] = [];
     const deletedIds = new Set<string>();
     const deletedRows: Array<Record<string, unknown>> = [];
+    const linkIds: string[] = [];
     const parents = new Set<Id<"selectorOptions">>();
 
     for (const nodeId of args.nodeIds) {
@@ -1582,6 +1613,18 @@ export const deleteEmptyNodes = internalMutation({
       }
 
       await ctx.db.delete(nodeId);
+      // NEO-496 — the row's checklist-section links go with it. The link
+      // writer keeps at most MAX_LINKS_PER_ROW per row; the take is a belt.
+      const links = await ctx.db
+        .query("publishedChecklistLinks")
+        .withIndex("by_selector_option_and_key", (q) =>
+          q.eq("selectorOptionId", nodeId),
+        )
+        .take(MAX_LINKS_PER_ROW * 2);
+      for (const link of links) {
+        await ctx.db.delete(link._id);
+        linkIds.push(link._id);
+      }
       deletedIds.add(nodeId);
       deletedRows.push({
         id: nodeId,
@@ -1627,6 +1670,7 @@ export const deleteEmptyNodes = internalMutation({
 
     logDeleted(args.variantTypeId, "selectorOptions", deletedRows);
     logDeleted(args.variantTypeId, "selectorSyncStatus", statusIds);
+    logDeleted(args.variantTypeId, "publishedChecklistLinks", linkIds);
     return { ...counts, selectorSyncStatus: statusIds.length, notEmpty };
   },
 });

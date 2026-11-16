@@ -97,3 +97,25 @@ describe("ConfirmDialog — children slot (NEO-279)", () => {
     );
   });
 });
+
+describe("ConfirmDialog — the buttons' colours and footer (NEO-528)", () => {
+  const fill = (el: HTMLElement) => el.style.getPropertyValue("--nb-fill");
+
+  it("by default the confirm is the pink of taking away, beside a cyan Cancel (every existing caller)", () => {
+    renderDialog();
+    expect(fill(screen.getByRole("button", { name: "Yes, delete" }))).toBe("var(--neon-pink)");
+    expect(fill(screen.getByRole("button", { name: "Cancel" }))).toBe("var(--neon-blue)");
+  });
+
+  it("a confirm that adds is green, and Cancel then wears the pink every cancel wears", () => {
+    renderDialog({ confirmLabel: "Yes, add them", confirmVariant: "primary" });
+    expect(fill(screen.getByRole("button", { name: "Yes, add them" }))).toBe("var(--neon-green)");
+    expect(fill(screen.getByRole("button", { name: "Cancel" }))).toBe("var(--neon-pink)");
+  });
+
+  it("stacks the two buttons below sm and puts them side by side from sm up", () => {
+    renderDialog();
+    const footer = screen.getByRole("button", { name: "Cancel" }).parentElement!;
+    expect(footer.className.split(/\s+/)).toEqual(expect.arrayContaining(["flex", "flex-col", "sm:flex-row"]));
+  });
+});

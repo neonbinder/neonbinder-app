@@ -10,11 +10,13 @@ import {
   CALLER_KEY,
   FILTERS_PATH,
   LOADER,
+  MemoryStore,
   RESULTS_PATH,
   STRANGER,
   idToken,
   rawResultsRow,
   resultsBody,
+  setLogSink,
   startFake,
 } from "./helpers.mjs";
 
@@ -213,6 +215,45 @@ describe("replay, misses and uploads", () => {
     assert.deepEqual(miss.nearMiss.diffPaths, ["body.filters.sport"]);
   });
 
+  it("refuses an upload past the 5,000-entry manifest cap with a 409, logging counts only", async () => {
+    const { MAX_RECORDINGS_TOTAL } = require("../dist/src/catalogue.js");
+    // One short of the cap, as stale entries the boot skips without a read.
+    const store = new MemoryStore();
+    const entries = {};
+    for (let i = 0; i < MAX_RECORDINGS_TOTAL - 1; i++) {
+      const key = i.toString(16).padStart(64, "0");
+      entries[key] = { object: `recordings/v999/${key}.json`, pathTemplate: "x", recordedAt: "2026-11-01T00:00:00.000Z" };
+    }
+    await store.writeManifest({ schema: 1, version: 1, allowlistVersion: 999, updatedAt: "", entries }, null);
+    const full = await startFake({ store });
+    const lines = [];
+    setLogSink((l) => lines.push(l));
+    try {
+      const answer = { aggregations: { year: [{ label: "1996", slug: "1996", count: 4, active: false }] } };
+      const upload = (sport) =>
+        full.call("POST", "/__fake/recordings", { email: LOADER, admin: true, body: { recordings: [recording(FILTERS_PATH, "POST", { filters: { sport: [sport] } }, answer)] } });
+      const atCap = await upload("baseball");
+      assert.equal(atCap.status, 200, "the upload landing on the cap is taken");
+      const over = await upload("football");
+      assert.equal(over.status, 409);
+      assert.deepEqual(over.body, { error: "catalogue full", total: MAX_RECORDINGS_TOTAL + 1, max: MAX_RECORDINGS_TOTAL });
+      const refused = lines.map((l) => JSON.parse(l)).find((l) => l.operation === "recordings_refused");
+      assert.deepEqual(
+        { reason: refused.reason, uploaded: refused.uploaded, total: refused.total, max: refused.max },
+        { reason: "catalogue_full", uploaded: 1, total: MAX_RECORDINGS_TOTAL + 1, max: MAX_RECORDINGS_TOTAL },
+      );
+      const footballKey = requestKey({ method: "POST", path: FILTERS_PATH, query: [], body: { filters: { sport: ["football"] } } });
+      assert.ok(!lines.some((l) => l.includes(footballKey) || l.includes("football")), "no key or body in the log");
+      // The football request is still a miss; a re-upload of a held key is taken.
+      assert.equal((await full.call("POST", `/api/${FILTERS_PATH}`, { bsc: BSC, body: { filters: { sport: ["football"] } } })).status, 501);
+      assert.equal((await upload("baseball")).status, 200, "a replace on a full catalogue is taken");
+      assert.equal((await full.call("GET", "/__fake/recordings", { email: LOADER, admin: true })).body.manifestVersion, 3);
+    } finally {
+      setLogSink(() => {});
+      await full.close();
+    }
+  });
+
   it("refuses an upload carrying anything outside the allowlist, naming paths only", async () => {
     const body = resultsBody(FILTERS);
     const raw = [rawResultsRow("c1", "1", "Ken Griffey Jr.")];
@@ -281,11 +322,18 @@ describe("replay, misses and uploads", () => {
 describe("seller synthesis", () => {
   let fake;
   const sellerId = async () => (await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC })).body.sellerProfile.sellerId;
-  const sheet = (condition) =>
-    fake.call("POST", "/api/seller/bulk-upload/results", {
+  // The sheet is answered as `{results: [...]}`, like real BSC; on a 200 the
+  // helper checks that root and hands back the rows.
+  const sheet = async (condition) => {
+    const r = await fake.call("POST", "/api/seller/bulk-upload/results", {
       bsc: BSC,
       body: { condition, currentListings: true, productType: "raw", page: 0, size: 5000, sort: "default", filters: FILTERS },
     });
+    if (r.status !== 200) return r;
+    assert.deepEqual(Object.keys(r.body), ["results"], "the sheet is wrapped in {results}");
+    assert.ok(Array.isArray(r.body.results));
+    return { ...r, body: r.body.results };
+  };
 
   beforeEach(async () => {
     if (fake) await fake.close();
@@ -326,7 +374,8 @@ describe("seller synthesis", () => {
       assert.equal(row.availableQuantity, 0);
       assert.equal(row.price, "0");
       assert.equal(row.condition, "near_mint");
-      assert.ok(row.sellerImgFront.includes("Default"));
+      // A blank row carries none of the listed-only keys (real BSC leaves them out).
+      for (const k of ["sellerSku", "sellerImgFront", "sellerImgBack"]) assert.equal(k in row, false, k);
     }
     const again = (await sheet("near_mint")).body;
     assert.notEqual(again[0].productId, first[0].productId, "a template mints a new productId on each read");
@@ -353,6 +402,9 @@ describe("seller synthesis", () => {
     assert.equal(listed.availableQuantity, 3);
     assert.equal(listed.price, "0.50");
     assert.equal(listed.sellerSku, "303|1");
+    // A listed row with no photo carries BSC's default-image strings.
+    assert.ok(listed.sellerImgFront.includes("Default"));
+    assert.ok(listed.sellerImgBack.includes("Default"));
     assert.equal(listed.card.cardNo, "1");
     const stable = (await sheet("near_mint")).body.find((r) => r.cardId === "c1");
     assert.equal(stable.productId, listed.productId, "a listing keeps its productId");
@@ -780,6 +832,20 @@ describe("cold start: listening before the recordings are in", () => {
     // Read again: the held read may have run before the held filters call recorded its miss.
     assert.equal((await cold.call("GET", "/__fake/misses?prefix=happy-cat-")).body.misses.length, 1);
     assert.equal((await cold.call("GET", "/__fake/health")).body.loading, false);
+  });
+
+  it("never names a write endpoint as missing while loading", async () => {
+    const cold = await startCold();
+    const during = (await cold.call("GET", "/__fake/health")).body;
+    assert.equal(during.loading, true);
+    assert.deepEqual(during.writeCaptures, { loading: true }, "no missing list until the captures are in");
+    cold.finish();
+    await cold.loaded;
+    const afterLoad = (await cold.call("GET", "/__fake/health")).body;
+    assert.equal(afterLoad.loading, false);
+    assert.deepEqual(afterLoad.writeCaptures, {
+      missing: ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"],
+    });
   });
 
   it("refuses admin uploads at once while loading; run controls work at once", async () => {

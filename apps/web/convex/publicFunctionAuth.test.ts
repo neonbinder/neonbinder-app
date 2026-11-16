@@ -952,8 +952,7 @@ describe("NEO-214: the Set Builder admin panel and its client-callable functions
     "resetVariantCommonPricesBatch",
     // NEO-552 — the BSC call gate.
     "resetMarketplaceCallGatesBatch",
-    // PR 451 (NEO-482) — the BSC 429 cooldown and the BSC wait rows.
-    "resetMarketplaceCooldownsBatch",
+    // PR 451 (NEO-482) — the BSC wait rows.
     "resetMarketplaceWaitsBatch",
   ])("%s is declared internalMutation, not mutation", (fn) => {
     // These do the actual deleting, and they carry no identity check —
@@ -3368,6 +3367,119 @@ describe("NEO-490: the operator's checklist links are admin-gated", () => {
 });
 
 
+describe("NEO-496: the set's publisher checklist surface is admin-gated", () => {
+  /**
+   * Four writes (start, addSections, finish, remove) and three subscribed or
+   * on-demand reads (getForSet, listSections, leafChecklistSummary). Every
+   * one calls `requireAdmin`; the reads answer a signed-out caller with
+   * nothing (a sign-out mid-session must not crash the screen) and refuse a
+   * signed-in member. The clean-up and the fetch's reads are internal.
+   */
+  async function seedSet(t: ReturnType<typeof convexTest>) {
+    return t.run(async (ctx) => {
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Set",
+        platformData: {},
+        children: [],
+        lastUpdated: 0,
+      });
+      const checklistId = await ctx.db.insert("publishedChecklists", {
+        setId,
+        status: "ready",
+        fileName: "c.csv",
+        format: "csv",
+        createdByUserId: "admin",
+        startedAt: 0,
+        lastActivityAt: 0,
+        finishedAt: 0,
+        sectionCount: 0,
+        rowCount: 0,
+        byteSize: 0,
+      });
+      return { setId, checklistId };
+    });
+  }
+
+  test("every write refuses an anonymous caller and a member, and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { setId, checklistId } = await seedSet(t);
+    const calls = (who: typeof t) => [
+      () => who.mutation(api.publishedChecklists.start, { setId, fileName: "x.csv", format: "csv" }),
+      () =>
+        who.mutation(api.publishedChecklists.addSections, {
+          checklistId,
+          firstOrdinal: 0,
+          sections: [{ name: "A", rows: [{ number: "1", players: ["P"], teams: [] }] }],
+        }),
+      () => who.mutation(api.publishedChecklists.finish, { checklistId, sectionCount: 0, rowCount: 0 }),
+      () => who.mutation(api.publishedChecklists.remove, { setId }),
+    ];
+    for (const call of calls(t)) await expect(call()).rejects.toThrow(/not authenticated/i);
+    const member = t.withIdentity({ subject: "member", role: "member" }) as unknown as typeof t;
+    for (const call of calls(member)) await expect(call()).rejects.toThrow(/admin access required/i);
+    const rows = await t.run(async (ctx) => ({
+      headers: (await ctx.db.query("publishedChecklists").collect()).map((h) => h.status),
+      sections: (await ctx.db.query("publishedChecklistSections").collect()).length,
+    }));
+    expect(rows).toEqual({ headers: ["ready"], sections: 0 });
+  });
+
+  test("the reads answer a signed-out caller with nothing and refuse a member", async () => {
+    const t = convexTest(schema, modules);
+    const { setId, checklistId } = await seedSet(t);
+    expect(await t.query(api.publishedChecklists.getForSet, { setId })).toBeNull();
+    expect(
+      await t.query(api.publishedChecklists.listSections, {
+        checklistId,
+        paginationOpts: { numItems: 10, cursor: null },
+      }),
+    ).toEqual({ page: [], isDone: true, continueCursor: "" });
+    expect(
+      await t.query(api.publishedChecklists.leafChecklistSummary, { selectorOptionId: setId }),
+    ).toBeNull();
+    const member = t.withIdentity({ subject: "member", role: "member" });
+    await expect(member.query(api.publishedChecklists.getForSet, { setId })).rejects.toThrow(
+      /admin access required/i,
+    );
+    await expect(
+      member.query(api.publishedChecklists.listSections, {
+        checklistId,
+        paginationOpts: { numItems: 10, cursor: null },
+      }),
+    ).rejects.toThrow(/admin access required/i);
+    await expect(
+      member.query(api.publishedChecklists.leafChecklistSummary, { selectorOptionId: setId }),
+    ).rejects.toThrow(/admin access required/i);
+  });
+
+  test("clean-up and the fetch's reads are internal, never public", () => {
+    const src = readFileSync(join(__dirname, "publishedChecklists.ts"), "utf8");
+    for (const name of ["expireUpload", "purge", "forgetUploader"]) {
+      expect(src).toContain(`export const ${name} = internalMutation({`);
+    }
+    for (const name of ["sectionsForSet", "linksForSet", "rowsForLeaf"]) {
+      expect(src).toContain(`export const ${name} = internalQuery({`);
+    }
+    // Every public function's handler calls requireAdmin (directly, or
+    // through adminOrSignedOut for the reads) before it touches the database.
+    for (const name of ["start", "addSections", "finish", "remove"]) {
+      const begin = src.indexOf(`export const ${name} = mutation({`);
+      expect(begin, name).toBeGreaterThan(-1);
+      const body = src.slice(src.indexOf("handler: async", begin));
+      expect(body.indexOf("await requireAdmin(ctx)"), name).toBeGreaterThan(-1);
+      expect(body.indexOf("await requireAdmin(ctx)"), name).toBeLessThan(body.indexOf("ctx.db"));
+    }
+    for (const name of ["getForSet", "listSections", "leafChecklistSummary"]) {
+      const begin = src.indexOf(`export const ${name} = query({`);
+      expect(begin, name).toBeGreaterThan(-1);
+      const body = src.slice(src.indexOf("handler: async", begin));
+      expect(body.indexOf("await adminOrSignedOut(ctx)"), name).toBeGreaterThan(-1);
+      expect(body.indexOf("await adminOrSignedOut(ctx)"), name).toBeLessThan(body.indexOf("ctx.db"));
+    }
+  });
+});
+
 /**
  * NEO-500 — the Pick List (`pickList.ts`). Every function is the signed-in
  * caller's own; the owner is never an argument. `open`, `soldPhotos` and
@@ -3429,6 +3541,297 @@ describe("NEO-500: the pick-order seed is locked like the other testing seeds", 
       t.withIdentity(SIGNED_IN).mutation(api.testing.seedMyTestPickOrder, { orderNo: "P1", ship: true }),
     ).rejects.toThrow(/not enabled on this deployment/);
     expect(await written(t)).toBe(0);
+  });
+});
+
+/**
+ * NEO-528 — "Also pictured" players on a card. Editing them is operator
+ * tooling (`requireAdmin`): one card's list, the "Player on every card" adds
+ * over a checklist and its parallels (as the card's player or as a cameo),
+ * that run's target list, and (round 3) the stored per-row defaults with the
+ * panel's read of them. A collector
+ * only ever READS them, through the signed-in smart binder read `ruleFits`
+ * (which answers only for the caller's own binder).
+ */
+describe("NEO-528: the also-pictured surface is admin-gated; ruleFits is signed-in", () => {
+  async function seedIds(t: ReturnType<typeof convexTest>) {
+    const sportId = await seedSport(t);
+    return t.run(async (ctx) => {
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: sportId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+      });
+      const playerId = await ctx.db.insert("players", {
+        name: "Dan Marino",
+        nameNormalized: "dan marino",
+        sportId,
+        lastUpdated: 1_700_000_000_000,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: variantId,
+        cardNumber: "1",
+        cardName: "Card",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { variantId, playerId, cardId };
+    });
+  }
+  /** What a refused call must not have written on the card. */
+  const cardWrites = (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) =>
+    t.run(async (ctx) => {
+      const card = await ctx.db.get(ids.cardId);
+      const row = await ctx.db.get(ids.variantId);
+      return {
+        secondaryPlayerIds: card?.secondaryPlayerIds ?? null,
+        playerIds: card?.playerIds ?? null,
+        // NEO-528 round 3: the stored "Player on every card" values.
+        defaults: [row?.defaultPlayerIds ?? null, row?.defaultCameoIds ?? null],
+      };
+    });
+  const ADMIN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) => Promise<unknown>]
+  > = [
+    [
+      "cardSecondaryPlayers.setSecondaryPlayers",
+      (t, ids) => t.mutation(api.cardSecondaryPlayers.setSecondaryPlayers, { cardId: ids.cardId, playerIds: [ids.playerId] }),
+    ],
+    [
+      "cardPlayersBulk.addPlayerToVariant",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.addPlayerToVariant, {
+          variantId: ids.variantId,
+          playerId: ids.playerId,
+          cursor: null,
+        }),
+    ],
+    [
+      "cardPlayersBulk.addCameoToVariant",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.addCameoToVariant, {
+          variantId: ids.variantId,
+          playerId: ids.playerId,
+          cursor: null,
+        }),
+    ],
+    [
+      "cardPlayersBulk.everyCardTargets",
+      (t, ids) => t.query(api.cardPlayersBulk.everyCardTargets, { variantId: ids.variantId, kind: "player" }),
+    ],
+    [
+      "cardPlayersBulk.setCardPlayerDefault",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.setCardPlayerDefault, {
+          selectorOptionId: ids.variantId,
+          kind: "player",
+          playerId: ids.playerId,
+        }),
+    ],
+    [
+      "cardPlayersBulk.clearCardPlayerDefault",
+      (t, ids) =>
+        t.mutation(api.cardPlayersBulk.clearCardPlayerDefault, {
+          selectorOptionId: ids.variantId,
+          kind: "cameo",
+          playerId: ids.playerId,
+        }),
+    ],
+    [
+      "cardPlayersBulk.cardPlayerDefaults",
+      (t, ids) => t.query(api.cardPlayersBulk.cardPlayerDefaults, { selectorOptionId: ids.variantId }),
+    ],
+  ];
+
+  test.each(ADMIN_GATED)("%s rejects an anonymous caller and writes nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t, ids)).rejects.toThrow(/not authenticated/i);
+    expect(await cardWrites(t, ids)).toEqual({ secondaryPlayerIds: null, playerIds: null, defaults: [null, null] });
+  });
+
+  test.each(ADMIN_GATED)("%s rejects a signed-in non-admin and writes nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity({ subject: "member", role: "member" }) as never, ids)).rejects.toThrow(
+      /admin access required/i,
+    );
+    expect(await cardWrites(t, ids)).toEqual({ secondaryPlayerIds: null, playerIds: null, defaults: [null, null] });
+  });
+
+  test.each(ADMIN_GATED)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity(ADMIN) as never, ids)).resolves.toBeDefined();
+  });
+
+  test("binderRules.ruleFits rejects an anonymous caller and answers a signed-in non-admin", async () => {
+    const t = convexTest(schema, modules);
+    await expect(t.query(api.binderRules.ruleFits, { containerId: "not-an-id", cardIds: [] })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.binderRules.ruleFits, { containerId: "not-an-id", cardIds: [] }),
+    ).resolves.toEqual([]);
+  });
+});
+
+/**
+ * NEO-520 — `testing.seedMyTestEbayOrder`, the unmatched-eBay-sale spec's seed
+ * hop, by the same two locks as `seedMyTestPickOrder`: an anonymous caller is
+ * refused, and a deployment without `TESTING_RESET_SECRET` (every production
+ * deployment) throws having written nothing. Its behaviour is pinned in
+ * `testing.ebayOrder.test.ts`.
+ */
+describe("NEO-520: the eBay order seed is locked like the other testing seeds", () => {
+  const args = { orderNo: "E1", lines: [{ title: "A lot", quantity: 1 }] };
+  const written = (t: ReturnType<typeof convexTest>) =>
+    t.run(async (ctx) => (await ctx.db.query("marketplaceSales").collect()).length);
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test("refuses an anonymous caller", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    const t = convexTest(schema, modules);
+    await expect(t.mutation(api.testing.seedMyTestEbayOrder, args)).rejects.toThrow(/Not authenticated/);
+    expect(await written(t)).toBe(0);
+  });
+
+  test("throws and writes nothing when TESTING_RESET_SECRET is unset", async () => {
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    const t = convexTest(schema, modules);
+    await expect(t.withIdentity(SIGNED_IN).mutation(api.testing.seedMyTestEbayOrder, args)).rejects.toThrow(
+      /not enabled on this deployment/,
+    );
+    await expect(
+      t.withIdentity(SIGNED_IN).mutation(api.testing.seedMyTestEbayOrder, { orderNo: "E1", ship: true }),
+    ).rejects.toThrow(/not enabled on this deployment/);
+    expect(await written(t)).toBe(0);
+  });
+});
+
+/**
+ * NEO-536 — a collector's report of a held-back set, and the dashboard's
+ * "with the crew" reads. The collector half reads and writes only the
+ * caller's own reports (`syncReports.test.ts` covers the ownership
+ * refusals); the queue, the review and the close read or settle every
+ * collector's, so they are admin. `crewDesk.waiting` is every collector's
+ * open asks, so it is admin too.
+ */
+describe("NEO-536: sync reports are the caller's own, and closing them is admin-gated", () => {
+  const NOT_AN_ID = "not-an-id";
+  const SIGNED_IN_GATED: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["syncReports.mine", (t) => t.query(api.syncReports.mine, {})],
+    ["crewDesk.mine", (t) => t.query(api.crewDesk.mine, {})],
+  ];
+
+  test.each(SIGNED_IN_GATED)("%s rejects an anonymous caller", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(SIGNED_IN_GATED)("%s answers a signed-in non-admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t.withIdentity(SIGNED_IN))).resolves.not.toThrow();
+  });
+
+  const ADMIN_READS: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["syncReports.queue", (t) => t.query(api.syncReports.queue, {})],
+    ["syncReports.review", (t) => t.query(api.syncReports.review, { id: NOT_AN_ID })],
+    ["crewDesk.waiting", (t) => t.query(api.crewDesk.waiting, {})],
+  ];
+
+  test.each(ADMIN_READS)("%s rejects anonymous and signed-in non-admin callers, and answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    await expect(call(t)).rejects.toThrow(/Not authenticated/);
+    await expect(call(t.withIdentity(SIGNED_IN))).rejects.toThrow(/Admin access required/);
+    await expect(call(t.withIdentity(ADMIN))).resolves.not.toThrow();
+  });
+
+  /** An open report of "user"'s on a real variant, with the sync record it came from. */
+  async function seed(t: ReturnType<typeof convexTest>) {
+    return await t.run(async (ctx) => {
+      const sportId = await ctx.db.insert("selectorOptions", { level: "sport", value: "Football", platformData: {}, lastUpdated: 0 });
+      const setId = await ctx.db.insert("selectorOptions", {
+        level: "setName",
+        value: "Contenders",
+        parentId: sportId,
+        platformData: {},
+        lastUpdated: 0,
+      });
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: setId,
+        platformData: {},
+        lastUpdated: 0,
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: variantId,
+        cardNumber: "41",
+        cardName: "Reggie White",
+        platformData: {},
+        sortOrder: 1,
+        lastUpdated: 0,
+      });
+      await ctx.db.insert("marketplaceListingSyncs", {
+        ownerId: "user",
+        variantId,
+        platform: "bsc",
+        status: "idle",
+        problems: [{ cardId, reason: "noLink" }],
+        conditionsPushed: [],
+        lastUpdated: 0,
+      });
+      const reportId = await ctx.db.insert("syncReports", {
+        ownerId: "user",
+        platform: "bsc",
+        variantId,
+        label: "1996 Playoff Contenders",
+        cards: [{ cardId, reason: "noLink" }],
+        heldBack: 1,
+        status: "open",
+        lastUpdated: 0,
+      });
+      return { variantId, reportId };
+    });
+  }
+
+  test("report and withdraw reject an anonymous caller and write nothing", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    await expect(t.mutation(api.syncReports.report, { variantId: ids.variantId, platform: "bsc" })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    await expect(t.mutation(api.syncReports.withdraw, { id: ids.reportId })).rejects.toThrow(/Not authenticated/);
+    const rows = await t.run((ctx) => ctx.db.query("syncReports").collect());
+    expect(rows.map((r) => [r._id, r.status])).toEqual([[ids.reportId, "open"]]);
+  });
+
+  test("close rejects anonymous and signed-in non-admin callers (the reporter included) and leaves the report open", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seed(t);
+    const close = (c: ReturnType<typeof convexTest>) =>
+      c.mutation(api.syncReports.close, { id: ids.reportId, outcome: "notABug", note: "no" });
+    await expect(close(t)).rejects.toThrow(/Not authenticated/);
+    await expect(close(t.withIdentity(SIGNED_IN))).rejects.toThrow(/Admin access required/);
+    const rows = await t.run((ctx) => ctx.db.query("syncReports").collect());
+    expect(rows.map((r) => r.status)).toEqual(["open"]);
+  });
+
+  test("the collector-facing returns never carry who closed a report", () => {
+    const src = readFileSync(join(__dirname, "syncReports.ts"), "utf8");
+    const mineValidator = src.slice(src.indexOf("export const mySyncReportValidator"), src.indexOf("export const syncReportQueueItemValidator"));
+    expect(mineValidator).not.toContain("closedBy");
+    const crewDesk = readFileSync(join(__dirname, "crewDesk.ts"), "utf8");
+    expect(crewDesk).not.toContain("closedBy");
+    expect(crewDesk).not.toContain("ownerId: v.");
   });
 });
 

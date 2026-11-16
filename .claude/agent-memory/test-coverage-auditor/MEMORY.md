@@ -16,5 +16,8 @@
 - [Websocket-faked query masks transitions](websocket-faked-query-masks-transitions.md) — faked Convex value proves the stored state only; hides "syncing" and own-action branches (alert, focus return)
 - [Measured-wait helper](measured-wait-helper-untested-and-narrower-than-flat-timeout.md) — flat live timeout swapped for announced-wait credit: helper untested, narrower than the flat ceiling, 429 UI never forced live
 - [Optimistic write, spec waits out the race](optimistic-write-spec-waits-out-the-race.md) — second-tab wait before reload hides lost-on-refresh; ask for pending/beforeunload unit test + no-wait reload
+- [Inverted skip path loses its live proof](inverted-skip-path-loses-its-live-proof.md) — a rule flip rewrites the skip specs; the unchanged case survives only as an .or(); grep removed sentences
 - [Two-order spec helper](two-order-spec-helper-hook-and-pin-widening.md) — instant-or-wait helpers: check failure hooks, widened success regexes, dropped underWay gate
 - [Fake-upstream fault proof gaps](fake-upstream-fault-injection-proof-gaps.md) — conditional/times:1 faults prove nothing; dropped log-shape tests; vacuous capture checks
+- [Budget sweep, GCS store untested](budget-sweep-and-gcs-store-untested.md) — removed/added expect pairing; cloud adapter tested via local store only; cold-start seed budgets
+- [Wildcard regex hides doubled words](wildcard-regex-around-a-label-hides-doubled-words.md) — `.*LABEL.*` passes a brand-doubled label; pin exact text for wording fixes

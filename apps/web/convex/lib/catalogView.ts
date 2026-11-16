@@ -84,6 +84,17 @@ export const setRefValidator = v.object({
 });
 
 /**
+ * What a set reads as to a collector: its season, then its own name
+ * ("2024 Topps Chrome", "1996-97 Upper Deck"). The brand is not added: a
+ * set's name already carries it where collectors say it. The one wording for
+ * a set on the collection screens, the smart binder rule picker and its
+ * summary (NEO-528), so the chip and the "Takes …" line can't disagree.
+ */
+export function setLabel(set: { season: string; name: string }): string {
+  return `${set.season} ${set.name}`.trim();
+}
+
+/**
  * The card-bearing row a card hangs off (a variant type such as Base, an
  * insert, or a sub-variant) and the rows above it inside its set.
  *
@@ -150,6 +161,11 @@ export const catalogCardFields = {
   listingTitle: v.string(),
   players: v.array(cardPlayerValidator),
   teams: v.array(cardTeamValidator),
+  /**
+   * NEO-528 — players pictured on the card who are not its subject ("Also
+   * pictured"), never one of `players`. Absent when there are none.
+   */
+  secondaryPlayers: v.optional(v.array(cardPlayerValidator)),
 };
 export const catalogCardValidator = v.object(catalogCardFields);
 
@@ -320,6 +336,17 @@ export class CatalogReader {
         ...(printed && printed !== p.name ? { nameOnCard: printed } : {}),
       });
     }
+    // NEO-528 — "Also pictured": the card's cameos, minus anyone it already
+    // carries as its own player (a later edit can make a cameo the subject).
+    const secondaryPlayers: NonNullable<CatalogCard["secondaryPlayers"]> = [];
+    for (const playerId of card.secondaryPlayerIds ?? []) {
+      if (seenPlayers.has(playerId as string)) continue;
+      if ((card.playerIds ?? []).includes(playerId)) continue;
+      seenPlayers.add(playerId as string);
+      const p = await this.player(playerId);
+      if (!p) continue;
+      secondaryPlayers.push({ _id: p._id, name: p.name });
+    }
     const seenTeams = new Set<string>();
     const teams: CatalogCard["teams"] = [];
     for (const teamId of card.teamOnCardIds ?? []) {
@@ -351,6 +378,7 @@ export class CatalogReader {
       listingTitle: card.listingTitle,
       players,
       teams,
+      ...(secondaryPlayers.length > 0 ? { secondaryPlayers } : {}),
     };
   }
 
