@@ -133,6 +133,15 @@ re-measure before quoting them for Playwright.
 3. **Run the specs covering the change on this worktree's own Convex
    deployment**, before the first push (below). Seller specs and cloud threads
    use shared dev instead.
+4. **Audit once.** One full audit round per ticket (the auditors the change
+   calls for, all in parallel). After the fixes, re-audit only the delta: the
+   fix commits, sent to every auditor whose findings they answer or whose
+   area they touch (a public Convex function, `services/browser`, a workflow
+   or `.claude/` always reaches `security-auditor`). Any commit made after
+   the round, a red's fix included, gets a delta audit before the ticket
+   rejoins the queue or is re-enqueued. A clean merge of main is not a
+   change; a merge with hand-resolved conflicts is, and its resolution gets a
+   delta audit before the push. Never rerun the full round.
 
 Two shipping modes, chosen by the repo variable `MERGE_QUEUE`
 (`gh variable get MERGE_QUEUE -R neonbinder/neonbinder-app`). Every skill reads
@@ -141,23 +150,28 @@ means the Claude-run queue.
 
 **Claude-run queue (`MERGE_QUEUE` off):**
 
-4. **Join the queue** (`pr-queue join NEO-123`) once the ticket is ready for
+5. **Join the queue** (`pr-queue join NEO-123`) once the ticket is ready for
    production: audits applied, gates and covering specs green, main merged, any
    UI verdict given. **Do not push before your turn** (the one exception is a
    push Jason asks for, such as a preview to look at). Every push starts a CI
    run, a run and its merge take up to an hour, and only one run at a time can
    end in a merge, so CI is handed out one ticket at a time by the queue
    session (`pr-queue run`).
-5. **On your turn** (the `pr-queue` skill has the steps): merge main, push and
-   open the PR, watch CI, one rerun only for a flake that names an outside
-   service (BuySportsCards, SportLots, eBay and the like, never our own code),
-   merge on green with `pr-close`, send the Mac notification, tell every other
-   session main moved, and tell the queue you are done.
-6. **On any other red, pass the turn** at once (and send the Mac notification),
-   reproduce the failing spec locally on your own deployment, or against the
-   PR's own preview stack when your deployment cannot reproduce it (below), fix
-   it, and join again. Push again only on your next turn. This is the actual
-   cost control: push-and-hope is what burns CI cycles.
+6. **On your turn** (the `pr-queue` skill has the steps): merge main, push and
+   open the PR, watch CI, merge on green with `pr-close`, send the Mac
+   notification, tell every other session main moved, and tell the queue you
+   are done.
+7. **On a red, pass the turn at once, triage cheaply, then stop.** A Sonnet
+   agent finds candidate `ci-fail` tickets in Linear; the session matches
+   them against the run's error signature. A known failure (signature
+   matches, nothing in the diff touches it) gets its occurrence count bumped
+   and rejoins the queue unchanged, every time.
+   Anything else goes to `feature-planner`, which says whether it is an
+   outside outage (go again unchanged on a later turn, or re-enqueue) or
+   something to fix; report that to Jason and wait
+   for his lead: no fix, no rejoin, no rerun until he says. The `pr-queue`
+   skill has the exact steps. Churning on reds is what burns CI cycles and
+   tokens.
 
 **GitHub merge queue (`MERGE_QUEUE=true`):** a PR push runs only the cheap
 checks, so pushes are free and need no turn. The full preview stack and E2E run
@@ -165,7 +179,7 @@ once, on the queue's `merge_group` build (main plus the PR); green merges and
 `release.yml` deploys as always. Use the `run-e2e` label plus a push for a full
 run off-queue.
 
-4. **Enqueue** with `gh pr merge --squash` once the ticket meets the same bar as
+5. **Enqueue** with `gh pr merge --squash` once the ticket meets the same bar as
    joining the Claude-run queue (audits applied, gates and covering specs green,
    UI verdict given). **Enqueueing is the merge approval**; `pr-close` does not
    ask again. `gh pr merge --disable-auto` leaves the queue; a push to a queued
@@ -176,14 +190,18 @@ run off-queue.
    these checks. In the Claude-run flow a green `CI Gate` is not E2E proof:
    require the `E2E / e2e` gate check run on the head SHA (not `Playwright E2E`,
    which is only the report), no exceptions.
-5. **Keep watching in the same session** with `pr-watch --queue <PR>`, which
+6. **Keep watching in the same session** with `pr-watch --queue <PR>`, which
    ends in `MERGED`, `EJECTED` (GitHub removed it by itself; reason and failing
    run/job included) or `REMOVED` (anything else: stop and tell Jason, never
    re-enqueue). A green PR run alone is never "green". Discord is a backup for
    when no session is alive, not the signal.
-6. **`MERGED`:** `pr-close` does the production check, smoke test, Linear and
-   cleanup. **`EJECTED`:** treat it as any red (save artifacts, ci-fail ticket,
-   planner), fix, push, re-enqueue, send the Mac notification. There are no
+7. **`MERGED`:** `pr-close` does the production check, smoke test, Linear and
+   cleanup. **`EJECTED`:** triage it like a Claude-run red (step 7 of the
+   Claude-run list): save
+   artifacts; a known `ci-fail` signature is bumped and re-enqueued
+   unchanged; anything else goes to the planner, then Jason, before any fix
+   or re-enqueue. Every re-enqueue first waits for the PR's `Preview Cleanup`
+   run to finish. Send the Mac notification. There are no
    turns, no `MAIN MOVED` messages and no `state.sh` in this mode.
 
 #### The fast gates, by area

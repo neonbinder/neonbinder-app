@@ -29,6 +29,11 @@ Review rules from NEO-546 (GitHub merge queue behind a repo variable; the PR run
 - Workflow-level `concurrency` with `cancel-in-progress: false` keeps only ONE pending run per group. A no-op event (e.g. a dequeue-on-merge) arriving after a pending `closed` replaces it, and the teardown is lost. Put the group on the teardown job(s) instead, one group per job, so no-op runs never enter it.
 - "Unknown → skip teardown" is acceptable when a later event (close) always tears down regardless. It needs a visible warning, because a systematic read failure (token scope) turns it into a silent leak on every dequeue.
 
+**9. Changing the red-handling rule (NEO-545 delta).**
+- The verdict-action text lives in four places: CLAUDE.md, pr-queue, and the EJECTED bullets in pr-watch and pr-close. A rule change that edits only the first two leaves pr-watch saying "fix, push, re-enqueue" to the session that actually acts on the verdict. Grep all four.
+- In a bullet list read top to bottom, a gate bullet (wait for Preview Cleanup) placed AFTER the action bullet (re-enqueue unchanged) is skipped. Put every gate in the one checklist bullet that precedes all actions.
+- "Any commit after the audit round gets a delta audit" collides with the turn's own main merge. Say which merges count: a clean main merge does not; a hand-resolved conflict does, and its resolution is exactly where workflow/.claude/ drift hides.
+
 Related: [[patterns-preview-cleanup-blast-radius]], [[patterns-cross-run-artifacts]], [[patterns-ci-cross-run-queue]].
 
 - **Two dequeue vocabularies (D0, 2026-11-14/15).** The GraphQL timeline `RemovedFromMergeQueueEvent.reason` is lowercase (`failed_checks`, `manual`, `merged`); the `pull_request: dequeued` webhook is uppercase (`CI_FAILURE`, `MERGE`). A case-insensitive allowlist stays safe only while anchored `^(...)$` and ANDed with the actor check. A "skip teardown" reason is safe only while the `closed` teardown is unconditional (`always()` plus `action == 'closed'`), independent of the gate.
