@@ -95,8 +95,11 @@ export function problemCopy(platform: ListingPlatform): Record<ListingProblemRea
     missingAspect: `${name} wants a card detail we don't have yet, so it's held back.`,
     noPhoto: `${name} listings need a photo. Add one to a copy of this card and it goes up.`,
     setupIncomplete: `Finish your ${name} setup in ${credentialsWords(platform)} and this one goes up.`,
-    // NEO-535: NB's own hold, never said as the platform turning it down.
-    titleTooLong: `Its title is ${titleCapWords(platform)}, and we won't chop it. Once it's shortened in the set builder, it goes up on the next sync.`,
+    // NEO-535: NB's own hold, never said as the platform turning it down. Only
+    // the crew can shorten a title (NEO-536 makes it reportable), so it says
+    // whose fix it is, like the other crew reasons, and never sends the
+    // collector to a set builder they can't open.
+    titleTooLong: `Its title is ${titleCapWords(platform)}, and we won't chop it. Once we shorten it on our end, it goes up on the next sync.`,
   };
 }
 

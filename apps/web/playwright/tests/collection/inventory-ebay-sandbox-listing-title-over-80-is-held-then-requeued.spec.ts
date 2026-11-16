@@ -7,8 +7,8 @@
 //      eBay connected and its setup finished.
 //   2. Sync. Sync status reads the set "0 listed, 1 skipped" with ONE card held
 //      back, and the reason is the title's, in a collector's words: "Its title is
-//      over the 80-character limit for listings, and we won't chop it. Once it's
-//      shortened in the set builder, it goes up on the next sync." The finished
+//      over the 80-character limit for listings, and we won't chop it. Once we
+//      shorten it on our end, it goes up on the next sync." The finished
 //      run's ledger holds no List the cards / Set prices / Go live step. That row
 //      is the whole of what a collector can see of eBay (the app shows no eBay
 //      listing of its own), so "nothing was listed, nothing chopped" is read from

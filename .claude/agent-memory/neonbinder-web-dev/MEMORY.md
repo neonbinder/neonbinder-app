@@ -226,3 +226,4 @@
 - [New table naming a variant has six pins](reference_new_table_naming_a_variant_has_six_pins.md) — wipe graph, reset batch + exact count pin, cli.mjs list, test reset, api.d.ts, auth registry
 - [Inline-block is a reader group](reference_inline_block_is_a_reader_group.md) — inline-block span in a one-phrase <p> = Chrome AX generic; role="presentation" flattens it
 - [convex-test: stub a module via the glob map](reference_convex_test_stub_a_module_via_the_glob_map.md) — add a "./x.ts" key to the modules map; check {ok:false} results; mutation→action flip breaks .mutation() call sites repo-wide
+- [New listing problem reason: hand lists](reference_new_listing_problem_reason_has_hand_lists.md) — SYNC_HELD_REASONS, REPORTABLE_SYNC_REASONS judgement, test Reason union, spec copy literals

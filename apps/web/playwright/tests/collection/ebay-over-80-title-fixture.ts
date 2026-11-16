@@ -3,8 +3,10 @@
 // `runOver80Flow(args, through)` drives the whole fixture and stops where the
 // spec's proof ends:
 //   through "requeued"  steps 1-4: the card is held back whole with the title's
-//                       reason, the title is shortened in the set builder, and
-//                       Sync status queues the card again with no Sync pressed.
+//                       reason, the title is shortened in the set builder (the
+//                       crew's fix, NEO-536: the collector's reason says it's on
+//                       us), and Sync status queues the card again with no Sync
+//                       pressed.
 //                       Needs no publish, so the active spec can go green now.
 //   through "listed"    steps 1-6: the second Sync lists it ("1 listed"). Needs
 //                       a publish that works (NEO-453: the sandbox refuses every
@@ -13,7 +15,8 @@
 //
 // The flow (NEO-535, R1): an eBay listing whose title is over 80 characters is never
 // chopped. NeonBinder holds the card back whole, says why, and lists it on the
-// next sync once the title has been shortened in the set builder. The flow, as
+// next sync once the title has been shortened in the set builder (an admin's
+// fix: the collector is told it's on our end, never sent there). The flow, as
 // the user lives it, on eBay's SANDBOX (the deployment's eBay wiring is the
 // sandbox's; step 1 refuses to go on if it is not):
 //   0. Not wired / paused: a deployment with no eBay wiring FAILS this spec
@@ -37,8 +40,8 @@
 //   3. Sync. The checklist's Sync is pressed and Sync status, followed to rest,
 //      reads the set "0 listed, 1 skipped" with ONE card held back, and the
 //      reason it names is the title's: "Its title is over the 80-character limit
-//      for listings, and we won't chop it. Once it's shortened in the set
-//      builder, it goes up on the next sync." That row is the whole of what a
+//      for listings, and we won't chop it. Once we shorten it on our end, it
+//      goes up on the next sync." That row is the whole of what a
 //      collector can see of eBay (the app shows no eBay listing of its own), so
 //      "nothing was listed with a chopped title" is read from three things
 //      together: the count says 0 listed, the finished run's ledger holds no
@@ -150,7 +153,7 @@ const SET_LEN = 21;
 const SANDBOX_LINE = "Test mode: this NeonBinder talks to eBay's sandbox, so nothing lists for real.";
 const PAUSED_LINE = "eBay is on a break. Your changes wait here and go up when it's back.";
 const HELD_SENTENCE =
-  "Its title is over the 80-character limit for listings, and we won't chop it. Once it's shortened in the set builder, it goes up on the next sync.";
+  "Its title is over the 80-character limit for listings, and we won't chop it. Once we shorten it on our end, it goes up on the next sync.";
 const NOT_CONNECTED_MISSING_SETUP =
   "eBay did not connect after the seed hop. Either DEV_EBAY_REFRESH_TOKEN (a sandbox seller's refresh token) " +
   "is unset on this deployment, or eBay is paused here (NEONBINDER_PAUSED_PLATFORMS) while this runner's " +
