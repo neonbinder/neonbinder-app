@@ -512,6 +512,10 @@ describe("addCustomCard — a hand-added card is born with the defaults", () => 
     expect(typed.playerIds).toBeUndefined();
     expect(typed.pendingPlayerNames).toEqual(["Pat Mahomes II"]);
     expect(typed.secondaryPlayerIds).toEqual([fx.kelce]);
+    // A hand-added card has no listing: it never carries the listing's claim,
+    // typed name or not.
+    expect(picked).not.toHaveProperty("listingNamedPlayer");
+    expect(typed).not.toHaveProperty("listingNamedPlayer");
   });
 
   test("a default whose player was deleted is dropped and the card is still added", async () => {
@@ -704,9 +708,15 @@ describe("a card whose listing named a player is never given the default player 
     const result = await t.withIdentity(ADMIN).action(api.selectorOptions.commitCardChecklist, {
       selectorOptionId: fx.base,
       sportId: fx.sport,
-      cards: [card("1", ["Team Leaders"]), card("2", []), card("3", ["  "])],
+      cards: [
+        card("1", ["Team Leaders"]),
+        card("2", []),
+        card("3", ["  "]),
+        card("4", ["Josh Allen"]),
+        card("5", ["Unknown Rookie"]),
+      ],
     });
-    expect(result).toMatchObject({ success: true, count: 3 });
+    expect(result).toMatchObject({ success: true, count: 5 });
     const cards = await cardsOn(t, fx.base);
     const leaders = cards.get("1")!;
     // The listing named someone: no default player, nothing pending (the skip
@@ -721,6 +731,29 @@ describe("a card whose listing named a player is never given the default player 
       expect(cards.get(n)!.playerIds).toEqual([fx.mahomes]);
       expect(cards.get(n)!.secondaryPlayerIds).toEqual([fx.kelce]);
     }
+    // A card naming a person keeps them; the cameo still goes on.
+    expect(cards.get("4")!.playerIds).toEqual([fx.allen]);
+    expect(cards.get("4")!.secondaryPlayerIds).toEqual([fx.kelce]);
+    // A name still waiting for review stays pending and the card is left
+    // blank (Jason, 2026-11-15); the cameo still goes on.
+    const pending = cards.get("5")!;
+    expect(pending.playerIds).toBeUndefined();
+    expect(pending.pendingPlayerNames).toEqual(["Unknown Rookie"]);
+    expect(pending.secondaryPlayerIds).toEqual([fx.kelce]);
+    // The claim is stored on every card whose listing named someone, so a
+    // parallel copied from it later holds the default back too; never on a
+    // card the listing named nobody on.
+    for (const n of ["1", "4", "5"]) expect(cards.get(n)!.listingNamedPlayer, n).toBe(true);
+    for (const n of ["2", "3"]) expect(cards.get(n)!, n).not.toHaveProperty("listingNamedPlayer");
+    // ... and the checklist query returns it: its returns validator is strict,
+    // so a field it does not list would fail the whole read.
+    const served = await t
+      .withIdentity(ADMIN)
+      .query(api.selectorOptions.getCardChecklist, { selectorOptionId: fx.base });
+    const byNumber = new Map(served.map((c) => [c.cardNumber, c]));
+    expect(byNumber.size).toBe(5);
+    for (const n of ["1", "4", "5"]) expect(byNumber.get(n)!.listingNamedPlayer, n).toBe(true);
+    for (const n of ["2", "3"]) expect(byNumber.get(n)!, n).not.toHaveProperty("listingNamedPlayer");
     await drainScheduled(t);
     await cancelScheduled(t);
   });

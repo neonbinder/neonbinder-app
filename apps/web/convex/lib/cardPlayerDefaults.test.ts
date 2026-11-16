@@ -7,6 +7,7 @@ import { describe, expect, test } from "vitest";
 import type { Id } from "../_generated/dataModel";
 import { MAX_CARD_PLAYERS } from "../features/cardAttention";
 import {
+  listingNamesAPlayer,
   planCardPlayerDefaults,
   planDefaultCameos,
   planDefaultPlayers,
@@ -15,6 +16,26 @@ import {
 
 const P = (s: string) => s as Id<"players">;
 const link = (id: string) => ({ playerId: P(id), nameOnCard: id.toUpperCase() });
+
+/**
+ * Jason, 2026-11-15: a NEW card whose listing names anyone (a person, a name
+ * waiting for review, a name ruled "not a person") is left blank; only a card
+ * whose listing names nobody takes the default player. The commit and every
+ * client preview read this one test.
+ */
+describe("listingNamesAPlayer", () => {
+  test("nothing printed, or only blanks, names nobody", () => {
+    expect(listingNamesAPlayer(undefined)).toBe(false);
+    expect(listingNamesAPlayer([])).toBe(false);
+    expect(listingNamesAPlayer(["", "   ", "\t"])).toBe(false);
+  });
+
+  test("any non-blank string names someone, whatever it resolves to (or doesn't)", () => {
+    expect(listingNamesAPlayer(["Patrick Mahomes"])).toBe(true);
+    expect(listingNamesAPlayer(["Team Leaders"])).toBe(true);
+    expect(listingNamesAPlayer(["  ", "Unknown Rookie"])).toBe(true);
+  });
+});
 
 describe("planDefaultPlayers", () => {
   test("no default player: none, whatever the card says", () => {

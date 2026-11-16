@@ -1,28 +1,30 @@
 // NEO-528 (R1): a smart binder can take in a player's cameos. An admin lists
 // a player P under "Also on this card" on a card he is not the subject of; a
 // collector's smart binder whose rule is "Player = P" leaves that card out
-// until its "Include cameos" option is on (off by default), then Find cards offers it
-// beside P's own card, tagged Cameo, and the binder counts cameos on a line of
-// their own.
+// until its "Include cameos" option is on (off by default), then Find cards
+// offers it beside P's own card, tagged Cameo, and the binder counts cameos on
+// a line of their own.
+//
+// The fixture is a REAL card (Jason, 2026-11-14): Football > 1984 > Topps >
+// Topps > Base, card #355 Fred Dean, with Dan Marino (P) as the cameo. P's own
+// card is #123 Dan Marino, in the same checklist.
 //
 // The flow:
-// - P is the player of the first ordinary row of the seed's 2024 Topps Chrome
-//   Base (read only: his row is never written). The collector marks that card
-//   Have in Main.
-// - As admin, a hand-made card in a per-attempt hand-made set gets P under
-//   "Also on this card" in its drawer. The collector marks it Have in Main
-//   too, and its card detail lists P under "Also on this card" (Back closes
-//   the detail).
-// - A new smart binder, rule "Player = P, and Set = 2024 Topps Chrome or the
-//   hand-made set" (a line naming sets gives it a checklist the dashboard
-//   counts): "Include cameos" is shown and OFF, and Find cards offers P's own
-//   card only.
+// - The set builder (admin): the checklist is fetched and committed if it is
+//   still empty (the publisher's checklist uploaded first, every review name
+//   skipped), or adopted as it is (a rerun on the same seed). Card #355's
+//   drawer gets P under "Also on this card"; its own player stays.
+// - The collector marks #123 (P's own) and #355 Have in Main; #355's card
+//   detail lists P under "Also on this card" (Back closes the detail).
+// - A new smart binder, rule "Player = P, and Set = 1984 Topps" (a line naming
+//   a set gives it a checklist the dashboard counts): "Include cameos" is
+//   shown and OFF, and Find cards offers P's own card only.
 // - Binder settings: the rule is edited to include cameos ("..., cameos
-//   included"); Find cards offers both, and only the hand-made card carries the
-//   Cameo tag ("P is a cameo on this card"). Both are added. Sorted by
-//   checklist with empty slots, the held cameo pocket's name says it is a
-//   cameo, P's own pocket does not, and the cover counts cameos apart:
-//   "Cameos: 1 have, 0 need".
+//   included"); Find cards offers both, and only #355 carries the Cameo tag
+//   ("P is a cameo on this card"). Both are added. Sorted by checklist with
+//   empty slots, the held cameo pocket's name says it is a cameo, P's own
+//   pocket does not, and the cover counts cameos apart: "Cameos: 1 have, 0
+//   need".
 // - Checklists, looking through the binder with "Fits <binder>": the cameo
 //   row wears the tag, P's own row does not. The cameo copy is removed: its row
 //   stays in the fits list.
@@ -37,126 +39,197 @@
 //   takes the "Include cameos" option away and says so ("Include cameos is off
 //   now: ..."); saved without the player line, the rule no longer says
 //   "cameos included".
+// - Cleanup: the binder is deleted, both copies removed, and P taken off
+//   #355's "Also on this card" (its drawer's ×), so the card is as it was.
 //
-// R7/R7a: the hand-made set `cmo<token>` (single token, per attempt,
-// SET-REGISTRY.md) sits under the REAL Baseball > 2024 > Topps (the drawer's
-// player search starts on the set's sport, Baseball, P's sport) with no
-// marketplace id anywhere beneath it; its one card `528-<attempt>` is DELETED
-// at the end, which takes its "Also on this card" link with it. The collector
-// writes only the signed-in user's own binder and copies (the cameo copy is
-// removed once mid-run and filed again from its empty slot). Self-cleaning: the
-// binder is deleted (its cards go back to Main), both copies are removed, then
-// the hand-made card is deleted (a card a collector holds cannot be).
+// R7/R7a: SOLE WRITER of Football > 1984 > Topps > Topps > Base
+// (SET-REGISTRY.md): the only spec that fetches it, commits it, or writes a
+// card of it, and the only one that puts Dan Marino under "Also on this card"
+// anywhere (a smart binder's cameo count is catalogue-wide, so the counts
+// below are exact only while nothing else does). Not fresh-only: the
+// committed checklist stays and a rerun adopts it, and the one card write (P
+// on #355) is undone at the end and by the failure hook. The collector writes
+// only the signed-in user's own binder and copies.
 //
-// R3: the collector cascade goes through `support/collection.ts`, the set
-// builder drill through `support/set-builder.ts` / `support/cards.ts`, and the
-// set builder's "Also on this card" names through `support/also-pictured.ts`
-// (one place, for the copy). The set builder's "Player on every card" control
-// is `set-selector/player-on-every-card`.
+// R3: the set builder drills through `support/set-builder.ts`, the fetch and
+// the review through `support/wizard.ts` and `support/published-checklist.ts`,
+// the collector cascade through `support/collection.ts`, and the set builder's
+// "Also on this card" names through `support/also-pictured.ts`. The set
+// builder's "Player on every card" control is `set-selector/player-on-every-card`.
 import type { Locator, Page } from "@playwright/test";
-import { ALSO_PICTURED, addAlsoPictured } from "../../support/also-pictured";
-import { addCardViaForm, confirmDeleteCardButton, deleteCardButton, editCardButton, escapeRe } from "../../support/cards";
-import { collectorCascade, confirmRemoved, drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import {
+  ALSO_PICTURED,
+  addAlsoPictured,
+  alsoPicturedGroup,
+  cameoLine,
+  cardDescription,
+  closeCardDrawer,
+  openCardDrawer,
+} from "../../support/also-pictured";
+import { escapeRe } from "../../support/cards";
+import { cameoPhrase as cameoWords, deleteBinder, holdInMain, openCollectorChecklist, removeCopy } from "../../support/cameo-binder";
+import type { CollectorSet } from "../../support/collection";
+import type { FlowEnv } from "../../support/env";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { drillToCustom, type CustomTarget } from "../../support/set-builder";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
+import { CHECKLISTS, checklistRows, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
+import { drillToBaseVariant, drillToColdManufacturer, setBuilderReady, syncChecklistButton } from "../../support/set-builder";
+import {
+  advanceToSave,
+  checklistDisagreementHeading,
+  confirmSaveButton,
+  expectChecklistDisagreementFirst,
+  nextStepButton,
+  pickSideForAllCards,
+  reviewWizard,
+  tidyUpName,
+} from "../../support/wizard";
 
-/** The hand-made set's Base checklist on the collector's Checklists tab (its region). */
-async function openMyChecklist(page: Page, setName: string): Promise<Locator> {
-  await page.goto("/collection?tab=checklists");
-  await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
-  const { drill } = collectorCascade(page);
-  await drill("Sports", "Baseball", "Years");
-  await drill("Years", "2024", "Brands");
-  await drill("Brands", "Topps", "Sets");
-  await drill("Sets", setName, "Variant Types");
-  await drill("Variant Types", "Insert", "Insert");
-  await drill("Insert", "Base");
-  const checklist = page.getByRole("region", { name: `2024 ${setName} Base`, exact: true });
-  await expect(checklist.getByRole("heading", { level: 3, name: `2024 ${setName} Base` })).toBeVisible();
-  return checklist;
-}
-
-/** The seed's 2024 Topps Chrome Base on the collector's Checklists tab (its region). */
-async function openBase(page: Page): Promise<Locator> {
-  await page.goto("/collection?tab=checklists");
-  await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible();
-  return drillToCollectorBase(page);
-}
+/** The set as the set builder drills it, and as the collector's cascade does. */
+const BUILD = { sport: "Football", year: "1984", manufacturer: "Topps", set: "Topps" } as const;
+const COLLECTOR: CollectorSet = { ...BUILD };
+/** The checklist's name on the collector's screens, and a set's name in a rule ("<season> <set>"). */
+const SET_LABEL = `${BUILD.year} ${BUILD.set}`;
+/** The cameo's card (Fred Dean) and P's own card. */
+const CAMEO_NUMBER = "355";
+const OWN_NUMBER = "123";
+const P = "Dan Marino";
 
 /**
- * Remove the collector's copy of `short` through its card detail, if it has
- * one: the detail settles on "None yet" or on the copy's Remove, and the
- * "Removed" line is the server's answer.
+ * The fetch's wizard can keep staging names (each unknown name's lookup) while
+ * "Skip remaining names" is pressed: the bulk skip is repeated until every name
+ * is decided (`checklist-team-leader-cards-pair-and-picked-name-saves`' ceiling).
  */
-async function removeCopy(page: Page, checklist: Locator, short: string): Promise<void> {
-  await checklist.getByRole("button", { name: `Details for ${short}`, exact: true }).click();
-  const drawer = page.getByRole("dialog").filter({ has: page.getByRole("region", { name: `Your copies of ${short}`, exact: true }) });
-  const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}`, exact: true });
-  const none = yourCopies.getByText("None yet. Fill in what you know below and add it.");
-  const remove = yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true });
-  await expect(none.or(remove)).toBeVisible();
-  if (await remove.isVisible()) {
-    await remove.click();
-    // This card's own notice first, then the shared wait-and-dismiss (R3).
-    await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw, Excellent` })).toBeVisible();
-    await confirmRemoved(drawer);
-    await expect(none).toBeVisible();
+const BATCH_GROWS = 60_000;
+/** The wizard opens behind the entity check's batch (live lookups; the same spec's ceiling). */
+const WIZARD_OPENS = 60_000;
+/** A live BSC + SportLots round trip on a ~400-card two-sided fetch (GUIDE hard rule 3, marketplace exception). */
+const CHECKLIST_FETCH = 120_000;
+
+/**
+ * The 1984 team-leader cards: BSC names each by its card ("Colts Team Leaders -
+ * Curtis Dickey TL", read as that team), the publisher's checklist by its club
+ * ("Baltimore Colts"), so each is a "Checklist says otherwise" card. Read off
+ * the file, never typed.
+ */
+const TEAM_LEADER_NUMBERS = checklistRows(CHECKLISTS.topps1984FootballBase)
+  .filter((row) => / Team Leaders /.test(row.player))
+  .map((row) => row.number);
+
+/**
+ * The set builder's Base of 1984 Topps Football, with its cards: fetched and
+ * committed when the checklist is still empty, adopted as it is otherwise.
+ * Contract: EXIT the checklist is on screen with cards in it.
+ *
+ * Its own fetch rather than `fetchChecklistToWizard` (R9 divergence): that
+ * helper's result line counts every row the file answers, while here the
+ * team-leader cards are disagreements the operator settles first, and the
+ * wizard opens on that step.
+ */
+async function ensureChecklist(page: Page, env: FlowEnv): Promise<void> {
+  // No other spec opens Football 1984, so every column may sync itself: the
+  // cold drill pays those marketplace waits (R9).
+  await drillToColdManufacturer(page, env, BUILD);
+  await drillToBaseVariant(page, env, BUILD);
+  const empty = page.getByText("No cards in this checklist yet.");
+  const cards = page.getByRole("heading", { level: 2, name: /^Cards \([1-9][0-9]*\)$/ });
+  await expect(empty.or(cards)).toBeVisible();
+  if (await cards.isVisible()) return;
+
+  // Empty: this spec is the set's sole writer, so it fetches and commits it.
+  // The publisher's checklist goes first (GUIDE "Checklist first"): every row
+  // names its team or says No Team, so BSC is asked for no card one by one.
+  const facts = await usePublishersChecklist(page, CHECKLISTS.topps1984FootballBase);
+  await syncChecklistButton(page).click();
+  if (!env.SL_PAUSED) {
+    // Both marketplaces answered: the pairing is confirmed as it stands.
+    const ready = page.getByRole("button", { name: "Confirm card matches", disabled: false });
+    await expect(ready).toBeVisible({ timeout: CHECKLIST_FETCH });
+    await ready.click();
+  } else {
+    // One marketplace: 7 s of our own time plus the seconds the screen waits on BSC (NEO-487).
+    await expectAfterMarketplace(page, page.getByText(/Kept all [0-9]+ cards? from BSC/), {
+      platform: "BuySportsCards",
+      what: "the one-marketplace fetch's kept-cards line",
+    });
   }
-  await drawer.getByRole("button", { name: "Close card detail" }).click();
-  await expect(drawer).toBeHidden();
-}
+  const wizard = reviewWizard(page);
+  await expect(wizard).toBeVisible({ timeout: WIZARD_OPENS });
+  await expect(wizard).toHaveAccessibleName(tidyUpName({ year: BUILD.year, set: BUILD.set }));
+  // The file answers every card but the team-leader ones, which wait on the operator.
+  await expectTeamsFromChecklist(page, { ...facts, matched: facts.matched - TEAM_LEADER_NUMBERS.length });
+  await expectChecklistDisagreementFirst(page);
+  await expect(wizard.getByRole("radiogroup", { name: /^Disagreement on #/ })).toHaveCount(TEAM_LEADER_NUMBERS.length);
+  await expectAccessible(page, { within: wizard, label: "Entity review wizard, team-leader cards the checklist names by club" });
+  // The club is the card's team (the checklist's side); not this spec's claim either way.
+  await pickSideForAllCards(page, "Use the checklist's", TEAM_LEADER_NUMBERS);
+  await nextStepButton(page).click();
+  await expect(checklistDisagreementHeading(page)).toBeHidden();
 
-/** Delete the smart binder `name` if it is on the shelf (its cards go back to Main). */
-async function deleteBinder(page: Page, name: string): Promise<void> {
-  await page.goto("/collection?tab=binders");
-  const shelf = page.getByRole("list", { name: "Your binders" });
-  // Main is always on the shelf: once its spine shows, the shelf has loaded.
-  await expect(shelf.getByRole("button", { name: /^Main, / })).toBeVisible({ timeout: LAUNCH_GATE });
-  const spine = shelf.getByRole("button", { name: new RegExp(`^${escapeRe(name)}, `) });
-  if ((await spine.count()) === 0) return;
-  await spine.click();
-  await expect(page.getByRole("heading", { level: 2, name, exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "Binder settings", exact: true }).click();
-  await page.getByRole("button", { name: `Rename or delete ${name}`, exact: true }).click();
-  await page
-    .getByRole("dialog", { name: `Rename or delete ${name}`, exact: true })
-    .getByRole("button", { name: "Delete this binder" })
-    .click();
-  const confirm = page.getByRole("dialog", { name: `Delete ${name}?`, exact: true });
-  await confirm.getByRole("button", { name: "Yes, delete it" }).click();
-  await expect(confirm).toBeHidden();
-  await expect(spine).toHaveCount(0);
-}
-
-/** Delete the hand-made card (its "Also on this card" link goes with it). */
-async function deleteCard(page: Page, build: CustomTarget, number: string): Promise<void> {
-  await drillToCustom(page, build);
-  await deleteCardButton(page, number).click();
-  await confirmDeleteCardButton(page, number).click();
-  await expect(editCardButton(page, number)).toBeHidden();
-  await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
+  // The names are not this spec's claim: skip them all, repeating while a
+  // lookup can still stage a row, then save.
+  const namesDone = nextStepButton(page).or(confirmSaveButton(page));
+  const skipRemaining = wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ });
+  await expect(async () => {
+    if (await skipRemaining.isVisible()) await skipRemaining.click();
+    await expect(namesDone).toBeVisible({ timeout: 7_000 });
+  }).toPass({ timeout: BATCH_GROWS });
+  await advanceToSave(page);
+  await confirmSaveButton(page).click();
+  await expect(page.getByText(/Saved [1-9][0-9]* cards?/)).toBeVisible();
+  await expect(wizard).toBeHidden();
+  // A fresh load of the checklist, as a rerun finds it.
+  await drillToBaseVariant(page, env, BUILD);
+  await expect(cards).toBeVisible();
 }
 
 /**
- * What the body wrote, each set right BEFORE its write (the card once its row
- * is confirmed: until then it carries no one else), and cleared once the
- * body's own cleanup has removed it.
+ * #355's description once the card has loaded (it settles before the chips, so
+ * it is the signal for whether P is on the card, never the chip row's absence),
+ * and P's line in it.
+ */
+const CARD_LOADED = new RegExp(`Fred Dean, #${CAMEO_NUMBER}\\b`);
+const P_LINE = cameoLine(P);
+
+/**
+ * Take P off #355's "Also on this card", if he is on it: the drawer's ×, the
+ * save's toast, and the description without his line. Contract: ENTRY any
+ * page. EXIT P is not on #355, proven by the drawer's description.
+ */
+async function takeCameoOff(page: Page, env: FlowEnv): Promise<void> {
+  await drillToBaseVariant(page, env, BUILD);
+  const drawer = await openCardDrawer(page, CAMEO_NUMBER);
+  const description = cardDescription(drawer);
+  await expect(description).toHaveValue(CARD_LOADED);
+  if (P_LINE.test(await description.inputValue())) {
+    await alsoPicturedGroup(drawer).getByRole("button", { name: ALSO_PICTURED.remove(P), exact: true }).click();
+    await expect(page.getByRole("status").filter({ hasText: ALSO_PICTURED.saved })).toBeVisible();
+  }
+  await expect(description).not.toHaveValue(P_LINE);
+  await expect(alsoPicturedGroup(drawer).getByRole("button", { name: ALSO_PICTURED.remove(P), exact: true })).toHaveCount(0);
+  await closeCardDrawer(drawer);
+}
+
+/** The collector's 1984 Topps Football Base on the Checklists tab, searched for `query` (its region). */
+const openChecklist = (page: Page, query: string): Promise<Locator> => openCollectorChecklist(page, COLLECTOR, query);
+
+/**
+ * What the body wrote, each set right BEFORE its write, and cleared once the
+ * body's own cleanup has undone it.
  */
 const written: {
   binder?: string;
-  baseCopy?: string;
-  mineCopy?: { setName: string; short: string };
-  card?: { build: CustomTarget; number: string };
+  copies?: string[];
+  cameo?: boolean;
 } = {};
 
-// A failed run must not leave the binder, the two copies or the hand-made card
-// (whose "Also on this card" link would make P a cameo need on the worker's next
-// run). Each step runs even when an earlier one fails; the first failure is
-// rethrown at the end (R7).
-// A page of its own, so the failure's screenshot and ARIA snapshot still show
-// where the body stopped. Brought to the front: left behind the test's page,
-// it stalled on the phone project (a 7 s step took minutes to time out).
-test.afterEach(async ({ context }, testInfo) => {
+// A failed run must not leave the binder, the copies or P on #355 (which would
+// make him a cameo need on the next run, and on every other binder for him).
+// Each step runs even when an earlier one fails; the first failure is rethrown
+// at the end (R7). A page of its own, so the failure's screenshot and ARIA
+// snapshot still show where the body stopped. Brought to the front: left
+// behind the test's page, it stalled on the phone project.
+test.afterEach(async ({ context, env }, testInfo) => {
   if (testInfo.status === testInfo.expectedStatus) return;
   const clean = await context.newPage();
   await clean.bringToFront();
@@ -169,11 +242,12 @@ test.afterEach(async ({ context }, testInfo) => {
     }
   };
   try {
-    const { binder, baseCopy, mineCopy, card } = written;
+    const { binder, copies, cameo } = written;
     if (binder) await attempt(() => deleteBinder(clean, binder));
-    if (baseCopy) await attempt(async () => removeCopy(clean, await openBase(clean), baseCopy));
-    if (mineCopy) await attempt(async () => removeCopy(clean, await openMyChecklist(clean, mineCopy.setName), mineCopy.short));
-    if (card) await attempt(() => deleteCard(clean, card.build, card.number));
+    for (const short of copies ?? []) {
+      await attempt(async () => removeCopy(clean, await openChecklist(clean, short.replace(/^#(\S+).*$/, "$1")), short));
+    }
+    if (cameo) await attempt(() => takeCameoOff(clean, env));
   } finally {
     await clean.close();
     for (const key of Object.keys(written) as Array<keyof typeof written>) delete written[key];
@@ -185,71 +259,60 @@ test(
   "Collection: a smart binder for a player takes in his cameos only once Include cameos is on, tags them Cameo and counts them apart",
   { tag: ["@collection"] },
   async ({ page, signIn, env }) => {
-    const A = env.ATTEMPT_ID;
-    const setName = `cmo${env.ATTEMPT_TOKEN}`;
-    const number = `528-${A}`;
-    const cardName = `Cameo${env.ATTEMPT_TOKEN}`;
     const binder = `Cameos${env.ATTEMPT_TOKEN}`;
-    const build: CustomTarget = { sport: "Baseball", year: "2024", manufacturer: "Topps", set: setName, variantType: "Insert", variant: "Base" };
 
-    await signIn("/collection");
-    await expect(page.getByRole("heading", { level: 1, name: "Collection" })).toBeVisible({ timeout: LAUNCH_GATE });
+    await signIn("/set-selector");
+    await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
+
+    // --- As admin: the real checklist, and P on Fred Dean's card -----------
+    await ensureChecklist(page, env);
+    const editor = await openCardDrawer(page, CAMEO_NUMBER);
+    // The card is Fred Dean's, and P is not on it yet (a red run's hook took
+    // him off; R2 precondition, read off the description, which settles with
+    // the card).
+    await expect(editor.getByRole("button", { name: "Remove player Fred Dean", exact: true })).toBeVisible();
+    await expect(cardDescription(editor)).toHaveValue(CARD_LOADED);
+    await expect(cardDescription(editor)).not.toHaveValue(P_LINE);
+    written.cameo = true;
+    await addAlsoPictured(page, editor, P);
+    // The chip shows him under "Also on this card", and the card's own player stays.
+    await expect(editor.getByLabel(ALSO_PICTURED.chip(P), { exact: true })).toBeVisible();
+    await expect(editor.getByRole("button", { name: "Remove player Fred Dean", exact: true })).toBeVisible();
+    await expect(editor.getByRole("button", { name: `Remove player ${P}`, exact: true })).toHaveCount(0);
+    // The listing description names him as a cameo.
+    await expect(cardDescription(editor)).toHaveValue(P_LINE);
+    await expectAccessible(page, { within: editor, label: "Card drawer with someone also on the card" });
+    await closeCardDrawer(editor);
+
     const tabs = page.getByRole("navigation", { name: "Collection sections" });
-    const toChecklists = async () => {
-      await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
-      await expect(page).toHaveURL(/[?&]tab=checklists/);
-    };
     const toBinders = async () => {
       await tabs.getByRole("link", { name: "My Binders", exact: true }).click();
       await expect(page).toHaveURL(/[?&]tab=binders/);
     };
-    const added = (short: string) => page.getByRole("status").filter({ hasText: `Added ${short} to Main` });
+    const added = (short: string, into = "Main") => page.getByRole("status").filter({ hasText: `Added ${short} to ${into}` });
 
-    // --- P, and P's own card into Main -------------------------------------
-    await toChecklists();
-    const base = await drillToCollectorBase(page);
-    await base.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
-    const own = await shortNameOf(ordinaryBaseRows(base).first());
-    const P = own.player;
-    written.baseCopy = own.short;
-    await base.getByRole("button", { name: `Have ${own.short}`, exact: true, pressed: false }).click();
-    await expect(base.getByRole("button", { name: `Have ${own.short}, Raw, Excellent`, exact: true, pressed: true })).toBeVisible();
-    // The toggle is optimistic; the notice is the server's answer.
-    await expect(added(own.short)).toBeVisible();
+    // --- The collector holds P's own card and the cameo card ---------------
+    const hold = async (number: string): Promise<{ checklist: Locator; short: string }> => {
+      const checklist = await openChecklist(page, number);
+      const short = await holdInMain(page, checklist, number, (s) => {
+        written.copies = [...(written.copies ?? []), s];
+      });
+      return { checklist, short };
+    };
+    const own = await hold(OWN_NUMBER);
+    expect(own.short, "P's own card").toBe(`#${OWN_NUMBER} ${P}`);
+    const cameo = await hold(CAMEO_NUMBER);
+    const cameoShort = cameo.short;
 
-    // --- As admin: a hand-made card that pictures P ------------------------
-    await drillToCustom(page, build);
-    await addCardViaForm(page, { cardNumber: number, playerName: cardName });
-    written.card = { build, number };
-    await editCardButton(page, number).click();
-    const editor = page.getByRole("dialog").filter({ has: page.getByRole("button", { name: "Done editing card", exact: true }) });
-    await expect(editor.getByRole("textbox", { name: "Card name", exact: true })).toBeVisible();
-    await addAlsoPictured(page, editor, P);
-    // The chip shows him under "Also on this card", and the card's own Players stay empty.
-    await expect(editor.getByLabel(ALSO_PICTURED.chip(P), { exact: true })).toBeVisible();
-    await expect(editor.getByRole("button", { name: `Remove player ${P}`, exact: true })).toHaveCount(0);
-    await expectAccessible(page, { within: editor, label: "Card drawer with someone also on the card" });
-    await editor.getByRole("button", { name: "Done editing card", exact: true }).click();
-    await expect(editor).toBeHidden();
-
-    // --- The collector holds the hand-made card; its detail says who else is on it
-    const mine = await openMyChecklist(page, setName);
-    // A hand-made card has no linked player: the collector sees only its number.
-    const cameoShort = `#${number}`;
-    await mine.getByRole("combobox", { name: "Binder" }).selectOption({ label: "Main" });
-    written.mineCopy = { setName, short: cameoShort };
-    await mine.getByRole("button", { name: `Have ${cameoShort}`, exact: true, pressed: false }).click();
-    await expect(mine.getByRole("button", { name: `Have ${cameoShort}, Raw, Excellent`, exact: true, pressed: true })).toBeVisible();
-    await expect(added(cameoShort)).toBeVisible();
-
-    await mine.getByRole("button", { name: `Details for ${cameoShort}`, exact: true }).click();
-    const detail = page.getByRole("dialog", { name: new RegExp(`^2024 ${escapeRe(setName)}.*#${escapeRe(number)}`) });
+    // Its detail says who else is on it.
+    await cameo.checklist.getByRole("button", { name: `Details for ${cameoShort}`, exact: true }).click();
+    const detail = page.getByRole("dialog", { name: new RegExp(`^${escapeRe(SET_LABEL)}.*#${CAMEO_NUMBER}\\b`) });
     await expect(detail.getByText(ALSO_PICTURED.heading, { exact: true })).toBeVisible();
     await expect(detail.getByRole("definition").filter({ hasText: new RegExp(`^${escapeRe(P)}$`) })).toBeVisible();
     // The detail lives in the address: Back closes it onto the checklist.
     await page.goBack();
     await expect(detail).toBeHidden();
-    await expect(mine.getByRole("button", { name: `Details for ${cameoShort}`, exact: true })).toBeVisible();
+    await expect(cameo.checklist.getByRole("button", { name: `Details for ${cameoShort}`, exact: true })).toBeVisible();
 
     // --- A smart binder for P: cameos are off by default -------------------
     await toBinders();
@@ -260,18 +323,15 @@ test(
     await newDialog.getByRole("radio", { name: /^Smart: a rule helps fill it/ }).check();
     await newDialog.getByRole("combobox", { name: "Line 1" }).selectOption({ label: "Player" });
     await newDialog.getByRole("combobox", { name: "Players" }).fill(P);
-    await newDialog.getByRole("option", { name: `${P} · Baseball`, exact: true }).click();
+    await newDialog.getByRole("option", { name: `${P} · Football`, exact: true }).click();
     await expect(newDialog.getByRole("button", { name: `Remove ${P}`, exact: true })).toBeVisible();
-    // A line naming sets: the binder's checklist, which the dashboard counts
+    // A line naming the set: the binder's checklist, which the dashboard counts
     // (a rule of players alone has none).
     await newDialog.getByRole("button", { name: "Add a line", exact: true }).click();
     await newDialog.getByRole("combobox", { name: "Line 2" }).selectOption({ label: "Set" });
-    const sets = newDialog.getByRole("combobox", { name: "Sets" });
-    for (const set of ["2024 Topps Chrome", `2024 ${setName}`]) {
-      await sets.fill(set);
-      await newDialog.getByRole("option", { name: set, exact: true }).click();
-      await expect(newDialog.getByRole("button", { name: `Remove ${set}`, exact: true })).toBeVisible();
-    }
+    await newDialog.getByRole("combobox", { name: "Sets" }).fill(SET_LABEL);
+    await newDialog.getByRole("option", { name: SET_LABEL, exact: true }).click();
+    await expect(newDialog.getByRole("button", { name: `Remove ${SET_LABEL}`, exact: true })).toBeVisible();
     const includeCameos = newDialog.getByRole("checkbox", { name: "Include cameos", exact: true });
     await expect(includeCameos).toBeVisible();
     await expect(includeCameos).not.toBeChecked();
@@ -282,13 +342,13 @@ test(
 
     // Find cards opens by itself: P's own card, never the card he is only pictured on.
     const find = page.getByRole("dialog", { name: `Find cards for ${binder}`, exact: true });
-    const ownLabel = `2024 Topps Chrome #${escapeRe(own.number)} ${escapeRe(P)}`;
-    const cameoLabel = `2024 ${escapeRe(setName)}\\b.*#${escapeRe(number)}`;
+    const ownLabel = `${escapeRe(SET_LABEL)} #${OWN_NUMBER} ${escapeRe(P)}`;
+    const cameoLabel = `${escapeRe(SET_LABEL)} #${CAMEO_NUMBER}\\b`;
     // Page-rooted, so each also works as a `has` filter inside a row (GUIDE gotcha).
     const addOwnButton = page.getByRole("button", { name: new RegExp(`^Add ${ownLabel}\\b.* from Main$`) });
-    const addCameoButton = page.getByRole("button", { name: new RegExp(`^Add ${cameoLabel}\\b.* from Main$`) });
+    const addCameoButton = page.getByRole("button", { name: new RegExp(`^Add ${cameoLabel}.* from Main$`) });
     const addOwn = find.getByRole("button", { name: new RegExp(`^Add ${ownLabel}\\b.* from Main$`) });
-    const addCameo = find.getByRole("button", { name: new RegExp(`^Add ${cameoLabel}\\b.* from Main$`) });
+    const addCameo = find.getByRole("button", { name: new RegExp(`^Add ${cameoLabel}.* from Main$`) });
     await expect(addOwn).toBeVisible();
     await expect(addCameo).toHaveCount(0);
     await find.getByRole("button", { name: "Done" }).click();
@@ -306,7 +366,8 @@ test(
     await expectAccessible(page, { within: settings, label: "Smart rule editor, Include cameos on" });
     await settings.getByRole("button", { name: "Save the rule", exact: true }).click();
     const ruleSummary = settings.getByText(/^Takes /);
-    await expect(ruleSummary).toHaveText(new RegExp(`^Takes ${escapeRe(P)}, and .*2024 Topps Chrome.*, cameos included\\.$`));
+    // Exact: the set reads as the picker names it ("1984 Topps"), never with its brand doubled.
+    await expect(ruleSummary).toHaveText(`Takes ${P}, and ${SET_LABEL}, cameos included.`);
     await settings.getByRole("radio", { name: /^Keep sorted by checklist/ }).check();
     await expect(settings.getByRole("radio", { name: /^Keep sorted by checklist/ })).toBeChecked();
     const emptySlots = settings.getByRole("checkbox", { name: /^Include empty slots/ });
@@ -314,10 +375,10 @@ test(
     await expect(emptySlots).toBeChecked();
     await settings.getByRole("button", { name: "Find cards", exact: true }).click();
 
-    // --- Find cards: both, and only the hand-made one is a cameo ------------
+    // --- Find cards: both, and only Fred Dean's card is a cameo ------------
     await expect(addOwn).toBeVisible();
     await expect(addCameo).toBeVisible();
-    const cameoPhrase = `${P} is a cameo on this card`;
+    const cameoPhrase = cameoWords(P);
     const cameoRow = find.getByRole("listitem").filter({ has: addCameoButton });
     const ownRow = find.getByRole("listitem").filter({ has: addOwnButton });
     await expect(cameoRow.getByText(cameoPhrase, { exact: true })).toBeVisible();
@@ -339,7 +400,7 @@ test(
 
     // --- The cover and the pockets ------------------------------------------
     // Two counts: P's own cards, then the cameos on a line of their own (how
-    // many own cards P has in the catalogue is the seed's, so only the cameo
+    // many own cards P has in the set is the catalogue's, so only the cameo
     // line is exact). On a desktop they sit on the binder's inside cover, on a
     // phone above the page: found on the page, not in the cover.
     const ownCount = page.getByText(/^1 have, \d+ need$/);
@@ -350,19 +411,14 @@ test(
     const ownPercent = Math.floor(100 / (1 + ownNeed));
     await expect(page.getByText("Cameos: 1 have, 0 need", { exact: true })).toBeVisible();
     const cover = page.getByRole("region", { name: `${binder}, open`, exact: true });
-    // Sorted by checklist, the hand-made set's page comes first. The held
-    // cameo's name says whose cameo it is.
-    const cameoPage = cover.getByRole("group", { name: new RegExp(`^Page 1, 2024 ${escapeRe(setName)} Base$`) });
-    const heldCameo = cameoPage.getByRole("button", { name: new RegExp(`^${cameoLabel}\\b.*, ${escapeRe(cameoPhrase)}$`) });
+    // Sorted by checklist: #123 comes before #355, both on the set's first
+    // page(s). The held cameo's name says whose cameo it is; P's own pocket's
+    // name ends at the card's team, no cameo appended.
+    const heldCameo = cover.getByRole("button", { name: new RegExp(`^${cameoLabel}.*, ${escapeRe(cameoPhrase)}$`) });
     await expect(heldCameo).toBeVisible();
+    await expect(cover.getByRole("button", { name: new RegExp(`^${ownLabel}(, [^,]+)?$`) })).toBeVisible();
+    await expect(cover.getByRole("button", { name: new RegExp(`^${ownLabel}\\b.*cameo`) })).toHaveCount(0);
     await expectAccessible(page, { label: "Smart binder holding a cameo, its cover counting cameos apart" });
-    // P's own card, on the Topps Chrome page (a Base page is named for the
-    // set alone): its name ends at the card's team, no cameo appended.
-    // "Next pages" on a desktop spread, "Next page" on a phone.
-    await page.getByRole("button", { name: /^Next pages?$/ }).click();
-    const chromePage = page.getByRole("group", { name: /^Page \d+, 2024 Topps Chrome$/ });
-    await expect(chromePage.getByRole("button", { name: new RegExp(`^${ownLabel}(, [^,]+)?$`) })).toBeVisible();
-    await expect(page.getByRole("button", { name: new RegExp(`^${ownLabel}\\b.*cameo`) })).toHaveCount(0);
 
     // --- Checklists, looking through the binder: the cameo row wears the tag
     /** Look through the binder, at the cards that fit it. */
@@ -373,24 +429,24 @@ test(
       await expect(fits).toHaveAttribute("aria-checked", "true");
       return fits;
     };
-    const mineScoped = await openMyChecklist(page, setName);
-    const mineFits = await fitsOnly(mineScoped);
-    const cameoItem = mineScoped
+    const cameoScoped = await openChecklist(page, CAMEO_NUMBER);
+    const cameoFits = await fitsOnly(cameoScoped);
+    const cameoItem = cameoScoped
       .getByRole("listitem")
       .filter({ has: page.getByRole("button", { name: `Details for ${cameoShort}`, exact: true }) });
     await expect(cameoItem.getByText(cameoPhrase, { exact: true })).toBeVisible();
-    await expectAccessible(page, { within: mineScoped, label: "Checklist through a smart binder, a cameo row tagged" });
+    await expectAccessible(page, { within: cameoScoped, label: "Checklist through a smart binder, a cameo row tagged" });
     // The cameo copy leaves the collection: the card still fits the rule, so
     // its row stays in the fits list, tagged, now a need.
-    await removeCopy(page, mineScoped, cameoShort);
-    delete written.mineCopy;
-    await expect(mineFits).toHaveAttribute("aria-checked", "true");
-    await expect(mineScoped.getByRole("button", { name: `Have ${cameoShort}`, exact: true, pressed: false })).toBeVisible();
+    await removeCopy(page, cameoScoped, cameoShort);
+    written.copies = written.copies?.filter((s) => s !== cameoShort);
+    await expect(cameoFits).toHaveAttribute("aria-checked", "true");
+    await expect(cameoScoped.getByRole("button", { name: `Have ${cameoShort}`, exact: true, pressed: false })).toBeVisible();
     await expect(cameoItem.getByText(cameoPhrase, { exact: true })).toBeVisible();
     // P's own row fits the same binder and wears no tag.
-    const baseScoped = await openBase(page);
-    await fitsOnly(baseScoped);
-    const ownItem = baseScoped
+    const ownScoped = await openChecklist(page, OWN_NUMBER);
+    await fitsOnly(ownScoped);
+    const ownItem = ownScoped
       .getByRole("listitem")
       .filter({ has: page.getByRole("button", { name: `Details for ${own.short}`, exact: true }) });
     await expect(ownItem).toBeVisible();
@@ -431,16 +487,16 @@ test(
       await expect(page.getByRole("heading", { level: 2, name: binder, exact: true })).toBeVisible();
     };
     await openOnShelf();
-    const needCameo = cameoPage.getByRole("button", {
-      name: new RegExp(`^${cameoLabel}\\b.*, ${escapeRe(cameoPhrase)}, need\\. Add it$`),
+    const needCameo = cover.getByRole("button", {
+      name: new RegExp(`^${cameoLabel}.*, ${escapeRe(cameoPhrase)}, need\\. Add it$`),
     });
     await expect(needCameo).toBeVisible();
     await expect(page.getByText("Cameos: 0 have, 1 need", { exact: true })).toBeVisible();
     await expectAccessible(page, { label: "Smart binder with a cameo's empty slot" });
-    written.mineCopy = { setName, short: cameoShort };
+    written.copies = [...(written.copies ?? []), cameoShort];
     await needCameo.click();
     // The pocket is optimistic; the notice is the server's answer.
-    await expect(page.getByRole("status").filter({ hasText: `Added ${cameoShort} to ${binder}` })).toBeVisible();
+    await expect(added(cameoShort, binder)).toBeVisible();
     await expect(page.getByText("Cameos: 1 have, 0 need", { exact: true })).toBeVisible();
     await expect(heldCameo).toBeVisible();
     await expect(needCameo).toHaveCount(0);
@@ -462,26 +518,39 @@ test(
       settings.getByRole("status").filter({ hasText: "Include cameos is off now: no line names a player or Hall of Famers." }),
     ).toBeVisible();
     await expectAccessible(page, { within: settings, label: "Smart rule editor, Include cameos dropped with the player line" });
-    // Line 1 is an empty Set line now: take it out, leaving the sets line.
+    // Line 1 is an empty Set line now: take it out, leaving the set's line.
     await settings.getByRole("button", { name: "Remove line 1", exact: true }).click();
     await expect(settings.getByRole("combobox", { name: "Line 2" })).toHaveCount(0);
     await settings.getByRole("button", { name: "Save the rule", exact: true }).click();
-    await expect(ruleSummary).toHaveText(/^Takes .*2024 Topps Chrome.*\.$/);
-    await expect(ruleSummary).not.toContainText("cameos included");
+    await expect(ruleSummary).toHaveText(`Takes ${SET_LABEL}.`);
     await settings.getByRole("button", { name: "Done" }).click();
     await expect(settings).toBeHidden();
 
-    // --- Cleanup: delete the binder, remove both copies, delete the card ----
+    // --- Cleanup: delete the binder, remove both copies, take P off #355 ----
     await page.getByRole("button", { name: "Back to the shelf" }).click();
     const spine = page.getByRole("list", { name: "Your binders" }).getByRole("button", { name: `${binder}, 2 cards`, exact: true });
     await expect(spine).toBeVisible();
     await deleteBinder(page, binder);
     delete written.binder;
-    await removeCopy(page, await openMyChecklist(page, setName), cameoShort);
-    delete written.mineCopy;
-    await removeCopy(page, await openBase(page), own.short);
-    delete written.baseCopy;
-    await deleteCard(page, build, number);
-    delete written.card;
+    for (const [number, short] of [
+      [CAMEO_NUMBER, cameoShort],
+      [OWN_NUMBER, own.short],
+    ] as const) {
+      await removeCopy(page, await openChecklist(page, number), short);
+      written.copies = written.copies?.filter((s) => s !== short);
+    }
+    await page.goto("/set-selector");
+    await expect(setBuilderReady(page)).toBeVisible();
+    await takeCameoOff(page, env);
+    delete written.cameo;
+    // Proven off on a fresh load: the description has lost his line, and the card keeps its own player.
+    await page.goto("/set-selector");
+    await expect(setBuilderReady(page)).toBeVisible();
+    await drillToBaseVariant(page, env, BUILD);
+    const after = await openCardDrawer(page, CAMEO_NUMBER);
+    await expect(cardDescription(after)).toHaveValue(CARD_LOADED);
+    await expect(cardDescription(after)).not.toHaveValue(P_LINE);
+    await expect(after.getByRole("button", { name: "Remove player Fred Dean", exact: true })).toBeVisible();
+    await closeCardDrawer(after);
   },
 );

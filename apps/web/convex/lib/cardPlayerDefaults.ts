@@ -45,6 +45,25 @@ export type CardPlayerDefaultIds = {
   cameoIds: ReadonlyArray<Id<"players">>;
 };
 
+/**
+ * Did the listing name anyone on this card? True when any printed player
+ * string is non-blank, whatever became of it: resolved, waiting for review,
+ * or ruled "not a person" in entity review (which leaves the card neither an
+ * id nor a pending name).
+ *
+ * A NEW card the listing named someone on is never born with the "Player on
+ * every card" default; it is left blank for the operator (Jason, 2026-11-15;
+ * product invariant 8: a data claim holds back a guess). Default cameos still
+ * apply. The ONE test for that, read by the checklist commit
+ * (`listingNamedPlayer`) and by every client preview of the default (the
+ * wizard's teams step, the card titles preview, the positions the checklist
+ * hands the wizard), so the preview can never plan a player the save then
+ * leaves off. Client-importable: no server imports.
+ */
+export function listingNamesAPlayer(printed: ReadonlyArray<string> | undefined): boolean {
+  return (printed ?? []).some((name) => name.trim().length > 0);
+}
+
 /** Every id the card carries as its own players (`playerIds` and `playerLinks`). */
 function ownPlayerIds(card: CardPlayerFacts): Set<string> {
   const out = new Set<string>();

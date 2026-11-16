@@ -697,6 +697,29 @@ export const selectorOptionFields = {
    * NB data only: no adapter or sync reads or writes it.
    */
   hasCards: v.optional(v.boolean()),
+  /**
+   * NEO-532 — when a card last LANDED on this row (an insert, or a move in),
+   * as the landing mutation's `Date.now()`. Meaningful on the card-bearing
+   * levels (`variantType`, `insert`, `parallel`); absent elsewhere, never
+   * written on an ancestor.
+   *
+   * Kept by the same `CardCountLedger` flush as `cardCount`: every flush that
+   * lands a card on the row stamps it (even when the mutation also took one
+   * off, so the count is unchanged), and a flush that leaves `cardCount` at 0
+   * clears it, but only when that 0 is known (a row whose recount is skipped
+   * is never cleared). A flush that only takes cards off brings it down to
+   * the newest card left (clears it when none is left). It is still a
+   * discovery hint, never a time to show. ABSENT means no card has landed
+   * since the field existed and the armed backfill (`backfillLastCardAt`)
+   * has not reached the row.
+   *
+   * Read by New on NeonBinder (`dashboard.newSets`) through
+   * `by_last_card_at`, to find the variants with the newest cards without
+   * walking the whole checklist table.
+   *
+   * NB data only: no adapter or sync reads or writes it.
+   */
+  lastCardAt: v.optional(v.number()),
   lastUpdated: v.number(),
 };
 
@@ -752,11 +775,13 @@ export const saleItemFromValidator = v.object({
  * and variant words, read by the order poll at the sync boundary
  * (`lib/bscOrders.ts`, bounded there: an over-long value is dropped, never
  * truncated). It lets the Pick List name a line NB could not match ("2021
- * Score · Justin Fields · #TB2 · 1991 Throwback").
+ * Score · Justin Fields · #TB2 · 1991 Throwback"). NEO-520 adds eBay's line
+ * `title` (below).
  *
  * Kept on the SALE only. It is never written to an NB card, set, player or
- * team row, and nothing outside the Pick List's labels and walking order reads
- * it. `sportId` is NB's own sport row, resolved once when the line is stored
+ * team row, and nothing outside the Pick List's labels and walking order, and
+ * (NEO-520) the Sales tab's `listed.title` label read through
+ * `listingSync.publicSale`, reads it. `sportId` is NB's own sport row, resolved once when the line is stored
  * from the platform's item-level sport id against the sport rows'
  * `platformData.bsc` slots (exactly one match, else absent); `sport` is the
  * platform's own word, a fallback label only. Every field is optional: the
@@ -771,6 +796,17 @@ export const saleItemListedValidator = v.object({
   cardNo: v.optional(v.string()),
   variant: v.optional(v.string()),
   variantName: v.optional(v.string()),
+  /**
+   * NEO-520 — eBay only: the order line's own title as the buyer saw it
+   * (`lineItems[].title`), stored on every eBay line whose title was
+   * readable, and shown only where NB holds no card for the line (a listing
+   * NB did not make): the Pick List, and the Sales tab via
+   * `listingSync.publicSale`. Bounded at the
+   * sync boundary (`lib/ebayListing.ts`): trimmed, control characters
+   * refused, an over-long title dropped, never cut. Never parsed, matched or
+   * written to any NB row. BSC lines never carry it.
+   */
+  title: v.optional(v.string()),
 });
 
 /**
@@ -1029,6 +1065,9 @@ export const cardRequestKindValidator = v.union(v.literal("card"), v.literal("se
  * deployed union lacks is refused on write, and on read by a rolled-back
  * deployment; see `platformFacets`). SportLots is not a listing destination,
  * so it is not here.
+ *
+ * NEO-536: `syncReports.platform` pins this union too (a collector's report
+ * of a held-back set), so removing a literal needs those rows cleared first.
  */
 export const listingPlatformValidator = v.union(v.literal("bsc"), v.literal("ebay"));
 
@@ -1063,6 +1102,9 @@ export const ebayConditionCodeValidator = v.union(v.literal("NM"), v.literal("EX
  *   setupIncomplete (eBay) the collector's eBay settings (shipping, payment,
  *                  returns, location) are not complete, so nothing was sent
  * A new reason widens this union (additive, deploy before writing it).
+ * Removing one needs every row carrying it cleared first: the listing tables
+ * here and, since NEO-536, `syncReports.cards[].reason` (a collector's report
+ * keeps the reason it was sent with until an admin closes it, and after).
  */
 export const listingProblemReasonValidator = v.union(
   v.literal("noLink"),
@@ -1078,6 +1120,9 @@ export const listingProblemReasonValidator = v.union(
   v.literal("noPhoto"),
   v.literal("setupIncomplete"),
 );
+
+/** NEO-536 — where a collector's sync report stands. `open` until an admin closes it. */
+export const syncReportStatusValidator = v.union(v.literal("open"), v.literal("fixed"), v.literal("notABug"));
 
 /**
  * NEO-415 — one step of a variant's listing run, as the Sync status tab shows
@@ -1540,6 +1585,10 @@ export default defineSchema({
     .index("by_parent", ["parentId"])
     .index("by_value", ["value"])
     .index("by_level_and_parent", ["level", "parentId"])
+    // NEO-532: New on NeonBinder (`dashboard.newSets`) reads the rows whose
+    // cards landed most recently, newest first. Rows without the stamp sort
+    // first and are ranged out (`gt 0`).
+    .index("by_last_card_at", ["lastCardAt"])
     // NEO-527: the collector's set column reads sets with cards (count > 0,
     // biggest first) and then the uncounted ones, so a brand with hundreds
     // of empty synced sets never pushes a set that holds cards past the cap.
@@ -1740,6 +1789,21 @@ export default defineSchema({
      * `cardSecondaryPlayers.pin.test.ts` greps for any other.
      */
     secondaryPlayerIds: v.optional(v.array(v.id("players"))),
+    /**
+     * NEO-528 round 3 — the listing this card was born from named a player
+     * (`lib/cardPlayerDefaults.listingNamesAPlayer`), whatever became of the
+     * name: resolved, waiting for review, or ruled "not a person" in entity
+     * review (which leaves the card no id and no pending name). Provenance
+     * only, written once at birth: by the checklist commit's insert, and by a
+     * parallel copy of a card that carries it. A hand-added card has no
+     * listing and never carries it. Absent otherwise; no backfill.
+     *
+     * Read by exactly one thing: a card born from one that carries it never
+     * takes the "Player on every card" default player (Jason, 2026-11-15;
+     * product invariant 8: a data claim holds back a guess). Default cameos
+     * still apply. Never a marketplace value: only that a name was printed.
+     */
+    listingNamedPlayer: v.optional(v.literal(true)),
     /**
      * ── NEO-254: which NAME this card printed for each player ────────────────
      *
@@ -5538,6 +5602,15 @@ export default defineSchema({
     ),
     /** When the poll last ran while the owner's credentials needed a fresh sign-in. */
     reauthPollAt: v.optional(v.number()),
+    /**
+     * NEO-520: which version of the platform's order read this row is caught
+     * up to (absent = 1). While it is below the platform's
+     * (`ORDER_READ_VERSION` in `listingSales.ts`), the poll reads from the
+     * earlier of the cursor and the platform's floor (eBay only) until a read
+     * completes or the catch-up runs out; the stored cursor never moves back.
+     * New rows are stamped at insert (`listingSync`). Never lowered.
+     */
+    orderReadVersion: v.optional(v.number()),
     lastUpdated: v.number(),
   })
     // Get-or-create and the drainer's claim (both fields, `.unique()`); the
@@ -5600,13 +5673,21 @@ export default defineSchema({
    * platform's status string, verbatim. Money is integer cents; each total
    * is absent when the platform did not report it.
    *
-   * Items: `platformCardId` is the platform's card id (BSC: `card.id`) and
-   * `sellerSku` the SKU NB pushed (it carries the NB card id and box); the
-   * poll resolves `cardId` from them, checked against the card's
-   * `platformData.<platform>.ref` (a point read, the exactly-one guard).
-   * `condition` is the platform's condition string. An order's items are
+   * Items: `platformCardId` is the platform's card id (BSC: `card.id`; eBay:
+   * the line's `legacyItemId`) and `sellerSku` the SKU NB pushed (it carries
+   * the NB card id and box); the poll resolves `cardId` from them, checked
+   * against the card's `platformData.<platform>.ref` (a point read, the
+   * exactly-one guard; eBay checks NB's link row for the SKU instead).
+   * `condition` is the platform's condition string (eBay: the SKU's bucket on
+   * an NB line, `""` on a line that is not NB's). An order's items are
    * well under Convex's 8,192-element array cap in practice; the poll refuses
    * (and reports) an order that is not.
+   *
+   * NEO-520 — eBay stores every readable line, NB's or not; a line with no NB
+   * SKU is refused as unmatched and lowers nothing. An eBay order with no NB
+   * line is stored only when placed on or after the state row's floor
+   * (`listingSales.ebayOrdersFloor`); one with an NB line is stored whatever
+   * its date.
    */
   marketplaceSales: defineTable({
     ownerId: v.string(),
@@ -5835,4 +5916,54 @@ export default defineSchema({
     // A sale line's exactly-one guard: the link whose SKU the order names
     // (all three, `.unique()`), then its `listingId` must equal the line's.
     .index("by_owner_platform_sku", ["ownerId", "platform", "sku"]),
+
+  /**
+   * ── NEO-536: a collector's report of one held-back set ───────────────────
+   *
+   * One row per report: one variant on one listing platform whose last sync
+   * held cards back for a reason only the admin team can fix
+   * (`lib/collection/sync-report.REPORTABLE_SYNC_REASONS`). Made by
+   * `syncReports.report` from the collector's own `marketplaceListingSyncs`
+   * record (the client sends no card ids); a second report of the same set
+   * and platform while one is open refreshes it.
+   *
+   * `label` is a snapshot of the set's name at report time (the dashboard's
+   * `ListingLabels` words), for the lists after the variant is gone. `cards`
+   * are the reportable problems that named an NB card, at most 30;
+   * `heldBack` is how many there were in all. `detail` snapshots the sync
+   * record's problem detail for `rejected` and `missingAspect` only, cut to
+   * 200 characters: display-only for the admin, never written anywhere as NB
+   * data. `note` is the collector's, trimmed, at most 500.
+   *
+   * No auto-close: an admin closes a report as `fixed` or `notABug`
+   * (`closeNote` required for `notABug`), and the close settles every open
+   * report on that (variant, platform) across collectors, because the fix is
+   * to NB's shared catalog. A withdrawn report is deleted, so it has no
+   * status. `closedBy` is the admin's id and never returned to a collector.
+   * NB data only: no marketplace value.
+   */
+  syncReports: defineTable({
+    ownerId: v.string(),
+    platform: listingPlatformValidator,
+    variantId: v.id("selectorOptions"),
+    label: v.string(),
+    cards: v.array(v.object({ cardId: v.id("cardChecklist"), reason: listingProblemReasonValidator, detail: v.optional(v.string()) })),
+    heldBack: v.number(),
+    note: v.optional(v.string()),
+    status: syncReportStatusValidator,
+    closedBy: v.optional(v.string()),
+    closedAt: v.optional(v.number()),
+    closeNote: v.optional(v.string()),
+    lastUpdated: v.number(),
+  })
+    // The collector's open reports and their cap (eq owner + "open"), the
+    // closed ones newest first (eq owner + status, order desc), and the
+    // per-user test reset (prefix owner).
+    .index("by_owner_status_closed", ["ownerId", "status", "closedAt"])
+    // One collector's open report on a set (all four, `.first()`), and an
+    // admin close's group: every open report on it (eq variant + platform +
+    // "open").
+    .index("by_variant_platform_status_owner", ["variantId", "platform", "status", "ownerId"])
+    // The admin queue: open reports oldest first (eq "open").
+    .index("by_status_closed", ["status", "closedAt"]),
 });

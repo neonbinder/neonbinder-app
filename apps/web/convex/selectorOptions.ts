@@ -72,6 +72,7 @@ import {
   bornSecondaryPlayers,
   refreshedGeneratedDescription,
 } from "./cardSecondaryPlayers";
+import { listingNamesAPlayer } from "./lib/cardPlayerDefaults";
 import { newStoredCardReadCache } from "./storedCardTitle";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
 import { blockedSideFailed, sideMissingFromRun } from "./parallelChecklistBuild";
@@ -2345,6 +2346,9 @@ export const getCardChecklist = query({
       // ("Also pictured"). Listed because this validator is STRICT: a row
       // carrying it would otherwise fail the whole checklist.
       secondaryPlayerIds: v.optional(v.array(v.id("players"))),
+      // NEO-528 round 3 — the card's listing named a player (provenance, see
+      // schema.ts). Listed because this validator is STRICT.
+      listingNamedPlayer: v.optional(v.literal(true)),
       // NEO-254 — the name each card PRINTED for its players. The card detail
       // panel renders "As printed: Doc Gooden" beside a chip whose player is
       // filed under a different name. See schema.ts.
@@ -10676,8 +10680,9 @@ export const resetVariantCommonPricesBatch = internalMutation({
  * Internal: drain the NEO-370 listing tables, looped by `runSetBuilderReset`
  * BEFORE the selector rows and cards they name: `listingOutbox`, then
  * `marketplaceListingSyncs`, `marketplaceListingStates`, the NEO-415 eBay
- * link rows (`marketplaceListingLinks`) and `marketplaceSales`, filling one
- * batch across them (the
+ * link rows (`marketplaceListingLinks`), the NEO-536 sync reports
+ * (`syncReports`, which name a variant and cards) and `marketplaceSales`,
+ * filling one batch across them (the
  * `resetIntakeRunsBatch` shape). Sales take a smaller share because a sale
  * carries its items array. Every collector's, across every account; armed
  * like every batch here.
@@ -10699,6 +10704,8 @@ export const resetMarketplaceListingBatch = internalMutation({
       "marketplaceListingStates",
       // NEO-415 — NB's eBay link rows name a card.
       "marketplaceListingLinks",
+      // NEO-536 — a collector's sync report names a variant and its cards.
+      "syncReports",
     ] as const) {
       if (room <= 0) break;
       const rows = await ctx.db.query(table).take(room);
@@ -20860,6 +20867,9 @@ export const commitCardChecklistChunk = internalMutation({
             platformData: toStoredPlatformData(card.platformData),
             pendingPlayerNames: insertPendingPlayerNames,
             pendingTeamNames: insertPendingTeamNames,
+            // NEO-528 round 3 — stored, so a parallel copied from this card
+            // later holds the default player back too.
+            ...(card.listingNamedPlayer ? { listingNamedPlayer: true as const } : {}),
             sortOrder: card.sortOrder,
             // Resolved in the prelude, once per player rather than once per
             // card (or the default player's, read once per chunk).
@@ -23871,7 +23881,8 @@ export const commitCardChecklist = action({
           // id nor a pending name (the skip keeps it out of the next review),
           // so without this the card would look like nobody's and take the
           // "Player on every card" default over the listing's own claim.
-          ...((c.players ?? []).some((p) => p.trim().length > 0)
+          // The same test the client previews with (`listingNamesAPlayer`).
+          ...(listingNamesAPlayer(c.players)
             ? { listingNamedPlayer: true as const }
             : {}),
         },

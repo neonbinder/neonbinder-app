@@ -29,6 +29,7 @@ import {
 import type { TitleContext } from "../../convex/features/listingInputs";
 // NEO-335: the teams step's answers, put on the cards at commit.
 import {
+  defaultPlayerPositions,
   sameTeamAnswers,
   setDefaultSettlesNewRow,
   setTeamDefaultKind,
@@ -298,8 +299,8 @@ type FetchPreview = {
   playerlessIndexes?: number[];
   /**
    * NEO-528 — the leaf's "Player on every card" and the positions in `cards`
-   * of the NEW rows the commit gives them when nobody else is on them
-   * (`setPlayerCoversNewRows` in `resolveAndCommit`). The wizard's teams
+   * of the NEW rows the commit gives them: those whose listing names nobody
+   * (`listingNamesAPlayer`, see `resolveAndCommit`). The wizard's teams
    * step files those cards under that player, by id, never "Cards with no
    * players". Absent when the leaf has no such player.
    */
@@ -2224,8 +2225,12 @@ export default function CardChecklist({
       return review.applyFieldsByIndex[index]?.includes("playerIds") ? [] : [position];
     });
     // NEO-528 — the same, for who is on the card: under a node with a
-    // "Player on every card", a NEW row with nobody on it is born with that
-    // player (the commit's insert branch). The title context names them
+    // "Player on every card", a NEW row whose listing names nobody is born
+    // with that player (the commit's insert branch). A card that prints any
+    // name, even one ruled "not a person" or still waiting for review, is
+    // left blank there (`listingNamedPlayer`), so it never joins: the same
+    // `listingNamesAPlayer` test, so the wizard cannot plan a player the save
+    // leaves off (Jason, 2026-11-15). The title context names them
     // (`setPlayerNames`) and carries their id beside the name (`setPlayerId`),
     // both resolved by the server the way the commit resolves them (a player
     // of another sport is dropped there, so never arrives here). Existing
@@ -2235,9 +2240,7 @@ export default function CardChecklist({
     const setPlayerId = titleContext?.setPlayerId;
     let defaultPlayer: DefaultPlayerWire | undefined;
     if (setPlayerName && setPlayerId && diff) {
-      const positions = kept.flatMap(({ index }, position) =>
-        existingIdByIndex.has(index) ? [] : [position],
-      );
+      const positions = defaultPlayerPositions(kept, existingIdByIndex);
       if (positions.length > 0) {
         defaultPlayer = { playerId: setPlayerId, name: setPlayerName, positions };
       }

@@ -268,6 +268,48 @@ describe("parallel build — the parallel's player defaults (NEO-528 round 3)", 
     expect(one.secondaryPlayerIds).toEqual([fx.soto]);
   });
 
+  // Jason, 2026-11-15: a card whose listing named anyone, even a name entity
+  // review ruled "not a person" (no id, no pending name left), is born blank.
+  // Its parallel copy is born from the same listing, so it stays blank too.
+  test("an insert card whose listing named someone it does not carry: the copy stays blank, keeps the claim, and takes the cameos", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await insertCard(t, fx, "1", { extra: { listingNamedPlayer: true } });
+    await insertCard(t, fx, "2");
+    await store(t, fx.parallel, { defaultPlayerIds: [fx.skenes], defaultCameoIds: [fx.soto] });
+    await build(t, fx);
+    const got = await copies(t, fx);
+
+    const one = got.get("1")!;
+    expect(one.playerIds).toBeUndefined();
+    expect(one.playerLinks).toBeUndefined();
+    expect(one.playerIndex).toEqual([]);
+    expect(one.listingTitle).not.toContain("Paul Skenes");
+    expect(one.secondaryPlayerIds).toEqual([fx.soto]);
+    // Carried forward, so a card born from this copy holds the default back.
+    expect(one.listingNamedPlayer).toBe(true);
+
+    // The nameless card beside it takes the default, and carries no claim.
+    const two = got.get("2")!;
+    expect(two.playerIds).toEqual([fx.skenes]);
+    expect(two.secondaryPlayerIds).toEqual([fx.soto]);
+    expect(two).not.toHaveProperty("listingNamedPlayer");
+  });
+
+  test("the claim travels with a card that names its player: the copy keeps the player and the claim", async () => {
+    const t = convexTest(schema, modules);
+    const fx = await seed(t);
+    await insertCard(t, fx, "1", {
+      players: [[fx.ohtani, "Shohei Ohtani"]],
+      extra: { listingNamedPlayer: true },
+    });
+    await store(t, fx.parallel, { defaultPlayerIds: [fx.skenes] });
+    await build(t, fx);
+    const one = (await copies(t, fx)).get("1")!;
+    expect(one.playerIds).toEqual([fx.ohtani]);
+    expect(one.listingNamedPlayer).toBe(true);
+  });
+
   test("the copy's own cameos come first, then the defaults; a copied cameo who is the default player moves up", async () => {
     const t = convexTest(schema, modules);
     const fx = await seed(t);
