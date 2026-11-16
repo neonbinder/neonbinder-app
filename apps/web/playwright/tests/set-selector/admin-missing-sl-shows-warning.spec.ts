@@ -19,7 +19,7 @@ test(
       await expect(banner).toBeVisible({ timeout: LAUNCH_GATE });
 
       // The seed hop is a BuySportsCards sign-in (the fake, NEO-552): BSC alone, no wait line,
-      // measured 3.3 s at most on the merge-group run, so the standard 7 s.
+      // measured 3.3 s at most on the #487 merge-group run (GUIDE), so the standard 7 s.
       await page.goto("/testing/seed-credentials?sites=buysportscards&redirect=/set-selector");
       await expect(banner).toBeVisible();
 
@@ -34,7 +34,7 @@ test(
     } else {
       await expect(banner.or(panel)).toBeVisible({ timeout: LAUNCH_GATE });
 
-      // The same BuySportsCards-only hop, measured 3.3 s at most: the standard 7 s.
+      // The same BuySportsCards-only hop, measured 3.3 s at most on the #487 merge-group run (GUIDE): the standard 7 s.
       await page.goto("/testing/seed-credentials?sites=buysportscards&redirect=/set-selector");
       await expect(panel).toBeVisible();
       await expect(banner).toBeHidden();

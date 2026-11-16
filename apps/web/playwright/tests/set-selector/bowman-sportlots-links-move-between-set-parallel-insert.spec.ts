@@ -78,7 +78,7 @@ test(
       await reconcile.getByRole("button", { name: /Save [0-9]+ sets/ }).click();
       await expect(reconcile).toBeHidden();
     } else {
-      // Measured 1.8 s at most on the merge-group run.
+      // Measured 1.8 s at most on the #487 merge-group run (GUIDE).
       await expectAfterMarketplace(page, page.getByRole("listbox", { name: `${TYPE_PARALLEL}s` }), {
         platform: "BuySportsCards",
         what: "the Parallels column's sync",

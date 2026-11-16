@@ -8,7 +8,7 @@ import { expectBscTestSuccess } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 // SportLots is the one live marketplace here: its steps keep their ceilings. BuySportsCards is
-// the fake (NEO-552) and takes the standard 7 s: the longest BSC step on the merge-group run
+// the fake (NEO-552) and takes the standard 7 s: the longest BSC step on the #487 merge-group run (GUIDE)
 // took 2.8 s (the seed hop), so `forSite` gives it no timeout of its own.
 const SEED_BUDGET = 90_000; // seed-credentials performs a real SportLots sign-in
 const LIVE = 30_000; // live SportLots round trip

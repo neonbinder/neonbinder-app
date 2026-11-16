@@ -503,7 +503,7 @@ export async function drillToColdManufacturer(
   // has sets, so a listed row is the signal. Hand-made brands under paused
   // SportLots may be empty; pass `expectSets: false` for any other empty brand.
   if (expectSets ?? !env.SL_PAUSED) {
-    // Measured on the merge-group run: the longest first Sets row took 5.8 s (a year-wide
+    // Measured on the #487 merge-group run (GUIDE): the longest first Sets row took 5.8 s (a year-wide
     // sync), so paused this is the marketplace rule (the Sets column's wait line), 7 s plus
     // the seconds BSC is visibly holding it.
     await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Sets" }).getByRole("option").first(), env, {

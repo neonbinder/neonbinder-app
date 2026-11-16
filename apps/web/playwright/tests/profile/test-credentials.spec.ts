@@ -3,7 +3,7 @@ import { expectBscTestSuccess } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 // The SportLots steps keep their live ceiling; BuySportsCards is the fake (NEO-552) and its steps
-// take the standard 7 s (measured 30 ms at most on the merge-group run).
+// take the standard 7 s (measured 30 ms at most on the #487 merge-group run (GUIDE)).
 const LIVE = 30_000; // live SportLots round trip
 
 test("BSC and SportLots credentials pass a live test", { tag: ["@credentials", "@profile"] }, async ({ page, signIn, env }) => {

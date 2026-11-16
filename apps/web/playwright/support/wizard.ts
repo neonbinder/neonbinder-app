@@ -331,7 +331,7 @@ export async function fetchChecklistToWizard(
   }
   // Live, the wizard opens after the pairing's Confirm (a live SportLots + BSC round trip's
   // aftermath); paused, it opens once the solo fetch has landed above, our own work: measured
-  // 1.3 s at most on the merge-group run, so the standard 7 s.
+  // 1.3 s at most on the #487 merge-group run (GUIDE), so the standard 7 s.
   await expectStepWithSportLots(page, reviewWizard(page), env, { liveMs: FETCH, what: "the tidy-up dialog opening", statusLine: false });
   // NEO-497: the dialog names the checklist it is tidying, read off the NB rows
   // this drill picked (the year and the set; a Base checklist's title leaves
@@ -470,7 +470,7 @@ export async function fetchOneMarketplaceSetChecklistToWizard(
   });
 
   // Every fetched name the deployment does not hold is queued, each behind a
-  // lookup (measured 3.3 s at most on the merge-group run, so the standard 7 s: the
+  // lookup (measured 3.3 s at most on the #487 merge-group run (GUIDE), so the standard 7 s: the
   // fetch has landed above, this is our own queueing). Gated on the wizard's title,
   // which names the set since NEO-497.
   await expect(reviewWizard(page)).toBeVisible();

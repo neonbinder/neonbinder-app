@@ -65,7 +65,9 @@ Reference specs that show the patterns below:
      SportLots is live and follows (1) and (2) while it is paused, through
      `expectStepWithSportLots` (`support/marketplace-wait.ts`), the one place a
      budget branches on `env.SL_PAUSED`. Never invent a number: a measurement from
-     a green run, plus 7 s. If a tightened step goes red in CI, restore that one
+     a green run, plus 7 s. The measurements in the site comments ("measured on
+     the #487 merge-group run (GUIDE)") come from the #487 merge-group run,
+     GitHub Actions run 43725066956. If a tightened step goes red in CI, restore that one
      site to its longest measured run plus 7 s; never revert the sweep;
    - the seed's cold syncs (`setup.spec.ts` is exempt as a class: it is a
      data-loading track, and its ceilings are the measured COLD-path values.

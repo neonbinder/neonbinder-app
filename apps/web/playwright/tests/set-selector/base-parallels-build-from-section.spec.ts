@@ -33,7 +33,7 @@ test(
     await page.getByRole("button", { name: "Stop after this one" }).click();
     // Building a parallel fetches its checklist from BSC (the fake, NEO-552) before writing
     // it, and the build shows "Waiting on BuySportsCards" while that call is out: 7 s of our
-    // own time plus the seconds the line is up (measured 3.4 s on the merge-group run).
+    // own time plus the seconds the line is up (measured 3.4 s on the #487 merge-group run (GUIDE)).
     await expectAfterMarketplace(page, page.getByRole("heading", { name: new RegExp(`Base parallels — stopped after 1 of ${total}`) }), {
       platform: "BuySportsCards",
       what: "the parallel build stopping after one",

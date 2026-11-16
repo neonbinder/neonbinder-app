@@ -88,7 +88,7 @@ test(
     } else {
       // Paused: SportLots offers no twin, so the sets come in without a reconcile.
       // BSC alone (the fake, NEO-552): the column's own wait line covers its sync, so 7 s plus
-      // the seconds BSC is visibly holding it (measured 0.2 s for the heading, 1.8 s for the row).
+      // the seconds BSC is visibly holding it (measured on the #487 merge-group run (GUIDE): 0.2 s for the heading, 1.8 s for the row).
       await expectAfterBscSync(page, columnHeading(page, "Inserts"), "the Inserts column opening");
       await expect(reconcile).toBeHidden();
       // The heading shows while the column's BSC sync is still running ("Syncing Inserts"),
@@ -127,7 +127,7 @@ test(
     if (!env.SL_PAUSED) {
       await expect(reconcile).toBeVisible({ timeout: 240_000 });
     } else {
-      // BSC alone: 7 s plus the seconds the column's wait line is up (measured 1.3 s).
+      // BSC alone: 7 s plus the seconds the column's wait line is up (measured 1.3 s on the #487 merge-group run (GUIDE)).
       await expectAfterMarketplace(
         page,
         page.getByText(
@@ -162,7 +162,7 @@ test(
     await syncChecklistButton(page).click();
 
     // The cards come from BSC (and SportLots, paired, when it is live): the flow's 120 s while
-    // SportLots is live; paused, BSC alone under the fetch's wait line (measured 1.3 s).
+    // SportLots is live; paused, BSC alone under the fetch's wait line (measured 1.3 s on the #487 merge-group run (GUIDE)).
     const matchCards = page.getByText(/Match Cards/).first();
     const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
     await expectStepWithSportLots(page, matchCards.or(kept).first(), env, { liveMs: 120_000, what: "the Anime checklist fetch" });
@@ -185,7 +185,7 @@ test(
     const wizard = reviewWizard(page);
     const saved = page.getByText(/Saved [0-9]+ cards/);
     // Live, the wizard opens after the pairing's Confirm (the flow's 60 s); paused, once the
-    // solo fetch has landed above: our own queueing, measured 1.8 s at most, the standard 7 s.
+    // solo fetch has landed above: our own queueing, measured 1.8 s at most on the #487 merge-group run (GUIDE), the standard 7 s.
     await expectStepWithSportLots(page, wizard.or(saved).first(), env, { liveMs: 60_000, what: "the tidy-up dialog or the save", statusLine: false });
     await expectTeamsFromChecklist(page, facts);
     if (await wizard.isVisible()) {
@@ -212,7 +212,7 @@ test(
       page.getByText(/Building parallels of Anime — [0-9]+ of [0-9]+|Anime parallels — [^.]+/).first(),
     ).toBeVisible();
     // Building Kanji's cards fetches its checklist from BSC under the build's wait line: 7 s plus
-    // the seconds BSC is visibly holding it (measured 5.4 s at most).
+    // the seconds BSC is visibly holding it (measured 5.4 s at most on the #487 merge-group run (GUIDE)).
     await expectAfterMarketplace(
       page,
       page.getByRole("heading", { name: /Anime parallels — [1-9][0-9]* built(, [0-9]+ (blocked|skipped|failed))*/ }),

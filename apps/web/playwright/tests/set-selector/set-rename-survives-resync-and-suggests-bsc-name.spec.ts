@@ -43,7 +43,7 @@ test(
       timeout: 20_000,
     });
     // The set's first visit syncs its variant types: 60 s while SportLots is live; paused, BSC
-    // alone under the column's wait line (measured 1.3 s on the merge-group run).
+    // alone under the column's wait line (measured 1.3 s on the #487 merge-group run (GUIDE)).
     await expectStepWithSportLots(page, columnOption(page, "Variant Types", "Base"), env, {
       liveMs: 60_000,
       what: "Variant Types row Base",
@@ -62,7 +62,7 @@ test(
     // A forced Sync Sets: the rename survives, BSC's name returns as a suggestion.
     await page.getByRole("button", { name: "Sync Sets" }).click();
     // The forced sync asks SportLots too while it is live (the flow's 90 s); paused, BSC alone
-    // under the column's wait line (measured 2 ms on the merge-group run).
+    // under the column's wait line (measured 2 ms on the #487 merge-group run (GUIDE)).
     await expectStepWithSportLots(page, page.getByText("1 name to check"), env, {
       liveMs: 90_000,
       what: "the forced Sets sync's name check",

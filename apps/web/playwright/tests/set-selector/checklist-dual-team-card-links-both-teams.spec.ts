@@ -69,7 +69,7 @@ test(
     await drillToColdManufacturer(page, env, { sport: "Baseball", year: "2025", manufacturer: "Bowman" });
     // The Sets column's LISTBOX renders only once it holds a row. The helper
     // waited the sync out with SportLots live; paused, BSC's sets can still be
-    // landing, so this waits by the marketplace rule (measured 0.2 s on the merge-group run).
+    // landing, so this waits by the marketplace rule (measured 0.2 s on the #487 merge-group run (GUIDE)).
     await expectStepWithSportLots(page, page.getByRole("listbox", { name: "Sets" }), env, {
       liveMs: COLD_SYNC,
       what: "the Sets list",
@@ -121,7 +121,7 @@ test(
     } else {
       // Paused: one marketplace, nothing to reconcile; the column fills
       // straight from BSC (the same cold fetch).
-      // BSC alone: 7 s plus the seconds the column's wait line is up (measured 0.2 s).
+      // BSC alone: 7 s plus the seconds the column's wait line is up (measured 0.2 s on the #487 merge-group run (GUIDE)).
       await expectAfterBscSync(page, columnHeading(page, "Inserts"), "the Inserts column opening");
       await expect(reconcile).toBeHidden();
     }

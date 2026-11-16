@@ -153,7 +153,7 @@ test(
       await columnOption(page, "Variant Types", "Insert").click();
     } else {
       // Paused: one marketplace, nothing to reconcile; the column fills straight from BSC.
-      // BSC alone: 7 s plus the seconds the column's wait line is up (measured 0.8 s).
+      // BSC alone: 7 s plus the seconds the column's wait line is up (measured 0.8 s on the #487 merge-group run (GUIDE)).
       await expectAfterBscSync(page, columnHeading(page, "Inserts"), "the Inserts column opening");
       await expect(reconcile).toBeHidden();
     }

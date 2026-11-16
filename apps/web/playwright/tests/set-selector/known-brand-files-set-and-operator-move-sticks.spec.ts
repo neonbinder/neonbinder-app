@@ -82,7 +82,7 @@ test(
     await expect(columnSelection(page, "Manufacturers", BRAND)).toBeVisible();
     await expectAccessible(page, { label: "Set filed under the sync-created brand" });
     // The set's first visit fires a cold variant-type sync (the flow's 60 s while SportLots is
-    // live; paused, BSC alone under the column's wait line, measured 9 ms on the merge-group run).
+    // live; paused, BSC alone under the column's wait line, measured 9 ms on the #487 merge-group run (GUIDE)).
     await expectStepWithSportLots(page, page.getByText("Syncing Variant Types"), env, {
       liveMs: 60_000,
       what: "the variant-type sync",
@@ -130,7 +130,7 @@ test(
     await page.getByRole("button", { name: "Sync Sets" }).click();
     await expect(page.getByRole("heading", { name: "Syncing Sets" })).toBeVisible();
     // The whole year again from BSC (the flow's 150 s while SportLots is live; paused, 7 s plus
-    // the seconds BSC is visibly holding it: the longest run measured 3.3 s).
+    // the seconds BSC is visibly holding it: the longest run measured 3.3 s on the #487 merge-group run (GUIDE)).
     await expectStepWithSportLots(page, page.getByRole("heading", { name: "Syncing Sets" }), env, {
       liveMs: COLD_SYNC,
       what: "the forced Sets sync finishing",

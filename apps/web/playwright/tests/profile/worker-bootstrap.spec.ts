@@ -16,7 +16,7 @@ test(
     );
     // One wait covers the whole redirect chain. While SportLots is live the seed performs a real
     // SportLots sign-in (30-65 s), hence the flow's 90 s. Paused, the chain is the fake
-    // BuySportsCards' sign-in alone: the longest run measured 6.4 s (the fake's cold first
+    // BuySportsCards' sign-in alone: the longest run measured 6.4 s on the #487 merge-group run (GUIDE) (the fake's cold first
     // token), so ceil(6.4 + 7) = 14 s.
     await expectStepWithSportLots(page, page.getByRole("heading", { name: "Profile Settings" }), env, {
       liveMs: 90_000,

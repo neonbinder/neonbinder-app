@@ -151,7 +151,7 @@ const CHECKLIST_OF: Readonly<Record<string, ChecklistName | undefined>> = {
  * on data that is not pre-synced": the cold year's first Sets sync, which also asks SportLots.
  * It is the ceiling kept while SportLots is live (`expectStepWithSportLots`); paused, BSC alone
  * is the fake (NEO-552) and the wait is the marketplace rule: 7 s plus the seconds
- * "Waiting on BuySportsCards" is up (measured 6.3 s at most on the merge-group run). The wizard
+ * "Waiting on BuySportsCards" is up (measured 6.3 s at most on the #487 merge-group run (GUIDE)). The wizard
  * opening afterwards is our own backend at the 7 s default. The fetch itself (the bulk
  * checklist, one BSC round trip) is waited on with `expectAfterMarketplace` (NEO-487).
  */
@@ -320,7 +320,7 @@ async function fetchInsertToWizard(
   }
   // The paused column fills from BSC when it is opened (the live one was saved
   // above): the listed row is the sync's proof, a BSC round trip under the column's wait
-  // line (measured 2.3 s at most), so 7 s plus the seconds BSC is visibly holding it.
+  // line (measured 2.3 s at most on the #487 merge-group run (GUIDE)), so 7 s plus the seconds BSC is visibly holding it.
   await columnSearch(page, "Inserts").fill(name);
   await expectAfterBscSync(page, columnOption(page, "Inserts", name), `Inserts row ${name}`);
   await columnOption(page, "Inserts", name).click();

@@ -13,7 +13,7 @@ import { test } from "./fixtures";
 /**
  * A live SportLots login is a real ~22 s Puppeteer/SSO round trip (the flows' 30 s).
  * SportLots only: BuySportsCards is the fake (NEO-552), whose sign-in steps measured
- * 1.3 s at most and take the standard 7 s.
+ * 1.3 s at most on the #487 merge-group run (GUIDE) and take the standard 7 s.
  */
 export const LIVE_LOGIN = 30_000;
 
@@ -30,7 +30,7 @@ async function openCredentials(page: Page, gate = 10_000): Promise<void> {
 async function pressTest(page: Page): Promise<void> {
   // While another credential op holds the lock the button reads
   // "Testing..."; wait for the real label. BSC only (the fake's sign-in:
-  // measured 5 ms at most), so the standard 7 s.
+  // measured 5 ms at most on the #487 merge-group run (GUIDE)), so the standard 7 s.
   const test = page.getByRole("button", { name: "Test Credentials" });
   await expect(test).toBeVisible();
   await test.click();
@@ -63,7 +63,7 @@ export const BSC_TEST_SUCCESS =
  *
  * Contract: ENTRY the Test press was taken. EXIT a success message is on screen.
  * The fake answers the sign-in at once (measured 2.8 s at most across the suite's Test
- * presses, one with a cold token), so the standard 7 s.
+ * presses on the #487 merge-group run (GUIDE), one with a cold token), so the standard 7 s.
  */
 export async function expectBscTestSuccess(page: Page, timeout = 7_000): Promise<"confirmed" | "unconfirmed"> {
   await expect(page.getByText(BSC_TEST_SUCCESS).first()).toBeVisible({ timeout });
@@ -114,7 +114,7 @@ export async function loginToSportLots(page: Page, env: FlowEnv): Promise<void> 
 
 /**
  * Saving a sign-in through the seed hop signs in to BuySportsCards (the fake since
- * NEO-552). Measured on the merge-group run that sized this: the longest hop took
+ * NEO-552). Measured on the #487 merge-group run (GUIDE) that sized this: the longest hop took
  * 13.4 s (the fake's first token of a run is cold, 7.5-9 s at the seed), so
  * ceil(13.4 + 7) = 21 s. It was 90 s when the sign-in went to the real site.
  */
@@ -131,7 +131,7 @@ export async function removeBscSignIn(page: Page, gate?: number): Promise<void> 
   await openCredentials(page, gate);
   // BuySportsCards is the default tab.
   await expect(page.getByText("Connected to BuySportsCards")).toBeVisible();
-  // BSC only, measured 0.8 s and 1.3 s: the standard 7 s.
+  // BSC only, measured 0.8 s and 1.3 s on the #487 merge-group run (GUIDE): the standard 7 s.
   const clear = page.getByRole("button", { name: "Clear Credentials" });
   await expect(clear).toBeVisible();
   await clear.click();

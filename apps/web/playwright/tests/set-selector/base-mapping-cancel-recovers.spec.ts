@@ -21,7 +21,7 @@ test(
 
     // Both the first open and the Retry show the candidates: a SportLots + BSC fetch, 60 s while
     // SportLots is live; paused, BSC's candidates alone under the picker's wait line (measured
-    // 1.3 s at most on the merge-group run).
+    // 1.3 s at most on the #487 merge-group run (GUIDE)).
     async function expectCandidates() {
       await expectStepWithSportLots(page, picker.getByRole("button", { name: "Confirm Base Set" }), env, {
         liveMs: 60_000,

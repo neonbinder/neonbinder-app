@@ -24,7 +24,7 @@ test(
     // it proves nothing (drillToColdManufacturer waits for listed sets too).
     await columnSearch(page, "Sets").fill(BRAND);
     // The year-wide sets sync asks SportLots too (COLD_SYNC while it is live); paused, BSC alone
-    // under the column's wait line (measured 3.8 s at most on the merge-group run).
+    // under the column's wait line (measured 3.8 s at most on the #487 merge-group run (GUIDE)).
     await expectStepWithSportLots(
       page,
       page
@@ -72,7 +72,7 @@ test(
 
     // Its Base set mapping offers candidates from both marketplaces (live, the flow's 60 s);
     // paused, BSC's variant-type sync and candidates alone, under their wait lines (measured
-    // 3.8 s and 1.3 s on the merge-group run).
+    // 3.8 s and 1.3 s on the #487 merge-group run (GUIDE)).
     const base = columnOption(page, "Variant Types", "Base");
     await expectStepWithSportLots(page, base, env, { liveMs: 60_000, what: "Variant Types row Base" });
     await base.click();

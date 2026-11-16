@@ -721,7 +721,7 @@ const MAX_REST_PASSES = 45;
  * never stalls, so the first background try (30 s after the chain starts) lands the
  * account. That try's read may hold for up to 20 s (the read's own timeout) and every
  * step is allowed 7 s of our own time (`expectAfterMarketplace`): 30 + 20 + 7 = 57 s,
- * rounded up to 60 s. Measured on the merge-group run that sized this: the one press
+ * rounded up to 60 s. Measured on the #487 merge-group run (GUIDE) that sized this: the one press
  * of four that met the wait was held 20.3 s. The old 240 s was the real BSC's worst
  * stall (150 s) plus all three tries; the fake has no such stall, and a spec that
  * wants the wait longer holds the read itself (`bscFault.slow`, shorter than the

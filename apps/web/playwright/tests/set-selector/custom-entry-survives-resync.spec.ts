@@ -41,7 +41,7 @@ test(
     // the focus check below proves focus was handed back, not kept.
     await expect(syncSports).toHaveCount(0);
     // A marketplace Sports sync, not our own server: the flow's 55 s while SportLots is live;
-    // paused, BSC alone under the panel's wait line (measured 0.8 s on the merge-group run).
+    // paused, BSC alone under the panel's wait line (measured 0.8 s on the #487 merge-group run (GUIDE)).
     await expectStepWithSportLots(page, page.getByText("Syncing Sport Options"), env, {
       liveMs: 55_000,
       what: "the Sports sync",

@@ -181,7 +181,7 @@ test(
     await expect(columnHeading(page, "Variant Types")).toBeVisible({ timeout: 20_000 });
     await expect(columnSelection(page, "Manufacturers", "Unknown")).toBeVisible();
     // A set with ONE marketplace attached syncs its variant types from BSC alone, under the
-    // column's wait line (measured 1.3 s at most on the merge-group run), live or paused.
+    // column's wait line (measured 1.3 s at most on the #487 merge-group run (GUIDE)), live or paused.
     await expectAfterBscSync(page, columnOption(page, "Variant Types", "Base"), "Variant Types row Base");
 
     // The picker opens for the unmapped base; BSC offers it, SportLots does not carry it.
@@ -189,7 +189,7 @@ test(
     const picker = page.getByRole("dialog", { name: "Select Base Set" });
     await expect(picker).toBeVisible();
     // The picker still asks SportLots for a candidate (60 s while it is live); paused, BSC's
-    // candidates alone under the picker's wait line (measured 0.8 s).
+    // candidates alone under the picker's wait line (measured 0.8 s on the #487 merge-group run (GUIDE)).
     await expectStepWithSportLots(page, picker.getByRole("button", { name: "Confirm Base Set" }), env, {
       liveMs: 60_000,
       what: "the Base picker's candidates",
@@ -239,7 +239,7 @@ test(
     await expect(page.getByText(/^Match Cards/)).toBeHidden();
     const wizard = reviewWizard(page);
     // The fetch has landed above, so this is our own queueing of the batch's lookups: measured
-    // 3 ms on the merge-group run, the standard 7 s.
+    // 3 ms on the #487 merge-group run (GUIDE), the standard 7 s.
     await expect(wizard).toBeVisible();
     // NEO-335 Phase 2: the sitting starts at its first step, nothing decided
     // (on a name step x is the decided count plus one; y grows, so it is left free).

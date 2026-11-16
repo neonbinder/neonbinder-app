@@ -311,7 +311,7 @@ async function buildFixture(page: Page, env: FlowEnv): Promise<void> {
   const reconcile = page.getByRole("dialog", { name: "Reconcile Parallels" });
   const chrome = columnOption(page, "Parallels", PARALLEL);
   // The Parallels column's first visit: the two-sided fetch's INSERT_FETCH while SportLots is live;
-  // paused, BSC alone under the column's wait line (measured 1.8 s on the merge-group run).
+  // paused, BSC alone under the column's wait line (measured 1.8 s on the #487 merge-group run (GUIDE)).
   await expectStepWithSportLots(page, reconcile.or(page.getByRole("listbox", { name: "Parallels" })).first(), env, {
     liveMs: INSERT_FETCH,
     what: "the Parallels column's fetch",
