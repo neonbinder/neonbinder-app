@@ -31,7 +31,7 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { usePastedChecklist, expectTeamsFromChecklist } from "../../support/published-checklist";
+import { confirmChecklistMatchCards, matchCardsDialog, usePastedChecklist } from "../../support/published-checklist";
 import {
   advanceToSave,
   cancelUndecided,
@@ -75,16 +75,28 @@ test(
     async function fetchToWizard(): Promise<{ facts: Awaited<ReturnType<typeof usePastedChecklist>>; cards: number }> {
       const facts = await usePastedChecklist(page, CHECKLIST, 1);
       await syncChecklistButton(page).click();
-      // One live BSC round trip: 7 s of our own time plus the seconds the screen says it waits on BSC.
-      const kept = page.getByText(/Kept all [0-9]+ cards? from BSC/);
-      await expectAfterMarketplace(page, kept, { platform: "BuySportsCards", what: "the Proof fetch's kept-cards line" });
-      const cards = Number(/Kept all ([0-9]+)/.exec((await kept.first().textContent()) ?? "")?.[1]);
+      // NEO-496: the checklist is a source of its own, so a one-marketplace fetch opens Match Cards
+      // (the pasted row pairs with its BSC card; the rest are BSC's alone). One live BSC round trip:
+      // 7 s of our own time plus the seconds the screen says it waits on BSC. The card count is
+      // read off the dialog once Confirm is usable (the batch has streamed in whole), then the
+      // house helper keeps every BSC-only card and confirms, so all of the set's cards are saved.
+      const matchCards = matchCardsDialog(page);
+      await expectAfterMarketplace(page, matchCards, { platform: "BuySportsCards", what: "Match Cards after the Proof fetch" });
+      await expectAfterMarketplace(
+        page,
+        matchCards.getByRole("button", { name: "Confirm card matches", disabled: false }),
+        { platform: "BuySportsCards", what: "Confirm unlocked after the Proof fetch" },
+      );
+      await expect(matchCards.getByText(`Matched (${facts.rows})`)).toBeVisible();
+      const bscOnly = matchCards.getByRole("heading", { name: /^BSC only \([1-9][0-9]*\)$/ });
+      await expect(bscOnly).toBeVisible();
+      const cards = facts.rows + Number(/\(([0-9]+)\)/.exec((await bscOnly.textContent()) ?? "")?.[1]);
       expect(cards).toBeGreaterThan(8);
+      await confirmChecklistMatchCards(page, { facts, what: "the Proof fetch" });
       await expect(reviewWizard(page)).toBeVisible();
       await expect(reviewWizard(page)).toHaveAccessibleName(
         tidyUpName({ year: TARGET.year, set: TARGET.set, variant: PROOF }),
       );
-      await expectTeamsFromChecklist(page, facts);
       return { facts, cards };
     }
 
