@@ -183,10 +183,14 @@ async function fetchAndCommit(page: Page, env: FlowEnv, section: Locator): Promi
     await expect(usablePerson.or(teamSkip).or(namesDone).first()).toBeVisible({ timeout: NAME_STEP });
     if (await namesDone.isVisible()) break;
     const { x } = await readStep(page);
-    const control = (await usablePerson.isVisible()) ? usablePerson : teamSkip.first();
-    const label = await nameOf(control);
-    if (control === usablePerson) skipped.push(label.replace(/^Skip (.*) — not a person$/, "$1"));
-    await control.click();
+    // One read of whichever skip is up now, then person or team is told from
+    // its label: choosing the control first (`isVisible() ? a : b`) let the
+    // wizard move to a team step in between and `nameOf(a)` wait for a button
+    // that was gone (NEO-568). The press is aimed at the name just read, so a
+    // step that moved on matches nothing rather than skipping the next row.
+    const label = await nameOf(usablePerson.or(teamSkip).first());
+    if (/ — not a person$/.test(label)) skipped.push(label.replace(/^Skip (.*) — not a person$/, "$1"));
+    await wizard.getByRole("button", { name: label, exact: true, disabled: false }).click();
     await expectStepLeft(page, x);
   }
   await expect(namesDone).toBeVisible();
