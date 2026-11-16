@@ -126,6 +126,9 @@ export const SELECTOR_DEPENDANT_TABLES = [
   // (`items[].listed.sportId`). Drained by the same reset batch.
   "marketplaceSales",
   "cardPlayerLinks",
+  // NEO-528 — the also-pictured player index (sportId, the card's sport).
+  // Drained by the reset (`resetCardSecondaryPlayerLinksBatch`), before the cards.
+  "cardSecondaryPlayerLinks",
   "cardChecklist",
   "cardCrossListings",
   "entityReviewQueue",

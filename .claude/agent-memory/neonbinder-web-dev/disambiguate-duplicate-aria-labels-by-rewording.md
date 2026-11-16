@@ -23,9 +23,16 @@ by id. (NEO-220, quick-add PlayerPicker vs. the card drawer's, both mounted by
 **How to apply:** add an all-or-nothing `labels` object prop (not individual
 optional overrides — a half-renamed instance is a collision you then have to
 hunt for), covering only the *container* controls that are always present and
-carry no entity name: root, trigger, search input, listbox. Leave chip and
-option labels alone — they already carry the row's name, which is the
-disambiguator, and renaming them breaks the existing flows. Then state the
+carry no entity name: root, trigger, search input, listbox. Chip and option
+labels carry the row's name, so they can stay default when the two pickers
+can never hold the same row — BUT when both sit in one dialog (NEO-528: the
+card drawer's Players + "Also pictured"), a spec's `/^Remove player /` or
+`Player: X` substring-matches the second picker's chips too, so those get
+reworded as well. PlayerPicker's full label sets (chip, remove, option,
+create, placeholder, sport switch) live in the pure module
+`components/SetSelector/player-picker-labels.ts`, pinned pairwise (every set
+vs every other, both directions, sample names) in `PlayerPicker.test.tsx`;
+add a new set there, not inline. Then state the
 default↔override pairs in a comment and pin the "neither contains the other"
 property in a unit test, since the failure is silent in both directions. Worked
 examples: `QUICK_ADD_PLAYER_LABELS` in `components/SetSelector/CardChecklist.tsx`

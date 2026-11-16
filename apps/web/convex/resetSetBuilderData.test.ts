@@ -518,6 +518,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
+      cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
@@ -576,6 +577,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
     ["resetPublishedChecklistChunksBatch", "publishedChecklistChunks"],
     ["resetPublishedChecklistSectionsBatch", "publishedChecklistSections"],
     ["resetPublishedChecklistsBatch", "publishedChecklists"],
+    ["resetCardSecondaryPlayerLinksBatch", "cardSecondaryPlayerLinks"],
     ["resetSelectorOptionsBatch", "selectorOptions"],
     ["resetCardChecklistBatch", "cardChecklist"],
     ["resetCardCrossListingsBatch", "cardCrossListings"],
@@ -651,6 +653,7 @@ describe("NEO-214: resetSetBuilderDataFromCli", () => {
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
+      cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
@@ -736,6 +739,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 0,
+      cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 0,
       crossListingsDeleted: 0,
       entityReviewQueueDeleted: 0,
@@ -786,6 +790,7 @@ describe("NEO-254: the reset yields at RESET_TIME_BUDGET_MS and resumes", () => 
       selectorOptionsDeleted: 3,
       cardPlayerLinksDeleted: 0,
       cardTeamLinksDeleted: 9,
+      cardSecondaryPlayerLinksDeleted: 0,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,
@@ -1232,6 +1237,8 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
     // NEO-509 — a sale line's description names a sport row (listed.sportId).
     "marketplaceSales",
     "cardPlayerLinks",
+    // NEO-528 — the also-pictured player index (sportId, the card's sport).
+    "cardSecondaryPlayerLinks",
     "cardChecklist",
     "cardCrossListings",
     "entityReviewQueue",
@@ -1302,6 +1309,12 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
         nameNormalized: player.nameNormalized,
       });
       await ctx.db.insert("cardPlayerLinks", {
+        cardChecklistId: card._id,
+        playerId: player._id,
+        sportId,
+      });
+      // NEO-528 — one also-pictured index row for that card.
+      await ctx.db.insert("cardSecondaryPlayerLinks", {
         cardChecklistId: card._id,
         playerId: player._id,
         sportId,
@@ -1534,6 +1547,7 @@ describe("NEO-330: scope exceptReferenceSeed", () => {
       selectorOptionsDeleted: 0,
       cardPlayerLinksDeleted: 1,
       cardTeamLinksDeleted: 9,
+      cardSecondaryPlayerLinksDeleted: 1,
       cardChecklistDeleted: 5,
       crossListingsDeleted: 6,
       entityReviewQueueDeleted: 7,

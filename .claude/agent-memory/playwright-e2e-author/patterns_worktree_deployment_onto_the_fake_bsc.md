@@ -34,3 +34,9 @@ metadata:
 - A page scroll a reader does is `page.mouse.move(<left margin>)` + `page.mouse.wheel(0, n)`; the old
   `evaluate(scrollIntoView)` could leave the page unmoved, and `scrollIntoViewIfNeeded` on a row would move the
   list and void a list-scroll proof (column-reexpand spec).
+- Real-set specs on the fake: write them FETCH-OR-ADOPT (branch on `No cards in this checklist yet.` vs
+  `Cards (N)`), and keep `fake-bsc.sh record <slug>- --yes` running in the background. Each rerun then
+  unlocks one more level (year filters, set filters, base results, insert sync, parallel filters, a
+  parallel's results) without a reseed between rounds. A miss shows as a column "Couldn't sync" or a
+  one-marketplace wait failing with "BSC held it 0.0 s"; read the recorder log, rerun, don't touch budgets.
+  Upload a publisher's checklist so no per-card `card-listing` level is needed.

@@ -42,6 +42,7 @@ import {
   TEAMS_SECTION_NAMES_PER_REQUEST,
   TEAMS_SECTION_PLAYERS_PER_REQUEST,
   toggleTeam,
+  type DefaultPlayerWire,
   type GroupChoice,
   type PreviewCardForTeams,
   type ServerPlayerEvidence,
@@ -230,6 +231,7 @@ export default function TeamsOnCardsSection({
   playerlessIndexes,
   skippedPlayerNames,
   skippedTeamNames,
+  defaultPlayer,
   disabled = false,
   showSetTeamHint = false,
 }: {
@@ -266,6 +268,12 @@ export default function TeamsOnCardsSection({
    */
   playerlessIndexes?: readonly number[];
   /**
+   * NEO-528 — the row's "Player on every card" and the NEW cards the commit
+   * gives them when nobody else is on them: those cards are that player's
+   * here, never "Cards with no players". The parent decides.
+   */
+  defaultPlayer?: DefaultPlayerWire;
+  /**
    * Player names this set's skip records rule "not a person" (raw, as the
    * records list them). Nobody, on any card, like a name skipped in the
    * Names step.
@@ -291,8 +299,8 @@ export default function TeamsOnCardsSection({
     [settledIndexes],
   );
   const people = useMemo(
-    () => storedPeople(playerlessIndexes, skippedPlayerNames, skippedTeamNames),
-    [playerlessIndexes, skippedPlayerNames, skippedTeamNames],
+    () => storedPeople(playerlessIndexes, skippedPlayerNames, skippedTeamNames, defaultPlayer),
+    [playerlessIndexes, skippedPlayerNames, skippedTeamNames, defaultPlayer],
   );
 
   const requests = useMemo(

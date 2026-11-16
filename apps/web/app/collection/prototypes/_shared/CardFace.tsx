@@ -10,7 +10,11 @@ import {
   type Finish,
 } from "./data";
 import type { Card as ModelCard } from "../../final/data/types";
-import { cardLabel as modelLabel, playerInitials as initialsOf } from "../../final/data/labels";
+import {
+  cardLabel as modelLabel,
+  cardSubject,
+  playerInitials as initialsOf,
+} from "../../final/data/labels";
 import { useCardImage } from "../../final/data/cardImages";
 import type { CopyPhotos } from "../../final/data/types";
 import "./card-face.css";
@@ -105,13 +109,21 @@ function faceOf(card: Card | undefined, model: ModelCard | undefined): Face {
   if (model) {
     const player = model.players[0];
     const team = model.teams[0];
+    // NEO-528 — a card with no player (a cameo-only card) still names
+    // itself on the nameplate: its own name, else "With <cameo>"
+    // (`cardSubject`). The photo window's monogram follows: the card's own
+    // name, else the first player pictured on it.
+    const stand = player ? null : cardSubject(model);
+    const pictured = model.secondaryPlayers?.[0]?.name;
     return {
       label: modelLabel(model),
       season: model.set.season,
       setName: model.set.name,
       cardNumber: model.cardNumber,
-      playerName: player?.nameOnCard ?? player?.name ?? "",
-      initials: player ? initialsOf(player.name) : "?",
+      playerName: player ? (player.nameOnCard ?? player.name) : (stand ?? ""),
+      initials: player
+        ? initialsOf(player.name)
+        : initialsOf(model.cardName?.trim() || pictured || ""),
       teamName: team?.name ?? "",
       primary: team?.primary ?? NO_LIVERY.primary,
       secondary: team?.secondary ?? team?.primary ?? NO_LIVERY.secondary,
@@ -408,9 +420,7 @@ export default function CardFace({
                 className="block truncate"
                 style={{ fontSize: cq(6.2), lineHeight: 1.2 }}
               >
-                {face.teamName}
-                {face.variation ? `, ${face.variation}` : ""}
-                {face.variantName ? `, ${face.variantName}` : ""}
+                {[face.teamName, face.variation, face.variantName].filter(Boolean).join(", ")}
               </span>
             )}
           </div>

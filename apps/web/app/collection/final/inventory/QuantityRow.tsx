@@ -5,10 +5,10 @@ import NeonButton from "@/components/modules/NeonButton";
 import { Input } from "@/components/primitives/Input";
 import { QUIET_BUTTON, useLiverySurface } from "../../prototypes/p1/ui";
 import type { RowActions } from "../CardRows";
-import { cardLabel, playerNames, printRunLabel, setAndVariant, shortCardName, teamNames, teamTextColor } from "../data/labels";
+import { cardLabel, cardSubject, printRunLabel, setAndVariant, shortCardName, teamNames, teamTextColor } from "../data/labels";
 import { inventoryCopies, useCollectionActions, useCopiesOf, useDefaultCondition, writeErrorMessage } from "../data/store";
 import type { Card, Container, Copy, CopyId, QuantityResult } from "../data/types";
-import { usePageApi } from "../pageApi";
+import { startWrite, usePageApi } from "../pageApi";
 import { FeatureBadges } from "./badges";
 import { useQuickEntry } from "./QuickEntry";
 import {
@@ -224,6 +224,8 @@ export default function QuantityRow({
     lastSent.current = quantity;
     setDraft({ text: String(quantity), boxId: target.id });
     setStatus({ kind: "saving" });
+    // NEO-460: the line's last Undo goes now, never pressed while this saves.
+    const ticket = startWrite(api);
     const settle = () => {
       pending.current -= 1;
       if (mine !== seq.current) return false;
@@ -236,12 +238,12 @@ export default function QuantityRow({
       .then(
         (result) => {
           if (settle()) setStatus({ kind: "saved" });
-          api.notify(quantityMessage(shortCardName(card), target, result), result.undo);
+          ticket.done(quantityMessage(shortCardName(card), target, result), result.undo);
         },
         (error: unknown) => {
           const message = writeErrorMessage(error);
           if (settle()) setStatus({ kind: "error", message });
-          api.notify(`${shortCardName(card)} didn't change. ${message}`);
+          ticket.refused(`${shortCardName(card)} didn't change. ${message}`);
         },
       );
   };
@@ -320,7 +322,7 @@ export default function QuantityRow({
         <div className={`min-w-0 flex-1 ${showSet ? "max-sm:basis-full" : ""}`}>
           <div className="min-w-0 truncate text-sm font-medium text-ink">
             <span className="font-mono font-normal text-ink-3 sm:hidden">#{card.cardNumber} </span>
-            {playerNames(card) || "Player unknown"}
+            {cardSubject(card) || "Player unknown"}
           </div>
           <div className="flex min-h-[1rem] min-w-0 items-center gap-1.5 text-xs text-ink-3">
             <span className="min-w-0 truncate">

@@ -87,6 +87,7 @@ import type {
   BinderSettingsPatch,
   DeclinedCard,
   RuleBrand,
+  RuleMatches,
   FoundCards,
   PocketPlacement,
   SmartRule,
@@ -283,10 +284,11 @@ export interface CollectionData {
   useBinderNeeds(containerId: ContainerId | null): BinderNeeds | undefined;
   /**
    * Which of `cardIds` fit a smart binder's rule (capability `binderRules`):
-   * the Checklists filter and "outside the rule". Empty for a binder without
-   * a rule, and from a store without rules.
+   * the Checklists filter and "outside the rule". NEO-528: `secondary` the
+   * ones that fit only as a cameo. Empty for a binder without a rule, and
+   * from a store without rules.
    */
-  useRuleMatches(containerId: ContainerId | null, cardIds: readonly CardId[] | null): ReadonlySet<CardId> | undefined;
+  useRuleMatches(containerId: ContainerId | null, cardIds: readonly CardId[] | null): RuleMatches | undefined;
   /** "Find cards for this binder" (capability `binderRules`); `null` asks nothing. */
   useFindCards(containerId: ContainerId | null): FoundCards | undefined;
   /** The cards declined for a smart binder, newest first (capability `binderRules`). */
@@ -837,7 +839,7 @@ export function useBinderNeeds(containerId: ContainerId | null): BinderNeeds | u
 export function useRuleMatches(
   containerId: ContainerId | null,
   cardIds: readonly CardId[] | null,
-): ReadonlySet<CardId> | undefined {
+): RuleMatches | undefined {
   return useCollectionStore().data.useRuleMatches(containerId, cardIds);
 }
 export function useFindCards(containerId: ContainerId | null): FoundCards | undefined {

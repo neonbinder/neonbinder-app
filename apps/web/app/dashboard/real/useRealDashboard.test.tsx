@@ -10,6 +10,7 @@ import { RUN_PARAM } from "@/app/collection/final/intake/RealAddCardsTab";
 import { toDash } from "../dash-card";
 import { bindersOf as demoBindersOf, getDashboard } from "../fake-data";
 import DashboardScreen from "../screen/DashboardScreen";
+import { PocketTitle } from "../screen/PocketPage";
 import { pageCount, POCKETS_PER_PAGE, shelfOrder } from "../screen/shelf-model";
 import { labelOf, PLAIN_LABEL } from "@/app/collection/final/binders/label";
 import { SHELF_CAP } from "../screen/Shelf";
@@ -770,6 +771,26 @@ describe("smart binders", () => {
     expect(smart.checklist).toEqual({ have: 24, total: 40, percent: 60 });
     expect(shelfBinderOf(container({ id: "plain" }), [], { checklist: { have: 1, total: 2 } }).checklist).toBeNull();
     expect(shelfBinderOf(container({ id: "smart", smartRule: rule }), [], { checklist: null }).checklist).toBeNull();
+  });
+
+  it("NEO-528: a binder that includes cameos counts them apart, beside its own percent", () => {
+    const cameoRule = { ...rule, secondaryPlayers: true as const };
+    const smart = shelfBinderOf(container({ id: "smart", smartRule: cameoRule }), [], {
+      checklist: { have: 24, total: 40, secondary: { have: 2, total: 5 } },
+    });
+    expect(smart.checklist).toEqual({ have: 24, total: 40, percent: 60 });
+    expect(smart.cameos).toEqual({ have: 2, total: 5 });
+    render(<PocketTitle binder={smart} headingRef={{ current: null }} />);
+    expect(screen.getByText(/of the checklist\./)).toBeTruthy();
+    expect(screen.getByText(/Cameos:/).textContent).toBe(" Cameos: 2 of 5");
+    // Only cameos fit so far: no percent of nothing, the cameo count still shows.
+    const cameoOnly = shelfBinderOf(container({ id: "smart2", smartRule: cameoRule }), [], {
+      checklist: { have: 0, total: 0, secondary: { have: 1, total: 3 } },
+    });
+    expect(cameoOnly.checklist).toBeNull();
+    expect(cameoOnly.cameos).toEqual({ have: 1, total: 3 });
+    // Without the option the server sends no `secondary`, and nothing is said about cameos.
+    expect(shelfBinderOf(container({ id: "s3", smartRule: rule }), [], { checklist: { have: 1, total: 2 } }).cameos).toBeUndefined();
   });
 
   it("summarises only the smart binders, with no percent where there is no checklist, and no candidates", () => {

@@ -1455,6 +1455,44 @@ describe("diffChecklistAgainstExisting — settled conflicts (NEO-251)", () => {
    * roster they typed. An upstream value against it is a real disagreement with
    * a human decision, and it must still be shown.
    */
+  /**
+   * NEO-528 D4 — a marketplace that lists no player has made no claim about
+   * who is on the card. A card whose player NB set (the Set Builder's "Player
+   * on every card", before the set was synced) is never offered "→ —".
+   */
+  test("an EMPTY incoming roster never offers a players change", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      { cardNumber: "1", cardName: "Card One", bscRef: "bsc-1", players: ["Patrick Mahomes"] },
+      { cardNumber: "1", cardName: "Card One", bscRef: "bsc-1", players: [] },
+    );
+    expect(row.fields.map((f) => f.name)).not.toContain("playerIds");
+    expect(row.bucket).toBe("identical");
+  });
+
+  test("a roster of blank names counts as empty too", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      { cardNumber: "1", cardName: "Card One", bscRef: "bsc-1", players: ["Patrick Mahomes"] },
+      { cardNumber: "1", cardName: "Card One", bscRef: "bsc-1", players: ["  "] },
+    );
+    expect(row.fields.map((f) => f.name)).not.toContain("playerIds");
+  });
+
+  test("a NON-empty incoming roster that differs is still offered", async () => {
+    const t = convexTest(schema, modules);
+    const row = await committedThenResynced(
+      t,
+      { cardNumber: "1", cardName: "Card One", bscRef: "bsc-1", players: ["Patrick Mahomes"] },
+      { cardNumber: "1", cardName: "Card One", bscRef: "bsc-1", players: ["Travis Kelce"] },
+    );
+    const players = row.fields.find((f) => f.name === "playerIds");
+    expect(players).toMatchObject({ oldValue: "Patrick Mahomes", newValue: "Travis Kelce" });
+    expect(row.bucket).toBe("contentChanges");
+  });
+
   test("a stored roster matching neither side still reports a change", async () => {
     const t = convexTest(schema, modules);
     const row = await committedThenResynced(
