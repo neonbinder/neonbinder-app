@@ -3,7 +3,8 @@
 // which proved the "COMING SOON" page this replaced.
 //
 // R1: the shelf stands, and a section with nothing behind it stays away: no
-// In the Hopper while nothing is in intake, and no Out the Door: the worker's
+// run to finish in the Hopper while nothing is in intake (only the stat of
+// runs sorted, NEO-539), and no Out the Door: the worker's
 // account has a saved marketplace sign-in (the bootstrap's) but no order (the
 // spec clears any test order other specs left), and
 // only a stored order puts the sales section up (Jason, 2026-11-10). New on
@@ -22,7 +23,12 @@
 //
 // R7: the hopper's state is this account's own and other specs leave scans in
 // it (real-hopper-run-link seeds one), so this spec asks for the state it needs:
-// the seed hop's `clearHopper` sets the account's open scans aside first.
+// it seeds a run with one open scan (`hopperScan`), then the seed hop's
+// `clearHopper` sets the account's open scans aside. Every scan of that run is
+// out of intake, so it counts as SORTED today: the hopper shows its stat line
+// and no run to finish. (Setting scans aside leaves the run's last activity
+// alone, so the seeded run, made just now, is "this week" whatever else the
+// account holds.)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { addCardViaForm } from "../../support/cards";
 import { customSport, drillToCustom, escapeRe, selectOrCreate, setBuilderReady } from "../../support/set-builder";
@@ -39,12 +45,15 @@ test("Dashboard shows the collector's own binder shelf", { tag: ["@smoke", "@das
   // R7: no stored order, asked for, not assumed: other specs on this worker leave
   // test orders behind (inventory-pick-list ships its orders and leaves them to the
   // bootstrap's reset). The clear removes only the caller's marked test orders and
-  // forwards to the dashboard. Both clears come BEFORE the sets are built, so the
-  // last write before the dashboard is read is a card, not a hop.
+  // forwards to the dashboard. The clears and the hopper seed come BEFORE the sets are
+  // built, so the last write before the dashboard is read is a card, not a hop.
   await signIn("/testing/seed-dashboard?clear=1");
   await expect(page.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible({ timeout: LAUNCH_GATE });
-  // The hopper clear is the same kind of hop, from the signed-in page, and lands on the set builder.
-  await page.goto("/testing/seed-placeholder-run?clearHopper=1&redirect=/set-selector");
+  // The hopper seed (one run with one open scan) and its clear are the same kind of hop, from
+  // the signed-in page; the clear lands on the set builder.
+  await page.goto("/testing/seed-placeholder-run?hopperScan=1");
+  await expect(page).toHaveURL(/\/collection\?tab=add&run=\w+/, { timeout: LAUNCH_GATE });
+  await page.goto("/testing/seed-placeholder-run?clearHopper=1&redirect=%2Fset-selector");
   await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
   // One set's Base with one more card: drill to it (making each hand-made row the first time,
@@ -75,11 +84,20 @@ test("Dashboard shows the collector's own binder shelf", { tag: ["@smoke", "@das
   await expect(main).toBeVisible();
 
   // Sections only when there is data. Out the Door shows only for an account
-  // with an order stored; this one has none, whatever logins it saved. Nothing
-  // is in intake, so the hopper is not drawn either.
+  // with an order stored; this one has none, whatever logins it saved, so there is
+  // no Pick List link either. Nothing is in intake, so the hopper holds no run to
+  // finish: just the stat of the run sorted this week (the seeded one), no lead
+  // line of scans waiting and no "Finish this run" link.
   await expect(page.getByRole("heading", { level: 2, name: "Out the Door", exact: true })).toHaveCount(0);
   await expect(page.getByText("All shipped. Nice.")).toHaveCount(0);
-  await expect(page.getByRole("heading", { level: 2, name: "In the Hopper", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: "Pull them on the Pick List", exact: true })).toHaveCount(0);
+  const hopper = page.getByRole("region", { name: "In the Hopper" });
+  await expect(hopper.getByRole("heading", { level: 2, name: "In the Hopper", exact: true })).toBeVisible();
+  await expect(hopper.getByText(/^\d+ runs? sorted this week$/)).toBeVisible();
+  await expect(hopper.getByText(/all-time/)).toHaveCount(0);
+  await expect(hopper.getByRole("list", { name: "Runs to finish", exact: true })).toHaveCount(0);
+  await expect(hopper.getByRole("link", { name: /^Finish this run/ })).toHaveCount(0);
+  await expect(hopper.getByText(/ to identify| needs? your yes/)).toHaveCount(0);
 
   // With no binder open, the first one on the shelf stands shut beside it, one button to open it.
   await expect(page.getByRole("button", { name: /^Crack open / })).toBeVisible();
