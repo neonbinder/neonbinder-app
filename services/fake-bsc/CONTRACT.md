@@ -294,7 +294,8 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
   or B2C text.
 - It reaches the fake as the loader SA through impersonated ADC, minting its
   ID token with `includeEmail` so rule 4 sees the SA's email.
-- Uploads with `POST /__fake/recordings`; auto-promoted.
+- Uploads with `POST /__fake/recordings`; auto-promoted. A full catalogue
+  answers 409 `catalogue full` ("Storage layout", entry cap).
 - `--watch --prefix` long-polls the miss list during a local E2E run.
 
 ### Write capture (Jason, 2026-11-14)
@@ -648,6 +649,18 @@ host itself. It never bundles or copies the browser source.
   the recording objects, then `manifests/<version>.json` and a new
   `manifest.json` (GCS generation precondition), and swaps the in-memory
   catalogue: auto-promoted.
+- **Entry cap:** a manifest holds at most 5,000 entries
+  (`MAX_RECORDINGS_TOTAL`). The boot reads every recording before it listens
+  ("Cold start"), so the cap keeps that read at roughly 10-20 s, well inside
+  the startup probe. An upload that would add a key past it is refused whole
+  with 409 `{error: "catalogue full", total, max}` and nothing is written;
+  the log line (`recordings_refused`, `reason: "catalogue_full"`) carries
+  counts only, never a key or body. A key the manifest already holds, or one
+  repeated within the upload, counts once, so re-recording a held key is
+  always taken (even on a manifest already over the cap). The check runs
+  inside the in-process write chain and again after a manifest conflict
+  re-read, so a second writer cannot push it past. The boot itself never
+  refuses an oversize manifest (that would only crash-loop).
 - `recordings/v<allowlistVersion>/<key>.json`: `{key, allowlistVersion,
   request:{method,path,query,body}, response:{status, body}, recordedAt}`.
 - `write-captures/<endpoint slug>.json`: the latest capture per write endpoint.

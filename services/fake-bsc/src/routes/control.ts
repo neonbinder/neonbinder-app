@@ -3,7 +3,7 @@
  * loader's endpoints (admin). See CONTRACT.md, "Who may call it".
  */
 import express, { type NextFunction, type Request, type Response, type Router } from "express";
-import { checkRecording, type Catalogue, type Recording } from "../catalogue";
+import { CatalogueFullError, checkRecording, type Catalogue, type Recording } from "../catalogue";
 import { Captures, checkCapture, readCapture } from "../captures";
 import { compareDrift } from "../drift";
 import { readFaultRules } from "../faults";
@@ -195,6 +195,12 @@ export function controlRouter(deps: ControlDeps): Router {
       log("recordings_promoted", { added: out.added, manifestVersion: out.version, ms: Date.now() - started });
       res.json({ ok: true, manifestVersion: out.version, keys: checked.map((r) => r.key) });
     } catch (err) {
+      if (err instanceof CatalogueFullError) {
+        // Counts only: no keys, paths or bodies.
+        log("recordings_refused", { reason: "catalogue_full", uploaded: checked.length, total: err.total, max: err.max, ms: Date.now() - started });
+        res.status(409).json({ error: "catalogue full", total: err.total, max: err.max });
+        return;
+      }
       log("recordings_store_failed", { error: err instanceof Error ? err.name : "unknown", ms: Date.now() - started });
       res.status(503).json({ error: "could not store recordings" });
     }

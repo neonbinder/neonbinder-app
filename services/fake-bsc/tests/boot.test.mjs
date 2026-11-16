@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
-import { CALLER, CALLER_KEY, FILTERS_PATH, MemoryStore, idToken, setLogSink, stubIdentity, stubVerifier, testConfig } from "./helpers.mjs";
+import { ADMIN_KEY, CALLER, CALLER_KEY, FILTERS_PATH, LOADER, MemoryStore, idToken, setLogSink, stubIdentity, stubVerifier, testConfig } from "./helpers.mjs";
 
 const require = createRequire(import.meta.url);
 const { boot, MISSES_BOOT_BUDGET_MS } = require("../dist/src/index.js");
@@ -56,6 +56,21 @@ const startBoot = (store, over = {}) =>
 const get = async (server, p) => {
   const r = await fetch(`http://127.0.0.1:${server.address().port}${p}`, {
     headers: { "x-nb-fake-bsc-key": CALLER_KEY, "x-nb-fake-id-token": idToken(CALLER) },
+  });
+  return { status: r.status, body: await r.json() };
+};
+
+/** An admin POST (admin key and an admin caller). */
+const adminPost = async (server, p, body) => {
+  const r = await fetch(`http://127.0.0.1:${server.address().port}${p}`, {
+    method: "POST",
+    headers: {
+      "x-nb-fake-bsc-key": CALLER_KEY,
+      "x-nb-fake-bsc-admin-key": ADMIN_KEY,
+      "x-nb-fake-id-token": idToken(LOADER),
+      "content-type": "application/json",
+    },
+    body: JSON.stringify(body),
   });
   return { status: r.status, body: await r.json() };
 };
@@ -158,7 +173,7 @@ describe("boot: load, then listen", () => {
     assert.equal(listens, 0);
   });
 
-  it("listens after the budget when the miss restore overruns it, and holds the miss list for it", async () => {
+  it("listens after the budget when the miss restore overruns it, and holds the miss list and bulk miss writes for it", async () => {
     assert.equal(MISSES_BOOT_BUDGET_MS, 30_000);
     const store = await storeWithMiss();
     const ops = [];
@@ -174,15 +189,26 @@ describe("boot: load, then listen", () => {
     // Recordings and captures are in: health never reads as loading.
     assert.equal((await get(booted.server, "/__fake/health")).body.loading, false);
 
-    let settled = false;
-    const held = get(booted.server, "/__fake/misses?prefix=happy-cat-").then((r) => ((settled = true), r));
+    // The miss list, and the two admin writes that remove misses in bulk
+    // (run during the restore, it would put back what they removed), wait.
+    const settled = new Set();
+    const track = (name, p) => p.then((r) => (settled.add(name), r));
+    const answer = { aggregations: { year: [{ label: "1996", slug: "1996", count: 4, active: false }] } };
+    const upload = { recordings: [{ request: { method: "POST", path: FILTERS_PATH, query: [], body: { filters: { sport: ["football"] } } }, response: { status: 200, body: answer } }] };
+    const misses = track("misses", get(booted.server, "/__fake/misses?prefix=happy-cat-"));
+    const recordings = track("recordings", adminPost(booted.server, "/__fake/recordings", upload));
+    const resetAll = track("reset-all", adminPost(booted.server, "/__fake/reset-all", {}));
     await wait(150);
-    assert.equal(settled, false, "the miss list waits for the restore");
+    assert.deepEqual([...settled], [], "nothing that reads or bulk-removes misses runs during the restore");
     listGate.open();
-    const misses = await held;
-    assert.equal(misses.status, 200);
-    assert.equal(misses.body.misses.length, 1);
+    const [m, rec, reset] = await Promise.all([misses, recordings, resetAll]);
+    assert.equal(m.status, 200);
+    assert.equal(rec.status, 200, JSON.stringify(rec.body));
+    assert.equal(reset.status, 200, JSON.stringify(reset.body));
     await booted.missesRestored;
+    // reset-all ran after the restore, so the restored miss did not come back.
+    assert.equal((await get(booted.server, "/__fake/misses?prefix=happy-cat-")).body.misses.length, 0);
+    assert.equal((await listVersions("misses/", 100)).length, 0, "its object is gone too");
   });
 });
 
