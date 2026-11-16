@@ -1046,40 +1046,45 @@ export default function SetAttributesPanel({
             </span>
           </div>
 
-          {/* NEO-277: FIRST, full width, and outside the grid — the position
-              is the information. Every row below is a fact about THIS node
-              only (write-once snapshots, no cascade); this one flows down to
-              every card. Keyed on the row so a confirm opened for one set can
-              never ask its question about the next one — the same reason
+          {/* NEO-277 / NEO-569: League and Team FIRST, outside the grid —
+              the position is the information. Every row below is a fact about
+              THIS node only (write-once snapshots, no cascade); these two flow
+              down to every card. League on the left, Team on the right,
+              because the team pickers rank by the leagues (Jason, NEO-569):
+              side by side while the panel is wide enough for both, League
+              above Team when it is not. flex-wrap on the panel's own width,
+              not a viewport breakpoint, since the panel is narrow inside the
+              set builder's split view on any screen. Each is keyed on the
+              row so a confirm or a save in flight for one set never carries
+              over to the next one — the same reason
               `DeleteSelectorRowControl` is keyed. */}
           {showTeamRow && (
-            <SetTeamRow
-              key={selectorOptionId}
-              selectorOptionId={selectorOptionId}
-              level={leafLevel}
-              teamIds={teamIds}
-              teamCascadeStartedAt={row.teamCascadeStartedAt}
-              sportId={ancestorSportId}
-              onSaved={showToast}
-              onFailed={showFailedToast}
-            />
-          )}
-          {/* NEO-569: directly under Team, at the same levels. The set's
-              leagues (any of them) are what the team pickers rank by, and a
-              teamless card in a one-league set takes that league. Keyed on
-              the row so a save in flight for one set never paints its chips
-              onto the next. */}
-          {showTeamRow && (
-            <SetLeagueRow
-              key={`set-league-${selectorOptionId}`}
-              selectorOptionId={selectorOptionId}
-              levelLabel={LEVEL_LABEL[leafLevel]}
-              isSet={leafLevel === "setName"}
-              ancestors={chain}
-              onSaving={showSavingToast}
-              onSaved={showToast}
-              onFailed={showFailedToast}
-            />
+            <div className="flex flex-wrap gap-2">
+              <div className="flex min-w-0 flex-1 basis-64 flex-col *:flex-1">
+                <SetLeagueRow
+                  key={`set-league-${selectorOptionId}`}
+                  selectorOptionId={selectorOptionId}
+                  levelLabel={LEVEL_LABEL[leafLevel]}
+                  isSet={leafLevel === "setName"}
+                  ancestors={chain}
+                  onSaving={showSavingToast}
+                  onSaved={showToast}
+                  onFailed={showFailedToast}
+                />
+              </div>
+              <div className="flex min-w-0 flex-1 basis-64 flex-col *:flex-1">
+                <SetTeamRow
+                  key={selectorOptionId}
+                  selectorOptionId={selectorOptionId}
+                  level={leafLevel}
+                  teamIds={teamIds}
+                  teamCascadeStartedAt={row.teamCascadeStartedAt}
+                  sportId={ancestorSportId}
+                  onSaved={showToast}
+                  onFailed={showFailedToast}
+                />
+              </div>
+            </div>
           )}
         </div>
       )}
@@ -1961,15 +1966,11 @@ export function teamSavedToast(preview: TeamCascadePreview | null): string {
 }
 
 /**
- * The visible hint under the picker, keyed on the level because the set is
- * where a collector meets this (a team issue, a police set, a college set, a
- * stadium giveaway) and a variant beneath it only needs the mechanism.
+ * The picker's accessible description (not shown, NEO-569): the one thing the
+ * screen does not say, that the team reaches every card beneath the row.
  */
 export function teamHintCopy(level: Level): string {
-  if (level === "setName") {
-    return "Team issues, police sets, college sets, stadium giveaways: pick the team once and every card in this set gets it.";
-  }
-  return `Every card in this ${LEVEL_LABEL[level].toLowerCase()} gets this team. Pick it once.`;
+  return `Every card in this ${LEVEL_LABEL[level].toLowerCase()} gets this team.`;
 }
 
 /** Order-insensitive equality: the picker appends, the row stores a set. */
@@ -2341,13 +2342,14 @@ function SetTeamRow({
           </button>
         </div>
       )}
-      {/* Visible, not a tooltip like the feature hints: this is the one row
-          whose save reaches beyond the row, and that has to be readable
-          before the pick, not discoverable after it. gray-400 on this
-          ground clears 4.5:1 (the pair every sub-line in this panel uses). */}
-      <p id={hintId} className="text-xs text-ink-3">
+      {/* NEO-569 (Jason: "too much text on the screen"): no visible hint.
+          What the screen does not show is that the save reaches every card
+          beneath the row, so a reader hears that one sentence and nothing
+          more. The confirm dialog says how many cards before any change
+          lands. */}
+      <span id={hintId} className="sr-only">
         {teamHintCopy(level)}
-      </p>
+      </span>
       {confirm && (
         <ConfirmDialog
           title={confirm.title}

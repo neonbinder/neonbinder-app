@@ -122,7 +122,6 @@ test(
     const inherited = row.getByRole("list", { name: "Leagues from above" });
     await expect(inherited).toBeVisible();
     await expect(chipOf(inherited, MLB)).toBeVisible();
-    await expect(row.getByText(/^Using the set's leagues\./)).toBeVisible();
     // An inherited list's only league has no ×: taking it away would leave nothing to inherit.
     await expect(row.getByRole("button", { name: /^Remove / })).toHaveCount(0);
     const rowAdd = row.getByRole("combobox", { name: "Add league" });
@@ -133,7 +132,9 @@ test(
     const own = row.getByRole("list", { name: "This row's leagues" });
     await expect(chipOf(own, KBO)).toBeVisible();
     await expect(chipOf(own, MLB)).toBeVisible();
-    await expect(row.getByText("This insert has its own leagues instead of the set's leagues.")).toBeVisible();
+    await expect(own).toBeVisible();
+    await expect(inherited).toBeHidden();
+    await expect(row.getByRole("button", { name: "Use the set's leagues" })).toBeVisible();
     await expectAccessible(page, { label: "Base row, its own league list over the set's" });
     await row.getByRole("button", { name: "Use the set's leagues" }).click();
     await expect(page.getByText("Back to the set's leagues").first()).toBeVisible();

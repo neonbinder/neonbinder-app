@@ -214,29 +214,28 @@ describe("SetLeagueRow — reading", () => {
     expect(within(chips[1]).getAllByText("Federal League")).toHaveLength(2);
   });
 
-  it("the set's hint says what the list is for, and the group is described by it", () => {
+  it("shows no helper line when nothing is off, and describes nothing (NEO-569: less text)", () => {
     renderRow();
-    const hint = screen.getByText(
-      "Every league this set's teams play in. Team pickers look here first.",
-    );
-    expect(group().getAttribute("aria-describedby")).toBe(hint.id);
-    expect(addField().getAttribute("aria-describedby")).toBe(hint.id);
+    expect(group().querySelectorAll("p")).toHaveLength(0);
+    expect(group().getAttribute("aria-describedby")).toBeNull();
+    expect(addField().getAttribute("aria-describedby")).toBeFalsy();
     // Nothing to go back to on the set itself.
     expect(screen.queryByRole("button", { name: SET_LEAGUE_LABELS.useInherited })).toBeNull();
   });
 
-  it("a set with no league yet says why to add one", () => {
+  it("an empty set shows no line either: the field's placeholder asks", () => {
     currentData = data({ own: null, effective: [] });
     renderRow();
-    expect(screen.getByText("No league yet. Add one so team pickers know where to look.")).toBeTruthy();
+    expect(group().querySelectorAll("p")).toHaveLength(0);
+    expect(addField().getAttribute("placeholder")).toBe("Add a league");
   });
 
-  it("a sport with no leagues says where to add them", () => {
+  it("a sport with no leagues says where to add them, and the row is described by it", () => {
     currentData = data({ own: null, effective: [], sportLeagues: [] });
     renderRow();
-    expect(
-      screen.getByText("This sport has no leagues yet. Add them in Admin → Leagues first."),
-    ).toBeTruthy();
+    const hint = screen.getByText("This sport has no leagues yet. Add them in Admin → Leagues first.");
+    expect(group().getAttribute("aria-describedby")).toBe(hint.id);
+    expect(addField().getAttribute("aria-describedby")).toBe(hint.id);
   });
 });
 
@@ -418,11 +417,7 @@ describe("SetLeagueRow — below the set", () => {
     // Shape, not only colour: a dashed outline, in ink-3 for 3:1 in dark.
     expect(chips[0].className).toContain("border-dashed");
     expect(chips[0].className).toContain("border-ink-3");
-    expect(
-      screen.getByText(
-        "Using the set's leagues. Adding or removing one here gives this insert its own list.",
-      ),
-    ).toBeTruthy();
+    expect(group().querySelectorAll("p")).toHaveLength(0);
     expect(screen.queryByRole("button", { name: SET_LEAGUE_LABELS.useInherited })).toBeNull();
   });
 
@@ -449,7 +444,7 @@ describe("SetLeagueRow — below the set", () => {
       fireEvent.mouseDown(screen.getByRole("option", { name: /^International League/ }));
     });
     expect(onSaved).toHaveBeenCalledWith("Saved League. This insert has its own leagues now.");
-    expect(screen.getByText("This insert has its own leagues instead of the set's leagues.")).toBeTruthy();
+    expect(screen.getByRole("button", { name: SET_LEAGUE_LABELS.useInherited })).toBeTruthy();
   });
 
   it("taking the added one away again goes back to the set's list rather than keeping a copy", async () => {
@@ -461,9 +456,6 @@ describe("SetLeagueRow — below the set", () => {
     expect(mockSetLeagues).toHaveBeenCalledWith({ selectorOptionId: ROW_ID, leagueIds: [] });
     expect(onSaved).toHaveBeenCalledWith("Back to the set's leagues");
     expect(screen.getByRole("list", { name: "Leagues from above" })).toBeTruthy();
-    expect(
-      screen.getByText("Using the set's leagues. Adding or removing one here gives this insert its own list."),
-    ).toBeTruthy();
   });
 
   it("the same leagues in another order are still the set's", async () => {
@@ -496,16 +488,12 @@ describe("SetLeagueRow — below the set", () => {
     expect(screen.queryByRole("button", { name: /^Remove/ })).toBeNull();
   });
 
-  it("nothing above either: says how to add one here or on the set", () => {
+  it("nothing above either: no chips, no line", () => {
     parentData = data({ own: null, effective: [] });
     currentData = data({ own: null, effective: [] });
     renderRow({ levelLabel: "Variant", isSet: false });
     expect(screen.queryByRole("list")).toBeNull();
-    expect(
-      screen.getByText(
-        "No league yet. Add one here for this variant alone, or on the set for everything in it.",
-      ),
-    ).toBeTruthy();
+    expect(group().querySelectorAll("p")).toHaveLength(0);
   });
 
   it("an own list says so, and one action returns the row to the set's", async () => {
@@ -513,7 +501,6 @@ describe("SetLeagueRow — below the set", () => {
     currentData = data({ own: [IL], effective: [IL] });
     const { onSaved } = renderRow({ levelLabel: "Insert", isSet: false });
     expect(screen.getByRole("list", { name: "This row's leagues" })).toBeTruthy();
-    expect(screen.getByText("This insert has its own leagues instead of the set's leagues.")).toBeTruthy();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: SET_LEAGUE_LABELS.useInherited }));
     });
@@ -567,23 +554,16 @@ describe("SetLeagueRow — a list from a nearer row than the set", () => {
     clearTo = [IL, PCL];
   });
 
-  it("inheriting: the hint names the row, not the set", () => {
+  it("inheriting: reads the nearer row as the parent", () => {
     currentData = data({ own: null, effective: [IL, PCL], inheritedFrom: TYPE_ID });
     renderRow({ levelLabel: "Parallel", isSet: false, ancestors: CHAIN });
     expect(queryArgs).toContainEqual({ selectorOptionId: TYPE_ID });
-    expect(
-      screen.getByText(
-        "Using the leagues from Chrome Prospects. Adding or removing one here gives this parallel its own list.",
-      ),
-    ).toBeTruthy();
+    expect(screen.getByRole("list", { name: "Leagues from above" })).toBeTruthy();
   });
 
   it("an own list goes back with \"Use the leagues above\", and the toast names the row", async () => {
     currentData = data({ own: [MLB] });
     const { onSaved } = renderRow({ levelLabel: "Parallel", isSet: false, ancestors: CHAIN });
-    expect(
-      screen.getByText("This parallel has its own leagues instead of the leagues from Chrome Prospects."),
-    ).toBeTruthy();
     expect(screen.queryByRole("button", { name: SET_LEAGUE_LABELS.useInherited })).toBeNull();
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: SET_LEAGUE_LABELS.useAbove }));

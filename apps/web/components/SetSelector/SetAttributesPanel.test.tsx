@@ -2778,14 +2778,12 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
 
     const group = teamGroup();
     expect(group).toBeTruthy();
-    // The hint is the group's description, not a tooltip: it has to be
-    // readable before the pick.
-    expect(group.getAttribute("aria-describedby")).toBeTruthy();
-    expect(
-      within(group).getByText(
-        "Team issues, police sets, college sets, stadium giveaways: pick the team once and every card in this set gets it.",
-      ),
-    ).toBeTruthy();
+    // NEO-569 ("too much text"): no visible hint. The group is described by
+    // the one thing the screen doesn't show: the save reaches every card.
+    const described = document.getElementById(group.getAttribute("aria-describedby")!);
+    expect(described?.textContent).toBe("Every card in this set gets this team.");
+    expect(described?.className).toContain("sr-only");
+    expect(within(group).queryByText(/Team issues, police sets/)).toBeNull();
 
     // Scoped by the sport row's id from the ancestor chain — never its name.
     expect(
@@ -2804,15 +2802,13 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
     ["insert", "insert"],
     ["parallel", "parallel"],
   ])(
-    "renders the row at %s too, with the shorter hint naming that level",
+    "renders the row at %s too, described (not shown) as reaching that level's cards",
     (level, noun) => {
       currentRow = makeRow({ level, value: `node-${level}`, teamIds: [] });
       renderPanel();
-      expect(
-        within(teamGroup()).getByText(
-          `Every card in this ${noun} gets this team. Pick it once.`,
-        ),
-      ).toBeTruthy();
+      const described = document.getElementById(teamGroup().getAttribute("aria-describedby")!);
+      expect(described?.textContent).toBe(`Every card in this ${noun} gets this team.`);
+      expect(described?.className).toContain("sr-only");
     },
   );
 
@@ -2852,7 +2848,7 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
     ).toBeNull();
   });
 
-  it("the trigger's visible text is contained in its accessible name (SC 2.5.3), and the hint describes it", () => {
+  it("the trigger's visible text is contained in its accessible name (SC 2.5.3), and the description reaches it", () => {
     currentRow = makeRow({ level: "setName", teamIds: [] });
     renderPanel();
 
@@ -2863,12 +2859,12 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
     expect(name).toBe("Add set team");
     expect(name.includes(visible)).toBe(true);
 
-    // The hint reaches the trigger as well as the group: a screen-reader user
-    // arrives at the button before the sentence under it.
+    // The description reaches the trigger as well as the group: a
+    // screen-reader user hears that the pick reaches every card.
     const describedBy = trigger.getAttribute("aria-describedby");
     expect(describedBy).toBeTruthy();
-    expect(document.getElementById(describedBy!)?.textContent).toContain(
-      "pick the team once and every card in this set gets it",
+    expect(document.getElementById(describedBy!)?.textContent).toBe(
+      "Every card in this set gets this team.",
     );
     expect(teamGroup().getAttribute("aria-describedby")).toBe(describedBy);
   });
@@ -4348,21 +4344,21 @@ describe("SetAttributesPanel — Player on every card (NEO-528)", () => {
     expect(stub.getAttribute("data-expanded")).toBe("true");
   });
 
-  it("sits directly under Team, ahead of every other attribute", () => {
+  it("sits directly under League and Team, ahead of every other attribute", () => {
     currentRow = makeRow({ level: "insert", value: "Diamond Kings" });
     renderPanel();
     const stub = screen.getByLabelText(STUB);
     const team = screen.getByRole("group", { name: "Team" });
     // Team, then the section, with nothing between them.
     expect(team.compareDocumentPosition(stub) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // Team and then League (NEO-569: the set's leagues sit directly under its
-    // team) close the toggle's body (the `aria-controls` target, NEO-496),
-    // and the section follows that body: it stays outside so a running ledger
-    // survives a collapse.
+    // League and Team, side by side (NEO-569), close the toggle's body (the
+    // `aria-controls` target, NEO-496), and the section follows that body: it
+    // stays outside so a running ledger survives a collapse.
     const league = screen.getByLabelText("Set league row (stub)");
-    expect(team.nextElementSibling).toBe(league);
-    expect(team.parentElement?.lastElementChild).toBe(league);
-    expect(team.parentElement?.nextElementSibling).toBe(stub);
+    const pair = team.parentElement!.parentElement!;
+    expect(league.parentElement!.parentElement).toBe(pair);
+    expect(pair.parentElement?.lastElementChild).toBe(pair);
+    expect(pair.parentElement?.nextElementSibling).toBe(stub);
     // Every other attribute comes after it.
     const prefix = screen.getByLabelText("Value for Card prefix");
     expect(stub.compareDocumentPosition(prefix) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
@@ -4416,7 +4412,7 @@ describe("SetAttributesPanel — the League row (NEO-569)", () => {
 
   const STUB = "Set league row (stub)";
 
-  it("mounts under Team at the set and every set-side level below it, with the panel's word for the level", () => {
+  it("mounts beside Team at the set and every set-side level below it, with the panel's word for the level", () => {
     const cases: Array<[string, string]> = [
       ["setName", "Set"],
       ["variantType", "Variant"],
@@ -4436,14 +4432,35 @@ describe("SetAttributesPanel — the League row (NEO-569)", () => {
       expect(stub.getAttribute("data-ancestors")).toBe(
         "Baseball>2024>Topps>2024 Topps Chrome",
       );
-      // Directly after the Team row.
+      // League first, Team beside it: the pair's first and second cells.
       const team = screen.getByRole("group", { name: "Team" });
       expect(
-        team.compareDocumentPosition(stub) & Node.DOCUMENT_POSITION_FOLLOWING,
+        stub.compareDocumentPosition(team) & Node.DOCUMENT_POSITION_FOLLOWING,
       ).toBeTruthy();
-      expect(team.nextElementSibling).toBe(stub);
+      expect(stub.parentElement!.nextElementSibling).toBe(team.parentElement);
       unmount();
     }
+  });
+
+  it("lays League and Team side by side on the panel's own width, wrapping League above Team when narrow", () => {
+    currentRow = makeRow({ level: "setName" });
+    currentChain = makeChain("Baseball");
+    renderPanel();
+    const leagueCell = screen.getByLabelText(STUB).parentElement!;
+    const teamCell = screen.getByRole("group", { name: "Team" }).parentElement!;
+    const pair = leagueCell.parentElement!;
+    expect(teamCell.parentElement).toBe(pair);
+    // flex-wrap with a basis, never a viewport breakpoint: the panel is
+    // narrow inside the set builder's split view on any screen.
+    expect(pair.className).toContain("flex-wrap");
+    expect(pair.className).not.toMatch(/\b(sm|md|lg|xl):/);
+    for (const cell of [leagueCell, teamCell]) {
+      expect(cell.className).toContain("basis-64");
+      expect(cell.className).toContain("flex-1");
+      expect(cell.className).toContain("min-w-0");
+    }
+    expect(pair.firstElementChild).toBe(leagueCell);
+    expect(pair.lastElementChild).toBe(teamCell);
   });
 
   it("is not on sport, year or manufacturer rows", () => {

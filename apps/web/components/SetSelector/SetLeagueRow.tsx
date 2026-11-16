@@ -18,13 +18,13 @@ import { userFacingMessage } from "@/lib/errors/user-facing-message";
  * Where it is edited: the set and every set-side row below it (variant type,
  * insert, parallel). Nothing is copied down. A row below the set with no list
  * of its own uses the nearest one above it (`getSelectorOptionLeagues`'s
- * `inheritedFrom`), shown here in a dashed chip and said in words, so the
- * difference never rests on colour (SC 1.4.1). Changing an inherited list
+ * `inheritedFrom`), shown here in a dashed chip, with the chip list named
+ * "Leagues from above", so the difference never rests on colour (SC 1.4.1). Changing an inherited list
  * (adding one, or taking one away when there are two or more) gives the row
- * its own list, and says so: the hint before the change ("Adding or removing
- * one here gives this insert its own list"), the inherited chip's × ("Remove
- * NPB from this insert") and the toast after it ("… has its own leagues
- * now"). "Use the set's leagues" ("Use the leagues above" when the list
+ * its own list, and says so: the inherited chip's × ("Remove NPB from this
+ * insert") and the toast after it ("… has its own leagues now"). No hint
+ * line explains any of this (Jason: "too much text on the screen"); the
+ * only line is the one for a sport with no leagues to pick. "Use the set's leagues" ("Use the leagues above" when the list
  * comes from a nearer row) drops it again, and so does any change that
  * leaves the row's list the same as the one above: a copy of the list above
  * is never stored, so it never goes stale when the set's list changes. An
@@ -296,23 +296,14 @@ export default function SetLeagueRow({
     }, 0);
   };
 
-  let hint: string;
-  if (data.sportLeagues.length === 0) {
-    hint = "This sport has no leagues yet. Add them in Admin → Leagues first.";
-  } else if (isSet) {
-    hint =
-      shown.length > 0
-        ? "Every league this set's teams play in. Team pickers look here first."
-        : "No league yet. Add one so team pickers know where to look.";
-  } else if (inheriting && shown.length > 0) {
-    hint = `Using ${sourcePhrase}. Adding or removing one here gives this ${noun} its own list.`;
-  } else if (inheriting) {
-    hint = `No league yet. Add one here for this ${noun} alone, or on the set for everything in it.`;
-  } else if (above && above.length > 0) {
-    hint = `This ${noun} has its own leagues instead of ${sourcePhrase}.`;
-  } else {
-    hint = `This ${noun} has its own leagues.`;
-  }
+  // NEO-569 (Jason: "too much text on the screen"): a line only when
+  // something is off. The rest shows itself: dashed chips are inherited (and
+  // their list is named "Leagues from above"), a row's own list has the way
+  // back beside it, and the toasts say what each change did.
+  const hint =
+    data.sportLeagues.length === 0
+      ? "This sport has no leagues yet. Add them in Admin → Leagues first."
+      : null;
 
   const emptyMessage = atCap
     ? `That's the limit: ${MAX_SET_LEAGUES} leagues.`
@@ -325,7 +316,7 @@ export default function SetLeagueRow({
       ref={rowRef}
       role="group"
       aria-labelledby={labelId}
-      aria-describedby={hintId}
+      aria-describedby={hint ? hintId : undefined}
       className="flex flex-col gap-1.5 p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
     >
       <span id={labelId} className="text-[10px] uppercase tracking-wide text-ink-3">
@@ -391,7 +382,7 @@ export default function SetLeagueRow({
           openOnEmpty
           placeholder="Add a league"
           emptyMessage={emptyMessage}
-          describedBy={hintId}
+          describedBy={hint ? hintId : undefined}
           listMaxHeightClassName="max-h-48"
           inputGeometryClassName="py-1 pl-1.5 pr-7 text-xs"
         />
@@ -415,9 +406,11 @@ export default function SetLeagueRow({
           </button>
         </div>
       )}
-      <p id={hintId} className="text-xs text-ink-3">
-        {hint}
-      </p>
+      {hint && (
+        <p id={hintId} className="text-xs text-ink-3">
+          {hint}
+        </p>
+      )}
     </div>
   );
 }
