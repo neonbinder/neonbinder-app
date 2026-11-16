@@ -170,6 +170,54 @@ body is `{ error, error_class, diagnostic? }`, with no credential material.
   `services/fake-bsc/CONTRACT.md`, "Probe, drift and ops wiring"; verdict:
   `.github/scripts/bsc-probe-verdict.sh`.
 
+### POST /probe/ebay (NEO-555)
+
+The prod deploy gate's eBay leg and the daily eBay drift source, built like
+`/probe/bsc` (same Cloud Run IAM auth, same global limiter, its own one call a
+minute). Code: `src/routes/ebay-probe.ts` and `src/routes/ebay-probe-allowlist.ts`.
+
+- **Read-only by construction.** In prod it reads a real seller's account (eBay
+  has no separate prod test seller), so every eBay read goes through
+  `probeGet`, which accepts only an entry of the frozen
+  `EBAY_PROBE_ALLOWLIST` (GET, fixed host, path and query: rows 1, 3, 5, 6, 7,
+  10 GET, 13 with `limit=1`, 15 of the NEO-555 eBay surface) and takes no
+  path, query or body of its own. The only POST is `tokenGrant`: a
+  `client_credentials` or `refresh_token` grant to eBay's token endpoint
+  through the existing `fetchApplicationToken` / `refreshAccessToken`.
+  `tests/ebay-probe.test.mjs` fails on egress anywhere else in either module,
+  on any Secret Manager write or credential lock, and on any non-GET entry.
+- **Two legs.** The app leg (a `client_credentials` token, then the card
+  category's item aspects, row 7) is hard: its failure is `outcome:
+  "app_failed"`. The account leg (the seller's refresh token, then the
+  account reads) only warns: `outcome: "account_warning"` with
+  `accountLeg.outcome` `skipped_not_connected`, `credential_read_failed`,
+  `refresh_failed`, `ebay_unavailable` or `read_failed`.
+- **Which account.** Real target (no `NEONBINDER_FAKE_BSC_URL`; prod only,
+  elsewhere `409`): the body is ignored; the key is read from
+  `NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY` (an `ebay-credentials-<id>` key, set
+  on the prod deploy only; unset means the account leg is skipped) and the
+  app from `EBAY_ENVIRONMENT=production`, `EBAY_CLIENT_ID`,
+  `EBAY_CLIENT_SECRET`, `EBAY_RU_NAME`. The refresh is in memory only: the
+  minted token is never written back, no lock is taken, and a rotated refresh
+  token would be dropped. The user token is asked for with the `.readonly`
+  scopes first (`EBAY_READONLY_SCOPES`) and with the consented scopes when
+  eBay refuses those (`accountLeg.scopes`, and an
+  `ebay_probe_scope_fallback` log line). Fake target (`NEONBINDER_FAKE_BSC_URL`
+  set): the fake eBay at `<FAKE>/ebay/api|apiz/...` with the fake's fixed
+  public client and the fake BSC's caller key and ID token; the body may be
+  `{refreshToken}` (a fake refresh token), else the account leg is skipped.
+- **Pause.** On the real target the eBay pause flag
+  (`NEONBINDER_PAUSED_PLATFORMS`, site key `ebay`, the canary's lookup)
+  answers `outcome: "skipped_paused"` without calling eBay.
+- **Answer.** `{ebayTarget, outcome, appLeg, accountLeg, shapes, statuses,
+  hashes, steps, durationMs, detail?}`. `shapes` holds only each entry's
+  `shapePaths` (the fields NB's parsers read; buyer and ship-to data never),
+  and `shapes`, `statuses` and `hashes` are keyed by the fake's endpoint names,
+  so they post to `/__fake/drift-compare {marketplace: "ebay"}` unchanged
+  (`services/fake-bsc/CONTRACT.md`, "Drift"). The two hashes (rows 5 and 7)
+  are sha256 of the sorted, unique shipping-service codes and aspect names.
+  Never a value: no token, key, user id or eBay message.
+
 ### EasyPost postage routes
 
 Convex never holds a seller's EasyPost API key (NEO-20's credential boundary),
@@ -542,7 +590,8 @@ signing in again clears it.
 **Additive fields that did not bump the version.** `bscTarget` on `/health`
 (NEO-552) is informational: Convex never acts on it, and an older service
 simply omits it (CI's probe verdict reads a missing value as the wrong target).
-`POST /probe/bsc` is new and Convex never calls it.
+`POST /probe/bsc` is new and Convex never calls it. Neither does it call
+`POST /probe/ebay` (NEO-555); CI is its only caller.
 
 ### The mechanical check
 

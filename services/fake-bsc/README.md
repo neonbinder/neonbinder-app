@@ -4,12 +4,14 @@ A standing fake of BuySportsCards (BSC) that previews, worktree deployments and
 dev call instead of the real site (NEO-552). **It never contacts BSC.**
 Catalogue reads are replayed from recordings; everything else (sign-in,
 profile, seller sheet, listing writes, photo uploads, orders) is synthesised
-per account. `CONTRACT.md` is the interface every caller builds to; read it
+per account. It also fakes the eBay APIs NB uses (NEO-555, `<FAKE>/ebay/...`,
+CONTRACT.md "Fake eBay"); **it never contacts eBay either.** `CONTRACT.md` is the interface every caller builds to; read it
 first.
 
 ```
 Convex / browser service ──► <FAKE>/api/<BSC path>        replay or synthesis
                          ──► <FAKE>/identity/<B2C path>   fake Azure B2C sign-in
+                         ──► <FAKE>/ebay/{api,apiz,apim}/… fake eBay (tokens, seller, orders)
 tests / Convex testing   ──► <FAKE>/__fake/...            reset, faults, orders, misses
 recorder (a person)      ──► <FAKE>/__fake/recordings     sanitised catalogue answers
 ```
@@ -27,8 +29,9 @@ recorder (a person)      ──► <FAKE>/__fake/recordings     sanitised catalo
 | `src/synth/`, `src/state.ts` | Per-namespace state and the synthesised seller and order endpoints. |
 | `src/faults.ts` | Fault rules (429, 503, delay, hang, reset). |
 | `src/captures.ts`, `src/shape.ts`, `src/drift.ts` | Write captures, shape signatures and the drift check. |
+| `src/ebay/` | The fake eBay: routes, sealed OAuth tokens, per-seller state and synthesis, error ids, notification key, eBay drift and capture names. |
 | `src/identity/` | The B2C identity endpoints (separate owner; see CONTRACT.md "Identity"). |
-| `recorder/` | The local recorder: fills the catalogue from real BSC, and captures write shapes. |
+| `recorder/` | The local recorder: fills the catalogue from real BSC, and captures write shapes. `ebay-*.ts` are its eBay commands (below). |
 
 ## Gates
 
@@ -39,7 +42,9 @@ npm ci
 npm run build && npm test
 ```
 
-Tests run against `dist/` with `node --test`, on loopback only.
+Tests run against `dist/` with `node --test`, on loopback only; the eBay
+recorder tests stub `fetch`, so nothing reaches eBay. There is no lint script:
+`tsc` in strict mode with `noUnusedLocals`/`noUnusedParameters` is the lint.
 
 The server image builds `src/` only (`npm run build:server`,
 `tsconfig.server.json`); the recorder is never built into it.
@@ -345,3 +350,37 @@ listing in BSC's seller pages and delete or replace the image there, or
 (`{shapes: {<endpoint>: {<key.path>: <type>}}, requests?: {...}}`) and answers
 `{outcome: "ok" | "shape_drift" | "unrecorded pinned key", paths, endpoints}`.
 Recorded endpoints compare only allowlisted paths.
+
+With `{marketplace: "ebay", shapes, statuses?, hashes?}` the same endpoint
+compares the prod eBay probe (`services/browser`) instead: see CONTRACT.md
+"Fake eBay" → "Drift".
+
+## eBay recorder (local only)
+
+The fake's two recorded eBay reads (shipping services, item aspects) and the
+eBay capture shapes come from these commands. Each one dry-runs unless given
+`--yes`. Uploads need `FAKE_BSC_CALLER_KEY`, `FAKE_BSC_ADMIN_KEY` and an ADC
+identity that can mint the loader SA's ID token, the same as `record`.
+
+```bash
+# sandbox: credentials from a mode-600 JSON file outside any checkout
+#   {"clientId": "...", "certId": "...", "refreshToken": "..."}
+# or, without --creds-file, a hidden prompt
+node dist/recorder/cli.js ebay-record  --fake <url> --creds-file <path> [--misses <prefix>] [--yes]
+node dist/recorder/cli.js ebay-capture --fake <url> --creds-file <path> [--public-key-id <kid>] [--yes]
+
+# production (one real listing, ended and deleted in the same run)
+node dist/recorder/cli.js ebay-capture --prod                 # dry run: the 7 writes, no credentials read
+node dist/recorder/cli.js ebay-capture --prod --fake <url> --client-id <id> \
+  --cert-secret <name> --session-secret <name> --project <id> [--picture <file>] --yes
+
+# remove a capture listing a failed run left behind
+node dist/recorder/cli.js ebay-undo --prod <the four credential flags> --sku NBCAPTURE-PRD-<yyyymmdd> --yes
+node dist/recorder/cli.js ebay-undo --sandbox --creds-file <path> --sku NBCAPTURE-SBX-<yyyymmdd> --yes
+```
+
+Tokens come from the refresh grant only: the recorder never mints a token in
+the developer portal and never runs a consent. Credential values are never
+flags. Calls are paced at one a second, capped at 300 a run, never retried,
+and a run stops on the first 401, 429 or 5xx. CONTRACT.md "Recorder: eBay"
+and "Production capture" have the details and the guards.

@@ -101,7 +101,7 @@ afterEach(() => {
 
 describe("canary-pause constants", () => {
   it("PLATFORM_TO_SITE maps slugs to Convex site keys and is frozen", () => {
-    assert.deepEqual({ ...PLATFORM_TO_SITE }, { bsc: "buysportscards", sportlots: "sportlots" });
+    assert.deepEqual({ ...PLATFORM_TO_SITE }, { bsc: "buysportscards", sportlots: "sportlots", ebay: "ebay" });
     assert.ok(Object.isFrozen(PLATFORM_TO_SITE));
   });
 
@@ -413,7 +413,8 @@ describe("shouldSkipCanary: tries to break fail-open", () => {
 
   it("an unknown platform slug returns false without a mint or a fetch", async () => {
     const h = harness({ response: jsonResponse({ paused: ["buysportscards", "undefined"] }) });
-    for (const slug of ["ebay", "BSC", "", undefined, null]) {
+    // "ebay" is a known slug since NEO-555 (the eBay probe's pause check).
+    for (const slug of ["mercari", "BSC", "", undefined, null]) {
       assert.equal(await shouldSkipCanary(slug, h.deps), false, String(slug));
     }
     assert.equal(h.mintCalls.length, 0);

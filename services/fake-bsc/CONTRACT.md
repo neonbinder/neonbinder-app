@@ -45,6 +45,7 @@ first, then in code.
 - BSC API, mirroring `api-prod` paths: `<FAKE>/api/<same path>`.
 - BSC identity (Azure B2C), mirroring the real path shape:
   `<FAKE>/identity/<same path as the identity host>`.
+- eBay (NEO-555): `<FAKE>/ebay/api|apiz|apim/<same path>`; see "Fake eBay".
 - Test control: `<FAKE>/__fake/...`. Health: `<FAKE>/__fake/health` (never `/healthz`: Cloud Run reserves paths ending in `z` and answers 404 before the container sees them).
 
 ## Accounts and per-run isolation
@@ -230,7 +231,8 @@ so the ones the recorder could replay are also kept in the recordings bucket.
 
 `POST /__fake/faults {ns, rules:[{match:{method, pathTemplate, cardId?},
 kind: "429"|"503"|"delay"|"hang"|"reset", delayMs?, retryAfterS?, times?,
-ttlS?}]}`. Default TTL 10 minutes. Replaces
+ttlS?}]}`. eBay templates and the eBay-only kinds `ebayError` and
+`unauthorized`: "Fake eBay", "Faults on eBay paths". Default TTL 10 minutes. Replaces
 `NEONBINDER_TEST_BSC_STALL_CARD_IDS`. A `hang` holds the socket for at most
 2 minutes. Held sockets are capped per scope (namespace, prefix, or no
 namespace): 4 in a `hang`, 24 in a `delay` (`bscFault.slow` delays
@@ -799,3 +801,385 @@ the fake deploy; deploy a fake-aware browser revision (tagged, no traffic);
 point a worktree Convex at it; run setup and the BSC specs and load the misses;
 record the `probe-ci` pinned reads and the write captures; only then push the
 PR. Until recordings exist every probe and E2E BSC call answers 501.
+
+## Fake eBay (NEO-555)
+
+The same service also fakes eBay. **It never contacts eBay.** It lives in
+`src/ebay/`, shares the fake's auth, store, faults, misses, request key,
+shapes, drift and write captures, and holds its seller state in memory per
+namespace beside the BSC state. Nothing in Convex or the browser service
+points at it yet (that is the cutover, PR B); until then it only answers its
+own tests, the drift job and the recorder.
+
+### Paths, one per real eBay host
+
+| Real host | Fake path |
+|---|---|
+| `api.ebay.com` (REST APIs, the OAuth token endpoint, notification public key) | `<FAKE>/ebay/api/<same path>` |
+| `apiz.ebay.com` (Commerce Identity) | `<FAKE>/ebay/apiz/<same path>` |
+| `apim.ebay.com` (Commerce Media) | `<FAKE>/ebay/apim/<same path>` |
+
+`auth.ebay.com/oauth2/authorize` (the consent page) has no fake path: the
+consent is `POST /__fake/ebay/consent` (below). Every `/ebay` call needs
+rules 1 and 2 of "Who may call it" (Cloud Run IAM, the caller key, the
+verified ID token), exactly like `/api`. eBay's own `Authorization: Bearer`
+carries the fake eBay token, as on BSC.
+
+A path's **template** names its variable segments `:name`, prefixed with the
+host part: `ebay/api/sell/inventory/v1/offer/:offerId/publish`. Templates are
+what fault rules match, what misses and request logs show (never a SKU or an
+id), and, with the method in front (`POST ebay/api/sell/inventory/v1/offer/:offerId/publish`),
+the endpoint names that write captures and drift use.
+
+### Recorded vs synthesised
+
+| Row | Endpoint | Treatment |
+|---|---|---|
+| 5 | `GET ebay/api/sell/metadata/v1/shipping/marketplace/:marketplaceId/get_shipping_services` | Recorded (field allowlist `ebayShippingServices`) |
+| 7 | `GET ebay/api/commerce/taxonomy/v1/category_tree/:categoryTreeId/get_item_aspects_for_category` | Recorded (field allowlist `ebayItemAspects`) |
+| 14 | `POST ebay/api/identity/v1/oauth2/token` | Synthesised (sealed tokens, below) |
+| 15 | `GET ebay/apiz/commerce/identity/v1/user/` | Synthesised per namespace and seller |
+| 16 | `GET ebay/api/commerce/notification/v1/public_key/:publicKeyId` | Synthesised from a keypair derived from the admin key |
+| 1-4, 6, 8-13 | Account, location, media, inventory, offers, orders | Synthesised from the namespace's seller state |
+
+- Rows 5 and 7 are ordinary catalogue recordings: `src/sanitise.ts` holds
+  their allowlists (public metadata only: row 5 keeps every field of eBay's
+  `ShippingService` schema; row 7 keeps `localizedAspectName` and the
+  `aspectConstraint` fields and drops `aspectValues` and
+  `relevanceIndicator`, because a value list such as Player/Athlete runs to
+  thousands of names and NB reads none of them), the request key is the usual one over the fake path
+  (`ebay/api/...`, query included), and an unrecorded request answers 501
+  `x-nb-fake: unrecorded` and is listed as a catalogue miss, owned by the
+  user token's namespace, else the `x-nb-fake-ns` scope, else nobody. Adding
+  these two allowlists changed no BSC spec, so `SANITISE_ALLOWLIST_VERSION`
+  did not move. Both accept a user token or an app token.
+- The recorder may replay exactly two eBay requests (`src/replayAllowlist.ts`),
+  so only these are kept durably: `get_shipping_services` for `EBAY_US` with
+  no query, and `get_item_aspects_for_category` on tree `0` with the query
+  exactly `category_id=261328`. The BSC recorder refuses every eBay miss
+  (`not_a_bsc_request`), and the eBay recorder every BSC one.
+- Any other eBay request the fake has no model for answers 501
+  `x-nb-fake: unrecorded` and is listed as `needs-model` with its method and
+  template only. Never forwarded anywhere. The order list answers only the
+  filter NB sends (below); any other filter is `needs-model`.
+
+### Tokens (row 14)
+
+`POST ebay/api/identity/v1/oauth2/token`, form-encoded, `Authorization: Basic
+base64(client_id:client_secret)`. The fake's app is fixed and public
+(`FAKE_EBAY_CLIENT_ID`, `FAKE_EBAY_CLIENT_SECRET` in `src/ebay/tokens.ts`);
+a wrong pair answers 401 `{error: "invalid_client"}`.
+
+| Grant | Body | Answer (200) |
+|---|---|---|
+| `authorization_code` | `code`, `redirect_uri` (any non-empty RuName) | `{access_token, expires_in: 7200, refresh_token, refresh_token_expires_in: 47304000, token_type: "User Access Token"}` |
+| `refresh_token` | `refresh_token`, `scope?` | `{access_token, expires_in: 7200, token_type: "User Access Token"}` (the refresh token is not rotated, as on eBay) |
+| `client_credentials` | `scope?` (only `https://api.ebay.com/oauth/api_scope`) | `{access_token, expires_in: 7200, token_type: "Application Access Token"}` |
+
+- Refusals are RFC 6749 bodies `{error, error_description}`: a bad, spent or
+  expired code or refresh token is 400 `invalid_grant`; a scope outside NB's
+  five (`EBAY_SCOPES`) and their `.readonly` forms is 400 `invalid_scope`;
+  any other grant is 400 `unsupported_grant_type`; a missing field is 400
+  `invalid_request`.
+- Stateless and sealed, like the BSC identity: AES-256-GCM under an HKDF key
+  derived from `FAKE_BSC_ADMIN_KEY` (its own label), so a stored session
+  survives every restart. Tokens are opaque strings starting `v^1.1#fake#`.
+  A user token names `{ns, seller}`; `seller` is `main` or `alt` (a second
+  eBay account for the same NB user, the account-switch case). Access 2 h,
+  refresh about 18 months, codes 5 minutes and single use (per instance,
+  until a restart), app tokens 2 h.
+- `/__fake/reset` never drops tokens. `/__fake/reset-all` revokes every
+  token issued before it.
+- A seller call with no live user token answers 401 with eBay's OAuth body
+  `{errors: [{errorId: 1001, domain: "OAuth", category: "REQUEST", message:
+  "Invalid access token", ...}]}`. Rows 5, 7 and 16 also take an app token.
+
+### Consent and seller seeding (test controls, rules 1 and 2)
+
+- `POST /__fake/ebay/consent {ns, seller?: "main"|"alt"}` answers `{code,
+  expiresIn: 300}`: a single-use authorization code for that namespace's
+  seller, which the normal code grant exchanges. This replaces the eBay
+  consent page in fake mode (PR B's testing route
+  `/testing/fake-ebay/authorize` calls it and hands the code to the usual
+  completeConnect path).
+- `POST /__fake/ebay/seller {ns, seller?, optedIn?, fulfillmentPolicies?}`
+  seeds the seller's shipping policies, which NB never creates (NEO-423):
+  `fulfillmentPolicies` is 1-10 `{name, costType?: "FLAT_RATE"|"CALCULATED",
+  services: [{code, costCents?, freeShipping?, carrier?}] (1-5)}`. Seeding
+  policies opts the seller in unless `optedIn: false`. Answers `{ok,
+  fulfillmentPolicyIds: [...]}` in the order given. A name already held is
+  refused 409.
+- `POST /__fake/ebay/orders {ns, seller?, order}` (or `orders`, 1-20). See
+  "Orders".
+- `/__fake/reset {ns}|{prefix}` clears the eBay seller state of the selected
+  namespaces with the rest of their run state; tokens survive.
+
+### Identity, public key (rows 15, 16)
+
+- `GET ebay/apiz/commerce/identity/v1/user/`: `{userId, username,
+  accountType: "INDIVIDUAL", registrationMarketplaceId: "EBAY_US", status:
+  "CONFIRMED"}`. `userId` (`^[A-Za-z0-9._-]{1,64}$`) and `username` are
+  derived from the namespace and seller, so every namespace and each of its
+  two sellers is a distinct eBay account. No personal data is synthesised.
+- `GET ebay/api/commerce/notification/v1/public_key/:publicKeyId` (app token):
+  for the fake's one key id (`FAKE_EBAY_PUBLIC_KEY_ID`), `{algorithm:
+  "ECDSA", digest: "SHA1", key: "<PEM, P-256>"}`; any other id is 404. The
+  keypair is derived from `FAKE_BSC_ADMIN_KEY`, so it is stable across
+  restarts; `src/ebay/notificationKey.ts` can sign a notification body the
+  way eBay does (`X-EBAY-SIGNATURE`) for tests.
+
+### Seller state and the synthesised answers
+
+Shapes follow what NB reads (`apps/web/convex/adapters/ebaySeller.ts`,
+`lib/ebayListing.ts`, `listingDrainEbay.ts`, `listingSales.ts`, the browser
+service's `ebay-oauth.ts` and `ebay-notification.ts`) and never invent a key
+outside eBay's published response schemas (checked in
+`tests/ebay-oas.test.mjs` against `tests/fixtures/ebay-oas-response-paths.json`,
+extracted from eBay's OpenAPI contracts). Every error answer is eBay's
+`{errors: [{errorId, domain, category, message, longMessage?, parameters?}]}`.
+
+- **Programs.** A new seller is opted in to nothing. `POST
+  program/opt_in {programType: "SELLING_POLICY_MANAGEMENT"}` answers 200
+  `{}`, or 409 when already in (NB reads 409 as success).
+- **Policies.** `GET {payment,return,fulfillment}_policy?marketplace_id=EBAY_US`
+  answers `{total, limit, offset, <kind>Policies: [...]}` (empty when not
+  opted in: UNVERIFIED against eBay). `POST payment_policy` /
+  `return_policy` store the body's fields NB sends and answer 201 with the
+  policy and its id; not opted in is 400 errorId 20403; a name the seller
+  already holds is 400 errorId 20400 (UNVERIFIED: eBay's duplicate-name id is
+  not in the contract). Fulfillment policies come only from
+  `/__fake/ebay/seller`.
+- **Location.** `GET location/:key` is 404 (errorId 25804) until created;
+  `POST location/:key` creates (204) or, when the key exists, 400 errorId
+  25803 (what the sandbox answers, not the contract's 409);
+  `update_location_details` (204), `enable` (200 `{}`).
+- **Inventory items.** `bulk_create_or_replace_inventory_item` takes 1-25
+  requests and answers `{responses: [{statusCode, sku, locale}]}` per entry:
+  200 when every entry passed, 207 when some did, 400 (body still carrying
+  `responses`) when none did. An entry with no `product.imageUrls` fails with
+  errorId 25717; no `sku`, a SKU over 50 characters, a title over 80, a
+  missing `condition` or a bad quantity fail with errorId 25709. `GET
+  inventory_item/:sku` (404 errorId 25710 when absent), `DELETE
+  inventory_item/:sku` (204; also removes the SKU's offers and ends its
+  listing; 404 when absent), `GET inventory_item?limit=&offset=` (offset is
+  a PAGE number; `next` is a path carrying the next page's `offset`).
+- **Offers.** `bulk_create_offer` (1-25) answers per entry 201 with `offerId`
+  (status `UNPUBLISHED`), or errorId 25002 when the SKU already has an offer
+  (NB then adopts it through `GET offer?sku=`), or 25702 when the SKU has no
+  item. `PUT offer/:offerId` replaces the offer (204). `GET
+  offer?sku=&marketplace_id=&format=&limit=` answers `{total, size, limit,
+  offset, offers: [...]}`, 404 errorId 25713 when the SKU has none.
+  `POST offer/:offerId/publish` answers 200 `{listingId, warnings: []}` (the
+  same id when already live) once the item has a picture (else 25717), the
+  offer's three policies exist on the seller (fulfillment missing: 25007;
+  payment or return missing: 25002) and its location exists and is enabled
+  (else 25002). `POST offer/:offerId/withdraw` ends the listing (200
+  `{listingId, warnings: []}`); an offer that is not live answers 404 errorId
+  25713, which NB reads as already ended (UNVERIFIED). `bulk_update_price_quantity`
+  (1-25) answers one response per offer (`{statusCode, sku, offerId}`) and
+  updates the item's and offers' quantity and price.
+- **Media (production only on real eBay).** `POST
+  ebay/apim/commerce/media/v1_beta/image/create_image_from_file`, multipart
+  with one `image` part (JPEG, PNG, WebP or GIF; 4 MB), answers 201 with
+  `Location: /ebay/apim/commerce/media/v1_beta/image/<id>` (a path on the
+  fake, never an eBay host) and `{imageUrl, expirationDate}`. `imageUrl` is on
+  an NB-owned host, never eBay's:
+  `https://www.neonbinder.io/placeholder-fixtures/01-vorkle-front.jpg?fake-ebay-image=<id>`.
+  `GET image/:imageId` answers the same body, 404 for an unknown id. No image
+  part is 400 errorId 190202.
+- **Orders.** `GET ebay/api/sell/fulfillment/v1/order?filter=lastmodifieddate:[<ISO>..]&limit=&offset=`,
+  the exact filter NB sends (`offset` is a record offset). Answers `{href,
+  total, limit, offset, orders: [...], next?}` with the namespace seller's
+  orders whose `lastModifiedDate` is at or after the filter's time, oldest
+  first. Orders exist only once injected:
+
+```ts
+// POST /__fake/ebay/orders {ns, seller?, order} | {ns, seller?, orders: [...]} (1-20)
+type FakeEbayOrder = {
+  orderId?: string;          // default synthesised; posting an existing id replaces that order
+  paymentStatus?: "PAID" | "PARTIALLY_REFUNDED" | "FULLY_REFUNDED" | "PENDING" | "FAILED"; // default PAID
+  cancelled?: boolean;       // cancelStatus.cancelState "CANCELED"
+  fulfillmentStatus?: "NOT_STARTED" | "IN_PROGRESS" | "FULFILLED"; // default NOT_STARTED
+  creationDateMs?: number;   // default: the fake's clock
+  lines: Array<{             // 1-50
+    sku?: string;            // an NB SKU the seller has listed, an unknown one, or none
+    title?: string;          // the line's title (an unknown or missing SKU is shown by title, NEO-520)
+    quantity: number;        // 1-1000
+    priceCents?: number;     // unit price; default the offer's price, else 99
+    listingId?: string;      // default: the SKU's live listing, else synthesised
+  }>;
+};
+```
+
+  The answer is `{ok, orderIds, orders: [{orderId, lines: [{sku, listingId,
+  quantity, priceCents}]}]}`. Each line's `legacyItemId` is the SKU's
+  published `listingId`, so NB matches it to its link. A new order that is
+  PAID or PARTIALLY_REFUNDED and not cancelled lowers the SKU's offer and item
+  quantity by the line's quantity, as eBay does; a replaced order changes no
+  quantity again but moves `lastModifiedDate` to now (a later poll sees the
+  cancel or refund).
+
+### Faults on eBay paths
+
+The same `POST /__fake/faults {ns, rules}` (one rule list per namespace for
+both marketplaces; a post replaces it) with eBay templates
+(`ebay/api/sell/inventory/v1/offer/:offerId/publish`, or a `*` prefix such as
+`ebay/api/sell/*`). The existing kinds work unchanged. Two kinds are eBay
+only (their template must start `ebay/`):
+
+- `{kind: "ebayError", status: 400-599, errorIds: [1-10 ids]}`: answers that
+  status with eBay's error body carrying those ids (25002 publish, 25007
+  shipping, 25717 image, ...). On a bulk path it answers instead `{responses:
+  [...]}`, one entry per request entry carrying the ids and `statusCode:
+  status`, as eBay reports a refused batch.
+- `{kind: "unauthorized"}` (use `times`): answers 401 with eBay's OAuth body,
+  so NB refreshes its token and retries.
+
+A request is in a namespace's scope by its user token; with none (the token
+endpoint, an app-token call) only `x-nb-fake-ns` scopes it. There is no call
+gate on eBay paths. Request bodies: 2 MB for the bulk calls, 4 MB for the
+media upload, 64 KB for the token form, 256 KB for any other JSON; 413 past
+them.
+
+### Write and read captures (eBay)
+
+`POST /__fake/write-captures {endpoint, status, shape}` (admin) also takes
+the eBay endpoint names in `src/ebay/captures.ts` (`EBAY_CAPTURE_ENDPOINTS`):
+`"<METHOD> <template>"`, plus a variant after ` #` where one endpoint has two
+answers worth keeping (`... /publish #25002`, the sandbox's refusal;
+`.../opt_in #409`; `.../oauth2/token #refresh_token` and `#client_credentials`).
+Reads are captured the same way (status and shape, never a value). The fake
+checks each against its own synthesis like the BSC captures. **No eBay
+endpoint is on the required list** (`writeCaptures.missing` and Convex's
+`writeCaptureStatus` read only the BSC two); that is PR B.
+
+### Drift: `POST /__fake/drift-compare {marketplace: "ebay", ...}` (admin)
+
+The BSC body is unchanged (no `marketplace`, or `"bsc"`). The eBay body, which
+the browser service's `POST /probe/ebay` answer supplies:
+
+```ts
+{
+  marketplace: "ebay",
+  // endpoint name -> probe shape (the BSC probe dialect: "$" root, "[]", "{*}", "a|b")
+  shapes: { [endpoint: string]: { [keyPath: string]: string | string[] } },
+  // endpoint name -> the HTTP status the probe got; a non-2xx endpoint is not compared
+  statuses?: { [endpoint: string]: number },
+  // rows 5 and 7 only: endpoint name -> lowercase hex SHA-256
+  hashes?: { [endpoint: string]: string },
+}
+```
+
+Endpoint names are exactly (rows 1, 3, 5, 6, 7, 10, 13, 15):
+
+```
+GET ebay/api/sell/account/v1/program/get_opted_in_programs
+GET ebay/api/sell/account/v1/payment_policy
+GET ebay/api/sell/account/v1/return_policy
+GET ebay/api/sell/account/v1/fulfillment_policy
+GET ebay/api/sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services
+GET ebay/api/sell/inventory/v1/location/:merchantLocationKey
+GET ebay/api/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category
+GET ebay/api/sell/inventory/v1/offer
+GET ebay/api/sell/fulfillment/v1/order
+GET ebay/apiz/commerce/identity/v1/user
+```
+
+- The two hashes: for row 5 the `shippingServices[].shippingService` codes,
+  for row 7 the `aspects[].localizedAspectName` names; each list made unique
+  (non-empty strings only), sorted with JavaScript's default sort (UTF-16
+  code units), then `sha256_hex(utf8(JSON.stringify(list)))`.
+  `ebayCatalogueHash` in `src/ebay/drift.ts` is the one definition.
+- Rows 5 and 7 compare allowlisted paths against the recording of NB's own
+  request (the pinned requests above); no recording is `unrecorded pinned
+  key`, as on BSC. A hash that differs from the recording's is a **warning**,
+  never drift (the recordings come from the sandbox, whose metadata differs
+  from production's). The other rows compare the paths NB reads against the
+  fake's synthesis; a path missing from the probe is drift only when its
+  parent is present, never for an array's items.
+- Statuses: a row compares only a 2xx body, with two exceptions. The probe
+  reads the location (row 6) and the item (row 10) with keys that need not
+  exist, so a 404 there compares eBay's error envelope (`errors[].errorId`,
+  `domain`, `category`). Any other non-2xx is `not_compared` with a
+  `not_2xx` warning, never drift.
+- Answer: `{outcome: "ok"|"shape_drift"|"unrecorded pinned key", paths,
+  endpoints: [{endpoint, verdict, paths}], warnings: [{endpoint, kind:
+  "hash_mismatch"|"hash_unrecorded"|"not_2xx"}]}`. An unknown endpoint name is
+  `not_compared`.
+
+### Recorder: eBay (local only, never CI)
+
+Three commands of `recorder/cli.js`; the eBay client is
+`recorder/ebay-api.ts` (one client for both hosts, sandbox and production).
+Uploads to the fake need `FAKE_BSC_CALLER_KEY` and `FAKE_BSC_ADMIN_KEY` in
+the environment and an ID token for the loader SA from ADC, as for the BSC
+commands; the production dry run needs neither. eBay credentials stay in process
+memory; they are never logged, written or sent to the fake. Every eBay call
+is paced at one a second, at most 300 a run, no retry, and the run stops on
+the first 401, 429, 5xx, timeout or network error. It mints user tokens only
+with the refresh grant (never the developer portal, never a consent), one
+access token per run, plus one app token where row 16 needs it.
+
+- **Sandbox credentials:** `--creds-file <path>`, JSON `{clientId, certId,
+  refreshToken}`, a regular file owned by the user, mode 600 (no group or
+  other bits), at most 16 KB, outside any git checkout; else a prompt on
+  the terminal (Cert ID and refresh token hidden). Credential values are
+  never flags: `--cert-id`, `--refresh-token`, `--client-secret` and
+  `--token` are refused.
+- **`ebay-record --fake <url> [--creds-file <path>] [--misses <prefix>] [--yes]`**: reads rows 5
+  and 7 from `api.sandbox.ebay.com`, sanitises them with the allowlists and
+  uploads them as recordings. `--misses <prefix>` sends only those of the two
+  that the fake lists as misses for that prefix (or anonymously).
+- **`ebay-capture --fake <url> [--creds-file <path>] [--public-key-id <kid>] [--yes]`** (sandbox):
+  read captures (rows 1, 3 ×3, 6, 10 GET, 13 with `limit=1`, 15, 16 when a
+  key id is given, both token grants) and write captures (opt_in, payment and
+  return policy create, location create, update and enable, one bulk item,
+  one bulk offer, PUT offer, the publish refusal, DELETE inventory item, and
+  withdraw if the sandbox does publish). SKU `NBCAPTURE-SBX-<yyyymmdd>`,
+  policies `NBCAPTURE-SBX-<yyyymmdd>-pay|-ret`, location
+  `nbcapture-sbx-<yyyymmdd>`; all removed at the end (those deletes are not
+  captured). Dry run unless `--yes`.
+- **`ebay-capture --prod --fake <url> --client-id <id> --cert-secret <name>
+  --session-secret <name> --project <id> [--picture <file>] [--yes]`**
+  (Jason only): see "Production capture".
+- **`ebay-undo (--sandbox [--creds-file <path>] | --prod <the four
+  credential flags>) --sku NBCAPTURE-... [--yes]`**: withdraws the SKU's
+  live offer and deletes the item, then checks. Refuses any SKU outside its
+  environment's `NBCAPTURE-SBX-`/`NBCAPTURE-PRD-` prefix.
+
+#### Production capture (`ebay-capture --prod`)
+
+One real listing on Jason's production account, to capture the writes the
+sandbox cannot (publish, price update, withdraw, media). Credentials: his NB
+production session's refresh token and the production Cert ID, read with his
+own gcloud (`gcloud secrets versions access` run by the recorder, stdout kept
+in memory; secret names and project come from flags the private wrapper
+passes), plus the production client id. Refresh grant only.
+
+- SKU fixed to `NBCAPTURE-PRD-<yyyymmdd>` (UTC); any other value is refused.
+- Pre-checks, before anything is written: `GET inventory_item/<sku>` is 404,
+  `GET offer?sku=` has none, his payment, return and fulfillment policies and
+  his `neonbinder-main` location exist (read only; nothing is created and
+  there is no opt-in).
+- Default is a dry run that prints exactly the **7 requests that change the
+  account**: (1) image upload, (2) bulk item (one, qty 1), (3) bulk offer
+  (one, $999.99, his first payment, return and fulfillment policies), (4)
+  publish, (5) bulk price update (price only, to $999.98), (6) withdraw, (7)
+  DELETE inventory item. Reads (the pre-checks, `GET image`, the final
+  verification) are listed on one line, unnumbered. Writes only with `--yes`
+  AND the SKU typed back on the terminal.
+- Title `NB capture test listing - not for sale`, one synthetic NB
+  placeholder picture (NB's public fictional test card, or `--picture
+  <file>` passing the capture-write EXIF checks).
+- Once the bulk item is sent, a `finally` block removes what the run
+  made: withdraw (once publish was sent; an offer that is not live answers
+  404, read as already ended) and DELETE inventory item (which on eBay also
+  removes the item's offers and ends its listing), each at
+  most 3 tries (one refresh grant allowed if a try answers 401), then
+  verifies `GET offer?sku=` is empty and `GET inventory_item/<sku>` is 404.
+  On any failure it exits non-zero and prints, to the terminal only, the
+  listing id, the exact `ebay-undo --prod --sku ...` command and "end it in
+  Seller Hub".
+- Stores only `{endpoint, status, shape}` per write through
+  `/__fake/write-captures` as the loader SA, after the cleanup. Re-run only
+  when a PR changes publish, price-quantity, withdraw or media.

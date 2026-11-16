@@ -449,6 +449,23 @@ jobs:
             echo "::error::See NEO-415. Set the repo variables with gh variable set and add the secret version with gcloud secrets versions add ebay-client-secret."
             exit 1
           fi
+      # NEO-555: the account the prod eBay probe reads (POST /probe/ebay), named
+      # by the credential key of one connected eBay seller. UNSET IS FINE: the
+      # service then skips the probe's account leg (a warning, never a
+      # failure), and an empty value written to env_vars clears a key set by an
+      # earlier deploy. A set value must look like a credential key, which also
+      # keeps a stray comma or newline out of env_vars.
+      - name: Check the eBay probe account variable (optional)
+        env:
+          PROBE_KEY: ${{ vars.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY }}
+        run: |
+          set -uo pipefail
+          if [ -z "$PROBE_KEY" ]; then
+            echo "::notice::vars.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY is unset: the prod eBay probe will skip its account leg."
+          elif ! [[ "$PROBE_KEY" =~ ^ebay-credentials-[A-Za-z0-9_-]{1,128}$ ]]; then
+            echo "::error::vars.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY must be an ebay-credentials-<id> key (or unset)."
+            exit 1
+          fi
       - id: capture-prev
         name: Capture prod's currently-serving revision
         run: |
@@ -474,6 +491,7 @@ jobs:
             EBAY_CLIENT_ID=${{ vars.EBAY_CLIENT_ID_PRODUCTION }}
             EBAY_RU_NAME=${{ vars.EBAY_RU_NAME_PRODUCTION }}
             EBAY_ENVIRONMENT=production
+            NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY=${{ vars.NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY }}
           secrets: |
             EBAY_CLIENT_SECRET=ebay-client-secret:${{ steps.ebay.outputs.version }}
           no_traffic: true
@@ -549,6 +567,18 @@ jobs:
           TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
           PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" real
+      # NEO-555: the eBay gate, same tagged revision. Two legs inside the one
+      # call: the APP leg (client_credentials + a catalogue read) fails the
+      # deploy; the seller-ACCOUNT leg only warns. Also fails when the answer's
+      # ebayTarget is not "real". skipped_paused (eBay paused by an operator)
+      # passes with a warning. A 429 (the one-call-a-minute window) is waited
+      # out and retried, at most twice. This is a different instance from the
+      # one the daily bsc-drift eBay leg calls, so they do not share a window.
+      - name: eBay probe against the prod tagged URL (real)
+        env:
+          TARGET_URL: ${{ needs.deploy-prod.outputs.tagged_url }}
+          PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/ebay-probe.sh" real
       - name: Run SportLots login suite against prod tagged URL
         working-directory: services/browser
         env:

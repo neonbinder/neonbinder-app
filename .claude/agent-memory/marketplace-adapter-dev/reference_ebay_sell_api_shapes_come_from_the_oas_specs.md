@@ -1,6 +1,6 @@
 ---
 name: ebay-sell-api-shapes-come-from-the-oas-specs
-description: eBay's developer doc pages do not yield request/response schemas to a fetch; read shapes from each API's OpenAPI contract file; bulk Sell endpoints answer 400 with per-entry results; linked-out enums and loose metadata cost types
+description: eBay's developer doc pages do not yield request/response schemas to a fetch; read shapes from each API's OpenAPI contract file; bulk Sell endpoints answer 400 with per-entry results; linked-out enums, loose metadata cost types, mistyped aspects; OAS conformance fixtures for fakes
 metadata:
   type: reference
 ---
@@ -34,6 +34,16 @@ Quirks worth remembering when building on them:
 - The eBay drain's item `contentHash` decides whether an item is resent; any
   field the item body carries (package weight follows the price slot) must
   be in the hash, or a live listing never gets the change.
+- The Inventory contract types `product.aspects` as a string; the API sends
+  a name-to-values map. A conformance check over the contract must exempt
+  paths below it.
+- A fake or stub eBay should be checked against the contracts by extracting
+  each operation's 2xx key paths into a committed fixture (a python walk that
+  resolves `$ref`) and asserting every path a synthesised body carries is in
+  it: synthesis may carry fewer fields, never invent one.
+- Since delete ends the SKU's offers and listing, a stub used to test a
+  listing cleanup must model that, or a "cleanup could not finish" test only
+  goes red when the delete fails too.
 
 **How to apply:** mark every field that came from prose or memory rather than
 the contract as UNVERIFIED in a code comment and in the report.
