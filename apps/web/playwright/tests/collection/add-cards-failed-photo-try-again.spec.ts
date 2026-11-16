@@ -19,13 +19,20 @@
 // R7: writes only the account's own run (the seed cancels the account's open
 // runs first, for the active-run cap) and Main, which it reads but never
 // writes a copy into. Self-cleaning: the run is closed at the end
-// ("Done adding photos").
+// ("Done adding photos"), and `afterEach` discards any batch of the account's still
+// reading "running" (the seeded job holds a cap slot after a red body), so the next
+// spec on the worker does not meet the batch cap.
 //
 // R5: the one wait past 7 s is the fast service's answer to the retried photo:
 // a 404 answered at once, plus a cold fast instance's start (the fast service
 // allows itself 60 s per call, PREPROCESS_FAST_TIMEOUT_MS), doubled for the
 // queue. Every collector action runs at 7 s.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { discardIfStillOpen } from "../../support/placeholder-intake";
+
+test.afterEach(async ({ page }, testInfo) => {
+  await discardIfStillOpen(page, testInfo, { all: true });
+});
 
 /** The fast service's answer to a retried photo, cold start included. */
 const FAST_READ = 120_000;

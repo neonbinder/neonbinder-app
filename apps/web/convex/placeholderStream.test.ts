@@ -35,6 +35,7 @@ import { api, internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { PLACEHOLDER_STREAM_IDLE_MS } from "./placeholderPipeline";
 import { PLACEHOLDER_MAX_ENTRY_INDEX } from "./lib/placeholderObjects";
+import { BATCH_NOT_COLLECTING, isBatchNotCollecting } from "./lib/placeholderRefusals";
 
 /**
  * `vi.hoisted` because `vi.mock`'s factory is hoisted above every `const` in the
@@ -274,6 +275,32 @@ describe("startPlaceholderStream", () => {
     expect(result.jobId).toBeUndefined();
   });
 
+  test("two back-to-back starts make two distinct jobs and the third is refused by the cap", async () => {
+    // The intake page's double-delivery guard is a client state check; this is
+    // the server half: each start that gets through is its own job, and the
+    // cap (DEFAULT_MAX_ACTIVE_JOBS_PER_USER = 2) is what stops a third.
+    const t = convexTest(schema, modules);
+    const asA = t.withIdentity(USER_A);
+    const first = await asA.mutation(api.placeholderStream.startPlaceholderStream, {});
+    const second = await asA.mutation(api.placeholderStream.startPlaceholderStream, {});
+    const third = await asA.mutation(api.placeholderStream.startPlaceholderStream, {});
+
+    expect(first.started).toBe(true);
+    expect(second.started).toBe(true);
+    expect(second.jobId).not.toBe(first.jobId);
+    expect(third.started).toBe(false);
+    expect(third.reason).toMatch(/you already have 2 active batches \(limit 2\)/);
+    expect(third.jobId).toBeUndefined();
+
+    const jobs = await t.run(async (ctx) =>
+      ctx.db
+        .query("placeholderJobs")
+        .withIndex("by_user", (q) => q.eq("userId", USER_A.subject))
+        .collect(),
+    );
+    expect(jobs.map((j) => j.jobId).sort()).toEqual([first.jobId, second.jobId].sort());
+  });
+
   test("a collecting stream job blocks a zip batch from starting too", async () => {
     // The other direction of the same cap.
     const t = convexTest(schema, modules);
@@ -371,6 +398,27 @@ describe("allocateStreamEntry", () => {
     expect(await getImages(t, jobId)).toHaveLength(0);
   });
 
+  test.each(["processing", "pairing"] as const)(
+    "NEO-529: a %s job owned by someone else answers 'not found', never the not-collecting code or its status",
+    async (status) => {
+      // The ownership check must run BEFORE the status check, or the coded
+      // refusal becomes an oracle for whether another user's job exists and
+      // what state it is in. Seeded closed on purpose: a collecting victim
+      // would pass even with the checks in the wrong order.
+      const t = convexTest(schema, modules);
+      await seedJob(t, "job-victim", { mode: "stream", status });
+      const error = await allocate(t, "job-victim", "x.jpg", USER_B.subject).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(error).not.toBeNull();
+      expect(isBatchNotCollecting(error)).toBe(false);
+      expect((error as Error).message).toMatch(/job not found/i);
+      expect((error as { data?: { status?: unknown } }).data?.status).toBeUndefined();
+      expect(await getImages(t, "job-victim")).toHaveLength(0);
+    },
+  );
+
   test("refuses a zip job", async () => {
     const t = convexTest(schema, modules);
     await seedJob(t, "job-zip", { mode: "zip", status: "processing" });
@@ -386,6 +434,31 @@ describe("allocateStreamEntry", () => {
       expect(await getImages(t, "job-closed")).toHaveLength(0);
     },
   );
+
+  test.each(["processing", "pairing", "succeeded", "failed"] as const)(
+    "NEO-529: names a %s job's refusal with the BATCH_NOT_COLLECTING code, which survives prod redaction",
+    async (status) => {
+      const t = convexTest(schema, modules);
+      await seedJob(t, "job-closed", { mode: "stream", status });
+      const error = await allocate(t, "job-closed").then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(isBatchNotCollecting(error)).toBe(true);
+      expect((error as { data: unknown }).data).toMatchObject({ code: BATCH_NOT_COLLECTING, status });
+    },
+  );
+
+  test("NEO-529: the other refusals carry no BATCH_NOT_COLLECTING code", async () => {
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-zip", { mode: "zip", status: "processing" });
+    const notStream = await allocate(t, "job-zip").then(() => null, (e: unknown) => e);
+    const missing = await allocate(t, "no-such-job").then(() => null, (e: unknown) => e);
+    expect(notStream).not.toBeNull();
+    expect(missing).not.toBeNull();
+    expect(isBatchNotCollecting(notStream)).toBe(false);
+    expect(isBatchNotCollecting(missing)).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -512,6 +585,23 @@ describe("confirmPlaceholderImageUpload", () => {
     expect(enqueueCalls).toHaveLength(0);
   });
 
+  test.each(["processing", "pairing"] as const)(
+    "NEO-529: a confirm into someone else's %s job answers 'not found', never the not-collecting code or its status",
+    async (status) => {
+      const t = convexTest(schema, modules);
+      await seedJob(t, "job-victim", { mode: "stream", status });
+      const error = await confirm(t, "job-victim", 0, USER_B).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(error).not.toBeNull();
+      expect(isBatchNotCollecting(error)).toBe(false);
+      expect((error as Error).message).toMatch(/job not found/i);
+      expect((error as { data?: { status?: unknown } }).data?.status).toBeUndefined();
+      expect(enqueueCalls).toHaveLength(0);
+    },
+  );
+
   test("throws when unauthenticated", async () => {
     const t = convexTest(schema, modules);
     const jobId = await openStream(t);
@@ -537,6 +627,14 @@ describe("confirmPlaceholderImageUpload", () => {
     await seedImage(t, "job-closed", 0, "awaiting_upload");
     await expect(confirm(t, "job-closed", 0)).rejects.toThrow(/not collecting/i);
     expect(enqueueCalls).toHaveLength(0);
+  });
+
+  test("NEO-529: a confirm into a closed job carries the BATCH_NOT_COLLECTING code", async () => {
+    const t = convexTest(schema, modules);
+    await seedJob(t, "job-closed", { mode: "stream", status: "pairing" });
+    await seedImage(t, "job-closed", 0, "awaiting_upload");
+    const error = await confirm(t, "job-closed", 0).then(() => null, (e: unknown) => e);
+    expect(isBatchNotCollecting(error)).toBe(true);
   });
 });
 

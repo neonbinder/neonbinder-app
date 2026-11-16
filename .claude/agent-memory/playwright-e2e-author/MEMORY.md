@@ -59,6 +59,8 @@ Rules for never diagnosing timing, the 7 s budget, and the commit/stage boundari
 - [Custom-sport minted players](patterns_custom_sport_player_specs_skip_lookups.md) — no lookup, no clashes, birth-year forks, Back is an exit
 
 ## Collection, listing and photos
+- [Placeholder real-intake specs](patterns_placeholder_real_intake_specs.md) — NEO-529: drop on /print/placeholders, cap recovery via Recent runs, second-page tidy
+- [Shared fast pool read ceiling](patterns_shared_fast_pool_read_ceiling.md) — NEO-529: FAST_READ_CEILING for "All N photos read."; no fast-vs-heavy E2E spec
 - [Collection checklist, binders](patterns_collection_checklist_total_and_drawer.md) — totals, drawer, hidden empty levels, binder flakes, page names
 - [Collection optimistic writes](patterns_collection_optimistic_writes_wait_for_the_notice.md) — wait for the notice before leaving or pressing next
 - [BSC budget rules and the SportLots helper](patterns_bsc_budget_rules_and_sportlots_helper.md) — rules 1-3, expectStepWithSportLots, TSV mis-match trap
