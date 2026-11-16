@@ -54,11 +54,12 @@ import {
   columnSearch,
   columnSelection,
   drillToColdManufacturer,
+  expectAfterBscSync,
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
 import { editCardButton } from "../../support/cards";
-import { bscLookupOutcome, expectAfterMarketplace } from "../../support/marketplace-wait";
+import { bscLookupOutcome, expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   CHECKLISTS,
@@ -179,13 +180,20 @@ test(
     await columnOption(page, "Sets", SET).click();
     await expect(columnHeading(page, "Variant Types")).toBeVisible({ timeout: 20_000 });
     await expect(columnSelection(page, "Manufacturers", "Unknown")).toBeVisible();
-    await expect(columnOption(page, "Variant Types", "Base")).toBeVisible({ timeout: 60_000 });
+    // A set with ONE marketplace attached syncs its variant types from BSC alone, under the
+    // column's wait line (measured 1.3 s at most on the #487 merge-group run (GUIDE)), live or paused.
+    await expectAfterBscSync(page, columnOption(page, "Variant Types", "Base"), "Variant Types row Base");
 
     // The picker opens for the unmapped base; BSC offers it, SportLots does not carry it.
     await columnOption(page, "Variant Types", "Base").click();
     const picker = page.getByRole("dialog", { name: "Select Base Set" });
     await expect(picker).toBeVisible();
-    await expect(picker.getByRole("button", { name: "Confirm Base Set" })).toBeVisible({ timeout: 60_000 });
+    // The picker still asks SportLots for a candidate (60 s while it is live); paused, BSC's
+    // candidates alone under the picker's wait line (measured 0.8 s on the #487 merge-group run (GUIDE)).
+    await expectStepWithSportLots(page, picker.getByRole("button", { name: "Confirm Base Set" }), env, {
+      liveMs: 60_000,
+      what: "the Base picker's candidates",
+    });
     await expect(picker.getByRole("option", { name: /^BSC base candidate: / }).first()).toBeVisible();
     const slCandidates = picker.getByRole("option", { name: /^SportLots base candidate: / });
     if (!env.SL_PAUSED) {
@@ -230,7 +238,9 @@ test(
     // No pairing dialog: straight to the entity review.
     await expect(page.getByText(/^Match Cards/)).toBeHidden();
     const wizard = reviewWizard(page);
-    await expect(wizard).toBeVisible({ timeout: 60_000 });
+    // The fetch has landed above, so this is our own queueing of the batch's lookups: measured
+    // 3 ms on the #487 merge-group run (GUIDE), the standard 7 s.
+    await expect(wizard).toBeVisible();
     // NEO-335 Phase 2: the sitting starts at its first step, nothing decided
     // (on a name step x is the decided count plus one; y grows, so it is left free).
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);

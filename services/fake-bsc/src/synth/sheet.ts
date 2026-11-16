@@ -5,10 +5,12 @@
  *   profile   apps/web/convex/adapters/bscSeller.ts fetchBscSellerId and
  *             services/browser bsc-adapter attemptSellerProfile:
  *             `sellerProfile.sellerId`, `sellerProfile.sellerStoreName`.
- *   sheet     apps/web/convex/lib/bscSheetPlan.ts narrowBscSheetRow: a bare
- *             array of rows with `card.id`, `card.cardNo`, `cardId`,
- *             `condition`, `availableQuantity`, `price` (dollar string),
- *             `productType`, `sellerSku`, `sellerImgFront/Back`, `productId`.
+ *   sheet     apps/web/convex/lib/bscSheetPlan.ts narrowBscSheetRow, answered
+ *             as `{results: [...]}` like real BSC (`sheetAnswer`): rows with
+ *             `card.id`, `card.cardNo`, `cardId`, `condition`,
+ *             `availableQuantity`, `price` (dollar string), `productType`,
+ *             `productId`; a listed row also `sellerSku` and
+ *             `sellerImgFront/Back`, which a blank row does not carry.
  *   put       bscSeller.ts putBscListings: `{sellerId, listings}`; NB ignores
  *             the answer and reads the sheet back. The answer's shape is the
  *             real one, from a write capture: `{listings: [...], result}`.
@@ -99,8 +101,14 @@ function dollars(price: number): string {
 /**
  * One row per catalogue card for `condition`: the namespace's listing when it
  * has one, otherwise a blank template (quantity 0, price "0", a NEW productId
- * on every read, BSC's default images). "" and "all" answer templates only,
- * hiding listings, as BSC does.
+ * on every read). "" and "all" answer templates only, hiding listings, as BSC
+ * does.
+ *
+ * A blank template carries no `sellerSku`, `sellerImgFront` or
+ * `sellerImgBack` key at all: real BSC leaves them out of an unlisted row
+ * (the drift probe of an account with no listings, CONTRACT.md "The seller
+ * sheet"). A listed row carries all three, the images falling back to BSC's
+ * default-image strings when the listing has no photo (the PUT capture).
  */
 export function synthSheet(
   catalogueRows: readonly unknown[],
@@ -143,15 +151,17 @@ export function synthSheet(
         availableQuantity: 0,
         active: false,
         sellerId: state.sellerId,
-        sellerSku: null,
-        sellerImgFront: DEFAULT_IMG_FRONT,
-        sellerImgBack: DEFAULT_IMG_BACK,
         updatedTimestamp: bscTimestamp(nowMs),
         card,
       });
     }
   }
   return out;
+}
+
+/** The sheet's wire form: real BSC wraps the rows, `{results: [...]}`. */
+export function sheetAnswer(rows: Record<string, unknown>[]): { results: Record<string, unknown>[] } {
+  return { results: rows };
 }
 
 // ── PUT seller/bulk-upload ─────────────────────────────────────────────────

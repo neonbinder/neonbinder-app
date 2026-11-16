@@ -29,9 +29,21 @@
  *
  * This is the ONE implementation of that rule. A spec never writes its own loop
  * around the status, and never passes a flat `timeout` to a step that waits on
- * BuySportsCards (one signed-off exception: `bscReadCeiling`, below).
+ * BuySportsCards.
+ *
+ * NEO-552 follow-up (Jason, 2026-11-15: "we should be fast always from the bsc mock
+ * server"). BuySportsCards is the fake, so the rule for a BSC step is:
+ *  1. a step the screen's "Waiting on BuySportsCards" line covers uses
+ *     `expectAfterMarketplace` (or `pickAfterBscSync`), no flat number;
+ *  2. a BSC-only step with no such line gets the standard 7 s when its measured
+ *     longest run was 3.5 s or less, else ceil(longest + 7 s), the measurement
+ *     written at the site;
+ *  3. a step that also drives SportLots keeps its old ceiling while SportLots is
+ *     live and follows 1-2 while it is paused: `expectStepWithSportLots`, below,
+ *     the one place a budget branches on the operator switch.
  */
-import { errors, type Locator, type Page } from "@playwright/test";
+import { errors, expect, type Locator, type Page } from "@playwright/test";
+import type { FlowEnv } from "./env";
 import { test } from "./fixtures";
 
 /** What a step is allowed, apart from the marketplace's time (GUIDE hard rule 3). */
@@ -47,20 +59,6 @@ const SAMPLE_MS = 250;
  */
 const ANNOUNCE_AFTER_MS = 1_500;
 
-/**
- * A BSC read step's longer budget, a ceiling Jason signed off on 2026-11-05
- * (GUIDE hard rule 3). "Read" and "Double-check" are each one call to BSC's
- * seller sheet, so the step lasts as long as that call. Measured: usually 4-5 s,
- * 6.98 s in the CI run that went red with the step landing just past 7 s, up to
- * 9.6 s elsewhere; our own work in the step is well under a second. Every other
- * step keeps 7 s, "Send changes" included (those use `expectAfterMarketplace`).
- * Void it if a read step gains any work of ours, or holds more than one call.
- *
- * For `followRunToEnd` / `followRunToRest`'s `slow` argument.
- */
-export const bscReadCeiling = (label: string): number | undefined =>
-  /^(Read|Double-check) /.test(label) ? 15_000 : undefined;
-
 /** The status line a marketplace wait shows, by the platform's name. Contract: a locator, nothing waited for. */
 export function waitingOn(page: Page | Locator, platform: string): Locator {
   return page.getByRole("status").filter({ hasText: `Waiting on ${platform}` }).first();
@@ -73,21 +71,23 @@ export interface MarketplaceWaitOptions {
   cap?: number;
   /** What is being waited for, for the failure message and the report. */
   what?: string;
+  /** Wait for the target to be visible (default) or to go away. */
+  state?: "visible" | "hidden";
 }
 
 /**
- * Wait for `target` to be visible: 7 s of our own time plus the time the
+ * Wait for `target` to be visible (or, with `state: "hidden"`, to go away): 7 s of our own time plus the time the
  * "Waiting on <platform>…" status is on screen, capped. Throws, naming the
  * measurement, when our own share passes 7 s or the cap is reached.
  *
  * Contract: ENTRY the step that starts the wait has been taken. EXIT `target`
- * is visible. A `target` that resolves to several elements fails (strict mode),
- * as in any other assert.
+ * is visible (or hidden). A `target` that resolves to several elements fails
+ * (strict mode), as in any other assert.
  */
 export async function expectAfterMarketplace(
   page: Page,
   target: Locator,
-  { platform, cap = CAP_MS, what = "the step" }: MarketplaceWaitOptions,
+  { platform, cap = CAP_MS, what = "the step", state = "visible" }: MarketplaceWaitOptions,
 ): Promise<void> {
   const status = waitingOn(page, platform);
   const started = Date.now();
@@ -98,7 +98,7 @@ export async function expectAfterMarketplace(
   let countedUntil = started;
   for (;;) {
     try {
-      await target.waitFor({ state: "visible", timeout: SAMPLE_MS });
+      await target.waitFor({ state, timeout: SAMPLE_MS });
       note(platform, what, waited, Date.now() - started);
       return;
     } catch (error) {
@@ -130,6 +130,52 @@ export async function expectAfterMarketplace(
         `${what} was not on screen: ${seconds(elapsed)} passed, ${platform} held it ${seconds(waited)}, so our own time is ${seconds(elapsed - waited)} against ${seconds(OWN_TIME_MS)}`,
       );
     }
+  }
+}
+
+export interface SportLotsStepOptions {
+  /** The step's old ceiling, kept while SportLots is live (the step also drives a live SportLots round trip). */
+  liveMs: number;
+  /** What is being waited for, for the failure message and the report. */
+  what: string;
+  /**
+   * Paused-SportLots budget for a step the wait line does NOT cover (`statusLine: false`,
+   * rule 2): the standard 7 s by default, or ceil(longest measured + 7 s) with the
+   * measurement in a comment at the site. Ignored when the wait line covers the step.
+   */
+  pausedMs?: number;
+  /**
+   * Whether the wait line covers this step while it runs (rule 1). Default true: paused,
+   * the step is `expectAfterMarketplace`. False: paused, a plain `pausedMs` (default 7 s).
+   */
+  statusLine?: boolean;
+  /** Wait for the target to be visible (default) or to go away. */
+  state?: "visible" | "hidden";
+}
+
+/**
+ * A step that also drives SportLots (rule 3 of the header). While SportLots is live it
+ * keeps `liveMs`, its old ceiling, because a live SportLots round trip is not the
+ * fake's pace. While SportLots is paused the step is BuySportsCards only and follows
+ * rules 1-2: `expectAfterMarketplace` when the wait line covers it, else a plain
+ * `pausedMs` (7 s unless the site measured a longer BSC run). The ONE place a spec's
+ * BSC budget branches on `env.SL_PAUSED`.
+ *
+ * Contract: ENTRY the step that starts the wait has been taken. EXIT `target` is
+ * visible (or hidden, with `state: "hidden"`).
+ */
+export async function expectStepWithSportLots(
+  page: Page,
+  target: Locator,
+  env: Pick<FlowEnv, "SL_PAUSED">,
+  { liveMs, what, pausedMs = OWN_TIME_MS, statusLine = true, state = "visible" }: SportLotsStepOptions,
+): Promise<void> {
+  if (!env.SL_PAUSED) {
+    await (state === "visible" ? expect(target).toBeVisible({ timeout: liveMs }) : expect(target).toBeHidden({ timeout: liveMs }));
+  } else if (statusLine) {
+    await expectAfterMarketplace(page, target, { platform: "BuySportsCards", what, state });
+  } else {
+    await (state === "visible" ? expect(target).toBeVisible({ timeout: pausedMs }) : expect(target).toBeHidden({ timeout: pausedMs }));
   }
 }
 

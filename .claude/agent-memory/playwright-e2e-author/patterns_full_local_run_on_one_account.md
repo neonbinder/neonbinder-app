@@ -1,6 +1,6 @@
 ---
-name: full-local-run-on-one-account
-description: What goes red only because a whole-suite local run puts every spec on ONE worker account and one seed, and how to separate it from real reds
+name: patterns_full_local_run_on_one_account
+description: What goes red only because a whole-suite local run puts every spec on ONE worker account and one seed; keep failure artifacts with --output
 metadata:
   type: pattern
 ---
@@ -36,3 +36,11 @@ spreads over 8 accounts onto one. Reds that are the run, not the product:
 Reading a failure's trace without the viewer: `unzip trace.zip`, then the `*.trace`
 ndjson (`before`/`after` actions with `startTime`) and `*.network` (`_monotonicTime`,
 `time`) share one clock; `screencast/*.jpeg` frames are timestamped in the file name.
+
+## Keep failure artifacts
+
+`npx playwright test` clears `playwright/results/` at the start of every run, so a red you want to diagnose is gone after the next command (even a different spec or project).
+
+**Why:** the "never diagnose timing first" rule needs the screenshot and `error-context.md`; losing them forces a reproduction before any theory.
+
+**How to apply:** when chasing an intermittent red, run with `--output=<scratchpad>/outN` and read the artifacts from there before launching any other run.

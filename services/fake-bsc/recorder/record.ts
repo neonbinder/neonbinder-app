@@ -70,6 +70,7 @@ export type StopReason =
   | "declined";
 
 export interface RecordDeps {
+  /** Handed to `fake.misses`: a deployment prefix (the CLI's `--all` passes a source that ignores it). */
   prefix: string;
   watch: boolean;
   fake: {

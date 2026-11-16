@@ -54,10 +54,21 @@ Reference specs that show the patterns below:
    longer waits, each passed on that one call as `toBeVisible({ timeout: 60_000 })`
    and commented at the site with which exception it is:
    - a step that directly drives a live SportLots round trip on data that is
-     not pre-synced (BuySportsCards is the fake since NEO-552: deterministic,
-     so its steps get the standard 7 s; the longer waits on BSC steps in older
-     specs and helpers predate it and come down once a green run has measured
-     them, never on a guess);
+     not pre-synced. BuySportsCards is the fake since NEO-552: deterministic, and
+     Jason (2026-11-15: "we should be fast always from the bsc mock server")
+     approved bringing every BSC wait down to its pace. The rule for a BSC step:
+     (1) a step the screen's "Waiting on BuySportsCards" line covers uses
+     `expectAfterMarketplace` / `pickAfterBscSync`, no flat number; (2) a BSC-only
+     step with no such line gets the standard 7 s when its longest measured run was
+     3.5 s or less, else ceil(longest + 7 s), the measurement in a comment at the
+     site; (3) a step that ALSO drives SportLots keeps its old ceiling while
+     SportLots is live and follows (1) and (2) while it is paused, through
+     `expectStepWithSportLots` (`support/marketplace-wait.ts`), the one place a
+     budget branches on `env.SL_PAUSED`. Never invent a number: a measurement from
+     a green run, plus 7 s. The measurements in the site comments ("measured on
+     the #487 merge-group run (GUIDE)") come from the #487 merge-group run,
+     GitHub Actions run 43725066956. If a tightened step goes red in CI, restore that one
+     site to its longest measured run plus 7 s; never revert the sweep;
    - the seed's cold syncs (`setup.spec.ts` is exempt as a class: it is a
      data-loading track, and its ceilings are the measured COLD-path values.
      A measurement means nothing until you know which branch, warm or cold,
@@ -66,7 +77,7 @@ Reference specs that show the patterns below:
    - the one live Wikidata proof (`player-live-wikidata-enrichment`);
    - a ceiling Jason has signed off, with the date, the measurement and what
      would void it recorded in the spec's own comment (`SELLER_ACCOUNT_CAP_MS`,
-     240 s, is one: see "The seller account" under Worker-state seeding).
+     60 s, is one: see "The seller account" under Worker-state seeding).
    Never invent a number, never raise one because a run was slow.
 4. **No sleeps, no settle waits (R10).** No `waitForTimeout`, no
    `waitForLoadState("networkidle")`, no polling loops around `isVisible`.
@@ -244,8 +255,15 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   (`slow`, `tooManyRequests`, `unavailable`, `hangs`, `dropsConnection`), and the
   `BscFake` class behind the `bscFake` fixture (`setFaults`, `addOrder`, `clear`;
   teardown is automatic). See "BuySportsCards is the fake" under Worker-state seeding.
+- `support/marketplace-wait.ts` (NEO-487, NEO-552): `expectAfterMarketplace(page, target,
+  { platform, what, state? })` (7 s of our own time plus every second the "Waiting on
+  <platform>" line is up; a hard cap of 180 s), `expectStepWithSportLots(page, target, env,
+  { liveMs, what, pausedMs?, statusLine?, state? })` (a step that also drives SportLots: `liveMs`
+  while it is live, the marketplace rule while it is paused), `waitingOn`, and
+  `bscLookupOutcome`. There is no per-step BSC ceiling any more (`bscReadCeiling` is gone).
 - `support/credentials.ts`: `openBscCredentials(page)` (opens the page, no Test press; the seed uses it), `loginToBsc(page)`, `loginToSportLots(page, env)`,
-  `LIVE_LOGIN`, the BSC sign-in seed pair (`removeBscSignIn`,
+  `LIVE_LOGIN` (SportLots' live login only: 30 s; BSC steps take the standard 7 s), `SEED_SIGN_IN`
+  (the BSC seed hop, 21 s: measured 13.4 s plus 7 s), the BSC sign-in seed pair (`removeBscSignIn`,
   `saveBscSignIn`) and eBay's (`saveEbayConnection`, `removeEbayConnection`,
   `expectEbayHookedUp`, which FAILS a spec loudly, naming the missing setup,
   when the deployment has no eBay wiring; NEO-415).
@@ -778,19 +796,22 @@ How a spec handles it, all in `support/collection.ts`:
   press is held).
 - `followRunToRest(platform, run, settled, slow, marketplace)` with `marketplace` given
   waits for the claim with `expectAfterMarketplace(..., { cap: SELLER_ACCOUNT_CAP_MS })`:
-  7 s of our own time plus every second the wait line is up, and a hard stop at 240 s.
+  7 s of our own time plus every second the wait line is up, and a hard stop at 60 s.
   Pass the marketplace on every press that could be the worker's first run; a
   press after a run has already landed in the same spec may omit it. Without it
   (eBay) the claim is the plain 7 s.
-- `SELLER_ACCOUNT_CAP_MS` (240 s) is a ceiling Jason signed off on 2026-11-13,
-  derived from the product's own read chain: the third try lands 210 s after the
-  chain starts (30 + 60 + 120 s), plus 20 s for the try's read and 7 s of our own
-  time. It was sized against the real BSC's worst stall (150 s); the fake never
-  stalls beyond a spec's own 15 s hold, so a green run will show a wait far below
-  it. **Void if the read's delays change** (`BSC_SELLER_ID_FETCH_DELAYS_MS`,
-  convex/bscSellerId.ts). Past it the spec is red whatever the status says; whether
-  to tighten it once a green fake run has measured the wait is Jason's call, never
-  a number to change here.
+- `SELLER_ACCOUNT_CAP_MS` (60 s) is the claim wait's hard stop. Jason signed off a 240 s
+  ceiling on 2026-11-13, sized against the real BSC's worst stall (150 s) and all three
+  background tries (30 + 60 + 120 s); he approved tightening every BSC wait to the fake's pace
+  on 2026-11-15. The fake answers the seller profile at once and never stalls, so the first
+  background try (30 s after the chain starts) lands the account: 30 s, plus the 20 s one
+  try's read may hold, plus 7 s of our own time, is 57 s, rounded up to 60 s. Measured on the
+  merge-group run: the one press of four that met the wait was held 20.3 s. The two BSC
+  listing specs hold the profile read 15 s on purpose (`bscFault.slow`), which lands the
+  account about 45 s after the save, inside the cap. **Void if the read's delays change**
+  (`BSC_SELLER_ID_FETCH_DELAYS_MS`, convex/bscSellerId.ts), if the read's 20 s timeout changes,
+  or if a spec holds the profile read past 20 s. Past the cap the spec is red whatever the
+  status says.
 - The Future Stars failure hook walks its zeroing press the same way (`walkForCleanup`
   around `followRunToRest`, marketplace passed), so a hook that meets the wait can spend
   up to the cap on each of its three tries. A hook only runs after the body wrote a
@@ -1131,6 +1152,13 @@ npx playwright test --project=setup --retries=0
 npx playwright test --project=bootstrap --retries=0
 npx playwright test --project=e2e --no-deps <path-substring>
 ```
+
+**Run `setup` and `bootstrap` first, locally, before the spec you are checking.** The fake
+BuySportsCards cold-starts: the first BSC step of a deployment (its first token, 7.5-9 s
+measured at the seed) can take longer than 7 s, and the BSC budgets are sized for a warm
+fake. A spec run on a deployment that has not just been through `setup` and `bootstrap` can
+fail its first BSC step on the cold start alone. That is the local order, not a licence to
+raise a budget: run them, then run the spec.
 
 A worker with no `TEST_EMAIL_<n>` falls back to `TEST_EMAIL`, so a different
 worker number does not give you a different user. `@marketplace-seller` specs
