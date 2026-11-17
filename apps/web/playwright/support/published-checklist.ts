@@ -402,7 +402,9 @@ function csvWithExtraRows(name: ChecklistName, extra: readonly ChecklistRow[]): 
  * `extraRows` (NEO-574) uploads the file with those rows appended. Each must carry
  * a number the marketplace does not list for the set (and the file does not hold):
  * a checklist-only row, so the facts' `rows` grow by them and `matched` does not
- * (a checklist-only row is not a card until it is kept in Match Cards).
+ * (a checklist-only row is not a card until it is kept in Match Cards). Once kept
+ * and saved, each is a card its checklist row gives a team, so the line the save
+ * lands with counts them: N there is `matched` plus the kept rows (measured NEO-574).
  */
 export async function usePublishersChecklist(
   page: Page,

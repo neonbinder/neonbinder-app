@@ -40,6 +40,11 @@ const SET_YEAR = "1995";
  */
 const PREFILL_PLAYER = "Scott Brower";
 const OTHER_TEAM = "Dallas Stars";
+/** Two checklist-only rows for the prefill player, kept in Match Cards: one on the club, one not. */
+const EXTRA_ROWS = [
+  { number: "901", player: PREFILL_PLAYER, team: CARD_TEAM },
+  { number: "902", player: PREFILL_PLAYER, team: OTHER_TEAM },
+] as const;
 
 // NEO-574 rides this fixture too: the career form opens PREFILLED with the team most of the
 // player's own cards print and the set's year, offers his other card teams as quick picks
@@ -56,10 +61,7 @@ test(
     await fetchOneMarketplaceSetChecklistToWizard(page, env, {
       set: SET,
       checklist: CHECKLISTS.memphisRiverKings,
-      extraRows: [
-        { number: "901", player: PREFILL_PLAYER, team: CARD_TEAM },
-        { number: "902", player: PREFILL_PLAYER, team: OTHER_TEAM },
-      ],
+      extraRows: EXTRA_ROWS,
     });
     const wizard = reviewWizard(page);
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
@@ -105,6 +107,9 @@ test(
     // Back to the club by hand, and + Add: it is staged, and the form prefills the next team
     // not yet added, the NHL club, with no quick pick left.
     await careerName.fill(CARD_TEAM);
+    // Typing opens the existing-team suggestions over the row; take the club from them.
+    await wizard.getByRole("listbox", { name: "Existing team suggestions" }).getByRole("option", { name: `Use ${CARD_TEAM}` }).click();
+    await expect(careerName).toHaveValue(CARD_TEAM);
     await wizard.getByRole("button", { name: "Add career team" }).click();
     await expect(staged.getByText(new RegExp(`^${CARD_TEAM} \\(${SET_YEAR}`))).toBeVisible();
     await expect(careerName).toHaveValue(OTHER_TEAM);
@@ -159,9 +164,12 @@ test(
     await expect(wizard.getByText("New players and teams", { exact: true })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, summary" });
     await confirmSave.click();
-    await expect(page.getByText(/Saved [0-9]+ cards/)).toBeVisible();
-    // The result line stays on screen after the save too.
-    await expectTeamsFromChecklist(page, checklistFacts(CHECKLISTS.memphisRiverKings));
+    // The result line stays on screen after the save too. The two kept checklist-only rows are
+    // cards now, each with its checklist row's team, so the line counts them with the matched ones.
+    const base = checklistFacts(CHECKLISTS.memphisRiverKings);
+    const saved = base.rows + EXTRA_ROWS.length;
+    await expect(page.getByText(`Saved ${saved} cards.`)).toBeVisible();
+    await expectTeamsFromChecklist(page, { ...base, matched: base.matched + EXTRA_ROWS.length });
 
     // The staged team is now a real row in Team Management.
     await page.goto("/admin/teams");

@@ -280,7 +280,8 @@ test(
     const lineHelton = careerLine(page, "Todd Helton", FIXTURE_TEAM);
     await expect(careerHeading).toBeVisible();
     await expect(lineRockies).toBeVisible();
-    // Six catalogue players on the linked club (measured) and P's two uncovered cards.
+    // Six catalogue players on the linked club (all six on its eight BSC cards that resolve: the
+    // other two names are unknown and skipped) and P's two uncovered cards (measured NEO-574).
     await expect(careerHeading).toHaveText("Career check · 8 to look at");
     await expect(lineMarlins).toBeVisible();
     await expect(lineWright).toBeVisible();
@@ -288,10 +289,13 @@ test(
     // #901 is P on the club his stint covers: no line for it.
     await expect(careerLine(page, scaffold, FIXTURE_TEAM)).toHaveCount(0);
     await expect(wizard.getByText(/#901\b/)).toHaveCount(0);
-    const itemOf = (line: Locator) => wizard.getByRole("listitem").filter({ has: line });
-    await expect(itemOf(lineRockies).getByText(`No Rockies in the career by ${SET_YEAR}.`, { exact: true })).toBeVisible();
-    await expect(itemOf(lineRockies).getByText("Cards #902", { exact: true })).toBeVisible();
-    await expect(itemOf(lineMarlins).getByText(`No Marlins in the career by ${SET_YEAR}.`, { exact: true })).toBeVisible();
+    // A line's list item, found by the line's group. The inner locator of `has` is matched INSIDE
+    // the item, so it is the bare group (`page.getByRole`), not the wizard-rooted `careerLine`.
+    const itemOf = (player: string, team: string) =>
+      wizard.getByRole("listitem").filter({ has: page.getByRole("radiogroup", { name: `${player} on ${team}`, exact: true }) });
+    await expect(itemOf(scaffold, ROCKIES).getByText(`No Rockies in the career by ${SET_YEAR}.`, { exact: true })).toBeVisible();
+    await expect(itemOf(scaffold, ROCKIES).getByText("Cards #902", { exact: true })).toBeVisible();
+    await expect(itemOf(scaffold, MARLINS).getByText(`No Marlins in the career by ${SET_YEAR}.`, { exact: true })).toBeVisible();
     // Every line opens on "Keep as is", so one Next would pass the screen writing nothing. Each
     // answer is on screen at phone width too (e2e-mobile, 412 px): scrolled to, in the viewport.
     for (const line of [lineRockies, lineMarlins, lineWright, lineHelton]) {
@@ -310,11 +314,15 @@ test(
     await expect(wizard.getByRole("spinbutton", { name: `From year for ${scaffold}, ${ROCKIES}` })).toHaveValue(SET_YEAR);
     const toRockies = wizard.getByRole("spinbutton", { name: `To year (optional) for ${scaffold}, ${ROCKIES}` });
     await expect(toRockies).toHaveValue("");
-    // Years that are not a stint hold Next, and the footer says why.
+    // Years that are not a stint hold Next. A press on the held Next (Enter on it, as the checklist
+    // step's spec presses its own) is refused: the footer says why and focus goes back to the years.
     await toRockies.fill("1990");
     await expect(nextStepButton(page)).toBeDisabled();
-    // The footer's status line; the field's own hint says it in other words.
-    await expect(wizard.getByText("Fix the years first — then Next.", { exact: true }).first()).toBeVisible();
+    await nextStepButton(page).focus();
+    await page.keyboard.press("Enter");
+    await expect(wizard.getByText("Fix the years first — then Next.", { exact: true })).toBeVisible();
+    await expect(careerHeading).toBeVisible();
+    await expect(wizard.getByRole("spinbutton", { name: `From year for ${scaffold}, ${ROCKIES}` })).toBeFocused();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check, Next held by the years" });
     await toRockies.fill("1997");
     await expect(nextStepButton(page)).toBeEnabled();
@@ -335,7 +343,7 @@ test(
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check, player search open" });
     await playerSearch.fill(scaffold);
     await wizard.getByRole("option", { name: `Link to ${scaffold}` }).click();
-    await expect(itemOf(lineWright).getByText(`${scaffold} played for the Ali${T}.`, { exact: true })).toBeVisible();
+    await expect(itemOf("Jamey Wright", FIXTURE_TEAM).getByText(`${scaffold} played for the Ali${T}.`, { exact: true })).toBeVisible();
 
     // #22: "Fix card's team" -> the Marlins, a club Todd Helton never played for, so the re-check
     // asks again about HIS career (the nested prompt). His career is not this spec's to write: the
@@ -349,7 +357,7 @@ test(
     await wizard.getByRole("option", { name: `Link to ${MARLINS}` }).click();
     await expect(wizard.getByRole("button", { name: "Pick another team for Todd Helton" })).toBeVisible();
     await expect(
-      itemOf(lineHelton).getByText(`No Marlins in Todd Helton’s career by ${SET_YEAR} either.`, { exact: true }),
+      itemOf("Todd Helton", FIXTURE_TEAM).getByText(`No Marlins in Todd Helton’s career by ${SET_YEAR} either.`, { exact: true }),
     ).toBeVisible();
     const heltonFollowUp = wizard.getByRole("radiogroup", { name: "Career for Todd Helton" });
     await expect(heltonFollowUp.getByRole("radio", { name: "Keep as is" })).toBeChecked();

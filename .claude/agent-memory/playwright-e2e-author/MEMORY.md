@@ -80,3 +80,4 @@
 - [Local run backend, Vite, previews](patterns_local_run_backend_and_vite.md) — function-spec check, one Vite per worktree, CI seed resets
 - [BSC budget rules and the SportLots helper](patterns_bsc_budget_rules_and_sportlots_helper.md) — rules 1-3, expectStepWithSportLots, TSV mis-match trap
 - [NEO-574 career check step](patterns_career_check_step_neo574.md) — handles, advanceToSave guard 5, prefill, both sides checked, 6b year-rule staging
+- [Planted break in convex/ code](reference_planted_break_on_convex_code.md) — linked-worktree copy named like the ticket; script pushes it; frozen wrapper

@@ -60,6 +60,22 @@ Fixture limits:
   drops him from the +-2 year survivors.
 - A red that stops between a fetch and Cancel leaves its review batch open; the next fetch
   RESUMES it, and a resumed batch with no decisions still reads "Step 1 of N", so a spec's
-  "not Step 1 -> discard" guard misses it and walks a stale batch. Re-seed after such a red.
+  "not Step 1 -> discard" guard misses it and walks a stale batch. The batch's rows are frozen
+  at its creation, so e.g. a pick step's candidate labels still show a stint the spec's start
+  cleanup has since removed (seen on same-name after a planted-break red). Re-seed after such a
+  red, or run the spec once more before reading anything into a second red.
 - Writes to a career must land on a per-worker player: "Wrong player" -> pick it ->
   the follow-up "Add to career" writes to THAT player, never to the catalogue player.
+
+Measured on the first full run (NEO-574):
+- The blocked-Next status ("Fix the years first — then Next.") shows only AFTER a press on the
+  held Next: focus Next, press Enter, then assert the status (once, no `.first()` needed) and
+  that focus went to the bad line's From year. `toBeDisabled()` alone proves the hold.
+- Typing in "Career team name" opens the "Existing team suggestions" listbox over the row, and
+  it intercepts the click on "+ Add". Pick `option "Use <team>"` first, then + Add.
+- Checklist-only rows kept in Match Cards are cards with a team after the save: the line the
+  save lands with counts them ("Teams from your checklist: N" = `facts.matched` + kept rows,
+  and "Saved <rows + kept> cards."). Before Confirm, N is still `facts.matched`.
+- `container.getByRole("listitem").filter({ has: X })`: X is matched INSIDE each item, so build
+  it from `page` (`page.getByRole("radiogroup", ...)`), not from the container-rooted helper
+  (`careerLine` is rooted at the wizard and matches nothing inside a list item).
