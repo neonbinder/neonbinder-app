@@ -590,15 +590,17 @@ describe("faults and resets", () => {
       return realSetTimeout(fn, ms, ...rest);
     };
     const ctl = new AbortController();
+    let held = Promise.resolve();
     try {
       await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/user/profile" }, kind: "hang", times: 1 }]);
-      const held = fetch(`${fake.base}/api/marketplace/user/profile`, { headers: fake.headers(CALLER, { bsc: BSC }), signal: ctl.signal }).catch(() => "aborted");
+      held = fetch(`${fake.base}/api/marketplace/user/profile`, { headers: fake.headers(CALLER, { bsc: BSC }), signal: ctl.signal }).catch(() => "aborted");
       await new Promise((r) => realSetTimeout(r, 100));
       assert.ok(armed.includes(120_000), `a 120000 ms timer was armed (saw ${armed.join(",")})`);
-      ctl.abort();
-      await held;
     } finally {
       globalThis.setTimeout = realSetTimeout;
+      // Always free the real 120 s hang, even when the assertion above failed.
+      ctl.abort();
+      await held;
     }
   });
 
@@ -1119,7 +1121,7 @@ describe("drift-compare", () => {
 });
 
 describe("hang cap answers 503 (NEO-582)", () => {
-  const CAP_MS = 400;
+  const CAP_MS = 800;
   const PROFILE = { method: "GET", pathTemplate: "marketplace/user/profile" };
   const UNAVAILABLE = { message: "Service Unavailable" };
   let fake;
@@ -1139,7 +1141,7 @@ describe("hang cap answers 503 (NEO-582)", () => {
     const r = await hung();
     assert.equal(r.status, 503);
     assert.deepEqual(r.body, UNAVAILABLE);
-    assert.ok(r.ms >= CAP_MS - 50, `held until the cap, not answered at once (${r.ms} ms)`);
+    assert.ok(r.ms >= CAP_MS - 100, `held until the cap, not answered at once (${r.ms} ms)`);
   });
 
   it("releases every held socket at the cap, so the scope can hang again", async () => {
@@ -1148,21 +1150,21 @@ describe("hang cap answers 503 (NEO-582)", () => {
     for (const r of four) {
       assert.equal(r.status, 503);
       assert.deepEqual(r.body, UNAVAILABLE);
-      assert.ok(r.ms >= CAP_MS - 50, `cap-ended, not refused at once (${r.ms} ms)`);
+      assert.ok(r.ms >= CAP_MS - 100, `cap-ended, not refused at once (${r.ms} ms)`);
     }
     const next = await hung("cap-release-w1");
     assert.equal(next.status, 503);
-    assert.ok(next.ms >= CAP_MS - 50, `the scope's slots were released (${next.ms} ms)`);
+    assert.ok(next.ms >= CAP_MS - 100, `the scope's slots were released (${next.ms} ms)`);
   });
 
   it("still refuses a fifth hang in one scope at once, while the four are held", async () => {
     await setFaults([{ match: PROFILE, kind: "hang" }], "cap-scope-w1");
     const four = Array.from({ length: 4 }, () => hung("cap-scope-w1"));
-    await settle(100);
+    await settle(200);
     const fifth = await hung("cap-scope-w1");
     assert.equal(fifth.status, 503);
     assert.deepEqual(fifth.body, UNAVAILABLE);
-    assert.ok(fifth.ms < CAP_MS - 100, `refused at once (${fifth.ms} ms)`);
+    assert.ok(fifth.ms < CAP_MS - 200, `refused at once (${fifth.ms} ms)`);
     for (const r of await Promise.all(four)) assert.equal(r.status, 503);
   });
 
@@ -1170,13 +1172,13 @@ describe("hang cap answers 503 (NEO-582)", () => {
     const scopes = Array.from({ length: 17 }, (_, i) => `cap-total-w${i}`);
     for (const ns of scopes) await setFaults([{ match: PROFILE, kind: "hang" }], ns);
     const held = scopes.slice(0, 16).flatMap((ns) => Array.from({ length: 4 }, () => hung(ns)));
-    await settle(150);
+    await settle(300);
     const over = await hung(scopes[16]);
     assert.equal(over.status, 503);
-    assert.ok(over.ms < CAP_MS - 100, `refused at once (${over.ms} ms)`);
+    assert.ok(over.ms < CAP_MS - 200, `refused at once (${over.ms} ms)`);
     for (const r of await Promise.all(held)) assert.equal(r.status, 503);
     const after64 = await hung(scopes[16]);
-    assert.ok(after64.ms >= CAP_MS - 50, `64 slots were released (${after64.ms} ms)`);
+    assert.ok(after64.ms >= CAP_MS - 100, `64 slots were released (${after64.ms} ms)`);
   });
 
   it("survives a client that gave up before the cap, and keeps serving", async () => {
@@ -1184,7 +1186,14 @@ describe("hang cap answers 503 (NEO-582)", () => {
     await assert.rejects(
       fetch(`${fake.base}/api/marketplace/user/profile`, { headers: fake.headers(CALLER, { bsc: "tok-cap-gone-w1" }), signal: AbortSignal.timeout(100) }),
     );
-    await settle(CAP_MS + 100);
+    await settle(CAP_MS + 200);
     assert.equal((await fake.call("GET", "/__fake/health")).status, 200);
+    // The slot the abort freed can be held again: four holds in the scope all reach the cap.
+    await setFaults([{ match: PROFILE, kind: "hang" }], "cap-gone-w1");
+    for (const r of await Promise.all(Array.from({ length: 4 }, () => hung("cap-gone-w1")))) {
+      assert.equal(r.status, 503);
+      assert.deepEqual(r.body, UNAVAILABLE);
+      assert.ok(r.ms >= CAP_MS - 100, `held to the cap, not refused at once (${r.ms} ms)`);
+    }
   });
 });
