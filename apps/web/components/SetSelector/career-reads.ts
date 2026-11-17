@@ -10,9 +10,11 @@ import { pairKey, type CoverageAsk } from "./career-check";
 export const CAREER_COVERAGE_PARALLEL = 2;
 
 /**
- * How long a run of reads may take before what is still out is reported as
- * failed. A query that never answers must not hold "Checking careers…" (and
- * the held Next) for ever: the failure line and Retry take over.
+ * How long a run of reads may go WITHOUT ANY chunk settling before what is
+ * still out is reported as failed. An inactivity timeout: it restarts each
+ * time a chunk answers or fails, so a large run that keeps progressing is
+ * never failed. A query that never answers must not hold "Checking careers…"
+ * (and the held Next) for ever: the failure line and Retry take over.
  */
 export const CAREER_COVERAGE_TIMEOUT_MS = 15_000;
 
@@ -84,9 +86,21 @@ export function CareerCoverageFetcher({
     // Keys of this run not yet answered or reported: what a timeout reports.
     const outstanding = new Set(fresh.map((c) => c.key));
     let timedOut = false;
-    if (outstanding.size > 0) {
-      const timer = setTimeout(() => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const disarm = () => {
+      if (timer !== undefined) {
+        clearTimeout(timer);
         timers.current.delete(timer);
+        timer = undefined;
+      }
+    };
+    /** (Re)start the inactivity clock; stops once nothing is outstanding. */
+    const arm = () => {
+      disarm();
+      if (outstanding.size === 0 || timedOut || !live.current) return;
+      const t = setTimeout(() => {
+        timers.current.delete(t);
+        timer = undefined;
         if (!live.current || outstanding.size === 0) return;
         timedOut = true;
         const keys = [...outstanding];
@@ -94,8 +108,10 @@ export function CareerCoverageFetcher({
         console.warn("Career check: coverage read timed out");
         onFailedRef.current(keys);
       }, CAREER_COVERAGE_TIMEOUT_MS);
-      timers.current.add(timer);
-    }
+      timer = t;
+      timers.current.add(t);
+    };
+    arm();
     const readChunk = async (chunk: typeof fresh): Promise<void> => {
       try {
         const answer = await convex.query(api.careerCoverage.coverageForPreview, {
@@ -112,12 +128,14 @@ export function CareerCoverageFetcher({
           else out[c.key] = covered;
           outstanding.delete(c.key);
         });
+        arm();
         if (Object.keys(out).length > 0) onAnsweredRef.current(out);
         if (missing.length > 0) onFailedRef.current(missing);
       } catch (error: unknown) {
         console.warn("Career check: coverage read failed", error);
         if (!live.current || timedOut) return;
         for (const c of chunk) outstanding.delete(c.key);
+        arm();
         onFailedRef.current(chunk.map((c) => c.key));
       }
     };

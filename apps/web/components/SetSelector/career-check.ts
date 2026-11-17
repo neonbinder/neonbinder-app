@@ -672,6 +672,13 @@ export function yearsHintText(): string {
   return `Years go ${MIN_CAREER_YEAR}–${maxCareerYear()}, and To can’t come before From.`;
 }
 
+/**
+ * How long the step waits for the listed teams' names before it lists the
+ * lines with the text the cards print (a names read that never answers must
+ * not hold "Checking careers…" and Next for ever).
+ */
+export const CAREER_NAMES_WAIT_MS = 15_000;
+
 export const CAREER_NEXT_BLOCKED = "Fix the years first — then Next.";
 export const CAREER_CHECKING = "Checking careers…";
 /** The coverage read failed. Next still saves; Retry asks again. */

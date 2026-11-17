@@ -104,6 +104,7 @@ import {
   CAREER_READ_FAILED,
   CAREER_RETRY_LABEL,
   CAREER_CHECKING,
+  CAREER_NAMES_WAIT_MS,
   CAREER_NEXT_BLOCKED,
   careerHeading,
   CAREER_TEAM_NOT_NEEDED,
@@ -437,6 +438,108 @@ describe("a coverage read that fails (never silently 'covered')", () => {
     expect(headings()).toEqual(["Mike Trout", "Fernando Tatis Jr."]);
     expect(screen.getAllByRole("radiogroup")).toHaveLength(2);
     expect(document.activeElement).toBe(first);
+  });
+
+  describe("the way out of 'Checking careers…' (names latch escape)", () => {
+    const BOTH: CareerContext = {
+      ...CONTEXT,
+      gaps: [
+        { teamId: tid("t-padres"), playerIds: [pid("p-tatis")] },
+        { teamId: tid("t-angels"), playerIds: [pid("p-trout")] },
+      ],
+    };
+
+    it("a names read that never answers is given up on after 15 s: lines with the printed names, Next released", () => {
+      vi.useFakeTimers();
+      try {
+        teamsLoaded = false;
+        render(wizard({ careerContext: BOTH }));
+        expect(next().getAttribute("aria-disabled")).toBe("true");
+        expect(screen.queryByRole("radiogroup")).toBeNull();
+        act(() => {
+          vi.advanceTimersByTime(CAREER_NAMES_WAIT_MS - 1);
+        });
+        expect(screen.queryByRole("radiogroup")).toBeNull();
+        act(() => {
+          vi.advanceTimersByTime(2);
+        });
+        expect(CAREER_NAMES_WAIT_MS).toBe(15_000);
+        expect(screen.getAllByRole("radiogroup")).toHaveLength(2);
+        expect(screen.getByRole("radiogroup", { name: "Fernando Tatis Jr. on Padres" })).toBeTruthy();
+        expect(next().getAttribute("aria-disabled")).not.toBe("true");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("a failed coverage read releases the lines at once, with the failure line and Retry", () => {
+      currentRows = linkedRows();
+      teamsLoaded = false;
+      fetcherBehaviour = (asks, cb) => cb.onFailed(asks.map((a) => `${a.playerId}|${a.teamId}`));
+      render(readWizard());
+      expect(screen.getByRole("button", { name: CAREER_RETRY_LABEL })).toBeTruthy();
+      expect(screen.getAllByRole("status").some((el) => el.textContent === CAREER_READ_FAILED)).toBe(true);
+      expect(next().getAttribute("aria-disabled")).not.toBe("true");
+    });
+
+    it("a names answer with fewer rows than ids (a deleted team) counts as loaded and falls back to the printed name", () => {
+      // Only Angels has a row; Padres was deleted under the pair.
+      teamRows = [{ _id: "t-angels", name: "Angels", location: "Los Angeles" }];
+      render(wizard({ careerContext: BOTH }));
+      expect(screen.getByRole("radiogroup", { name: "Fernando Tatis Jr. on Padres" })).toBeTruthy();
+      expect(screen.getByRole("radiogroup", { name: "Mike Trout on Los Angeles Angels" })).toBeTruthy();
+      expect(next().getAttribute("aria-disabled")).not.toBe("true");
+    });
+  });
+
+  describe("a different batch or set while the wizard stays mounted", () => {
+    it("drops the career answers and reads, and the names latch, and asks again", () => {
+      const onCareerChange = vi.fn();
+      const { rerender } = render(wizard({ onCareerChange, batchId: "" }));
+      const group = screen.getAllByRole("radiogroup")[0];
+      fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
+      expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toHaveLength(1);
+      // The same component instance, handed another set.
+      rerender(
+        wizard({
+          onCareerChange,
+          selectorOptionId: "selopt-2" as unknown as Id<"selectorOptions">,
+        }),
+      );
+      expect(onCareerChange.mock.calls.at(-1)?.[0]).toBeUndefined();
+      const again = within(screen.getAllByRole("radiogroup")[0]);
+      expect(again.getByRole("radio", { name: "Keep as is" }).getAttribute("aria-checked")).toBe("true");
+      expect(screen.queryByLabelText(/^From year for /)).toBeNull();
+    });
+
+    it("asks the coverage reads again for the new batch (a fresh fetcher)", () => {
+      currentRows = linkedRows();
+      fetcherBehaviour = () => {};
+      const { rerender } = render(readWizard());
+      expect(fetcherMounts).toBe(1);
+      rerender(
+        wizard(
+          {
+            teamsOnly: false,
+            batchId: "batch-2",
+            careerContext: { setYear: 2022, players: [], teams: [], gaps: [] },
+          },
+          [CARDS[1]],
+        ),
+      );
+      expect(fetcherMounts).toBe(2);
+    });
+
+    it("drops the answers when the wizard closes and opens again", () => {
+      const onCareerChange = vi.fn();
+      const { rerender } = render(wizard({ onCareerChange }));
+      fireEvent.click(
+        within(screen.getAllByRole("radiogroup")[0]).getByRole("radio", { name: "Add to career" }),
+      );
+      rerender(wizard({ onCareerChange, isOpen: false }));
+      rerender(wizard({ onCareerChange, isOpen: true }));
+      expect(onCareerChange.mock.calls.at(-1)?.[0]).toBeUndefined();
+    });
   });
 
   it("after a Retry that finds nothing missing, focus lands on the next screen's control, not the page", () => {

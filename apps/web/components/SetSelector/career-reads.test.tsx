@@ -198,4 +198,75 @@ describe("CareerCoverageFetcher dispatch", () => {
       vi.useRealTimers();
     }
   });
+
+  it("is an INACTIVITY timeout: a long run that keeps settling chunks is never failed", async () => {
+    vi.useFakeTimers();
+    try {
+      const onAnswered = vi.fn();
+      const onFailed = vi.fn();
+      render(
+        <CareerCoverageFetcher
+          selectorOptionId={SET}
+          asks={asksOf(CAREER_COVERAGE_MAX_PAIRS * 4)}
+          onAnswered={onAnswered}
+          onFailed={onFailed}
+        />,
+      );
+      await act(async () => {});
+      const settle = async (i: number) =>
+        act(async () => {
+          pending[i].resolve({ results: pending[i].pairs.map(() => ({ covered: true })) });
+        });
+      // Each chunk takes 10 s: 40 s in all, far past the 15 s limit.
+      for (let i = 0; i < 4; i += 1) {
+        await act(async () => {
+          vi.advanceTimersByTime(10_000);
+        });
+        await settle(i);
+      }
+      expect(pending).toHaveLength(4);
+      expect(onAnswered).toHaveBeenCalledTimes(4);
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(onFailed).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("restarts the clock on each settle: 15 s of silence AFTER progress still fails the rest", async () => {
+    vi.useFakeTimers();
+    try {
+      const onFailed = vi.fn();
+      render(
+        <CareerCoverageFetcher
+          selectorOptionId={SET}
+          asks={asksOf(CAREER_COVERAGE_MAX_PAIRS * 3)}
+          onAnswered={vi.fn()}
+          onFailed={onFailed}
+        />,
+      );
+      await act(async () => {});
+      await act(async () => {
+        vi.advanceTimersByTime(10_000);
+      });
+      await act(async () => {
+        pending[0].resolve({ results: pending[0].pairs.map(() => ({ covered: true })) });
+      });
+      // 14 s after that settle: still waiting. (The first 10 s would have counted had it not restarted.)
+      await act(async () => {
+        vi.advanceTimersByTime(14_000);
+      });
+      expect(onFailed).not.toHaveBeenCalled();
+      await act(async () => {
+        vi.advanceTimersByTime(1_001);
+      });
+      expect(onFailed).toHaveBeenCalledTimes(1);
+      // Chunk 1 (still out) and chunk 2 (running, behind it): 2 x 32 keys... chunk 2 had started when chunk 0 settled.
+      expect((onFailed.mock.calls[0][0] as string[]).length).toBe(CAREER_COVERAGE_MAX_PAIRS * 2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

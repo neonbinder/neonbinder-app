@@ -93,6 +93,7 @@ import {
   deriveSittingPairs,
   gateJudgedKeys,
   CAREER_CHECKING,
+  CAREER_NAMES_WAIT_MS,
   CAREER_NEXT_BLOCKED,
   CAREER_READ_FAILED,
   CAREER_TEAM_NOT_NEEDED,
@@ -1492,15 +1493,60 @@ export default function EntityReviewWizard({
     api.teams.getManyByIds,
     careerEnabled && careerGapTeamIds.length > 0 ? { ids: careerGapTeamIds } : "skip",
   );
+  /**
+   * A `getManyByIds` answer with FEWER rows than ids (a team deleted under
+   * the pair) still counts as loaded: that line reads the text its cards
+   * print instead (`careerShortTeamLabel` / `careerTeamLabel`).
+   */
   const careerNamesLoaded =
     careerClass.pending.length === 0 &&
     (careerGapTeamIds.length === 0 || careerGapTeams !== undefined);
+  /**
+   * The way out: a failed coverage read releases the lines at once (the
+   * failure line and Retry are what the operator needs, with the printed
+   * names), and so does a names read that has not answered in
+   * `CAREER_NAMES_WAIT_MS`.
+   */
+  const [careerNamesGaveUp, setCareerNamesGaveUp] = useState(false);
+  const careerWaitingOnNames =
+    careerClass.pending.length === 0 &&
+    careerClass.failed.length === 0 &&
+    careerGapTeamIds.length > 0 &&
+    careerGapTeams === undefined &&
+    !careerNamesReleased &&
+    !careerNamesGaveUp;
+  useEffect(() => {
+    if (!careerWaitingOnNames) return;
+    const timer = setTimeout(() => setCareerNamesGaveUp(true), CAREER_NAMES_WAIT_MS);
+    return () => clearTimeout(timer);
+  }, [careerWaitingOnNames]);
+  /**
+   * The wizard is not always unmounted between batches (`CardChecklist` can
+   * hand it a different batch or set while it stays mounted, and it keeps its
+   * hooks while closed), so everything the career step holds is dropped when
+   * the batch, the set or the open state changes: answers, reads, the names
+   * latch. A fresh fetcher key makes the reads ask again.
+   */
+  const careerIdentity = `${isOpen ? "open" : "closed"}|${String(selectorOptionId)}|${batchId}|${teamsOnly ? "t" : "n"}`;
+  const [careerSeenIdentity, setCareerSeenIdentity] = useState(careerIdentity);
+  if (careerSeenIdentity !== careerIdentity) {
+    setCareerSeenIdentity(careerIdentity);
+    setCareerAnswers({});
+    setCareerCoverage({});
+    setCareerFollowUpAsks([]);
+    setCareerFailed({});
+    setCareerFetchRun((n) => n + 1);
+    setCareerNamesReleased(false);
+    setCareerNamesGaveUp(false);
+  }
+  const careerNamesReady =
+    careerNamesLoaded || careerNamesGaveUp || careerClass.failed.length > 0;
   // The latch is set while rendering (React's derived-state pattern), so the
   // lines are released in the very render the names arrive, never one later.
-  if (careerNamesLoaded && !careerNamesReleased) setCareerNamesReleased(true);
+  if (careerNamesReady && !careerNamesReleased) setCareerNamesReleased(true);
   /** Held back while any answer, or any listed team's name, is still on its way. */
   const careerChecking =
-    careerClass.pending.length > 0 || !(careerNamesReleased || careerNamesLoaded);
+    careerClass.pending.length > 0 || !(careerNamesReleased || careerNamesReady);
   const careerLines = useMemo<CareerLine[]>(
     () => (careerChecking ? [] : careerGapLines),
     [careerChecking, careerGapLines],
@@ -4421,7 +4467,7 @@ export default function EntityReviewWizard({
       const loaded = (careerGapTeams ?? []).find((t) => t._id === line.teamId);
       if (loaded) return teamFullName(loaded);
     }
-    const printed = line.teamName ?? "";
+    const printed = line.teamName || line.printedTeam || "";
     const key = normalizeEntityName(printed);
     const created = rows.find(
       (r) =>
@@ -4446,7 +4492,7 @@ export default function EntityReviewWizard({
       );
       if (team) return team.name;
     }
-    const printed = line.teamName ?? "";
+    const printed = line.teamName || line.printedTeam || "";
     const key = normalizeEntityName(printed);
     const created = rows.find(
       (r) =>
