@@ -38,7 +38,11 @@ vi.mock("convex/react", () => ({
   useQuery: () => undefined,
 }));
 
-import { CareerCoverageFetcher, CAREER_COVERAGE_PARALLEL } from "./career-reads";
+import {
+  CareerCoverageFetcher,
+  CAREER_COVERAGE_PARALLEL,
+  CAREER_COVERAGE_TIMEOUT_MS,
+} from "./career-reads";
 
 const SET = "set-1" as unknown as Id<"selectorOptions">;
 const asksOf = (n: number) =>
@@ -131,5 +135,67 @@ describe("CareerCoverageFetcher dispatch", () => {
     await flush();
     expect(pending).toHaveLength(1);
     expect(pending[0].pairs).toHaveLength(3);
+  });
+
+  it("reports what is still out after 15 s as failed, and ignores a late answer", async () => {
+    vi.useFakeTimers();
+    try {
+      const onAnswered = vi.fn();
+      const onFailed = vi.fn();
+      render(
+        <CareerCoverageFetcher
+          selectorOptionId={SET}
+          asks={asksOf(CAREER_COVERAGE_MAX_PAIRS * 2)}
+          onAnswered={onAnswered}
+          onFailed={onFailed}
+        />,
+      );
+      await act(async () => {});
+      expect(CAREER_COVERAGE_TIMEOUT_MS).toBe(15_000);
+      expect(pending).toHaveLength(2);
+      // One chunk answers in time; the other never does.
+      await act(async () => {
+        pending[0].resolve({ results: pending[0].pairs.map(() => ({ covered: true })) });
+      });
+      expect(onAnswered).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        vi.advanceTimersByTime(14_999);
+      });
+      expect(onFailed).not.toHaveBeenCalled();
+      await act(async () => {
+        vi.advanceTimersByTime(2);
+      });
+      expect(onFailed).toHaveBeenCalledTimes(1);
+      const keys = onFailed.mock.calls[0][0] as string[];
+      expect(keys).toHaveLength(CAREER_COVERAGE_MAX_PAIRS);
+      // The late answer changes nothing.
+      await act(async () => {
+        pending[1].resolve({ results: pending[1].pairs.map(() => ({ covered: true })) });
+      });
+      expect(onAnswered).toHaveBeenCalledTimes(1);
+      expect(onFailed).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not fire when everything answered in time", async () => {
+    vi.useFakeTimers();
+    try {
+      const onFailed = vi.fn();
+      render(
+        <CareerCoverageFetcher selectorOptionId={SET} asks={asksOf(3)} onAnswered={vi.fn()} onFailed={onFailed} />,
+      );
+      await act(async () => {});
+      await act(async () => {
+        pending[0].resolve({ results: pending[0].pairs.map(() => ({ covered: false })) });
+      });
+      await act(async () => {
+        vi.advanceTimersByTime(60_000);
+      });
+      expect(onFailed).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -1461,11 +1461,49 @@ export default function EntityReviewWizard({
       }),
     [careerPairs, careerJudged, careerContext, careerCoverage, careerFailed],
   );
-  /** The pairs that will be listed — held back while any answer is still on its way. */
-  const careerChecking = careerClass.pending.length > 0;
+  /**
+   * The pairs that will be listed, once every answer is in. Their teams and
+   * players are read (`linkedTeams` / `linkedPlayers`) from THIS list, so the
+   * names can load while the step still says "Checking careers…".
+   */
+  const careerGapLines = useMemo<CareerLine[]>(() => toLines(careerClass.gaps), [careerClass.gaps]);
+  /**
+   * Team names for the listed lines have loaded (or there are none to load).
+   * Latched: once the lines have been released, a later re-subscription (a
+   * picked team joins the read) never takes them back, so the order and the
+   * operator's place never change after the step has shown lines.
+   */
+  const [careerNamesReleased, setCareerNamesReleased] = useState(false);
+  const careerGapTeamIds = useMemo(
+    () =>
+      [
+        ...new Set(
+          careerGapLines.flatMap((l) => (l.teamId ? [l.teamId as Id<"teams">] : [])),
+        ),
+      ].sort(),
+    [careerGapLines],
+  );
+  /**
+   * Just the listed lines' teams, read here so the step can wait for them.
+   * (The wizard's wider `linkedTeams` read comes later in the component and
+   * needs this step's answers.) A few team rows; the labels use either.
+   */
+  const careerGapTeams = useQuery(
+    api.teams.getManyByIds,
+    careerEnabled && careerGapTeamIds.length > 0 ? { ids: careerGapTeamIds } : "skip",
+  );
+  const careerNamesLoaded =
+    careerClass.pending.length === 0 &&
+    (careerGapTeamIds.length === 0 || careerGapTeams !== undefined);
+  // The latch is set while rendering (React's derived-state pattern), so the
+  // lines are released in the very render the names arrive, never one later.
+  if (careerNamesLoaded && !careerNamesReleased) setCareerNamesReleased(true);
+  /** Held back while any answer, or any listed team's name, is still on its way. */
+  const careerChecking =
+    careerClass.pending.length > 0 || !(careerNamesReleased || careerNamesLoaded);
   const careerLines = useMemo<CareerLine[]>(
-    () => (careerChecking ? [] : toLines(careerClass.gaps)),
-    [careerChecking, careerClass.gaps],
+    () => (careerChecking ? [] : careerGapLines),
+    [careerChecking, careerGapLines],
   );
   /** What the coverage read is asked: the waiting pairs, and any re-checks. */
   const careerAsks = useMemo(
@@ -1855,13 +1893,13 @@ export default function EntityReviewWizard({
     }
     // NEO-574 — and the teams the career check names, so a line reads the
     // team's own name rather than the card's printed text.
-    for (const line of careerLines) if (line.teamId) ids.add(line.teamId as Id<"teams">);
+    for (const line of careerGapLines) if (line.teamId) ids.add(line.teamId as Id<"teams">);
     // …and the teams the operator picked there, to call them by their short name.
     for (const answer of Object.values(careerAnswers)) {
       if (answer.kind === "team" && answer.pick) ids.add(answer.pick.teamId);
     }
     return [...ids].sort();
-  }, [rows, titleContext, teamAnswersForTitles, careerLines, careerAnswers]);
+  }, [rows, titleContext, teamAnswersForTitles, careerGapLines, careerAnswers]);
   const linkedPlayerIds = useMemo(() => {
     const ids = new Set<Id<"players">>();
     for (const row of rows ?? []) {
@@ -1870,12 +1908,12 @@ export default function EntityReviewWizard({
     }
     // NEO-574 — the players the career check lists, by their own names, and
     // the ones it relinked a card to (the titles step names those).
-    for (const line of careerLines) ids.add(line.playerId as Id<"players">);
+    for (const line of careerGapLines) ids.add(line.playerId as Id<"players">);
     for (const edit of careerFields?.cardEdits ?? []) {
       for (const r of edit?.playerIdByName ?? []) ids.add(r.playerId);
     }
     return [...ids].sort();
-  }, [rows, careerLines, careerFields]);
+  }, [rows, careerGapLines, careerFields]);
   const linkedTeams = useQuery(
     api.teams.getManyByIds,
     linkedTeamIds.length > 0 ? { ids: linkedTeamIds } : "skip",
@@ -4380,6 +4418,8 @@ export default function EntityReviewWizard({
     if (line.teamId) {
       const named = linkedNameById.get(line.teamId);
       if (named) return named;
+      const loaded = (careerGapTeams ?? []).find((t) => t._id === line.teamId);
+      if (loaded) return teamFullName(loaded);
     }
     const printed = line.teamName ?? "";
     const key = normalizeEntityName(printed);
@@ -4401,7 +4441,9 @@ export default function EntityReviewWizard({
    */
   const careerShortTeamLabel = (line: CareerLine): string | undefined => {
     if (line.teamId) {
-      const team = (linkedTeams ?? []).find((t) => t._id === line.teamId);
+      const team = [...(linkedTeams ?? []), ...(careerGapTeams ?? [])].find(
+        (t) => t._id === line.teamId,
+      );
       if (team) return team.name;
     }
     const printed = line.teamName ?? "";

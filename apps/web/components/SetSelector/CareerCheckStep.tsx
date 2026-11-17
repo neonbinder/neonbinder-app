@@ -77,8 +77,9 @@ export const KIND_LABEL: Readonly<Record<Kind, string>> = {
 };
 
 /** "Fernando Tatis Jr. on the San Diego Padres" — each line's radio group name. */
-export function careerLineLabel(player: string, team: string): string {
-  return `${player} on ${team}`;
+export function careerLineLabel(player: string, team: string, cardNumber?: string): string {
+  // With no team name to tell two lines of one player apart, the first card does.
+  return cardNumber ? `${player} on ${team}, card ${cardNumber}` : `${player} on ${team}`;
 }
 
 export type CareerCheckStepProps = {
@@ -158,7 +159,16 @@ export default function CareerCheckStep({
     shortTeamNameOf ? shortTeamNameOf(line) : teamNameOf(line);
   // By the team as it reads on the line, then card number; a line whose team
   // has no name yet sorts by the text its cards print.
-  const lines = sortCareerLines(given, shortOf);
+  const sorted = sortCareerLines(given, shortOf);
+  // Once lines are on screen their order is kept: a name that resolves later
+  // can change the sort, never the places the operator is working in. A line
+  // that arrives afterwards joins at the end, in sort order.
+  const [shownOrder, setShownOrder] = useState<string[]>([]);
+  const byKey = new Map(sorted.map((l) => [l.key, l]));
+  const keptKeys = shownOrder.filter((k) => byKey.has(k));
+  const orderKeys = [...keptKeys, ...sorted.map((l) => l.key).filter((k) => !keptKeys.includes(k))];
+  const lines = orderKeys.map((k) => byKey.get(k)!);
+  if (orderKeys.join("\u0000") !== shownOrder.join("\u0000")) setShownOrder(orderKeys);
   const rowRef = (key: string) =>
     Array.from(document.querySelectorAll<HTMLElement>("[data-career-line]")).find(
       (el) => el.dataset.careerLine === key,
@@ -267,7 +277,11 @@ function CareerLineRow({
   firstRef?: Ref<HTMLButtonElement>;
   onWalk: () => void;
 }) {
-  const groupLabel = careerLineLabel(playerName, teamName);
+  const groupLabel = careerLineLabel(
+    playerName,
+    teamName,
+    shortTeamName === undefined ? line.cardNumbers[0] : undefined,
+  );
   const current = kindOf(answer);
   const panelRef = useRef<HTMLDivElement>(null);
   const noteId = useId();
@@ -866,6 +880,11 @@ function PlayerChoices({
                 event.preventDefault();
                 if (disabled) return;
                 const to = (i + step + choices.length) % choices.length;
+                if (to === pickedAt) {
+                  // Already the pick: re-picking would reset what was typed under it.
+                  optionRefs.current.get(choices[to].playerId)?.focus();
+                  return;
+                }
                 focusAfterRender.current = choices[to].playerId;
                 onPick(choices[to].playerId, choices[to].name);
               } else if (event.key === "Enter") {

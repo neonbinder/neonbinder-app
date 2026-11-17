@@ -10,6 +10,13 @@ import { pairKey, type CoverageAsk } from "./career-check";
 export const CAREER_COVERAGE_PARALLEL = 2;
 
 /**
+ * How long a run of reads may take before what is still out is reported as
+ * failed. A query that never answers must not hold "Checking careers…" (and
+ * the held Next) for ever: the failure line and Retry take over.
+ */
+export const CAREER_COVERAGE_TIMEOUT_MS = 15_000;
+
+/**
  * NEO-574 — the career check's coverage reads, asked once each.
  *
  * Render-less. The wizard mounts it while some pair has no answer yet and
@@ -48,10 +55,14 @@ export function CareerCoverageFetcher({
     onAnsweredRef.current = onAnswered;
     onFailedRef.current = onFailed;
   }, [onAnswered, onFailed]);
+  const timers = useRef(new Set<ReturnType<typeof setTimeout>>());
   useEffect(() => {
     live.current = true;
+    const pending = timers.current;
     return () => {
       live.current = false;
+      for (const t of pending) clearTimeout(t);
+      pending.clear();
     };
   }, []);
 
@@ -70,31 +81,49 @@ export function CareerCoverageFetcher({
     for (let at = 0; at < fresh.length; at += CAREER_COVERAGE_MAX_PAIRS) {
       chunks.push(fresh.slice(at, at + CAREER_COVERAGE_MAX_PAIRS));
     }
+    // Keys of this run not yet answered or reported: what a timeout reports.
+    const outstanding = new Set(fresh.map((c) => c.key));
+    let timedOut = false;
+    if (outstanding.size > 0) {
+      const timer = setTimeout(() => {
+        timers.current.delete(timer);
+        if (!live.current || outstanding.size === 0) return;
+        timedOut = true;
+        const keys = [...outstanding];
+        outstanding.clear();
+        console.warn("Career check: coverage read timed out");
+        onFailedRef.current(keys);
+      }, CAREER_COVERAGE_TIMEOUT_MS);
+      timers.current.add(timer);
+    }
     const readChunk = async (chunk: typeof fresh): Promise<void> => {
       try {
         const answer = await convex.query(api.careerCoverage.coverageForPreview, {
           selectorOptionId,
           pairs: chunk.map((c) => c.ask),
         });
-        if (!live.current) return;
+        // Past the timeout the keys were already reported: a late answer is ignored.
+        if (!live.current || timedOut) return;
         const out: Record<string, boolean> = {};
         const missing: string[] = [];
         chunk.forEach((c, i) => {
           const covered = answer.results[i]?.covered;
           if (covered === undefined) missing.push(c.key);
           else out[c.key] = covered;
+          outstanding.delete(c.key);
         });
         if (Object.keys(out).length > 0) onAnsweredRef.current(out);
         if (missing.length > 0) onFailedRef.current(missing);
       } catch (error: unknown) {
         console.warn("Career check: coverage read failed", error);
-        if (!live.current) return;
+        if (!live.current || timedOut) return;
+        for (const c of chunk) outstanding.delete(c.key);
         onFailedRef.current(chunk.map((c) => c.key));
       }
     };
     let next = 0;
     const worker = async (): Promise<void> => {
-      while (live.current && next < chunks.length) {
+      while (live.current && !timedOut && next < chunks.length) {
         const chunk = chunks[next++];
         await readChunk(chunk);
       }

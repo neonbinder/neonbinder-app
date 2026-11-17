@@ -19,6 +19,10 @@ vi.mock("../../convex/_generated/api", () => {
 let currentRows: unknown[];
 /** The ids the wizard asked `players.getManyByIds` for, per render. */
 let playerIdReads: string[][];
+/** The teams read has answered (false = still loading, so the step waits). */
+let teamsLoaded = true;
+/** Extra team rows the read serves, by id. */
+let teamRows: Array<{ _id: string; name: string; location?: string }> = [];
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -33,11 +37,16 @@ vi.mock("convex/react", () => ({
       return (args as { ids: string[] }).ids.map((id) => ({ _id: id, name: known[id] ?? `Name of ${id}` }));
     }
     if (ref === "teams.getManyByIds") {
-      // Only the team the search "picks" is ever known here; the others stay unloaded.
+      // Only the team the search "picks" has a row here; the read itself has
+      // answered unless a test holds it back (`teamsLoaded`).
+      if (!teamsLoaded) return undefined;
       const ids = (args as { ids: string[] }).ids;
-      return ids.includes("picked-team")
-        ? [{ _id: "picked-team", name: "Picks", location: "Pickton" }]
-        : undefined;
+      return [
+        ...(ids.includes("picked-team")
+          ? [{ _id: "picked-team", name: "Picks", location: "Pickton" }]
+          : []),
+        ...teamRows.filter((t) => ids.includes(t._id)),
+      ];
     }
     return undefined;
   },
@@ -161,6 +170,8 @@ const next = () => screen.getByRole("button", { name: NEXT_NAME });
 
 beforeEach(() => {
   currentRows = [];
+  teamsLoaded = true;
+  teamRows = [];
   fetcherMounts = 0;
   playerIdReads = [];
   fetcherBehaviour = () => {};
@@ -390,6 +401,42 @@ describe("a coverage read that fails (never silently 'covered')", () => {
       answer?.({ "p-trout|t-angels": false });
     });
     expect(next().getAttribute("aria-disabled")).not.toBe("true");
+  });
+
+  it("waits for the listed teams' names, then shows the lines once, in an order that never moves after", () => {
+    const both: CareerContext = {
+      ...CONTEXT,
+      gaps: [
+        { teamId: tid("t-padres"), playerIds: [pid("p-tatis")] },
+        { teamId: tid("t-angels"), playerIds: [pid("p-trout")] },
+      ],
+    };
+    teamsLoaded = false;
+    const { rerender } = render(wizard({ careerContext: both }));
+    // Names not here yet: the step says it is checking, Next is held, no lines to sort.
+    expect(screen.getAllByRole("status").some((el) => el.textContent === CAREER_CHECKING)).toBe(true);
+    expect(next().getAttribute("aria-disabled")).toBe("true");
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    // They arrive: Padres resolves to a name that sorts AFTER Angels.
+    teamsLoaded = true;
+    teamRows = [
+      { _id: "t-padres", name: "Zephyrs", location: "San Diego" },
+      { _id: "t-angels", name: "Angels", location: "Los Angeles" },
+    ];
+    rerender(wizard({ careerContext: both }));
+    const headings = () => screen.getAllByRole("heading", { level: 4 }).map((h) => h.textContent);
+    expect(headings()).toEqual(["Mike Trout", "Fernando Tatis Jr."]);
+    expect(screen.getByRole("radiogroup", { name: "Fernando Tatis Jr. on San Diego Zephyrs" })).toBeTruthy();
+    expect(next().getAttribute("aria-disabled")).not.toBe("true");
+    // Focus is on the first line; a later change to the read (a name arriving
+    // again, the teams read re-subscribing) moves neither the order nor focus.
+    const first = within(screen.getAllByRole("radiogroup")[0]).getByRole("radio", { name: "Keep as is" });
+    expect(document.activeElement).toBe(first);
+    teamsLoaded = false;
+    rerender(wizard({ careerContext: both }));
+    expect(headings()).toEqual(["Mike Trout", "Fernando Tatis Jr."]);
+    expect(screen.getAllByRole("radiogroup")).toHaveLength(2);
+    expect(document.activeElement).toBe(first);
   });
 
   it("after a Retry that finds nothing missing, focus lands on the next screen's control, not the page", () => {
