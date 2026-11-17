@@ -1854,8 +1854,12 @@ export default function EntityReviewWizard({
     // NEO-574 — and the teams the career check names, so a line reads the
     // team's own name rather than the card's printed text.
     for (const line of careerLines) if (line.teamId) ids.add(line.teamId as Id<"teams">);
+    // …and the teams the operator picked there, to call them by their short name.
+    for (const answer of Object.values(careerAnswers)) {
+      if (answer.kind === "team" && answer.pick) ids.add(answer.pick.teamId);
+    }
     return [...ids].sort();
-  }, [rows, titleContext, teamAnswersForTitles, careerLines]);
+  }, [rows, titleContext, teamAnswersForTitles, careerLines, careerAnswers]);
   const linkedPlayerIds = useMemo(() => {
     const ids = new Set<Id<"players">>();
     for (const row of rows ?? []) {
@@ -6239,6 +6243,9 @@ export default function EntityReviewWizard({
                   playerNameOf={(line) => linkedNameById.get(line.playerId) ?? line.printedPlayer}
                   teamNameOf={(line) => careerTeamLabel(line)}
                   shortTeamNameOf={(line) => careerShortTeamLabel(line)}
+                  shortTeamNameOfId={(teamId) =>
+                    (linkedTeams ?? []).find((t) => t._id === teamId)?.name
+                  }
                   hasNoCareer={(line) => careerPlayerHasNoCareer(line)}
                   readFailed={careerReadFailed}
                   onRetry={() => {

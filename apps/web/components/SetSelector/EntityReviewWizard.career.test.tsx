@@ -32,6 +32,13 @@ vi.mock("convex/react", () => ({
       };
       return (args as { ids: string[] }).ids.map((id) => ({ _id: id, name: known[id] ?? `Name of ${id}` }));
     }
+    if (ref === "teams.getManyByIds") {
+      // Only the team the search "picks" is ever known here; the others stay unloaded.
+      const ids = (args as { ids: string[] }).ids;
+      return ids.includes("picked-team")
+        ? [{ _id: "picked-team", name: "Picks", location: "Pickton" }]
+        : undefined;
+    }
     return undefined;
   },
   useQueries: (queries: Record<string, { args: { players: unknown[] } }>) => {
@@ -253,6 +260,15 @@ describe("a re-teamed card leaves the teams step", () => {
     fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
     fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
   }
+
+  it("calls the picked team by its short name in the follow-up, not the typeahead's full one", () => {
+    fetcherBehaviour = (asks, cb) =>
+      cb.onAnswered(Object.fromEntries(asks.map((a) => [`${a.playerId}|${a.teamId}`, false])));
+    render(wizard({ careerContext: ANGELS_GAP }, [CARDS[1]]));
+    reteam();
+    // Still the search result until the team loads; here the mock has it at once.
+    expect(screen.getByText("Mike Trout doesn’t have Picks by 2022 either.")).toBeTruthy();
+  });
 
   it("reports the printed team dropped and the picked team on", () => {
     const onCareerChange = vi.fn();

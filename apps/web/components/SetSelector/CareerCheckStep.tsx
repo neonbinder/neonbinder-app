@@ -100,6 +100,12 @@ export type CareerCheckStepProps = {
   teamNameOf: (line: CareerLine) => string;
   /** The short name as the team's rows show it ("Padres"): the line's own text. */
   shortTeamNameOf?: (line: CareerLine) => string;
+  /**
+   * The short name ("Padres") of a team the operator picked from the search,
+   * once it is known; the follow-up names the pick by it, as lines name teams.
+   * Until then (or without it) the search result's own name is used.
+   */
+  shortTeamNameOfId?: (teamId: string) => string | undefined;
   /** The player has no stints at all: "No career on file yet." instead of the team. */
   hasNoCareer?: (line: CareerLine) => boolean;
   /**
@@ -137,6 +143,7 @@ export default function CareerCheckStep({
   playerNameOf,
   teamNameOf,
   shortTeamNameOf,
+  shortTeamNameOfId,
   hasNoCareer,
   readFailed = false,
   onRetry,
@@ -195,6 +202,10 @@ export default function CareerCheckStep({
               playerName={playerNameOf(line)}
               teamName={teamNameOf(line)}
               shortTeamName={shortTeamNameOf ? shortTeamNameOf(line) : teamNameOf(line)}
+              pickedTeamShortName={(() => {
+                const a = answers[line.key];
+                return a?.kind === "team" && a.pick ? shortTeamNameOfId?.(a.pick.teamId) : undefined;
+              })()}
               noCareer={hasNoCareer ? hasNoCareer(line) : false}
               disabled={disabled}
               firstRef={i === 0 ? firstRef : undefined}
@@ -225,6 +236,7 @@ function CareerLineRow({
   playerName,
   teamName,
   shortTeamName,
+  pickedTeamShortName,
   noCareer,
   disabled,
   firstRef,
@@ -242,6 +254,7 @@ function CareerLineRow({
   playerName: string;
   teamName: string;
   shortTeamName: string;
+  pickedTeamShortName?: string;
   noCareer: boolean;
   disabled: boolean;
   firstRef?: Ref<HTMLButtonElement>;
@@ -396,6 +409,7 @@ function CareerLineRow({
                 failed={failed}
                 requestCoverage={requestCoverage}
                 playerName={playerName}
+                pickedShortName={pickedTeamShortName}
                 disabled={disabled}
                 searchOpen={searchOpen}
                 setSearchOpen={setSearchOpen}
@@ -878,6 +892,7 @@ function TeamPanel({
   failed,
   requestCoverage,
   playerName,
+  pickedShortName,
   disabled,
   searchOpen,
   setSearchOpen,
@@ -893,6 +908,8 @@ function TeamPanel({
   failed: Readonly<Record<string, boolean>>;
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   playerName: string;
+  /** The picked team's short name, when known: what the follow-up calls it. */
+  pickedShortName?: string;
   disabled: boolean;
   searchOpen: boolean;
   setSearchOpen: (open: boolean) => void;
@@ -928,7 +945,7 @@ function TeamPanel({
         />
       ) : (
         <div className="flex flex-wrap items-center gap-2">
-          {picked && <p className="text-sm text-ink">{picked.name}</p>}
+          {picked && <p className="text-sm text-ink">{pickedShortName ?? picked.name}</p>}
           <NeonButton
             ref={buttonRef}
             size="1"
@@ -956,7 +973,7 @@ function TeamPanel({
           coverage={coverage}
           failed={failed}
           subject={playerName}
-          team={picked.name}
+          team={pickedShortName ?? picked.name}
           disabled={disabled}
           onWalk={onWalk}
         />

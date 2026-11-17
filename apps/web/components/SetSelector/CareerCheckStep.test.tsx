@@ -89,7 +89,12 @@ const TEAMS: Record<string, string> = {
   "t-padres": "San Diego Padres",
   "t-angels": "Los Angeles Angels",
 };
-const SHORT: Record<string, string> = { "t-padres": "Padres", "t-angels": "Angels" };
+const SHORT: Record<string, string> = {
+  "t-padres": "Padres",
+  "t-angels": "Angels",
+  // A team picked from the search: the typeahead says "Picked team", the row's nickname is short.
+  "picked-team": "Picks",
+};
 /** Sorted by team, then card number: Angels (Trout) come before Padres (Tatis). */
 const keyOf = (playerId: string) => LINES.find((l) => l.playerId === playerId)!.key;
 let noCareer: Set<string>;
@@ -125,6 +130,7 @@ function Harness(props: {
       playerNameOf={(l) => NAMES[l.playerId]}
       teamNameOf={(l) => TEAMS[l.teamId ?? ""]}
       shortTeamNameOf={(l) => SHORT[l.teamId ?? ""]}
+      shortTeamNameOfId={(id) => SHORT[id]}
       hasNoCareer={(l) => noCareer.has(l.playerId)}
       onAllDone={allDone}
       headingId="career-lead"
@@ -509,6 +515,32 @@ describe("Fix card’s team", () => {
     });
     expect(asked).toEqual([{ playerId: "p-trout", teamId: "picked-team" }]);
     expect(screen.getByRole("button", { name: "Pick another team for Mike Trout" })).toBeTruthy();
+  });
+
+  it("names the picked team by its short name in the follow-up, as the lines do", () => {
+    coverage = { "p-trout|picked-team": false };
+    render(<Harness />);
+    fireEvent.click(radio(trout(), "Fix card’s team"));
+    fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
+    fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
+    expect(screen.getByText("Mike Trout doesn’t have Picks by 2022 either.")).toBeTruthy();
+    expect(screen.queryByText(/Picked team/)).toBeNull();
+    fireEvent.click(radio(screen.getByRole("radiogroup", { name: "Career for Mike Trout" }), "Add to career"));
+    expect(screen.getByLabelText("From year for Mike Trout, Picks")).toBeTruthy();
+  });
+
+  it("falls back to the search result's name until the short name is known", () => {
+    coverage = { "p-trout|picked-team": false };
+    delete SHORT["picked-team"];
+    try {
+      render(<Harness />);
+      fireEvent.click(radio(trout(), "Fix card’s team"));
+      fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
+      fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
+      expect(screen.getByText("Mike Trout doesn’t have Picked team by 2022 either.")).toBeTruthy();
+    } finally {
+      SHORT["picked-team"] = "Picks";
+    }
   });
 
   it("cancelling the search puts focus back on 'Pick a team…' (A1)", () => {
