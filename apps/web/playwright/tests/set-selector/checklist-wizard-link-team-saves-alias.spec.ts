@@ -46,11 +46,13 @@
 //   - The step lists #902 and #903 ("No Rockies in the career by 1996.") and NOT #901, whose
 //     team P's stint covers. The catalogue's players on the linked club are listed too: the
 //     club is minted per attempt, so no catalogue career holds it.
-//   - Answers: #902 "Add to career" with the prefilled year (read back in Players admin);
+//   - Answers: #902 "Add to career" with the prefilled year and a typed end year (read back in
+//     Players admin; a To year before From holds Next first, and the answer survives Back);
 //     #903 "Keep as is" (P's career has no Marlins); Jamey Wright's line (#21) "Wrong player"
-//     -> P, and Todd Helton's (#22) "Fix card's team" -> the Rockies, each read back on the
-//     saved card. A catalogue player's career is never written: "Wrong player" puts P on the
-//     card, and Helton's follow-up stays on "Keep as is".
+//     -> P, and Todd Helton's (#22) "Fix card's team" -> the Marlins (he never played there, so
+//     the nested "Career for Todd Helton" prompt comes up), each read back on the saved card.
+//     A catalogue player's career is never written: "Wrong player" puts P on the card, and
+//     Helton's prompt stays on "Keep as is".
 // Fresh-only like the rest of the spec (committed cards are never checked again).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";
@@ -290,9 +292,15 @@ test(
     await expect(itemOf(lineRockies).getByText(`No Rockies in the career by ${SET_YEAR}.`, { exact: true })).toBeVisible();
     await expect(itemOf(lineRockies).getByText("Cards #902", { exact: true })).toBeVisible();
     await expect(itemOf(lineMarlins).getByText(`No Marlins in the career by ${SET_YEAR}.`, { exact: true })).toBeVisible();
-    // Every line opens on "Keep as is", so one Next would pass the screen writing nothing.
+    // Every line opens on "Keep as is", so one Next would pass the screen writing nothing. Each
+    // answer is on screen at phone width too (e2e-mobile, 412 px): scrolled to, in the viewport.
     for (const line of [lineRockies, lineMarlins, lineWright, lineHelton]) {
       await expect(line.getByRole("radio", { name: "Keep as is" })).toBeChecked();
+      for (const answer of ["Keep as is", "Add to career", "Wrong player", /^Fix card.s team$/]) {
+        const radio = line.getByRole("radio", { name: answer });
+        await radio.scrollIntoViewIfNeeded();
+        await expect(radio).toBeInViewport();
+      }
     }
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check" });
 
@@ -302,7 +310,14 @@ test(
     await expect(wizard.getByRole("spinbutton", { name: `From year for ${scaffold}, ${ROCKIES}` })).toHaveValue(SET_YEAR);
     const toRockies = wizard.getByRole("spinbutton", { name: `To year (optional) for ${scaffold}, ${ROCKIES}` });
     await expect(toRockies).toHaveValue("");
+    // Years that are not a stint hold Next, and the footer says why.
+    await toRockies.fill("1990");
+    await expect(nextStepButton(page)).toBeDisabled();
+    // The footer's status line; the field's own hint says it in other words.
+    await expect(wizard.getByText("Fix the years first — then Next.", { exact: true }).first()).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check, Next held by the years" });
     await toRockies.fill("1997");
+    await expect(nextStepButton(page)).toBeEnabled();
     // The answer and its years survive Back out of the step and the way in again.
     await wizard.getByRole("button", { name: "Back to previous step" }).click();
     await expect(careerHeading).toBeHidden();
@@ -315,20 +330,31 @@ test(
     // #21: "Wrong player" -> P, through "Someone else…". P's stint covers the club: said, no ask.
     await lineWright.getByRole("radio", { name: /^Wrong player$/ }).click();
     await wizard.getByRole("button", { name: "Someone else for Jamey Wright" }).click();
-    await wizard.getByRole("textbox", { name: "Search existing players" }).fill(scaffold);
+    const playerSearch = wizard.getByRole("textbox", { name: "Search existing players" });
+    await expect(playerSearch).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check, player search open" });
+    await playerSearch.fill(scaffold);
     await wizard.getByRole("option", { name: `Link to ${scaffold}` }).click();
     await expect(itemOf(lineWright).getByText(`${scaffold} played for the Ali${T}.`, { exact: true })).toBeVisible();
 
-    // #22: "Fix card's team" -> the Rockies. Helton's own career is not this spec's to write:
-    // its follow-up (if his career lacks them) stays on "Keep as is".
+    // #22: "Fix card's team" -> the Marlins, a club Todd Helton never played for, so the re-check
+    // asks again about HIS career (the nested prompt). His career is not this spec's to write: the
+    // prompt stays on "Keep as is".
     await lineHelton.getByRole("radio", { name: /^Fix card.s team$/ }).click();
     await wizard.getByRole("button", { name: "Pick a team for Todd Helton" }).click();
-    await wizard.getByRole("textbox", { name: "Search existing teams" }).fill(ROCKIES);
-    await wizard.getByRole("option", { name: `Link to ${ROCKIES}` }).click();
+    const careerTeamSearch = wizard.getByRole("textbox", { name: "Search existing teams" });
+    await expect(careerTeamSearch).toBeVisible();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check, team search open" });
+    await careerTeamSearch.fill(MARLINS);
+    await wizard.getByRole("option", { name: `Link to ${MARLINS}` }).click();
     await expect(wizard.getByRole("button", { name: "Pick another team for Todd Helton" })).toBeVisible();
-    await expect(itemOf(lineHelton).getByText(/^(Todd Helton played for the Rockies\.|No Rockies in Todd Helton’s career by 1996 either\.)$/)).toBeVisible();
+    await expect(
+      itemOf(lineHelton).getByText(`No Marlins in Todd Helton’s career by ${SET_YEAR} either.`, { exact: true }),
+    ).toBeVisible();
     const heltonFollowUp = wizard.getByRole("radiogroup", { name: "Career for Todd Helton" });
-    if (await heltonFollowUp.isVisible()) await expect(heltonFollowUp.getByRole("radio", { name: "Keep as is" })).toBeChecked();
+    await expect(heltonFollowUp.getByRole("radio", { name: "Keep as is" })).toBeChecked();
+    await expect(heltonFollowUp.getByRole("radio", { name: "Add to career" })).not.toBeChecked();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check, follow-up for a re-teamed card" });
     // #903 stays on "Keep as is".
     await expect(lineMarlins.getByRole("radio", { name: "Keep as is" })).toBeChecked();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check answered" });
@@ -366,9 +392,9 @@ test(
     await expect(drawer.getByRole("button", { name: "Remove player Jamey Wright", exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(drawer).toBeHidden();
-    // "Fix card's team": #22 is on the Rockies now, not the linked club.
+    // "Fix card's team": #22 is on the Marlins now, not the linked club.
     await editCardButton(page, "22").click();
-    await expect(drawer.getByRole("button", { name: `Remove team ${ROCKIES}`, exact: true })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: `Remove team ${MARLINS}`, exact: true })).toBeVisible();
     await expect(drawer.getByRole("button", { name: `Remove team ${FIXTURE_TEAM}`, exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(drawer).toBeHidden();

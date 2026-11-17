@@ -286,8 +286,8 @@ export const CAREER_STEP_SUBTITLE = "Career check";
 
 /**
  * NEO-574: one line of the "Career check" step, a radio group named
- * "<player> on <team>" (`careerLineLabel`), holding "Leave it", "Add the
- * stint", "Different player" and "Different team". Contract: a locator,
+ * "<player> on <team>" (`careerLineLabel`), holding "Keep as is", "Add
+ * to career", "Wrong player" and "Fix card’s team". Contract: a locator,
  * nothing waited for; exact, so "Ann on Reds" never answers for "Ann on Reds II".
  */
 export function careerLine(page: Page, player: string, team: string): Locator {
@@ -308,7 +308,7 @@ export function postNameSubtitle(page: Page): Locator {
 
 /**
  * NEO-574: press Next past the "Career check" step when it comes (every line
- * left on "Leave it", which writes nothing), and stop on the step after it.
+ * left on "Keep as is", which writes nothing), and stop on the step after it.
  * For a spec that asserts what the LATER steps hold (the teams step's lines,
  * or that there is no teams step) and whose fixture's known players may or may
  * not have the card's team on file: the branch waits for a settled post-name
@@ -332,7 +332,7 @@ export async function passCareerCheck(page: Page): Promise<void> {
 
 /**
  * Press Next past the "Career check" (NEO-574) and "Cards with no team" steps
- * when they come, leaving every line on its default ("Leave it", "Leave for
+ * when they come, leaving every line on its default ("Keep as is", "Leave for
  * later"), and stop on the first step after them (autograph, titles or Save).
  * For a spec whose feature is a LATER step (the titles step) and which reads
  * where it is from the subtitle; a spec that only needs Save calls
@@ -885,7 +885,7 @@ export async function walkToPlayerRow(
  *   the wizard (the "Step x of y" x it left is gone), so a Next that does
  *   nothing fails by name. Next leaves every line on its default (a pre-filled
  *   team, else "Leave for later"; every title kept; NEO-574: every "Career
- *   check" line on "Leave it", which writes nothing) - the same answers the old
+ *   check" line on "Keep as is", which writes nothing) - the same answers the old
  *   final step's Confirm & Save saved. A spec whose FEATURE is the career,
  *   teams or titles step drives that step itself and does not call this.
  * - NEO-345: the "Autographed cards" step (new AU cards on a part with no
