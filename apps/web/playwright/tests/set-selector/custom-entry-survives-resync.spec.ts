@@ -1,7 +1,7 @@
 // Origin: .maestro/flows/set-selector/custom-entry-survives-resync.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectStepWithSportLots } from "../../support/marketplace-wait";
-import { columnOption, columnSearch, setBuilderReady, addCustomEntry } from "../../support/set-builder";
+import { columnOption, columnSearch, setBuilderReady, addCustomEntry, openAttributesPanel } from "../../support/set-builder";
 
 const PAUSE_NOTICE = "SportLots is on pause: nothing from SportLots was asked for or changed.";
 
@@ -67,6 +67,8 @@ test(
     // ── STEP 4: remove it again, which keeps the flow self-cleaning ──
     await columnOption(page, "Sports", sport).click();
     await expect(page.getByRole("heading", { name: `Attributes for ${sport}` })).toBeVisible();
+    // NEO-569: the delete sits in the open panel only; a sport row starts it shut.
+    await openAttributesPanel(page);
     await page.getByRole("button", { name: `Delete ${sport}`, exact: true }).click();
     const confirm = page.getByRole("dialog", { name: `Delete Sport "${sport}"?` });
     await expect(confirm).toBeVisible();

@@ -1,8 +1,10 @@
 // Origin: .maestro/flows/set-selector/set-attributes-edit.yaml (Maestro suite retired in NEO-341; see git history)
 // NEO-38/39/217: the SetAttributesPanel on the worker's own custom set
 // (Baseball > 2024 > Topps > attr-edit-<n>): breadcrumb scope, editing a
-// metadata field, CLEARING it ("Cleared", not "Saved"), collapse/expand, and
-// the scope following a child pick. The real Topps Chrome set is never touched.
+// metadata field, CLEARING it ("Cleared", not "Saved"), collapse/expand (NEO-569:
+// shut, the panel shows only its title and toggle; the pencil, delete,
+// breadcrumb and Set actions return when it opens), and the scope following a
+// child pick. The real Topps Chrome set is never touched.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom, selectOrCreate } from "../../support/set-builder";
 
@@ -67,19 +69,80 @@ test(
     await expect(releaseDate).toHaveAttribute("placeholder", "—");
 
     // Collapse by hand, then expand again.
+    // NEO-569: shut, the panel is one line, its title and the Edit attributes
+    // toggle. The pencil, the delete, the breadcrumb and the Set actions all
+    // come back with the open panel. Positive first (R2): the title and the
+    // toggle are drawn, so the absences below are read on a live panel.
+    const title = panel.getByRole("heading", { name: `Attributes for ${set} (Set)`, exact: true });
+    const renameSet = panel.getByRole("button", { name: `Rename ${set}`, exact: true });
+    const deleteSet = panel.getByRole("button", { name: `Delete ${set}`, exact: true });
+    const breadcrumb = panel.getByText(new RegExp(`›.*${set}`));
+    const setActions = panel.getByRole("group", { name: "Set actions" });
+    await expect(renameSet).toBeVisible();
+    await expect(setActions).toBeVisible();
     await hide.click();
     await expect(edit).toBeVisible();
+    // The press that shut it leaves focus on the toggle, not on <body>.
+    await expect(edit).toBeFocused();
+    await expect(title).toBeVisible();
     await expect(hide).toBeHidden();
+    await expect(renameSet).toHaveCount(0);
+    await expect(deleteSet).toHaveCount(0);
+    await expect(breadcrumb).toHaveCount(0);
+    await expect(setActions).toHaveCount(0);
+    await expectAccessible(page, { label: "Set attributes panel collapsed to its title" });
+    // The shut line fits the screen: title and toggle sit wholly inside it, and a
+    // sideways swipe over it moves nothing (NEO-341: a line that escapes its clip
+    // widens a 412px phone page and slides it sideways).
+    await expect(title).toBeInViewport({ ratio: 1 });
+    await expect(edit).toBeInViewport({ ratio: 1 });
+    await title.hover();
+    await page.mouse.wheel(400, 0);
+    await expect(title).toBeInViewport({ ratio: 1 });
+    await expect(edit).toBeInViewport({ ratio: 1 });
     await edit.click();
     await expect(hide).toBeVisible();
+    await expect(renameSet).toBeVisible();
+    await expect(deleteSet).toBeVisible();
+    await expect(breadcrumb.first()).toBeVisible();
+    await expect(setActions).toBeVisible();
 
     // Child scope: create (or reuse) a custom variant type and pick it.
     await selectOrCreate(page, "Variant Types", child, { via: "list" });
     await expect(page.getByRole("heading", { name: `${child}s`, exact: true })).toBeVisible();
 
+    // A variant type starts shut, and shut it has no pencil and no delete (NEO-569).
+    // Positive first (R2): the panel is on the child, with its toggle.
+    const renameChild = panel.getByRole("button", { name: `Rename ${child}`, exact: true });
+    const deleteChild = panel.getByRole("button", { name: `Delete ${child}`, exact: true });
+    await expect(panel.getByRole("heading", { name: new RegExp(`^Attributes for ${child} \\(`) })).toBeVisible();
+    await expect(edit).toBeVisible();
+    await expect(renameChild).toHaveCount(0);
+    await expect(deleteChild).toHaveCount(0);
+
     // The panel's breadcrumb followed the pick down to the variant type.
     await ensureExpanded();
     await expect(panel.getByText(new RegExp(`›.*${child}`)).first()).toBeVisible();
+    await expect(renameChild).toBeVisible();
     await expectAccessible(page, { label: "Set attributes panel scoped to a variant type" });
+
+    // NEO-569: while the delete confirm is open the panel's toggle is out of reach
+    // (inert behind the modal), so the panel cannot shut under the dialog. Cancel
+    // releases it. The type is empty, so the trash can asks rather than explains.
+    await deleteChild.click();
+    const confirm = page.getByRole("dialog", { name: new RegExp(`^Delete .*"${child}"\\?$`) });
+    await expect(confirm).toBeVisible();
+    const cancel = confirm.getByRole("button", { name: "Cancel" });
+    await expect(cancel).toBeFocused();
+    // A screen reader's cursor or a scripted focus cannot land on the toggle; focus stays in the dialog.
+    await hide.focus();
+    await expect(cancel).toBeFocused();
+    await expect(hide).not.toBeFocused();
+    await expect(hide).toBeVisible();
+    await cancel.click();
+    await expect(confirm).toBeHidden();
+    await hide.click();
+    await expect(edit).toBeFocused();
+    await expect(deleteChild).toHaveCount(0);
   },
 );

@@ -2,7 +2,7 @@
 // A hand-added card in the worker's own custom subtree: add, rename (Enter
 // commits in place), delete (two-step). No marketplace call fires.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { setBuilderReady } from "../../support/set-builder";
+import { openAttributesPanel, setBuilderReady } from "../../support/set-builder";
 import { addCustomCard, confirmDeleteCardButton, deleteCardButton, editCardButton } from "../../support/cards";
 
 test(
@@ -29,7 +29,9 @@ test(
 
     // NEO-400: the row's trash can checks what is below it on click (never a
     // live query). This Base variant type now holds a card, so the click explains itself
-    // and opens no dialog.
+    // and opens no dialog. NEO-569: the trash can sits in the open panel only,
+    // and an insert row starts it shut.
+    await openAttributesPanel(page);
     const trash = page.getByRole("button", { name: "Delete Base", exact: true });
     await expect(trash).toBeVisible();
     await expect(trash).not.toHaveAttribute("aria-disabled", "true");

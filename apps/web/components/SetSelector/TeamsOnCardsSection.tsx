@@ -206,6 +206,8 @@ function noPlayersLabel(count: number): string {
 type SuggestionResult = {
   setYear: number | null;
   sportId?: Id<"selectorOptions"> | null;
+  /** NEO-569 — the set's effective leagues (any-of). */
+  setLeagueIds?: Array<Id<"leagues">>;
   setLeagueId?: Id<"leagues"> | null;
   players: ServerPlayerEvidence[];
   teamNames?: Array<{ teams: ServerTeam[] }>;
@@ -372,7 +374,7 @@ export default function TeamsOnCardsSection({
   }, [requests, nameRequests, selectorOptionId, anyTeamless]);
   const results = useQueries(queries);
 
-  const { serverEvidence, teamNameEvidence, setYear, sportId, setLeagueId } = useMemo(() => {
+  const { serverEvidence, teamNameEvidence, setYear, sportId, setLeagueIds } = useMemo(() => {
     // Loading: the entries stay "not arrived". Failed: the same, for good —
     // a suggestion is a convenience, and a broken one must not take the step
     // down with it.
@@ -403,7 +405,13 @@ export default function TeamsOnCardsSection({
       teamNameEvidence: names,
       setYear: facts.find((r) => r.setYear !== null)?.setYear ?? undefined,
       sportId: facts.find((r) => r.sportId)?.sportId ?? undefined,
-      setLeagueId: facts.find((r) => r.setLeagueId)?.setLeagueId ?? null,
+      // NEO-569 — the list; a server older than it sends only the first.
+      setLeagueIds: ((): string[] => {
+        const withList = facts.find((r) => r.setLeagueIds && r.setLeagueIds.length > 0);
+        if (withList?.setLeagueIds) return withList.setLeagueIds;
+        const single = facts.find((r) => r.setLeagueId)?.setLeagueId;
+        return single ? [single] : [];
+      })(),
     };
   }, [results, requests, nameRequests]);
 
@@ -418,7 +426,7 @@ export default function TeamsOnCardsSection({
         currentYear: new Date().getFullYear(),
         settled,
         teamNameEvidence,
-        setLeagueId,
+        setLeagueIds,
         people,
       }),
     [
@@ -429,7 +437,7 @@ export default function TeamsOnCardsSection({
       linkedTeamNameById,
       settled,
       teamNameEvidence,
-      setLeagueId,
+      setLeagueIds,
       people,
     ],
   );

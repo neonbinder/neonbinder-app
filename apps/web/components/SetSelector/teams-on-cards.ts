@@ -153,7 +153,12 @@ export interface TeamsReviewRow {
   _id: string;
   kind: "player" | "team" | "league";
   name: string;
-  enrichment?: { careerTeams?: CareerStint[]; colors?: TeamColors } | null;
+  enrichment?: {
+    careerTeams?: CareerStint[];
+    /** NEO-569 — Wikidata teams with no years; see `createdUndatedNames`. */
+    undatedCareerTeams?: string[];
+    colors?: TeamColors;
+  } | null;
   decision?:
     | {
         action: "create";
@@ -655,6 +660,31 @@ function createdStints(row: TeamsReviewRow): CareerStint[] {
 }
 
 /**
+ * NEO-569 — a created player's UNDATED career teams: the Wikidata names with
+ * no years, minus what the operator unchecked and minus any name already on
+ * the dated list (dating a lead moves it there). They reach the career rule as
+ * undated stints, which counts one only when it is the player's one team in
+ * the set's leagues (`careerTeamVerdict`) — the client mirror of the server's
+ * rule for a stored player's undated `teamYears`. A lead still creates nothing
+ * on the player.
+ */
+function createdUndatedNames(row: TeamsReviewRow, dated: readonly CareerStint[]): string[] {
+  const decision = row.decision?.action === "create" ? row.decision : undefined;
+  const skip = new Set([
+    ...(decision?.excludedCareerTeamNames ?? []).map(norm),
+    ...dated.map((s) => norm(s.name)),
+  ]);
+  const out: string[] = [];
+  for (const name of row.enrichment?.undatedCareerTeams ?? []) {
+    const key = norm(name);
+    if (!key || skip.has(key)) continue;
+    skip.add(key);
+    out.push(name);
+  }
+  return out;
+}
+
+/**
  * Every team NAME the server should resolve to existing NB teams, deduped by
  * normalized name, in first-seen order:
  *  - a listing's printed team on a card in the section (invariant 8: its NB
@@ -679,8 +709,12 @@ export function teamNameRequests(
     for (const listed of listedClaims(card, view)) add(listed);
     for (const player of cardPlayers(card, index, view)) {
       if (player.kind !== "created") continue;
-      for (const stint of createdStints(player.row)) {
+      const dated = createdStints(player.row);
+      for (const stint of dated) {
         if (!view.teamRowByKey.has(norm(stint.name))) add(stint.name);
+      }
+      for (const name of createdUndatedNames(player.row, dated)) {
+        if (!view.teamRowByKey.has(norm(name))) add(name);
       }
     }
   }
@@ -748,7 +782,8 @@ interface RankContext {
   view: NamesView;
   /** By normalized name; absent map = names are not being resolved (nothing pending). */
   teamNameEvidence: ReadonlyMap<string, ServerTeam[]> | undefined;
-  setLeagueId: string | null | undefined;
+  /** NEO-569 — the set's effective leagues, any-of; empty = none. */
+  setLeagueIds: readonly string[];
 }
 
 /**
@@ -763,7 +798,7 @@ function stringRank(raw: string, ctx: RankContext): { rank: TeamPreferenceRank; 
   if (row) {
     const leagueId = row.decision?.action === "create" ? row.decision.create?.leagueId : undefined;
     return {
-      rank: leagueId && ctx.setLeagueId && leagueId === ctx.setLeagueId ? 0 : UNRANKED,
+      rank: leagueId && ctx.setLeagueIds.includes(leagueId) ? 0 : UNRANKED,
       pending: false,
     };
   }
@@ -783,21 +818,32 @@ function createdPlayerVerdict(
   ctx: RankContext,
 ): PlayerVerdict {
   const refByKey = new Map<string, TeamRef>();
-  const stints: Array<{ key: string; fromYear: number; toYear?: number }> = [];
+  const stints: Array<{ key: string; fromYear?: number; toYear?: number }> = [];
   let loading = false;
-  for (const stint of createdStints(row)) {
-    const ref = refFromString(stint.name, ctx.view, linkedTeamNameById);
-    if (!ref) continue;
+  const refFor = (name: string): TeamRef | null => {
+    const ref = refFromString(name, ctx.view, linkedTeamNameById);
+    if (!ref) return null;
     if (!refByKey.has(ref.key)) {
-      const { rank, pending } = stringRank(stint.name, ctx);
+      const { rank, pending } = stringRank(name, ctx);
       if (pending) loading = true;
       refByKey.set(ref.key, rank === UNRANKED ? ref : { ...ref, rank });
     }
+    return ref;
+  };
+  const dated = createdStints(row);
+  for (const stint of dated) {
+    const ref = refFor(stint.name);
+    if (!ref) continue;
     stints.push({
       key: ref.key,
       fromYear: stint.fromYear,
       ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
     });
+  }
+  // NEO-569 — undated leads go to the career rule as undated stints.
+  for (const name of createdUndatedNames(row, dated)) {
+    const ref = refFor(name);
+    if (ref) stints.push({ key: ref.key });
   }
   // A rank still on its way could change a tie-break: hold the line until
   // it lands rather than pre-fill and then move the pick under the cursor.
@@ -807,6 +853,7 @@ function createdPlayerVerdict(
     year: setYear,
     currentYear,
     rankOf: (key) => (refByKey.get(key)?.rank ?? UNRANKED) as TeamPreferenceRank,
+    setHasLeagues: ctx.setLeagueIds.length > 0,
   });
   return {
     answer: verdict.answer ? [refByKey.get(verdict.answer.key)!] : null,
@@ -845,8 +892,11 @@ export function buildTeamsGroups(input: {
    * names are not resolved at all (nothing waits on them).
    */
   teamNameEvidence?: ReadonlyMap<string, ServerTeam[]>;
-  /** The set's preferred league (C2b), for a team staged in this wizard. */
-  setLeagueId?: string | null;
+  /**
+   * NEO-569 — the set's effective leagues (C2b, any-of), for a team staged
+   * in this wizard and for the undated-stint rule's scope.
+   */
+  setLeagueIds?: readonly string[];
   /** Who the stored data says is on the cards — see `StoredPeople`. */
   people?: StoredPeople;
 }): TeamsGroup[] {
@@ -856,7 +906,7 @@ export function buildTeamsGroups(input: {
   const rankCtx: RankContext = {
     view,
     teamNameEvidence: input.teamNameEvidence,
-    setLeagueId: input.setLeagueId,
+    setLeagueIds: input.setLeagueIds ?? [],
   };
   const members = new Set(teamlessCardIndexes(cards, rows, settled, input.people));
 

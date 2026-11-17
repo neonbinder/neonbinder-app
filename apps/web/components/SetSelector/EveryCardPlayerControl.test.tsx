@@ -100,7 +100,7 @@ import EveryCardPlayerControl, {
   applyPage,
   bulkErrorText,
   bulkHeading,
-  bulkHintText,
+  cameoHintText,
   bulkLineText,
   confirmCopy,
   failRun,
@@ -238,12 +238,8 @@ describe("Player on every card — the words", () => {
     expect(lineResultText("cameo", ZERO, "X")).toBe("no cards yet");
   });
 
-  it("the hint names both actions, and says 'in this parallel' on a parallel", () => {
-    expect(bulkHintText("insert")).toBe(
-      'Same face on every card? Pick them once. "Add to every card" makes them the player wherever nobody\'s there yet; "Add as cameo" tucks them under "Also on this card". New cards get them too.',
-    );
-    expect(bulkHintText("sport")).toBe(bulkHintText("insert"));
-    expect(bulkHintText("parallel")).toMatch(/^Same face on every card in this parallel\? Pick them once\./);
+  it("the cameo description says where a cameo shows", () => {
+    expect(cameoHintText()).toBe('Tucks them under "Also on this card" on each card.');
   });
 
   it("the player confirm: who, where, what stays, and what new cards get", () => {
@@ -488,22 +484,25 @@ describe("EveryCardPlayerControl", () => {
     });
   });
 
-  it("names itself, describes its picker with the hint, and holds both actions until someone is chosen", () => {
+  it("names itself, shows no hint text, and holds both actions until someone is chosen", () => {
     renderControl();
     expect(PLAYER_ON_EVERY_CARD_HEADING).toBe("Player on every card");
     const region = screen.getByRole("region", { name: PLAYER_ON_EVERY_CARD_HEADING });
     expect(within(region).getByRole("heading", { name: PLAYER_ON_EVERY_CARD_HEADING })).toBeTruthy();
-    const hint = screen.getByText(bulkHintText("insert"));
+    // NEO-569: no visible hint; only the cameo button is described, and only
+    // with where a cameo shows (never a title only a mouse sees).
+    const hint = screen.getByText(cameoHintText());
+    expect(hint.className).toContain("sr-only");
+    expect(screen.queryByText(/Same face on every card/)).toBeNull();
     expect(
       screen.getByLabelText(EVERY_CARD_PLAYER_PICKER_LABELS.root).getAttribute("data-described-by"),
-    ).toBe(hint.id);
-    // Held with aria-disabled, never native disabled: still reachable, and
-    // described by the hint (never a title only a mouse sees).
+    ).toBeFalsy();
+    expect(cameoButton().getAttribute("aria-describedby")).toBe(hint.id);
+    expect(playerButton().getAttribute("aria-describedby")).toBeNull();
     for (const button of [playerButton(), cameoButton()]) {
       expect((button as HTMLButtonElement).disabled).toBe(false);
       expect(button.getAttribute("aria-disabled")).toBe("true");
       expect(button.getAttribute("title")).toBeNull();
-      expect(button.getAttribute("aria-describedby")).toBe(hint.id);
     }
     expect(A.addPlayer).toBe(BULK_ADD_PLAYER_LABEL);
     expect(A.addCameo).toBe(BULK_ADD_CAMEO_LABEL);

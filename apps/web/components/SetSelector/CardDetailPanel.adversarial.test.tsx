@@ -79,6 +79,8 @@ vi.mock("convex/react", () => ({
 
 // A richer TeamPicker stub than the sibling file's — this one can drive the
 // array down to empty, which is exactly the case under test in §4.
+// NEO-569 — the League row reads its own module; CardLeagueRow.test.tsx covers it.
+vi.mock("./CardLeagueRow", () => ({ default: () => null }));
 vi.mock("./TeamPicker", () => ({
   default: ({
     value,

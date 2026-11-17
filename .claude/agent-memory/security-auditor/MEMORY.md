@@ -116,6 +116,7 @@
 - [Neo535 rename fan-out + title chain](patterns_neo535_rename_fanout_and_title_chain.md) — per-row probe × row cap in budget doors
 - [Neo552 fake upstream](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; probe leaks; TOCTOU
 - [Live-account probe and capture](patterns_live_account_probe_and_capture.md) — wrap transport; signal guard; stderr EPIPE/EIO kills it; scripts need checkout
+- [Neo569 league ids](patterns_neo569_league_ids.md) — registry fixture the body refuses = vacuous gate test; new hold reason freezes live qty/price
 - [Feedback reviewing a live worktree](feedback_reviewing_a_live_worktree.md) — When auditing a monorepo worktree, another agent may be editing it concurrently — never temporarily overwrite a file to test something, and re-run lint/tests before re…
 - [Patterns ar cleanup serving image](patterns_ar_cleanup_serving_image.md) — Availability invariant for the Artifact Registry cleanup policies in terraform main.tf — when a KEEP rank guard actually protects the live serving image and when it si…
 - [Patterns attention flag suppression](patterns_attention_flag_suppression.md) — Review rule for NeonBinder "needs attention" flags — a stored flag cleared by any write of its field is silently clearable by an unrelated save; check the client's mut…
@@ -234,3 +235,4 @@
 - [Neo552 fake upstream + recorder](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; TOCTOU; .. prefix; SKU ns; durable list needs write rate; sweep only older versions
 - [Neo556 copied-down decision stamp](patterns_neo556_copied_down_decision_stamp.md) — server-minted {setAt,setByUserId} copied down + reused for background stamps; cursor {i,t,c,r}; one bool two caps
 - [Merge guard survival; bscTeamPool enqueue](patterns_merge_resolution_guard_survival_and_bsc_lane_enqueue.md) — comm -23 line-survival check for merges; one-slot lane enqueue is bounded if admin/internal + row re-read
+- [Cross-workflow preview wait](patterns_cross_workflow_preview_wait.md) — waiter gate ⊆ builder's merge_group scope; tag-exists wait = stale revision

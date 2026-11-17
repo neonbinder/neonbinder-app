@@ -2084,6 +2084,21 @@ describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
       );
     });
 
+    test("NEO-569: a noLeague held set is written on eBay only, and it can be reported there", async () => {
+      const { t, fx, me } = await withBoxedCard();
+      expect(await me.mutation(api.testing.seedMyTestSync, { pending: false, error: false, held: "noLeague" })).toEqual({
+        platforms: [
+          { platform: "bsc", pending: false, error: false, held: false, note: "no held set: only eBay holds a card back for its league" },
+          { platform: "ebay", pending: false, error: false, held: true },
+        ],
+      });
+      const records = await t.run((ctx) => ctx.db.query("marketplaceListingSyncs").collect());
+      expect(records.map((r) => [r.platform, r.problems])).toEqual([["ebay", [{ cardId: fx.gooden1, reason: "noLeague" }]]]);
+      await expect(me.mutation(api.syncReports.report, { variantId: fx.baseId, platform: "ebay" })).resolves.toMatchObject({
+        already: false,
+      });
+    });
+
     test("asking for a held set with a failed or recovered one is refused, and nothing is written", async () => {
       const { t, me } = await withBoxedCard();
       await expect(me.mutation(api.testing.seedMyTestSync, { pending: false, error: true, held: "noLink" })).rejects.toThrow(

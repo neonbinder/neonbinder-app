@@ -156,6 +156,7 @@ import { findSportForSelectorOption } from "./cardChecklist";
 import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 import { derivedVariantFlags, variantTypeKind } from "./variantRole";
 import { titleChainFacts } from "./listingShortName";
+import { newCardLeagueCache } from "./cardLeague";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
 import { classifyAdapterError } from "./observability";
 import { isValidWaitKey } from "./lib/marketplaceWaitWriter";
@@ -1829,6 +1830,8 @@ export const insertParallelCardsPage = internalMutation({
     // (the card's own chain), walked once per page; `insertCardRow` writes the
     // rows, and (NEO-358) stamps the sport on every copy as `sportId`.
     let pageSport: { id: Id<"selectorOptions"> | undefined } | undefined;
+    // NEO-569 — team and set league reads for the copies, once per page.
+    const leagueCache = newCardLeagueCache();
     const parallelSport = async (): Promise<Id<"selectorOptions"> | undefined> => {
       pageSport ??= {
         id: await findSportForSelectorOption(ctx, args.parallelId),
@@ -2020,6 +2023,10 @@ export const insertParallelCardsPage = internalMutation({
         playerLinks: born.playerLinks,
         cameos: born.cameos,
         teamOnCardIds,
+        // NEO-569 — the copy carries its source's league while it carries
+        // the source's teams; a copy given the parallel's Set Team derives
+        // its own from that team.
+        ...(!teamDefault.defaulted && source.leagueId ? { leagueId: source.leagueId } : {}),
         attributes: source.attributes,
         isRookie: source.isRookie,
         isRelic: source.isRelic,
@@ -2108,7 +2115,7 @@ export const insertParallelCardsPage = internalMutation({
         ctx,
         card,
         set,
-        { sport: parallelSport },
+        { sport: parallelSport, leagueCache },
         countLedger,
       );
       writes +=

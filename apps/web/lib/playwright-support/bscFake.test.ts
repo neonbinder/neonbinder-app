@@ -32,7 +32,7 @@ const BREAKER_RULES: ReadonlyArray<[string, BscFaultRule]> = [
   ["429", bscFault.tooManyRequests(BSC_PATH.cardListing)],
   ["503", bscFault.unavailable(BSC_PATH.filters)],
   ["hang", bscFault.hangs(BSC_PATH.sellerSheet)],
-  ["reset", bscFault.dropsConnection(BSC_PATH.sellerWrite)],
+  ["reset", bscFault.answersUnavailable(BSC_PATH.sellerWrite)],
 ];
 
 describe("setFaults: the @bsc-breaker guard", () => {

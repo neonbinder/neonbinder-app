@@ -2235,6 +2235,8 @@ export const seedMyTestSale = mutation({
  * `lastSuccessAt`, the mark on `lastError` as for a recovered set) whose one
  * problem names the card with that reason; `rejected` and `missingAspect`
  * carry a marked detail. Replaced and left alone, and cleared, as the others.
+ * `noLeague` (NEO-569) is written on eBay only: no other platform holds a
+ * card back for its league, so the others get a note instead.
  *
  * Safety as `seedMyTestSale`: production refuses it; caller only.
  */
@@ -2302,7 +2304,9 @@ export const seedMyTestSync = mutation({
       }
       let recovered = false;
       let held = false;
-      if (args.error || args.recovered || args.held !== undefined) {
+      const heldElsewhere = args.held === "noLeague" && platform !== "ebay";
+      if (heldElsewhere) notes.push("no held set: only eBay holds a card back for its league");
+      if (!heldElsewhere && (args.error || args.recovered || args.held !== undefined)) {
         const asked = args.held !== undefined ? "held set" : args.recovered ? "recovered set" : "failed set";
         const existing = await ctx.db
           .query("marketplaceListingSyncs")

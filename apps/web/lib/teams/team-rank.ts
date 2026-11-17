@@ -7,12 +7,13 @@
  * search index's order (or, browsing, the table's): "Rangers" surfaced the
  * 1972 Texas Rangers, a minor-league Rangers and a hockey-adjacent namesake in
  * whatever order BM25 scored them, and the MLB club the card almost certainly
- * means could sit fifth. The set already knows its league (`features.league`)
- * and its year, so the picker can put the likely answer first.
+ * means could sit fifth. The set already knows its leagues (NEO-569:
+ * `selectorOptions.leagueIds`, any-of) and its year, so the picker can put
+ * the likely answer first.
  *
  * ## The tiers (Jason, 2026-10-10)
  *
- * With L the set's league row and Y the set's year:
+ * With L the set's leagues (any of them, NEO-569) and Y the set's year:
  *
  *   1. in L, and active in Y;
  *   2. in a league whose level is "minor", and active in Y — a minor-league
@@ -51,8 +52,11 @@ export type RankableTeam = TeamNameParts & {
 };
 
 export type TeamRankContext = {
-  /** The set's league row, when `features.league` resolved to one. */
-  leagueId?: string;
+  /**
+   * NEO-569 — the set's leagues (its effective `leagueIds`, in the searched
+   * sport). A team is "in L" when it is in ANY of them.
+   */
+  leagueIds?: ReadonlyArray<string>;
   /** The set's year, when an ancestor carries one. */
   year?: number;
   /**
@@ -84,8 +88,9 @@ export function teamRankTier(
   team: RankableTeam,
   context: TeamRankContext,
 ): TeamRankTier {
-  const { leagueId, year, levelById } = context;
-  const inLeague = leagueId !== undefined && team.leagueId === leagueId;
+  const { leagueIds, year, levelById } = context;
+  const inLeague =
+    team.leagueId !== undefined && (leagueIds ?? []).includes(team.leagueId);
 
   if (year === undefined) {
     // No year: every team in L is tier 1; nothing can be "active" or

@@ -48,6 +48,18 @@
 // pre-checked; skipped: it is offered and the spec picks it), annotates which one ran
 // (`bsc-lookup`), and every later assert is the same in both.
 //
+// NEO-569 rides this fixture as well: the set's League list decides which of a
+// created player's in-window career teams the Teams step pre-selects. Before the
+// checklist is fetched, NCAA is added to the Base row's League list (it starts
+// with the sport's league, the NHL); LIVE_PLAYER is then created with TWO career
+// teams in the set's window, the staged club (no league: nothing ranks it) and
+// Wisconsin Badgers, an NCAA team of the reference catalogue. With the NCAA in the
+// set's leagues the Badgers rank first and are PRE-SELECTED; the club, same
+// years, is offered but not selected. A tie (both unranked) would pre-select
+// neither, which is what the Teams step does for any career team outside the
+// set's leagues (unit-tested: teamFill.test.ts, teams-on-cards.test.tsx); the
+// operator then picks the club, so everything after this is as before.
+//
 // Sole writer of the Roanoke Express ECHL set; fresh-only (it commits the
 // checklist). Re-seed before re-running.
 import type { Page } from "@playwright/test";
@@ -59,6 +71,7 @@ import {
   columnSelection,
   drillToColdManufacturer,
   expectAfterBscSync,
+  openAttributesPanel,
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
@@ -94,6 +107,8 @@ const YEAR = "1995";
  * Player" (never a "Link to" preselect, as Daniel Berthiaume and Matt DelGuidice get).
  */
 const LIVE_PLAYER = "Chris Pollack";
+/** An NCAA hockey team of the reference catalogue ("Wisconsin" + "Badgers"), staged as a second career team. */
+const COLLEGE_TEAM = "Wisconsin Badgers";
 
 /**
  * Walk the review's name steps to LIVE_PLAYER's row: each team/league step is skipped ("that is
@@ -218,6 +233,19 @@ test(
     await expect(cancelled).toBeHidden();
     await expect(page.getByRole("button", { name: "Map Base Set" })).toBeVisible();
 
+    // NEO-569: NCAA joins the Base row's League list before any card exists (the wizard's Teams
+    // step ranks a player's career teams by the leagues of the row the cards save under).
+    await openAttributesPanel(page);
+    const baseLeagues = page
+      .getByRole("region", { name: "Set attributes panel" })
+      .getByRole("group", { name: "League", exact: true });
+    const addLeague = baseLeagues.getByRole("combobox", { name: "Add league" });
+    await addLeague.click();
+    await addLeague.fill("NCAA");
+    await page.getByRole("listbox", { name: "Add league suggestions" }).getByRole("option", { name: /^NCAA/ }).click();
+    await expect(page.getByText("Saved League").first()).toBeVisible();
+    await expect(baseLeagues.getByRole("listitem").filter({ hasText: "NCAA" })).toBeVisible();
+
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
     await expectAccessible(page, { label: "Empty checklist with an unmapped base" });
@@ -300,6 +328,14 @@ test(
     await wizard.getByRole("button", { name: "Add as New Team" }).click();
     // Back on the player, the staged stint survived the hop, years and all.
     await expect(careerTeam).toBeVisible();
+    await expect(wizard.getByText(new RegExp(`${team} \\(1994.1996\\)`))).toBeVisible();
+    // NEO-569: a second in-window career team, an NCAA program the catalogue already holds
+    // (no lookup, no New Team step). Same years as the club, so only the set's leagues tell them apart.
+    await careerTeam.fill(COLLEGE_TEAM);
+    await wizard.getByRole("spinbutton", { name: "From year" }).fill("1994");
+    await wizard.getByRole("spinbutton", { name: /^To year/ }).fill("1996");
+    await wizard.getByRole("button", { name: "Add career team" }).click();
+    await expect(wizard.getByText(new RegExp(`${COLLEGE_TEAM} \\(1994.1996\\)`))).toBeVisible();
     await expect(wizard.getByText(new RegExp(`${team} \\(1994.1996\\)`))).toBeVisible();
     // "Add as New Player" records exactly ONE decision (x moves by one).
     const { x: stepBefore } = await readStep(page);
@@ -424,24 +460,25 @@ test(
     // ...and the Penguins pick above no longer holds: one team per card on this row.
     await expect(wizard.getByRole("radio", { name: /^Pittsburgh Penguins — #/ })).not.toBeChecked();
 
-    // THE PRE-FILL, or invariant 8's hold-back (NEO-489, Jason 2026-11-11: a 429 or an open
-    // cooldown on the live card is a pass). The wizard opened behind the team fence (every
-    // lookup settled), so BSC's answer for his card is final here. The line ALWAYS offers his
-    // one in-window career team. Answered: it is CHECKED by default, nobody touched it.
-    // Cooldown: the lookup was skipped, the line rests on "Leave for later" and the operator
-    // picks the team. Either way he ends on the career team, so everything after is unconditional.
+    // THE PRE-FILL (NEO-569). BSC does not 429 on its own any more (GUIDE, "BSC does not 429 on
+    // its own"), so his live card is answered and the line is final here. It offers both
+    // in-window career teams (same years: 1994-1996 covers the set year 1995), and the SET'S
+    // LEAGUES break the tie: Wisconsin Badgers play in NCAA, which the Base row's League list
+    // now holds, so they are CHECKED by default, nobody touched them; the club has no league and
+    // ranks last, so it is offered and not selected. Without NCAA on the row the same two teams tie
+    // and neither is selected (the planted proof: skip the "Add league" step above and this goes red).
     const careerTeamRadio = wizard.getByRole("radio", { name: `${team} — ${LIVE_PLAYER}`, exact: true });
-    const prefilled = wizard.getByRole("radio", { name: `${team} — ${LIVE_PLAYER}`, exact: true, checked: true });
-    const heldBack = wizard.getByRole("radio", { name: `Leave for later — ${LIVE_PLAYER}`, exact: true, checked: true });
+    const collegeRadio = wizard.getByRole("radio", { name: `${COLLEGE_TEAM} — ${LIVE_PLAYER}`, exact: true });
     await expect(careerTeamRadio).toBeVisible();
-    await expect(prefilled.or(heldBack)).toBeVisible();
-    const answered = await prefilled.isVisible();
-    bscLookupOutcome(answered ? "answered" : "cooldown", LIVE_PLAYER);
-    if (!answered) {
-      await expect(careerTeamRadio).not.toBeChecked();
-      await careerTeamRadio.check();
-    }
+    await expect(collegeRadio).toBeVisible();
+    await expect(collegeRadio).toBeChecked();
+    await expect(careerTeamRadio).not.toBeChecked();
+    bscLookupOutcome("answered", LIVE_PLAYER);
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Teams step with a league-ranked pre-fill" });
+    // The operator then picks the club, so everything after is as it was.
+    await careerTeamRadio.check();
     await expect(careerTeamRadio).toBeChecked();
+    await expect(collegeRadio).not.toBeChecked();
 
     // What the checklist must say once this saves: every card left for later is
     // flagged; the one answered "no team" is not, nor the pre-filled one, nor the

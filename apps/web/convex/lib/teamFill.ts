@@ -49,6 +49,11 @@
  *  year from its start. A stint that starts AFTER the set year never covers
  *  it: a card can show a team's past, never its future.
  *
+ *  **Undated stints** (NEO-569): a team with no years counts as covering
+ *  every year only when it is the ONE career team in the set's leagues (or
+ *  the one career team at all, for a set with no league) and has no dated
+ *  stint; otherwise undated stints are ignored. See `withUndatedRule`.
+ *
  *  **oneTeamCareerInLeague** (legends). With NOTHING in the window — a
  *  retired player on a modern insert, or no set year at all — a career of
  *  exactly one team pre-fills only when that team is in the set's own league
@@ -124,25 +129,30 @@ export type TeamPreferenceRank = 0 | 1 | 2;
 export const UNRANKED: TeamPreferenceRank = 2;
 
 /**
- * C2b — a team's fit to the set, from NB rows only: the set's
- * `features.league` resolved to a `leagues` row, and the team's `leagueId`.
+ * C2b — a team's fit to the set, from NB rows only: the set's effective
+ * `leagueIds` (NEO-569, any-of) and the team's `leagueId`.
  *
- * Never a marketplace value or a display name: both sides are NB ids, and the
- * level is the league row's own NB field. An unclassified league (no level)
- * can only ever match by id.
+ * 0 when the team is in ANY of the set's leagues; 1 when its league's level
+ * is the level of any of them; otherwise 2. Never a marketplace value or a
+ * display name: both sides are NB ids, and the level is the league row's own
+ * NB field. An unclassified league (no level) can only ever match by id.
  */
 export function teamPreferenceRank(
   team: { leagueId?: string | null; leagueLevel?: string | null },
-  set: { leagueId: string; level?: string | null } | null,
+  set: { leagueIds: ReadonlyArray<string>; levels: ReadonlyArray<string | null | undefined> } | null,
 ): TeamPreferenceRank {
-  if (!set || !team.leagueId) return UNRANKED;
-  if (team.leagueId === set.leagueId) return 0;
-  if (set.level && team.leagueLevel && team.leagueLevel === set.level) return 1;
+  if (!set || !team.leagueId || set.leagueIds.length === 0) return UNRANKED;
+  if (set.leagueIds.includes(team.leagueId)) return 0;
+  if (team.leagueLevel && set.levels.some((level) => level && level === team.leagueLevel)) return 1;
   return UNRANKED;
 }
 
-/** One stint, keyed by whatever identifies its team to the caller. */
-export type KeyedStint<K extends string> = { key: K; fromYear: number; toYear?: number };
+/**
+ * One stint, keyed by whatever identifies its team to the caller. NEO-569:
+ * `fromYear` may be absent — an UNDATED stint ("played college ball at Wake
+ * Forest", years unknown). See `careerTeamVerdict` for when one counts.
+ */
+export type KeyedStint<K extends string> = { key: K; fromYear?: number; toYear?: number };
 
 /**
  * Does this stint cover any year of the set's window `[year - 1, year]`?
@@ -179,16 +189,26 @@ export function careerTeamVerdict<K extends string>(input: {
   year: number | undefined;
   currentYear: number;
   rankOf?: (key: K) => TeamPreferenceRank;
+  /**
+   * NEO-569 — whether the set has any league (`leagueIds` non-empty). Scopes
+   * the undated-stint rule to the teams in the set's leagues; see below.
+   */
+  setHasLeagues?: boolean;
 }): CareerVerdict<K> {
-  const { stints, year, currentYear } = input;
+  const { year, currentYear } = input;
   const rankOf = input.rankOf ?? (() => UNRANKED);
+  const stints = withUndatedRule(input.stints, rankOf, input.setHasLeagues ?? false);
 
   const order: K[] = [];
   const years = new Map<K, number>();
   for (const stint of stints) {
     if (!years.has(stint.key)) order.push(stint.key);
-    const end = stint.toYear ?? Math.max(currentYear, stint.fromYear);
-    years.set(stint.key, (years.get(stint.key) ?? 0) + Math.max(1, end - stint.fromYear + 1));
+    // An all-years (undated) stint counts as one year: its length is unknown.
+    const span =
+      stint.fromYear === undefined
+        ? 1
+        : Math.max(1, (stint.toYear ?? Math.max(currentYear, stint.fromYear)) - stint.fromYear + 1);
+    years.set(stint.key, (years.get(stint.key) ?? 0) + span);
   }
   const ranks = new Map<K, TeamPreferenceRank>(order.map((key) => [key, rankOf(key)]));
   const ordered = (keys: K[]): K[] =>
@@ -206,7 +226,13 @@ export function careerTeamVerdict<K extends string>(input: {
     year === undefined
       ? []
       : order.filter((key) =>
-          stints.some((stint) => stint.key === key && stintCoversWindow(stint, year)),
+          stints.some(
+            (stint) =>
+              stint.key === key &&
+              // An undated stint that survived `withUndatedRule` covers every year.
+              (stint.fromYear === undefined ||
+                stintCoversWindow({ fromYear: stint.fromYear, toYear: stint.toYear }, year)),
+          ),
         );
 
   if (inWindow.length === 1) {
@@ -234,6 +260,40 @@ export function careerTeamVerdict<K extends string>(input: {
   return { answer: null, candidates: ordered(order) };
 }
 
+/**
+ * NEO-569 — the undated-stint rule (Jason, 2026-11-16), applied before any
+ * window is counted:
+ *
+ *  - the scope is the career's teams IN THE SET'S LEAGUES (rank 0) when the
+ *    set has leagues, else the whole career;
+ *  - exactly ONE team in that scope, and it has no dated stint at all (only
+ *    undated ones) → that team covers every year: its undated stint is kept
+ *    and counts in any window;
+ *  - otherwise every undated stint is ignored (dropped, as the server always
+ *    dropped them before this rule): more than one team in scope, or the one
+ *    team is dated, or the undated team is outside the set's leagues.
+ *
+ * So a college player whose only NCAA team is undated pre-fills on an NCAA
+ * set (the Jackson Burns case), while an undated college stint never decides
+ * a pro set.
+ */
+function withUndatedRule<K extends string>(
+  stints: ReadonlyArray<KeyedStint<K>>,
+  rankOf: (key: K) => TeamPreferenceRank,
+  setHasLeagues: boolean,
+): Array<KeyedStint<K>> {
+  const keys = [...new Set(stints.map((stint) => stint.key))];
+  const scope = setHasLeagues ? keys.filter((key) => rankOf(key) === 0) : keys;
+  const only = scope.length === 1 ? scope[0] : undefined;
+  const coversAll =
+    only !== undefined &&
+    stints.some((stint) => stint.key === only && stint.fromYear === undefined) &&
+    !stints.some((stint) => stint.key === only && stint.fromYear !== undefined);
+  return stints.filter(
+    (stint) => stint.fromYear !== undefined || (coversAll && stint.key === only),
+  );
+}
+
 /** The card fields a stored tier reads. Satisfied by a full `Doc<"cardChecklist">`. */
 export type SuggestionCard = {
   selectorOptionId: Id<"selectorOptions">;
@@ -243,7 +303,8 @@ export type SuggestionCard = {
 
 /** The player fields the career tiers read. Satisfied by a full `Doc<"players">`. */
 export type SuggestionPlayer = {
-  teamYears?: ReadonlyArray<{ teamId: Id<"teams">; fromYear: number; toYear?: number }>;
+  /** NEO-569 — undated stints included; `careerTeamVerdict` decides which count. */
+  teamYears?: ReadonlyArray<{ teamId: Id<"teams">; fromYear?: number; toYear?: number }>;
 };
 
 export type PlayerTeamSuggestion = {
@@ -316,6 +377,8 @@ export function suggestTeamsForPlayer(input: {
   maxCandidates: number;
   /** C2b — each career team's fit to the set; absent ranks everything alike. */
   rankOf?: (teamId: Id<"teams">) => TeamPreferenceRank;
+  /** NEO-569 — the set has leagues; scopes the undated-stint rule. */
+  setHasLeagues?: boolean;
 }): PlayerTeamSuggestion {
   const { playerId, player, cards, nodeId, parallelOfNodeId, baseNodeId, year, currentYear } =
     input;
@@ -342,12 +405,13 @@ export function suggestTeamsForPlayer(input: {
   const verdict = careerTeamVerdict<Id<"teams">>({
     stints: (player.teamYears ?? []).map((entry) => ({
       key: entry.teamId,
-      fromYear: entry.fromYear,
+      ...(entry.fromYear !== undefined ? { fromYear: entry.fromYear } : {}),
       ...(entry.toYear !== undefined ? { toYear: entry.toYear } : {}),
     })),
     year,
     currentYear,
     rankOf: input.rankOf,
+    setHasLeagues: input.setHasLeagues,
   });
   return {
     answer: verdict.answer

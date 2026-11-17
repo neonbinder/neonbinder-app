@@ -171,6 +171,10 @@ vi.mock("react-virtuoso", () => ({
  * session to return to, and whether a failed commit was reported without
  * throwing the review away.
  */
+// NEO-569: the card panel's League row reads its own query; its behaviour is
+// CardLeagueRow.test.tsx's, so here it is out of the way.
+vi.mock("./CardLeagueRow", () => ({ default: () => null }));
+
 vi.mock("./EntityReviewWizard", () => ({
   default: ({
     summary,

@@ -420,7 +420,9 @@ describe("the commit sizes its chunks for the defaults' index rows", () => {
     // Measured above: a full chunk with a player and every cameo writes
     // 1 + MAX_CARD_PLAYERS more per card than one without; at this size the
     // chunk writes no more than a 150-card chunk with two such rows per card.
-    expect(atCap * (1 + MAX_CARD_PLAYERS)).toBeLessThanOrEqual(CARDS_PER_COMMIT_CHUNK * (6 + 2));
+    // NEO-569: the budget carries one league operation per card besides.
+    expect(atCap * (6 + 1 + 1 + MAX_CARD_PLAYERS)).toBeLessThanOrEqual(COMMIT_CHUNK_OP_BUDGET);
+    expect(COMMIT_CHUNK_OP_BUDGET).toBe(CARDS_PER_COMMIT_CHUNK * (6 + 1 + 2));
     expect(commitChunkSize(1000)).toBeGreaterThanOrEqual(1);
   });
 
@@ -664,11 +666,12 @@ describe("a chunk applies no more default rows than it was sized for (N1)", () =
     expect(commitChunkDefaultAllowance(CARDS_PER_COMMIT_CHUNK, 3)).toBe(3);
     expect(commitChunkDefaultAllowance(10, 0)).toBe(0);
     expect(commitChunkDefaultAllowance(CARDS_PER_COMMIT_CHUNK, undefined)).toBe(
-      Math.floor(COMMIT_CHUNK_OP_BUDGET / CARDS_PER_COMMIT_CHUNK) - 6,
+      // 6 per card, plus NEO-569's one league operation.
+      Math.floor(COMMIT_CHUNK_OP_BUDGET / CARDS_PER_COMMIT_CHUNK) - 7,
     );
     // Every size the action can pick leaves the sized count inside the budget.
     for (const sized of [0, 1, 2, 5, 1 + MAX_CARD_PLAYERS]) {
-      expect(commitChunkSize(sized) * (6 + Math.max(sized, 1))).toBeLessThanOrEqual(COMMIT_CHUNK_OP_BUDGET);
+      expect(commitChunkSize(sized) * (6 + 1 + Math.max(sized, 1))).toBeLessThanOrEqual(COMMIT_CHUNK_OP_BUDGET);
     }
   });
 

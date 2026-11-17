@@ -79,6 +79,12 @@ export type TeamPickerNoTeam = {
   onChange: (next: boolean) => void;
   /** Accessible name; one of `NO_TEAM_LABELS`. Default `NO_TEAM_LABELS.card`. */
   label?: string;
+  /**
+   * Id of an element that describes the toggle itself. Without it the toggle
+   * follows the picker's `ariaDescribedBy`, which says what a picked TEAM
+   * reaches and so misdescribes this control while it is off.
+   */
+  describedBy?: string;
 };
 
 /**
@@ -948,8 +954,8 @@ export default function TeamPicker({
           `min-h-6`: the 24px target floor (SC 2.5.8) on a chip-sized face;
           on a touch screen (`pointer: coarse`) it grows to the 44px finger
           target, as "+ Add team" beside it does.
-          `aria-describedby` follows "+ Add team"'s: the caller's hint says
-          what the answer reaches, for this control as much as the trigger.
+          `aria-describedby` is the caller's `noTeam.describedBy` (what No Team
+          does); absent that it follows "+ Add team"'s.
 
           The same element in both states, so focus never moves under the
           operator's finger when it toggles.
@@ -959,7 +965,7 @@ export default function TeamPicker({
           disabled={disabled}
           aria-pressed={noTeamOn}
           aria-label={noTeam.label ?? NO_TEAM_LABELS.card}
-          aria-describedby={ariaDescribedBy}
+          aria-describedby={noTeam.describedBy ?? ariaDescribedBy}
           onClick={() => {
             if (disabled) return;
             noTeam.onChange(!noTeamOn);

@@ -15,8 +15,9 @@
 
 /**
  * Reasons only the admin team can fix: the card's link, its sheet row, what
- * the platform said, or its title (`titleTooLong`, NEO-535: a title over the
- * listing limit is shortened in the set builder, which is the admin team's).
+ * the platform said, the card's league (NEO-569), which only an admin sets,
+ * or its title (`titleTooLong`, NEO-535: a title over the listing limit is
+ * shortened in the set builder, which is the admin team's).
  */
 export const REPORTABLE_SYNC_REASONS = [
   "noLink",
@@ -25,6 +26,7 @@ export const REPORTABLE_SYNC_REASONS = [
   "notOnSheet",
   "rejected",
   "missingAspect",
+  "noLeague",
   "titleTooLong",
 ] as const;
 

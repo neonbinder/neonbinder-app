@@ -212,10 +212,11 @@ describe("runCardFeaturesBackfill (node+card materialized backfill)", () => {
     await runBackfill(t);
 
     // --- NODES: each heuristic key landed where the backfill anchors it. ---
-    // league/era/vintage/manufacturer/isReprint are anchored at the SETNAME
-    // node (set-scoped materialize); cardType at each variant node.
+    // era/vintage/manufacturer/isReprint are anchored at the SETNAME node
+    // (set-scoped materialize); cardType at each variant node. NEO-569: the
+    // retired League is never seeded.
     const setNameNode = await getNode(t, ids.setNameId);
-    expect(setNameNode!.features?.league).toBe("MLB");
+    expect(setNameNode!.features?.league).toBeUndefined();
     expect(setNameNode!.features?.era).toBe("Vintage (1970-79)");
     expect(setNameNode!.features?.vintage).toBe("true");
     expect(setNameNode!.features?.manufacturer).toBe("Topps");
@@ -229,14 +230,14 @@ describe("runCardFeaturesBackfill (node+card materialized backfill)", () => {
     expect(variantNode!.features?.cardType).toBe("Base");
     expect(insertNode!.features?.cardType).toBe("Insert");
     // ...and inherit the setName-anchored keys via materialization.
-    expect(variantNode!.features?.league).toBe("MLB");
+    expect(variantNode!.features?.league).toBeUndefined();
     expect(variantNode!.features?.isReprint).toBe("false");
     expect(insertNode!.features?.era).toBe("Vintage (1970-79)");
 
     // --- CARDS: under each variant node, fully resolved. ---
     for (const id of ids.baseCardIds) {
       const card = await getCard(t, id);
-      expect(card!.features?.league).toBe("MLB");
+      expect(card!.features?.league).toBeUndefined();
       expect(card!.features?.era).toBe("Vintage (1970-79)");
       expect(card!.features?.vintage).toBe("true");
       expect(card!.features?.manufacturer).toBe("Topps");
@@ -245,13 +246,13 @@ describe("runCardFeaturesBackfill (node+card materialized backfill)", () => {
     }
     for (const id of ids.insertCardIds) {
       const card = await getCard(t, id);
-      expect(card!.features?.league).toBe("MLB");
+      expect(card!.features?.league).toBeUndefined();
       expect(card!.features?.cardType).toBe("Insert"); // insert leaf, not Base
       expect(card!.features?.isReprint).toBe("false");
     }
   });
 
-  test("league only for stick-and-ball sports; non-mapped sport gets none", async () => {
+  test("a non-stick-and-ball sport seeds the same keys (and, NEO-569, no league)", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedPrePipelineSet(t, {
       sport: "Pokemon",
@@ -287,26 +288,28 @@ describe("runCardFeaturesBackfill (node+card materialized backfill)", () => {
     expect(setNameNode!.features?.manufacturer).toBe("Topps (Operator)"); // preserved
     expect(setNameNode!.features?.isReprint).toBe("true"); // preserved
     // The keys the operator did NOT set still get the heuristic.
-    expect(setNameNode!.features?.league).toBe("MLB");
+    expect(setNameNode!.features?.league).toBeUndefined();
 
     // The setName node already carried manufacturer=isReprint values, so the
     // fill-absent seed SKIPS those keys entirely — it does not (and must not)
     // re-cascade an already-set node value onto cards. Critically, the WRONG
     // heuristic value ("Topps") is never pushed down: the card's manufacturer
     // stays whatever it was (here: undefined), not the heuristic guess. The
-    // keys the operator left blank (league) DO materialize down to the cards.
+    // keys the operator left blank DO materialize down to the cards; NEO-569:
+    // the retired League is never one of them.
     for (const id of ids.baseCardIds) {
       const card = await getCard(t, id);
       expect(card!.features?.manufacturer).toBeUndefined();
       expect(card!.features?.isReprint).toBeUndefined();
-      expect(card!.features?.league).toBe("MLB");
+      expect(card!.features?.league).toBeUndefined();
     }
   });
 
   test("preserves an operator override on a CARD", async () => {
     const t = convexTest(schema, modules);
-    // One base card already has league=NPB (a per-card override). The
-    // setName-anchored league=MLB materialize must skip it.
+    // One base card already has league=NPB (a legacy per-card value). NEO-569:
+    // the backfill neither seeds League nor touches the legacy text (only the
+    // armed leagueBackfill strips it).
     const ids = await seedPrePipelineSet(t, {
       baseCardFeaturesPerIndex: { 1: { league: "NPB" } },
     });
@@ -316,9 +319,9 @@ describe("runCardFeaturesBackfill (node+card materialized backfill)", () => {
     const card0 = await getCard(t, ids.baseCardIds[0]);
     const card1 = await getCard(t, ids.baseCardIds[1]);
     const card2 = await getCard(t, ids.baseCardIds[2]);
-    expect(card0!.features?.league).toBe("MLB");
+    expect(card0!.features?.league).toBeUndefined();
     expect(card1!.features?.league).toBe("NPB"); // override preserved
-    expect(card2!.features?.league).toBe("MLB");
+    expect(card2!.features?.league).toBeUndefined();
     // The overridden card still gets the OTHER (non-conflicting) keys.
     expect(card1!.features?.cardType).toBe("Base");
     expect(card1!.features?.isReprint).toBe("false");
@@ -382,6 +385,6 @@ describe("runCardFeaturesBackfill (node+card materialized backfill)", () => {
     const aCard = await getCard(t, a.baseCardIds[0]);
     const bCard = await getCard(t, b.baseCardIds[0]);
     expect(aCard!.features?.cardType).toBe("Base");
-    expect(bCard!.features?.league).toBe("MLB");
+    expect(bCard!.features?.league).toBeUndefined();
   });
 });
