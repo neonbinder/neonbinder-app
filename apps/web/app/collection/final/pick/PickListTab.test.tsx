@@ -976,6 +976,39 @@ describe("the signed-in Pick List's ways out", () => {
     }
   });
 
+  it("NEO-590: a sport's Sales NB didn't list band counts items, never cards, while an NB set's band still counts cards", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const order = { id: "oe", venue: "eBay", number: "27-11111-22222" };
+    const titled = (id: string, sport: { id: string; name: string; code: string | null } | null) => ({
+      id,
+      quantity: 1,
+      condition: "",
+      order,
+      card: null,
+      sportCode: null,
+      listingTitle: `Lot ${id}`,
+      listed: { title: `Lot ${id}`, titleSport: sport },
+      problem: "NB didn't list this one. Check the order's photo.",
+    });
+    const zz = { id: "sp-zz", name: "Zorbball", code: "ZB" };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, titled("a", zz), titled("b", zz), titled("c", null)] }, true);
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      const heads = within(region).getAllByRole("heading", { level: 3 });
+      const band = (sport: string) => {
+        const head = heads.find((h) => h.closest("tr")?.textContent?.includes("Sales NB didn't list") && h.closest("tr")?.textContent?.includes(sport));
+        return head!.closest("tr")!.textContent!;
+      };
+      expect(band("Zorbball")).toMatch(/list2 items$/);
+      expect(band("Other")).toMatch(/list1 item$/);
+      expect(band("Zorbball")).not.toMatch(/card/i);
+      expect(band("Other")).not.toMatch(/card/i);
+      // A band of NB's own set still counts cards.
+      const nbBand = heads.map((h) => h.closest("tr")!.textContent!).find((t) => /\d+ cards?$/.test(t) && !t.includes("Sales NB didn't list"));
+      expect(nbBand).toBeTruthy();
+    }
+  });
+
   it("a line NB couldn't match names its order, and its order opens that sale on the Sales tab", async () => {
     const region = await show({}, true);
     // The toggle carries the order: two orders' strays never read alike.
