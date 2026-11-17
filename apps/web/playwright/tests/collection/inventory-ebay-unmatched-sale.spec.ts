@@ -4,13 +4,19 @@
 //   - shows the sold line on the Sales tab under eBay's own title (never called
 //     a card), says plainly it did not list it and left the boxes alone, and
 //     counts the order in "items", not "cards";
-//   - puts it on the Pick List under "Can't find it" with eBay's title and the
-//     "NB didn't list this one" words, wearing NO "Not in NB" chip
-//     (Jason's J2: that chip is for a line NB can describe as a card);
-//   - never files it by reading the title: the title here names a REAL card
-//     that sits in the seller's own box, and the box keeps its copy;
+//   - puts it on the Pick List with eBay's title and the "NB didn't list this
+//     one" words, wearing NO "Not in NB" chip (Jason's J2: that chip is for a
+//     line NB can describe as a card);
+//   - NEO-590: files a titled line by its title for the list's ORDER only:
+//     under the sport of the NB player the title names (Nolan Arenado is a
+//     Baseball row of the reference seed), behind the "Sales NB didn't list"
+//     divider, and a title naming no NB player or team under the "Other"
+//     band; never in "Can't find it", which keeps only a line with no title;
+//   - never ties it to a card by its title: the title here names a REAL card
+//     that sits in the seller's own box; that card is not on the list, its
+//     set gets no row, and the box keeps its copy;
 //   - lets the seller pull it (and it stays pulled), and a line eBay sends no
-//     title for reads "A sale with no title";
+//     title for reads "A sale with no title" and stays under "Can't find it";
 //   - takes it off the list once the order ships.
 //
 // Orders come from `/testing/seed-pick-order?platform=ebay` (support/pick-list.ts,
@@ -58,6 +64,8 @@ const SET_TITLE = "2024 Topps Chrome";
 const WHY_PICK = "NB didn't list this one. Check the order's photo.";
 const WHY_SALES = "NeonBinder didn't list this one. Boxes untouched. Pull it by hand.";
 const NO_TITLE_NAME = "A sale with no title";
+/** NEO-590: the one divider a sport's title-filed sales sit behind. */
+const TITLE_DIVIDER = "Sales NB didn't list";
 
 test(
   "Sales and Pick List: an eBay sale NeonBinder did not list shows under eBay's title, unmatched, with no Not in NB chip, and the box keeps its card",
@@ -77,6 +85,12 @@ test(
     const pick = pickList(page);
     const { region, table } = pick;
     const tabs = inventoryTabs(page);
+    /**
+     * NEO-590: the "Sales NB didn't list" group under `sport`'s band. The group's header
+     * cell reads the band, the divider and the count ("Baseball Sales NB didn't list 1 item").
+     */
+    const titleBand = (sport: string) =>
+      table.getByRole("rowgroup").filter({ has: page.getByRole("rowheader", { name: new RegExp(`^${sport} ${TITLE_DIVIDER} `) }) });
     /** The Sales tab's article for an eBay order (the tab names the marketplace in full). */
     const saleOrder = (orderNo: string) => page.getByRole("article", { name: `eBay order ${orderNo}`, exact: true });
     /**
@@ -134,19 +148,27 @@ test(
       await expect(groupByOrder).toHaveAttribute("aria-pressed", "false");
       await expect(page).not.toHaveURL(/[?&]pgroup=/);
 
-      // --- Pick List: under Can't find it, eBay's title, the unmatched words, no chip ---------------
+      // --- Pick List: under Baseball, behind "Sales NB didn't list", eBay's title, the unmatched words, no chip ---
+      // NEO-590: the title names Nolan Arenado, an NB Baseball player of the reference seed, so the line
+      // files in Baseball's band; it is no longer in Can't find it.
       const cantFind = pickGroup(table, "Can't find it");
-      await expect(pulledToggle(cantFind, title)).toBeVisible();
-      await expect(pulledToggle(cantFind, title)).toHaveAttribute("aria-pressed", "false");
-      const row = pickRow(cantFind, title);
+      const baseball = titleBand("Baseball");
+      await expect(pulledToggle(baseball, title)).toBeVisible();
+      await expect(pulledToggle(baseball, title)).toHaveAttribute("aria-pressed", "false");
+      await expect(baseball.getByRole("heading", { level: 3, name: TITLE_DIVIDER, exact: true })).toBeVisible();
+      // A line NB didn't list is never called a card (NEO-520), in its band's count as in its order's.
+      await expect(baseball.getByText("1 item", { exact: true })).toBeVisible();
+      await expect(baseball.getByText("1 card", { exact: true })).toHaveCount(0);
+      await expect(pulledToggle(cantFind, title)).toHaveCount(0);
+      const row = pickRow(baseball, title);
       await expect(seen(row.getByText(title, { exact: true }))).toBeVisible();
       await expect(seen(row.getByText(WHY_PICK, { exact: true }))).toBeVisible();
       await expect(seen(row.getByText("Not in NB", { exact: true }))).toHaveCount(0);
       await expect(table.getByText("Not in NB", { exact: true })).toHaveCount(0);
-      // The title is never read: the real card it names is not on the list, and nothing is filed in its set.
+      // Filed by its title, never tied to a card by it: the real card it names is not on the list, and its set has no row.
       await expect(pulledToggle(table, CARD.short)).toHaveCount(0);
       await expect(pickGroup(table, SET_TITLE).getByRole("button", { name: /^Pulled / })).toHaveCount(0);
-      await expectAccessible(page, { label: "Pick List, an eBay sale NeonBinder did not list, under Can't find it" });
+      await expectAccessible(page, { label: "Pick List, an eBay sale NeonBinder did not list, under Baseball's Sales NB didn't list" });
 
       // --- Its order opens on the Sales tab, that order focused; Back returns ---------------------
       await row.getByRole("link", { name: `${ebayOrder(titled)} on your Sales tab`, exact: true }).click();
@@ -170,11 +192,11 @@ test(
       await expect(pick.heading).toBeVisible();
       await expect(page).toHaveURL(/[?&]porder=/);
       await expect(pick.matches).toHaveText("1 match.");
-      await expect(pulledToggle(cantFind, title)).toBeVisible();
+      await expect(pulledToggle(baseball, title)).toBeVisible();
 
       // --- Pull it: the pull sticks ---------------------------------------------------------------
-      await pulledToggle(cantFind, title).click();
-      await expect(pulledToggle(cantFind, title)).toHaveAttribute("aria-pressed", "true");
+      await pulledToggle(baseball, title).click();
+      await expect(pulledToggle(baseball, title)).toHaveAttribute("aria-pressed", "true");
       await expect(pick.notice(`Pulled ${title}.`)).toBeVisible();
       // "Pulled …" waits for the server; a second tab's list no longer holds the line.
       await fromServer(async (list) => {
@@ -199,8 +221,11 @@ test(
       await expect(pick.heading).toBeVisible();
       await filterBy(page, isMobile, "Order", ebayOrder(long));
       await expect(pick.matches).toHaveText("1 match.");
-      await expect(pulledToggle(cantFind, longTitle)).toBeVisible();
-      const wideRow = pickRow(cantFind, longTitle);
+      // NEO-590: a title naming no NB player or team files under the Other band, not Can't find it.
+      const other = titleBand("Other");
+      await expect(pulledToggle(other, longTitle)).toBeVisible();
+      await expect(pulledToggle(cantFind, longTitle)).toHaveCount(0);
+      const wideRow = pickRow(other, longTitle);
       await expect(seen(wideRow.getByText(longTitle, { exact: true }))).toBeVisible();
       // Scrolled to first: the row may sit below the fold, which is not what is being asked.
       const wideLink = seen(wideRow.getByRole("link", { name: `${ebayOrder(long)} on your Sales tab`, exact: true }));
@@ -226,12 +251,14 @@ test(
       await expect(pick.heading).toBeVisible();
       await filterBy(page, isMobile, "Order", ebayOrder(untitled));
       await expect(pick.matches).toHaveText("1 match.");
-      // No title to show: the row reads "A sale with no title", named for its order.
+      // No title to show: the row reads "A sale with no title", named for its order, and stays in Can't find it.
       const bareName = `${NO_TITLE_NAME}, ${ebayOrder(untitled)}`;
       const bareToggle = pulledToggle(cantFind, bareName);
       await expect(bareToggle).toHaveCount(1);
       await expect(bareToggle).toHaveAttribute("aria-pressed", "false");
       await expect(seen(pickRow(cantFind, bareName).getByText(WHY_PICK, { exact: true }))).toBeVisible();
+      // No title, nothing to file by: no "Sales NB didn't list" band holds it.
+      await expect(table.getByRole("heading", { level: 3, name: TITLE_DIVIDER, exact: true })).toHaveCount(0);
       await expect(table.getByText("Not in NB", { exact: true })).toHaveCount(0);
       await expectAccessible(page, { label: "Pick List, an eBay line with no title" });
 

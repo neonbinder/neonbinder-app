@@ -1324,7 +1324,11 @@ function PickTable({
  */
 function sectionCount(section: PickSection): string {
   const count = section.rows.reduce((n, r) => n + r.quantity, 0);
-  const items = section.kind === "order" && section.rows.some((r) => !r.card);
+  // NEO-520: a line NB didn't list is never called a card, in its order's group
+  // or in a sport's "Sales NB didn't list" group (NEO-590).
+  const items =
+    (section.kind === "order" && section.rows.some((r) => !r.card)) ||
+    (section.kind === "set" && section.rows.some((r) => rowFacts(r)?.fromTitle));
   return `${count} ${items ? (count === 1 ? "item" : "items") : count === 1 ? "card" : "cards"}`;
 }
 
