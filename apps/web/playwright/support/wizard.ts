@@ -32,7 +32,7 @@ import { expect, type Locator, type Page } from "@playwright/test";
 import { expectAccessible } from "./fixtures";
 import type { FlowEnv } from "./env";
 import { expectAfterMarketplace, expectStepWithSportLots } from "./marketplace-wait";
-import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName } from "./published-checklist";
+import { CHECKLISTS, confirmChecklistMatchCards, usePublishersChecklist, type ChecklistName, type ChecklistRow } from "./published-checklist";
 import {
   columnHeading,
   columnOption,
@@ -448,6 +448,12 @@ export interface OneMarketplaceSet {
    * BSC for every card itself.
    */
   checklist?: ChecklistName;
+  /**
+   * NEO-574: rows appended to `checklist` that the marketplace has no card for
+   * (`usePublishersChecklist`'s `extraRows`). Match Cards then KEEPS them all, so
+   * they reach the wizard as cards the checklist alone names.
+   */
+  extraRows?: readonly ChecklistRow[];
 }
 
 /**
@@ -545,14 +551,21 @@ export async function fetchOneMarketplaceSetChecklistToWizard(
   // re-sync raises no review). A local re-run against an already-committed
   // preview fails here, by name, which is correct: re-seed first.
   await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-  const facts = target.checklist === undefined ? undefined : await usePublishersChecklist(page, target.checklist);
+  const facts =
+    target.checklist === undefined
+      ? undefined
+      : await usePublishersChecklist(page, target.checklist, target.extraRows ? { extraRows: target.extraRows } : {});
   await syncChecklistButton(page).click();
 
   if (facts !== undefined) {
     // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens.
     // One live BSC round trip, waited on inside with `expectAfterMarketplace` (NEO-487). The
     // picker above already proved exactly one marketplace is attached.
-    await confirmChecklistMatchCards(page, { facts, what: `the fetch of ${target.set}` });
+    await confirmChecklistMatchCards(page, {
+      facts,
+      what: `the fetch of ${target.set}`,
+      keepChecklistOnly: target.extraRows?.length,
+    });
   } else {
     // One live BSC round trip, waited on with `expectAfterMarketplace` (NEO-487).
     // `soloKeptMessage` prints only on the NEO-255

@@ -35,25 +35,48 @@
 // THE ROW UNDER TEST IS NAMED, not "whichever comes first": the walk reads
 // each team/league step's heading, acts on the checklist club "New Haven
 // Ravens" and skips every other step (a skip creates nothing, R7).
+//
+// NEO-574 RIDES THIS FIXTURE: the "Career check" step. It needs a real set that commits (a
+// hand-made set never reaches the commit path) and a player of the spec's own, so it uses this
+// sole writer's set, its per-worker career-editor player (P, below) and its per-attempt club.
+//   - P gets ONE dated stint, on the fixture club, 1994-1996 (PART 1).
+//   - The upload adds three rows BSC has no card for, each P's (#901 on the fixture club, #902 on
+//     the Colorado Rockies, #903 on the Florida Marlins); Match Cards keeps all three, so they are
+//     cards only the checklist names. Two catalogue teams, read only: no row of theirs is written.
+//   - The step lists #902 and #903 ("No Rockies in the career by 1996.") and NOT #901, whose
+//     team P's stint covers. The catalogue's players on the linked club are listed too: the
+//     club is minted per attempt, so no catalogue career holds it.
+//   - Answers: #902 "Add to career" with the prefilled year (read back in Players admin);
+//     #903 "Keep as is" (P's career has no Marlins); Jamey Wright's line (#21) "Wrong player"
+//     -> P, and Todd Helton's (#22) "Fix card's team" -> the Rockies, each read back on the
+//     saved card. A catalogue player's career is never written: "Wrong player" puts P on the
+//     card, and Helton's follow-up stays on "Keep as is".
+// Fresh-only like the rest of the spec (committed cards are never checked again).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";
 import { CHECKLISTS } from "../../support/published-checklist";
-import { expectPlayersLoaded, expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { expectPlayersLoaded, expectTeamsLoaded, PLAYERS_MATCHES, playersCounter, teamsCounter } from "../../support/players";
 import { recordedNoMatchPlayer } from "../../support/recorded-names";
 import {
   advanceToSave,
+  careerLine,
   confirmSaveButton,
+  expectStepLeft,
   fetchOneMarketplaceSetChecklistToWizard,
   nextStepButton,
-  passCareerCheck,
   readStep,
   reviewWizard,
   stepCounter,
 } from "../../support/wizard";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 
 const SET = "New Haven Ravens Rally Raffle";
 const ROW = "New Haven Ravens";
+/** NEO-574: the set's year, what a career line is read against. */
+const SET_YEAR = "1996";
+/** NEO-574: two catalogue clubs for the checklist-only cards (read only). */
+const ROCKIES = "Colorado Rockies";
+const MARLINS = "Florida Marlins";
 
 /** The admin Team Management page, filtered to `query`. */
 async function openTeams(page: Page, query: string) {
@@ -114,8 +137,27 @@ test(
     await newAli.getByRole("button", { name: `Create team ${FIXTURE_TEAM}` }).click();
     await expect(page.getByRole("button", { name: `Remove team ${FIXTURE_TEAM}` })).toBeVisible();
 
+    // NEO-574: P's one dated stint, on the fixture club, covering the set's year.
+    await page.getByLabel(/Stint from year/).fill("1994");
+    await page.getByLabel(/Stint to year/).fill(SET_YEAR);
+    await page.getByRole("button", { name: "Add stint" }).click();
+    await expect(page.getByRole("link", { name: new RegExp(`${FIXTURE_TEAM} · 1994.${SET_YEAR}`) })).toBeVisible();
+    await page.getByRole("button", { name: "Save", exact: true }).click();
+    await expect(page.getByText(`Saved ${scaffold}`)).toBeVisible();
+
     // ── PART 2: the set; decline SportLots (it does not carry this set), fetch BSC only ──
-    await fetchOneMarketplaceSetChecklistToWizard(page, env, { sport: "Baseball", year: "1996", set: SET, checklist: CHECKLISTS.newHavenRavens });
+    await fetchOneMarketplaceSetChecklistToWizard(page, env, {
+      sport: "Baseball",
+      year: SET_YEAR,
+      set: SET,
+      checklist: CHECKLISTS.newHavenRavens,
+      // NEO-574: P's three checklist-only cards, kept in Match Cards.
+      extraRows: [
+        { number: "901", player: scaffold, team: FIXTURE_TEAM },
+        { number: "902", player: scaffold, team: ROCKIES },
+        { number: "903", player: scaffold, team: MARLINS },
+      ],
+    });
     const wizard = reviewWizard(page);
 
     // ── PART 3: walk the team and league steps, acting on one club by name ──
@@ -225,9 +267,75 @@ test(
     // teamless and the wizard is on a later step or already on Save. The footer's forward
     // control is the positive the hidden title is read against.
     await expect(nextStepButton(page).or(confirmSaveButton(page))).toBeVisible();
-    // NEO-574: the cards' known players have no stint with the linked fixture team, so a
-    // "Career check" comes first; this spec's feature is the alias ("Leave it" writes nothing).
-    await passCareerCheck(page);
+
+    // ── PART 5a (NEO-574): the Career check ──
+    // The step after the names. Next is held while the careers are read; the lines are the
+    // positive that the read landed (a line names its player and team: "<player> on <team>").
+    const careerHeading = wizard.getByRole("heading", { level: 3, name: /^Career check/ });
+    const lineRockies = careerLine(page, scaffold, ROCKIES);
+    const lineMarlins = careerLine(page, scaffold, MARLINS);
+    const lineWright = careerLine(page, "Jamey Wright", FIXTURE_TEAM);
+    const lineHelton = careerLine(page, "Todd Helton", FIXTURE_TEAM);
+    await expect(careerHeading).toBeVisible();
+    await expect(lineRockies).toBeVisible();
+    // Six catalogue players on the linked club (measured) and P's two uncovered cards.
+    await expect(careerHeading).toHaveText("Career check · 8 to look at");
+    await expect(lineMarlins).toBeVisible();
+    await expect(lineWright).toBeVisible();
+    await expect(lineHelton).toBeVisible();
+    // #901 is P on the club his stint covers: no line for it.
+    await expect(careerLine(page, scaffold, FIXTURE_TEAM)).toHaveCount(0);
+    await expect(wizard.getByText(/#901\b/)).toHaveCount(0);
+    const itemOf = (line: Locator) => wizard.getByRole("listitem").filter({ has: line });
+    await expect(itemOf(lineRockies).getByText(`No Rockies in the career by ${SET_YEAR}.`, { exact: true })).toBeVisible();
+    await expect(itemOf(lineRockies).getByText("Cards #902", { exact: true })).toBeVisible();
+    await expect(itemOf(lineMarlins).getByText(`No Marlins in the career by ${SET_YEAR}.`, { exact: true })).toBeVisible();
+    // Every line opens on "Keep as is", so one Next would pass the screen writing nothing.
+    for (const line of [lineRockies, lineMarlins, lineWright, lineHelton]) {
+      await expect(line.getByRole("radio", { name: "Keep as is" })).toBeChecked();
+    }
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check" });
+
+    // #902: "Add to career", the team and the set's year already in; an end year typed.
+    await lineRockies.getByRole("radio", { name: "Add to career" }).click();
+    await expect(lineRockies.getByRole("radio", { name: "Add to career" })).toBeChecked();
+    await expect(wizard.getByRole("spinbutton", { name: `From year for ${scaffold}, ${ROCKIES}` })).toHaveValue(SET_YEAR);
+    const toRockies = wizard.getByRole("spinbutton", { name: `To year (optional) for ${scaffold}, ${ROCKIES}` });
+    await expect(toRockies).toHaveValue("");
+    await toRockies.fill("1997");
+    // The answer and its years survive Back out of the step and the way in again.
+    await wizard.getByRole("button", { name: "Back to previous step" }).click();
+    await expect(careerHeading).toBeHidden();
+    await wizard.getByRole("button", { name: /^Next( \(Enter\))?$/ }).first().click();
+    await expect(careerHeading).toBeVisible();
+    await expect(lineRockies.getByRole("radio", { name: "Add to career" })).toBeChecked();
+    await expect(wizard.getByRole("spinbutton", { name: `From year for ${scaffold}, ${ROCKIES}` })).toHaveValue(SET_YEAR);
+    await expect(toRockies).toHaveValue("1997");
+
+    // #21: "Wrong player" -> P, through "Someone else…". P's stint covers the club: said, no ask.
+    await lineWright.getByRole("radio", { name: /^Wrong player$/ }).click();
+    await wizard.getByRole("button", { name: "Someone else for Jamey Wright" }).click();
+    await wizard.getByRole("textbox", { name: "Search existing players" }).fill(scaffold);
+    await wizard.getByRole("option", { name: `Link to ${scaffold}` }).click();
+    await expect(itemOf(lineWright).getByText(`${scaffold} played for the Ali${T}.`, { exact: true })).toBeVisible();
+
+    // #22: "Fix card's team" -> the Rockies. Helton's own career is not this spec's to write:
+    // its follow-up (if his career lacks them) stays on "Keep as is".
+    await lineHelton.getByRole("radio", { name: /^Fix card.s team$/ }).click();
+    await wizard.getByRole("button", { name: "Pick a team for Todd Helton" }).click();
+    await wizard.getByRole("textbox", { name: "Search existing teams" }).fill(ROCKIES);
+    await wizard.getByRole("option", { name: `Link to ${ROCKIES}` }).click();
+    await expect(wizard.getByRole("button", { name: "Pick another team for Todd Helton" })).toBeVisible();
+    await expect(itemOf(lineHelton).getByText(/^(Todd Helton played for the Rockies\.|No Rockies in Todd Helton’s career by 1996 either\.)$/)).toBeVisible();
+    const heltonFollowUp = wizard.getByRole("radiogroup", { name: "Career for Todd Helton" });
+    if (await heltonFollowUp.isVisible()) await expect(heltonFollowUp.getByRole("radio", { name: "Keep as is" })).toBeChecked();
+    // #903 stays on "Keep as is".
+    await expect(lineMarlins.getByRole("radio", { name: "Keep as is" })).toBeChecked();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check answered" });
+
+    const { x: careerStep } = await readStep(page);
+    await nextStepButton(page).click();
+    await expectStepLeft(page, careerStep);
     await expect(wizard.getByText(/^(Card titles|Autographed cards|Ready to save)$/)).toBeVisible();
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
     // The teams / titles steps stay on their defaults; this spec's feature is the alias.
@@ -250,6 +358,33 @@ test(
     await expect(drawer.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(drawer).toBeHidden();
+
+    // ── PART 5c (NEO-574): the career answers, read back where they landed ──
+    // "Wrong player": #21 is P's card now, not Jamey Wright's.
+    await editCardButton(page, "21").click();
+    await expect(drawer.getByRole("button", { name: `Remove player ${scaffold}`, exact: true })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: "Remove player Jamey Wright", exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Done editing card" }).click();
+    await expect(drawer).toBeHidden();
+    // "Fix card's team": #22 is on the Rockies now, not the linked club.
+    await editCardButton(page, "22").click();
+    await expect(drawer.getByRole("button", { name: `Remove team ${ROCKIES}`, exact: true })).toBeVisible();
+    await expect(drawer.getByRole("button", { name: `Remove team ${FIXTURE_TEAM}`, exact: true })).toHaveCount(0);
+    await page.getByRole("button", { name: "Done editing card" }).click();
+    await expect(drawer).toBeHidden();
+    // P's career: the stint he came with, the one "Add to career" added (the prefilled year and the
+    // typed end), and no Marlins ("Keep as is" wrote nothing).
+    await page.goto("/admin/players");
+    await expectPlayersLoaded(page, 30_000);
+    await page.getByRole("textbox", { name: "Filter players" }).fill(scaffold);
+    await expect(playersCounter(page, PLAYERS_MATCHES)).toBeVisible();
+    await page.getByRole("button", { name: scaffold }).first().click();
+    await expect(page.getByRole("heading", { name: scaffold, exact: true })).toBeVisible();
+    const career = page.getByRole("list", { name: "Career history" }).getByRole("listitem");
+    await expect(career.filter({ hasText: `${FIXTURE_TEAM} · 1994–${SET_YEAR}` })).toHaveCount(1);
+    await expect(career.filter({ hasText: `${ROCKIES} · ${SET_YEAR}–1997` })).toHaveCount(1);
+    await expect(career.filter({ hasText: MARLINS })).toHaveCount(0);
+    await expect(career).toHaveCount(2);
 
     // ── PART 6: Team Management shows the alias ──
     await openTeams(page, `Ali${T}`);
