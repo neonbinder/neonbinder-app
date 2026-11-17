@@ -4,7 +4,7 @@
  * re-check after a different player or team, and the keyboard model.
  * The wiring into the wizard is EntityReviewWizard.career.test.tsx.
  */
-import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import React, { useEffect, useState } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -19,7 +19,12 @@ vi.mock("./career-reads", () => ({
   useRelinkCandidates: (setId: unknown, args: unknown) => {
     relinkSetIds.push(setId);
     relinkArgs.push(args);
-    return { state: candidateState, candidates };
+    // `reorderOnPick`: once a namesake is picked the read comes back reversed,
+    // so the rows change places in the same render the pick lands.
+    return {
+      state: candidateState,
+      candidates: reorderOnPick && pickedAny ? [...candidates].reverse() : candidates,
+    };
   },
 }));
 
@@ -98,6 +103,9 @@ const SHORT: Record<string, string> = {
 /** Sorted by team, then card number: Angels (Trout) come before Padres (Tatis). */
 const keyOf = (playerId: string) => LINES.find((l) => l.playerId === playerId)!.key;
 let noCareer: Set<string>;
+/** Team names the harness knows; absent = not resolved yet. */
+let reorderOnPick = false;
+let pickedAny = false;
 
 let coverage: Record<string, boolean>;
 let asked: CoverageAsk[];
@@ -108,6 +116,9 @@ let failed: Record<string, boolean>;
 let onRetry: () => void;
 
 function Harness(props: {
+  /** No team has a short name yet. */
+  shortUnknown?: boolean;
+  shortOverride?: Record<string, string>;
   readFailed?: boolean;
   empty?: boolean;
 }) {
@@ -122,14 +133,21 @@ function Harness(props: {
       selectorOptionId={SET}
       sportId={SPORT}
       answers={answers}
-      onAnswer={(key, answer) => setAnswers((prev) => ({ ...prev, [key]: answer }))}
+      onAnswer={(key, answer) => {
+        if (answer.kind === "player" && answer.pick) pickedAny = true;
+        setAnswers((prev) => ({ ...prev, [key]: answer }));
+      }}
       coverage={coverage}
       failed={failed}
       onRetry={onRetry}
       requestCoverage={(asks) => asked.push(...asks)}
       playerNameOf={(l) => NAMES[l.playerId]}
       teamNameOf={(l) => TEAMS[l.teamId ?? ""]}
-      shortTeamNameOf={(l) => SHORT[l.teamId ?? ""]}
+      shortTeamNameOf={(l) =>
+        props.shortUnknown
+          ? undefined
+          : (props.shortOverride?.[l.teamId ?? ""] ?? SHORT[l.teamId ?? ""])
+      }
       shortTeamNameOfId={(id) => SHORT[id]}
       hasNoCareer={(l) => noCareer.has(l.playerId)}
       onAllDone={allDone}
@@ -148,6 +166,8 @@ const radio = (g: HTMLElement, name: string) => within(g).getByRole("radio", { n
 beforeEach(() => {
   candidates = [];
   noCareer = new Set();
+  reorderOnPick = false;
+  pickedAny = false;
   candidateState = "ready";
   relinkArgs = [];
   relinkSetIds = [];
@@ -170,6 +190,26 @@ describe("the lines", () => {
     // The cards behind the pair, once.
     expect(screen.getByText(/Cards #12 · #45/)).toBeTruthy();
     expect(screen.getByText(/Cards #27/)).toBeTruthy();
+  });
+
+  it("never renders 'No the team…': a line whose team has no name yet says it plainly", () => {
+    render(<Harness shortUnknown />);
+    expect(screen.queryByText(/the team/)).toBeNull();
+    expect(screen.getAllByText("This team isn’t in the career by 2022.")).toHaveLength(2);
+  });
+
+  it("sorts by the team as the line shows it, not by the text the card printed", () => {
+    // Tatis prints "Padres" and resolves to "Zephyrs"; Trout prints "Angels" and resolves to "Angels".
+    render(<Harness shortOverride={{ "t-padres": "Zephyrs" }} />);
+    const names = screen.getAllByRole("heading", { level: 4 }).map((h) => h.textContent);
+    expect(names).toEqual(["Mike Trout", "Fernando Tatis Jr."]);
+    // And the other way round: Angels resolves late in the alphabet.
+    cleanup();
+    render(<Harness shortOverride={{ "t-angels": "Zephyrs" }} />);
+    expect(screen.getAllByRole("heading", { level: 4 }).map((h) => h.textContent)).toEqual([
+      "Fernando Tatis Jr.",
+      "Mike Trout",
+    ]);
   });
 
   it("sorts the lines by team, then by card number", () => {
@@ -276,7 +316,7 @@ describe("Add to career", () => {
     fireEvent.change(from, { target: { value: "1200" } });
     expect(note()?.textContent).toBe(yearsHintText());
     expect(yearsHintText()).toBe(
-      `Years run from ${MIN_CAREER_YEAR} to ${maxCareerYear()}, and To can’t be before From.`,
+      `Years go ${MIN_CAREER_YEAR}–${maxCareerYear()}, and To can’t come before From.`,
     );
     expect(note()?.getAttribute("role")).toBe("status");
     // A blank From is quiet until Enter is pressed on it; then it is said.
@@ -343,7 +383,7 @@ describe("Wrong player", () => {
     // A bare namesake says so.
     expect(within(list).getByText("Nothing on file yet")).toBeTruthy();
     // The covering one says what the line is missing.
-    expect(within(list).getByText("Played for Padres")).toBeTruthy();
+    expect(within(list).getByText("Played for the Padres")).toBeTruthy();
     expect(within(list).queryByText(/on file$/)).toBeNull();
     expect(options.every((o) => o.getAttribute("aria-pressed") === null)).toBe(true);
   });
@@ -379,6 +419,23 @@ describe("Wrong player", () => {
     expect(first.getAttribute("aria-checked")).toBe("true");
   });
 
+  it("after an arrow pick, focus follows the player by id even when the rows change places", () => {
+    candidates = CANDIDATES;
+    reorderOnPick = true;
+    render(<Harness />);
+    fireEvent.click(radio(tatis(), "Wrong player"));
+    const list = screen.getByRole("radiogroup", { name: "Which Fernando Tatis Jr.?" });
+    const [first] = within(list).getAllByRole("radio");
+    act(() => first.focus());
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    // The read is now reversed: the picked player (p-x) sits first.
+    const after = within(screen.getByRole("radiogroup", { name: "Which Fernando Tatis Jr.?" })).getAllByRole("radio");
+    expect(after[0].textContent).toContain("Fernando Tatis");
+    expect(after[0].textContent).not.toContain("Sr.");
+    expect(document.activeElement).toBe(after[0]);
+    expect(document.activeElement?.getAttribute("aria-checked")).toBe("true");
+  });
+
   it("'Someone else…' stays outside the namesake group", () => {
     candidates = CANDIDATES;
     render(<Harness />);
@@ -407,7 +464,7 @@ describe("Wrong player", () => {
     render(<Harness />);
     fireEvent.click(radio(tatis(), "Wrong player"));
     fireEvent.click(screen.getByRole("radio", { name: /Fernando Tatis Sr\./ }));
-    expect(screen.getByText("Fernando Tatis Sr. played for Padres.")).toBeTruthy();
+    expect(screen.getByText("Fernando Tatis Sr. played for the Padres.")).toBeTruthy();
     expect(screen.queryByRole("radiogroup", { name: "Career for Fernando Tatis Sr." })).toBeNull();
   });
 
@@ -417,7 +474,7 @@ describe("Wrong player", () => {
     render(<Harness />);
     fireEvent.click(radio(tatis(), "Wrong player"));
     fireEvent.click(screen.getByRole("radio", { name: /Fernando Tatis Sr\./ }));
-    expect(screen.getByText("Fernando Tatis Sr. doesn’t have Padres by 2022 either.")).toBeTruthy();
+    expect(screen.getByText("No Padres in Fernando Tatis Sr.’s career by 2022 either.")).toBeTruthy();
     const follow = screen.getByRole("radiogroup", { name: "Career for Fernando Tatis Sr." });
     expect(radio(follow, "Keep as is").getAttribute("aria-checked")).toBe("true");
     fireEvent.click(radio(follow, "Add to career"));
@@ -437,7 +494,7 @@ describe("Wrong player", () => {
     coverage = { "p-sr|t-padres": false };
     rerender(<Harness />);
     // The very same element now says the answer.
-    expect(status.textContent).toBe("Fernando Tatis Sr. doesn’t have Padres by 2022 either.");
+    expect(status.textContent).toBe("No Padres in Fernando Tatis Sr.’s career by 2022 either.");
     expect(status.isConnected).toBe(true);
   });
 
@@ -523,7 +580,7 @@ describe("Fix card’s team", () => {
     fireEvent.click(radio(trout(), "Fix card’s team"));
     fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
     fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
-    expect(screen.getByText("Mike Trout doesn’t have Picks by 2022 either.")).toBeTruthy();
+    expect(screen.getByText("No Picks in Mike Trout’s career by 2022 either.")).toBeTruthy();
     expect(screen.queryByText(/Picked team/)).toBeNull();
     fireEvent.click(radio(screen.getByRole("radiogroup", { name: "Career for Mike Trout" }), "Add to career"));
     expect(screen.getByLabelText("From year for Mike Trout, Picks")).toBeTruthy();
@@ -537,7 +594,7 @@ describe("Fix card’s team", () => {
       fireEvent.click(radio(trout(), "Fix card’s team"));
       fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
       fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
-      expect(screen.getByText("Mike Trout doesn’t have Picked team by 2022 either.")).toBeTruthy();
+      expect(screen.getByText("No Picked team in Mike Trout’s career by 2022 either.")).toBeTruthy();
     } finally {
       SHORT["picked-team"] = "Picks";
     }

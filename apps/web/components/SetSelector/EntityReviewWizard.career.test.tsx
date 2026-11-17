@@ -267,7 +267,7 @@ describe("a re-teamed card leaves the teams step", () => {
     render(wizard({ careerContext: ANGELS_GAP }, [CARDS[1]]));
     reteam();
     // Still the search result until the team loads; here the mock has it at once.
-    expect(screen.getByText("Mike Trout doesn’t have Picks by 2022 either.")).toBeTruthy();
+    expect(screen.getByText("No Picks in Mike Trout’s career by 2022 either.")).toBeTruthy();
   });
 
   it("reports the printed team dropped and the picked team on", () => {

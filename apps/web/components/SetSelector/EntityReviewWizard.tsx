@@ -4391,13 +4391,13 @@ export default function EntityReviewWizard({
     if (created?.decision?.action === "create" && created.decision.create) {
       return teamFullName(created.decision.create);
     }
-    return printed || "the team";
+    return printed || "this team";
   };
   /**
    * NEO-574 — the same team as its rows show it: the nickname ("Padres"),
    * not the full "San Diego Padres".
    */
-  const careerShortTeamLabel = (line: CareerLine): string => {
+  const careerShortTeamLabel = (line: CareerLine): string | undefined => {
     if (line.teamId) {
       const team = (linkedTeams ?? []).find((t) => t._id === line.teamId);
       if (team) return team.name;
@@ -4414,7 +4414,7 @@ export default function EntityReviewWizard({
     if (created?.decision?.action === "create" && created.decision.create) {
       return created.decision.create.name;
     }
-    return printed || "the team";
+    return printed || undefined;
   };
   /** The listed player has no stints on file at all (loaded, and empty). */
   const careerPlayerHasNoCareer = (line: CareerLine): boolean => {

@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
+import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
 import {
   CAREER_READ_FAILED,
   NO_CAREER_TEXT,
@@ -13,8 +14,11 @@ import {
   careerCommitFields,
   careerHeading,
   noStintText,
+  coveredText,
   playedForText,
+  sortCareerLines,
   uncoveredAgainText,
+  yearsHintText,
   careerContextAsks,
   classifyPairs,
   deriveSittingPairs,
@@ -191,8 +195,43 @@ describe("toLines ordering and copy", () => {
     expect(noStintText("Padres", 2022)).toBe("No Padres in the career by 2022.");
     expect(NO_CAREER_TEXT).toBe("No career on file yet.");
     expect(CAREER_READ_FAILED).toBe("Couldn’t check careers. Retry, or Next saves without it.");
-    expect(uncoveredAgainText("Ana", "Padres", 2022)).toBe("Ana doesn’t have Padres by 2022 either.");
-    expect(playedForText("Padres")).toBe("Played for Padres");
+    expect(uncoveredAgainText("Ana", "Padres", 2022)).toBe("No Padres in Ana’s career by 2022 either.");
+    expect(coveredText("Ana", "Padres")).toBe("Ana played for the Padres.");
+    expect(playedForText("Padres")).toBe("Played for the Padres");
+    expect(yearsHintText()).toBe(
+      `Years go ${MIN_CAREER_YEAR}–${maxCareerYear()}, and To can’t come before From.`,
+    );
+  });
+  it("never says 'No the team…': with no name known it says what is true of any team", () => {
+    for (const none of [undefined, ""]) {
+      expect(noStintText(none, 2022)).toBe("This team isn’t in the career by 2022.");
+      expect(uncoveredAgainText("Ana", none, 2022)).toBe(
+        "This team isn’t in Ana’s career by 2022 either.",
+      );
+      expect(coveredText("Ana", none)).toBe("Ana played for this team.");
+      expect(playedForText(none)).toBe("Played for this team");
+    }
+  });
+  it("sortCareerLines orders by the resolved short name, falling back to the printed text, then number", () => {
+    const base = { cardIndexes: [0], printedPlayer: "x" };
+    const mk = (id: string, printedTeam: string | undefined, no: string) => ({
+      ...base,
+      playerId: id,
+      cardNumbers: [no],
+      printedTeam,
+      key: `${id}|${no}`,
+    });
+    const lines = [
+      mk("a", "SD", "5"), // prints "SD", resolves to "Padres"
+      mk("b", "Angels", "2"),
+      mk("c", undefined, "1"), // no name at all: last
+      mk("d", "Padres", "1"),
+    ];
+    const resolved: Record<string, string> = { a: "Padres" };
+    const out = sortCareerLines(lines, (l) => resolved[l.playerId]);
+    expect(out.map((l) => l.playerId)).toEqual(["b", "d", "a", "c"]);
+    // Does not mutate its input.
+    expect(lines.map((l) => l.playerId)).toEqual(["a", "b", "c", "d"]);
   });
 });
 

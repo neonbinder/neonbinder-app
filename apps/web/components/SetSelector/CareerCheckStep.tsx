@@ -1,4 +1,4 @@
-import { useId, useRef, useState, type KeyboardEvent, type Ref } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent, type Ref } from "react";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
@@ -17,6 +17,7 @@ import {
   coveredText,
   followUpPair,
   freshStint,
+  sortCareerLines,
   noStintText,
   parseStintDraft,
   playedForText,
@@ -99,7 +100,7 @@ export type CareerCheckStepProps = {
   /** The full team name ("San Diego Padres"): names each line's radio group. */
   teamNameOf: (line: CareerLine) => string;
   /** The short name as the team's rows show it ("Padres"): the line's own text. */
-  shortTeamNameOf?: (line: CareerLine) => string;
+  shortTeamNameOf?: (line: CareerLine) => string | undefined;
   /**
    * The short name ("Padres") of a team the operator picked from the search,
    * once it is known; the follow-up names the pick by it, as lines name teams.
@@ -131,7 +132,7 @@ function kindOf(answer: CareerAnswer | undefined): Kind {
 }
 
 export default function CareerCheckStep({
-  lines,
+  lines: given,
   setYear,
   selectorOptionId,
   sportId,
@@ -152,6 +153,12 @@ export default function CareerCheckStep({
   headingId,
   firstRef,
 }: CareerCheckStepProps) {
+  /** The team as the line shows it: the short name, once it is known. */
+  const shortOf = (line: CareerLine): string | undefined =>
+    shortTeamNameOf ? shortTeamNameOf(line) : teamNameOf(line);
+  // By the team as it reads on the line, then card number; a line whose team
+  // has no name yet sorts by the text its cards print.
+  const lines = sortCareerLines(given, shortOf);
   const rowRef = (key: string) =>
     Array.from(document.querySelectorAll<HTMLElement>("[data-career-line]")).find(
       (el) => el.dataset.careerLine === key,
@@ -201,7 +208,7 @@ export default function CareerCheckStep({
               requestCoverage={requestCoverage}
               playerName={playerNameOf(line)}
               teamName={teamNameOf(line)}
-              shortTeamName={shortTeamNameOf ? shortTeamNameOf(line) : teamNameOf(line)}
+              shortTeamName={shortOf(line)}
               pickedTeamShortName={(() => {
                 const a = answers[line.key];
                 return a?.kind === "team" && a.pick ? shortTeamNameOfId?.(a.pick.teamId) : undefined;
@@ -253,7 +260,7 @@ function CareerLineRow({
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   playerName: string;
   teamName: string;
-  shortTeamName: string;
+  shortTeamName: string | undefined;
   pickedTeamShortName?: string;
   noCareer: boolean;
   disabled: boolean;
@@ -390,7 +397,7 @@ function CareerLineRow({
                 failed={failed}
                 requestCoverage={requestCoverage}
                 playerName={playerName}
-                teamName={shortTeamName}
+                teamName={shortTeamName ?? ""}
                 disabled={disabled}
                 searchOpen={searchOpen}
                 setSearchOpen={setSearchOpen}
@@ -638,7 +645,7 @@ function FollowUp({
           </div>
           {then.kind === "add" && (
             <StintFields
-              label={`${subject}, ${team}`}
+              label={`${subject}, ${team || "this team"}`}
               draft={then}
               onChange={(draft) => setThen({ kind: "add", ...draft })}
               onEnter={onWalk}
@@ -816,6 +823,17 @@ function PlayerChoices({
 }) {
   const pickedAt = choices.findIndex((c) => c.playerId === pickedId);
   const stop = pickedAt >= 0 ? pickedAt : 0;
+  // After an arrow pick the rows may be re-ordered by the re-render (a pick
+  // joins the list as an extra row), so focus follows the player, by id,
+  // once the new rows are in: never a position read before the render.
+  const optionRefs = useRef(new Map<string, HTMLButtonElement>());
+  const focusAfterRender = useRef<string | null>(null);
+  useEffect(() => {
+    const id = focusAfterRender.current;
+    if (id === null) return;
+    focusAfterRender.current = null;
+    optionRefs.current.get(id)?.focus();
+  });
   return (
     <div role="radiogroup" aria-label={label} className="space-y-1">
       {choices.map((c, i) => {
@@ -827,6 +845,10 @@ function PlayerChoices({
         return (
           <button
             key={c.playerId}
+            ref={(el) => {
+              if (el) optionRefs.current.set(c.playerId, el);
+              else optionRefs.current.delete(c.playerId);
+            }}
             type="button"
             role="radio"
             aria-checked={picked}
@@ -844,10 +866,8 @@ function PlayerChoices({
                 event.preventDefault();
                 if (disabled) return;
                 const to = (i + step + choices.length) % choices.length;
+                focusAfterRender.current = choices[to].playerId;
                 onPick(choices[to].playerId, choices[to].name);
-                const radios =
-                  event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[role="radio"]');
-                radios?.[to]?.focus();
               } else if (event.key === "Enter") {
                 event.preventDefault();
                 event.stopPropagation();

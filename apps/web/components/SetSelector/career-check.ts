@@ -283,16 +283,31 @@ const numeric = new Intl.Collator(undefined, { numeric: true, sensitivity: "base
 export function toLines(
   pairs: ReadonlyArray<CareerPair & { printedTeam?: string }>,
 ): CareerLine[] {
-  return pairs
-    .map((pair) => ({ ...pair, key: pairKey(pair) }))
-    .sort((a, b) => {
-      const ta = a.printedTeam ? fold(a.printedTeam) : "\uffff";
-      const tb = b.printedTeam ? fold(b.printedTeam) : "\uffff";
-      if (ta !== tb) return ta < tb ? -1 : 1;
-      const byNumber = numeric.compare(a.cardNumbers[0] ?? "", b.cardNumbers[0] ?? "");
-      if (byNumber !== 0) return byNumber;
-      return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
-    });
+  return sortCareerLines(pairs.map((pair) => ({ ...pair, key: pairKey(pair) })));
+}
+
+/**
+ * Lines by team, then the first card number, then key. `teamLabelOf` is the
+ * team as the line shows it (the resolved short name); where it has none yet
+ * the order falls back to the text the cards print, so a line without a name
+ * is placed, never lost. Returns a new array.
+ */
+export function sortCareerLines<T extends CareerLine>(
+  lines: readonly T[],
+  teamLabelOf?: (line: T) => string | undefined,
+): T[] {
+  const teamKey = (line: T): string => {
+    const label = teamLabelOf?.(line) || line.printedTeam;
+    return label ? fold(label) : "\uffff";
+  };
+  return [...lines].sort((a, b) => {
+    const ta = teamKey(a);
+    const tb = teamKey(b);
+    if (ta !== tb) return ta < tb ? -1 : 1;
+    const byNumber = numeric.compare(a.cardNumbers[0] ?? "", b.cardNumbers[0] ?? "");
+    if (byNumber !== 0) return byNumber;
+    return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -623,32 +638,38 @@ export function careerHeading(count: number): string {
   return count > 0 ? `${CAREER_STEP_HEADING} · ${count} to look at` : CAREER_STEP_HEADING;
 }
 
-/** "No Padres in the career by 2022." The team is the short name, as its rows show it. */
-export function noStintText(team: string, year: number): string {
-  return `No ${team} in the career by ${year}.`;
+/**
+ * "No Padres in the career by 2022." The team is the short name, as its rows
+ * show it. With no name known yet it says "This team isn’t in the career by
+ * 2022.", which is true of any team, so it is never wrong text.
+ */
+export function noStintText(team: string | undefined, year: number): string {
+  return team ? `No ${team} in the career by ${year}.` : `This team isn’t in the career by ${year}.`;
 }
 
 /** A player with no stints at all: there is nothing to compare the team with. */
 export const NO_CAREER_TEXT = "No career on file yet.";
 
 /** The follow-up after a different player or team is picked and is uncovered too. */
-export function uncoveredAgainText(subject: string, team: string, year: number): string {
-  return `${subject} doesn’t have ${team} by ${year} either.`;
+export function uncoveredAgainText(subject: string, team: string | undefined, year: number): string {
+  return team
+    ? `No ${team} in ${subject}’s career by ${year} either.`
+    : `This team isn’t in ${subject}’s career by ${year} either.`;
 }
 
 /** …and when the pick's career does show the team. */
-export function coveredText(subject: string, team: string): string {
-  return `${subject} played for ${team}.`;
+export function coveredText(subject: string, team: string | undefined): string {
+  return team ? `${subject} played for the ${team}.` : `${subject} played for this team.`;
 }
 
 /** A namesake's career shows the card's team. */
-export function playedForText(team: string): string {
-  return `Played for ${team}`;
+export function playedForText(team: string | undefined): string {
+  return team ? `Played for the ${team}` : "Played for this team";
 }
 
 /** Why the years are not a stint. */
 export function yearsHintText(): string {
-  return `Years run from ${MIN_CAREER_YEAR} to ${maxCareerYear()}, and To can’t be before From.`;
+  return `Years go ${MIN_CAREER_YEAR}–${maxCareerYear()}, and To can’t come before From.`;
 }
 
 export const CAREER_NEXT_BLOCKED = "Fix the years first — then Next.";
