@@ -69,7 +69,6 @@
 - [Bulk walk busy label toBeHidden is vacuous](patterns_bulk_walk_busy_label_toBeHidden_is_vacuous.md) — wait for "(0)" or Next/Confirm after "Add remaining players as new", not the busy label gone
 - [Shared fast pool read ceiling](patterns_shared_fast_pool_read_ceiling.md) — NEO-529: FAST_READ_CEILING for "All N photos read."; no fast-vs-heavy E2E spec
 - [Adopting specs need a real reseed for a planted break](pattern_adopting_specs_need_reseed_for_planted_break.md) — failed reseed = silent green; reseed before each plant
-- [Shared fast pool read ceiling](patterns_shared_fast_pool_read_ceiling.md) — NEO-529: FAST_READ_CEILING for "All N photos read."; no fast-vs-heavy E2E spec
 - [Probe Vite from a HEAD snapshot](patterns_probe_vite_from_a_head_snapshot.md) — builders' edits HMR-crash a worktree Vite (multiple ClerkProvider, black PNG); git-archive…
 - [Compare a publisher checklist with BSC facets](reference_compare_a_publisher_checklist_with_bsc_facets.md) — one aggregation call lists every BSC section; insert parallels are…
 - [Checklist is a Match Cards source](patterns_checklist_is_a_match_cards_source.md) — NEO-496: BSC + checklist opens Match Cards paused; name-fallback pairing; no-checklist branches are dead
@@ -79,7 +78,9 @@
 ## From the NEO-552 consolidation
 - [Local run backend, Vite, previews](patterns_local_run_backend_and_vite.md) — function-spec check, one Vite per worktree, CI seed resets
 - [BSC budget rules and the SportLots helper](patterns_bsc_budget_rules_and_sportlots_helper.md) — rules 1-3, expectStepWithSportLots, TSV mis-match trap
+- [Set League and card League specs](patterns_set_league_and_card_league_specs.md) — NEO-569 handles, born-with-MLB needs real sport, noLeague dashboard Report scoping
 - [Near-match absence proved by the same locator](patterns_near_match_absence_proved_by_the_same_locator.md) — NEO-578: pin row count, flip query so the locator matches; admin add form = minted route
 - [Set-level No Team spec shape](patterns_set_no_team_spec_shape.md) — NEO-556: pressed-role toggles, cascade replaces the save toast, run ledger handles, badge proves teamless
 - [Leaf Vivid: a real unlicensed set](patterns_leaf_vivid_real_unlicensed_set.md) — NEO-556: find a set via year-wide sync, Proof type, held cards, parallel copies
 - [Stale batch masks a lookup loss](patterns_dialog_seed_from_stale_batch_masks_a_lookup_loss.md) — Match Cards drops lookup outcomes of pending rows; local green, CI 35 on the lane
+- [Attributes panel header needs the open panel](patterns_attributes_panel_header_controls_need_the_open_panel.md) — NEO-569: shut = title+toggle only; open before Rename/Delete/breadcrumb/Set actions

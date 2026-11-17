@@ -1440,6 +1440,10 @@ describe("the sync status: syncStatusOf", () => {
   it("a held-back reason other than a price reads as the Sync status tab says it", () => {
     expect(heldBackReason({ reason: "noPrice" }, "bsc")).toMatch(/^No price yet/);
     expect(heldBackReason({ reason: "noLink" }, "bsc").length).toBeGreaterThan(0);
+    // NEO-569: the dashboard has the Report button, so noLeague just says "Report it".
+    expect(heldBackReason({ reason: "noLeague" }, "ebay")).toBe(
+      "eBay listings need a league, and this card doesn't have one yet. Report it and our crew sets it.",
+    );
   });
 });
 

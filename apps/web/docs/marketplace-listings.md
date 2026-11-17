@@ -40,7 +40,9 @@ This audit identifies the required and recommended fields for creating listings 
 
 **eBay Item Specifics (facets):**
 eBay requires marketplace-specific aspects. For sports cards:
-- League (e.g., "MLB", "NBA", "NFL")
+- League (e.g., "MLB", "NBA", "NFL"). **Superseded by NEO-569:** sent from the
+  card's own league row, not from `features`; see "League on eBay listings"
+  at the end of this document.
 - Era (e.g., "Vintage", "Modern", "Junk Era")
 - Reprint (true/false)
 - Card Type (e.g., "Base Card", "Rookie Card", "Autograph", "Memorabilia Relic")
@@ -430,7 +432,7 @@ File separate Linear tickets for each source as it becomes urgent. Do not implem
 
 | Marketplace field | NeonBinder schema location | Rationale |
 |---|---|---|
-| **eBay Item Specifics** (League, Era, Reprint, Card Type) | `selectorOptions.features` (set-level); propagate to `cardChecklist.features` (per-card) | Marketplace-agnostic dictionary; set-level values write-time propagate; per-card override possible |
+| **eBay Item Specifics** (League, Era, Reprint, Card Type) | `selectorOptions.features` (set-level); propagate to `cardChecklist.features` (per-card) | Marketplace-agnostic dictionary; set-level values write-time propagate; per-card override possible. **League superseded by NEO-569:** `selectorOptions.leagueIds` (set and below) and `cardChecklist.leagueId` (per card), typed league ids, not a `features` key |
 | **Release date, Total card count, Block/Series** | `selectorOptions.setMetadata` (set-level only; not propagating) | Set-specific metadata; no per-card variant; read-only in UI (populated by TCDB sync) |
 | **TCDB Set ID** | `selectorOptions.setMetadata.tcdbSetId` | Canonical external identifier; used to re-sync if needed |
 | **Card printRun** | `cardChecklist.printRun` | Already captured by adapters; persisting it (currently missing) |
@@ -651,3 +653,51 @@ parent.
 reach it. BSC overloads `playerAttributeDesc` for shelf notes ("Puzzle piece B2
 on back") and for "this is the base card"; those are filtered out at the
 adapter boundary.
+
+---
+
+## League on eBay listings (NEO-569)
+
+A league is NB data: a `leagues` row of the card's sport. A set (and its
+variant types, inserts and parallels) carries `leagueIds`, the leagues its
+cards may be in; each card carries its own `cardChecklist.leagueId`, settled
+from its teams (all in one league → that league; no team in a one-league set →
+that league; otherwise an admin picks it). Nothing about it is read from a
+marketplace, and no marketplace value sets it.
+
+**What eBay gets.** The `League` item specific, one value: the card's league
+row's `abbreviation`, else its `name` ("MLB", "Pacific Coast League").
+eBay prefers its own League values but accepts free text, so NB sends its own
+words (`lib/ebayListing.ebayLeagueValue`, read in
+`listingDrainEbay.ebayCardFacts`). Like every aspect, a value longer than the
+cap is dropped, never cut.
+
+**When a card has no league.** If the card's sport has at least one `leagues`
+row and the card has no `leagueId` (or its row is gone), the eBay drain holds
+the card back with reason `noLeague` (`lib/ebayListing.ebayLeagueMissing`)
+unless it already has a live listing. A sport with no leagues lists without
+the aspect, as before. The hold:
+
+- is eBay's only; BuySportsCards never reads a card's league;
+- is checked after the collector's own holds (price, photo) and before eBay's
+  required aspects, so a card shows one reason at a time;
+- never applies to a live listing. Holding one would freeze its price and
+  quantity on eBay, an oversell risk for every listing until the card
+  backfill runs, and for good on a card whose teams sit in different leagues.
+  A live listing instead keeps syncing with its aspects built without League,
+  exactly as they were pushed before, so its content hash does not change and
+  only price and quantity updates go out. League is added (one item re-send)
+  once the card has a league. Since no hold is recorded, such a card is not
+  offered for Report; the card backfill and the admin's card panel fill it;
+- is reportable (`lib/collection/sync-report.REPORTABLE_SYNC_REASONS`): the
+  collector cannot set a league, so the held notice says so and the existing
+  Report flow sends it to the admin team, who set it in the card's panel. The
+  listing never asks the collector to pick one.
+
+**One-time re-send.** The League aspect is part of the item content that
+`contentFingerprint` hashes. On the first sync after NEO-569 ships, every live
+listing whose card has a league re-sends its inventory item once (item only;
+the offer is untouched unless something else changed). A live listing whose
+card has no league keeps its old content and is not re-sent. A NEW listing
+for a card without a league in a sport with leagues is held, so roll the card
+backfill out before eBay syncs run in earnest.

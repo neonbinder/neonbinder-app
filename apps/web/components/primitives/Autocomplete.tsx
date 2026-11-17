@@ -1,4 +1,4 @@
-import React, { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import React, { Fragment, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Input } from "./Input";
 
@@ -126,6 +126,16 @@ export interface AutocompleteProps<T> {
   getLabel: (item: T) => string;
   /** Optional secondary line, e.g. a player's sport or a team's league. */
   getDescription?: (item: T) => string | undefined;
+  /**
+   * Optional group heading for an item (NEO-569: "Major leagues" / "More
+   * leagues"). Consecutive items with the same heading render under it as an
+   * ARIA `group` labelled by a non-option heading row (the APG grouped
+   * listbox), so the reader hears the group on entering it. Items keep one
+   * flat order: arrows, Enter and the highlight run straight through the
+   * groups, and the caller sorts `items` so each group is one run. An item
+   * with no heading renders ungrouped.
+   */
+  getGroup?: (item: T) => string | undefined;
   onSelect: (item: T) => void;
   /** Accessible name for the input. Also the Maestro selector for it. */
   label: string;
@@ -219,6 +229,7 @@ export function Autocomplete<T>({
   getKey,
   getLabel,
   getDescription,
+  getGroup,
   onSelect,
   label,
   placeholder,
@@ -432,6 +443,69 @@ export function Autocomplete<T>({
       ? -1
       : items.findIndex((item) => getKey(item) === selectedKey);
 
+  /** One option row; `idx` is its place in the flat `items` order. */
+  const renderOption = (item: T, idx: number) => {
+    const description = getDescription?.(item);
+    const isCurrent = idx === selectedIdx;
+    return (
+      <li
+        key={getKey(item)}
+        id={autocompleteOptionId(listboxId, getKey(item))}
+        role="option"
+        aria-selected={idx === highlightIdx}
+        // NEO-518 — mousemove, not mouseenter. A list that opens, or
+        // re-renders with new rows, under a RESTING pointer fires
+        // mouseenter on whatever row lands there, and that stole the
+        // highlight from row 0 — so Enter took the row under the
+        // mouse, not the best match. Only a pointer that actually
+        // moves claims it, and only when it is not already there.
+        onMouseMove={() => {
+          if (idx !== highlightIdx) setHighlightIdx(idx);
+        }}
+        // onMouseDown, not onClick: the input's blur fires first on a
+        // click and would close the list before the click lands.
+        onMouseDown={(e) => {
+          e.preventDefault();
+          select(item);
+        }}
+        className={`cursor-pointer px-3 py-2 text-sm ${
+          idx === highlightIdx
+            ? "bg-neon-green/20 text-neon-green-text"
+            : "text-ink-2 hover:bg-hover"
+        }`}
+      >
+        {selectedKey !== undefined && (
+          /* The current answer's mark. A fixed-width slot on EVERY
+             row, so labels stay aligned whether or not they carry it.
+             aria-hidden: the combobox's own value already announces
+             the answer, and the glyph must not join the option's
+             accessible name or its text (the label is the option's
+             only direct text node, which is what a flow matches). */
+          <span
+            aria-hidden="true"
+            className="mr-2 inline-block w-3 text-neon-green-text"
+          >
+            {isCurrent ? "✓" : ""}
+          </span>
+        )}
+        {getLabel(item)}
+        {description && (
+          <span
+            // `pl-5` = the check slot's `w-3 mr-2`, so a line under
+            // the label starts under the label and not under the mark.
+            className={`${
+              descriptionBelow
+                ? `block mt-0.5 ${selectedKey !== undefined ? "pl-5" : ""}`
+                : "ml-2"
+            } text-xs text-ink-3`}
+          >
+            {description}
+          </span>
+        )}
+      </li>
+    );
+  };
+
   return (
     <div ref={containerRef} className={`relative ${className}`}>
       <Input
@@ -573,64 +647,24 @@ export function Autocomplete<T>({
               {loading ? "Searching…" : emptyMessage}
             </li>
           )}
-          {items.map((item, idx) => {
-            const description = getDescription?.(item);
-            const isCurrent = idx === selectedIdx;
+          {groupRuns(items, getGroup).map((run) => {
+            const options = run.items.map(({ item, idx }) => renderOption(item, idx));
+            if (run.heading === undefined) {
+              return <Fragment key={`run-${run.start}`}>{options}</Fragment>;
+            }
+            const headingId = `${listboxId}-grp-${run.start}`;
             return (
-              <li
-                key={getKey(item)}
-                id={autocompleteOptionId(listboxId, getKey(item))}
-                role="option"
-                aria-selected={idx === highlightIdx}
-                // NEO-518 — mousemove, not mouseenter. A list that opens, or
-                // re-renders with new rows, under a RESTING pointer fires
-                // mouseenter on whatever row lands there, and that stole the
-                // highlight from row 0 — so Enter took the row under the
-                // mouse, not the best match. Only a pointer that actually
-                // moves claims it, and only when it is not already there.
-                onMouseMove={() => {
-                  if (idx !== highlightIdx) setHighlightIdx(idx);
-                }}
-                // onMouseDown, not onClick: the input's blur fires first on a
-                // click and would close the list before the click lands.
-                onMouseDown={(e) => {
-                  e.preventDefault();
-                  select(item);
-                }}
-                className={`cursor-pointer px-3 py-2 text-sm ${
-                  idx === highlightIdx
-                    ? "bg-neon-green/20 text-neon-green-text"
-                    : "text-ink-2 hover:bg-hover"
-                }`}
-              >
-                {selectedKey !== undefined && (
-                  /* The current answer's mark. A fixed-width slot on EVERY
-                     row, so labels stay aligned whether or not they carry it.
-                     aria-hidden: the combobox's own value already announces
-                     the answer, and the glyph must not join the option's
-                     accessible name or its text (the label is the option's
-                     only direct text node, which is what a flow matches). */
-                  <span
-                    aria-hidden="true"
-                    className="mr-2 inline-block w-3 text-neon-green-text"
+              <li key={headingId} role="presentation">
+                <ul role="group" aria-labelledby={headingId}>
+                  <li
+                    role="presentation"
+                    id={headingId}
+                    className="px-3 pt-2 pb-1 text-xs font-semibold text-ink-3"
                   >
-                    {isCurrent ? "✓" : ""}
-                  </span>
-                )}
-                {getLabel(item)}
-                {description && (
-                  <span
-                    // `pl-5` = the check slot's `w-3 mr-2`, so a line under
-                    // the label starts under the label and not under the mark.
-                    className={`${
-                      descriptionBelow
-                        ? `block mt-0.5 ${selectedKey !== undefined ? "pl-5" : ""}`
-                        : "ml-2"
-                    } text-xs text-ink-3`}
-                  >
-                    {description}
-                  </span>
-                )}
+                    {run.heading}
+                  </li>
+                  {options}
+                </ul>
               </li>
             );
           })}
@@ -639,4 +673,22 @@ export function Autocomplete<T>({
       )}
     </div>
   );
+}
+
+/**
+ * `items` cut into runs of one group heading each (`getGroup`), every item
+ * with its index in the flat order. Without `getGroup`, one ungrouped run.
+ */
+function groupRuns<T>(
+  items: ReadonlyArray<T>,
+  getGroup: ((item: T) => string | undefined) | undefined,
+): Array<{ heading: string | undefined; start: number; items: Array<{ item: T; idx: number }> }> {
+  const runs: Array<{ heading: string | undefined; start: number; items: Array<{ item: T; idx: number }> }> = [];
+  items.forEach((item, idx) => {
+    const heading = getGroup?.(item);
+    const last = runs[runs.length - 1];
+    if (last && last.heading === heading) last.items.push({ item, idx });
+    else runs.push({ heading, start: idx, items: [{ item, idx }] });
+  });
+  return runs;
 }

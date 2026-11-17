@@ -173,6 +173,8 @@
  */
 
 import { internalMutation, internalQuery } from "./_generated/server";
+// NEO-569 — a team's league filled in here re-settles its cards.
+import { scheduleTeamLeagueRecompute } from "./cardLeague";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import type { Infer } from "convex/values";
@@ -1109,6 +1111,11 @@ async function loadTeams(
       }
       if (mutationCtx && wouldPatch) {
         await mutationCtx.db.patch(existing._id, { ...patch, lastUpdated: Date.now() });
+        // NEO-569 — a league filled in re-settles the cards showing the team
+        // (scheduled only when some card does; one indexed read otherwise).
+        if (patch.leagueId !== undefined) {
+          await scheduleTeamLeagueRecompute(mutationCtx, existing._id, existing.leagueId);
+        }
         if (patch.aliases) {
           await syncTeamAliases(mutationCtx, {
             teamId: existing._id,

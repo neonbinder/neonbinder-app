@@ -1522,6 +1522,9 @@ export function planValueRename(args: {
     trimmed,
   );
   const features = { ...(row.features ?? {}), ...rederived };
+  // NEO-569 — a rename of a sport row (whose reference-seed features may
+  // still say `league: "MLB"`) never re-mints the retired key either; the
+  // rest of the map is left exactly as it was.
 
   // A sport's config is seeded from its display value at creation. Backfill on
   // rename ONLY when the row has none — never overwrite, so an operator's

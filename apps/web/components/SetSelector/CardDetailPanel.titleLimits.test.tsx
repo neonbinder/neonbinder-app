@@ -66,6 +66,8 @@ vi.mock("convex/react", () => ({
   },
 }));
 
+// NEO-569 — the League row reads its own module; CardLeagueRow.test.tsx covers it.
+vi.mock("./CardLeagueRow", () => ({ default: () => null }));
 vi.mock("./TeamPicker", () => ({ default: () => <div>Team picker (stub)</div> }));
 vi.mock("./PlayerPicker", () => ({ default: () => <div>Player picker (stub)</div> }));
 

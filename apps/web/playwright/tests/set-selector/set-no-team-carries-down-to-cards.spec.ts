@@ -117,10 +117,10 @@ test(
     // so the finish line is what a user is left to read.
     await expect(page.getByText("No Team applied to the checklists under this set")).toBeVisible();
     await expect(setToggle(true)).toBeVisible();
-    // The Team row's hint now says what the answer does, not the choice already made.
-    await expect(
-      panel.getByText("No Team: new cards with nothing naming a team get it. Pick a team to replace it."),
-    ).toBeVisible();
+    // The Team row's description (read aloud, not drawn: NEO-569) now says what the answer does, not the choice already made.
+    await expect(panel.getByRole("group", { name: "Team", exact: true })).toHaveAccessibleDescription(
+      "No Team: new cards with nothing naming a team get it. Pick a team to replace it.",
+    );
     await expectAccessible(page, { label: "Set attributes panel with the set at No Team" });
 
     // ── STEP 3: the follow-up offer counts ONE teamless card (the teamed one is
@@ -149,10 +149,16 @@ test(
     await expectAccessible(page, { within: ledger, label: "No Team run ledger, finished" });
     await ledger.getByRole("button", { name: "Dismiss the No Team run" }).click();
     await expect(ledger).toBeHidden();
-    // Collapsed, the Team bar still says it.
+    // Shut and opened again, the set still answers No Team. NEO-569: the shut
+    // panel draws only its title and toggle (no "No Team" on the bar); the toggle
+    // says the answer to a screen reader, and the reopened Team row still has it.
     await hide.click();
     await expect(edit).toBeVisible();
-    await expect(panel.getByText("No Team", { exact: true })).toBeVisible();
+    await expect(panel.getByRole("heading", { name: `Attributes for ${SET} (Set)` })).toBeVisible();
+    await expect(edit).toHaveAccessibleDescription(/^Team: No Team$/);
+    await expect(panel.getByText("No Team", { exact: true })).toHaveCount(0);
+    await edit.click();
+    await expect(setToggle(true)).toBeVisible();
 
     // ── STEP 5: the run moved only the teamless card; a card added now is born No Team.
     await openInsertBase();

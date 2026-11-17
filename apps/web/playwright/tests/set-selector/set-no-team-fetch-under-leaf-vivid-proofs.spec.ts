@@ -27,6 +27,7 @@ import {
   columnSelection,
   drillToBaseVariant,
   drillToSet,
+  escapeRe,
   pick,
   setBuilderReady,
   syncChecklistButton,
@@ -146,7 +147,12 @@ test(
     // cards (each may be answered one by one) but no longer hints at a set team.
     await pick(page, "Variant Types", "Proof", { search: false });
     await columnOption(page, "Proofs", PROOF).click();
-    await expect(panel.getByText("No Team", { exact: true })).toBeVisible();
+    // NEO-569: the Proof row's panel starts shut and draws only its title and toggle, so the
+    // copied answer is read from the toggle's description, as a screen reader hears it.
+    await expect(panel.getByRole("heading", { name: new RegExp(`^Attributes for ${escapeRe(PROOF)} \\(`) })).toBeVisible();
+    await expect(edit).toBeVisible();
+    await expect(edit).toHaveAccessibleDescription(/^Team: No Team$/);
+    await expect(panel.getByText("No Team", { exact: true })).toHaveCount(0);
     const second = await fetchToWizard();
     expect(second.cards).toBe(first.cards);
     await expect(teamsStep).toBeVisible();

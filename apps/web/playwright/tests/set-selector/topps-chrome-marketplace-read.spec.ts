@@ -24,9 +24,12 @@ test(
     // Breadcrumb scope: the "›" separator shows the ancestry is rendered.
     await expect(page.getByText(/›.*Topps Chrome/).first()).toBeVisible();
 
-    // The League feature is the primary marketplace-derived Baseball feature
-    // and renders whether or not a marketplace filled it (SL-pause agnostic).
-    await expect(page.getByLabel("Value for League").first()).toBeVisible();
+    // NEO-569: League is the set's own list of NB leagues (a group of chips with an
+    // "Add league" field), no longer a free-text feature row. It renders whether or
+    // not the set has a league yet (SL-pause agnostic), so only the row is asserted.
+    const league = page.getByRole("group", { name: "League", exact: true });
+    await expect(league).toBeVisible();
+    await expect(league.getByRole("combobox", { name: "Add league" })).toBeVisible();
 
     // Release metadata rows always render at set level.
     await expect(page.getByText(/Total Cards|Block/).first()).toBeVisible();

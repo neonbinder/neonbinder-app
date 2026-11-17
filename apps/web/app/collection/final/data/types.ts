@@ -1049,6 +1049,9 @@ export type ListingProblemReason =
   | "missingAspect"
   | "noPhoto"
   | "setupIncomplete"
+  // NEO-569, eBay: the card has no league while its sport has some. Only an
+  // admin sets it; the collector reports it.
+  | "noLeague"
   // NEO-535, eBay: the card's title is over eBay's 80 characters; NB holds it
   // back rather than cut it, until the title is shortened in the set builder.
   | "titleTooLong";

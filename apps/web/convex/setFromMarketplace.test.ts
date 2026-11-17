@@ -620,8 +620,14 @@ describe("insertSetWithBaseFromSl — the pre-read index (the batch caller's rea
       return { counts, ok: results.filter((r) => r.ok).length };
     });
     expect(withIndex.ok).toBe(2);
-    expect(withIndex.counts.query).toBe(0);
-    expect(withIndex.counts.get).toBe(4);
+    // NEO-569: a new set is born LINKED to its sport's major league when that
+    // row exists (never created). That is resolved ONCE per call, memoised per
+    // brand (`leagues.bornSetLeagueIds`): the walk to the sport (year + sport
+    // gets), the sport's config (a get), and the read-only lookup (an exact
+    // name query, then one by-sport read — this fixture has no league, so
+    // both run and nothing is inserted). None of it repeats per root.
+    expect(withIndex.counts.query).toBe(2);
+    expect(withIndex.counts.get).toBe(4 + 4);
     expect(withIndex.counts.insert).toBe(4);
     expect(withIndex.counts.patch).toBe(4);
 
@@ -634,8 +640,10 @@ describe("insertSetWithBaseFromSl — the pre-read index (the batch caller's rea
       });
       return counts;
     });
-    // Siblings, then the manufacturer list and each other brand's sets.
-    expect(selfRead.query).toBe(4);
+    // Siblings, then the manufacturer list and each other brand's sets —
+    // plus (NEO-569) the read-only lookup of the sport's league (exact name,
+    // then the by-sport read: still no league row, none was created above).
+    expect(selfRead.query).toBe(4 + 2);
   });
 
   test("a set the helper writes is added to the index, so the next root that folds to it is a clash", async () => {

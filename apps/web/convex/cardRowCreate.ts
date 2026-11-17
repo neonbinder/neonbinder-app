@@ -44,6 +44,7 @@ import {
 import { generateSku } from "./sku";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
 import { syncCardTeamLinks } from "./cardTeamLinks";
+import { deriveNewCardLeagueId, newCardLeagueCache, type CardLeagueCache } from "./cardLeague";
 import type { CardCountLedger } from "./cardCounts";
 import {
   bornSecondaryPlayerFields,
@@ -98,6 +99,13 @@ export type NewCardRow = {
   /** NEO-254 — always written together with `playerIds`, never apart. */
   playerLinks?: Array<{ playerId: Id<"players">; nameOnCard: string }>;
   teamOnCardIds?: Array<Id<"teams">>;
+  /**
+   * NEO-569 — the card's league when the caller already knows it (a parallel
+   * copy carries its source card's, when it carries the source's teams).
+   * Absent: derived before the insert from the teams and the set's leagues
+   * (`cardLeague.deriveNewCardLeagueId`).
+   */
+  leagueId?: Id<"leagues">;
   attributes?: string[];
   isRookie?: boolean;
   isRelic?: boolean;
@@ -449,6 +457,12 @@ export function buildCardRowForInsert(
  */
 export type CardRowIndexing = {
   sport: () => Promise<Id<"selectorOptions"> | undefined>;
+  /**
+   * NEO-569 — team and set league reads for the card's `leagueId`, shared
+   * across the page. Every production caller passes its page's cache; absent,
+   * the insert reads with a cache of its own (same answer, more reads).
+   */
+  leagueCache?: CardLeagueCache;
 };
 
 /**
@@ -505,9 +519,14 @@ export async function insertCardRow(
   const built = buildCardRowForInsert(card, set, Date.now());
   // The insert below is typed against the schema, so leaving `sportId` (or
   // any required field the build forgot) off this object is a type error.
+  // NEO-569 — born with its league, never patched in after the insert.
+  const leagueCache = indexing.leagueCache ?? newCardLeagueCache();
+  const leagueId =
+    card.leagueId ?? (await deriveNewCardLeagueId(ctx, card, leagueCache));
   const row = {
     ...built.row,
     sportId,
+    ...(leagueId ? { leagueId } : {}),
     // NEO-312 (R2): a rebuilt card that is clearly the old one keeps its SKU,
     // so a label or a listing that already names it still does.
     ...(card.keepSku ? { sku: card.keepSku } : {}),
@@ -519,7 +538,10 @@ export async function insertCardRow(
     });
   }
   if ((card.teamOnCardIds ?? []).length > 0) {
-    await syncCardTeamLinks(ctx, id, card.teamOnCardIds, { fresh: true });
+    await syncCardTeamLinks(ctx, { _id: id, selectorOptionId: row.selectorOptionId, leagueId }, card.teamOnCardIds, {
+      fresh: true,
+      leagueCache,
+    });
   }
   // NEO-528 round 3 — and its cameo index rows, through the one writer. The
   // names are already known, so the writer reads no player.

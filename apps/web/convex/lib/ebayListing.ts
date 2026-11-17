@@ -165,7 +165,21 @@ export interface EbayTarget {
   photoCopyId: Id<"collectionCopies"> | null;
 }
 
-export type EbayHoldReason = "graded" | "noCondition" | "noPrice" | "noPhoto" | "missingAspect" | "rejected" | "titleTooLong";
+/**
+ * Why the drain held a (card, bucket) back. `noLeague` (NEO-569): the card has
+ * no NB league while its sport has leagues to pick from (`ebayLeagueMissing`);
+ * an admin sets it on the card, the collector can only report it.
+ * `titleTooLong` (NEO-535): the title is over eBay's limit and is held, not cut.
+ */
+export type EbayHoldReason =
+  | "graded"
+  | "noCondition"
+  | "noPrice"
+  | "noPhoto"
+  | "missingAspect"
+  | "noLeague"
+  | "rejected"
+  | "titleTooLong";
 
 export interface EbayHold {
   cardId: Id<"cardChecklist">;
@@ -270,6 +284,11 @@ export interface EbayAspectFacts {
   manufacturerBrandUnknown?: boolean;
   setName?: string;
   insertName?: string;
+  /**
+   * NEO-569: the card's own NB league (`cardChecklist.leagueId`), as
+   * `ebayLeagueValue` says it. NB data, never read back from eBay.
+   */
+  league?: string;
   cardNumber: string;
   parallelName?: string;
   isRookie?: boolean;
@@ -309,6 +328,11 @@ export function buildEbayAspects(
   put("Sport", [facts.sport]);
   put("Player/Athlete", facts.playerNames ?? []);
   put("Team", facts.teamNames ?? []);
+  // NEO-569: eBay prefers its own League values but takes free text, so NB's
+  // league goes as NB writes it. New in NEO-569: it changes the content
+  // fingerprint of every live listing whose card has a league, so each of
+  // those is re-sent once (item only) on its next sync.
+  put("League", [facts.league]);
   put("Manufacturer", [manufacturer]);
   put("Set", [setName ? [season, setName].filter(Boolean).join(" ") : null]);
   put("Season", [season]);
@@ -332,6 +356,27 @@ export function buildEbayAspects(
   put("Type", ["Sports Trading Card"]);
   put("Graded", ["No"]);
   return out;
+}
+
+/**
+ * NEO-569 — the League aspect's value for the card's league row: its
+ * abbreviation ("MLB"), else its name. Blank parts count as absent; no row
+ * (no `leagueId`, or the row is gone) is no value.
+ */
+export function ebayLeagueValue(league: { name: string; abbreviation?: string } | null | undefined): string | undefined {
+  if (!league) return undefined;
+  return clean(league.abbreviation) ?? clean(league.name) ?? undefined;
+}
+
+/**
+ * NEO-569 — does the card go on eBay without a league it should have? Only
+ * when its sport has at least one NB league to choose from: a sport with none
+ * lists without the aspect, as before. The drain holds such a card back
+ * `noLeague` (a live listing stays up, untouched, as for every hold); it
+ * never guesses a league, and BuySportsCards never reads this.
+ */
+export function ebayLeagueMissing(input: { league: string | undefined; sportHasLeagues: boolean }): boolean {
+  return input.sportHasLeagues && clean(input.league) === null;
 }
 
 /** Names of required aspects (`requiredAspectNames`) the built aspects leave empty. */

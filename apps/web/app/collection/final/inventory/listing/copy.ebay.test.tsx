@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   EBAY_ORDERS_URL,
+  heldBackNotice,
   EBAY_SANDBOX_ORDERS_URL,
   PROBLEM_COPY,
   PROBLEM_COPY_READ_ONLY,
@@ -73,6 +74,39 @@ describe("listing copy, per platform (NEO-415)", () => {
     );
     expect(problemSentence({ reason: "missingAspect" }, false, "ebay")).toBe(problemCopy("ebay").missingAspect);
     expect(problemSentence({ reason: "missingAspect", detail: "   " }, false, "ebay")).toBe(problemCopy("ebay").missingAspect);
+  });
+
+  it("NEO-569: noLeague says eBay needs a league and that the crew sets it once reported; the admin reads where to set it", () => {
+    // Inventory's Sync status has no Report: the sentence says where it is.
+    expect(problemCopy("ebay").noLeague).toBe(
+      "eBay listings need a league, and this card doesn't have one yet. Report it from Sync status on your dashboard and our crew sets it.",
+    );
+    expect(problemSentence({ reason: "noLeague" }, false, "ebay")).toBe(problemCopy("ebay").noLeague);
+    expect(problemSentence({ reason: "noLeague" }, false, "ebay", "inventory")).toBe(problemCopy("ebay").noLeague);
+    // The dashboard's Sync status has the Report button right there.
+    expect(problemSentence({ reason: "noLeague" }, false, "ebay", "dashboard")).toBe(
+      "eBay listings need a league, and this card doesn't have one yet. Report it and our crew sets it.",
+    );
+    // Every other reason reads the same on both surfaces.
+    for (const reason of Object.keys(problemCopy("ebay")) as Array<keyof ReturnType<typeof problemCopy>>) {
+      if (reason === "noLeague") continue;
+      expect(problemSentence({ reason }, false, "ebay", "dashboard")).toBe(problemSentence({ reason }, false, "ebay"));
+    }
+    expect(problemSentence({ reason: "noLeague" }, true, "ebay", "dashboard")).toBe(problemCopyReadOnly("ebay").noLeague);
+    // The admin is the one who can fix it, so the read-only line says where.
+    expect(problemSentence({ reason: "noLeague" }, true, "ebay")).toBe(
+      "No league on this card yet, and eBay listings need one. Pick it in the card's panel.",
+    );
+    // No detail rides on it.
+    expect(problemSentence({ reason: "noLeague", detail: "MLB" }, false, "ebay")).toBe(problemCopy("ebay").noLeague);
+    expect(heldBackNotice("noLeague", "ebay")).toBe(
+      "Held back from eBay: listings there need a league, and this card doesn't have one yet. Report it and our crew sets it.",
+    );
+    // With no crew to report to beside it (the logged-out demo), the panel says where Report is.
+    expect(heldBackNotice("noLeague", "ebay", false)).toBe(
+      "Held back from eBay: listings there need a league, and this card doesn't have one yet. Report it from Sync status on your dashboard and our crew sets it.",
+    );
+    expect(heldBackNotice("noPrice", "ebay", false)).toBe(heldBackNotice("noPrice", "ebay"));
   });
 
   it("a rejected row's detail is NB's own sentence, said as ours, never as a quote from the platform", () => {

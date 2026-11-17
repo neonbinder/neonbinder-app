@@ -15,6 +15,7 @@
  */
 
 import { ConvexError, v } from "convex/values";
+import { sportOfSelectorOption } from "./lib/selectorLeagues";
 import {
   action,
   internalMutation,
@@ -395,6 +396,154 @@ export async function resolveOperatorLeagueId(
 }
 
 /**
+ * NEO-569 — the most leagues one set row may carry (`selectorOptions.leagueIds`).
+ * A real set spans one league, a draft product two or three (MLB plus the
+ * college and minor leagues its prospects play in); twelve is far past any
+ * real set and keeps every any-of read (the picker's league leg, the
+ * suggestion ranks) bounded.
+ */
+export const MAX_SET_LEAGUES = 12;
+
+/**
+ * NEO-569 — the slice of a league row a set's League control and a card's
+ * League select show: its id, name, short form and level. Never the whole
+ * row; aliases and external ids are League Management's business.
+ */
+export const leagueSummaryValidator = v.object({
+  _id: v.id("leagues"),
+  name: v.string(),
+  abbreviation: v.optional(v.string()),
+  level: v.optional(leagueLevelValidator),
+});
+
+export type LeagueSummary = {
+  _id: Id<"leagues">;
+  name: string;
+  abbreviation?: string;
+  level?: LeagueLevel;
+};
+
+export function toLeagueSummary(row: Doc<"leagues">): LeagueSummary {
+  return {
+    _id: row._id,
+    name: row.name,
+    ...(row.abbreviation ? { abbreviation: row.abbreviation } : {}),
+    ...(row.level ? { level: row.level } : {}),
+  };
+}
+
+/**
+ * NEO-569 — a sport's leagues in the order a picker offers them: the major
+ * league(s) first, then everything else A–Z by name. Pure; a new array.
+ */
+export function orderSportLeagues<T extends { name: string; level?: string }>(
+  rows: ReadonlyArray<T>,
+): T[] {
+  return [...rows].sort(
+    (a, b) =>
+      Number(b.level === "major") - Number(a.level === "major") ||
+      a.name.localeCompare(b.name),
+  );
+}
+
+/** NEO-569 — every league of one sport, as summaries, major first. */
+/**
+ * NEO-569 security N2 — the most of a sport's leagues one read takes. A sport
+ * holds tens of leagues; the cap only bounds a pathological table.
+ */
+export const MAX_SPORT_LEAGUES_READ = 500;
+
+export async function sportLeagueSummaries(
+  ctx: Pick<QueryCtx, "db">,
+  sportId: Id<"selectorOptions"> | undefined,
+): Promise<LeagueSummary[]> {
+  if (!sportId) return [];
+  const rows = await ctx.db
+    .query("leagues")
+    .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+    .take(MAX_SPORT_LEAGUES_READ);
+  return orderSportLeagues(rows.map(toLeagueSummary));
+}
+
+/**
+ * NEO-331 — the ONE league of the sport whose `abbreviation` reads the same
+ * as `name`, or null.
+ *
+ * NEO-569 moved it here from `teams.ts`. Its picker job is gone (the picker
+ * reads the set's league ids now); its one caller is the armed
+ * `leagueBackfill`, which resolves a set's legacy `features.league` text
+ * ("MLB") onto a row when `findLeagueByName` misses: a league minted through
+ * the wizard's New League step stores that short form as `abbreviation` with
+ * no alias.
+ *
+ * Exactly one match or nothing. Abbreviations are not unique (two leagues may
+ * both say "IL"), and taking the first of several would pick a league nobody
+ * named.
+ */
+export function leagueByUniqueAbbreviation<T extends { abbreviation?: string }>(
+  sportLeagues: ReadonlyArray<T>,
+  name: string,
+): T | null {
+  const wanted = normalizeLeagueName(name);
+  if (!wanted) return null;
+  const matches = sportLeagues.filter(
+    (league) =>
+      league.abbreviation !== undefined &&
+      normalizeLeagueName(league.abbreviation) === wanted,
+  );
+  return matches.length === 1 ? matches[0] : null;
+}
+
+type BornSetLeagueMemo = {
+  byParent: Map<string, Promise<Array<Id<"leagues">> | undefined>>;
+  bySport: Map<string, Promise<Id<"leagues"> | undefined>>;
+};
+const bornSetLeagueMemo = new WeakMap<object, BornSetLeagueMemo>();
+
+/**
+ * NEO-569 — the `leagueIds` a NEW `setName` row under `parentId` (its brand)
+ * is born with: its sport's configured major league, LINKED, never created
+ * (`findDefaultLeagueId`). Automatic paths do not create leagues (NEO-331 /
+ * NEO-240, the rule on the `leagues` table), so set creation only points at a
+ * row that already exists. `undefined` when the sport has no configured
+ * league, or that league has no row yet: the set is born without one and an
+ * operator adds it on the set's League row.
+ *
+ * Memoised per brand and per sport for the whole mutation, keyed on the
+ * transaction's `db`, so a sync minting many sets under one brand walks to the
+ * sport and resolves its league once (`insertSetWithBaseFromSl`'s per-root
+ * read budget stays query-free).
+ */
+export async function bornSetLeagueIds(
+  ctx: MutationCtx,
+  parentId: Id<"selectorOptions">,
+): Promise<Array<Id<"leagues">> | undefined> {
+  let memo = bornSetLeagueMemo.get(ctx.db);
+  if (!memo) {
+    memo = { byParent: new Map(), bySport: new Map() };
+    bornSetLeagueMemo.set(ctx.db, memo);
+  }
+  const shared = memo;
+  let pending = shared.byParent.get(parentId);
+  if (!pending) {
+    pending = (async () => {
+      const sportId = await sportOfSelectorOption(ctx, parentId);
+      if (!sportId) return undefined;
+      let league = shared.bySport.get(sportId);
+      if (!league) {
+        league = findDefaultLeagueId(ctx, sportId);
+        shared.bySport.set(sportId, league);
+      }
+      const id = await league;
+      return id ? [id] : undefined;
+    })();
+    shared.byParent.set(parentId, pending);
+  }
+  const ids = await pending;
+  return ids ? [...ids] : undefined;
+}
+
+/**
  * NEO-284 — the sport's configured league NAME, read-only.
  *
  * The naming half of `resolveDefaultLeagueId`, split out so a query context
@@ -423,15 +572,54 @@ export async function defaultLeagueNameFor(
 }
 
 /**
+ * NEO-569 — the sport's configured top-flight league, READ-ONLY: the existing
+ * row that answers to `sportConfig`'s full name, then its abbreviation as a
+ * name or alias, then a UNIQUE `abbreviation` match. Never creates a row and
+ * never queues enrichment — this is what set creation calls, and automatic
+ * paths only link an existing league (schema comment on `leagues`).
+ * `undefined` when the sport has no configured league or no row answers.
+ */
+export async function findDefaultLeagueId(
+  ctx: QueryCtx,
+  sportId: Id<"selectorOptions">,
+): Promise<Id<"leagues"> | undefined> {
+  const configured = await defaultLeagueNameFor(ctx, sportId);
+  if (!configured) return undefined;
+  const nameKey = normalizeLeagueName(configured.name);
+  const exact = await ctx.db
+    .query("leagues")
+    .withIndex("by_name_normalized_and_sport_id", (q) =>
+      q.eq("nameNormalized", nameKey).eq("sportId", sportId),
+    )
+    .first();
+  if (exact) return exact._id;
+  // One bounded read of the sport's (few) leagues answers every other leg.
+  const sportRows = await ctx.db
+    .query("leagues")
+    .withIndex("by_sport_id", (q) => q.eq("sportId", sportId))
+    .take(MAX_SPORT_LEAGUES_READ);
+  const byAlias = sportRows.find((row) => leagueAnswersTo(row, nameKey));
+  if (byAlias) return byAlias._id;
+  const { abbreviation } = configured;
+  if (!abbreviation) return undefined;
+  const abbrevKey = normalizeLeagueName(abbreviation);
+  const byAbbrevName = sportRows.find((row) => leagueAnswersTo(row, abbrevKey));
+  if (byAbbrevName) return byAbbrevName._id;
+  return leagueByUniqueAbbreviation(sportRows, abbreviation)?._id;
+}
+
+/**
  * The sport's configured top-flight league, creating the row on first use.
  *
  * NEO-331: NO team-creation path calls this any more. It used to be the
  * fallback for a team created with no league answer, which filed minor,
  * independent, college and overseas clubs under MLB with nothing on screen
  * saying so; Jason ruled (2026-10-10) that an unanswered League stays blank.
- * Kept for a surface that SHOWS the sport default to an operator before they
- * accept it — such a pre-fill needs the row to exist — and not to be wired
- * back in as a silent fallback.
+ * Not to be wired back in as a silent fallback for a TEAM.
+ *
+ * NEO-569: set creation does NOT call this. A new set only LINKS its sport's
+ * major league when that row already exists (`findDefaultLeagueId`, read-only,
+ * via `bornSetLeagueIds`); automatic paths never create leagues.
  *
  * Sourced from the sport's own `sportConfig` — `league` is the abbreviation
  * ("MLB") and `espn.leagueName` the full name ("Major League Baseball") — so
