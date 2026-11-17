@@ -1,6 +1,6 @@
 /**
  * Faults (CONTRACT.md, "Faults"): per-namespace rules that make a matching
- * request answer 429 or 503, wait, hang or drop its connection, or (eBay
+ * request answer 429 or 503, wait, hang (ending in 503) or reset (503), or (eBay
  * paths only) answer eBay's error or 401 body. They replace
  * NEONBINDER_TEST_BSC_STALL_CARD_IDS. Default TTL 10 minutes.
  */
@@ -29,8 +29,9 @@ export const MAX_FAULT_TTL_S = 3600;
 export const MAX_RULES_PER_NAMESPACE = 50;
 export const MAX_DELAY_MS = 120_000;
 /**
- * A hang is cut after this, so a client with no timeout cannot pin a socket
- * for long. Two minutes is past every NB timeout a hang is meant to trip
+ * A hang answers 503 after this (never a socket drop: on Cloud Run that
+ * restarts the only instance and wipes all state), so a client with no
+ * timeout cannot pin a socket for long. Two minutes is past every NB timeout a hang is meant to trip
  * (BSC calls time out at 30-60 s).
  */
 export const HANG_CAP_MS = 2 * 60 * 1000;

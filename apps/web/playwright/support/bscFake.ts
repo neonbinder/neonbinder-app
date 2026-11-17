@@ -25,8 +25,9 @@
  *
  * THE CALL GATE IS DEPLOYMENT-WIDE. Convex keeps ONE breaker per deployment
  * (`convex/bscCallGate.ts`; its token bucket is not applied against the fake, so there is no rate cap). A 429 opens it at once, and five
- * consecutive 5xx, timeouts or dropped connections open it too; while it is
- * open EVERY shard's BSC calls are refused. So a rule of kind `429`, `503`,
+ * consecutive 5xx or timeouts open it too (no fault drops the connection: a
+ * `reset` answers 503 at once, and a `hang` the caller outwaits ends in a 503 at
+ * its 2-minute cap); while it is open EVERY shard's BSC calls are refused. So a rule of kind `429`, `503`,
  * `hang` or `reset` is allowed only in a spec tagged `@bsc-breaker` (listed in
  * `BREAKER_SPECS`, project-scope.mjs), which CI runs alone after every shard;
  * `setFaults` throws on the others. A `delay` is fine anywhere as long as it is
@@ -132,10 +133,10 @@ export const bscFault = {
     ruleOf("503", pathTemplate, o, o.retryAfterS !== undefined ? { retryAfterS: o.retryAfterS } : {}),
   /** Hold the answer for `delayMs`, then answer normally. Keep it under the caller's own timeout. */
   slow: (pathTemplate: string, delayMs: number, o: RuleOptions = {}): BscFaultRule => ruleOf("delay", pathTemplate, o, { delayMs }),
-  /** Never answer: the caller's own timeout ends the call. Counts as a failure to the gate: `@bsc-breaker` only. */
+  /** Hold the answer: the caller's own timeout ends the call (the fake answers 503 at its 2-minute cap). Counts as a failure to the gate: `@bsc-breaker` only. */
   hangs: (pathTemplate: string, o: RuleOptions = {}): BscFaultRule => ruleOf("hang", pathTemplate, o),
-  /** Drop the connection. Counts as a failure to the gate: `@bsc-breaker` only. */
-  dropsConnection: (pathTemplate: string, o: RuleOptions = {}): BscFaultRule => ruleOf("reset", pathTemplate, o),
+  /** Answer 503 at once, with no `Retry-After` (the fake's `reset` kind; it never drops the socket). Counts as a failure to the gate: `@bsc-breaker` only. */
+  answersUnavailable: (pathTemplate: string, o: RuleOptions = {}): BscFaultRule => ruleOf("reset", pathTemplate, o),
 };
 
 /** An order a buyer places, in NB's terms (`api.testing.addMyBscOrder`). */
