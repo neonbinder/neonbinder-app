@@ -249,7 +249,12 @@ vi.mock("./TeamPicker", () => ({
   }: {
     contextOptionId?: string;
     /** NEO-556 — the No Team toggle, mirrored as a pressed/unpressed button. */
-    noTeam?: { value: boolean; onChange: (next: boolean) => void; label?: string };
+    noTeam?: {
+      value: boolean;
+      onChange: (next: boolean) => void;
+      label?: string;
+      describedBy?: string;
+    };
     value: string[];
     onChange: (next: string[]) => void;
     sportId?: string;
@@ -290,6 +295,7 @@ vi.mock("./TeamPicker", () => ({
           type="button"
           aria-label={noTeam.label}
           aria-pressed={noTeam.value}
+          aria-describedby={noTeam.describedBy ?? ariaDescribedBy}
           disabled={disabled}
           onClick={() => noTeam.onChange(!noTeam.value)}
         >
@@ -4617,6 +4623,35 @@ describe("SetAttributesPanel — No Team (NEO-556)", () => {
     currentRow = makeRow({ level: "setName", teamIds: [] });
     renderPanel();
     expect(toggle().getAttribute("aria-pressed")).toBe("false");
+  });
+
+  // The group and the picker trigger say what a picked team reaches; the
+  // toggle has its own description, in both states.
+  const teamGroup = () => screen.getByRole("group", { name: "Team" });
+  const describedText = (el: HTMLElement) =>
+    document.getElementById(el.getAttribute("aria-describedby")!)?.textContent;
+
+  it("describes the toggle as No Team when it is off, and leaves the group and trigger on the team sentence", () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    renderPanel();
+    expect(describedText(toggle())).toBe(
+      "New cards with nothing naming a team get No Team.",
+    );
+    expect(describedText(teamGroup())).toBe("Every card in this set gets this team.");
+    expect(describedText(screen.getByLabelText(PICK))).toBe(
+      "Every card in this set gets this team.",
+    );
+    expect(toggle().getAttribute("aria-describedby")).not.toBe(
+      teamGroup().getAttribute("aria-describedby"),
+    );
+  });
+
+  it("describes the toggle with the on-state sentence when No Team is on", () => {
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    renderPanel();
+    const on = "No Team: new cards with nothing naming a team get it. Pick a team to replace it.";
+    expect(describedText(toggle())).toBe(on);
+    expect(describedText(teamGroup())).toBe(on);
   });
 
   it("saves No Team straight away when nothing beneath follows and no card carries a team being replaced", async () => {

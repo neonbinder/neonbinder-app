@@ -2104,6 +2104,15 @@ export function teamHintCopy(level: Level, noTeam = false): string {
   return `Every card in this ${LEVEL_LABEL[level].toLowerCase()} gets this team.`;
 }
 
+/**
+ * The No Team toggle's own accessible description (not shown). Off, it says
+ * what pressing does; on, it is the on-state sentence the group already reads.
+ */
+export function noTeamToggleHintCopy(level: Level, noTeam: boolean): string {
+  if (noTeam) return teamHintCopy(level, true);
+  return "New cards with nothing naming a team get No Team.";
+}
+
 /** Order-insensitive equality: the picker appends, the row stores a set. */
 function sameTeamIds(
   a: ReadonlyArray<Id<"teams">>,
@@ -2236,6 +2245,7 @@ function SetTeamRow({
       : null;
   const labelId = useId();
   const hintId = useId();
+  const noTeamHintId = useId();
   const seqRef = useRef(0);
 
   /** The picker's value while a pick is being previewed or saved. */
@@ -2585,6 +2595,7 @@ function SetTeamRow({
           value: noTeamShown,
           onChange: (next) => void handleNoTeam(next),
           label: NO_TEAM_LABELS.everyCard,
+          describedBy: noTeamHintId,
         }}
         sportId={sportId}
         disabled={busy || inFlight}
@@ -2635,6 +2646,11 @@ function SetTeamRow({
           dialog says how many cards before any change lands. */}
       <span id={hintId} className="sr-only">
         {teamHintCopy(level, noTeamShown)}
+      </span>
+      {/* The No Team toggle's own description: the sentence above says what a
+          picked team reaches, which misdescribes the toggle while it is off. */}
+      <span id={noTeamHintId} className="sr-only">
+        {noTeamToggleHintCopy(level, noTeamShown)}
       </span>
       {confirm && (
         <ConfirmDialog
