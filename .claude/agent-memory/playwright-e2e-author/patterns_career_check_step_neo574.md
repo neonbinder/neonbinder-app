@@ -71,8 +71,11 @@ Measured on the first full run (NEO-574):
 - The blocked-Next status ("Fix the years first — then Next.") shows only AFTER a press on the
   held Next: focus Next, press Enter, then assert the status (once, no `.first()` needed) and
   that focus went to the bad line's From year. `toBeDisabled()` alone proves the hold.
-- Typing in "Career team name" opens the "Existing team suggestions" listbox over the row, and
-  it intercepts the click on "+ Add". Pick `option "Use <team>"` first, then + Add.
+- Career team entry suggestions (since the a12d46fb/b2a87c01 rework): a team's WHOLE name shows
+  no list (it would only echo the box), so type it and press + Add directly; a partial name shows
+  "Existing team suggestions" IN the form, below the field. Prove + Add is not covered with
+  `click({ trial: true })` (runs the hit test, adds nothing). Each entry mounts its own
+  `role="status"` ("N suggestions"): never call an unfiltered `getByRole("status")` in the wizard.
 - Checklist-only rows kept in Match Cards are cards with a team after the save: the line the
   save lands with counts them ("Teams from your checklist: N" = `facts.matched` + kept rows,
   and "Saved <rows + kept> cards."). Before Confirm, N is still `facts.matched`.

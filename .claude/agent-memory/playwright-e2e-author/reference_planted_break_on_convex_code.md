@@ -21,3 +21,7 @@ by the coordinator or picked up by another builder. Plant it in a scratch copy i
   lazily): run a frozen copy from the scratchpad, with any sibling helper it calls.
 - A break may go red in no E2E: then say so and name the unit test that catches it (run it
   with the break planted, e.g. `npx vitest run <file>` in the copy).
+- UI-review screenshots without touching the repo: copy the spec into a scratch dir with absolute
+  imports, add a `{"type":"module"}` package.json there (the support files use `import.meta`), and
+  a scratch config that spreads the repo config with `testDir`/`testMatch`/`outputDir` overridden.
+  Shoot both themes with `page.emulateMedia({ colorScheme })` (the app follows the OS by default).

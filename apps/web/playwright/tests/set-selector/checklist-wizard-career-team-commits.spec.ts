@@ -104,13 +104,27 @@ test(
     await expect(careerName).toHaveValue(OTHER_TEAM);
     await expect(fromYear).toHaveValue(SET_YEAR);
     await expect(staged).toBeHidden();
-    // Back to the club by hand, and + Add: it is staged, and the form prefills the next team
-    // not yet added, the NHL club, with no quick pick left.
-    await careerName.fill(CARD_TEAM);
-    // Typing opens the existing-team suggestions over the row; take the club from them.
-    await wizard.getByRole("listbox", { name: "Existing team suggestions" }).getByRole("option", { name: `Use ${CARD_TEAM}` }).click();
+    // Part of a name opens the existing-team suggestions IN the form, below the field: the
+    // years and + Add stay reachable while it is open (a trial click runs every actionability
+    // check, the hit test included, and fails if the list covers the button; it adds nothing).
+    const suggestionList = wizard.getByRole("listbox", { name: "Existing team suggestions" });
+    const addCareerTeam = wizard.getByRole("button", { name: "Add career team" });
+    await careerName.fill(CARD_TEAM.split(" ")[0]);
+    await expect(suggestionList).toBeVisible();
+    await expect(suggestionList.getByRole("option", { name: `Use ${CARD_TEAM}` })).toBeVisible();
+    await expect(addCareerTeam).toBeVisible();
+    await addCareerTeam.click({ trial: true });
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, career team entry with suggestions open" });
+    // A suggestion fills the field with the team's whole name and closes the list.
+    await suggestionList.getByRole("option", { name: `Use ${CARD_TEAM}` }).click();
     await expect(careerName).toHaveValue(CARD_TEAM);
-    await wizard.getByRole("button", { name: "Add career team" }).click();
+    await expect(suggestionList).toBeHidden();
+    // Typing a team's WHOLE name offers nothing back (the list would only echo the box), so
+    // + Add is pressed straight away, as a user would: it is staged, and the form prefills the
+    // next team not yet added, the NHL club, with no quick pick left.
+    await careerName.fill(CARD_TEAM);
+    await expect(suggestionList).toBeHidden();
+    await addCareerTeam.click();
     await expect(staged.getByText(new RegExp(`^${CARD_TEAM} \\(${SET_YEAR}`))).toBeVisible();
     await expect(careerName).toHaveValue(OTHER_TEAM);
     await expect(fromYear).toHaveValue(SET_YEAR);
