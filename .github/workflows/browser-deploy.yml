@@ -277,6 +277,18 @@ jobs:
           echo "new_revision=$NEW" >> "$GITHUB_OUTPUT"
           echo "tagged_url=$TAGGED_URL" >> "$GITHUB_OUTPUT"
 
+      # NEO-555: assert what landed on the new revision. env_vars merges, so a
+      # PREVIEW_SHA left by a pr-<N> preview must be gone. Same script as the
+      # preprocess lane's G5 check (service-generic).
+      - name: Assert the new revision's env
+        env:
+          NEW_REVISION: ${{ steps.capture-new.outputs.new_revision }}
+        run: |
+          set -euo pipefail
+          bash .github/scripts/preprocess-revision-check.sh env \
+            --project neonbinder-dev --service neonbinder-browser \
+            --revision "$NEW_REVISION" --absent PREVIEW_SHA
+
   # Real BSC + SportLots login round-trip against the dev tagged revision
   # (catches auth regressions before any traffic shift).
   dev-login-probe:

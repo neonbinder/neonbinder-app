@@ -144,6 +144,9 @@ test("pipeline browser_preview equals browser.yml's scope", () => {
   assert.deepEqual(sorted(preview), sorted(scopeFilter("browser.yml", "browser")));
 });
 
+// Sees only scripts named directly in browser.yml. Scripts those call
+// indirectly through `$here/` (bsc-probe-verdict.sh, ebay-probe-verdict.sh) are
+// invisible here and must be added to the trigger and scope lists by hand.
 test("every script browser.yml runs is in its trigger paths", () => {
   const text = read("browser.yml").join("\n");
   const used = [...text.matchAll(/\.github\/scripts\/([A-Za-z0-9_-]+\.sh)/g)].map((m) => `.github/scripts/${m[1]}`);
