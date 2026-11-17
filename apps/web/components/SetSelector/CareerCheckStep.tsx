@@ -360,9 +360,11 @@ function CareerLineRow({
           {KINDS.map((kind) => {
             const picked = kind === current;
             return (
-              <button
+              <NeonButton
                 key={kind}
                 ref={kind === current ? firstRef : undefined}
+                variant="secondary"
+                outline={!picked}
                 type="button"
                 role="radio"
                 aria-checked={picked}
@@ -371,11 +373,7 @@ function CareerLineRow({
                 data-career-kind={kind}
                 onClick={() => choose(kind, false)}
                 onKeyDown={(event) => onKeyDown(event, kind)}
-                className={`rounded-md border-2 px-3 py-1.5 text-sm font-semibold transition-colors focus-outline max-sm:min-h-11 ${
-                  picked
-                    ? "border-neon-green-text text-neon-green-text"
-                    : "border-control text-ink-2 hover:border-ink-2"
-                } ${disabled ? "cursor-not-allowed opacity-60" : ""}`}
+                className="max-sm:min-h-11"
               >
                 {picked && (
                   <span aria-hidden="true" className="mr-1.5">
@@ -383,7 +381,7 @@ function CareerLineRow({
                   </span>
                 )}
                 {KIND_LABEL[kind]}
-              </button>
+              </NeonButton>
             );
           })}
         </div>
@@ -599,8 +597,10 @@ function FollowUp({
             {(["leave", "add"] as const).map((kind) => {
               const picked = then.kind === kind;
               return (
-                <button
+                <NeonButton
                   key={kind}
+                  variant="secondary"
+                  outline={!picked}
                   type="button"
                   role="radio"
                   aria-checked={picked}
@@ -641,11 +641,7 @@ function FollowUp({
                       intoYears();
                     }
                   }}
-                  className={`rounded-md border-2 px-3 py-1.5 text-sm font-semibold transition-colors focus-outline max-sm:min-h-11 ${
-                    picked
-                      ? "border-neon-green-text text-neon-green-text"
-                      : "border-control text-ink-2 hover:border-ink-2"
-                  }`}
+                  className="max-sm:min-h-11"
                 >
                   {picked && (
                     <span aria-hidden="true" className="mr-1.5">
@@ -653,7 +649,7 @@ function FollowUp({
                     </span>
                   )}
                   {KIND_LABEL[kind]}
-                </button>
+                </NeonButton>
               );
             })}
           </div>
@@ -857,12 +853,14 @@ function PlayerChoices({
           onPick(c.playerId, c.name);
         };
         return (
-          <button
+          <NeonButton
             key={c.playerId}
             ref={(el) => {
               if (el) optionRefs.current.set(c.playerId, el);
               else optionRefs.current.delete(c.playerId);
             }}
+            variant="secondary"
+            outline={!picked}
             type="button"
             role="radio"
             aria-checked={picked}
@@ -893,23 +891,22 @@ function PlayerChoices({
                 if (!event.repeat) choose();
               }
             }}
-            className={`flex w-full flex-col rounded-md border px-3 py-1.5 text-left text-sm focus-outline max-sm:min-h-11 ${
-              picked
-                ? "border-neon-green-text bg-list-hover-raised"
-                : "border-control hover:border-ink-2"
-            }`}
+            // Up to three lines in one button: the name, the detail and the
+            // team note. The lines inherit NeonButton's ink (no colour of their
+            // own), so they read on the outline, the fill and the hover fill.
+            className="h-auto w-full flex-col items-start whitespace-normal py-1.5 text-left max-sm:min-h-11"
           >
-            <span className="font-semibold text-ink">
+            <span className="font-semibold">
               {picked && (
-                <span aria-hidden="true" className="mr-1.5 text-neon-green-text">
+                <span aria-hidden="true" className="mr-1.5">
                   ✓
                 </span>
               )}
               {c.name}
             </span>
-            {c.detail && <span className="text-xs text-ink-3">{c.detail}</span>}
-            {c.covers && team && <span className="text-xs text-ink-2">{playedForText(team)}</span>}
-          </button>
+            {c.detail && <span className="text-xs font-normal">{c.detail}</span>}
+            {c.covers && team && <span className="text-xs font-normal">{playedForText(team)}</span>}
+          </NeonButton>
         );
       })}
     </div>

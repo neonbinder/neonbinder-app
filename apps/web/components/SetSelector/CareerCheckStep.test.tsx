@@ -165,6 +165,10 @@ const group = (player: string, team: string) =>
 const tatis = () => group("Fernando Tatis Jr.", "San Diego Padres");
 const trout = () => group("Mike Trout", "Los Angeles Angels");
 const radio = (g: HTMLElement, name: string) => within(g).getByRole("radio", { name });
+// The standard secondary NeonButton paints through --nb-* custom properties:
+// outline = a clear ground, filled = the cyan fill.
+const isOutline = (el: HTMLElement) => el.style.getPropertyValue("--nb-fill") === "transparent";
+const isFilledBlue = (el: HTMLElement) => el.style.getPropertyValue("--nb-fill") === "var(--neon-blue)";
 
 beforeEach(() => {
   candidates = [];
@@ -280,6 +284,46 @@ describe("the lines", () => {
     expect(answersSeen).toEqual({});
   });
 
+  // Jason (NEO-574): the choices are the standard secondary NeonButton, not a
+  // pale hand-rolled chip. Unselected = outline, selected = filled.
+
+  it("draws the answers as standard secondary buttons: outline until picked, then filled", () => {
+    render(<Harness />);
+    const g = tatis();
+    for (const r of within(g).getAllByRole("radio")) {
+      expect(r.className).toContain("neon-button");
+      expect(r.getAttribute("type")).toBe("button");
+    }
+    expect(isFilledBlue(radio(g, "Keep as is"))).toBe(true);
+    for (const name of ["Add to career", "Wrong player", "Fix card’s team"]) {
+      expect(isOutline(radio(g, name))).toBe(true);
+      expect(radio(g, name).style.getPropertyValue("--nb-ink")).toBe("var(--neon-blue-text)");
+    }
+    fireEvent.click(radio(g, "Add to career"));
+    expect(isFilledBlue(radio(g, "Add to career"))).toBe(true);
+    expect(isOutline(radio(g, "Keep as is"))).toBe(true);
+  });
+
+  it("keeps the radio semantics on the buttons: checked, one tab stop, arrows, Enter", () => {
+    render(<Harness />);
+    const g = tatis();
+    const radios = within(g).getAllByRole("radio");
+    expect(radios.map((r) => r.getAttribute("aria-checked"))).toEqual(["true", "false", "false", "false"]);
+    expect(radios.map((r) => r.tabIndex)).toEqual([0, -1, -1, -1]);
+    const leave = radio(g, "Keep as is");
+    act(() => leave.focus());
+    fireEvent.keyDown(leave, { key: "ArrowRight" });
+    const add = radio(g, "Add to career");
+    expect(document.activeElement).toBe(add);
+    expect(add.getAttribute("aria-checked")).toBe("true");
+    expect(add.tabIndex).toBe(0);
+    expect(leave.tabIndex).toBe(-1);
+    expect(isFilledBlue(add)).toBe(true);
+    // Enter is handled by the radio, not left to the button's click.
+    const notPrevented = fireEvent.keyDown(add, { key: "Enter" });
+    expect(notPrevented).toBe(false);
+  });
+
   it("names the four answers in the collector's words", () => {
     render(<Harness />);
     expect(
@@ -391,6 +435,47 @@ describe("Wrong player", () => {
     { playerId: pid("p-sr"), name: "Fernando Tatis Sr.", birthYear: 1971, careerSummary: "Cardinals 1997–98", covers: true },
     { playerId: pid("p-x"), name: "Fernando Tatis", careerSummary: "", covers: false },
   ];
+
+  it("keeps the phone target height on every choice", () => {
+    candidates = CANDIDATES;
+    render(<Harness />);
+    fireEvent.click(radio(tatis(), "Wrong player"));
+    const list = screen.getByRole("radiogroup", { name: "Which Fernando Tatis Jr.?" });
+    for (const r of [...within(tatis()).getAllByRole("radio"), ...within(list).getAllByRole("radio")]) {
+      expect(r.className).toContain("max-sm:min-h-11");
+    }
+  });
+
+  it("draws the namesakes as the same secondary buttons, keeping their detail lines", () => {
+    candidates = CANDIDATES;
+    render(<Harness />);
+    fireEvent.click(radio(tatis(), "Wrong player"));
+    const list = screen.getByRole("radiogroup", { name: "Which Fernando Tatis Jr.?" });
+    const [first, second] = within(list).getAllByRole("radio");
+    expect(isOutline(first)).toBe(true);
+    expect(isOutline(second)).toBe(true);
+    fireEvent.click(second);
+    const after = within(list).getAllByRole("radio");
+    expect(after.filter(isFilledBlue)).toHaveLength(1);
+    expect(after.filter(isFilledBlue)[0].getAttribute("aria-checked")).toBe("true");
+    // The detail lines carry no ink of their own, so they follow the button's.
+    expect(within(list).getByText("b. 1971 · Cardinals 1997–98").className).not.toMatch(/text-ink|text-neon/);
+  });
+
+  it("draws the follow-up pair as the same secondary buttons", () => {
+    candidates = CANDIDATES;
+    coverage = { "p-sr|t-padres": false };
+    render(<Harness />);
+    fireEvent.click(radio(tatis(), "Wrong player"));
+    fireEvent.click(screen.getByRole("radio", { name: /Fernando Tatis Sr\./ }));
+    const follow = screen.getByRole("radiogroup", { name: "Career for Fernando Tatis Sr." });
+    expect(isFilledBlue(radio(follow, "Keep as is"))).toBe(true);
+    expect(isOutline(radio(follow, "Add to career"))).toBe(true);
+    expect(radio(follow, "Add to career").tabIndex).toBe(-1);
+    fireEvent.click(radio(follow, "Add to career"));
+    expect(isFilledBlue(radio(follow, "Add to career"))).toBe(true);
+    expect(isOutline(radio(follow, "Keep as is"))).toBe(true);
+  });
 
   it("lists the same-name players, asking only about existing ones, excluding the current", () => {
     candidates = CANDIDATES;
