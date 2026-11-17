@@ -14,7 +14,7 @@
  * otherwise from ADC.
  */
 import { readCredentials } from "./credentials";
-import { FakeClient, idTokenSource, isLoopback } from "./fake-client";
+import { FakeClient, assertFakeUrl, idTokenSource, isLoopback } from "./fake-client";
 import { bscSession, loadBrowserModules } from "./bsc";
 import { MAX_REQUESTS_PER_SESSION, bscCaller, describeRequest, planMisses, runRecordSession } from "./record";
 import { describeRefusal, describeUndo, describeUndoCheck, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite, type CaptureResult, type UndoResult } from "./capture-write";
@@ -78,9 +78,10 @@ export function readMax(value: string | true | undefined): number | undefined {
   return Math.min(Number(value), MAX_REQUESTS_PER_SESSION);
 }
 
-function fakeClient(flags: Map<string, string | true>): FakeClient {
+export function fakeClient(flags: Map<string, string | true>): FakeClient {
   const url = str(flags, "--fake");
   if (!url) throw new Error("--fake <url> is required");
+  assertFakeUrl(url);
   const callerKey = process.env.FAKE_BSC_CALLER_KEY ?? "";
   const adminKey = process.env.FAKE_BSC_ADMIN_KEY ?? "";
   if (!callerKey || !adminKey) throw new Error("FAKE_BSC_CALLER_KEY and FAKE_BSC_ADMIN_KEY must be set for this command (see README)");
