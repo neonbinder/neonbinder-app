@@ -48,9 +48,38 @@ describe("idTokenSource", () => {
 
   it("a directory is refused; a file over 16 KB is refused", async () => {
     const d = path.join(dir, "adir"); await mkdir(d);
-    await assert.rejects(src({ FAKE_BSC_ID_TOKEN_FILE: d }), /regular file/);
+    const same = /^FAKE_BSC_ID_TOKEN_FILE is set but is not a readable regular file under 16 KB$/;
+    await assert.rejects(src({ FAKE_BSC_ID_TOKEN_FILE: d }), (e) => {
+      assert.match(e.message, same); assert.equal(e.reason, "not-a-regular-file");
+      assert.ok(!e.message.includes(dir)); return true;
+    });
     const big = await file("big", "a".repeat(17 * 1024));
-    await assert.rejects(src({ FAKE_BSC_ID_TOKEN_FILE: big }), /under 16 KB/);
+    await assert.rejects(src({ FAKE_BSC_ID_TOKEN_FILE: big }), (e) => {
+      assert.match(e.message, same); assert.equal(e.reason, "too-large");
+      assert.ok(!e.message.includes(dir)); return true;
+    });
+    await assert.rejects(src({ FAKE_BSC_ID_TOKEN_FILE: path.join(dir, "gone") }), (e) => {
+      assert.match(e.message, same); assert.equal(e.reason, "unreadable"); return true;
+    });
+  });
+
+  it("a three-part token whose middle part is not JSON is refused generically", async () => {
+    const f = await file("nojson", "aaa.bbb.ccc");
+    await assert.rejects(src({ FAKE_BSC_ID_TOKEN_FILE: f }), /does not hold a single ID token/);
+  });
+
+  it("a payload of null or a string is refused", async () => {
+    for (const payload of [null, "x", [1]]) {
+      const f = await file("pl", `${b64({ alg: "RS256" })}.${b64(payload)}.c2ln`);
+      await assert.rejects(src({ FAKE_BSC_ID_TOKEN_FILE: f }), /single ID token/, JSON.stringify(payload));
+    }
+  });
+
+  it("exp equal to now is refused; a string exp is refused", async () => {
+    const f = await file("expnow", jws({ aud: AUD, exp: NOW / 1000 }));
+    await assert.rejects(src({ FAKE_BSC_ID_TOKEN_FILE: f }), /expired/);
+    const g = await file("expstr", jws({ aud: AUD, exp: String(NOW / 1000 + 3600) }));
+    await assert.rejects(src({ FAKE_BSC_ID_TOKEN_FILE: g }), /expired/);
   });
 
   it("an empty or blank file throws naming the variable", async () => {
@@ -145,6 +174,30 @@ describe("fakeClient wiring and --fake pinning", () => {
     for (const bad of ["https://evil.example", "https://neonbinder-fake-bsc-1.run.app.evil.example", "http://neonbinder-fake-bsc-1.us-central1.run.app", "https://pr-1---neonbinder-fake-bsc-1.us-central1.run.app", "https://neonbinder-browser-1.us-central1.run.app", "https://user:pw@neonbinder-fake-bsc-1.run.app", "not a url"]) {
       assert.throws(() => assertFakeUrl(bad), /--fake/, bad);
     }
+  });
+
+  it("FAKE_BSC_EXPECTED_HOST pins the exact host; loopback stays allowed", () => {
+    const host = "neonbinder-fake-bsc-1.us-central1.run.app";
+    const env = { FAKE_BSC_EXPECTED_HOST: host };
+    assert.doesNotThrow(() => assertFakeUrl(`https://${host}`, env));
+    assert.throws(() => assertFakeUrl("https://neonbinder-fake-bsc-2.us-central1.run.app", env), /FAKE_BSC_EXPECTED_HOST/);
+    assert.throws(() => assertFakeUrl(`https://${host}`, { FAKE_BSC_EXPECTED_HOST: "" }), /FAKE_BSC_EXPECTED_HOST/);
+    assert.doesNotThrow(() => assertFakeUrl("http://127.0.0.1:9", env));
+    assert.doesNotThrow(() => assertFakeUrl(`https://${host}`, {}));
+  });
+
+  it("keys with whitespace or control characters are refused by name, never by value", () => {
+    const keep = [process.env.FAKE_BSC_CALLER_KEY, process.env.FAKE_BSC_ADMIN_KEY];
+    try {
+      for (const [name, bad] of [["FAKE_BSC_CALLER_KEY", "abc\ndef"], ["FAKE_BSC_ADMIN_KEY", "abc def"], ["FAKE_BSC_CALLER_KEY", "abc\u0001"], ["FAKE_BSC_ADMIN_KEY", "tab\there"]]) {
+        process.env.FAKE_BSC_CALLER_KEY = "c".repeat(40); process.env.FAKE_BSC_ADMIN_KEY = "a".repeat(40);
+        process.env[name] = bad;
+        assert.throws(() => fakeClient(flags("--fake", base, "--no-id-token")), (e) => {
+          assert.ok(e.message.includes(name)); assert.ok(!e.message.includes("def") && !e.message.includes("here"));
+          return true;
+        });
+      }
+    } finally { [process.env.FAKE_BSC_CALLER_KEY, process.env.FAKE_BSC_ADMIN_KEY] = keep; }
   });
 
   it("fakeClient refuses a bad --fake host before building anything", () => {

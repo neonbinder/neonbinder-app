@@ -85,6 +85,9 @@ export function fakeClient(flags: Map<string, string | true>): FakeClient {
   const callerKey = process.env.FAKE_BSC_CALLER_KEY ?? "";
   const adminKey = process.env.FAKE_BSC_ADMIN_KEY ?? "";
   if (!callerKey || !adminKey) throw new Error("FAKE_BSC_CALLER_KEY and FAKE_BSC_ADMIN_KEY must be set for this command (see README)");
+  for (const [name, value] of [["FAKE_BSC_CALLER_KEY", callerKey], ["FAKE_BSC_ADMIN_KEY", adminKey]]) {
+    if (/[\u0000-\u0020\u007f-\u009f]/.test(value)) throw new Error(`${name} contains whitespace or control characters`);
+  }
   const noIdToken = flags.get("--no-id-token") === true;
   if (noIdToken && !isLoopback(url)) throw new Error("--no-id-token is only for a fake on localhost");
   const audience = str(flags, "--audience") ?? new URL(url).origin;

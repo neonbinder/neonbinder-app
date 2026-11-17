@@ -79,17 +79,19 @@ export function idTokenSource(
   return async () => {
     if (file === "") throw new Error("FAKE_BSC_ID_TOKEN_FILE is set but empty; unset it to use ADC");
     let raw: string;
+    let reason = "unreadable";
     try {
       const st = await stat(file);
-      if (!st.isFile()) throw new Error("not a regular file");
-      if (st.size > MAX_TOKEN_FILE_BYTES) throw new Error("too large");
+      if (!st.isFile()) { reason = "not-a-regular-file"; throw new Error(reason); }
+      if (st.size > MAX_TOKEN_FILE_BYTES) { reason = "too-large"; throw new Error(reason); }
       if (!warned && (st.mode & 0o077) !== 0) {
         warned = true;
         warn("warning: FAKE_BSC_ID_TOKEN_FILE is readable by group or others; use mode 600");
       }
       raw = await readFile(file, "utf8");
     } catch {
-      throw new Error("FAKE_BSC_ID_TOKEN_FILE is set but is not a readable regular file under 16 KB");
+      // One public text for every cause (never the path); `reason` is for tests and debugging.
+      throw Object.assign(new Error("FAKE_BSC_ID_TOKEN_FILE is set but is not a readable regular file under 16 KB"), { reason });
     }
     const token = raw.trim();
     if (!token) throw new Error("FAKE_BSC_ID_TOKEN_FILE is set but the file is empty");
@@ -100,7 +102,10 @@ export function idTokenSource(
     } catch {
       throw new Error("FAKE_BSC_ID_TOKEN_FILE does not hold a single ID token");
     }
-    if (claims === null || typeof claims !== "object" || claims.aud !== audience) {
+    if (claims === null || typeof claims !== "object" || Array.isArray(claims)) {
+      throw new Error("FAKE_BSC_ID_TOKEN_FILE does not hold a single ID token");
+    }
+    if (claims.aud !== audience) {
       throw new Error("FAKE_BSC_ID_TOKEN_FILE holds a token for a different audience");
     }
     if (typeof claims.exp !== "number" || claims.exp * 1000 <= now()) {
@@ -117,10 +122,14 @@ export function idTokenSource(
  */
 const FAKE_BSC_HOST =
   /^neonbinder-fake-bsc-(?:[a-z0-9-]{0,42}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.run\.app$/;
-export function assertFakeUrl(raw: string): void {
+export function assertFakeUrl(raw: string, env: NodeJS.ProcessEnv = process.env): void {
   let u: URL;
   try { u = new URL(raw); } catch { throw new Error("--fake is not a URL"); }
   if (isLoopback(raw)) return;
+  // Optional extra pin (README): when set, only this exact host, whatever the pattern says.
+  if (env.FAKE_BSC_EXPECTED_HOST !== undefined && u.hostname !== env.FAKE_BSC_EXPECTED_HOST) {
+    throw new Error("--fake host is not FAKE_BSC_EXPECTED_HOST");
+  }
   if (u.protocol !== "https:" || u.username || u.password || u.port || !FAKE_BSC_HOST.test(u.hostname)) {
     throw new Error("--fake must be the fake's own Cloud Run service (https, neonbinder-fake-bsc-*.run.app) or localhost");
   }

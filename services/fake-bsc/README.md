@@ -183,6 +183,11 @@ Prerequisites:
    login, so no application-default login is needed. With the variable unset
    the recorder mints the token from ADC impersonating the loader service
    account, as before.
+   Optionally set `FAKE_BSC_EXPECTED_HOST` to the fake's exact host name: the
+   recorder then refuses any other `--fake` host (a localhost fake is still
+   allowed), on top of its built-in check that the host is the fake's own
+   Cloud Run service. The caller and admin key variables must not contain
+   whitespace or control characters.
 3. The fake's two keys in this command's environment only, read from Secret
    Manager at run time. Never write them to a file.
 
