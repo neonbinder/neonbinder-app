@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useId, useMemo, useRef, useState, type KeyboardEvent } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -195,6 +195,12 @@ export default function CareerTeamEntry({
   /** The input + its listbox. Blur out of THIS closes the list; blur between
    *  its two halves does not. */
   const comboRef = useRef<HTMLDivElement>(null);
+  /** The whole entry: scrolled into view when the list opens, so the list and
+   *  the years row under it are both on screen. */
+  const rootRef = useRef<HTMLDivElement>(null);
+  const baseId = useId();
+  const listboxId = `${baseId}-listbox`;
+  const optionId = (idx: number) => `${baseId}-option-${idx}`;
 
   const maxYear = maxCareerYear();
 
@@ -256,6 +262,18 @@ export default function CareerTeamEntry({
   );
   /** The saved teams, in the server's final (tiered) order. */
   const searched = useMemo(() => ranked?.map((r) => r.team), [ranked]);
+  /**
+   * Saved teams only once they answer the text CURRENTLY in the box. While the
+   * debounce or the query is catching up, `ranked` still holds the answer for
+   * earlier text; offering it would flash a list for the wrong name (over the
+   * years and + Add, now that the list is in the flow). Staged names are
+   * matched here, not searched, so they stay instant.
+   */
+  const savedFresh = debouncedTrimmed === name.trim() && ranked !== undefined;
+  const freshSearched = useMemo(
+    () => (savedFresh ? searched : undefined),
+    [savedFresh, searched],
+  );
 
   /**
    * Staged first, then saved teams the staged list does not already cover.
@@ -290,7 +308,7 @@ export default function CareerTeamEntry({
       .sort(rank)
       .map((n) => ({ key: `staged:${n}`, name: n, staged: true }));
 
-    const saved = (searched ?? [])
+    const saved = (freshSearched ?? [])
       // NEO-236: the FULL name. A suggestion is something the operator can
       // pick to LINK to, and "Padres" does not identify the row it belongs to.
       .map((t) => ({ _id: t._id, name: teamFullName(t) }))
@@ -300,7 +318,7 @@ export default function CareerTeamEntry({
       .map((t) => ({ key: `team:${t._id}`, name: t.name, staged: false }));
 
     return [...staged, ...saved].slice(0, MAX_SUGGESTIONS);
-  }, [stagedNames, searched, trimmedName]);
+  }, [stagedNames, freshSearched, trimmedName]);
 
   /**
    * NEO-574 — the typed text IS one of the suggestions (case and accents
@@ -316,11 +334,12 @@ export default function CareerTeamEntry({
    * on purpose (`browsing`): a keyboard operator who does that is not about to
    * click + Add.
    */
-  const exactMatch = useMemo(() => {
-    if (!trimmedName) return false;
+  const exactIdx = useMemo(() => {
+    if (!trimmedName) return -1;
     const key = nameSearchKey(trimmedName);
-    return suggestions.some((s) => nameSearchKey(s.name) === key);
+    return suggestions.findIndex((s) => nameSearchKey(s.name) === key);
   }, [suggestions, trimmedName]);
+  const exactMatch = exactIdx >= 0;
   /** What the combobox actually shows: open, with rows, and not an echo. */
   const listOpen = suggestionsOpen && suggestions.length > 0 && (!exactMatch || browsing);
 
@@ -339,7 +358,7 @@ export default function CareerTeamEntry({
       // composed here rather than read off `name` — a split row's `name` is
       // just "Padres" and ranking "San Diego Padres" against it would report a
       // near match where there is an exact one.
-      ...(searched ?? []).map((t) => teamFullName(t)),
+      ...(freshSearched ?? []).map((t) => teamFullName(t)),
     ];
     if (pool.length === 0) return null;
     const ranked = rankTeamCandidates(
@@ -349,7 +368,7 @@ export default function CareerTeamEntry({
     if (ranked.length === 0) return null;
     if (ranked[0].confidence === "exact") return null;
     return pool[ranked[0].index] ?? null;
-  }, [composedName, stagedNames, searched]);
+  }, [composedName, stagedNames, freshSearched]);
 
   const fromNum = Number(fromYear);
   const toNum = toYear.trim() === "" ? undefined : Number(toYear);
@@ -376,6 +395,7 @@ export default function CareerTeamEntry({
     setFromYear("");
     setToYear("");
     setSuggestionsOpen(false);
+    setBrowsing(false);
     justAddedRef.current = true;
     // Safe to refocus now: the list opens on TYPING, not on focus. See the
     // note on `pickSuggestion`.
@@ -401,6 +421,7 @@ export default function CareerTeamEntry({
     setDebouncedName(team);
     setFromYear(String(year));
     setSuggestionsOpen(false);
+    setBrowsing(false);
     fromYearRef.current?.focus();
   };
   const shownQuickPicks = (quickPicks ?? []).filter(
@@ -452,6 +473,7 @@ export default function CareerTeamEntry({
     setName(teamName);
     setDebouncedName(teamName);
     setSuggestionsOpen(false);
+    setBrowsing(false);
     fromYearRef.current?.focus();
   };
 
@@ -470,12 +492,63 @@ export default function CareerTeamEntry({
   const handleComboBlur = () => {
     setTimeout(() => {
       if (comboRef.current?.contains(document.activeElement)) return;
+      // A press on the controls under the list is still in flight: closing now
+      // would pull the row up from under the pointer and the click would never
+      // land. `holdListWhilePressed` closes it once the press is over.
+      if (pressingRef.current) {
+        closeAfterPressRef.current = true;
+        return;
+      }
       setSuggestionsOpen(false);
+      setBrowsing(false);
     }, 0);
   };
 
+  /*
+   * The list is in the flow, so closing it moves everything under it up. A
+   * mouse press on + Add (or a year box) first blurs the name box, which
+   * closes the list, which moves the button before the button is released:
+   * mousedown and mouseup then land on different elements and no click fires.
+   * So a press on those controls keeps the list as it is until the pointer is
+   * released and the click has run; a blur that happened meanwhile is honoured
+   * then. + Add closes the list itself when it commits.
+   */
+  const pressingRef = useRef(false);
+  const closeAfterPressRef = useRef(false);
+  const releasePressRef = useRef<(() => void) | null>(null);
+  const holdListWhilePressed = () => {
+    pressingRef.current = true;
+    releasePressRef.current?.();
+    const onUp = () => {
+      window.removeEventListener("mouseup", onUp);
+      releasePressRef.current = null;
+      // After the click event that follows this mouseup.
+      setTimeout(() => {
+        pressingRef.current = false;
+        if (!closeAfterPressRef.current) return;
+        closeAfterPressRef.current = false;
+        if (comboRef.current?.contains(document.activeElement)) return;
+        setSuggestionsOpen(false);
+        setBrowsing(false);
+      }, 0);
+    };
+    releasePressRef.current = () => window.removeEventListener("mouseup", onUp);
+    window.addEventListener("mouseup", onUp);
+  };
+  useEffect(() => () => releasePressRef.current?.(), []);
+
+  /* The list opening grows the entry downward; keep the list and the years row
+     under it in view (the review dialog scrolls). `nearest` moves nothing
+     when they already are. */
+  useEffect(() => {
+    if (listOpen) rootRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [listOpen]);
+
   return (
-    <div className="border border-rule-strong rounded-md bg-raised-deep/60 p-2 space-y-1.5">
+    <div
+      ref={rootRef}
+      className="border border-rule-strong rounded-md bg-raised-deep/60 p-2 space-y-1.5"
+    >
       {/* NEO-236: one box. The team's Location is asked on its own New Team
           step, which is also the only place its League can be asked. */}
       <div className="relative" ref={comboRef} onBlur={handleComboBlur}>
@@ -488,6 +561,10 @@ export default function CareerTeamEntry({
           aria-label="Career team name"
           role="combobox"
           aria-expanded={listOpen}
+          aria-controls={listboxId}
+          aria-activedescendant={
+            listOpen && suggestions[highlightIdx] ? optionId(highlightIdx) : undefined
+          }
           aria-autocomplete="list"
           onChange={(e) => {
             setName(e.target.value);
@@ -497,9 +574,16 @@ export default function CareerTeamEntry({
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
               e.preventDefault();
-              setSuggestionsOpen(true);
-              setBrowsing(true);
-              setHighlightIdx((i) => Math.min(i + 1, suggestions.length - 1));
+              if (listOpen) {
+                setHighlightIdx((i) => Math.min(i + 1, suggestions.length - 1));
+              } else {
+                // Opening the list is the first press: land on the row the box
+                // already holds (a whole name), else the top, instead of
+                // skipping past it.
+                setSuggestionsOpen(true);
+                setBrowsing(true);
+                setHighlightIdx(exactIdx >= 0 ? exactIdx : 0);
+              }
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
               setHighlightIdx((i) => Math.max(i - 1, 0));
@@ -538,6 +622,7 @@ export default function CareerTeamEntry({
                */
               e.preventDefault();
               e.stopPropagation();
+              setBrowsing(false);
               if (listOpen) {
                 setSuggestionsOpen(false);
               } else if (name !== "") {
@@ -551,15 +636,18 @@ export default function CareerTeamEntry({
         />
         {listOpen && (
           <ul
+            id={listboxId}
             role="listbox"
             aria-label="Existing team suggestions"
-            className="absolute z-10 left-0 right-0 mt-1 max-h-40 overflow-y-auto rounded-md border border-rule-strong bg-raised-deep shadow-lg shadow-offset"
+            className="mt-1 max-h-32 max-sm:max-h-[30vh] overflow-y-auto rounded-md border border-rule-strong bg-raised-deep"
           >
             {suggestions.map((s, idx) => (
               <li key={s.key} role="none">
                 <button
                   type="button"
+                  id={optionId(idx)}
                   role="option"
+                  tabIndex={-1}
                   aria-selected={idx === highlightIdx}
                   /*
                    * NEO-236 — ONE name for every suggestion, saved or staged.
@@ -593,10 +681,16 @@ export default function CareerTeamEntry({
             ))}
           </ul>
         )}
+        {/* Always mounted: a live region has to exist before its text changes. */}
+        <p className="sr-only" role="status">
+          {listOpen
+            ? `${suggestions.length} ${suggestions.length === 1 ? "suggestion" : "suggestions"}`
+            : ""}
+        </p>
       </div>
 
       {didYouMean && (
-        <p className="text-xs text-ink-3">
+        <p className="text-xs text-ink-3" onMouseDown={holdListWhilePressed}>
           {/* NEO-212 (a11y): no aria-label. The visible text IS the name, so
               an "Use {name}" override replaced a readable label with one that
               shares none of its words — a voice-control user saying "Did you
@@ -611,7 +705,7 @@ export default function CareerTeamEntry({
         </p>
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2" onMouseDown={holdListWhilePressed}>
         <Input
           bare
           ref={fromYearRef}
@@ -654,6 +748,7 @@ export default function CareerTeamEntry({
           role="group"
           aria-label="Also on the cards"
           className="flex flex-wrap items-center gap-1.5"
+          onMouseDown={holdListWhilePressed}
         >
           <span aria-hidden="true" className="text-xs text-ink-3">
             Also on the cards:

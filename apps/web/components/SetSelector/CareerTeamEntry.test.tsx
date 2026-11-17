@@ -870,6 +870,263 @@ describe("CareerTeamEntry — whole team name typed (NEO-574)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// NEO-574 — keyboard, stale results, combobox semantics, in-flow list
+// ---------------------------------------------------------------------------
+
+describe("CareerTeamEntry — list behaviour after the audit (NEO-574)", () => {
+  const listbox = () => screen.queryByRole("listbox", { name: "Existing team suggestions" });
+  const RK = makeTeam("Memphis RiverKings", "t-rk");
+  const RK2 = makeTeam("Memphis RiverKings II", "t-rk2");
+  const nameBox = () => screen.getByLabelText("Career team name") as HTMLInputElement;
+  const typeNow = (value: string) =>
+    fireEvent.change(nameBox(), { target: { value } });
+  const settle = (ms = 0) =>
+    act(() => {
+      vi.advanceTimersByTime(ms);
+    });
+
+  describe("ArrowDown", () => {
+    it("first press on a whole name opens the list on that team, not the row after it", () => {
+      currentTeams = [RK2, RK];
+      renderEntry();
+      typeName("Memphis RiverKings");
+      expect(listbox()).toBeNull();
+
+      fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+
+      expect(
+        screen.getByRole("option", { name: "Use Memphis RiverKings" }).getAttribute("aria-selected"),
+      ).toBe("true");
+      expect(
+        screen.getByRole("option", { name: "Use Memphis RiverKings II" }).getAttribute("aria-selected"),
+      ).toBe("false");
+    });
+
+    it("with the list already showing, moves down a row", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis River");
+
+      fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+
+      expect(
+        screen.getByRole("option", { name: "Use Memphis RiverKings II" }).getAttribute("aria-selected"),
+      ).toBe("true");
+    });
+
+    it("after ArrowDown then Escape, Enter on the whole name moves on to From year", () => {
+      currentTeams = [RK2, RK];
+      renderEntry();
+      typeName("Memphis RiverKings");
+      fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+      fireEvent.keyDown(nameBox(), { key: "Escape" });
+      expect(listbox()).toBeNull();
+
+      fireEvent.keyDown(nameBox(), { key: "Enter" });
+
+      expect(nameBox().value).toBe("Memphis RiverKings");
+      expect(document.activeElement).toBe(screen.getByLabelText("From year"));
+    });
+
+    it("picking a row ends the browsing: the list stays away from the same name", () => {
+      currentTeams = [RK2, RK];
+      renderEntry();
+      typeName("Memphis RiverKing");
+      fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+      fireEvent.click(screen.getByRole("option", { name: "Use Memphis RiverKings" }));
+
+      fireEvent.keyDown(nameBox(), { key: "Enter" });
+      expect(listbox()).toBeNull();
+      expect(document.activeElement).toBe(screen.getByLabelText("From year"));
+    });
+  });
+
+  describe("results that have not caught up", () => {
+    it("shows no list built for earlier text while the new text's results are on the way", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis");
+      expect(listbox()).toBeTruthy();
+
+      // More typed, debounce not elapsed: the mock still answers for "Memphis".
+      typeNow("Memphis River");
+      expect(listbox()).toBeNull();
+
+      settle(DEBOUNCE_MS);
+      expect(screen.getByRole("option", { name: "Use Memphis RiverKings" })).toBeTruthy();
+    });
+
+    it("hides the list while the query itself is still loading", () => {
+      currentTeams = undefined;
+      renderEntry();
+      typeName("Memphis");
+      expect(listbox()).toBeNull();
+
+      currentTeams = [RK];
+      // Any re-render brings the answer in; typing the next letter does.
+      typeNow("Memphis R");
+      settle(DEBOUNCE_MS);
+      expect(screen.getByRole("option", { name: "Use Memphis RiverKings" })).toBeTruthy();
+    });
+
+    it("keeps a staged match instant, without the stale saved rows", () => {
+      currentTeams = [RK, RK2];
+      renderEntry({ stagedNames: ["Memphis Mud Hens"] });
+      typeName("Memphis");
+
+      typeNow("Memphis M");
+
+      expect(screen.getByRole("option", { name: "Use Memphis Mud Hens" })).toBeTruthy();
+      expect(screen.queryByRole("option", { name: "Use Memphis RiverKings" })).toBeNull();
+    });
+  });
+
+  describe("combobox semantics", () => {
+    it("wires aria-controls, aria-activedescendant and unique option ids", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+
+      // Closed: nothing active, and the list is not claimed as open.
+      expect(nameBox().getAttribute("aria-expanded")).toBe("false");
+      expect(nameBox().getAttribute("aria-activedescendant")).toBeNull();
+
+      typeName("Memphis River");
+      const list = listbox()!;
+      expect(nameBox().getAttribute("aria-controls")).toBe(list.id);
+      expect(list.id).not.toBe("");
+
+      const options = screen.getAllByRole("option");
+      const ids = options.map((o) => o.id);
+      expect(new Set(ids).size).toBe(2);
+      expect(ids.every((id) => id !== "")).toBe(true);
+      expect(nameBox().getAttribute("aria-activedescendant")).toBe(ids[0]);
+
+      fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+      expect(nameBox().getAttribute("aria-activedescendant")).toBe(ids[1]);
+      expect(document.getElementById(ids[1])).toBe(options[1]);
+
+      fireEvent.keyDown(nameBox(), { key: "Escape" });
+      expect(nameBox().getAttribute("aria-activedescendant")).toBeNull();
+    });
+
+    it("keeps options out of the Tab order", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis River");
+
+      for (const option of screen.getAllByRole("option")) {
+        expect(option.getAttribute("tabindex")).toBe("-1");
+      }
+    });
+
+    it("announces the count through a status region that stays mounted", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      const status = screen.getByRole("status");
+      expect(status.textContent).toBe("");
+
+      typeName("Memphis River");
+      expect(screen.getByRole("status")).toBe(status);
+      expect(status.textContent).toBe("2 suggestions");
+
+      fireEvent.keyDown(nameBox(), { key: "Escape" });
+      expect(screen.getByRole("status")).toBe(status);
+      expect(status.textContent).toBe("");
+    });
+
+    it("says '1 suggestion' for one row", () => {
+      currentTeams = [RK];
+      renderEntry();
+      typeName("Memphis River");
+      expect(screen.getByRole("status").textContent).toBe("1 suggestion");
+    });
+  });
+
+  describe("in the flow, not over the years", () => {
+    it("sits between the name box and the years row, not absolutely positioned", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis River");
+
+      const list = listbox()!;
+      expect(list.className).not.toMatch(/\babsolute\b/);
+      expect(list.className).toMatch(/\bmax-h-32\b/);
+      expect(list.className).toMatch(/max-sm:max-h-\[30vh\]/);
+      const follows = (a: Element, b: Element) =>
+        Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(follows(nameBox(), list)).toBe(true);
+      expect(follows(list, screen.getByLabelText("From year"))).toBe(true);
+      expect(follows(list, screen.getByRole("button", { name: "Add career team" }))).toBe(true);
+    });
+
+    it("scrolls the entry into view when the list opens", () => {
+      currentTeams = [RK, RK2];
+      const scrollIntoView = vi.fn();
+      Element.prototype.scrollIntoView = scrollIntoView;
+      try {
+        renderEntry();
+        typeName("Memphis River");
+        expect(scrollIntoView).toHaveBeenCalledWith({ block: "nearest" });
+      } finally {
+        delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView;
+      }
+    });
+
+    it("keeps the list while + Add is pressed, so the click lands, then closes it", () => {
+      // Blur from the name box used to close the list on mousedown, which pulled
+      // + Add up from under the pointer before mouseup: no click.
+      currentTeams = [RK, RK2];
+      const { onAdd } = renderEntry();
+      typeName("Memphis River");
+      fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2012" } });
+      const add = screen.getByRole("button", { name: "Add career team" });
+
+      fireEvent.mouseDown(add);
+      add.focus();
+      fireEvent.blur(nameBox());
+      settle();
+      expect(listbox()).toBeTruthy();
+
+      fireEvent.mouseUp(window);
+      fireEvent.click(add);
+      settle();
+
+      expect(onAdd).toHaveBeenCalledWith({ name: "Memphis River", fromYear: 2012 });
+      expect(listbox()).toBeNull();
+    });
+
+    it("closes the list after a press on a year box is released", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis River");
+      const from = screen.getByLabelText("From year");
+
+      fireEvent.mouseDown(from);
+      from.focus();
+      fireEvent.blur(nameBox());
+      settle();
+      expect(listbox()).toBeTruthy();
+
+      fireEvent.mouseUp(window);
+      settle();
+      expect(listbox()).toBeNull();
+    });
+
+    it("a blur with no press still closes at once", () => {
+      currentTeams = [RK, RK2];
+      renderEntry();
+      typeName("Memphis River");
+
+      screen.getByLabelText("From year").focus();
+      fireEvent.blur(nameBox());
+      settle();
+
+      expect(listbox()).toBeNull();
+    });
+  });
+});
+
 // ===========================================================================
 // NEO-326 — Enter in a year field is "+ Add"
 //
