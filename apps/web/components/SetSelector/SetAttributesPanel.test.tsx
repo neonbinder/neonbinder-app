@@ -402,7 +402,10 @@ const PICK = SET_TEAM_PICKER_LABELS.trigger;
 // NEO-496 — a set the operator closes stays closed for the tab session, held in
 // `sessionStorage`; happy-dom keeps it across this file's tests, so each test
 // starts with none remembered.
+// Spies are restored here too, so one left behind by a test cannot reach the
+// next (vitest 5's restoreAllMocks restores `spyOn` spies only, not `vi.fn`).
 afterEach(() => {
+  vi.restoreAllMocks();
   window.sessionStorage.clear();
 });
 
@@ -1743,6 +1746,9 @@ describe("SetAttributesPanel — Set name in titles row (NEO-335)", () => {
         act(() => cb(0));
       }
       expect(queued.size).toBe(0);
+      // The first look plus nine retries: SHORT_NAME_FRAMES (10) in the panel. A panel
+      // that gave up on the first frame would pass the focus check below without this.
+      expect(nextFrame).toBe(10);
       expect(document.activeElement).toBe(region);
       expect(region.getAttribute("tabindex")).toBe("-1");
     } finally {
@@ -4283,7 +4289,6 @@ describe("SetAttributesPanel — opens itself at the set level, checklist first 
       setItem.mockRestore();
     }
   });
-
 });
 
 /**

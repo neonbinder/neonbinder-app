@@ -715,7 +715,7 @@ describe("Checklists on the real collection", () => {
     expect(store.undo).toHaveBeenCalledTimes(1);
     // Still running: the line still says what it said, and Undo stays, inert.
     await afterFrame();
-    expect(statuses()).not.toContain("Undone.");
+    expect(statuses().some((t) => t?.endsWith("Undone."))).toBe(false);
     expect(statuses()).toContain("Added #2 Aaron Judge to Main");
     expect(screen.getByRole("button", { name: "Undo" }).getAttribute("aria-disabled")).toBe("true");
     fireEvent.click(screen.getByRole("button", { name: "Undo" }));
@@ -1470,7 +1470,7 @@ describe("Inventory is on for the real collection (NEO-364)", () => {
     await waitFor(() =>
       expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.endsWith(`That undo didn't go through. ${GATE_WORDS}`))).toBe(true),
     );
-    expect(within(drawer).getAllByRole("status").some((s) => s.textContent === "Undone.")).toBe(false);
+    expect(within(drawer).getAllByRole("status").some((s) => s.textContent?.endsWith("Undone."))).toBe(false);
   });
 
   it("Move here into an open box the listing gate refuses says the gate's words on the status line (NEO-370)", async () => {

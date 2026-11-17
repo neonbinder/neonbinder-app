@@ -164,7 +164,7 @@ describe("the inventory's checklist", () => {
     fireEvent.blur(b);
     await flush();
     await afterFrame();
-    expect(says(/^Boxed 3 more of /)).toBe(true);
+    await waitFor(() => expect(says(/^Boxed 3 more of /)).toBe(true));
     expect(says(/Nothing changed/)).toBe(false);
     expect(b.value).toBe("0");
     fireEvent.click(screen.getAllByRole("button", { name: "Undo" })[0]);
