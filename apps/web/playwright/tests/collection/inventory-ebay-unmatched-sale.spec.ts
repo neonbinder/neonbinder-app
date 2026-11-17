@@ -12,6 +12,9 @@
 //     Baseball row of the reference seed), behind the "Sales NB didn't list"
 //     divider, and a title naming no NB player or team under the "Other"
 //     band; never in "Can't find it", which keeps only a line with no title;
+//     a band walks its titles newest year first (a 2019 Mike Trout title, also
+//     a reference-seed Baseball player, sits under the 2024 one), and the Sport
+//     filter offers "Other" while an Other line is on the list;
 //   - never ties it to a card by its title: the title here names a REAL card
 //     that sits in the seller's own box; that card is not on the list, its
 //     set gets no row, and the box keeps its copy;
@@ -26,8 +29,9 @@
 //
 // R7/R7a: reads the seed's 2024 Topps Chrome Base and writes ONLY the signed-in
 // user's own rows: one box `Ebay<token>`, one copy of #215 Nolan Arenado in it
-// (reserved for this spec, SET-REGISTRY.md) and three `marketplaceSales` orders
-// (`<token>e` titled, `<token>g` with a 150-character unspaced title, `<token>f` untitled), all shipped by the end.
+// (reserved for this spec, SET-REGISTRY.md) and four `marketplaceSales` orders
+// (`<token>e` and `<token>h` titled, `<token>g` with a 150-character unspaced title,
+// `<token>f` untitled), all shipped by the end.
 // Self-cleaning: #215's copy is typed back to 0 and the box deleted; on a
 // failure the finally block ships whatever order is still open, on a second
 // page so the failing one stays as the screenshot saw it (the bootstrap's
@@ -44,6 +48,7 @@ import {
   quantityField,
 } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { escapeRe } from "../../support/set-builder";
 import {
   PICK_LIST_PATH,
   ebayOrder,
@@ -76,10 +81,14 @@ test(
     const titled = `${env.ATTEMPT_TOKEN}e`;
     const untitled = `${env.ATTEMPT_TOKEN}f`;
     const long = `${env.ATTEMPT_TOKEN}g`;
+    const older = `${env.ATTEMPT_TOKEN}h`;
     // One unspaced token of 150 characters: nothing to break on, so the page must wrap it itself.
     const longTitle = `Long${env.ATTEMPT_TOKEN}`.padEnd(150, "w");
     // The title names a real card in the seller's box on purpose: NB must never read a title to find a card.
     const title = `${SET_TITLE} ${CARD.short} Thing${env.ATTEMPT_TOKEN}`;
+    // NEO-590: an older Baseball title (Mike Trout is a Baseball player of the reference seed) whose set
+    // words sort first ("Bowman" < "Topps Chrome") and which is seeded first: only the year puts it second.
+    const olderTitle = `2019 Bowman #50 Mike Trout Thing${env.ATTEMPT_TOKEN}`;
     const advance = isMobile ? "Enter" : "Tab";
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
     const pick = pickList(page);
@@ -126,11 +135,30 @@ test(
       await page.keyboard.press(advance);
       await expect(said(`Boxed 1 more of ${CARD.short}. 1 in ${boxName}.`)).toBeVisible();
 
-      // --- An eBay order for something NeonBinder never listed, titled like that card ----------
-      await seedEbayOrder(page, { orderNo: titled, lines: [{ quantity: 1, title }] });
-      open.add(titled);
+      // --- An older Baseball title first, then an eBay order titled like that card ---------------
+      await seedEbayOrder(page, { orderNo: older, lines: [{ quantity: 1, title: olderTitle }] });
+      open.add(older);
       // The hop is a full page load: the launch gate.
       await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
+      await expect(pulledToggle(table, olderTitle)).toBeVisible();
+      await seedEbayOrder(page, { orderNo: titled, lines: [{ quantity: 1, title }] });
+      open.add(titled);
+      await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
+
+      // --- NEO-590: both file under Baseball's band, newest year first, counted as items -----------
+      const baseball = titleBand("Baseball");
+      const inBaseball = baseball.getByRole("button", { name: /^Pulled / });
+      await expect(inBaseball).toHaveCount(2);
+      await expect(inBaseball.nth(0)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(title)}`));
+      await expect(inBaseball.nth(1)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(olderTitle)}`));
+      await expect(baseball.getByText("2 items", { exact: true })).toBeVisible();
+      await shipEbayOrder(page, older);
+      await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
+      open.delete(older);
+      await expect(pulledToggle(baseball, title)).toBeVisible();
+      await expect(pulledToggle(table, olderTitle)).toHaveCount(0);
+
+      // --- The eBay order titled like the card, on its own ---------------------------------------
       await filterBy(page, isMobile, "Order", ebayOrder(titled));
       await expect(page).toHaveURL(/[?&]porder=/);
       await expect(pick.matches).toHaveText("1 match.");
@@ -152,7 +180,6 @@ test(
       // NEO-590: the title names Nolan Arenado, an NB Baseball player of the reference seed, so the line
       // files in Baseball's band; it is no longer in Can't find it.
       const cantFind = pickGroup(table, "Can't find it");
-      const baseball = titleBand("Baseball");
       await expect(pulledToggle(baseball, title)).toBeVisible();
       await expect(pulledToggle(baseball, title)).toHaveAttribute("aria-pressed", "false");
       // The heading leads with its sport, so the bands that share the divider's words read apart.
@@ -226,6 +253,8 @@ test(
       const other = titleBand("Other");
       await expect(pulledToggle(other, longTitle)).toBeVisible();
       await expect(pulledToggle(cantFind, longTitle)).toHaveCount(0);
+      // Its sport is a choice of the Sport filter (filterBy left the filters open on a phone).
+      await expect(region.getByRole("combobox", { name: "Sport", exact: true }).getByRole("option", { name: "Other", exact: true })).toHaveCount(1);
       const wideRow = pickRow(other, longTitle);
       await expect(seen(wideRow.getByText(longTitle, { exact: true }))).toBeVisible();
       // Scrolled to first: the row may sit below the fold, which is not what is being asked.
@@ -258,8 +287,9 @@ test(
       await expect(bareToggle).toHaveCount(1);
       await expect(bareToggle).toHaveAttribute("aria-pressed", "false");
       await expect(seen(pickRow(cantFind, bareName).getByText(WHY_PICK, { exact: true }))).toBeVisible();
-      // No title, nothing to file by: no "Sales NB didn't list" band holds it.
-      await expect(table.getByRole("heading", { level: 3, name: TITLE_DIVIDER, exact: true })).toHaveCount(0);
+      // No title, nothing to file by: no sport's "Sales NB didn't list" band holds it (each band's
+      // heading reads "<Sport> Sales NB didn't list"; it sits in Can't find it, asserted just above).
+      await expect(table.getByRole("heading", { level: 3, name: new RegExp(`${escapeRe(TITLE_DIVIDER)}$`) })).toHaveCount(0);
       await expect(table.getByText("Not in NB", { exact: true })).toHaveCount(0);
       await expectAccessible(page, { label: "Pick List, an eBay line with no title" });
 

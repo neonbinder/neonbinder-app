@@ -18,7 +18,10 @@ What to check instead:
   extra sports per player). Count the follow-up reads per hit, not just the searches.
   Bounded, signed-in, one-shot (not subscribed), no write: a note, not a finding.
 - Each text clamped by `clampSearchQuery` before any tokenising; the array cap is checked
-  before `new Set(...)`/work.
+  before `new Set(...)`/work. Watch for a new pre-pass helper that slices the RAW title
+  (e.g. "words after the first #token") and only clamps its output: the regex/replace then
+  runs over the unclamped arg. Clamp first; it changes no answer, since verification words
+  already come from the clamped title.
 - Search-term normalisation parity: `teams.search` runs the query through `nameTokens`
   before the `nameNormalized` index; a new caller passing raw text misses accents and
   punctuation (correctness, not security).
