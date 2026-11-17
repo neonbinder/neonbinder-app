@@ -112,6 +112,8 @@ test(
     await careerName.fill(CARD_TEAM.split(" ")[0]);
     await expect(suggestionList).toBeVisible();
     await expect(suggestionList.getByRole("option", { name: `Use ${CARD_TEAM}` })).toBeVisible();
+    // The open list already offers the club, so the "Did you mean" line does not offer it twice.
+    await expect(wizard.getByRole("button", { name: `Did you mean ${CARD_TEAM}?` })).toHaveCount(0);
     await expect(addCareerTeam).toBeVisible();
     await addCareerTeam.click({ trial: true });
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, career team entry with suggestions open" });
