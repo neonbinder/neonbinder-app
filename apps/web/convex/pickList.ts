@@ -46,6 +46,7 @@ import {
   TITLE_SEARCH_TAKE,
   decideTitleSport,
   nameInTitle,
+  titleNameText,
   teamInTitle,
   titleSearchTerm,
   titleTeamSearchTerm,
@@ -402,7 +403,11 @@ export const titleSports = query({
 
     const answers = new Map<string, typeof pickSportValidator.type | null>();
     for (const title of new Set(args.titles)) {
-      const term = titleSearchTerm(title);
+      // Players and teams are searched by the words after the card number (the
+      // named player and team sit at the end); the set's words stay out of the
+      // search. Whole-name verification below still reads the full title.
+      const nameText = titleNameText(title);
+      const term = titleSearchTerm(nameText);
       if (!term) {
         answers.set(title, null);
         continue;
@@ -414,7 +419,7 @@ export const titleSports = query({
         .take(TITLE_SEARCH_TAKE);
       // `teams.nameNormalized` is accent-folded and punctuation-free, so the teams
       // are searched by the title's normalised words, not its raw text.
-      const teamTerm = titleTeamSearchTerm(title);
+      const teamTerm = titleTeamSearchTerm(nameText);
       const teams = teamTerm
         ? await ctx.db
             .query("teams")
@@ -424,10 +429,9 @@ export const titleSports = query({
       // `playerSports` is the authority for a player's extra sports (the player row's
       // "also" list is only a display copy): one indexed read per player the title really names.
       const named = players.filter((p) => nameInTitle(p.name, words));
-      const playerSportLists: string[][] = [];
-      for (const p of named) {
-        playerSportLists.push([p.sportId as string, ...(await additionalSportIds(ctx, p._id)).map((id) => id as string)]);
-      }
+      const playerSportLists: string[][] = await Promise.all(
+        named.map(async (p) => [p.sportId as string, ...(await additionalSportIds(ctx, p._id)).map((id) => id as string)]),
+      );
       const sportId = decideTitleSport(
         playerSportLists,
         teams.filter((t) => teamInTitle(t, words)).map((t) => [t.sportId as string]),

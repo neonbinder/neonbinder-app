@@ -32,6 +32,25 @@ export function boundedTitle(title: string): string {
 }
 
 /**
+ * The part of a title that names the player and team. A listing title runs
+ * year, then set info, then the card number (`#<token>`), then player and
+ * team, so the words after the first `#<token>` are searched, and the set's
+ * generic words ("Rookie Card") cannot crowd the named player out of the
+ * `take` window. Mirrors the number rule of `parseListingTitle`
+ * (app/collection/final/pick/model.ts), which convex code cannot import.
+ * With no `#` token, or nothing with a letter after it, the whole title.
+ */
+export function titleNameText(title: string): string {
+  const text = title.replace(/\s+/g, " ").trim();
+  const at = text.indexOf("#");
+  if (at < 0) return text;
+  const number = /^#\s*(\S+)/.exec(text.slice(at));
+  if (!number) return text;
+  const tail = text.slice(at + number[0].length).trim();
+  return /\p{L}/u.test(tail) ? tail : text;
+}
+
+/**
  * The text a title is searched by: its words, digit-only ones dropped (a year,
  * a card number or a print run names no player or team), at most
  * `TITLE_SEARCH_MAX_TERMS`. Empty when nothing is left.

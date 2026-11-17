@@ -1363,7 +1363,12 @@ function SectionHead({ section, columns, condensed }: { section: PickSection; co
       <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
         {titleBand ? (
           // Bands share this title, so the heading's name leads with the sport ("Baseball Sales NB didn't list").
-          <span role="heading" aria-level={3} className="flex flex-wrap items-end gap-x-3 gap-y-1">
+          <span
+            role="heading"
+            aria-level={3}
+            aria-label={section.unmatchedTwin ? `${section.sportName} ${section.title}${COPY.unmatchedTwin}` : undefined}
+            className="flex flex-wrap items-end gap-x-3 gap-y-1"
+          >
             <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-sm font-bold ${SPORT_TAB[hue]}`}>
               {section.sportName}
             </span>{" "}
@@ -1756,7 +1761,12 @@ function CondensedSectionHead({ section, columns }: { section: PickSection; colu
     body = (
       <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
         {titleBand ? (
-          <span role="heading" aria-level={3} className="flex flex-wrap items-end gap-x-3 gap-y-1">
+          <span
+            role="heading"
+            aria-level={3}
+            aria-label={section.unmatchedTwin ? `${section.sportName} ${section.title}${COPY.unmatchedTwin}` : undefined}
+            className="flex flex-wrap items-end gap-x-3 gap-y-1"
+          >
             <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-xs font-bold ${SPORT_TAB[hue]}`}>
               {section.sportName}
             </span>{" "}

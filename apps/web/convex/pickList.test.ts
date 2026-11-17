@@ -348,6 +348,51 @@ describe("NEO-590: titleSports", () => {
     expect(out).toEqual([hit, null, hit, null, null]);
   });
 
+  test("take-8 boundary: with a card number, eight look-alikes of the set's words no longer cut the named player off", async () => {
+    // Only the words after the `#<token>` are searched, so the set's generic words ("Rookie Card")
+    // cannot fill the page with other players.
+    const w = await world();
+    for (let i = 0; i < 9; i += 1) await w.player(`Rookie Card Rookie Card Filler${i}`, w.football);
+    await w.player("Zorbo Quillfeather", w.baseball);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["2023 Rookie Card #12 Zorbo Quillfeather"] });
+    expect(out).toEqual([{ id: w.baseball, name: "Pitching Baseball", code: "PB" }]);
+  });
+
+  test("take-8 boundary, no # in the title: a named player outranked by eight look-alike hits is cut off and the title files under Other", async () => {
+    // Display order only (NEO-590): with no card number the whole title is searched, ranked by relevance, not by
+    // "named in full". Fillers repeating the title's generic words outrank the named player, so once they
+    // fill the page the player is never read and the row files under Other (null). Pinned, not endorsed.
+    const w = await world();
+    for (let i = 0; i < 8; i += 1) await w.player(`Rookie Card Rookie Card Filler${i}`, w.football);
+    await w.player("Zorbo Quillfeather", w.baseball);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather Rookie Card"] });
+    expect(out).toEqual([null]);
+  });
+
+  test("take-8 boundary control: with seven look-alike hits beside it the named player still decides the sport", async () => {
+    const w = await world();
+    for (let i = 0; i < 7; i += 1) await w.player(`Rookie Card Rookie Card Filler${i}`, w.football);
+    await w.player("Zorbo Quillfeather", w.baseball);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather Rookie Card"] });
+    expect(out).toEqual([{ id: w.baseball, name: "Pitching Baseball", code: "PB" }]);
+  });
+
+  test("a player whose sport row is gone files the title under Other without throwing", async () => {
+    const w = await world();
+    await w.player("Zorbo Quillfeather", w.baseball);
+    await w.t.run(async (ctx) => ctx.db.delete(w.baseball));
+    await expect(w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather RC"] })).resolves.toEqual([null]);
+  });
+
+  test("a player whose sportId is a row that is not a sport files the title under Other", async () => {
+    const w = await world();
+    const notSport = await w.t.run(async (ctx) =>
+      ctx.db.insert("selectorOptions", { level: "year", value: "2024", platformData: {}, children: [], lastUpdated: 0 }),
+    );
+    await w.player("Zorbo Quillfeather", notSport);
+    await expect(w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather RC"] })).resolves.toEqual([null]);
+  });
+
   test("refuses more than its limit and an anonymous caller", async () => {
     const w = await world();
     await expect(w.me.query(api.pickList.titleSports, { titles: Array.from({ length: 21 }, (_, i) => `t${i}`) })).rejects.toThrow(/at most 20/);

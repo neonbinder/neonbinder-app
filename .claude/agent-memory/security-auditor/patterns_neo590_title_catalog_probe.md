@@ -13,8 +13,10 @@ cannot reach another user's data through them.
 
 What to check instead:
 - Per-call fan-out: N texts x 2 searches x take(k) docs read vs the existing search's
-  per-call limit (25). NEO-590: 20 x 2 x 8 = 320 docs/call, ~13x players.search; bounded,
-  signed-in, no write, so a note, not a finding.
+  per-call limit (25). NEO-590: 20 x 2 x 8 = 320 search docs/call, plus per verified
+  player hit a playerSports read (take 16): ~2,900 at the ceiling, ~980 realistic (≤4
+  extra sports per player). Count the follow-up reads per hit, not just the searches.
+  Bounded, signed-in, one-shot (not subscribed), no write: a note, not a finding.
 - Each text clamped by `clampSearchQuery` before any tokenising; the array cap is checked
   before `new Set(...)`/work.
 - Search-term normalisation parity: `teams.search` runs the query through `nameTokens`

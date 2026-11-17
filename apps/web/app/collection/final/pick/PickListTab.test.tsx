@@ -1043,6 +1043,30 @@ describe("the signed-in Pick List's ways out", () => {
     }
   });
 
+  it("NEO-590: grouped by order, a title row's sport chip is read out, since no band above it names the sport", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const extra = {
+      id: "x-590-order",
+      quantity: 1,
+      condition: "",
+      order: { id: "oe", venue: "eBay", number: "27-11111-22222" },
+      card: null,
+      sportCode: null,
+      listingTitle: "Lot order-chip",
+      listed: { title: "Lot order-chip", titleSport: { id: "sp-zz", name: "Zorbball", code: "ZB" } },
+      problem: "NB didn't list this one. Check the order's photo.",
+    };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true, "/inventory?tab=pick&pgroup=order");
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      const row = within(region).getByRole("button", { name: /Lot order-chip/ }).closest("tr")!;
+      // (The wide cell and the phone's one cell each carry it; CSS shows one.)
+      const chips = within(row as HTMLElement).getAllByText("Zorbball", { exact: true });
+      expect(chips.length).toBeGreaterThan(0);
+      for (const chip of chips) expect(chip.getAttribute("aria-hidden")).toBeNull();
+    }
+  });
+
   it("a line NB couldn't match names its order, and its order opens that sale on the Sales tab", async () => {
     const region = await show({}, true);
     // The toggle carries the order: two orders' strays never read alike.

@@ -9,6 +9,7 @@ import {
   decideTitleSport,
   nameInTitle,
   teamInTitle,
+  titleNameText,
   titleSearchTerm,
   titleTeamSearchTerm,
   titleWords,
@@ -128,5 +129,29 @@ describe("titleTeamSearchTerm", () => {
   test("keeps at most the search term bound and is empty when no words are left", () => {
     expect(titleTeamSearchTerm(Array.from({ length: 30 }, (_, i) => `w${i}`).join(" ")).split(" ")).toHaveLength(16);
     expect(titleTeamSearchTerm("2024 #12 /99")).toBe("");
+  });
+});
+
+describe("titleNameText (the words searched for players and teams)", () => {
+  test("with a card number token, only the words after it: the set's generic words stay out", () => {
+    expect(titleNameText("2023 Rookie Card #12 Zorbo Quillfeather")).toBe("Zorbo Quillfeather");
+    expect(titleNameText("2023 Topps Chrome # 12 Mike Trout Angels")).toBe("Mike Trout Angels");
+    expect(titleNameText("2023 Topps #BC-2, Mike Trout")).toBe("Mike Trout");
+  });
+
+  test("the term builders then search only those words", () => {
+    const tail = titleNameText("2023 Rookie Card #12 Zorbo Quillfeather");
+    expect(titleSearchTerm(tail)).toBe("Zorbo Quillfeather");
+    expect(titleTeamSearchTerm(tail)).toBe("zorbo quillfeather");
+  });
+
+  test("with no # token, the whole title (whitespace collapsed)", () => {
+    expect(titleNameText("2023  Rookie Card Zorbo Quillfeather")).toBe("2023 Rookie Card Zorbo Quillfeather");
+  });
+
+  test("a # as the last token, or with only digits or symbols after it, falls back to the whole title", () => {
+    expect(titleNameText("Zorbo Quillfeather Rookie Card #")).toBe("Zorbo Quillfeather Rookie Card #");
+    expect(titleNameText("Zorbo Quillfeather Rookie Card #12")).toBe("Zorbo Quillfeather Rookie Card #12");
+    expect(titleNameText("Zorbo Quillfeather #12 /99")).toBe("Zorbo Quillfeather #12 /99");
   });
 });
