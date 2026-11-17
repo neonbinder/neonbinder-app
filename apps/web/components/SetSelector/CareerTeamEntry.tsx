@@ -263,17 +263,25 @@ export default function CareerTeamEntry({
   /** The saved teams, in the server's final (tiered) order. */
   const searched = useMemo(() => ranked?.map((r) => r.team), [ranked]);
   /**
-   * Saved teams only once they answer the text CURRENTLY in the box. While the
-   * debounce or the query is catching up, `ranked` still holds the answer for
-   * earlier text; offering it would flash a list for the wrong name (over the
-   * years and + Add, now that the list is in the flow). Staged names are
-   * matched here, not searched, so they stay instant.
+   * The saved teams to offer for the text CURRENTLY in the box.
+   *
+   * While the debounce or the query catches up, `ranked` still holds the
+   * answer for earlier text. Hiding it outright made the in-flow list vanish
+   * and come back on every keystroke (`aria-expanded` flipping, the status
+   * re-announced, + Add jumping). So stale rows stay, narrowed by the same
+   * folded-substring test the staged names use: a row that still matches what
+   * is typed remains, one that no longer does goes, and the list closes only
+   * when nothing is left. Once the answer for this text is in, it is the
+   * server's, untouched (its search can be softer than a substring).
+   * Staged names are matched here, not searched, so they are always instant.
    */
-  const savedFresh = debouncedTrimmed === name.trim() && ranked !== undefined;
-  const freshSearched = useMemo(
-    () => (savedFresh ? searched : undefined),
-    [savedFresh, searched],
-  );
+  const savedStale = debouncedTrimmed !== name.trim();
+  const freshSearched = useMemo(() => {
+    if (ranked === undefined || searched === undefined) return undefined;
+    if (!savedStale) return searched;
+    return searched.filter((t) => nameMatchesQuery(teamFullName(t), name.trim()));
+  }, [ranked, searched, savedStale, name]);
+
 
   /**
    * Staged first, then saved teams the staged list does not already cover.

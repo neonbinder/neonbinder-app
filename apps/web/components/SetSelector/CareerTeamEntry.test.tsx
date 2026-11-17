@@ -932,10 +932,15 @@ describe("CareerTeamEntry — list behaviour after the audit (NEO-574)", () => {
     it("picking a row ends the browsing: the list stays away from the same name", () => {
       currentTeams = [RK2, RK];
       renderEntry();
-      typeName("Memphis RiverKing");
+      typeName("Memphis RiverKings");
+      // Whole name, list hidden: this ArrowDown is what starts the browsing.
       fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
       fireEvent.click(screen.getByRole("option", { name: "Use Memphis RiverKings" }));
 
+      // Back in the name box: Enter on the whole name goes on to From year, as
+      // it would had the operator never pressed ArrowDown.
+      nameBox().focus();
+      expect(document.activeElement).toBe(nameBox());
       fireEvent.keyDown(nameBox(), { key: "Enter" });
       expect(listbox()).toBeNull();
       expect(document.activeElement).toBe(screen.getByLabelText("From year"));
@@ -943,28 +948,55 @@ describe("CareerTeamEntry — list behaviour after the audit (NEO-574)", () => {
   });
 
   describe("results that have not caught up", () => {
-    it("shows no list built for earlier text while the new text's results are on the way", () => {
+    it("keeps the list mounted while a keystroke still matches the rows it holds", () => {
+      // Hiding stale rows used to make the in-flow list vanish and return on
+      // every keystroke: aria-expanded flipping, the status re-read, + Add
+      // jumping.
       currentTeams = [RK, RK2];
       renderEntry();
       typeName("Memphis");
-      expect(listbox()).toBeTruthy();
+      const list = listbox()!;
+      const status = screen.getByRole("status");
+      expect(nameBox().getAttribute("aria-expanded")).toBe("true");
+      expect(status.textContent).toBe("2 suggestions");
 
-      // More typed, debounce not elapsed: the mock still answers for "Memphis".
-      typeNow("Memphis River");
-      expect(listbox()).toBeNull();
+      // Debounce not elapsed: the mock still answers for "Memphis".
+      for (const text of ["Memphis R", "Memphis Ri", "Memphis Riv"]) {
+        typeNow(text);
+        expect(listbox()).toBe(list);
+        expect(nameBox().getAttribute("aria-expanded")).toBe("true");
+        expect(status.textContent).toBe("2 suggestions");
+      }
 
       settle(DEBOUNCE_MS);
-      expect(screen.getByRole("option", { name: "Use Memphis RiverKings" })).toBeTruthy();
+      expect(listbox()).toBe(list);
+      expect(nameBox().getAttribute("aria-expanded")).toBe("true");
     });
 
-    it("hides the list while the query itself is still loading", () => {
+    it("drops stale rows that no longer match the text, keeps those that do, and closes when none are left", () => {
+      currentTeams = [RK, makeTeam("Memphis Mud Hens", "t-mh")];
+      renderEntry();
+      typeName("Memphis");
+      expect(screen.getAllByRole("option")).toHaveLength(2);
+
+      typeNow("Memphis River");
+      expect(screen.getAllByRole("option").map((o) => o.getAttribute("aria-label"))).toEqual([
+        "Use Memphis RiverKings",
+      ]);
+      expect(nameBox().getAttribute("aria-expanded")).toBe("true");
+
+      typeNow("Zzz");
+      expect(listbox()).toBeNull();
+      expect(nameBox().getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("offers no saved rows while the query has not answered at all", () => {
       currentTeams = undefined;
       renderEntry();
       typeName("Memphis");
       expect(listbox()).toBeNull();
 
       currentTeams = [RK];
-      // Any re-render brings the answer in; typing the next letter does.
       typeNow("Memphis R");
       settle(DEBOUNCE_MS);
       expect(screen.getByRole("option", { name: "Use Memphis RiverKings" })).toBeTruthy();
