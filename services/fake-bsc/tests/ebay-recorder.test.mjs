@@ -449,7 +449,7 @@ function sandboxRoutes(over = {}) {
 }
 
 describe("ebay-capture (sandbox)", () => {
-  it("captures reads and the writes the sandbox accepts, files the publish refusal as #25002, and removes everything", async () => {
+  it("captures reads and the writes the sandbox accepts, files the publish refusal as #refused, and removes everything", async () => {
     const { routes, deleted } = sandboxRoutes();
     const { api: a, stub } = api("sandbox", routes);
     const s = sink();
@@ -461,7 +461,7 @@ describe("ebay-capture (sandbox)", () => {
       "POST ebay/api/identity/v1/oauth2/token #refresh_token",
       "POST ebay/api/identity/v1/oauth2/token #client_credentials",
       "POST ebay/api/sell/account/v1/program/opt_in #409",
-      "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #25002",
+      "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused",
       "PUT ebay/api/sell/inventory/v1/offer/:offerId",
       "DELETE ebay/api/sell/inventory/v1/inventory_item/:sku",
       "GET ebay/api/sell/fulfillment/v1/order",

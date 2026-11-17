@@ -282,7 +282,9 @@ describe("fake eBay: the seller flow NB drives (rows 1-4, 6, 9-12)", () => {
     assert.equal((await ebay(fake, "GET", `${INV}/location/neonbinder-main`, { token: other })).body.merchantLocationStatus, "DISABLED");
     const { merchantLocationStatus: _s, ...details } = LOCATION;
     assert.equal((await ebay(fake, "POST", `${INV}/location/neonbinder-main/update_location_details`, { token: other, body: details })).status, 204);
-    assert.equal((await ebay(fake, "POST", `${INV}/location/neonbinder-main/enable`, { token: other })).status, 200);
+    const enabled = await ebay(fake, "POST", `${INV}/location/neonbinder-main/enable`, { token: other });
+    assert.equal(enabled.status, 200);
+    assert.equal(enabled.body, null, "the sandbox answers enable with an empty body");
     assert.equal((await ebay(fake, "GET", `${INV}/location/neonbinder-main`, { token: other })).body.merchantLocationStatus, "ENABLED");
   });
 
@@ -669,6 +671,46 @@ describe("fake eBay: captures", () => {
     });
     assert.equal(r.body.verdict, "shape_drift");
     assert.deepEqual(r.body.paths, ["listingId"]);
+  });
+
+  it("a capture may lack the fields eBay includes only for some objects, but never one the fake always sends, and a present one is type-checked", async () => {
+    const { checkCapture } = require("../dist/src/captures.js");
+    const synth = require("../dist/src/ebay/captures.js").ebaySynthesisedCapture;
+    const without = (shape, starts) => Object.fromEntries(Object.entries(shape).filter(([p]) => !starts.some((s) => p === s || p.startsWith(`${s}.`) || p.startsWith(`${s}[]`))));
+    const check = (endpoint, shape, status = 200) => checkCapture({ endpoint, status, shape, capturedAt: "2026-11-16T00:00:00.000Z" });
+    const ID = "GET ebay/apiz/commerce/identity/v1/user";
+    const RET = "GET ebay/api/sell/account/v1/return_policy";
+    const OFFERS = "GET ebay/api/sell/inventory/v1/offer";
+    const ITEMS = "GET ebay/api/sell/inventory/v1/inventory_item";
+
+    // The first sandbox capture's four reads: the answer without the optional paths is fine.
+    assert.equal(check(ID, without(synth(ID).shape, ["status"])).verdict, "ok");
+    assert.equal(check(RET, without(synth(RET).shape, ["returnPolicies[].categoryTypes[].default"])).verdict, "ok");
+    assert.equal(check(OFFERS, without(synth(OFFERS).shape, ["offers[].listing"])).verdict, "ok");
+    const items = without(synth(ITEMS).shape, ["inventoryItems[].conditionDescriptors", "inventoryItems[].packageWeightAndSize.packageType", "inventoryItems[].product.aspects.*"]);
+    assert.equal(check(ITEMS, items).verdict, "ok");
+
+    // A path not on the list is still drift when the capture lacks it.
+    const noId = without(synth(ID).shape, ["userId"]);
+    assert.deepEqual(check(ID, noId).paths, ["userId"]);
+    assert.deepEqual(check(OFFERS, without(synth(OFFERS).shape, ["offers[].offerId"])).paths, ["offers[].offerId"]);
+
+    // A listed path that IS in the capture is still compared by type.
+    const typed = { ...synth(ID).shape, status: ["number"] };
+    assert.deepEqual(check(ID, typed).paths, ["status"]);
+
+    // enable: an empty body is the sandbox's answer; one with an object is drift from it.
+    const EN = "POST ebay/api/sell/inventory/v1/location/:merchantLocationKey/enable";
+    assert.deepEqual(synth(EN), { status: 200, shape: {} });
+    assert.equal(check(EN, {}).verdict, "ok");
+
+    // The refusal is filed as #refused (the sandbox's id was 25007, not 25002); the old name is gone.
+    const REFUSED = "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused";
+    assert.equal(synth(REFUSED).status, 400);
+    assert.ok(EBAY_CAPTURE_ENDPOINTS.includes(REFUSED));
+    assert.ok(!EBAY_CAPTURE_ENDPOINTS.some((e) => e.endsWith("#25002")));
+    const stale = await fake.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint: "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #25002", status: 400, shape: { "": ["object"] } } });
+    assert.equal(stale.status, 400);
   });
 
   it("refuses an eBay name it does not know", async () => {

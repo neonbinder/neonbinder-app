@@ -952,7 +952,8 @@ extracted from eBay's OpenAPI contracts). Every error answer is eBay's
 - **Location.** `GET location/:key` is 404 (errorId 25804) until created;
   `POST location/:key` creates (204) or, when the key exists, 400 errorId
   25803 (what the sandbox answers, not the contract's 409);
-  `update_location_details` (204), `enable` (200 `{}`).
+  `update_location_details` (204), `enable` (200 with NO body, as the sandbox
+  answered it; the contract types an empty object).
 - **Inventory items.** `bulk_create_or_replace_inventory_item` takes 1-25
   requests and answers `{responses: [{statusCode, sku, locale}]}` per entry:
   200 when every entry passed, 207 when some did, 400 (body still carrying
@@ -1048,10 +1049,20 @@ them.
 `POST /__fake/write-captures {endpoint, status, shape}` (admin) also takes
 the eBay endpoint names in `src/ebay/captures.ts` (`EBAY_CAPTURE_ENDPOINTS`):
 `"<METHOD> <template>"`, plus a variant after ` #` where one endpoint has two
-answers worth keeping (`... /publish #25002`, the sandbox's refusal;
+answers worth keeping (`... /publish #refused`, the sandbox's refusal, which
+was HTTP 400 errorId 25007 on the first run, not 25002, so the name carries no
+id;
 `.../opt_in #409`; `.../oauth2/token #refresh_token` and `#client_credentials`).
 Reads are captured the same way (status and shape, never a value). The fake
-checks each against its own synthesis like the BSC captures. **No eBay
+checks each against its own synthesis like the BSC captures (every path the
+fake sends must be in the capture with an overlapping type; the capture may
+hold more). A few paths are exempt when the capture lacks them, because eBay
+sends them only for some objects and a capture sees one: identity `status`,
+return-policy `categoryTypes[].default`, an offer's `listing` (published offers
+only), and on the first inventory item `conditionDescriptors`,
+`packageWeightAndSize.packageType` and the `product.aspects` names
+(`isOptionalCapturePath` in `src/ebay/captures.ts`). If the capture has one of
+them its types are still compared. **No eBay
 endpoint is on the required list** (`writeCaptures.missing` and Convex's
 `writeCaptureStatus` read only the BSC two); that is PR B.
 

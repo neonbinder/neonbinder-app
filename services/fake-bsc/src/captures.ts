@@ -8,7 +8,7 @@ import { readShape, shapeOf, synthConformsTo, type Shape } from "./shape";
 import { photoAnswer, putAnswer } from "./synth/sheet";
 import type { Listing, NamespaceState } from "./state";
 import type { ObjectStore } from "./store/types";
-import { EBAY_CAPTURE_ENDPOINTS, ebayCaptureSlug, ebaySynthesisedCapture, isEbayCaptureEndpoint } from "./ebay/captures";
+import { EBAY_CAPTURE_ENDPOINTS, ebayCaptureSlug, ebaySynthesisedCapture, isEbayCaptureEndpoint, isOptionalCapturePath } from "./ebay/captures";
 
 /** A BSC write endpoint, or an eBay read or write capture name (`src/ebay/captures.ts`). */
 export type CaptureEndpoint = WriteEndpoint | string;
@@ -88,7 +88,7 @@ export interface CaptureVerdict {
 /** Does the fake's answer fit the real one? Paths only. */
 export function checkCapture(capture: WriteCapture): CaptureVerdict {
   const synth = synthesisedWrite(capture.endpoint);
-  const paths = synthConformsTo(synth.shape, capture.shape).paths;
+  const paths = synthConformsTo(synth.shape, capture.shape, isWriteEndpoint(capture.endpoint) ? undefined : (p) => isOptionalCapturePath(capture.endpoint, p)).paths;
   const statusClass = (s: number) => Math.floor(s / 100);
   if (statusClass(synth.status) !== statusClass(capture.status)) paths.unshift("$status");
   return { endpoint: capture.endpoint, capturedAt: capture.capturedAt, verdict: paths.length ? "shape_drift" : "ok", paths };

@@ -5,7 +5,7 @@
  * required list (`Captures.missing` stays BSC-only until PR B).
  */
 import { shapeOf, type Shape } from "../shape";
-import { endpointName, sampleAnswers } from "./sample";
+import { endpointName, REFUSED, sampleAnswers } from "./sample";
 
 /** Every eBay capture endpoint name, in the order the sample walks them. */
 export const EBAY_CAPTURE_ENDPOINTS: readonly string[] = Object.freeze([
@@ -36,7 +36,7 @@ export const EBAY_CAPTURE_ENDPOINTS: readonly string[] = Object.freeze([
   endpointName("bulkItems"),
   endpointName("bulkOffers"),
   endpointName("updateOffer"),
-  endpointName("publishOffer", "25002"),
+  endpointName("publishOffer", REFUSED),
   endpointName("deleteItem"),
   // Writes only production accepts (`ebay-capture --prod`)
   endpointName("uploadImage"),
@@ -57,6 +57,36 @@ export function ebayCaptureSlug(endpoint: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")}`.slice(0, 150);
+}
+
+/**
+ * Paths the fake's answer carries that a stored capture may legitimately lack,
+ * because eBay includes them only for some objects and the capture saw one
+ * object. A path here is never required of the capture; if the capture has it
+ * its types are still compared. A prefix covers everything below it.
+ * Evidence is the first sandbox capture (2026-11-16): each was documented in
+ * eBay's contract and absent from the answer the sandbox gave.
+ */
+const CAPTURE_OPTIONAL: Record<string, readonly string[]> = {
+  // Account state: the sandbox seller's user answer has no `status`; NB reads userId and username only.
+  [endpointName("identityUser")]: ["status"],
+  // A return policy made some other way (Seller Hub, the older API) has no `default` on its category type.
+  [endpointName("listReturnPolicies")]: ["returnPolicies[].categoryTypes[].default"],
+  // `listing` exists only once an offer has been published; the capture's offer was not.
+  [endpointName("getOffers")]: ["offers[].listing"],
+  // The capture reads the seller's FIRST item (limit=1), which need not be the one NB just sent: the
+  // descriptors and package type are optional on an item, and aspect names with a space or a digit run
+  // collapse to `*` in a shape, so which aspect paths exist depends on the item's names.
+  [endpointName("listItems")]: [
+    "inventoryItems[].conditionDescriptors",
+    "inventoryItems[].packageWeightAndSize.packageType",
+    "inventoryItems[].product.aspects.*",
+  ],
+};
+
+/** Is `path` one a capture of `endpoint` may lack? (Exact, or below a listed path.) */
+export function isOptionalCapturePath(endpoint: string, path: string): boolean {
+  return (CAPTURE_OPTIONAL[endpoint] ?? []).some((p) => path === p || path.startsWith(`${p}.`) || path.startsWith(`${p}[]`));
 }
 
 let cached: Record<string, { status: number; shape: Shape }> | null = null;
