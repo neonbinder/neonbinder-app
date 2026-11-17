@@ -757,6 +757,9 @@ describe("fake eBay: captures", () => {
     assert.ok(check({ ...noListing, "offers[].listing": ["string"] }).paths.includes("offers[].listing"));
     // The status NB reads is never optional.
     assert.deepEqual(check(dropped("offers[].status")).paths, ["offers[].status"]);
+    // A capture holding only a child of `listing` (no `listing` key of its own) still has a listing: listingId is required.
+    const onlyChild = { ...noListing, "offers[].listing.listingStatus": ["string"] };
+    assert.deepEqual(check(onlyChild).paths, ["offers[].listing.listingId"]);
   });
 
   it("the optional list is scoped to its own endpoint", async () => {
@@ -847,7 +850,6 @@ describe("fake eBay: captures", () => {
       "GET ebay/api/sell/inventory/v1/offer": ["offers[].listing", "offers[].listing.listingId", "offers[].listing.listingStatus", "offers[].listing.soldQuantity"],
       "GET ebay/apiz/commerce/identity/v1/user": ["status"],
       "POST ebay/api/sell/inventory/v1/location/:merchantLocationKey/enable": [""],
-      "POST ebay/api/sell/inventory/v1/offer/:offerId/withdraw": ["warnings"],
     };
     for (const [endpoint, paths] of Object.entries(lacking)) {
       const s = synth(endpoint);
@@ -855,6 +857,10 @@ describe("fake eBay: captures", () => {
       const r = checkCapture({ endpoint, status: s.status, shape, capturedAt: "2026-11-17T02:00:00.000Z" });
       assert.deepEqual([r.verdict, r.paths], ["ok", []], endpoint);
     }
+    // Withdraw drifted on `warnings` (production sends none). The fake no longer answers with it, so there is
+    // nothing to remove from a capture: these asserts carry the proof, and an unchanged shape is ok.
+    const wd = synth("POST ebay/api/sell/inventory/v1/offer/:offerId/withdraw");
+    assert.equal(checkCapture({ endpoint: "POST ebay/api/sell/inventory/v1/offer/:offerId/withdraw", status: wd.status, shape: wd.shape, capturedAt: "2026-11-17T02:00:00.000Z" }).verdict, "ok");
     // The withdraw answer carries no warnings; publish still does.
     assert.equal("warnings" in synth("POST ebay/api/sell/inventory/v1/offer/:offerId/withdraw").shape, false);
     assert.equal("warnings" in synth("POST ebay/api/sell/inventory/v1/offer/:offerId/publish").shape, true);
