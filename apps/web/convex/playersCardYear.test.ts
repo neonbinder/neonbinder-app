@@ -1948,3 +1948,182 @@ describe("NEO-490: rule 6b is bounded, and a bound always means review", () => {
     });
   });
 });
+
+// ===========================================================================
+// NEO-574 — rule 6b shares the career-coverage rule
+// ===========================================================================
+
+describe("NEO-574: rule 6b counts a stint only when it began by the card's year, and matches teams by franchise", () => {
+  async function insertTeamIn(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    location: string,
+    name: string,
+    nameNormalized: string,
+    franchiseId?: Id<"franchises">,
+  ): Promise<Id<"teams">> {
+    return t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        location,
+        name,
+        nameNormalized,
+        sportId,
+        ...(franchiseId ? { franchiseId } : {}),
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  test("a namesake whose only stint with the card's team begins AFTER the card year is not linked", async () => {
+    // The prospect case (Jason, 2026-11-16: strict). Before NEO-574 this
+    // linked him, because "any year" counted the 2030 stint.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    await insertBobAllen(t, sportId, [{ teamId: padres, fromYear: 2030, toYear: 2032 }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.narrowedBy).toBeUndefined();
+    expect(resolved.matchCount).toBe(2);
+  });
+
+  test("a stint beginning in the card's own year counts", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    // Starts 2024 and ends 2024: the career span covers the year, but the
+    // namesake is one of two survivors only if the other is active too.
+    const onPadres = await insertBobAllen(t, sportId, [{ teamId: padres, fromYear: 2024, toYear: 2024 }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, fromYear: 2024, toYear: 2024 }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    // Rule 4 (the team in the card's year) answers first; either way the
+    // namesake on the Padres is the one.
+    expect(resolved.playerId).toBe(onPadres);
+  });
+
+  test("an undated stint counts toward the card's team", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const onPadres = await insertBobAllen(t, sportId, [{ teamId: padres }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBe(onPadres);
+    expect(resolved.narrowedBy).toBe("careerTeam");
+  });
+
+  test("a stint on another row of the card team's FRANCHISE counts", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1999");
+    const franchiseId = await t.run(async (ctx) =>
+      ctx.db.insert("franchises", {
+        name: "Titans / Oilers",
+        nameNormalized: "oilers titans",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const oilers = await insertTeamIn(t, sportId, "Houston", "Oilers", "houston oilers", franchiseId);
+    await insertTeamIn(t, sportId, "Tennessee", "Titans", "tennessee titans", franchiseId);
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const oiler = await insertBobAllen(t, sportId, [{ teamId: oilers, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 1999, cardTeamNames: ["Tennessee Titans"] });
+
+    expect(resolved.playerId).toBe(oiler);
+    expect(resolved.narrowedBy).toBe("careerTeam");
+  });
+
+  test("without the franchise link the same names do not match", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1999");
+    const oilers = await insertTeamIn(t, sportId, "Houston", "Oilers", "houston oilers");
+    await insertTeamIn(t, sportId, "Tennessee", "Titans", "tennessee titans");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    await insertBobAllen(t, sportId, [{ teamId: oilers, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 1999, cardTeamNames: ["Tennessee Titans"] });
+
+    expect(resolved.playerId).toBeUndefined();
+  });
+
+  test("the franchise leg is off without a sport, and its rows are metered on the shared cache", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1999");
+    const franchiseId = await t.run(async (ctx) =>
+      ctx.db.insert("franchises", {
+        name: "Titans / Oilers",
+        nameNormalized: "oilers titans",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const oilers = await insertTeamIn(t, sportId, "Houston", "Oilers", "houston oilers", franchiseId);
+    await insertTeamIn(t, sportId, "Tennessee", "Titans", "tennessee titans", franchiseId);
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs", "chicago cubs");
+    const oiler = await insertBobAllen(t, sportId, [{ teamId: oilers, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    await t.run(async (ctx) => {
+      const candidates = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", "allen bob").eq("sportId", sportId),
+        )
+        .collect();
+      const without = await narrowSameNamePlayersByCardYear(ctx, candidates, {
+        cardYear: 1999,
+        cardTeamNames: ["Tennessee Titans"],
+      });
+      expect(without.playerId).toBeNull();
+
+      const cache = createCardYearTeamCache();
+      const withSport = await narrowSameNamePlayersByCardYear(ctx, candidates, {
+        cardYear: 1999,
+        cardTeamNames: ["Tennessee Titans"],
+        sportId,
+        teamCache: cache,
+      });
+      expect(withSport).toMatchObject({ playerId: oiler, viaCareerTeam: true });
+      // The franchise leg's printed-team lookup was charged to the meter, and
+      // a second name printing the same team pays for it once.
+      const afterFirst = cache.reads;
+      expect(afterFirst).toBeGreaterThan(0);
+      await narrowSameNamePlayersByCardYear(ctx, candidates, {
+        cardYear: 1999,
+        cardTeamNames: ["Tennessee Titans"],
+        sportId,
+        teamCache: cache,
+      });
+      expect(cache.reads).toBe(afterFirst);
+    });
+  });
+
+  test("a rival whose only stint on the card's team begins after the card does not block the link", async () => {
+    // The mirror of the prospect case: the namesake who played for the club in
+    // the past is the one; a rival who joins it years later is not "also on
+    // that team" as of the card.
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres", "padres san diego");
+    const veteran = await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: padres, fromYear: 2031, toYear: 2033 }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBe(veteran);
+    expect(resolved.narrowedBy).toBe("careerTeam");
+  });
+});

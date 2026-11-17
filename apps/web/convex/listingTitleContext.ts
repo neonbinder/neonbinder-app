@@ -39,6 +39,8 @@ import { teamFullName } from "../lib/teams/team-name";
 import type { TitleContext } from "./features/listingInputs";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
+import { deriveCareerPairs } from "./lib/careerCoverage";
+import { COVERAGE_PAIRS_PER_INTERNAL_READ } from "./careerCoverage";
 import { titleChainFacts, titleChainFactsFields } from "./listingShortName";
 import { effectiveCardPlayerDefaults } from "./cardPlayersBulk";
 
@@ -195,10 +197,21 @@ export const playerNamesByIds = internalQuery({
 export type ResolvedNames = {
   playerIdByNorm: Map<string, Id<"players">>;
   teamNameByNorm: Map<string, string>;
+  /**
+   * NEO-574 — the NB team each resolved team spelling answered to, beside
+   * `teamNameByNorm` and set at the same places, for the career check.
+   */
+  teamIdByNorm: Map<string, Id<"teams">>;
+  /** NEO-574 — the set's year as the gate found it; absent when the set has none. */
+  setYear?: number;
 };
 
 export function emptyResolvedNames(): ResolvedNames {
-  return { playerIdByNorm: new Map(), teamNameByNorm: new Map() };
+  return {
+    playerIdByNorm: new Map(),
+    teamNameByNorm: new Map(),
+    teamIdByNorm: new Map(),
+  };
 }
 
 /**
@@ -259,4 +272,115 @@ export async function buildTitleContext(
     players: Array.from(players, ([printed, name]) => ({ printed, name })),
     teams: Array.from(teams, ([printed, name]) => ({ printed, name })),
   };
+}
+
+/** NEO-574 — the wire shape of `CareerContext`. */
+export const careerContextValidator = v.object({
+  setYear: v.optional(v.number()),
+  players: v.array(v.object({ printed: v.string(), playerId: v.id("players") })),
+  teams: v.array(v.object({ printed: v.string(), teamId: v.id("teams") })),
+  gaps: v.array(
+    v.object({ teamId: v.id("teams"), playerIds: v.array(v.id("players")) }),
+  ),
+});
+
+/**
+ * NEO-574 — what the wizard's "career check" step starts from: which printed
+ * names the gate resolved to existing players and to NB teams, and which
+ * (team, players) the players' careers do not cover as of the set's year.
+ */
+export type CareerContext = {
+  setYear?: number;
+  players: Array<{ printed: string; playerId: Id<"players"> }>;
+  teams: Array<{ printed: string; teamId: Id<"teams"> }>;
+  gaps: Array<{ teamId: Id<"teams">; playerIds: Array<Id<"players">> }>;
+};
+
+/**
+ * NEO-574 — assemble the `CareerContext` for the confirmed cards, from the
+ * gate's own answers (the same `ResolvedNames` the title context reads, so the
+ * two can never disagree about which names resolved).
+ *
+ * `gaps` is computed over EVERY card passed (the gate does not know which
+ * already exist as rows) but only for single-player cards whose player and
+ * team both resolved: the pairs `deriveCareerPairs` would list for a save that
+ * creates every card. The wizard intersects it with its own pairs. Coverage is
+ * read through `careerCoverage.coverageForPairs` in slices of
+ * `COVERAGE_PAIRS_PER_INTERNAL_READ`, so no transaction reads the whole set.
+ * With no set year there is nothing to compare against: no gaps.
+ */
+export async function buildCareerContext(
+  ctx: ActionCtx,
+  args: {
+    sportId: Id<"selectorOptions">;
+    cards: ReadonlyArray<{
+      cardNumber: string;
+      players?: string[];
+      teams?: string[];
+      team?: string;
+      teamIds?: ReadonlyArray<Id<"teams">>;
+    }>;
+    resolved: ResolvedNames;
+  },
+): Promise<CareerContext> {
+  const { resolved } = args;
+  const players = new Map<string, Id<"players">>();
+  const teams = new Map<string, Id<"teams">>();
+  for (const card of args.cards) {
+    for (const raw of card.players ?? []) {
+      const printed = raw.trim();
+      if (!printed || players.has(printed)) continue;
+      const id = resolved.playerIdByNorm.get(normalizePlayerName(printed));
+      if (id) players.set(printed, id);
+    }
+    const printedTeams = (card.teams ?? []).map((t) => t.trim()).filter(Boolean);
+    if (printedTeams.length === 0 && card.team?.trim()) printedTeams.push(card.team.trim());
+    for (const printed of printedTeams) {
+      if (teams.has(printed)) continue;
+      const id = resolved.teamIdByNorm.get(normalizeTeamName(printed));
+      if (id) teams.set(printed, id);
+    }
+  }
+  const context: CareerContext = {
+    ...(resolved.setYear !== undefined ? { setYear: resolved.setYear } : {}),
+    players: Array.from(players, ([printed, playerId]) => ({ printed, playerId })),
+    teams: Array.from(teams, ([printed, teamId]) => ({ printed, teamId })),
+    gaps: [],
+  };
+  if (resolved.setYear === undefined) return context;
+
+  const pairs = deriveCareerPairs({
+    cards: args.cards,
+    setYear: resolved.setYear,
+    playerIdFor: (printed) => players.get(printed),
+    teamFor: (printed) => {
+      const teamId = teams.get(printed);
+      return teamId ? { teamId } : undefined;
+    },
+  });
+  const pairArgs = pairs.flatMap((pair) =>
+    pair.teamId
+      ? [{ playerId: pair.playerId as Id<"players">, teamId: pair.teamId as Id<"teams"> }]
+      : [],
+  );
+  const uncoveredByTeam = new Map<string, Array<Id<"players">>>();
+  for (let i = 0; i < pairArgs.length; i += COVERAGE_PAIRS_PER_INTERNAL_READ) {
+    const results: Array<{ playerId: Id<"players">; teamId?: Id<"teams">; covered: boolean }> =
+      await ctx.runQuery(internal.careerCoverage.coverageForPairs, {
+        sportId: args.sportId,
+        setYear: resolved.setYear,
+        pairs: pairArgs.slice(i, i + COVERAGE_PAIRS_PER_INTERNAL_READ),
+      });
+    for (const r of results) {
+      if (r.covered || !r.teamId) continue;
+      const list = uncoveredByTeam.get(r.teamId as string) ?? [];
+      if (!list.includes(r.playerId)) list.push(r.playerId);
+      uncoveredByTeam.set(r.teamId as string, list);
+    }
+  }
+  context.gaps = Array.from(uncoveredByTeam, ([teamId, playerIds]) => ({
+    teamId: teamId as Id<"teams">,
+    playerIds,
+  }));
+  return context;
 }

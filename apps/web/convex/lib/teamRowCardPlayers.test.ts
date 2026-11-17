@@ -178,6 +178,28 @@ describe("NEO-490: narrowTeamRowsByCardPlayers", () => {
     expect(await narrow(t, [w.early, w.modern], [[onlyModern]], 1950)).toBeNull();
   });
 
+  test("NEO-574: a stint beginning after the set year does not count (the shared coverage rule)", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    // `insertPlayer` starts the first team's stint in 1930 and the second's
+    // in 1931.
+    const both = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early, w.late]);
+    const startsLate = await insertPlayer(t, w.sportId, "Other Player", [w.late, w.early]);
+
+    // A 1930 card: both eras are in range for the early row, the stint on it
+    // began that year and counts; the late stint (1931) does not, so the
+    // player points at one era...
+    expect(await narrow(t, [w.early, w.late], [[both]], 1930)).toBe(w.early);
+    // ...a 1925 card sees neither stint begun, so nothing says which era...
+    expect(await narrow(t, [w.early, w.late], [[both]], 1925)).toBeNull();
+    // ...and this player's stint on the early era began in 1931, after a 1930
+    // card (his other stint is on a row that does not exist yet in 1930).
+    expect(await narrow(t, [w.early, w.late], [[startsLate]], 1930)).toBeNull();
+    expect(await narrow(t, [w.early, w.late], [[startsLate]], 1931)).toBe(w.early);
+    // With no year every stint counts: the first player is ambiguous again.
+    expect(await narrow(t, [w.early, w.late], [[both]], undefined)).toBeNull();
+  });
+
   test("fewer than two candidates is resolveTeamForSetYear's to answer", async () => {
     const t = convexTest(schema, modules);
     const w = await seed(t);

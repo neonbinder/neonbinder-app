@@ -50,9 +50,12 @@ import {
   type TitleContext,
 } from "./features/listingInputs";
 import {
+  buildCareerContext,
   buildTitleContext,
+  careerContextValidator,
   emptyResolvedNames,
   titleContextValidator,
+  type CareerContext,
   type ResolvedNames,
 } from "./listingTitleContext";
 import { generateSku } from "./sku";
@@ -98,6 +101,7 @@ import { safeMarketplaceText } from "../lib/marketplace/safe-text";
 // each entry point rather than trusted from the adapter. (`MAX_CARD_PLAYERS` /
 // `MAX_CARD_TEAMS` are already imported below.)
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
+import { assertCareerStintYears, maxCareerYear } from "../lib/players/career-years";
 import {
   CROSS_LISTING_LINKS_PER_CALL,
   MAX_OPERATOR_DELETE_IDS,
@@ -245,6 +249,7 @@ import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
   addPlayerSport,
   createCardYearTeamCache,
+  MAX_CAREER_STINT_APPENDS,
   narrowSameNamePlayersByCardYear,
   normalizePlayerName,
   playerBelongsToSport,
@@ -1613,6 +1618,8 @@ async function resolveUnknownsAndStartBatch(
       internal.selectorOptions.findSetYearForSelectorOptionQuery,
       { selectorOptionId: args.selectorOptionId },
     )) ?? undefined;
+  // NEO-574 — the career check compares against the same year the gate used.
+  if (args.resolvedNames && setYear !== undefined) args.resolvedNames.setYear = setYear;
   /**
    * The team names that appeared on a card alongside this player, deduped and
    * keyed by the NORMALIZED name — the same key `playerByNorm` and the
@@ -1938,7 +1945,11 @@ async function resolveUnknownsAndStartBatch(
     });
     if (!existing) unresolvedTeams.push({ normalized, name });
     // NEO-335 — recorded for the title context, under the gate's own key.
-    else args.resolvedNames?.teamNameByNorm.set(normalized, teamFullName(existing));
+    else {
+      args.resolvedNames?.teamNameByNorm.set(normalized, teamFullName(existing));
+      // NEO-574 — and the row, for the career check.
+      args.resolvedNames?.teamIdByNorm.set(normalized, existing._id);
+    }
   }
   const historyTeams =
     unresolvedTeams.length > 0 && history?.complete && history.teamIds.size > 0
@@ -1957,6 +1968,7 @@ async function resolveUnknownsAndStartBatch(
         origin: "setHistory",
       });
       args.resolvedNames?.teamNameByNorm.set(normalized, team.fullName);
+      args.resolvedNames?.teamIdByNorm.set(normalized, teamId as Id<"teams">);
       continue;
     }
     unresolvedAfterHistory.push({ normalized, name });
@@ -2031,6 +2043,7 @@ async function resolveUnknownsAndStartBatch(
         origin: "careerTeam",
       });
       args.resolvedNames?.teamNameByNorm.set(ask.normalized, teamFullName(team));
+      args.resolvedNames?.teamIdByNorm.set(ask.normalized, team._id);
     });
   }
 
@@ -4151,6 +4164,9 @@ type CardNameBearing = {
   // NEO-335 — operator-chosen NB team ids. Only the COUNT is bounded here;
   // the ids themselves are validated against the table by the commit.
   teamIds?: ReadonlyArray<unknown>;
+  // NEO-574 — the career check's per-card re-links. Bounded here; the ids are
+  // validated against the table by the commit.
+  playerIdByName?: ReadonlyArray<{ name: string }>;
   // NEO-335 — BSC's unsplit team value, the commit's hint source.
   rawTeamName?: string;
 };
@@ -4230,6 +4246,20 @@ function assertCardBatchWithinLimits(
       if (name.length > MAX_PLAYER_NAME_LENGTH) {
         throw new Error(
           `${fnName}: ${where} carries a team name of ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+        );
+      }
+    }
+    // NEO-574 — one re-link per printed player at most.
+    const relinks = card.playerIdByName ?? [];
+    if (relinks.length > MAX_CARD_PLAYERS) {
+      throw new Error(
+        `${fnName}: ${where} carries ${relinks.length} player re-links, above the ${MAX_CARD_PLAYERS}-player limit`,
+      );
+    }
+    for (const relink of relinks) {
+      if (relink.name.length > MAX_PLAYER_NAME_LENGTH) {
+        throw new Error(
+          `${fnName}: ${where} carries a re-linked player name of ${relink.name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
         );
       }
     }
@@ -15156,6 +15186,18 @@ const previewCardFields = {
   // card's `teams` NAMES resolve to, deduped, and held to `MAX_CARD_TEAMS`.
   // Count-bounded by `assertCardBatchWithinLimits`.
   teamIds: v.optional(v.array(v.id("teams"))),
+  // NEO-574 — `playerIdByName` — the existing NB player the operator linked THIS
+  // card's printed player name to, in the wizard's career check ("link the
+  // cards to a different player"). Mirrors `teamIds`: a client-chosen id, so
+  // the commit re-validates every one before any write
+  // (`validateOperatorPlayerIds`: another sport's player refuses the commit, a
+  // vanished one drops the override). `name` is the printed string exactly as
+  // in `players`; the listed id beats the name's ordinary resolution for this
+  // card ONLY, and `playerLinks.nameOnCard` keeps the printed name. Optional,
+  // so an older bundle's payload commits as it always did.
+  playerIdByName: v.optional(
+    v.array(v.object({ name: v.string(), playerId: v.id("players") })),
+  ),
   // `teamsAnswered` — this card's `teams` STRINGS are the operator's answer
   // in the wizard (a team staged in this review, or a sibling card's printed
   // team), not what the card printed. The commit resolves them exactly as it
@@ -16921,6 +16963,11 @@ export const resolveChecklistEntities = action({
     // has rows the operator must see before the commit. Optional so the wire
     // change is purely additive; this action always sends it.
     autoLinkedCount: v.optional(v.number()),
+    // NEO-574 — what the wizard's "career check" step starts from: the
+    // existing players and NB teams the gate resolved, and the (team,
+    // players) the players' careers do not cover as of the set's year.
+    // Optional so the wire change is purely additive; always sent.
+    careerContext: v.optional(careerContextValidator),
   }),
   handler: async (ctx, args): Promise<{
     unknownPlayers: string[];
@@ -16929,6 +16976,7 @@ export const resolveChecklistEntities = action({
     batchId?: string;
     titleContext?: TitleContext;
     autoLinkedCount?: number;
+    careerContext?: CareerContext;
   }> => {
     await requireAdmin(ctx);
     assertCardBatchWithinLimits(args.cards, "resolveChecklistEntities");
@@ -17032,7 +17080,13 @@ export const resolveChecklistEntities = action({
       cards: args.cards,
       resolved: resolvedNames,
     });
-    return { ...result, titleContext };
+    // NEO-574 — the career check's starting point, from the same answers.
+    const careerContext = await buildCareerContext(ctx, {
+      sportId: args.sportId,
+      cards: args.cards,
+      resolved: resolvedNames,
+    });
+    return { ...result, titleContext, careerContext };
   },
 });
 /**
@@ -19703,6 +19757,8 @@ export const commitCardChecklistPrelude = internalMutation({
             ...(setYear !== undefined ? { cardYear: setYear } : {}),
             cardTeamNames: cardTeamNamesByPlayer.get(normalized) ?? [],
             teamCache: cardYearTeamCache,
+            // NEO-574 — rule 6b's franchise leg.
+            sportId: args.sportId,
           },
         );
         /*
@@ -23319,6 +23375,62 @@ export const validateOperatorTeamIds = internalQuery({
   },
 });
 
+/** NEO-574 — ids one `validateOperatorPlayerIds` page reads: a read per id. */
+const OPERATOR_PLAYER_IDS_PER_PAGE = 500;
+
+/**
+ * NEO-574 — check the NB player ids the operator chose in the career check (a
+ * card's `playerIdByName` re-link, a `careerStints` entry) before the commit
+ * writes anything. The player counterpart of `validateOperatorTeamIds`, with
+ * the same three answers:
+ *
+ *  - a player deleted since the pick is `missing`: the override is dropped and
+ *    the card falls back to the name's ordinary resolution;
+ *  - a player outside the set's sport (`playerBelongsToSport`: home sport, or
+ *    one an operator added) is `foreignSport`, and the commit REFUSES: a
+ *    client offering a choice it was never shown;
+ *  - with no sport resolvable for the row nothing can be verified, so every id
+ *    is reported foreign — fail closed.
+ *
+ * The sport is walked from the row server-side, never taken from the action's
+ * `sportId` argument, which is itself client-supplied.
+ */
+export const validateOperatorPlayerIds = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    ids: v.array(v.id("players")),
+  },
+  returns: v.object({
+    players: v.array(v.object({ id: v.id("players"), name: v.string() })),
+    missing: v.number(),
+    foreignSport: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    if (args.ids.length > OPERATOR_PLAYER_IDS_PER_PAGE) {
+      throw new Error(
+        `validateOperatorPlayerIds: ${args.ids.length} ids exceeds the ${OPERATOR_PLAYER_IDS_PER_PAGE}-id page`,
+      );
+    }
+    const sportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    const players: Array<{ id: Id<"players">; name: string }> = [];
+    let missing = 0;
+    let foreignSport = 0;
+    for (const id of new Set(args.ids)) {
+      const player = await ctx.db.get(id);
+      if (!player) {
+        missing++;
+        continue;
+      }
+      if (!sportId || !(await playerBelongsToSport(ctx, player, sportId))) {
+        foreignSport++;
+        continue;
+      }
+      players.push({ id, name: player.name });
+    }
+    return { players, missing, foreignSport };
+  },
+});
+
 export const commitCardChecklist = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -23350,6 +23462,28 @@ export const commitCardChecklist = action({
      * leaf that already has a format keeps it.
      */
     autographFormat: v.optional(autographFormatArg),
+    /**
+     * NEO-574 — the stints the operator added in the wizard's career check,
+     * for the WHOLE batch. Each names an EXISTING player (never one the wizard
+     * created) and a team either by NB id or by the printed string a card in
+     * this commit carries (a team the batch creates has no id until the
+     * prelude makes it); exactly one of the two. Checked before any phase
+     * writes, appended as its own phase after the prelude's resolve walk
+     * (`players.appendCareerStints`): additive, and a retry adds nothing twice.
+     * A stint whose team cannot be resolved is skipped and counted, never
+     * guessed.
+     */
+    careerStints: v.optional(
+      v.array(
+        v.object({
+          playerId: v.id("players"),
+          teamId: v.optional(v.id("teams")),
+          teamName: v.optional(v.string()),
+          fromYear: v.number(),
+          toYear: v.optional(v.number()),
+        }),
+      ),
+    ),
   },
   returns: v.object({
     success: v.boolean(),
@@ -23401,6 +23535,11 @@ export const commitCardChecklist = action({
     // side is inside it). A COUNT, never the names: what was dropped is
     // marketplace-derived text.
     droppedPendingNameCount: v.number(),
+    // NEO-574 — what the career-stint phase did, present only when the commit
+    // carried `careerStints`. Counts only.
+    careerStints: v.optional(
+      v.object({ added: v.number(), existing: v.number(), skipped: v.number() }),
+    ),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
@@ -23421,6 +23560,7 @@ export const commitCardChecklist = action({
     collectedDeleteCollectorsAtLeast?: boolean;
     unreviewedNameCount: number;
     droppedPendingNameCount: number;
+    careerStints?: { added: number; existing: number; skipped: number };
   }> => {
     // Enforced HERE, before any phase runs, so a non-admin call writes
     // nothing at all — the phases below re-check, but this is the boundary.
@@ -23494,6 +23634,43 @@ export const commitCardChecklist = action({
         ? undefined
         : normalizeListingShortName(args.listingShortName);
 
+    // NEO-574 — the career check's stints, held to their shape and to the
+    // year bounds every other writer holds, before ANY phase writes. The
+    // wizard never sends a stint outside them; a refusal is a client that
+    // skipped its own year fields. No name is echoed (Sentry, console).
+    const careerStints = args.careerStints ?? [];
+    if (careerStints.length > MAX_CAREER_STINT_APPENDS) {
+      throw new ConvexError(
+        `commitCardChecklist: ${careerStints.length} career stints exceeds the ${MAX_CAREER_STINT_APPENDS} limit for a single commit`,
+      );
+    }
+    {
+      const maxYear = maxCareerYear();
+      careerStints.forEach((stint, i) => {
+        const hasId = stint.teamId !== undefined;
+        const hasName = (stint.teamName ?? "").trim().length > 0;
+        if (hasId === hasName) {
+          throw new ConvexError(
+            `commitCardChecklist: career stint ${i + 1} must name exactly one team, by id or by printed name.`,
+          );
+        }
+        if ((stint.teamName ?? "").length > MAX_PLAYER_NAME_LENGTH) {
+          throw new ConvexError(
+            `commitCardChecklist: career stint ${i + 1} carries a team name over the ${MAX_PLAYER_NAME_LENGTH}-character limit.`,
+          );
+        }
+        try {
+          assertCareerStintYears(stint.fromYear, stint.toYear, maxYear);
+        } catch (error) {
+          throw new ConvexError(
+            `commitCardChecklist: career stint ${i + 1}: ${
+              error instanceof Error ? error.message : "invalid years."
+            }`,
+          );
+        }
+      });
+    }
+
     // Checked before ANY phase writes, so an over-long delete list costs the
     // operator nothing. Finalize re-checks — it is separately callable.
     const operatorDeleteIds = args.operatorDeleteIds ?? [];
@@ -23508,7 +23685,11 @@ export const commitCardChecklist = action({
     const operatorTeamNameById = new Map<string, string>();
     {
       const distinct = Array.from(
-        new Set(args.cards.flatMap((c) => c.teamIds ?? [])),
+        new Set([
+          ...args.cards.flatMap((c) => c.teamIds ?? []),
+          // NEO-574 — a career stint's team, when it names one by id.
+          ...careerStints.flatMap((stint) => (stint.teamId ? [stint.teamId] : [])),
+        ]),
       );
       let missing = 0;
       let foreignSport = 0;
@@ -23538,6 +23719,49 @@ export const commitCardChecklist = action({
         console.warn(
           JSON.stringify({
             msg: "commit_operator_team_ids_missing",
+            selectorOptionId: args.selectorOptionId,
+            missing,
+          }),
+        );
+      }
+    }
+
+    // NEO-574 — the operator's re-linked and stint players, validated before
+    // ANY phase writes, exactly as the picked teams are. See
+    // `validateOperatorPlayerIds`.
+    const operatorPlayerNameById = new Map<string, string>();
+    {
+      const distinct = Array.from(
+        new Set([
+          ...args.cards.flatMap((c) => (c.playerIdByName ?? []).map((e) => e.playerId)),
+          ...careerStints.map((stint) => stint.playerId),
+        ]),
+      );
+      let missing = 0;
+      let foreignSport = 0;
+      for (let i = 0; i < distinct.length; i += OPERATOR_PLAYER_IDS_PER_PAGE) {
+        const page: {
+          players: Array<{ id: Id<"players">; name: string }>;
+          missing: number;
+          foreignSport: number;
+        } = await ctx.runQuery(internal.selectorOptions.validateOperatorPlayerIds, {
+          selectorOptionId: args.selectorOptionId,
+          ids: distinct.slice(i, i + OPERATOR_PLAYER_IDS_PER_PAGE),
+        });
+        for (const p of page.players) operatorPlayerNameById.set(p.id, p.name);
+        missing += page.missing;
+        foreignSport += page.foreignSport;
+      }
+      if (foreignSport > 0) {
+        throw new ConvexError(
+          `commitCardChecklist: ${foreignSport} chosen player(s) belong to another sport or could not be checked against this set's sport. Pick the players again and save.`,
+        );
+      }
+      if (missing > 0) {
+        // Counts only. A card keeps the name's ordinary resolution.
+        console.warn(
+          JSON.stringify({
+            msg: "commit_operator_player_ids_missing",
             selectorOptionId: args.selectorOptionId,
             missing,
           }),
@@ -23761,6 +23985,65 @@ export const commitCardChecklist = action({
     const teamNameById = new Map(
       prelude.teamNameById.map(({ id, name }) => [id as string, name] as const),
     );
+    // NEO-574 — a re-linked player's canonical name, for the card's title. The
+    // prelude's own entry wins where it has one (the same player, same name).
+    for (const [id, name] of operatorPlayerNameById) {
+      if (!playerNameById.has(id)) playerNameById.set(id, name);
+    }
+    /*
+     * NEO-574 — the career check's stints, appended as their own phase AFTER
+     * the resolve walk (a stint for a team this commit created needs the id the
+     * creates phase minted) and BEFORE any chunk. Additive and idempotent, so
+     * a retried commit adds nothing twice. A stint whose team or player cannot
+     * be resolved is skipped and counted. Ids and counts only in the log.
+     */
+    let careerStintsResult: { added: number; existing: number; skipped: number } | undefined;
+    if (careerStints.length > 0) {
+      const toAppend: Array<{
+        playerId: Id<"players">;
+        teamId: Id<"teams">;
+        fromYear: number;
+        toYear?: number;
+      }> = [];
+      let unresolved = 0;
+      for (const stint of careerStints) {
+        const teamId = stint.teamId
+          ? operatorTeamNameById.has(stint.teamId)
+            ? stint.teamId
+            : undefined
+          : teamIdByName.get((stint.teamName ?? "").trim());
+        if (!teamId || !operatorPlayerNameById.has(stint.playerId)) {
+          unresolved++;
+          continue;
+        }
+        toAppend.push({
+          playerId: stint.playerId,
+          teamId,
+          fromYear: stint.fromYear,
+          ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+        });
+      }
+      const appended: { added: number; existing: number; skipped: number } =
+        toAppend.length > 0
+          ? await phase("career stints", () =>
+              ctx.runMutation(internal.players.appendCareerStints, { stints: toAppend }),
+            )
+          : { added: 0, existing: 0, skipped: 0 };
+      careerStintsResult = {
+        added: appended.added,
+        existing: appended.existing,
+        skipped: appended.skipped + unresolved,
+      };
+      console.log(
+        JSON.stringify({
+          msg: "commit_career_stints",
+          selectorOptionId: args.selectorOptionId,
+          requested: careerStints.length,
+          players: new Set(careerStints.map((stint) => stint.playerId)).size,
+          ...careerStintsResult,
+        }),
+      );
+    }
     // NEO-221 — the names the review never ruled on, as sets for the per-card
     // intersection below. Membership is by the TRIMMED name, which is the same
     // form the prelude was handed and the same form it echoed back, so the two
@@ -23838,9 +24121,18 @@ export const commitCardChecklist = action({
        * of step. See `cardChecklist.playerLinks` in schema.ts.
        */
       const playerLinks: Array<{ playerId: Id<"players">; nameOnCard: string }> = [];
+      // NEO-574 — the operator's per-card re-link (career check), kept only
+      // while the player still exists in this sport (`operatorPlayerNameById`).
+      // It beats the name's ordinary resolution for THIS card, and only here.
+      const relinkedByName = new Map<string, Id<"players">>();
+      for (const e of c.playerIdByName ?? []) {
+        if (operatorPlayerNameById.has(e.playerId)) {
+          relinkedByName.set(e.name.trim(), e.playerId);
+        }
+      }
       for (const p of c.players ?? []) {
         const nameOnCard = p.trim();
-        const id = playerIdByName.get(nameOnCard);
+        const id = relinkedByName.get(nameOnCard) ?? playerIdByName.get(nameOnCard);
         if (id) {
           playerIds.push(id);
           playerLinks.push({ playerId: id, nameOnCard });
@@ -23899,7 +24191,8 @@ export const commitCardChecklist = action({
           new Set(
             (c.players ?? [])
               .map((p) => p.trim())
-              .filter((p) => p && unreviewedPlayers.has(p)),
+              // NEO-574 — a name the operator re-linked is answered, not pending.
+              .filter((p) => p && unreviewedPlayers.has(p) && !relinkedByName.has(p)),
           ),
         ),
         MAX_PENDING_PLAYER_NAMES,
@@ -24408,6 +24701,7 @@ export const commitCardChecklist = action({
       // arrived" and "15 are waiting" invisible. Not rendered anywhere yet: a
       // user-facing string needs a brand-voice draft and Jason's sign-off.
       droppedPendingNameCount,
+      ...(careerStintsResult ? { careerStints: careerStintsResult } : {}),
     };
   },
 });

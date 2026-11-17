@@ -3924,3 +3924,51 @@ describe("NEO-552: the fake BSC test controls are locked like the other testing 
     await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/real BuySportsCards/);
   });
 });
+
+/**
+ * NEO-574 — the wizard's career check. `careerCoverage.coverageForPreview`
+ * and `relinkCandidates` are operator reads (`requireAdmin` first); the gate's
+ * `coverageForPairs` and the commit's `players.appendCareerStints` are
+ * internal. Behaviour is pinned in `careerCoverage.test.ts` and
+ * `commitCardChecklist.careerCheck.test.ts`.
+ */
+describe("NEO-574: the career check reads are admin-gated; the writer is internal", () => {
+  test("both public reads call requireAdmin before any read; the others are internal", () => {
+    const src = readFileSync(join(__dirname, "careerCoverage.ts"), "utf8");
+    expect(src).toContain("export const coverageForPreview = query({");
+    expect(src).toContain("export const relinkCandidates = query({");
+    expect(src).toContain("export const coverageForPairs = internalQuery({");
+    for (const name of ["coverageForPreview", "relinkCandidates"]) {
+      const body = src.slice(src.indexOf(`export const ${name} =`));
+      const guard = body.indexOf("await requireAdmin(ctx)");
+      expect(guard).toBeGreaterThan(-1);
+      expect(guard).toBeLessThan(body.indexOf("findSportForSelectorOption(ctx"));
+    }
+    const players = readFileSync(join(__dirname, "players.ts"), "utf8");
+    expect(players).toContain("export const appendCareerStints = internalMutation({");
+  });
+
+  test("an anonymous call is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.query(api.careerCoverage.coverageForPreview, { selectorOptionId: id, pairs: [] }),
+    ).rejects.toThrow(/not authenticated/i);
+    await expect(
+      t.query(api.careerCoverage.relinkCandidates, { selectorOptionId: id, printedName: "Bob Allen" }),
+    ).rejects.toThrow(/not authenticated/i);
+  });
+
+  test("a signed-in non-admin is refused", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedSport(t);
+    await expect(
+      t.withIdentity(SIGNED_IN).query(api.careerCoverage.coverageForPreview, { selectorOptionId: id, pairs: [] }),
+    ).rejects.toThrow(/admin access required/i);
+    await expect(
+      t
+        .withIdentity(SIGNED_IN)
+        .query(api.careerCoverage.relinkCandidates, { selectorOptionId: id, printedName: "Bob Allen" }),
+    ).rejects.toThrow(/admin access required/i);
+  });
+});
