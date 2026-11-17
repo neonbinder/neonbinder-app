@@ -109,6 +109,52 @@ describe("players.nearMatches", () => {
     ]);
   });
 
+  // NEO-578: the reverse of the case above. A full name must not be offered
+  // every stored surname-only row of the same surname.
+  test("does not offer a surname-only row for a full name", async () => {
+    const t = convexTest(schema, modules);
+    const baseball = await seedSport(t, "Baseball", "BB");
+    await seedPlayer(t, "Williams", baseball);
+    await seedPlayer(t, "Williams Jr.", baseball);
+    const robertId = await seedPlayer(t, "Robert Williams", baseball);
+
+    const rows = await t
+      .withIdentity(ADMIN)
+      .query(api.players.nearMatches, { name: "Rob Williams", sportId: baseball });
+
+    expect(rows).toEqual([
+      { _id: robertId, name: "Robert Williams", confidence: "close" },
+    ]);
+  });
+
+  // NEO-578: the ranked name for an alias-matched row is the ALIAS, so a
+  // one-word alias is a surname-only name to the guard. Deliberate: a full
+  // name is not offered a one-word alias.
+  test("drops a player whose matching alias is one word for a full-name query", async () => {
+    const t = convexTest(schema, modules);
+    const basketball = await seedSport(t, "Basketball", "BK");
+    await t.run(async (ctx) => {
+      const id = await ctx.db.insert("players", {
+        name: "Metta World Peace",
+        nameNormalized: normalizePlayerName("Metta World Peace"),
+        sportId: basketball,
+        aliases: ["Artest"],
+        lastUpdated: 1_700_000_000_000,
+      });
+      await ctx.db.insert("playerAliases", {
+        playerId: id,
+        sportId: basketball,
+        aliasNormalized: normalizePlayerName("Artest"),
+      });
+    });
+
+    const rows = await t
+      .withIdentity(ADMIN)
+      .query(api.players.nearMatches, { name: "Ron Artest", sportId: basketball });
+
+    expect(rows).toEqual([]);
+  });
+
   test("finds the full name from an initialled first name", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t, "Baseball", "BB");
@@ -194,7 +240,9 @@ describe("players.nearMatches", () => {
   test("falls back to the surname when the whole-name search misses", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t, "Baseball", "BB");
-    const ohtaniId = await seedPlayer(t, "Ohtani", baseball);
+    // NEO-578: stored as an initialled name, not a bare "Ohtani" — a
+    // surname-only row is no longer offered for a full-name query.
+    const ohtaniId = await seedPlayer(t, "S. Ohtani", baseball);
 
     const rows = await t.withIdentity(ADMIN).query(api.players.nearMatches, {
       name: "Shohei Ohtani.",
@@ -202,14 +250,14 @@ describe("players.nearMatches", () => {
     });
 
     expect(rows).toEqual([
-      { _id: ohtaniId, name: "Ohtani", confidence: "close" },
+      { _id: ohtaniId, name: "S. Ohtani", confidence: "close" },
     ]);
   });
 
   test("puts the exact row first and honours the limit", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t, "Baseball", "BB");
-    await seedPlayer(t, "Ohtani", baseball);
+    await seedPlayer(t, "Sho Ohtani", baseball);
     const ohtaniId = await seedPlayer(t, "Shohei Ohtani", baseball);
     await seedPlayer(t, "S. Ohtani", baseball);
 
