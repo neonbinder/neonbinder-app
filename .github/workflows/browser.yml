@@ -18,9 +18,9 @@ on:
   pull_request:
     paths:
       - "services/browser/**"
-      # NEO-555: the browser tests read the fake's eBay sources and contract.
-      - "services/fake-bsc/src/ebay/**"
-      - "services/fake-bsc/CONTRACT.md"
+      # NEO-555: kept equal to the merge_group `scope` filter below. A change
+      # to the fake-bsc files the browser tests read is covered by the PR
+      # pipeline's browser-test job; it does not need a browser preview.
       # This workflow's own path (NEO-130). Without it a PR that changes only
       # this file does not run it, so the change ships unexercised — which is
       # exactly how a broken preview image path could reach main and take the

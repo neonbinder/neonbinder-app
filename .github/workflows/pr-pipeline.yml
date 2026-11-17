@@ -12,6 +12,16 @@ name: PR Pipeline
 # specs exercise the PR's browser service, not shared dev. Web-only PRs skip the
 # wiring and run E2E against the canonical dev browser default.
 #
+# Path filters (job `changes`), and why two of them name browser files:
+#  • `browser` gates the browser unit tests. It is wider than services/browser
+#    because those tests read a few fake-bsc files (identity, namespace, eBay
+#    sources, CONTRACT.md).
+#  • `browser_preview` gates the pr-<N> wiring. It is services/browser/** only,
+#    because that is all browser.yml builds a preview for (its merge_group scope
+#    filter). It must stay a subset of that filter: a PR it selects but
+#    browser.yml skips would wait on a preview that never comes (NEO-555).
+#  • `scripts` includes .github/workflows/** because a script test reads them.
+#
 # Why the wiring lives HERE (not in e2e.yml, not in the Vercel build):
 #  • Vercel stays "dumb": it only builds the SPA + `convex deploy`. The
 #    FE → Convex → browser security boundary means Vercel never talks to the
@@ -65,6 +75,7 @@ jobs:
     outputs:
       web: ${{ steps.filter.outputs.web }}
       browser: ${{ steps.filter.outputs.browser }}
+      browser_preview: ${{ steps.filter.outputs.browser_preview }}
       preprocess: ${{ steps.filter.outputs.preprocess }}
       fake_bsc: ${{ steps.filter.outputs.fake_bsc }}
       scripts: ${{ steps.filter.outputs.scripts }}
@@ -114,6 +125,12 @@ jobs:
               # sources and the contract doc.
               - 'services/fake-bsc/src/ebay/**'
               - 'services/fake-bsc/CONTRACT.md'
+            # NEO-555: what browser.yml builds a `pr-<N>` preview for. Must stay
+            # a SUBSET of browser.yml's merge_group scope filter, or the wire
+            # job below waits for a preview that is never built. `browser`
+            # above is wider on purpose (it gates the unit tests only).
+            browser_preview:
+              - 'services/browser/**'
             preprocess:
               - 'services/preprocess/**'
             # NEO-552: the standing fake BuySportsCards (dev). Own lane, own
@@ -133,6 +150,8 @@ jobs:
               - 'scripts/**'
               - '.github/scripts/**'
               - '.github/actions/notify-discord/**'
+              # NEO-555: a script test reads the workflow files (filter parity).
+              - '.github/workflows/**'
             # NEO-386: the scanner script runs on a collector's own computer,
             # never deployed, so it gets its own small lane.
             scanner:
@@ -465,7 +484,7 @@ jobs:
     if: |
       needs.changes.outputs.full == 'true'
       && needs.changes.outputs.pr != ''
-      && needs.changes.outputs.browser == 'true'
+      && needs.changes.outputs.browser_preview == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -563,16 +582,23 @@ jobs:
           set -euo pipefail
           PREVIEW_BROWSER_URL="https://pr-${PR}---${HOST}"
           echo "browser_url=$PREVIEW_BROWSER_URL" >> "$GITHUB_OUTPUT"
-          for attempt in $(seq 1 180); do  # ~30 min ceiling (slow preprocess build)
+          # Give up with our own error before the job's 20-minute timeout-minutes
+          # (earlier steps take up to ~5 min), so a missing preview reads as
+          # "never came up" rather than a bare timeout cancel. The wall-clock
+          # deadline also covers the curl time each attempt spends.
+          MAX_ATTEMPTS=80
+          DEADLINE_SECONDS=720
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            if [ "$SECONDS" -ge "$DEADLINE_SECONDS" ]; then break; fi
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PREVIEW_BROWSER_URL}/health" || echo 000)
             if [ "$code" != "404" ] && [ "$code" != "000" ]; then
               echo "pr-${PR} browser preview is live (HTTP ${code}): $PREVIEW_BROWSER_URL"
               exit 0
             fi
-            echo "attempt $attempt/60: $PREVIEW_BROWSER_URL → HTTP ${code} — retry in 10s"
+            echo "attempt $attempt/$MAX_ATTEMPTS: $PREVIEW_BROWSER_URL → HTTP ${code} — retry in 10s"
             sleep 10
           done
-          echo "::error::pr-${PR} browser preview never came up — browser.yml deploy may have failed."; exit 1
+          echo "::error::pr-${PR} browser preview never came up within ${SECONDS}s — browser.yml deploy may have failed, or this change does not build a browser preview."; exit 1
 
       # Point the Convex preview at the pr-<N> browser. A PREVIEW deploy key is
       # project-scoped; `--deployment <slug>` selects THIS PR's preview. Verified
