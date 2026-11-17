@@ -877,6 +877,41 @@ describe("eBay drain: League (NEO-569)", () => {
     expect((await record(s, v.variantId))?.problems).toEqual([{ cardId: card, reason: "noLeague" }]);
   });
 
+  test("noLeague comes before titleTooLong: a new listing with both is held noLeague only, nothing sent", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await addLeague(s, v.sportId, { name: "Major League Baseball", abbreviation: "MLB" });
+    const longTitle = "t".repeat(78) + " /5 x";
+    expect(longTitle.length).toBeGreaterThan(80);
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(card, { listingTitle: longTitle });
+    });
+    await drain(s);
+    expect((await record(s, v.variantId))?.problems).toEqual([{ cardId: card, reason: "noLeague" }]);
+    expect(ebay.writes()).toEqual([]);
+  });
+
+  test("a live listing is never held noLeague: with a too-long title and no league it is held titleTooLong, nothing cut or sent", async () => {
+    const s = await setup();
+    const { v, card } = await oneCard(s);
+    await addLeague(s, v.sportId, { name: "Major League Baseball", abbreviation: "MLB" }, card);
+    await drain(s);
+    const before = ebay.items.get(`NB2-${card}-NM`).product.title;
+    ebay.calls = [];
+    const longTitle = "t".repeat(78) + " /5 x";
+    await s.t.run(async (ctx) => {
+      await ctx.db.patch(card, { listingTitle: longTitle, leagueId: undefined });
+    });
+    await queue(s, [{ cardId: card, variantId: v.variantId, seq: 2 }]);
+    await drain(s);
+    expect((await record(s, v.variantId))?.problems).toEqual([
+      expect.objectContaining({ cardId: card, reason: "titleTooLong" }),
+    ]);
+    expect(ebay.writes()).toEqual([]);
+    expect(ebay.items.get(`NB2-${card}-NM`).product.title).toBe(before);
+    expect((await linkOf(s, card, "NM"))?.status).toBe("live");
+  });
+
   test("a sport with no leagues at all lists without the aspect, as before", async () => {
     const s = await setup();
     const { v, card } = await oneCard(s);
