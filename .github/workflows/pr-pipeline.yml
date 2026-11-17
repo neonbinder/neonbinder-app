@@ -12,6 +12,18 @@ name: PR Pipeline
 # specs exercise the PR's browser service, not shared dev. Web-only PRs skip the
 # wiring and run E2E against the canonical dev browser default.
 #
+# Path filters (job `changes`), and why two of them name browser files:
+#  • `browser` gates the browser unit tests. It is wider than services/browser
+#    because those tests read a few fake-bsc files (identity, namespace, eBay
+#    sources, CONTRACT.md).
+#  • `browser_preview` gates the pr-<N> wiring. It equals browser.yml's
+#    merge_group scope filter (services/browser, that workflow and its deploy
+#    lane, release.yml, the scripts its preview jobs run), because that is
+#    exactly when browser.yml builds a preview. Wider and the wire job waits
+#    for a preview that never comes; narrower and a built preview is not wired
+#    into E2E (NEO-555).
+#  • `scripts` includes .github/workflows/** because a script test reads them.
+#
 # Why the wiring lives HERE (not in e2e.yml, not in the Vercel build):
 #  • Vercel stays "dumb": it only builds the SPA + `convex deploy`. The
 #    FE → Convex → browser security boundary means Vercel never talks to the
@@ -65,6 +77,7 @@ jobs:
     outputs:
       web: ${{ steps.filter.outputs.web }}
       browser: ${{ steps.filter.outputs.browser }}
+      browser_preview: ${{ steps.filter.outputs.browser_preview }}
       preprocess: ${{ steps.filter.outputs.preprocess }}
       fake_bsc: ${{ steps.filter.outputs.fake_bsc }}
       scripts: ${{ steps.filter.outputs.scripts }}
@@ -114,6 +127,25 @@ jobs:
               # sources and the contract doc.
               - 'services/fake-bsc/src/ebay/**'
               - 'services/fake-bsc/CONTRACT.md'
+            # NEO-555: what browser.yml builds a `pr-<N>` preview for. Must EQUAL
+            # browser.yml's merge_group scope filter (a test enforces it): wider
+            # and the wire job waits for a preview that is never built, narrower
+            # and a preview is built but never wired into E2E. `browser`
+            # above is wider on purpose (it gates the unit tests only).
+            browser_preview:
+              - 'services/browser/**'
+              - '.github/workflows/browser.yml'
+              - '.github/workflows/browser-deploy.yml'
+              - '.github/workflows/release.yml'
+              - '.github/scripts/ci-mode.sh'
+              - '.github/scripts/resolve-secret-version.sh'
+              - '.github/scripts/image-push-report.sh'
+              - '.github/scripts/fake-bsc-url.sh'
+              - '.github/scripts/bsc-probe.sh'
+              - '.github/scripts/bsc-probe-verdict.sh'
+              - '.github/scripts/ebay-fake-token.sh'
+              - '.github/scripts/ebay-probe.sh'
+              - '.github/scripts/ebay-probe-verdict.sh'
             preprocess:
               - 'services/preprocess/**'
             # NEO-552: the standing fake BuySportsCards (dev). Own lane, own
@@ -133,6 +165,8 @@ jobs:
               - 'scripts/**'
               - '.github/scripts/**'
               - '.github/actions/notify-discord/**'
+              # NEO-555: a script test reads the workflow files (filter parity).
+              - '.github/workflows/**'
             # NEO-386: the scanner script runs on a collector's own computer,
             # never deployed, so it gets its own small lane.
             scanner:
@@ -465,10 +499,13 @@ jobs:
     if: |
       needs.changes.outputs.full == 'true'
       && needs.changes.outputs.pr != ''
-      && needs.changes.outputs.browser == 'true'
+      && needs.changes.outputs.browser_preview == 'true'
       && needs.changes.outputs.deps_only != 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Covers browser.yml's worst case (scope 5 + test 10 + deploy-preview 15
+    # min) plus the ~5 min of steps before the wait; the wait step's own
+    # ceiling (below) is well inside it.
+    timeout-minutes: 60
     # Job-scoped perms: id-token (WIF for gcloud), contents (checkout). Does NOT
     # need checks/PR-write, and no longer needs deployments:read — NEO-162
     # replaced the Deployments API poll with a `needs:` on web-preview.
@@ -551,28 +588,28 @@ jobs:
           done
           echo "::error::Could not resolve Convex deployment name from preview index.html."; exit 1
 
-      # Wait for the PR's pr-<N> browser revision to be live before pointing the
-      # Convex preview at it. browser.yml deploys it in parallel (~3-5 min). The
-      # service requires OIDC, so an UNauthenticated probe returns 403 once the
-      # revision exists (404 = tag not present yet, 000 = unreachable).
-      - name: Wait for pr-<N> browser preview to be live
+      # Wait for the PR's pr-<N> browser revision to be built from THIS commit
+      # before pointing the Convex preview at it. browser.yml deploys it in
+      # parallel (scope + test + deploy: up to ~30 min). A URL that merely
+      # answers is not proof: on a second full run for the same PR the tag still
+      # serves the previous run's revision, so E2E would run against stale
+      # browser code. browser.yml stamps PREVIEW_SHA with the commit it builds
+      # (the same `sha` output of ci-mode.sh), and this reads it back from the
+      # Cloud Run revision with gcloud (NEO-484's guard, shared script), not
+      # from an endpoint of the app. Ceiling: 120 x 20s = 40 min plus gcloud
+      # time, inside the job's 60 min; a deploy that never arrives fails here
+      # with an ::error::, never falls through to the stale revision.
+      - name: Wait for pr-<N> browser preview to be built from this commit
         id: browser
         env:
           HOST: ${{ steps.host.outputs.host }}
+          EXPECTED_SHA: ${{ needs.changes.outputs.sha }}
         run: |
           set -euo pipefail
-          PREVIEW_BROWSER_URL="https://pr-${PR}---${HOST}"
-          echo "browser_url=$PREVIEW_BROWSER_URL" >> "$GITHUB_OUTPUT"
-          for attempt in $(seq 1 180); do  # ~30 min ceiling (slow preprocess build)
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${PREVIEW_BROWSER_URL}/health" || echo 000)
-            if [ "$code" != "404" ] && [ "$code" != "000" ]; then
-              echo "pr-${PR} browser preview is live (HTTP ${code}): $PREVIEW_BROWSER_URL"
-              exit 0
-            fi
-            echo "attempt $attempt/60: $PREVIEW_BROWSER_URL → HTTP ${code} — retry in 10s"
-            sleep 10
-          done
-          echo "::error::pr-${PR} browser preview never came up — browser.yml deploy may have failed."; exit 1
+          echo "browser_url=https://pr-${PR}---${HOST}" >> "$GITHUB_OUTPUT"
+          bash .github/scripts/wait-preprocess-revision.sh \
+            --project neonbinder-dev --service neonbinder-browser \
+            --tag "pr-${PR}" --sha "$EXPECTED_SHA" --attempts 120 --interval 20
 
       # Point the Convex preview at the pr-<N> browser. A PREVIEW deploy key is
       # project-scoped; `--deployment <slug>` selects THIS PR's preview. Verified
