@@ -197,7 +197,12 @@ describe("fakeClient wiring and --fake pinning", () => {
           return true;
         });
       }
-    } finally { [process.env.FAKE_BSC_CALLER_KEY, process.env.FAKE_BSC_ADMIN_KEY] = keep; }
+    } finally {
+      for (const [name, value] of [["FAKE_BSC_CALLER_KEY", keep[0]], ["FAKE_BSC_ADMIN_KEY", keep[1]]]) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
   });
 
   it("fakeClient refuses a bad --fake host before building anything", () => {
