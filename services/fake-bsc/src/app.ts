@@ -57,6 +57,8 @@ export interface AppDeps {
   missesLoaded?: Promise<void>;
   /** How long a held request waits for the load before a 503 (default 25 s). */
   loadWaitMs?: number;
+  /** How long a `hang` fault holds a request before it answers 503 (default `HANG_CAP_MS`, 2 min). Tests pass a few ms. */
+  hangCapMs?: number;
   /** The fake eBay's token sealer (default: keyed from FAKE_BSC_ADMIN_KEY). */
   ebayTokens?: EbayTokens;
   /** The fake eBay's notification key (default: derived from FAKE_BSC_ADMIN_KEY). */
@@ -71,11 +73,18 @@ const LOADING_REFUSED_CONTROL = new Set(["/recordings", "/write-captures", "/dri
 /** Control routes held (not refused) until the recordings are in. */
 const LOADING_HELD_CONTROL = new Set(["/misses"]);
 
+/** The 503 a hang cap and the `reset` kind answer; skipped when the client is already gone. */
+function answerUnavailable(res: express.Response): void {
+  if (res.headersSent || res.writableEnded) return;
+  res.status(503).json({ message: "Service Unavailable" });
+}
+
 const defaultSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export function createApp(deps: AppDeps): express.Express {
   const now = deps.now ?? Date.now;
   const sleep = deps.sleep ?? defaultSleep;
+  const hangCapMs = deps.hangCapMs ?? HANG_CAP_MS;
   const { config, state, identity } = deps;
   const ebayTokens = deps.ebayTokens ?? createEbayTokens({ secret: config.adminKey, now });
   const ebayPublicKey = deps.ebayPublicKey ?? notificationKey(config.adminKey);
@@ -287,13 +296,17 @@ export function createApp(deps: AppDeps): express.Express {
           next();
           return;
         }
-        const timer = setTimeout(() => req.socket.destroy(), HANG_CAP_MS);
+        // Answer 503 at the cap; never destroy the socket. On Cloud Run a
+        // container-side drop mid-request makes the platform replace the only
+        // instance, which wipes every namespace's state (NEO-582).
+        const timer = setTimeout(() => answerUnavailable(res), hangCapMs);
         timer.unref();
         res.on("close", () => clearTimeout(timer));
         return;
       }
       case "reset":
-        req.socket.destroy();
+        // Same reason as the hang cap: a real socket drop restarts the instance.
+        answerUnavailable(res);
         return;
       case "unauthorized":
         // eBay paths only (readFaultRules): NB refreshes its token and retries.

@@ -532,9 +532,13 @@ describe("faults and resets", () => {
     assert.deepEqual(slept, [4000]);
   });
 
-  it("drops the connection on reset", async () => {
+  it("answers 503 at once on reset, without dropping the socket (a drop restarts the Cloud Run instance)", async () => {
     await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/user/profile" }, kind: "reset", times: 1 }]);
-    await assert.rejects(fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC }));
+    const r = await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC });
+    assert.equal(r.status, 503);
+    assert.deepEqual(r.body, { message: "Service Unavailable" });
+    // Control: the rule was spent (times: 1), so the next call passes.
+    assert.equal((await fake.call("GET", "/api/marketplace/user/profile", { bsc: BSC })).status, 200);
   });
 
   it("hangs until the client gives up", async () => {
@@ -575,6 +579,27 @@ describe("faults and resets", () => {
     await assert.rejects(
       fetch(`${fake.base}/api/marketplace/user/profile`, { headers: fake.headers(CALLER, { bsc: BSC }), signal: AbortSignal.timeout(150) }),
     );
+  });
+
+  it("keeps the default hang cap at 120 000 ms when no option is passed", async () => {
+    // Observe the timer the hang arms instead of waiting two minutes for it.
+    const armed = [];
+    const realSetTimeout = globalThis.setTimeout;
+    globalThis.setTimeout = (fn, ms, ...rest) => {
+      armed.push(ms);
+      return realSetTimeout(fn, ms, ...rest);
+    };
+    const ctl = new AbortController();
+    try {
+      await setFaults([{ match: { method: "GET", pathTemplate: "marketplace/user/profile" }, kind: "hang", times: 1 }]);
+      const held = fetch(`${fake.base}/api/marketplace/user/profile`, { headers: fake.headers(CALLER, { bsc: BSC }), signal: ctl.signal }).catch(() => "aborted");
+      await new Promise((r) => realSetTimeout(r, 100));
+      assert.ok(armed.includes(120_000), `a 120000 ms timer was armed (saw ${armed.join(",")})`);
+      ctl.abort();
+      await held;
+    } finally {
+      globalThis.setTimeout = realSetTimeout;
+    }
   });
 
   it("limits request bodies to what NB's BSC traffic needs", async () => {
@@ -1090,5 +1115,76 @@ describe("drift-compare", () => {
   it("refuses a malformed probe", async () => {
     assert.equal((await probe({ "search/bulk-upload/filters": { "bad path!": "string" } })).status, 400);
     assert.equal((await fake.call("POST", "/__fake/drift-compare", { body: { shapes: {} } })).status, 403);
+  });
+});
+
+describe("hang cap answers 503 (NEO-582)", () => {
+  const CAP_MS = 400;
+  const PROFILE = { method: "GET", pathTemplate: "marketplace/user/profile" };
+  const UNAVAILABLE = { message: "Service Unavailable" };
+  let fake;
+  before(async () => (fake = await startFake({ appOver: { hangCapMs: CAP_MS } })));
+  after(() => fake.close());
+
+  const setFaults = (rules, ns = NS) => fake.call("POST", "/__fake/faults", { body: { ns, rules } });
+  const hung = (ns = NS) => {
+    const started = Date.now();
+    return fake.call("GET", "/api/marketplace/user/profile", { bsc: `tok-${ns}` }).then((r) => ({ ...r, ms: Date.now() - started }));
+  };
+  const settle = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  it("ends a hung request with 503 and the JSON body at the cap, not a reset or hang-up", async () => {
+    await setFaults([{ match: PROFILE, kind: "hang", times: 1 }]);
+    // A rejected fetch ("fetch failed", ECONNRESET, socket hang up) fails the test here.
+    const r = await hung();
+    assert.equal(r.status, 503);
+    assert.deepEqual(r.body, UNAVAILABLE);
+    assert.ok(r.ms >= CAP_MS - 50, `held until the cap, not answered at once (${r.ms} ms)`);
+  });
+
+  it("releases every held socket at the cap, so the scope can hang again", async () => {
+    await setFaults([{ match: PROFILE, kind: "hang" }], "cap-release-w1");
+    const four = await Promise.all(Array.from({ length: 4 }, () => hung("cap-release-w1")));
+    for (const r of four) {
+      assert.equal(r.status, 503);
+      assert.deepEqual(r.body, UNAVAILABLE);
+      assert.ok(r.ms >= CAP_MS - 50, `cap-ended, not refused at once (${r.ms} ms)`);
+    }
+    const next = await hung("cap-release-w1");
+    assert.equal(next.status, 503);
+    assert.ok(next.ms >= CAP_MS - 50, `the scope's slots were released (${next.ms} ms)`);
+  });
+
+  it("still refuses a fifth hang in one scope at once, while the four are held", async () => {
+    await setFaults([{ match: PROFILE, kind: "hang" }], "cap-scope-w1");
+    const four = Array.from({ length: 4 }, () => hung("cap-scope-w1"));
+    await settle(100);
+    const fifth = await hung("cap-scope-w1");
+    assert.equal(fifth.status, 503);
+    assert.deepEqual(fifth.body, UNAVAILABLE);
+    assert.ok(fifth.ms < CAP_MS - 100, `refused at once (${fifth.ms} ms)`);
+    for (const r of await Promise.all(four)) assert.equal(r.status, 503);
+  });
+
+  it("still refuses a hang past 64 held sockets in all, across scopes, at once", async () => {
+    const scopes = Array.from({ length: 17 }, (_, i) => `cap-total-w${i}`);
+    for (const ns of scopes) await setFaults([{ match: PROFILE, kind: "hang" }], ns);
+    const held = scopes.slice(0, 16).flatMap((ns) => Array.from({ length: 4 }, () => hung(ns)));
+    await settle(150);
+    const over = await hung(scopes[16]);
+    assert.equal(over.status, 503);
+    assert.ok(over.ms < CAP_MS - 100, `refused at once (${over.ms} ms)`);
+    for (const r of await Promise.all(held)) assert.equal(r.status, 503);
+    const after64 = await hung(scopes[16]);
+    assert.ok(after64.ms >= CAP_MS - 50, `64 slots were released (${after64.ms} ms)`);
+  });
+
+  it("survives a client that gave up before the cap, and keeps serving", async () => {
+    await setFaults([{ match: PROFILE, kind: "hang", times: 1 }], "cap-gone-w1");
+    await assert.rejects(
+      fetch(`${fake.base}/api/marketplace/user/profile`, { headers: fake.headers(CALLER, { bsc: "tok-cap-gone-w1" }), signal: AbortSignal.timeout(100) }),
+    );
+    await settle(CAP_MS + 100);
+    assert.equal((await fake.call("GET", "/__fake/health")).status, 200);
   });
 });
