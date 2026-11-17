@@ -227,3 +227,50 @@ describe("RenameEntityControl", () => {
     });
   });
 });
+
+/**
+ * NEO-569 — the control tells its host when the name field is open or saving,
+ * so the Attributes panel can stay open under it.
+ */
+describe("RenameEntityControl onBusyChange (NEO-569)", () => {
+  it("reports busy while the field is open and idle after Escape", () => {
+    const onBusyChange = vi.fn();
+    render(<RenameEntityControl id={ID} currentValue="Baseball" onBusyChange={onBusyChange} />);
+    expect(onBusyChange).toHaveBeenLastCalledWith(false);
+
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    expect(onBusyChange).toHaveBeenLastCalledWith(true);
+
+    fireEvent.keyDown(screen.getByLabelText("Edit name for Baseball"), { key: "Escape" });
+    expect(onBusyChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("stays busy through a refused rename, and goes idle once it lands", async () => {
+    const onBusyChange = vi.fn();
+    mockRename.mockRejectedValueOnce(new Error("Taken"));
+    render(<RenameEntityControl id={ID} currentValue="Baseball" onBusyChange={onBusyChange} />);
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    const input = screen.getByLabelText("Edit name for Baseball");
+    fireEvent.change(input, { target: { value: "Football" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await screen.findByRole("alert");
+    expect(onBusyChange).toHaveBeenLastCalledWith(true);
+
+    fireEvent.change(input, { target: { value: "Softball" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(onBusyChange).toHaveBeenLastCalledWith(false));
+  });
+
+  it("reports idle when it unmounts mid-edit", () => {
+    const onBusyChange = vi.fn();
+    const { unmount } = render(
+      <RenameEntityControl id={ID} currentValue="Baseball" onBusyChange={onBusyChange} />,
+    );
+    fireEvent.click(screen.getByLabelText("Rename Baseball"));
+    expect(onBusyChange).toHaveBeenLastCalledWith(true);
+
+    unmount();
+    expect(onBusyChange).toHaveBeenLastCalledWith(false);
+  });
+});
+

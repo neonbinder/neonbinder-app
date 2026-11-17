@@ -41,7 +41,7 @@ import MakeInsertControl from "./MakeInsertControl";
 import PromoteToSetControl from "./PromoteToSetControl";
 import PublishedChecklistPanel from "./PublishedChecklistPanel";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
-import { NO_TEAM_LABELS } from "./team-picker-labels";
+import { NO_TEAM_LABELS, NO_TEAM_TEXT } from "./team-picker-labels";
 import EveryCardPlayerControl from "./EveryCardPlayerControl";
 import SetLeagueRow from "./SetLeagueRow";
 import NoTeamCardsControl from "./NoTeamCardsControl";
@@ -373,6 +373,17 @@ export default function SetAttributesPanel({
   // (`failure`, the alert region). Raising either clears the other.
   const [toast, setToast] = useState<string | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
+  // NEO-569 — what keeps the panel open. The name field (open or saving) and
+  // the delete confirm (open or busy) live inside the collapsible header; shut
+  // under them, the typed name, a refusal's reason and the "Deleting…" state
+  // would unmount with them. Each control reports here; `setOpen(false)` is a
+  // no-op while either holds, and the delete confirm's modal also makes the
+  // toggle inert (it is a sibling outside the dialog, reachable by a virtual
+  // cursor).
+  const [renameHeld, setRenameHeld] = useState(false);
+  const [deleteHeld, setDeleteHeld] = useState(false);
+  /** NEO-569 — the collapsed toggle's description (the set's team). */
+  const teamNoteId = useId();
   // NEO-528 — bumped on every raise and keyed onto the toast's box, so the
   // same sentence raised twice (a second "Saved, every new card gets X") is
   // a new node in the live region and is read again, not a no-op.
@@ -455,12 +466,26 @@ export default function SetAttributesPanel({
     });
   }, [ancestorSport]);
 
+  // NEO-569 — the shut panel shows only its title and the toggle, so the set's
+  // team reaches a screen reader as the toggle's description instead. The read
+  // is skipped while the panel is open (the Team row's own picker says it).
+  const collapsedTeamIds =
+    !expanded && row && TEAM_LEVELS.has(row.level as Level)
+      ? (row.teamIds ?? [])
+      : [];
+  const collapsedTeamRows = useQuery(
+    api.teams.getManyByIds,
+    collapsedTeamIds.length > 0 ? { ids: collapsedTeamIds } : "skip",
+  );
+
   if (!row || !chain) return null;
 
   const leafLevel = row.level as Level;
   // The operator's own open or close. On a set it is remembered for the tab
   // session (`CLOSED_SETS_KEY`); elsewhere the default is collapsed anyway.
   const setOpen = (open: boolean) => {
+    // NEO-569: not while a rename or a delete confirm is in flight (see above).
+    if (!open && (renameHeld || deleteHeld)) return;
     setExpanded(open);
     if (leafLevel === "setName") rememberSetClosed(selectorOptionId, !open);
   };
@@ -534,6 +559,18 @@ export default function SetAttributesPanel({
   // Breadcrumb: "Attributes for {leaf} ({levelLabel}) — a › b › c".
   const breadcrumb = chain.map((c) => c.value).join(" › ");
   const headerTitle = `Attributes for ${row.value} (${LEVEL_LABEL[leafLevel]})`;
+  // NEO-569 — said by the shut toggle, never drawn: "Team: Durham Bulls" (the
+  // full names), "Team: No Team", or nothing when the set has no team default.
+  const teamNote =
+    expanded || !showTeamRow
+      ? null
+      : teamIds.length > 0
+        ? collapsedTeamRows && collapsedTeamRows.length > 0
+          ? `Team: ${joinLabels(collapsedTeamRows.map((t) => teamFullName(t)))}`
+          : null
+        : noTeamDefault
+          ? `Team: ${NO_TEAM_TEXT}`
+          : null;
 
   /**
    * Put `message` in the `kind` toast, replacing whatever either toast shows
@@ -817,7 +854,14 @@ export default function SetAttributesPanel({
       <div
         className={`flex justify-between gap-3 ${expanded ? "items-start" : "items-center"}`}
       >
-        <div className="min-w-0">
+        <div className="relative min-w-0">
+          {/* NEO-569: the collapsed toggle's description. Always mounted (empty
+              when there is nothing to say) and `sr-only`: the closed bar shows
+              only the title and the toggle. `relative` on this box keeps the
+              absolute span from escaping the `truncate` clip (NEO-341). */}
+          <span id={teamNoteId} className="sr-only">
+            {teamNote}
+          </span>
           {/* NEO-96: the rename pencil sits immediately after the title
               because the title IS the name it edits — that adjacency is the
               only thing making it discoverable. The panel scopes itself to the
@@ -850,6 +894,7 @@ export default function SetAttributesPanel({
                 <RenameEntityControl
                   id={selectorOptionId}
                   currentValue={row.value}
+                  onBusyChange={setRenameHeld}
                 />
               )}
               {/* NEO-239: which variant type is the set's base is IDENTITY, not
@@ -885,6 +930,7 @@ export default function SetAttributesPanel({
                 level={leafLevel}
                 isBase={isBaseVariantType}
                 onDeleted={onDeleted}
+                onOpenChange={setDeleteHeld}
               />
               </>
             )}
@@ -913,9 +959,21 @@ export default function SetAttributesPanel({
           ref={expandToggleRef}
           type="button"
           onClick={() => setOpen(!expanded)}
+          // NEO-569: Safari does not focus a button on a click, so an open name
+          // field would never blur (and so never commit or cancel) under the
+          // press. Take focus on the press, as Chrome does.
+          onMouseDown={(e) => {
+            if (renameHeld) e.currentTarget.focus();
+          }}
           onKeyDown={(e) => activateOnEnter(e, () => setOpen(!expanded))}
           aria-label={expanded ? HIDE_ATTRIBUTES_LABEL : EDIT_ATTRIBUTES_LABEL}
           aria-expanded={expanded}
+          // NEO-569: the delete confirm is modal and this button sits outside
+          // it; inert keeps a virtual cursor from pressing it under the dialog.
+          inert={deleteHeld || undefined}
+          // The set's team, said while shut (not drawn). No description when
+          // the set has no team default.
+          aria-describedby={teamNote ? teamNoteId : undefined}
           // NEO-569: the body is not mounted while collapsed, so there is
           // nothing for `aria-controls` to name until it opens.
           aria-controls={expanded ? bodyId : undefined}
@@ -2873,6 +2931,7 @@ function DeleteSelectorRowControl({
   level,
   isBase = false,
   onDeleted,
+  onOpenChange,
 }: {
   id: Id<"selectorOptions">;
   row: Pick<SlotBearingRow, "platformData"> & { value: string };
@@ -2884,6 +2943,12 @@ function DeleteSelectorRowControl({
    */
   isBase?: boolean;
   onDeleted?: (level: SelectorLevel) => void;
+  /**
+   * NEO-569 — told `true` while the confirm is open (busy included) and
+   * `false` when it is not (and on unmount). The panel stays open and makes
+   * its toggle inert meanwhile.
+   */
+  onOpenChange?: (open: boolean) => void;
 }) {
   // NEO-400: the holdings are read ONCE, on click, never subscribed. The
   // subscribed form re-read every row and card below the selection on every
@@ -2909,6 +2974,15 @@ function DeleteSelectorRowControl({
   /** The check itself failed — not a refusal, so the control stays live. */
   const [checkError, setCheckError] = useState<string | null>(null);
   const reasonId = useId();
+
+  const onOpenChangeRef = useRef(onOpenChange);
+  useEffect(() => {
+    onOpenChangeRef.current = onOpenChange;
+  });
+  useEffect(() => {
+    onOpenChangeRef.current?.(open);
+  }, [open]);
+  useEffect(() => () => onOpenChangeRef.current?.(false), []);
 
   const blocked = reason !== null && reason.length > 0;
 

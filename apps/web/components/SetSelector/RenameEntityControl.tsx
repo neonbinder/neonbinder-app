@@ -106,10 +106,19 @@ export default function RenameEntityControl({
   id,
   currentValue,
   disabled,
+  onBusyChange,
 }: {
   id: Id<"selectorOptions">;
   currentValue: string;
   disabled?: boolean;
+  /**
+   * NEO-569 — told `true` while the name field is open or its save is in
+   * flight, and `false` when neither (and on unmount). A host that can unmount
+   * this control (the Attributes panel shutting) holds off while it is `true`:
+   * the refusal line and the typed name live in this control's own state, and a
+   * collapse would drop both and leave focus on <body>.
+   */
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const rename = useMutation(api.selectorOptions.renameSelectorOption);
   const fieldClass = useFieldTestClass();
@@ -129,6 +138,18 @@ export default function RenameEntityControl({
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
+
+  // Held in a ref so a host passing a fresh callback each render does not
+  // re-run the effect below (and so flicker `false` then `true`).
+  const onBusyChangeRef = useRef(onBusyChange);
+  useEffect(() => {
+    onBusyChangeRef.current = onBusyChange;
+  });
+  const busy = editing || saving;
+  useEffect(() => {
+    onBusyChangeRef.current?.(busy);
+  }, [busy]);
+  useEffect(() => () => onBusyChangeRef.current?.(false), []);
 
   // The input unmounts the instant `editing` goes false (commit succeeding,
   // or Escape reverting) and the pencil button takes its place — with nothing

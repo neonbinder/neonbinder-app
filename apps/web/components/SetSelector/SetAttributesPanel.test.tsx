@@ -135,6 +135,8 @@ vi.mock("../../convex/_generated/api", () => ({
 
 const mockSetSelectorOptionFeature = vi.fn();
 const mockDeleteSelectorOption = vi.fn();
+/** NEO-569 — the rename pencil's write. */
+const mockRenameSelectorOption = vi.fn();
 /** NEO-291 */
 const mockSetSelectorOptionCardNumberPrefix = vi.fn();
 /** NEO-335 */
@@ -197,6 +199,7 @@ vi.mock("convex/react", () => ({
     if (mutation === "setSelectorOptionFeature")
       return mockSetSelectorOptionFeature;
     if (mutation === "deleteSelectorOption") return mockDeleteSelectorOption;
+    if (mutation === "renameSelectorOption") return mockRenameSelectorOption;
     if (mutation === "setSelectorOptionCardNumberPrefix")
       return mockSetSelectorOptionCardNumberPrefix;
     if (mutation === "setSelectorOptionListingShortName")
@@ -5075,5 +5078,224 @@ describe("SetAttributesPanel — the collapsed panel shows only its title and to
       expect(document.activeElement).toBe(screen.getByLabelText("Value for Set name in titles")),
     );
     expect(screen.getByRole("button", { name: "Hide attributes" })).toBeTruthy();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-569 — the panel stays open while a rename or a delete is in flight, and
+// the shut toggle says the set's team
+// ---------------------------------------------------------------------------
+
+describe("SetAttributesPanel — held open by a rename or a delete (NEO-569)", () => {
+  const BULLS = { _id: "team-bulls", name: "Bulls", location: "Durham" };
+  const KNIGHTS = { _id: "team-knights", name: "Knights", location: "Charlotte" };
+
+  const hide = () => screen.getByRole("button", { name: "Hide attributes" });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRenameSelectorOption.mockResolvedValue({ success: true });
+    mockDeleteSelectorOption.mockResolvedValue({ deleted: true });
+    currentRow = makeRow({ level: "setName", value: "2024 Topps Chrome" });
+    currentChain = makeChain("Baseball");
+    currentHoldings = { holds: [], protected: false };
+    currentTeamRows = undefined;
+  });
+
+  describe("rename", () => {
+    it("pressing Hide attributes while the name field is open does not shut the panel or lose the field", () => {
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Rename 2024 Topps Chrome"));
+      const input = screen.getByLabelText("Edit name for 2024 Topps Chrome");
+      fireEvent.change(input, { target: { value: "2024 Topps Chrome Update" } });
+
+      fireEvent.click(hide());
+
+      expect(hide().getAttribute("aria-expanded")).toBe("true");
+      expect(screen.getByLabelText("Edit name for 2024 Topps Chrome")).toBe(input);
+      expect((input as HTMLInputElement).value).toBe("2024 Topps Chrome Update");
+      // Held-open is not disabled: the toggle stays a live, focusable button.
+      expect(hide().getAttribute("aria-disabled")).toBeNull();
+    });
+
+    it("keeps a refused rename's reason, and the typed name, when the toggle is pressed", async () => {
+      mockRenameSelectorOption.mockRejectedValueOnce(
+        new Error('Another set here is already called "Update"'),
+      );
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Rename 2024 Topps Chrome"));
+      const input = screen.getByLabelText("Edit name for 2024 Topps Chrome");
+      fireEvent.change(input, { target: { value: "Update" } });
+      // What pressing the toggle does first: the field blurs and commits.
+      fireEvent.blur(input);
+      const reason = await screen.findByText(/already called/);
+
+      fireEvent.click(hide());
+
+      expect(hide().getAttribute("aria-expanded")).toBe("true");
+      expect(reason.isConnected).toBe(true);
+      expect(alertTexts()).toContain('Another set here is already called "Update"');
+      expect((screen.getByLabelText("Edit name for 2024 Topps Chrome") as HTMLInputElement).value).toBe("Update");
+    });
+
+    it("holds through the save's round trip, then lets the panel shut once it lands", async () => {
+      let finish: (v: unknown) => void = () => {};
+      mockRenameSelectorOption.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Rename 2024 Topps Chrome"));
+      const input = screen.getByLabelText("Edit name for 2024 Topps Chrome");
+      fireEvent.change(input, { target: { value: "Update" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(input.getAttribute("aria-disabled")).toBe("true");
+
+      fireEvent.click(hide());
+      expect(hide().getAttribute("aria-expanded")).toBe("true");
+
+      await act(async () => finish({ success: true }));
+      // Saved: the pencil is back and nothing holds the panel any more.
+      const pencil = await screen.findByLabelText("Rename 2024 Topps Chrome");
+      expect(document.activeElement).toBe(pencil);
+      fireEvent.click(hide());
+      expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+    });
+
+    it("an Escape ends the hold: the panel shuts on the next press", () => {
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Rename 2024 Topps Chrome"));
+      const input = screen.getByLabelText("Edit name for 2024 Topps Chrome");
+      fireEvent.keyDown(input, { key: "Escape" });
+
+      fireEvent.click(hide());
+
+      expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+    });
+  });
+
+  describe("delete", () => {
+    const toggle = () => screen.getByRole("button", { name: /^(Hide|Edit) attributes$/ });
+
+    it("makes the toggle inert, and ignores a press, while the confirm is open; Cancel releases both", async () => {
+      renderPanel();
+      expect(toggle().hasAttribute("inert")).toBe(false);
+
+      fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
+      await screen.findByRole("dialog");
+      await waitFor(() => expect(toggle().hasAttribute("inert")).toBe(true));
+
+      // A press that reaches the handler anyway (a virtual cursor) is a no-op.
+      fireEvent.click(toggle());
+      expect(screen.getByRole("dialog")).toBeTruthy();
+      expect(toggle().getAttribute("aria-expanded")).toBe("true");
+
+      fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(toggle().hasAttribute("inert")).toBe(false);
+      fireEvent.click(toggle());
+      expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+    });
+
+    it("keeps 'Deleting…' on screen while the delete is in flight", async () => {
+      let finish: (v: unknown) => void = () => {};
+      mockDeleteSelectorOption.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
+      const dialog = await screen.findByRole("dialog");
+      fireEvent.click(within(dialog).getByRole("button", { name: "Yes, delete" }));
+      await within(screen.getByRole("dialog")).findByText("Deleting…");
+
+      fireEvent.click(toggle());
+
+      expect(toggle().getAttribute("aria-expanded")).toBe("true");
+      expect(within(screen.getByRole("dialog")).getByText("Deleting…")).toBeTruthy();
+      await act(async () => finish({ deleted: true }));
+    });
+
+    it("keeps a refused delete's error on screen when the toggle is pressed", async () => {
+      mockDeleteSelectorOption.mockRejectedValueOnce({
+        data: {
+          code: "SELECTOR_ROW_NOT_EMPTY",
+          holds: [{ kind: "cards", count: 4, examples: ["#1"] }],
+        },
+      });
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Delete 2024 Topps Chrome"));
+      fireEvent.click(await screen.findByRole("button", { name: "Yes, delete" }));
+      await waitFor(() =>
+        expect(alertTexts()).toContain("Holds 4 cards — delete what is below it first"),
+      );
+
+      fireEvent.click(toggle());
+
+      expect(screen.getByRole("dialog")).toBeTruthy();
+      expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    });
+  });
+
+  describe("the shut toggle says the set's team (not drawn)", () => {
+    const shut = () =>
+      render(
+        <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />,
+      );
+    const edit = () => screen.getByRole("button", { name: "Edit attributes" });
+    const described = () => {
+      const id = edit().getAttribute("aria-describedby");
+      return id ? document.getElementById(id) : null;
+    };
+
+    it("describes the toggle with the team's full name, in an sr-only node, not on screen", () => {
+      currentRow = makeRow({ level: "insert", teamIds: ["team-bulls"] });
+      currentTeamRows = [BULLS];
+      shut();
+
+      const note = described();
+      expect(note?.textContent).toBe("Team: Durham Bulls");
+      expect(note?.className).toContain("sr-only");
+      // The closed bar shows the title and the toggle only.
+      expect(screen.queryByText("Team: Durham Bulls")?.className).toContain("sr-only");
+    });
+
+    it("names every team of a multi-team set", () => {
+      currentRow = makeRow({ level: "insert", teamIds: ["team-bulls", "team-knights"] });
+      currentTeamRows = [BULLS, KNIGHTS];
+      shut();
+
+      expect(described()?.textContent).toBe("Team: Durham Bulls and Charlotte Knights");
+    });
+
+    it("says No Team for a No Team set", () => {
+      currentRow = makeRow({
+        level: "insert",
+        noTeamDefault: { setAt: 1, setByUserId: "u" },
+      });
+      shut();
+
+      expect(described()?.textContent).toBe("Team: No Team");
+    });
+
+    it("gives the toggle no description when the set has no team default", () => {
+      currentRow = makeRow({ level: "insert" });
+      shut();
+
+      expect(edit().hasAttribute("aria-describedby")).toBe(false);
+    });
+
+    it("gives the toggle no description once the panel is open", () => {
+      currentRow = makeRow({ level: "insert", teamIds: ["team-bulls"] });
+      currentTeamRows = [BULLS];
+      shut();
+      fireEvent.click(edit());
+
+      expect(
+        screen.getByRole("button", { name: "Hide attributes" }).hasAttribute("aria-describedby"),
+      ).toBe(false);
+    });
   });
 });
