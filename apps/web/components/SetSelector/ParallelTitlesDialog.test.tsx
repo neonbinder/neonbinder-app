@@ -493,4 +493,43 @@ describe("NEO-581 — the live count goes back to the host", () => {
     });
     expect(dialog()).toBeNull();
   });
+  // A promise the test settles by hand, so two reads can land out of order.
+  function held<T>() {
+    let resolve!: (value: T) => void;
+    const promise = new Promise<T>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  }
+
+  test("a mount recount still in flight when the button is pressed is dropped", async () => {
+    const mount = held<ReturnType<typeof answerCount>>();
+    mockQuery.mockReturnValueOnce(mount.promise);
+    const onCounts = vi.fn();
+    render(
+      <ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} countOnMount />,
+    );
+    await waitFor(() => expect(mockQuery).toHaveBeenCalledTimes(1));
+    // The press loads fresh (the default mock: two failing cards).
+    await openByHand();
+    expect(onCounts).toHaveBeenLastCalledWith(counts(2));
+    // The stale mount read lands after the press's: it must not overwrite it.
+    await act(async () => mount.resolve(answerCount(9)));
+    expect(onCounts).toHaveBeenCalledTimes(1);
+    expect(onCounts).toHaveBeenLastCalledWith(counts(2));
+  });
+
+  test("a mount recount that lands first is overtaken by a later press", async () => {
+    const press = held<ReturnType<typeof page>>();
+    mockQuery.mockResolvedValueOnce(answerCount(9));
+    const onCounts = vi.fn();
+    render(
+      <ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} countOnMount />,
+    );
+    await waitFor(() => expect(onCounts).toHaveBeenCalledWith(counts(9)));
+    mockQuery.mockReturnValueOnce(press.promise);
+    fireEvent.click(door());
+    await act(async () => press.resolve(page()));
+    await waitFor(() => expect(onCounts).toHaveBeenLastCalledWith(counts(2)));
+  });
 });
