@@ -1405,13 +1405,22 @@ export default function ParallelBuildPanel({
       {doorShown && (
         <div
           className="mt-2"
-          // Whether the door held focus when it left: a removal blur has no
-          // `relatedTarget`, a real move away has one.
+          // Whether the door held focus when it left (see the blur handler).
           onFocusCapture={() => {
             doorHadFocusRef.current = true;
           }}
           onBlurCapture={(event) => {
-            if (event.relatedTarget) doorHadFocusRef.current = false;
+            if (event.relatedTarget) {
+              doorHadFocusRef.current = false;
+              return;
+            }
+            // No `relatedTarget`: focus went nowhere (a click on blank page)
+            // or the door was removed under it. After the commit the wrapper
+            // is still there in the first case, gone in the second.
+            const wrapper = event.currentTarget;
+            queueMicrotask(() => {
+              if (wrapper.isConnected) doorHadFocusRef.current = false;
+            });
           }}
         >
           <ParallelTitlesDoor

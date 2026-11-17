@@ -381,4 +381,29 @@ describe("NEO-581 — the button follows the cards", () => {
     // Nothing held focus, so nothing is parked on the panel.
     expect(document.activeElement).toBe(document.body);
   });
+
+  test("focus that left the door earlier is not parked when a later recount removes it", async () => {
+    // The mount recount is held; the operator focuses the door, then clicks
+    // blank page (a blur with no relatedTarget); only then does it land at zero.
+    let answer: (value: unknown) => void = () => {};
+    mockQuery.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    render(<ParallelBuildPanel run={oneParallel(4, { phase: "left" })} onStop={() => {}} />);
+    const button = screen.getByRole("button", { name: "Fix 4 card titles" });
+    act(() => button.focus());
+    expect(document.activeElement).toBe(button);
+    act(() => button.blur());
+    await settle();
+    expect(document.activeElement).toBe(document.body);
+    await act(async () =>
+      answer({
+        parallel: { _id: A, value: "Anime Gold" },
+        boxPrefill: "",
+        cards: [],
+        failingInPage: 0,
+        cursor: null,
+      }),
+    );
+    await waitFor(() => expect(doorButton(/card titles?$/)).toBeNull());
+    expect(document.activeElement).toBe(document.body);
+  });
 });
