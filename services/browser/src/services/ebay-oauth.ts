@@ -44,7 +44,7 @@ export const EBAY_HOSTS: Record<EbayEnvironment, { api: string; apiz: string }> 
   sandbox: { api: "https://api.sandbox.ebay.com", apiz: "https://apiz.sandbox.ebay.com" },
 };
 
-const TOKEN_PATH = "/identity/v1/oauth2/token";
+export const TOKEN_PATH = "/identity/v1/oauth2/token";
 const IDENTITY_USER_PATH = "/commerce/identity/v1/user/";
 
 /**
@@ -61,6 +61,22 @@ export const EBAY_SCOPES: readonly string[] = [
   "https://api.ebay.com/oauth/api_scope/sell.fulfillment",
   "https://api.ebay.com/oauth/api_scope/commerce.identity.readonly",
 ];
+
+/**
+ * NEO-555: the read-only counterparts of EBAY_SCOPES, for the prod probe
+ * (src/routes/ebay-probe.ts), which reads one seller's account and must not
+ * hold a token that could write to it. `api_scope` (public data) and
+ * `commerce.identity.readonly` have no other form. Whether eBay grants these
+ * on a refresh token consented with the full scopes is UNVERIFIED; the probe
+ * falls back to EBAY_SCOPES when eBay refuses them, and logs that it did.
+ */
+export const EBAY_READONLY_SCOPES: readonly string[] = Object.freeze([
+  "https://api.ebay.com/oauth/api_scope",
+  "https://api.ebay.com/oauth/api_scope/sell.inventory.readonly",
+  "https://api.ebay.com/oauth/api_scope/sell.account.readonly",
+  "https://api.ebay.com/oauth/api_scope/sell.fulfillment.readonly",
+  "https://api.ebay.com/oauth/api_scope/commerce.identity.readonly",
+]);
 
 /** Per-call budget. eBay's token endpoint answers in well under a second. */
 export const EBAY_REQUEST_TIMEOUT_MS = 10_000;
@@ -308,18 +324,22 @@ export async function exchangeAuthorizationCode(
  * Refresh-token grant. eBay does not rotate the refresh token here, so the
  * result normally has no `refreshToken`; if eBay ever starts returning one,
  * the caller stores it.
+ *
+ * `scopes` defaults to the consented set. NEO-555's probe passes
+ * EBAY_READONLY_SCOPES first; eBay wants a subset of the consented scopes.
  */
 export async function refreshAccessToken(
   config: EbayOAuthConfig,
   refreshToken: string,
   deps: EbayOAuthDeps = {},
+  scopes: readonly string[] = EBAY_SCOPES,
 ): Promise<EbayTokenResult> {
   return tokenGrant(
     config,
     new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
-      scope: EBAY_SCOPES.join(" "),
+      scope: scopes.join(" "),
     }),
     deps,
   );

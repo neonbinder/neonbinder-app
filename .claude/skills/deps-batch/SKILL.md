@@ -331,7 +331,7 @@ dropped and parked per step 4, never debugged inside the queue. Step 9 is
 unchanged. For `MERGE_QUEUE` off, the turn flow:
 
 Follow the `pr-queue` turn steps (merge main, push and open the PR, watch CI,
-one rerun only for a flake that names an outside service, merge on green with
+on a red pass the turn and triage per that skill, merge on green with
 `pr-close`, notify, tell the other sessions, tell the queue). For this skill:
 
 ```bash
@@ -352,8 +352,8 @@ PR body must contain:
 
 Label it `dependencies` (and `github_actions` if Actions were bumped).
 
-A red that is not an outside-service flake passes the turn: diagnose from the actual
-failure log, fix locally, and join again. `main`'s ruleset requires branches be up to
+A red passes the turn and goes through the `pr-queue` triage (a known `ci-fail`
+failure rejoins every time; anything else goes to the planner and waits for the user). `main`'s ruleset requires branches be up to
 date, which is why the batch is one PR, not N.
 
 ---
@@ -443,8 +443,8 @@ that went `READY`, which Dependabot PRs/branches were closed or deleted, what wa
   ~30 phantom browser failures and ~31 silently-dropped web tests.
 - **Never batch a major in with the grouped minors.** Majors go last, one commit each.
 - **Never let one failing bump block the batch** — drop it, park it, ticket it, and say
-  so. And never call a failure flaky unless its evidence names an outside service
-  (the `pr-queue` flake rule).
+  so. And never call a failure flaky without a matching `ci-fail` ticket
+  (the `pr-queue` red triage).
 - **Never enqueue or merge a fork PR or a Dependabot-authored PR.** The batch is
   maintainer-authored on a `neonbinder` branch: before `gh pr merge`, check
   `gh pr view <PR> --json isCrossRepository,headRepositoryOwner,author` (not

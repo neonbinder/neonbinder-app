@@ -21,7 +21,7 @@
  * BSC; nothing here reaches the network on its own.
  */
 import { canonicalRequest, requestKey, type CanonicalRequest } from "../src/requestKey";
-import { SANITISE_ALLOWLIST_VERSION, catalogueEndpointFor, sanitiseCatalogue } from "../src/sanitise";
+import { SANITISE_ALLOWLIST_VERSION, catalogueEndpointFor, isBscCatalogueEndpoint, sanitiseCatalogue } from "../src/sanitise";
 import type { MissEntry } from "./fake-client";
 import { replayRefusal } from "./replay-allowlist";
 
@@ -144,7 +144,10 @@ export function replayable(m: MissEntry): { ok: true; req: CanonicalRequest } | 
   } catch {
     return { ok: false, reason: "malformed" };
   }
-  if (!catalogueEndpointFor(req.method, req.path)) return { ok: false, reason: "not_a_catalogue_request" };
+  const endpoint = catalogueEndpointFor(req.method, req.path);
+  if (!endpoint) return { ok: false, reason: "not_a_catalogue_request" };
+  // eBay misses (NEO-555) belong to `ebay-record`; never sent to BSC.
+  if (!isBscCatalogueEndpoint(endpoint)) return { ok: false, reason: "not_a_bsc_request" };
   if (requestKey(req) !== m.key) return { ok: false, reason: "key_mismatch" };
   const refusal = replayRefusal(req);
   if (refusal) return { ok: false, reason: refusal };
@@ -355,7 +358,7 @@ export function bscCaller(opts: {
   const f = opts.fetchImpl ?? fetch;
   return async (req) => {
     const endpoint = catalogueEndpointFor(req.method, req.path);
-    if (!endpoint) throw new Error("refusing a non-catalogue request");
+    if (!endpoint || !isBscCatalogueEndpoint(endpoint)) throw new Error("refusing a non-catalogue request");
     const q = req.query.map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
     const url = `${opts.apiBase}/${req.path}${q ? `?${q}` : ""}`;
     const signal = AbortSignal.timeout(opts.timeoutMs ?? BSC_TIMEOUT_MS);

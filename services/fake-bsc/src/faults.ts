@@ -1,17 +1,24 @@
 /**
  * Faults (CONTRACT.md, "Faults"): per-namespace rules that make a matching
- * request answer 429 or 503, wait, hang or drop its connection. They replace
+ * request answer 429 or 503, wait, hang or drop its connection, or (eBay
+ * paths only) answer eBay's error or 401 body. They replace
  * NEONBINDER_TEST_BSC_STALL_CARD_IDS. Default TTL 10 minutes.
  */
 
-export type FaultKind = "429" | "503" | "delay" | "hang" | "reset";
-const KINDS: readonly FaultKind[] = ["429", "503", "delay", "hang", "reset"];
+export type FaultKind = "429" | "503" | "delay" | "hang" | "reset" | "ebayError" | "unauthorized";
+const KINDS: readonly FaultKind[] = ["429", "503", "delay", "hang", "reset", "ebayError", "unauthorized"];
+/** Kinds that answer in eBay's own bodies, so only an eBay template may carry them (CONTRACT.md, "Faults on eBay paths"). */
+const EBAY_ONLY_KINDS: ReadonlySet<FaultKind> = new Set<FaultKind>(["ebayError", "unauthorized"]);
+export const MAX_EBAY_ERROR_IDS = 10;
 
 export interface FaultRule {
   match: { method: string; pathTemplate: string; cardId?: string };
   kind: FaultKind;
   delayMs?: number;
   retryAfterS?: number;
+  /** `ebayError` only: the status answered (400-599) and eBay's error ids in the body. */
+  status?: number;
+  errorIds?: number[];
   /** Applications left; null = until it expires. */
   timesLeft: number | null;
   expiresAt: number;
@@ -77,6 +84,24 @@ export function readFaultRules(input: unknown, now: number = Date.now()): FaultR
       delayMs = d;
     }
     if (kind === "delay" && delayMs === undefined) return bad("delay needs delayMs");
+    if (EBAY_ONLY_KINDS.has(kind) && !pathTemplate.startsWith("ebay/")) return bad(`${kind} needs an ebay/ template`);
+    let status: number | undefined;
+    let errorIds: number[] | undefined;
+    if (kind === "ebayError") {
+      const st = intIn(r.status, 400, 599);
+      if (st === null) return bad("status");
+      status = st;
+      if (!Array.isArray(r.errorIds) || r.errorIds.length < 1 || r.errorIds.length > MAX_EBAY_ERROR_IDS) return bad("errorIds");
+      const ids: number[] = [];
+      for (const id of r.errorIds) {
+        const n = intIn(id, 1, 9_999_999);
+        if (n === null) return bad("errorIds");
+        ids.push(n);
+      }
+      errorIds = ids;
+    } else if (r.status !== undefined || r.errorIds !== undefined) {
+      return bad("status and errorIds are for ebayError");
+    }
     let retryAfterS: number | undefined;
     if (r.retryAfterS !== undefined) {
       const ra = intIn(r.retryAfterS, 0, 3600);
@@ -100,6 +125,8 @@ export function readFaultRules(input: unknown, now: number = Date.now()): FaultR
       kind,
       ...(delayMs !== undefined ? { delayMs } : {}),
       ...(retryAfterS !== undefined ? { retryAfterS } : {}),
+      ...(status !== undefined ? { status } : {}),
+      ...(errorIds !== undefined ? { errorIds } : {}),
       timesLeft,
       expiresAt: now + ttlS * 1000,
     });

@@ -1,5 +1,121 @@
 # Security Auditor — Agent Memory Index
 
+- [Reviewing a live worktree](feedback_reviewing_a_live_worktree.md) — others edit it: never overwrite a file to test; re-run gates
+- [Ar cleanup serving image](patterns_ar_cleanup_serving_image.md) — AR cleanup policies: when a KEEP rank guard protects the live image
+- [Attention flag suppression](patterns_attention_flag_suppression.md) — a flag cleared by any write of its field is clearable by an unrelated save
+- [Card drawer autosave](patterns_card_drawer_autosave.md) — NEO-216/217 per-field autosave; null-clear for numbers; userFacingMessage
+- [Checklist commit trust](patterns_checklist_commit_trust_boundary.md) — where marketplace strings steer writes; four invariants
+- [Convex auth boundary](patterns_convex_auth_boundary.md) — every public adapter/set-builder fn gates with requireAdmin or is internal*
+- [Convex cli target selection](patterns_convex_cli_target_selection.md) — name guards on `npx convex` wrappers: CONVEX_DEPLOY_KEY wins
+- [Credential atomicity neo89](patterns_credential_atomicity_neo89.md) — NEO-89: hasCredentials flag written in the Secret Manager action
+- [Dependency batch audit](patterns_dependency_batch_audit.md) — auditing a dep-bump batch (npm + pinned Actions): scope, commands, red flags
+- [Entity skip suppression](patterns_entity_skip_suppression.md) — a write-only suppression list needs list + clear; check new reject memories
+- [Name bounds three tiers](patterns_name_bounds_three_tiers.md) — roster-name bounds in three places with three answers; which is right
+- [Neo102 card team none](patterns_neo102_card_team_none.md) — NEO-102 derived "no team" list; where teamNoneConfirmedAt is cleared
+- [Neo137 platform slots](patterns_neo137_platform_slots.md) — NEO-137 commit attaches BSC set ids uncapped, past MAX_ATTACH
+- [Neo141 credential rework](patterns_neo141_credential_rework.md) — NEO-140/141 password-less creds: invariants and four surviving traps
+- [Neo147 outbound scrape](patterns_neo147_outbound_scrape.md) — first outbound fetch: SSRF guard; CSS-attribute escaping; NUL bytes
+- [Neo149 zip ingest](patterns_neo149_zip_ingest.md) — NEO-149: Zip64 locator beats the pre-parse cap; no pixel cap
+- [Neo164 test completeness gate](patterns_neo164_test_completeness_gate.md) — two ways the unit-test completeness gate passes a file that never ran
+- [Neo170 workpool pipeline](patterns_neo170_workpool_pipeline.md) — NEO-170 workpool to preprocess: invariants held, four structural gaps
+- [Neo172 machine auth](patterns_neo172_machine_auth.md) — unauthenticated /machine/token: anti-oracle and log-hygiene invariants
+- [Neo211 additive selector sync](patterns_neo211_additive_selector_sync.md) — additive id-keyed stores; client coveredSides; fail-closed unlink
+- [Neo219 sanctioned delete](patterns_neo219_sanctioned_delete.md) — the one sanctioned selectorOptions delete; "empty" excludes in-flight
+- [Neo21 cross listings](patterns_neo21_cross_listings.md) — NEO-21 junction table: only deleteCard cascades; no server cap
+- [Neo220 review session safety](patterns_neo220_review_session_safety.md) — NEO-220/221: resume DELETE, unindexed take(500) sweep, partial batches
+- [Neo236 team location split](patterns_neo236_team_location_split.md) — NEO-236: `location` is creation field AND enrichment marker
+- [Neo239 retire custom](patterns_neo239_retire_custom.md) — per-side resolvability: a SKIPPED side must not read as COVERED
+- [Neo240 league management](patterns_neo240_league_management.md) — all 7 fns requireAdmin + registered; untouched leagues paths are the gap
+- [Neo248 manual stint](patterns_neo248_manual_stint.md) — NEO-248 manualStint: bulk create and dialog paths do not read it
+- [Neo251 sl player derivation](patterns_neo251_sl_player_derivation.md) — SL text to players: adapter caps are not the trust boundary
+- [Neo253 entity name fold](patterns_neo253_entity_name_fold.md) — one entity-name normaliser + NFD fold: where the fold applies
+- [Neo84 convex client swap](patterns_neo84_convex_client_swap.md) — NEO-84: rebuilding ConvexReactClient is auth-safe; ConnectionState too
+- [Neo92 entity review queue](patterns_neo92_entity_review_queue.md) — NEO-92 wizard: every fn requireAdmin; linked*Id kind-checked
+- [Postage label trust boundary](patterns_postage_label_trust_boundary.md) — EasyPost: a public mutation authors the "derived" id; unescaped print doc
+- [Preprocess service](patterns_preprocess_service.md) — preprocess posture: auth shape, decompression bomb, weight bake
+- [Preview cleanup blast radius](patterns_preview_cleanup_blast_radius.md) — team-scoped token deletes a name read from PR HTML: could delete prod
+- [Public function auth registry](patterns_public_function_auth_registry.md) — publicFunctionAuth registries: every new public fn needs an entry
+- [Set metadata admin gate](patterns_set_metadata_admin_gate.md) — selectorOptions writes requireAdmin; sourceUrl rendered as text only
+- [Setselector visibility and title](patterns_setselector_visibility_and_title.md) — one visibility choke point; the one backend-derived column title
+- [Testing endpoint gate](patterns_testing_endpoint_gate.md) — TESTING_RESET_SECRET fail-closed in prod; per-user scoping gap
+- [Wikidata pool abuse surface](patterns_wikidata_pool_abuse_surface.md) — shared uncapped wikidataPool: signed-in enqueue paths are DoS/cost
+- [Neo277 set level team cascade](patterns_neo277_set_level_team_cascade.md) — preview carries every mutation guard; cursor monotonicity ends the walk
+- [Neo278 session lifetimes](patterns_neo278_session_lifetimes.md) — undici header-validation TypeError embeds the full Cookie/Bearer value in
+- [Neo279 team fill recompute](patterns_neo279_team_fill_recompute.md) — shared compute path closes guard parity by construction
+- [Neo281 probe verdicts](patterns_neo281_probe_verdicts.md) — three-way verdicts; reauthRequired only on a positive upstream answer
+- [Neo284 team aliases](patterns_neo284_team_aliases.md) — advisory alias collision + alias-union in findCollidingTeams = NAME_TAKEN lock on the
+- [Neo287 marketplace pause switch](patterns_neo287_marketplace_pause_switch.md) — env pause switch: one login funnel; guard before readCachedToken
+- [Neo288 automated access](patterns_neo288_automated_access.md) — reader = one fixed error; summarizeFetchError redacts quoted spans only
+- [Neo289 enrichment fixtures](patterns_neo289_enrichment_fixtures.md) — two-env gate (flag AND TESTING_RESET_SECRET) is the dev/preview-only house
+- [Neo291 metadata doors](patterns_neo291_metadata_doors.md) — "no mutation takes this object any more" is a grep target (shared validator arg uses)
+- [Neo293 facet remap](patterns_neo293_facet_remap.md) — bscSourceView partition guards re-tag; armed backfills skip scope checks
+- [Neo237 all brands view](patterns_neo237_all_brands_view.md) — reserved name's 4th door (store insert); `side` keys the Create slot
+- [Neo296 transaction bounds](patterns_neo296_transaction_bounds.md) — bounding a transaction: client callers that ignore hasMore
+- [Neo299 shared pool warmups](patterns_neo299_shared_pool_warmups.md) — public trigger enqueuing onto a shared FIFO workpool = head-of-line DoS
+- [Neo300 held elsewhere](patterns_neo300_held_elsewhere.md) — subtree walk charges ranges not bytes; 400 cap falls back silently
+- [Neo304 armed subtree wipe](patterns_neo304_armed_subtree_wipe.md) — name-only confirm phrase does not bind a target among duplicates
+- [Neo305 parallel conversion](patterns_neo305_set_parallel_conversion.md) — two-mode guard drift; row-delete doors drop NB fields
+- [Neo306 sl review insert door](patterns_neo306_sl_review_insert_door.md) — staging doc = allowlist + mutex for client SL ids
+- [Neo307 alias reverse order](patterns_neo307_alias_reverse_order.md) — both alias orders at every teams insert site
+- [Neo308 client chunked cap](patterns_neo308_client_chunked_cap.md) — shared cap module: server check stays the bound; literal cap pin
+- [Neo312 parallel rebuild](patterns_neo312_parallel_rebuild.md) — rebuild guard; holder walk counts bytes, not docs; report cap multiplies
+- [Neo313 cross sport override](patterns_neo313_cross_sport_override.md) — card-only guard relax; commit prelude sportId is client-supplied
+- [Neo309/310 CI notify + JSON files](patterns_neo309_310_ci_notify_and_json_files.md) — secret input templated in composite guard; ref_name in run
+- [Neo321 build source resolver](patterns_neo321_build_source_resolver.md) — resolver throw after delete pages hides partial wipe
+- [Neo322 initials key rekey](patterns_neo322_initials_key_rekey.md) — sorted key not idempotent after initials join; initials = short word ("Al")
+- [Neo327 pair decision log + OCR parse](patterns_neo327_pair_decision_log_and_ocr_parse.md) — decision-log content rules (cap filename, no userId
+- [Neo325 identity-only, twins](patterns_neo325_identity_only_and_twins.md) — forced-insert flag vs multi-id insert; bound labels
+- [Inline re-auth bypasses backoff](patterns_inline_reauth_bypasses_backoff.md) — adapter 401 → authenticate* skips NEO-278 backoff + lock
+- [Neo318 derived copy column](patterns_neo318_derived_copy_column.md) — exported *Impl split of a gated query is safe if gate stays in handler
+- [Neo335 wizard team answers](patterns_neo335_wizard_team_answers.md) — server match decides insert-only title answers; "kept" flag unbound to text
+- [Neo330 reference seed CI](patterns_neo330_reference_seed_ci.md) — private bundle in public CI: id-token is job-wide, gcloud echoes gs:// URI
+- [Neo330 by-id twin and search](patterns_neo330_by_id_twin_and_search.md) — normalizeId twins: exposure is the returns validator
+- [Neo334 title is kind](patterns_neo334_title_is_kind.md) — title-as-kind door enumeration; id-less intra-batch twins bypass the sameName twin
+- [Neo333 split raw and report](patterns_neo333_split_raw_and_report.md) — raw-beside-split bounded per consumer; read-only report = page + budget
+- [Neo331 context-id side channel](patterns_neo331_context_id_side_channel.md) — signed-in query ranking by an admin-gated row leaks it via
+- [Playwright report exposure](patterns_playwright_report_exposure.md) — reports embed ARIA snapshots (password values); results/ glob is no scope
+- [Neo345 attribute fill](patterns_neo345_attribute_fill.md) — node-only feature key needs every copy-down door; Proxy-recorded dry run
+- [Neo350 public demo and prefill](patterns_neo350_public_demo_and_prefill.md) — public client-only demo: import-graph grep; prefill allowlisted
+- [Neo355 reverse OIDC tokeninfo](patterns_neo355_reverse_oidc_tokeninfo.md) — SA id token → Convex route: allowlist is the gate (aud is mintable)
+- [Neo356 theme prepaint](patterns_neo356_theme_prepaint.md) — inline pre-paint script: compare to literals; no CSP in apps/web
+- [Neo358 collector rows pin catalog](patterns_neo358_collector_rows_pin_catalog.md) — user copies guarding catalog deletes/moves = signed-in
+- [Neo364 client-carried undo](patterns_neo364_client_carried_undo.md) — forged inverse = raw write API; per-step owner/home/class/qty re-check held
+- [Cross-run artifacts](patterns_cross_run_artifacts.md) — A CI job that reads other runs' artifacts must filter to this repo's runs
+- [Unauthenticated probe functions](patterns_unauthenticated_probe_functions.md) — weigh a no-auth ping against an auth-failing call (not zero)
+- [Neo408 seed without exports](patterns_neo408_seed_without_exports.md) — internal read fns replacing `convex export`: reachability = deploy key
+- [Neo370 scheduled marketplace poll](patterns_neo370_scheduled_marketplace_poll.md) — 24/7 poll: credential gating; backoff == interval
+- [Neo411 retry generation](patterns_neo411_retry_generation_and_dispatcher.md) — retry needs an attempt generation; undici needs a signal
+- [Neo370 listing gate doors](patterns_neo370_listing_gate_doors.md) — readiness gate on adds: restore/undo/move/empty/flag-flip doors bypass it
+- [Neo415 eBay OAuth + deletion webhook](patterns_neo415_ebay_oauth_and_deletion_webhook.md) — nonce/state shape; deletion POST signature
+- [CI cross-run queue](patterns_ci_cross_run_queue.md) — gh-api run/job polling mutex: fork runs forge holders (filter head_repository)
+- [Per-owner progress field](patterns_per_owner_progress_field.md) — patch-only, run-id guarded writer; siblings in the run patch-only too
+- [Held client store auto-send](patterns_held_client_store_autosend.md) — client readiness vs server refusals; retry key scope
+- [Neo446 rejected names and copies](patterns_neo446_rejected_names_and_copies.md) — names passing `_name_rejection` are not display-safe
+- [Bundler plugin disable drops cleanup](patterns_bundler_plugin_disable_drops_cleanup.md) — `disable` also drops delete-after-upload
+- [Address step bundle order](patterns_neo434_address_step_bundle_order.md) — "First import" is a source claim; read the built entry, run a timeline
+- [Neo424 offered-on-stored-row](patterns_neo424_offered_on_stored_row.md) — id relaxation keyed on stored row fields is as narrow as that field's
+- [Signed URL scrub coverage](patterns_signed_url_scrub_coverage.md) — which pipelines scrubUrlSecrets covers; test a new shape via strip-types
+- [Neo475 body scrubber](patterns_neo475_body_scrubber.md) — run adversarial inputs; x-amzn-* wildcard + unredacted headers; slice-before-redact
+- [Neo481 photo edit renders](patterns_neo481_photo_edit_renders.md) — per-object caps ≠ rate/concurrency; runAfter bypasses the capacity-pinned
+- [Neo464 dashboard aggregator](patterns_neo464_dashboard_aggregator.md) — per-read owner derivation; budget skips; demo shell
+- [Shared cache host gate](patterns_shared_cache_host_gate.md) — Cloud Run Host gate holds against spoofing but runs in PR code
+- [Playwright WebSocket route proxy](patterns_playwright_websocket_route_proxy.md) — route-group calls never reach reporters
+- [Neo478 operator checklist ingest](patterns_neo478_operator_checklist_ingest.md) — pasted-file ingest: bounds after the gate, quadratic \s+ split
+- [LLM-operated shell queue](patterns_llm_operated_shell_queue.md) — message text typed into Bash is injected before jq --arg helps; sender binding
+- [Neo495 scoped capped list](patterns_neo495_scoped_capped_list.md) — new arg on a capped admin list: registry must hit the new arg
+- [Neo490 chained tie-break allowances](patterns_neo490_chained_tiebreak_allowances.md) — per-rule meter check at rule start
+- [Neo496 client file readers](patterns_neo496_client_file_readers.md) — xlsx/pdf in browser: inflate cap ≠ derived-string cap
+- [Neo500 pick list](patterns_neo500_pick_list.md) — skipPollGate grep; hashed line ids opaque; sold-copy photo tokens live; NEO-509 listed re-check
+- [Neo528 multi-target cursor](patterns_neo528_multi_target_cursor.md) — {i,c} cursor over a re-derived target list shifts on mid-run inserts
+- [Coded ConvexError oracle](patterns_coded_convex_error_oracle.md) — coded ConvexError data skips prod redaction; owner check first
+- [Neo532 discovery-hint stamp](patterns_neo532_discovery_hint_stamp.md) — global stamp index feeding a signed-in list: writers, validator reach
+- [Cross-session message authority](patterns_cross_session_message_authority.md) — SendMessage text is a doorbell; operator verbs only from the user
+- [Backfill is fill-only](backfill-of-operator-editable-field-is-fill-only-by-default.md) — operator-editable fields: fill, never overwrite
+- [Merge queue cheap/full split](patterns_merge_queue_cheap_full_split.md) — stale cheap green; queue rule w/o gate; merge_group fork boundary
+- [Neo483 background chain re-arm](patterns_neo483_background_chain_rearm.md) — capped chain re-armed by a cron is perpetual; upstream "no" terminal
+- [Neo535 rename fan-out + title chain](patterns_neo535_rename_fanout_and_title_chain.md) — per-row probe × row cap in budget doors
+- [Neo552 fake upstream](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; probe leaks; TOCTOU
+- [Live-account probe and capture](patterns_live_account_probe_and_capture.md) — wrap transport; signal guard; stderr EPIPE/EIO kills it; scripts need checkout
 - [Feedback reviewing a live worktree](feedback_reviewing_a_live_worktree.md) — When auditing a monorepo worktree, another agent may be editing it concurrently — never temporarily overwrite a file to test something, and re-run lint/tests before re…
 - [Patterns ar cleanup serving image](patterns_ar_cleanup_serving_image.md) — Availability invariant for the Artifact Registry cleanup policies in terraform main.tf — when a KEEP rank guard actually protects the live serving image and when it si…
 - [Patterns attention flag suppression](patterns_attention_flag_suppression.md) — Review rule for NeonBinder "needs attention" flags — a stored flag cleared by any write of its field is silently clearable by an unrelated save; check the client's mut…

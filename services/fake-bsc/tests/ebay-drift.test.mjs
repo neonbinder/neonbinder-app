@@ -1,0 +1,266 @@
+// `/__fake/drift-compare {marketplace: "ebay"}`: the prod eBay probe's shapes
+// against the fake's recordings (rows 5, 7) and synthesis (the rest), and the
+// rows 5 and 7 hashes as a warning only.
+import { describe, it, before, after } from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { LOADER, startFake } from "./helpers.mjs";
+
+const require = createRequire(import.meta.url);
+const { compareEbayDrift, ebayCatalogueHash } = require("../dist/src/ebay/drift.js");
+const { sampleAnswers, endpointName } = require("../dist/src/ebay/sample.js");
+const { shapeOf } = require("../dist/src/shape.js");
+const { Catalogue } = require("../dist/src/catalogue.js");
+const { MemoryStore } = require("../dist/src/store/local.js");
+
+const SHIP = "GET ebay/api/sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services";
+const ASPECTS = "GET ebay/api/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category";
+const ORDERS = "GET ebay/api/sell/fulfillment/v1/order";
+const LOCATION = "GET ebay/api/sell/inventory/v1/location/:merchantLocationKey";
+
+/** A shape in the browser probe's dialect: `$` root, `a|b` unions. */
+function probeShape(body) {
+  const out = {};
+  for (const [p, ts] of Object.entries(shapeOf(body))) out[p === "" ? "$" : p] = ts.join("|");
+  return out;
+}
+
+const SHIP_BODY = {
+  shippingServices: [
+    { shippingService: "USPSGroundAdvantage", description: "USPS Ground Advantage", shippingCarrier: "USPS", internationalService: false, validForSellingFlow: true, shippingCostTypes: ["FLAT_RATE", "CALCULATED"], shippingCategory: "STANDARD", minShippingTime: 2, maxShippingTime: 5, packageLimits: { maxWeight: 70, weightUnit: "POUND" } },
+    { shippingService: "US_eBayStandardEnvelope", description: "eBay Standard Envelope", shippingCarrier: "USPS", internationalService: false, validForSellingFlow: true, shippingCostTypes: ["FLAT_RATE"], shippingCategory: "ECONOMY" },
+  ],
+};
+const ASPECTS_BODY = { aspects: [{ localizedAspectName: "Sport", aspectConstraint: { aspectRequired: true, aspectMaxLength: 65 } }, { localizedAspectName: "Team", aspectConstraint: { aspectRequired: false } }] };
+
+async function catalogueWith(recordings) {
+  const c = new Catalogue(new MemoryStore());
+  await c.load();
+  if (recordings.length) await c.add(recordings.map((r) => require("../dist/src/catalogue.js").checkRecording(r).recording));
+  return c;
+}
+
+const rec = (path, query, body) => ({ request: { method: "GET", path, query }, response: { status: 200, body } });
+const RECORDINGS = [
+  rec("ebay/api/sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services", [], SHIP_BODY),
+  rec("ebay/api/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category", [["category_id", "261328"]], ASPECTS_BODY),
+];
+
+/** A probe body built from the fake's own answers: what an unchanged eBay would send. */
+function cleanProbe() {
+  const answers = sampleAnswers();
+  const shapes = {};
+  for (const op of ["optedInPrograms", "listPaymentPolicies", "listReturnPolicies", "listFulfillmentPolicies", "getLocation", "getOffers", "orders", "identityUser"]) {
+    shapes[endpointName(op)] = probeShape(answers[endpointName(op)].body);
+  }
+  shapes[SHIP] = probeShape(SHIP_BODY);
+  shapes[ASPECTS] = probeShape(ASPECTS_BODY);
+  return { marketplace: "ebay", shapes, statuses: Object.fromEntries(Object.keys(shapes).map((k) => [k, 200])) };
+}
+
+describe("eBay drift: the hash", () => {
+  it("is sha256 of the JSON of the unique, sorted, non-empty names", () => {
+    const want = createHash("sha256").update(JSON.stringify(["Sport", "Team", "Year Manufactured"]), "utf8").digest("hex");
+    assert.equal(ebayCatalogueHash(["Year Manufactured", "Team", "Sport", "Team", "", null, 7]), want);
+    // JavaScript's default sort is by UTF-16 code unit: upper case before lower.
+    assert.equal(ebayCatalogueHash(["b", "B", "a"]), createHash("sha256").update('["B","a","b"]').digest("hex"));
+  });
+
+  it("matches the browser probe's digestNames, by its source's stated definition", () => {
+    const src = readFileSync(new URL("../../browser/src/routes/ebay-probe.ts", import.meta.url), "utf8");
+    assert.match(src, /new Set\(names\.filter\(\(n\) => typeof n === "string" && n\.length > 0\)\)\]\.sort\(\)/);
+    assert.match(src, /createHash\("sha256"\)\.update\(JSON\.stringify\(list\), "utf8"\)\.digest\("hex"\)/);
+  });
+});
+
+describe("eBay drift: compare", () => {
+  let recorded;
+  before(async () => (recorded = await catalogueWith(RECORDINGS)));
+
+  it("an unchanged eBay is ok, every endpoint compared", () => {
+    const out = compareEbayDrift(cleanProbe(), recorded);
+    assert.equal(out.ok, true);
+    assert.equal(out.result.outcome, "ok", JSON.stringify(out.result.paths));
+    assert.ok(out.result.endpoints.every((e) => e.verdict === "ok"), JSON.stringify(out.result.endpoints));
+    assert.deepEqual(out.result.warnings, []);
+  });
+
+  it("every endpoint name the browser probe sends is one the fake compares", () => {
+    const src = readFileSync(new URL("../../browser/src/routes/ebay-probe-allowlist.ts", import.meta.url), "utf8");
+    const names = [...src.matchAll(/endpoint: "([^"]+)"/g)].map((m) => m[1]);
+    assert.ok(names.length >= 10, `found ${names.length} endpoint names`);
+    const probe = cleanProbe();
+    for (const n of names) assert.ok(n in probe.shapes, `the fake does not compare ${n}`);
+  });
+
+  it("a read path NB uses that went missing is drift; a type change is drift", () => {
+    const probe = cleanProbe();
+    const FUL = endpointName("listFulfillmentPolicies");
+    delete probe.shapes[FUL]["fulfillmentPolicies[].shippingOptions[].shippingServices[].shippingServiceCode"];
+    probe.shapes[endpointName("listPaymentPolicies")].total = "string";
+    const out = compareEbayDrift(probe, recorded).result;
+    assert.equal(out.outcome, "shape_drift");
+    assert.deepEqual(out.paths.sort(), [`${FUL} fulfillmentPolicies[].shippingOptions[].shippingServices[].shippingServiceCode`, `${endpointName("listPaymentPolicies")} total`].sort());
+  });
+
+  it("row 13 (orders) as the probe reports it, top-level keys only, is ok; a missing or retyped top-level key is still drift", () => {
+    const topLevel = { $: "object", href: "string", limit: "number", offset: "number", total: "number", orders: "array" };
+    for (const [what, shape] of [
+      ["top-level keys only", topLevel],
+      ["with the element itself but none of its paths", { ...topLevel, "orders[]": "object" }],
+      ["with no root entry", { total: "number", orders: "array" }],
+      // The browser probe stops reporting `orders` at all for row 13: href, limit, offset and total only.
+      ["without `orders` (href, limit, offset and total only)", { $: "object", href: "string", limit: "number", offset: "number", total: "number" }],
+    ]) {
+      const probe = cleanProbe();
+      probe.shapes[ORDERS] = shape;
+      const out = compareEbayDrift(probe, recorded).result;
+      assert.equal(out.outcome, "ok", `${what}: ${out.paths}`);
+      assert.equal(out.endpoints.find((e) => e.endpoint === ORDERS).verdict, "ok", what);
+    }
+    const noTotal = cleanProbe();
+    const { total: _t, ...rest } = topLevel;
+    noTotal.shapes[ORDERS] = rest;
+    assert.deepEqual(compareEbayDrift(noTotal, recorded).result.paths, [`${ORDERS} total`]);
+    // With `orders` absent, a missing total is still drift.
+    const noOrdersNoTotal = cleanProbe();
+    noOrdersNoTotal.shapes[ORDERS] = { $: "object", href: "string", limit: "number", offset: "number" };
+    const nont = compareEbayDrift(noOrdersNoTotal, recorded).result;
+    assert.equal(nont.outcome, "shape_drift");
+    assert.deepEqual(nont.paths, [`${ORDERS} total`]);
+    // And a retyped total, with `orders` absent, is drift too.
+    const noOrdersRetyped = cleanProbe();
+    noOrdersRetyped.shapes[ORDERS] = { $: "object", href: "string", limit: "number", offset: "number", total: "string" };
+    assert.deepEqual(compareEbayDrift(noOrdersRetyped, recorded).result.paths, [`${ORDERS} total`]);
+    const retyped = cleanProbe();
+    retyped.shapes[ORDERS] = { ...topLevel, orders: "object" };
+    assert.equal(compareEbayDrift(retyped, recorded).result.outcome, "shape_drift");
+    // An element path that IS reported is still type-checked; one that is absent is not drift.
+    const typed = cleanProbe();
+    typed.shapes[ORDERS]["orders[].lineItems[].legacyItemId"] = "number";
+    delete typed.shapes[ORDERS]["orders[].orderId"];
+    assert.deepEqual(compareEbayDrift(typed, recorded).result.paths, [`${ORDERS} orders[].lineItems[].legacyItemId`]);
+  });
+
+  it("an optional path NB reads is not drift when absent (the last page has no next, a line may have no SKU)", () => {
+    const probe = cleanProbe();
+    delete probe.shapes[ORDERS].next;
+    delete probe.shapes[ORDERS]["orders[].lineItems[].sku"];
+    assert.equal(compareEbayDrift(probe, recorded).result.outcome, "ok");
+  });
+
+  it("an empty list says nothing about its items", () => {
+    const probe = cleanProbe();
+    probe.shapes[ORDERS] = { $: "object", total: "number", orders: "array" };
+    assert.equal(compareEbayDrift(probe, recorded).result.outcome, "ok");
+  });
+
+  it("a recorded row compares allowlisted paths against the pinned recording", () => {
+    const probe = cleanProbe();
+    probe.shapes[SHIP]["shippingServices[].shippingService"] = "number";
+    probe.shapes[SHIP]["shippingServices[].brandNewField"] = "string";
+    const out = compareEbayDrift(probe, recorded).result;
+    assert.deepEqual(out.paths, [`${SHIP} shippingServices[].shippingService`]);
+  });
+
+  it("rows 5 and 7 unrecorded are 'unrecorded pinned key'; a hash with no recording is a warning", async () => {
+    const empty = await catalogueWith([]);
+    const probe = { ...cleanProbe(), hashes: { [ASPECTS]: "0".repeat(64) } };
+    const out = compareEbayDrift(probe, empty).result;
+    assert.equal(out.outcome, "unrecorded pinned key");
+    assert.deepEqual(out.warnings, [{ endpoint: ASPECTS, kind: "hash_unrecorded" }]);
+  });
+
+  it("a hash that differs from the recording's is a warning, never drift; an equal one is silent", () => {
+    const names = ASPECTS_BODY.aspects.map((a) => a.localizedAspectName);
+    const probe = { ...cleanProbe(), hashes: { [ASPECTS]: ebayCatalogueHash(names), [SHIP]: ebayCatalogueHash(["SomethingElse"]) } };
+    const out = compareEbayDrift(probe, recorded).result;
+    assert.equal(out.outcome, "ok");
+    assert.deepEqual(out.warnings, [{ endpoint: SHIP, kind: "hash_mismatch" }]);
+  });
+
+  it("a 404 on the location compares eBay's error envelope; a 401 is not compared and warned", () => {
+    const probe = cleanProbe();
+    probe.shapes[LOCATION] = { $: "object", errors: "array", "errors[]": "object", "errors[].errorId": "number", "errors[].domain": "string", "errors[].category": "string" };
+    probe.statuses[LOCATION] = 404;
+    probe.statuses[ORDERS] = 401;
+    const out = compareEbayDrift(probe, recorded).result;
+    assert.equal(out.endpoints.find((e) => e.endpoint === LOCATION).verdict, "ok");
+    assert.equal(out.endpoints.find((e) => e.endpoint === ORDERS).verdict, "not_compared");
+    assert.deepEqual(out.warnings, [{ endpoint: ORDERS, kind: "not_2xx" }]);
+    probe.shapes[LOCATION]["errors[].errorId"] = "string";
+    assert.equal(compareEbayDrift(probe, recorded).result.outcome, "shape_drift");
+  });
+
+  it("an unknown endpoint is not compared; malformed input is refused", () => {
+    const out = compareEbayDrift({ marketplace: "ebay", shapes: { "GET ebay/api/sell/finances/v1/payout": { $: "object" } } }, recorded).result;
+    assert.equal(out.endpoints[0].verdict, "not_compared");
+    assert.equal(compareEbayDrift({ marketplace: "ebay" }, recorded).ok, false);
+    assert.equal(compareEbayDrift({ marketplace: "ebay", shapes: {}, hashes: { [SHIP]: "NOTHEX" } }, recorded).ok, false);
+    assert.equal(compareEbayDrift({ marketplace: "ebay", shapes: {}, statuses: { [SHIP]: "200" } }, recorded).ok, false);
+  });
+});
+
+describe("eBay drift over HTTP", () => {
+  let fake;
+  before(async () => (fake = await startFake()));
+  after(() => fake.close());
+
+  it("routes on `marketplace`; no marketplace is BSC; anything else is refused; admin only", async () => {
+    const ebay = await fake.call("POST", "/__fake/drift-compare", { email: LOADER, admin: true, body: { marketplace: "ebay", shapes: { [ORDERS]: { $: "object" } } } });
+    assert.equal(ebay.status, 200);
+    assert.deepEqual(ebay.body.warnings, []);
+    const bsc = await fake.call("POST", "/__fake/drift-compare", { email: LOADER, admin: true, body: { shapes: { "GET marketplace/user/profile": { $: "object" } } } });
+    assert.equal(bsc.status, 200);
+    assert.equal(bsc.body.warnings, undefined);
+    assert.equal((await fake.call("POST", "/__fake/drift-compare", { email: LOADER, admin: true, body: { marketplace: "mercari", shapes: {} } })).status, 400);
+    assert.equal((await fake.call("POST", "/__fake/drift-compare", { body: { marketplace: "ebay", shapes: {} } })).status, 403);
+  });
+
+  const post = (f, body) => f.call("POST", "/__fake/drift-compare", { email: LOADER, admin: true, body });
+
+  it("a drifted probe answers outcome shape_drift with the paths as strings", async () => {
+    await fake.catalogue.add(RECORDINGS.map((r) => require("../dist/src/catalogue.js").checkRecording(r).recording));
+    const probe = cleanProbe();
+    probe.shapes[endpointName("listPaymentPolicies")].total = "string";
+    probe.shapes[SHIP]["shippingServices[].shippingService"] = "number";
+    const r = await post(fake, probe);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.outcome, "shape_drift");
+    assert.ok(Array.isArray(r.body.paths) && r.body.paths.length > 0);
+    assert.ok(r.body.paths.every((p) => typeof p === "string" && p.length > 0));
+    assert.deepEqual(r.body.paths.sort(), [`${SHIP} shippingServices[].shippingService`, `${endpointName("listPaymentPolicies")} total`].sort());
+    // Control: the same fake answers ok to the unchanged probe.
+    assert.equal((await post(fake, cleanProbe())).body.outcome, "ok");
+  });
+
+  it("a hash mismatch answers ok with a warning naming the endpoint and kind", async () => {
+    const r = await post(fake, { ...cleanProbe(), hashes: { [SHIP]: ebayCatalogueHash(["SomethingElse"]) } });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.outcome, "ok");
+    assert.equal(r.body.warnings.length, 1);
+    assert.deepEqual(r.body.warnings[0], { endpoint: SHIP, kind: "hash_mismatch" });
+  });
+
+  it("an unrecorded pinned key answers the exact outcome ebay-drift-verdict.sh switches on", async () => {
+    const script = readFileSync(new URL("../../../.github/scripts/ebay-drift-verdict.sh", import.meta.url), "utf8");
+    const labels = [...script.matchAll(/^\s*"([^"]+)"\)/gm)].map((m) => m[1]);
+    assert.ok(labels.length >= 1, "the script names no quoted case label");
+    const scriptOutcome = labels.find((l) => /unrecorded/.test(l));
+    assert.ok(scriptOutcome, `no unrecorded case in ${labels}`);
+    // The bare outcomes the script also matches: ok and shape_drift.
+    assert.match(script, /^\s*ok\) ;;$/m);
+    assert.match(script, /^\s*shape_drift\)$/m);
+    const empty = await startFake();
+    try {
+      const r = await post(empty, cleanProbe());
+      assert.equal(r.status, 200);
+      assert.equal(r.body.outcome, scriptOutcome);
+      assert.equal(r.body.outcome, "unrecorded pinned key");
+    } finally {
+      await empty.close();
+    }
+  });
+});
