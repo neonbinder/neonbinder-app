@@ -163,7 +163,7 @@ let currentChain: unknown;
  */
 let currentHoldings: unknown;
 /**
- * NEO-277: `teams.getManyByIds` — the collapsed bar's livery and the Team
+ * NEO-277: `teams.getManyByIds` — the Team
  * row's own read of its stored team (for "Keep {team}" and the clear confirm).
  */
 let currentTeamRows: unknown;
@@ -1397,7 +1397,7 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-334)", () =
     expect(screen.queryByText("Base set")).toBeNull();
   });
 
-  it("keeps the tag visible while the panel is COLLAPSED", () => {
+  it("hides the tag while the panel is COLLAPSED (NEO-569) and brings it back on Edit attributes", () => {
     currentRow = baseRow();
     currentChain = makeChain("Baseball");
 
@@ -1408,6 +1408,11 @@ describe("SetAttributesPanel — the base variant type (NEO-239, NEO-334)", () =
       />,
     );
 
+    // A Base variant type is not the set level, so `defaultCollapsed` holds.
+    expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+    expect(screen.queryByText("Base set")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit attributes" }));
     expect(screen.getByText("Base set")).toBeTruthy();
   });
 
@@ -3452,8 +3457,9 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
     );
   });
 
-  it("shows the team on the COLLAPSED bar as its short name in livery, and not while expanded", () => {
-    // An insert: the set level opens itself (NEO-496), so the bar is read below it.
+  it("does not repeat the team on a collapsed panel, and the open panel's picker says it (NEO-569)", () => {
+    // An insert: the set level opens itself (NEO-496), so the shut panel is
+    // read below it. The livery chip (NEO-277) is gone from the collapsed bar.
     currentRow = makeRow({ level: "insert", teamIds: ["team-bulls"] });
     currentTeamRows = [BULLS];
 
@@ -3463,78 +3469,17 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
         defaultCollapsed
       />,
     );
-
-    const chip = screen.getByText("Bulls");
-    expect(chip.getAttribute("title")).toBe("Durham Bulls");
-    // Primary clears 4.5:1 on the panel ground, so it is the colour used —
-    // normalised to lower-case `#rrggbb` on the way through.
-    expect(chip.style.color).toBe("#4a9eff");
-    // Screen readers hear what the word is.
-    expect(chip.parentElement?.parentElement?.textContent).toContain("Team: ");
+    expect(screen.queryByText("Bulls")).toBeNull();
+    expect(screen.queryByText("Team:")).toBeNull();
+    expect(screen.queryByRole("group", { name: "Team" })).toBeNull();
 
     unmount();
 
-    // Expanded, the picker says it; the bar does not repeat it.
     renderPanel();
     expect(screen.queryByText("Bulls")).toBeNull();
     expect(screen.getByTestId("team-picker-value").textContent).toBe(
       "team-bulls",
     );
-  });
-
-  it("falls back to the secondary colour when the primary fails contrast, and to muted when both do", () => {
-    currentRow = makeRow({
-      level: "insert",
-      teamIds: ["team-knights", "team-muted"],
-    });
-    currentTeamRows = [
-      KNIGHTS,
-      { _id: "team-muted", name: "Shadows", colors: { primary: "#111111" } },
-    ];
-
-    render(
-      <SetAttributesPanel
-        selectorOptionId={SELECTOR_OPTION_ID}
-        defaultCollapsed
-      />,
-    );
-
-    expect(screen.getByText("Knights").style.color).toBe("#e8e8e8");
-    const muted = screen.getByText("Shadows");
-    expect(muted.style.color).toBe("");
-    expect(muted.className).toContain("text-ink-2");
-  });
-
-  it("judges the livery against the light panel in light mode (NEO-356)", () => {
-    document.documentElement.dataset.theme = "light";
-    try {
-      currentRow = makeRow({ level: "insert", teamIds: ["team-muted"] });
-      currentTeamRows = [
-        { _id: "team-muted", name: "Shadows", colors: { primary: "#111111" } },
-      ];
-      render(
-        <SetAttributesPanel
-          selectorOptionId={SELECTOR_OPTION_ID}
-          defaultCollapsed
-        />,
-      );
-      // Near-black is unreadable on the dark panel and plain ink on the white one.
-      expect(screen.getByText("Shadows").style.color).toBe("#111111");
-    } finally {
-      delete document.documentElement.dataset.theme;
-    }
-  });
-
-  it("does not show the bar chip at a level that has no Team row", () => {
-    currentRow = makeRow({ level: "year", value: "2024", teamIds: ["team-bulls"] });
-    currentTeamRows = [BULLS];
-    render(
-      <SetAttributesPanel
-        selectorOptionId={SELECTOR_OPTION_ID}
-        defaultCollapsed
-      />,
-    );
-    expect(screen.queryByText("Bulls")).toBeNull();
   });
 });
 
@@ -4365,6 +4310,8 @@ describe("SetAttributesPanel — the attributes toggle keeps focus (NEO-496 a11y
     render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />);
     const toggle = screen.getByRole("button", { name: "Edit attributes" });
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    // NEO-569: nothing is mounted for it to control while shut.
+    expect(toggle.hasAttribute("aria-controls")).toBe(false);
     toggle.focus();
 
     fireEvent.click(toggle);
@@ -4382,6 +4329,7 @@ describe("SetAttributesPanel — the attributes toggle keeps focus (NEO-496 a11y
     expect(screen.getByRole("button", { name: "Edit attributes" })).toBe(toggle);
     expect(toggle.textContent).toBe("Edit attributes ▾");
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.hasAttribute("aria-controls")).toBe(false);
   });
 
   it("keeps at most CLOSED_SETS_CAP closed sets, dropping the oldest", () => {
@@ -4770,10 +4718,18 @@ describe("SetAttributesPanel — No Team (NEO-556)", () => {
     });
   });
 
-  it("the collapsed summary bar reads No Team", () => {
-    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
-    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />);
-    expect(screen.getByText("No Team")).toBeTruthy();
+  it("a collapsed panel does not summarise No Team (NEO-569); the open Team row says it", () => {
+    // An insert, so `defaultCollapsed` holds (the set level opens itself).
+    currentRow = makeRow({ level: "insert", noTeamDefault: NO_TEAM });
+    const { unmount } = render(
+      <SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />,
+    );
+    expect(screen.queryByText("No Team")).toBeNull();
+    expect(screen.queryByText("Team:")).toBeNull();
+    unmount();
+
+    renderPanel();
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
   });
 
   it("a row carrying a team (even with a stray No Team) reads as its team, never No Team", () => {
@@ -4969,5 +4925,155 @@ describe("setNoTeamConfirmCopy (NEO-556)", () => {
     ).toBe(
       "New cards with nothing naming a team get No Team. Cards already here stay as they are; you can mark the teamless ones next.",
     );
+  });
+});
+
+/**
+ * NEO-569 (Jason, 2026-11-17) — the shut panel is one compact line: its title
+ * and the "Edit attributes" toggle, nothing else. The pencil, the Base tag,
+ * the delete, the breadcrumb, the team livery, the No Team summary and the
+ * Set actions all come back with the open panel, in the places they sat.
+ */
+describe("SetAttributesPanel — the collapsed panel shows only its title and toggle (NEO-569)", () => {
+  const NO_TEAM = { setAt: 1, setByUserId: "admin-1" };
+  const BULLS = {
+    _id: "team-bulls",
+    name: "Bulls",
+    location: "Durham",
+    colors: { primary: "#4A9EFF", secondary: "#f5a623" },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentChain = makeChain("Baseball");
+    currentHoldings = { holds: [], protected: false };
+    currentInsertEligibility = { eligible: true };
+    currentPromotionEligibility = {
+      eligible: true,
+      links: [{ slot: "s0", label: "Bowman Blue" }],
+    };
+    currentTeamRows = [BULLS];
+  });
+
+  /** A set opens itself (NEO-496); close it the way an operator does. */
+  function renderShutSet() {
+    currentRow = makeRow({
+      level: "setName",
+      value: "Bowman Blue",
+      teamIds: ["team-bulls"],
+    });
+    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />);
+    fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+  }
+
+  const BREADCRUMB = "Baseball › 2024 › Topps › 2024 Topps Chrome";
+
+  it("a shut set draws the title and the toggle, and nothing else of the header", () => {
+    renderShutSet();
+    const region = screen.getByRole("region", { name: "Set attributes panel" });
+
+    expect(
+      within(region).getByRole("heading", { name: "Attributes for Bowman Blue (Set)" }),
+    ).toBeTruthy();
+    // Exactly one button in the header: the toggle. (The panel's other
+    // buttons are the bulk controls' stubs, kept mounted for a running ledger.)
+    const header = within(region)
+      .getByRole("heading", { name: "Attributes for Bowman Blue (Set)" })
+      .closest("div.justify-between") as HTMLElement;
+    expect(within(header).getAllByRole("button").map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Edit attributes",
+    ]);
+
+    expect(within(region).queryByRole("button", { name: "Rename Bowman Blue" })).toBeNull();
+    expect(within(region).queryByLabelText("Delete Bowman Blue")).toBeNull();
+    expect(within(region).queryByTitle(BREADCRUMB)).toBeNull();
+    expect(within(region).queryByText(BREADCRUMB)).toBeNull();
+    expect(within(region).queryByText("Bulls")).toBeNull();
+    expect(within(region).queryByText("Team:")).toBeNull();
+    expect(within(region).queryByRole("group", { name: "Set actions" })).toBeNull();
+    expect(within(region).queryByRole("group", { name: "Team" })).toBeNull();
+  });
+
+  it("it is the compact box: less padding than the open panel, the toggle on the title's line", () => {
+    renderShutSet();
+    const region = screen.getByRole("region", { name: "Set attributes panel" });
+    expect(region.classList.contains("py-2")).toBe(true);
+    expect(region.classList.contains("p-4")).toBe(false);
+    const toggle = screen.getByRole("button", { name: "Edit attributes" });
+    expect(toggle.parentElement?.classList.contains("items-center")).toBe(true);
+
+    fireEvent.click(toggle);
+    expect(region.classList.contains("p-4")).toBe(true);
+    expect(region.classList.contains("py-2")).toBe(false);
+    expect(
+      screen.getByRole("button", { name: "Hide attributes" }).parentElement?.classList.contains(
+        "items-start",
+      ),
+    ).toBe(true);
+  });
+
+  it("Edit attributes brings the pencil, delete, breadcrumb and Set actions back", () => {
+    renderShutSet();
+    fireEvent.click(screen.getByRole("button", { name: "Edit attributes" }));
+
+    const region = screen.getByRole("region", { name: "Set attributes panel" });
+    const heading = within(region).getByRole("heading", {
+      name: "Attributes for Bowman Blue (Set)",
+    });
+    const titleLine = heading.parentElement!;
+    expect(within(titleLine).getByRole("button", { name: "Rename Bowman Blue" })).toBeTruthy();
+    expect(within(titleLine).getByLabelText("Delete Bowman Blue")).toBeTruthy();
+    expect(within(region).getByTitle(BREADCRUMB).textContent).toBe(BREADCRUMB);
+    expect(
+      within(within(region).getByRole("group", { name: "Set actions" }))
+        .getAllByRole("button")
+        .map((b) => b.textContent),
+    ).toEqual(["Move to another brand", "Make parallel of…", "Make insert of…"]);
+    // The Team row is the one place the team is said.
+    expect(within(region).getByRole("group", { name: "Team" })).toBeTruthy();
+  });
+
+  it("the toggle keeps focus when it closes the panel", () => {
+    renderShutSet();
+    const toggle = screen.getByRole("button", { name: "Edit attributes" });
+    toggle.focus();
+    fireEvent.click(toggle);
+    expect(document.activeElement).toBe(toggle);
+    fireEvent.click(toggle);
+    expect(document.activeElement).toBe(toggle);
+    expect(toggle.hasAttribute("aria-controls")).toBe(false);
+  });
+
+  it("a shut No Team row has no summary on the bar; the Team row has it when open", () => {
+    currentRow = makeRow({ level: "insert", value: "Anime", noTeamDefault: NO_TEAM });
+    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />);
+    expect(screen.queryByText("No Team")).toBeNull();
+    expect(screen.queryByText("Team:")).toBeNull();
+  });
+
+  it("a shut parallel's Promote to set is hidden, and returns on Edit attributes", () => {
+    currentRow = makeRow({ level: "parallel", value: "Bowman Blue" });
+    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />);
+    expect(screen.queryByRole("group", { name: "Set actions" })).toBeNull();
+    expect(screen.queryByLabelText("Delete Bowman Blue")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit attributes" }));
+    expect(screen.getByLabelText("Delete Bowman Blue")).toBeTruthy();
+    expect(screen.getByRole("group", { name: "Set actions" })).toBeTruthy();
+  });
+
+  it("the Set name in titles door opens a shut set and focuses its box", async () => {
+    currentRow = makeRow({ level: "setName", value: "Bowman Blue" });
+    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />);
+    fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+    expect(screen.queryByLabelText("Value for Set name in titles")).toBeNull();
+
+    act(() => {
+      expect(goToSetNameInTitles()).toBe(true);
+    });
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByLabelText("Value for Set name in titles")),
+    );
+    expect(screen.getByRole("button", { name: "Hide attributes" })).toBeTruthy();
   });
 });

@@ -27,11 +27,7 @@ import { activateOnEnter } from "@/lib/dom/activate-on-enter";
 import { EDIT_ATTRIBUTES_LABEL } from "./control-labels";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
-import { contrastRatio, normalizeHexColor } from "@/lib/print/contrast";
-import { useTheme } from "@/src/theme/ThemeProvider";
-import type { ThemeMode } from "@/src/theme/theme-mode";
-import { tokenHex } from "@/src/theme/tokens";
-import { teamFullName, teamShortName } from "../../lib/teams/team-name";
+import { teamFullName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
 import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps";
 import CardPrefixRow from "./CardPrefixRow";
@@ -45,7 +41,7 @@ import MakeInsertControl from "./MakeInsertControl";
 import PromoteToSetControl from "./PromoteToSetControl";
 import PublishedChecklistPanel from "./PublishedChecklistPanel";
 import TeamPicker, { type TeamPickerLabels } from "./TeamPicker";
-import { NO_TEAM_LABELS, NO_TEAM_TEXT } from "./team-picker-labels";
+import { NO_TEAM_LABELS } from "./team-picker-labels";
 import EveryCardPlayerControl from "./EveryCardPlayerControl";
 import SetLeagueRow from "./SetLeagueRow";
 import NoTeamCardsControl from "./NoTeamCardsControl";
@@ -81,7 +77,8 @@ import {
  * editable at every set-side level, copied down at creation like the rest.
  *
  * Collapsible so it never pushes the card list off-screen. Collapsed shows
- * a single summary bar (breadcrumb + an "Edit attributes" toggle). Default
+ * one compact line: the title and the "Edit attributes" toggle, nothing else
+ * (NEO-569; a run's ledger is the one thing kept on screen). Default
  * collapsed only when `defaultCollapsed` (cards present); expanded otherwise
  * so the setName-with-no-cards flow needs no extra tap. NEO-496: the set
  * level itself always opens by default, its official checklist first,
@@ -798,7 +795,12 @@ export default function SetAttributesPanel({
 
   return (
     <div
-      className="border border-rule-strong rounded-lg bg-raised-deep/60 p-4 space-y-3 focus-outline"
+      // NEO-569: collapsed, the panel is one compact line (its title and the
+      // "Edit attributes" toggle), so it takes less padding than the open
+      // panel. `space-y-3` stays for a run ledger that is kept on screen.
+      className={`border border-rule-strong rounded-lg bg-raised-deep/60 space-y-3 focus-outline ${
+        expanded ? "p-4" : "px-4 py-2"
+      }`}
       ref={regionRef}
       // NEO-535: the "Trim Set name in titles" jump's fallback focus target;
       // never a Tab stop.
@@ -807,8 +809,14 @@ export default function SetAttributesPanel({
       aria-label="Set attributes panel"
     >
       {showShortNameRow && <SetNameInTitlesTarget open={openShortName} />}
-      {/* Breadcrumb header (fixes QA #2 — which level/column applies). */}
-      <div className="flex items-start justify-between gap-3">
+      {/* Breadcrumb header (fixes QA #2 — which level/column applies).
+          NEO-569 (Jason, 2026-11-17): collapsed, this shows ONLY the title and
+          the "Edit attributes" toggle. The rename pencil, the Base tag, the
+          delete, the breadcrumb and the Set actions all come back with the
+          open panel, in the places they have always sat. */}
+      <div
+        className={`flex justify-between gap-3 ${expanded ? "items-start" : "items-center"}`}
+      >
         <div className="min-w-0">
           {/* NEO-96: the rename pencil sits immediately after the title
               because the title IS the name it edits — that adjacency is the
@@ -825,85 +833,76 @@ export default function SetAttributesPanel({
             <h3 className="min-w-0 wrap-anywhere text-sm font-semibold text-ink">
               {headerTitle}
             </h3>
-            {/* NEO-239: every level renames, variantType included.
-                NEO-294: with ONE exception — the year's Unknown row, which is
-                frozen at the mutation. The pencil is replaced rather than
-                removed, so the answer to "why can't I rename this one" is
-                where the question gets asked.
-                NEO-334: a variant type's title IS its kind, so renaming one
-                to or from Base / Insert / Parallel changes what it is. The
-                server refuses that while rows sit beneath it, and the pencil
-                says why in its own refusal line under this header. */}
-            {brandUnknownRow ? (
-              <BrandUnknownRenameNotice value={row.value} />
-            ) : (
-              <RenameEntityControl
+            {expanded && (
+              <>
+              {/* NEO-239: every level renames, variantType included.
+                  NEO-294: with ONE exception — the year's Unknown row, which is
+                  frozen at the mutation. The pencil is replaced rather than
+                  removed, so the answer to "why can't I rename this one" is
+                  where the question gets asked.
+                  NEO-334: a variant type's title IS its kind, so renaming one
+                  to or from Base / Insert / Parallel changes what it is. The
+                  server refuses that while rows sit beneath it, and the pencil
+                  says why in its own refusal line under this header. */}
+              {brandUnknownRow ? (
+                <BrandUnknownRenameNotice value={row.value} />
+              ) : (
+                <RenameEntityControl
+                  id={selectorOptionId}
+                  currentValue={row.value}
+                />
+              )}
+              {/* NEO-239: which variant type is the set's base is IDENTITY, not
+                  an attribute, so it sits with the name rather than in the grid
+                  below.
+                  NEO-334: the type titled "Base" IS the base (Jason,
+                  2026-10-10), so there is nothing to mark: "Mark as base set"
+                  and its mutation are gone, and a type becomes the base by
+                  being renamed "Base" with the pencil beside this tag. */}
+              {isBaseVariantType && <BaseSetTag />}
+              {/* NEO-219: the one sanctioned delete, next to the pencil for the
+                  same reason the pencil is next to the title — the title IS the
+                  row it acts on.
+                  NEO-239: this used to be wrapped in `canRenameSelectorRow(row)`,
+                  which meant "hide it on a variantType that is not custom". That
+                  predicate is gone with the custom concept — a row either carries
+                  marketplace ids or it does not, and both behave the same — so
+                  the gate is now the control's OWN, and it is a better one: on
+                  click it reads `getSelectorOptionHoldings` once (NEO-400: never
+                  subscribed, that read is too heavy to re-run on every write)
+                  and shows an explained refusal for a row with something below
+                  it, or the confirm when the row is genuinely empty. The server's
+                  emptiness check still runs independently. Nothing became
+                  deletable that the server would not already have let go. */}
+              <DeleteSelectorRowControl
+                // Keyed on the row: this panel does NOT remount when the
+                // selection moves, so without this a dialog opened for one row
+                // — or a revealed reason belonging to it — would survive onto
+                // the next one and ask its question about the wrong thing.
+                key={selectorOptionId}
                 id={selectorOptionId}
-                currentValue={row.value}
+                row={row}
+                level={leafLevel}
+                isBase={isBaseVariantType}
+                onDeleted={onDeleted}
               />
+              </>
             )}
-            {/* NEO-239: which variant type is the set's base is IDENTITY, not
-                an attribute, so it sits with the name rather than in the grid
-                below, and stays visible while the panel is collapsed.
-                NEO-334: the type titled "Base" IS the base (Jason,
-                2026-10-10), so there is nothing to mark: "Mark as base set"
-                and its mutation are gone, and a type becomes the base by
-                being renamed "Base" with the pencil beside this tag. */}
-            {isBaseVariantType && <BaseSetTag />}
-            {/* NEO-219: the one sanctioned delete, next to the pencil for the
-                same reason the pencil is next to the title — the title IS the
-                row it acts on.
-                NEO-239: this used to be wrapped in `canRenameSelectorRow(row)`,
-                which meant "hide it on a variantType that is not custom". That
-                predicate is gone with the custom concept — a row either carries
-                marketplace ids or it does not, and both behave the same — so
-                the gate is now the control's OWN, and it is a better one: on
-                click it reads `getSelectorOptionHoldings` once (NEO-400: never
-                subscribed, that read is too heavy to re-run on every write)
-                and shows an explained refusal for a row with something below
-                it, or the confirm when the row is genuinely empty. The server's
-                emptiness check still runs independently. Nothing became
-                deletable that the server would not already have let go. */}
-            <DeleteSelectorRowControl
-              // Keyed on the row: this panel does NOT remount when the
-              // selection moves, so without this a dialog opened for one row
-              // — or a revealed reason belonging to it — would survive onto
-              // the next one and ask its question about the wrong thing.
-              key={selectorOptionId}
-              id={selectorOptionId}
-              row={row}
-              level={leafLevel}
-              isBase={isBaseVariantType}
-              onDeleted={onDeleted}
-            />
           </div>
-          {/* NEO-341: `relative` so this line's `truncate` clips the team's
-              `sr-only` "Team:" too. Unpositioned, that absolute span took
+          {/* NEO-341: `relative` so this line's `truncate` clips the `sr-only`
+              text in it too. Unpositioned, an absolute span took
               binder-layout's wrapper as its containing block, escaped the
-              clip at the end of the nowrap team name, and widened a 412px
-              page by ~50px, sliding the whole page (and the card drawer)
-              sideways on a phone. */}
-          <p className="relative text-xs text-ink-3 mt-0.5 truncate" title={breadcrumb}>
-            {breadcrumb}
-            {/* NEO-277: the set's team, said the way a collector says it —
-                "Bulls", in Durham Bulls blue — on the collapsed summary bar,
-                which is the state this panel spends almost all of its life in.
-                Only while collapsed: expanded, the picker two lines down shows
-                the same fact with the full name and a remove button, and a
-                chip that repeats it is an accessory to take off. */}
-            {!expanded && showTeamRow && teamIds.length > 0 && (
-              <SetTeamLivery teamIds={teamIds} />
-            )}
-            {/* NEO-556: a No Team row says so on the same bar, in the same
-                place and weight as a team's short name. */}
-            {!expanded && showTeamRow && noTeamDefault && (
-              <span className="ml-1.5 whitespace-nowrap">
-                <span aria-hidden="true">· </span>
-                <span className="sr-only">Team: </span>
-                <span className="font-semibold text-ink-2">{NO_TEAM_TEXT}</span>
-              </span>
-            )}
-          </p>
+              clip at the end of a nowrap run, and widened a 412px page by
+              ~50px, sliding the whole page (and the card drawer) sideways on
+              a phone.
+              NEO-569: open panel only. The team livery (NEO-277) and the No
+              Team summary (NEO-556) that used to ride this line while the
+              panel was shut are gone with it: the Team row below says both. */}
+          {expanded && (
+            <p className="relative text-xs text-ink-3 mt-0.5 truncate" title={breadcrumb}>
+              {breadcrumb}
+            </p>
+          )}
         </div>
         {/* NEO-496 (a11y audit): ONE button for both states, so toggling
             keeps focus on it. Two elements swapped under the press and
@@ -917,7 +916,9 @@ export default function SetAttributesPanel({
           onKeyDown={(e) => activateOnEnter(e, () => setOpen(!expanded))}
           aria-label={expanded ? HIDE_ATTRIBUTES_LABEL : EDIT_ATTRIBUTES_LABEL}
           aria-expanded={expanded}
-          aria-controls={bodyId}
+          // NEO-569: the body is not mounted while collapsed, so there is
+          // nothing for `aria-controls` to name until it opens.
+          aria-controls={expanded ? bodyId : undefined}
           className={`shrink-0 ${ATTRIBUTES_TOGGLE_CLASS}`}
         >
           {expanded ? `${HIDE_ATTRIBUTES_LABEL} ▴` : `${EDIT_ATTRIBUTES_LABEL} ▾`}
@@ -925,7 +926,7 @@ export default function SetAttributesPanel({
       </div>
 
       {/* NEO-306: the things that can be DONE to this row, as its own row of
-          visibly-button chips under the breadcrumb — out of the title line,
+          visibly-button chips under the breadcrumb (NEO-569: open panel only) — out of the title line,
           where they were grey text beside the name and did not read as
           controls. The title line keeps what is about the row's identity:
           its name (pencil), whether it is the base (tag) and the delete.
@@ -940,7 +941,7 @@ export default function SetAttributesPanel({
           Every control keeps its own `key` prefix: the panel does not remount
           when the selection moves, and two siblings sharing a key is the one
           thing React refuses to reconcile (NEO-279, CI run 34930152576). */}
-      {hasRowActions && (
+      {expanded && hasRowActions && (
         <div
           role="group"
           aria-label="Set actions"
@@ -2700,77 +2701,6 @@ function SetTeamRow({
         />
       )}
     </div>
-  );
-}
-
-/**
- * The panel ground for the contrast gate below, per mode. Dark: `bg-raised-deep/60`
- * (gray-900 at 60%) over the near-black page, worked out once here rather
- * than guessed, because a franchise colour can clear 4.5:1 on pure black and
- * miss it on this slightly lifted surface. Light: the panel is white.
- */
-const PANEL_GROUND = { dark: "#0e121b", light: tokenHex("raised-deep", "light") } as const;
-
-/** WCAG 2.2 SC 1.4.3 for text this size. A gate, not a readout — this is UI. */
-const LIVERY_MIN_CONTRAST = 4.5;
-
-/**
- * The team's own colour for its name, or null to leave it muted.
- *
- * Primary first, secondary as the fallback, muted when neither clears the
- * floor — the same order the Players page uses, for the same reason: many
- * franchises are built on a near-black navy or maroon whose secondary is the
- * pale one they print the dark on, so the fallback is usually the right
- * colour as well as the readable one. Colour is never the only carrier: the
- * word reads the same whichever branch is taken (SC 1.4.1).
- */
-function teamTextColor(
-  colors: { primary?: string; secondary?: string } | undefined,
-  mode: ThemeMode,
-): string | null {
-  for (const candidate of [colors?.primary, colors?.secondary]) {
-    if (!candidate) continue;
-    const hex = normalizeHexColor(candidate);
-    if (!hex) continue;
-    const ratio = contrastRatio(hex, PANEL_GROUND[mode]);
-    if (ratio !== null && ratio >= LIVERY_MIN_CONTRAST) return hex;
-  }
-  return null;
-}
-
-/**
- * NEO-277 — the set's team on the collapsed summary bar, in livery.
- *
- * The short name ("Bulls"), because that is what a collector says and the
- * bar is one truncating line; the full name rides on `title` and in the
- * accessible text. Renders nothing until the rows arrive rather than a
- * "Loading…" — a summary bar that flickers a placeholder on every selection
- * change is worse than one that fills in a beat later.
- */
-function SetTeamLivery({ teamIds }: { teamIds: Array<Id<"teams">> }) {
-  const { mode } = useTheme();
-  const rows = useQuery(api.teams.getManyByIds, { ids: teamIds });
-  if (!rows || rows.length === 0) return null;
-  return (
-    <span className="ml-1.5 whitespace-nowrap">
-      <span aria-hidden="true">· </span>
-      <span className="sr-only">Team: </span>
-      {rows.map((team, i) => {
-        const color = teamTextColor(team.colors, mode);
-        return (
-          <span key={team._id}>
-            {i > 0 && ", "}
-            <span
-              title={teamFullName(team)}
-              className={color ? "font-semibold" : "font-semibold text-ink-2"}
-              style={color ? { color } : undefined}
-            >
-              {teamShortName(team)}
-            </span>
-          </span>
-        );
-      })}
-    </span>
   );
 }
 
