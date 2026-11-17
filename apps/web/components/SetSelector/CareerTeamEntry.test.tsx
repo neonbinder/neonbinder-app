@@ -52,6 +52,7 @@ vi.mock("../../convex/_generated/api", () => ({
 }));
 
 let currentTeams: unknown;
+let mapped: { source: unknown; rows: unknown[] } | undefined;
 let queryCalls: Array<{ ref: string; args: unknown }>;
 
 vi.mock("convex/react", () => ({
@@ -60,9 +61,17 @@ vi.mock("convex/react", () => ({
     if (args === "skip") return undefined;
     if (ref === "teams.pickerCandidates") {
       if (!Array.isArray(currentTeams)) return currentTeams;
-      return currentTeams.map((row: Record<string, unknown>) =>
-        "team" in row ? row : { team: row, tier: 4 },
-      );
+      // Stable between renders, as Convex's is: the component holds the last
+      // answer by identity, so a fresh array per call would never settle.
+      if (mapped?.source !== currentTeams) {
+        mapped = {
+          source: currentTeams,
+          rows: currentTeams.map((row: Record<string, unknown>) =>
+            "team" in row ? row : { team: row, tier: 4 },
+          ),
+        };
+      }
+      return mapped.rows;
     }
     return undefined;
   },
@@ -98,6 +107,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
   currentTeams = [];
+  mapped = undefined;
   queryCalls = [];
 });
 
@@ -988,6 +998,32 @@ describe("CareerTeamEntry — list behaviour after the audit (NEO-574)", () => {
       typeNow("Zzz");
       expect(listbox()).toBeNull();
       expect(nameBox().getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("keeps matching rows, and the list open, while a query with new arguments loads", () => {
+      // Convex returns undefined for the new arguments until they answer; the
+      // last answer, narrowed to the text, stands in so the list does not blink.
+      currentTeams = [RK, RK2, makeTeam("Memphis Mud Hens", "t-mh")];
+      renderEntry();
+      typeName("Memphis");
+      const list = listbox()!;
+      expect(screen.getAllByRole("option")).toHaveLength(3);
+
+      currentTeams = undefined;
+      typeNow("Memphis River");
+      settle(DEBOUNCE_MS);
+
+      expect(listbox()).toBe(list);
+      expect(nameBox().getAttribute("aria-expanded")).toBe("true");
+      expect(screen.getAllByRole("option").map((o) => o.getAttribute("aria-label"))).toEqual([
+        "Use Memphis RiverKings",
+        "Use Memphis RiverKings II",
+      ]);
+
+      // Nothing held matches: now it closes.
+      typeNow("Zzz");
+      settle(DEBOUNCE_MS);
+      expect(listbox()).toBeNull();
     });
 
     it("offers no saved rows while the query has not answered at all", () => {

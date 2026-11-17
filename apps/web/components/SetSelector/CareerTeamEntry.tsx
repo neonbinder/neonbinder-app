@@ -260,27 +260,41 @@ export default function CareerTeamEntry({
       ? { query: debouncedTrimmed, sportId, contextOptionId }
       : "skip",
   );
-  /** The saved teams, in the server's final (tiered) order. */
-  const searched = useMemo(() => ranked?.map((r) => r.team), [ranked]);
+  /*
+   * The last answer the query gave. Convex hands back `undefined` while a query
+   * with new arguments loads, so without this the list blinks once each time
+   * typing pauses. Held as state, adjusted during render (the same "previous
+   * value" pattern as `followed` above) rather than in a ref: the lint rule
+   * rightly refuses a ref read while rendering.
+   */
+  const [lastRanked, setLastRanked] = useState(ranked);
+  if (ranked !== undefined && ranked !== lastRanked) setLastRanked(ranked);
+  /** The saved teams, in the server's final (tiered) order — or, while the
+   *  query reloads, the last order it gave. */
+  const searched = useMemo(
+    () => (ranked ?? lastRanked)?.map((r) => r.team),
+    [ranked, lastRanked],
+  );
   /**
    * The saved teams to offer for the text CURRENTLY in the box.
    *
-   * While the debounce or the query catches up, `ranked` still holds the
-   * answer for earlier text. Hiding it outright made the in-flow list vanish
-   * and come back on every keystroke (`aria-expanded` flipping, the status
-   * re-announced, + Add jumping). So stale rows stay, narrowed by the same
-   * folded-substring test the staged names use: a row that still matches what
-   * is typed remains, one that no longer does goes, and the list closes only
-   * when nothing is left. Once the answer for this text is in, it is the
-   * server's, untouched (its search can be softer than a substring).
-   * Staged names are matched here, not searched, so they are always instant.
+   * While the debounce or the query catches up, what we hold is the answer for
+   * earlier text. Hiding it outright made the in-flow list vanish and come
+   * back on every keystroke (`aria-expanded` flipping, the status re-announced,
+   * + Add jumping). So stale rows stay, narrowed by the same folded-substring
+   * test the staged names use: a row that still matches what is typed remains,
+   * one that no longer does goes, and the list closes only when nothing is
+   * left. Once the answer for this text is in, it is the server's, untouched
+   * (its search can be softer than a substring). The very first query has no
+   * earlier answer, so until it lands there are no saved rows at all. Staged
+   * names are matched here, not searched, so they are always instant.
    */
-  const savedStale = debouncedTrimmed !== name.trim();
+  const savedStale = ranked === undefined || debouncedTrimmed !== name.trim();
   const freshSearched = useMemo(() => {
-    if (ranked === undefined || searched === undefined) return undefined;
+    if (searched === undefined) return undefined;
     if (!savedStale) return searched;
     return searched.filter((t) => nameMatchesQuery(teamFullName(t), name.trim()));
-  }, [ranked, searched, savedStale, name]);
+  }, [searched, savedStale, name]);
 
 
   /**
