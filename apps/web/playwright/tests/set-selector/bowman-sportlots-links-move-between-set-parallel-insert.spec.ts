@@ -101,6 +101,11 @@ test(
     await expectAccessible(page, { label: "Blue parallel with its attributes" });
 
     // ── Promote to set (live only: paused, Blue carries no SportLots link) ──
+    // NEO-569: the Set actions sit in the open panel only, and a parallel starts
+    // it shut. Open it, and anchor on the pencil the open panel draws beside the
+    // title (R2), so the paused branch's absence is read on the open panel.
+    await openAttributesPanel(page);
+    await expect(page.getByRole("button", { name: new RegExp(`^Rename ${COLOUR}`) })).toBeVisible();
     if (env.SL_PAUSED) {
       await expect(page.getByRole("button", { name: "Promote to set" })).toBeHidden();
     } else {
@@ -115,6 +120,8 @@ test(
       // ── Make parallel of…: the promoted set goes back under Bowman's Blue ──
       await drillToSet(page, env, { sport: "Baseball", year: "2026", manufacturer: BRAND, set: SL_SET });
       await expect(page.getByText(new RegExp(`Attributes for ${SL_SET}`))).toBeVisible();
+      // NEO-569: Set actions sit in the open panel (a set opens itself unless closed this session).
+      await openAttributesPanel(page);
       await page.getByRole("button", { name: "Make parallel of…" }).click();
       const makeParallel = page.getByRole("dialog", { name: `Make “${SL_SET}” a parallel` });
       await expect(makeParallel).toBeVisible();
@@ -138,6 +145,8 @@ test(
       await columnOption(page, "Variant Types", TYPE_PARALLEL).click();
       await pickParallel(page, SOURCE_ROW);
       await expect(page.getByText(new RegExp(`Attributes for ${SOURCE_ROW}`))).toBeVisible();
+      // NEO-569: Set actions sit in the open panel, and a parallel starts it shut.
+      await openAttributesPanel(page);
       await page.getByRole("button", { name: "Make insert of…" }).click();
       const makeInsert = page.getByRole("dialog", { name: new RegExp(`^Make “${SOURCE_ROW}” (an insert|a parallel)$`) });
       await expect(makeInsert).toBeVisible();

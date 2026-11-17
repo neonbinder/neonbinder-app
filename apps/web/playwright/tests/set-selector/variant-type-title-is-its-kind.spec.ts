@@ -74,6 +74,7 @@ import {
   columnOption,
   columnSelection,
   pick,
+  openAttributesPanel,
 } from "../../support/set-builder";
 import { addCardViaForm, editCardButton } from "../../support/cards";
 import type { Page } from "@playwright/test";
@@ -94,6 +95,8 @@ async function repickVariantType(page: Page, from: string, name: string) {
 
 /** Open the attributes panel's rename field for the option it is showing. */
 async function openRename(page: Page, current: string) {
+  // NEO-569: the pencil sits in the open panel only, and a variant type starts it shut.
+  await openAttributesPanel(page);
   await page.getByRole("button", { name: `Rename ${current}`, exact: true }).click();
   const field = page.getByRole("textbox", { name: `Edit name for ${current}` });
   await expect(field).toBeVisible();

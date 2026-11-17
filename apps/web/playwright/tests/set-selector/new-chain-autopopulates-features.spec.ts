@@ -1,6 +1,6 @@
 // Origin: .maestro/flows/set-selector/new-chain-autopopulates-features.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { setBuilderReady, drillToCustom, customSport } from "../../support/set-builder";
+import { setBuilderReady, drillToCustom, customSport, openAttributesPanel } from "../../support/set-builder";
 
 test(
   "Write-once feature snapshots — a freshly-built set chain auto-populates its SetAttributesPanel feature values with NO card-checklist step",
@@ -20,17 +20,13 @@ test(
     });
 
     await expect(page.getByText(`Attributes for ${variantType}`)).toBeVisible();
+    // The panel starts shut below the set; open it (NEO-569: the breadcrumb is
+    // drawn by the open panel only).
+    await openAttributesPanel(page);
     // The panel's breadcrumb names the chain it was built from.
     await expect(
       page.getByText(`${customSport(env)} › 1975 › WOMfr-${w} › WOSet3-${w} › ${variantType}`, { exact: true }),
     ).toBeVisible();
-
-    // The panel remembers whether it was left open, so open it only if needed.
-    const edit = page.getByRole("button", { name: "Edit attributes" });
-    const hide = page.getByRole("button", { name: "Hide attributes" });
-    await expect(edit.or(hide)).toBeVisible();
-    if (await edit.isVisible()) await edit.click();
-    await expect(hide).toBeVisible();
 
     // Written once, at creation, from the chain: no checklist sync happened.
     const era = page.getByRole("combobox", { name: "Value for Era" });

@@ -1,8 +1,10 @@
 // Origin: .maestro/flows/set-selector/set-attributes-edit.yaml (Maestro suite retired in NEO-341; see git history)
 // NEO-38/39/217: the SetAttributesPanel on the worker's own custom set
 // (Baseball > 2024 > Topps > attr-edit-<n>): breadcrumb scope, editing a
-// metadata field, CLEARING it ("Cleared", not "Saved"), collapse/expand, and
-// the scope following a child pick. The real Topps Chrome set is never touched.
+// metadata field, CLEARING it ("Cleared", not "Saved"), collapse/expand (NEO-569:
+// shut, the panel shows only its title and toggle; the pencil, delete,
+// breadcrumb and Set actions return when it opens), and the scope following a
+// child pick. The real Topps Chrome set is never touched.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom, selectOrCreate } from "../../support/set-builder";
 
@@ -67,11 +69,32 @@ test(
     await expect(releaseDate).toHaveAttribute("placeholder", "—");
 
     // Collapse by hand, then expand again.
+    // NEO-569: shut, the panel is one line, its title and the Edit attributes
+    // toggle. The pencil, the delete, the breadcrumb and the Set actions all
+    // come back with the open panel. Positive first (R2): the title and the
+    // toggle are drawn, so the absences below are read on a live panel.
+    const title = panel.getByRole("heading", { name: `Attributes for ${set} (Set)`, exact: true });
+    const renameSet = panel.getByRole("button", { name: `Rename ${set}`, exact: true });
+    const deleteSet = panel.getByRole("button", { name: `Delete ${set}`, exact: true });
+    const breadcrumb = panel.getByText(new RegExp(`›.*${set}`));
+    const setActions = panel.getByRole("group", { name: "Set actions" });
+    await expect(renameSet).toBeVisible();
+    await expect(setActions).toBeVisible();
     await hide.click();
     await expect(edit).toBeVisible();
+    await expect(title).toBeVisible();
     await expect(hide).toBeHidden();
+    await expect(renameSet).toHaveCount(0);
+    await expect(deleteSet).toHaveCount(0);
+    await expect(breadcrumb).toHaveCount(0);
+    await expect(setActions).toHaveCount(0);
+    await expectAccessible(page, { label: "Set attributes panel collapsed to its title" });
     await edit.click();
     await expect(hide).toBeVisible();
+    await expect(renameSet).toBeVisible();
+    await expect(deleteSet).toBeVisible();
+    await expect(breadcrumb.first()).toBeVisible();
+    await expect(setActions).toBeVisible();
 
     // Child scope: create (or reuse) a custom variant type and pick it.
     await selectOrCreate(page, "Variant Types", child, { via: "list" });

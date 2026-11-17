@@ -149,10 +149,13 @@ test(
     await expectAccessible(page, { within: ledger, label: "No Team run ledger, finished" });
     await ledger.getByRole("button", { name: "Dismiss the No Team run" }).click();
     await expect(ledger).toBeHidden();
-    // Collapsed, the Team bar still says it.
+    // Shut and opened again, the set still answers No Team. NEO-569: the shut
+    // panel draws only its title and toggle, so the answer is read where it is
+    // set, on the reopened Team row.
     await hide.click();
     await expect(edit).toBeVisible();
-    await expect(panel.getByText("No Team", { exact: true })).toBeVisible();
+    await edit.click();
+    await expect(setToggle(true)).toBeVisible();
 
     // ── STEP 5: the run moved only the teamless card; a card added now is born No Team.
     await openInsertBase();
