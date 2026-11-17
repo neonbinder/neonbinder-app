@@ -31,7 +31,7 @@ import { teamFullName } from "../../lib/teams/team-name";
 import { FeatureValueControl } from "./FeatureValueControl";
 import { AUTOGRAPH_CHOICE_LABEL, AUTOGRAPH_FORMATS } from "./entity-review-steps";
 import CardPrefixRow from "./CardPrefixRow";
-import RenameEntityControl from "./RenameEntityControl";
+import RenameEntityControl, { type RenameEntityHandle } from "./RenameEntityControl";
 import { variantTypeKind } from "../../convex/variantRole";
 import { titleChainFacts } from "../../convex/listingShortName";
 import { setDescriptionForTitles } from "../../convex/features/listingInputs";
@@ -381,6 +381,23 @@ export default function SetAttributesPanel({
   // toggle inert (it is a sibling outside the dialog, reachable by a virtual
   // cursor).
   const [renameHeld, setRenameHeld] = useState(false);
+  /** The rename control's handle: where a refused toggle press sends focus. */
+  const renameRef = useRef<RenameEntityHandle>(null);
+  /**
+   * Set when the operator's own press shuts the panel. Shutting unmounts what
+   * had focus (the rename pencil the field hands focus to, a field in the
+   * body), which drops focus to <body>; the layout effect below parks it on
+   * the toggle instead.
+   */
+  const parkFocusOnToggle = useRef(false);
+  useLayoutEffect(() => {
+    if (expanded || !parkFocusOnToggle.current) return;
+    parkFocusOnToggle.current = false;
+    const active = document.activeElement;
+    if (!active || active === document.body) {
+      expandToggleRef.current?.focus({ preventScroll: true });
+    }
+  }, [expanded]);
   const [deleteHeld, setDeleteHeld] = useState(false);
   /** NEO-569 — the collapsed toggle's description (the set's team). */
   const teamNoteId = useId();
@@ -485,7 +502,14 @@ export default function SetAttributesPanel({
   // session (`CLOSED_SETS_KEY`); elsewhere the default is collapsed anyway.
   const setOpen = (open: boolean) => {
     // NEO-569: not while a rename or a delete confirm is in flight (see above).
-    if (!open && (renameHeld || deleteHeld)) return;
+    if (!open && renameHeld) {
+      // Refused, and said so: focus goes to the name field, where the reason
+      // (or the saving state) is read, not left on the toggle.
+      renameRef.current?.focusField();
+      return;
+    }
+    if (!open && deleteHeld) return;
+    if (!open) parkFocusOnToggle.current = true;
     setExpanded(open);
     if (leafLevel === "setName") rememberSetClosed(selectorOptionId, !open);
   };
@@ -565,7 +589,8 @@ export default function SetAttributesPanel({
     expanded || !showTeamRow
       ? null
       : teamIds.length > 0
-        ? collapsedTeamRows && collapsedTeamRows.length > 0
+        ? // Only when every id resolved: a partial list reads as the whole.
+          collapsedTeamRows && collapsedTeamRows.length === teamIds.length
           ? `Team: ${joinLabels(collapsedTeamRows.map((t) => teamFullName(t)))}`
           : null
         : noTeamDefault
@@ -892,6 +917,7 @@ export default function SetAttributesPanel({
                 <BrandUnknownRenameNotice value={row.value} />
               ) : (
                 <RenameEntityControl
+                  ref={renameRef}
                   id={selectorOptionId}
                   currentValue={row.value}
                   onBusyChange={setRenameHeld}

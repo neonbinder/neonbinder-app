@@ -3460,7 +3460,7 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
     );
   });
 
-  it("does not repeat the team on a collapsed panel, and the open panel's picker says it (NEO-569)", () => {
+  it("draws no team on a collapsed panel, and the open panel's picker says it (NEO-569)", () => {
     // An insert: the set level opens itself (NEO-496), so the shut panel is
     // read below it. The livery chip (NEO-277) is gone from the collapsed bar.
     currentRow = makeRow({ level: "insert", teamIds: ["team-bulls"] });
@@ -5134,6 +5134,11 @@ describe("SetAttributesPanel — held open by a rename or a delete (NEO-569)", (
 
       expect(hide().getAttribute("aria-expanded")).toBe("true");
       expect(reason.isConnected).toBe(true);
+      // The refused press is not silent: focus goes to the field, whose
+      // aria-describedby reads the reason, instead of staying on the toggle.
+      const field = screen.getByLabelText("Edit name for 2024 Topps Chrome");
+      expect(document.activeElement).toBe(field);
+      expect(field.getAttribute("aria-describedby")).toBe(reason.id);
       expect(alertTexts()).toContain('Another set here is already called "Update"');
       expect((screen.getByLabelText("Edit name for 2024 Topps Chrome") as HTMLInputElement).value).toBe("Update");
     });
@@ -5161,6 +5166,45 @@ describe("SetAttributesPanel — held open by a rename or a delete (NEO-569)", (
       expect(document.activeElement).toBe(pencil);
       fireEvent.click(hide());
       expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+    });
+
+    it("a press while the save is in flight sends focus to the name field", async () => {
+      let finish: (v: unknown) => void = () => {};
+      mockRenameSelectorOption.mockReturnValueOnce(
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+      );
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Rename 2024 Topps Chrome"));
+      const input = screen.getByLabelText("Edit name for 2024 Topps Chrome");
+      fireEvent.change(input, { target: { value: "Update" } });
+      fireEvent.keyDown(input, { key: "Enter" });
+      act(() => hide().focus());
+      expect(document.activeElement).toBe(hide());
+
+      fireEvent.click(hide());
+
+      expect(document.activeElement).toBe(input);
+      await act(async () => finish({ success: true }));
+    });
+
+    it("pressing Hide with the field open and unchanged shuts the panel and parks focus on the toggle, not <body>", () => {
+      renderPanel();
+      fireEvent.click(screen.getByLabelText("Rename 2024 Topps Chrome"));
+      const input = screen.getByLabelText("Edit name for 2024 Topps Chrome");
+      expect(document.activeElement).toBe(input);
+
+      // What a real press does: the toggle takes focus, the field blurs and
+      // (nothing typed) cancels, the pencil comes back and takes focus; then
+      // the click shuts the panel and the pencil unmounts under it.
+      act(() => hide().focus());
+      expect(screen.queryByLabelText("Edit name for 2024 Topps Chrome")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+
+      const edit = screen.getByRole("button", { name: "Edit attributes" });
+      expect(screen.queryByLabelText("Rename 2024 Topps Chrome")).toBeNull();
+      expect(document.activeElement).toBe(edit);
     });
 
     it("an Escape ends the hold: the panel shuts on the next press", () => {
@@ -5278,6 +5322,14 @@ describe("SetAttributesPanel — held open by a rename or a delete (NEO-569)", (
       shut();
 
       expect(described()?.textContent).toBe("Team: No Team");
+    });
+
+    it("gives the toggle no description while only some of the set's teams have resolved", () => {
+      currentRow = makeRow({ level: "insert", teamIds: ["team-bulls", "team-knights"] });
+      currentTeamRows = [BULLS];
+      shut();
+
+      expect(edit().hasAttribute("aria-describedby")).toBe(false);
     });
 
     it("gives the toggle no description when the set has no team default", () => {
