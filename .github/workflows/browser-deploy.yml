@@ -256,7 +256,9 @@ jobs:
           no_traffic: true
           tag: ${{ needs.build-push.outputs.deploy_tag }}
           # Cost control (NEO-95): min-instances=0 intentionally, allow cold start.
-          flags: '--min-instances=0 --max-instances=20'
+          # env_vars MERGES, so a PREVIEW_SHA a pr-<N> preview left on the
+          # service template (browser.yml, NEO-555) would carry over; remove it.
+          flags: '--min-instances=0 --max-instances=20 --remove-env-vars=PREVIEW_SHA'
       - id: capture-new
         name: Capture new dev revision + tagged URL
         env:

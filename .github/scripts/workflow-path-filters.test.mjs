@@ -136,13 +136,27 @@ test("preprocess.yml pull_request.paths equals its merge_group scope filter", ()
 
 test("browser.yml lists no fake-bsc path in its trigger or scope", () => {
   const all = [...pullRequestPaths(read("browser.yml")), ...scopeFilter("browser.yml", "browser")];
-  assert.deepEqual(all.filter((p) => p.includes("fake-bsc")), []);
+  assert.deepEqual(all.filter((p) => p.startsWith("services/fake-bsc/")), []);
 });
 
-test("pipeline browser_preview is a subset of browser.yml's scope", () => {
+test("pipeline browser_preview equals browser.yml's scope", () => {
   const preview = nonEmpty(pipelineFilters.browser_preview, "pipeline browser_preview");
-  const scope = scopeFilter("browser.yml", "browser");
-  assert.deepEqual(preview.filter((p) => !scope.includes(p)), []);
+  assert.deepEqual(sorted(preview), sorted(scopeFilter("browser.yml", "browser")));
+});
+
+test("every script browser.yml runs is in its trigger paths", () => {
+  const text = read("browser.yml").join("\n");
+  const used = [...text.matchAll(/\.github\/scripts\/([A-Za-z0-9_-]+\.sh)/g)].map((m) => `.github/scripts/${m[1]}`);
+  const trigger = pullRequestPaths(read("browser.yml"));
+  // Scripts that browser.yml names only inside comments or trigger lists are
+  // still in `trigger`; the ones it runs must be.
+  assert.deepEqual([...new Set(used)].filter((p) => !trigger.includes(p)), []);
+});
+
+test("wire-browser-url waits on the PREVIEW_SHA browser.yml stamps", () => {
+  assert.match(read("browser.yml").join("\n"), /PREVIEW_SHA=\$\{\{\s*needs\.scope\.outputs\.sha\s*\}\}/);
+  const text = pipeline.join("\n");
+  assert.match(text, /wait-preprocess-revision\.sh[^\n]*\\\n[^\n]*--service neonbinder-browser /);
 });
 
 test("pipeline preprocess is a subset of preprocess.yml's scope", () => {
@@ -165,7 +179,7 @@ test("fake-bsc paths gate browser tests but not the browser preview", () => {
     "fake-bsc paths in pipeline browser",
   );
   const preview = nonEmpty(pipelineFilters.browser_preview, "pipeline browser_preview");
-  assert.deepEqual(preview.filter((p) => p.includes("fake-bsc")), []);
+  assert.deepEqual(preview.filter((p) => p.startsWith("services/fake-bsc/")), []);
   assert.ok(fake.length > 0);
 });
 

@@ -30,6 +30,16 @@ on:
       # a PR touching only those should still build + preview this service.
       - ".github/workflows/browser-deploy.yml"
       - ".github/workflows/release.yml"
+      # NEO-555: the scripts this workflow's preview jobs run.
+      - ".github/scripts/ci-mode.sh"
+      - ".github/scripts/resolve-secret-version.sh"
+      - ".github/scripts/image-push-report.sh"
+      - ".github/scripts/fake-bsc-url.sh"
+      - ".github/scripts/bsc-probe.sh"
+      - ".github/scripts/bsc-probe-verdict.sh"
+      - ".github/scripts/ebay-fake-token.sh"
+      - ".github/scripts/ebay-probe.sh"
+      - ".github/scripts/ebay-probe-verdict.sh"
 
 # NEO-143: deliberately NO `push:` trigger. The prod deploy lane moved to
 # browser-deploy.yml so release.yml can order it AHEAD of the web/Convex
@@ -113,6 +123,15 @@ jobs:
               - ".github/workflows/browser.yml"
               - ".github/workflows/browser-deploy.yml"
               - ".github/workflows/release.yml"
+              - ".github/scripts/ci-mode.sh"
+              - ".github/scripts/resolve-secret-version.sh"
+              - ".github/scripts/image-push-report.sh"
+              - ".github/scripts/fake-bsc-url.sh"
+              - ".github/scripts/bsc-probe.sh"
+              - ".github/scripts/bsc-probe-verdict.sh"
+              - ".github/scripts/ebay-fake-token.sh"
+              - ".github/scripts/ebay-probe.sh"
+              - ".github/scripts/ebay-probe-verdict.sh"
 
   test:
     name: Build + unit tests
@@ -135,7 +154,7 @@ jobs:
   # Per-PR preview: each PR gets a stable `pr-<N>` tagged, NO-TRAFFIC revision
   # on the dev Cloud Run service. Traffic-serving dev (main's HEAD) is
   # untouched. The deterministic tagged URL
-  #   https://pr-<N>---neonbinder-browser-xxlo66yxuq-uc.a.run.app
+  #   https://pr-<N>---<base-host>
   # is what apps/web's vercel-build.sh points the Convex preview's
   # NEONBINDER_BROWSER_URL at, so the web E2E exercises THIS PR's browser code.
   # Fork PRs are skipped (no WIF/OIDC access). Teardown: a cutover follow-up
@@ -267,6 +286,7 @@ jobs:
             EBAY_RU_NAME=${{ vars.EBAY_RU_NAME_SANDBOX }}
             EBAY_ENVIRONMENT=sandbox
             NEONBINDER_FAKE_BSC_URL=${{ vars.NEONBINDER_FAKE_BSC_URL }}
+            PREVIEW_SHA=${{ needs.scope.outputs.sha }}
           secrets: |
             EBAY_CLIENT_SECRET=ebay-client-secret:${{ steps.ebay.outputs.version }}
             NEONBINDER_FAKE_BSC_KEY=fake-bsc-caller-key:${{ steps.fakebsc.outputs.version }}
