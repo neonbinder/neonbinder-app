@@ -32,6 +32,7 @@ import {
   insertConversionRefusal,
 } from "./setInsertConversion";
 import { insertTestCard } from "../lib/testing/card-row";
+import { teamRowFields } from "./lib/teamRow";
 
 const modules = (
   import.meta as unknown as {
@@ -1403,3 +1404,93 @@ describe("insertTypeOf is bounded (NEO-306 security audit)", () => {
     );
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-556 — the team default (a team, or No Team) reaches the new insert
+// ───────────────────────────────────────────────────────────────────────────
+
+describe.each<"noTeam" | "team">(["noTeam", "team"])(
+  "NEO-556 the new insert's team default, %s",
+  (kind) => {
+    const NO_TEAM = { setAt: 1_600_000_000_000, setByUserId: "admin_earlier" };
+
+    async function theDefault(t: T, ids: Awaited<ReturnType<typeof seed>>) {
+      if (kind === "noTeam") return { noTeamDefault: NO_TEAM };
+      const teamId = await t.run(async (ctx) => {
+        const year = (await ctx.db.get(ids.yearId))!;
+        return ctx.db.insert("teams", {
+          ...teamRowFields({ name: "Bulls", location: "Durham" }),
+          sportId: year.parentId!,
+          lastUpdated: SENTINEL,
+        } as never);
+      });
+      return { teamIds: [teamId] };
+    }
+
+    async function landed(t: T, parentId: RowId, value: string): Promise<Row | null> {
+      return t.run(async (ctx) =>
+        (
+          await ctx.db
+            .query("selectorOptions")
+            .withIndex("by_level_and_parent", (q) =>
+              q.eq("level", "insert").eq("parentId", parentId),
+            )
+            .collect()
+        ).find((r) => r.value === value) ?? null,
+      );
+    }
+
+    function expectDefault(row: Row | null, expected: Awaited<ReturnType<typeof theDefault>>) {
+      expect(row).not.toBeNull();
+      if ("noTeamDefault" in expected) {
+        expect(row!.noTeamDefault).toEqual(expected.noTeamDefault);
+        expect(row!.teamIds).toBeUndefined();
+      } else {
+        expect(row!.teamIds).toEqual(expected.teamIds);
+        expect(row!.noTeamDefault).toBeUndefined();
+      }
+    }
+
+    test("S1: the source Base's own default comes with it", async () => {
+      const t = convexTest(schema, modules);
+      const ids = await seed(t);
+      const d = await theDefault(t, ids);
+      const { setId } = await slSet(
+        t,
+        ids.brandId,
+        "Bowman Stars",
+        [{ id: "SL-STARS", label: "Bowman Stars" }],
+        { base: d },
+      );
+
+      const result = await convert(t, setId, ids.insertTypeId, { kind: "newInsert" });
+
+      expectDefault(await landed(t, ids.insertTypeId, result.landedValue), d);
+    });
+
+    test("S2: the source row's own default comes with it", async () => {
+      const t = convexTest(schema, modules);
+      const ids = await seed(t);
+      const d = await theDefault(t, ids);
+      const rowId = await slRow(t, ids.parallelTypeId, "All-America Game Autos Red Ink", [RED_INK], d);
+
+      const result = await convert(t, rowId, ids.insertTypeId, { kind: "newInsert" });
+
+      expectDefault(await landed(t, ids.insertTypeId, result.landedValue), d);
+    });
+
+    test("S1 with no default of its own: the Insert type's default is copied down", async () => {
+      const t = convexTest(schema, modules);
+      const ids = await seed(t);
+      const d = await theDefault(t, ids);
+      await t.run((ctx) => ctx.db.patch(ids.insertTypeId, d));
+      const { setId } = await slSet(t, ids.brandId, "Bowman Stars", [
+        { id: "SL-STARS", label: "Bowman Stars" },
+      ]);
+
+      const result = await convert(t, setId, ids.insertTypeId, { kind: "newInsert" });
+
+      expectDefault(await landed(t, ids.insertTypeId, result.landedValue), d);
+    });
+  },
+);

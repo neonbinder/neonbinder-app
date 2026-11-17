@@ -93,7 +93,7 @@ export function readProbeShape(v: unknown): Shape | null {
   return out;
 }
 
-function mergeShapes(shapes: Shape[]): Shape {
+export function mergeShapes(shapes: Shape[]): Shape {
   const out: Record<string, Set<ShapeType>> = {};
   for (const s of shapes) for (const [p, ts] of Object.entries(s)) for (const t of ts) (out[p] ??= new Set()).add(t);
   const merged: Shape = {};
@@ -113,7 +113,7 @@ function parentOf(path: string): string {
  * sheet's listed-only keys) is type-checked when the probe has it, never
  * required.
  */
-function compare(probe: Shape, served: Shape, allow: (p: string) => boolean, required?: ReadonlySet<string>): string[] {
+export function compare(probe: Shape, served: Shape, allow: (p: string) => boolean, required?: ReadonlySet<string>): string[] {
   const out: string[] = [];
   const nonNull = (ts: readonly string[]) => ts.filter((t) => t !== "null");
   for (const p of Object.keys(probe)) {

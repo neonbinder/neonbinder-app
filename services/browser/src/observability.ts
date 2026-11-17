@@ -124,7 +124,8 @@ export type CanaryPauseLookupFailureReason =
 
 export interface CanaryPauseLookupFailedLine {
   msg: "canary_pause_lookup_failed";
-  platform: "bsc" | "sportlots";
+  /** "ebay" only from the eBay probe's pause check (NEO-555). */
+  platform: "bsc" | "sportlots" | "ebay";
   reason: CanaryPauseLookupFailureReason;
 }
 

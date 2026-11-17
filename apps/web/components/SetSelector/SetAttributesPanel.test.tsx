@@ -244,8 +244,11 @@ vi.mock("./TeamPicker", () => ({
     labels,
     ariaDescribedBy,
     contextOptionId,
+    noTeam,
   }: {
     contextOptionId?: string;
+    /** NEO-556 — the No Team toggle, mirrored as a pressed/unpressed button. */
+    noTeam?: { value: boolean; onChange: (next: boolean) => void; label?: string };
     value: string[];
     onChange: (next: string[]) => void;
     sportId?: string;
@@ -281,8 +284,57 @@ vi.mock("./TeamPicker", () => ({
           ×
         </button>
       ))}
+      {noTeam && (
+        <button
+          type="button"
+          aria-label={noTeam.label}
+          aria-pressed={noTeam.value}
+          disabled={disabled}
+          onClick={() => noTeam.onChange(!noTeam.value)}
+        >
+          No Team
+        </button>
+      )}
     </div>
   ),
+}));
+
+/**
+ * NEO-556 — "Mark N teamless cards No Team" owns its own Convex calls and has
+ * its own test file (NoTeamCardsControl.test.tsx). Here it reports what the
+ * panel handed it — and, like the real control on a row whose Team is not No
+ * Team (and with no run on screen), draws nothing otherwise, so the NEO-528
+ * "directly under Team" pin still measures the real layout.
+ */
+vi.mock("./NoTeamCardsControl", () => ({
+  default: ({
+    selectorOptionId,
+    isNoTeam,
+    expanded,
+    onConfirmOpen,
+    onDismissed,
+  }: {
+    selectorOptionId: string;
+    isNoTeam: boolean;
+    expanded: boolean;
+    onConfirmOpen?: () => void;
+    onDismissed: () => void;
+  }) =>
+    !isNoTeam ? null : (
+    <div
+      aria-label="No Team cards control (stub)"
+      data-selector-option-id={selectorOptionId}
+      data-is-no-team={String(isNoTeam)}
+      data-expanded={String(expanded)}
+    >
+      <button type="button" onClick={onDismissed}>
+        Stub No Team dismiss
+      </button>
+      <button type="button" onClick={() => onConfirmOpen?.()}>
+        Stub No Team mark offer
+      </button>
+    </div>
+    ),
 }));
 
 /**
@@ -329,12 +381,18 @@ vi.mock("./EveryCardPlayerControl", () => ({
 
 import SetAttributesPanel, {
   CLOSED_SETS_CAP,
+  noTeamAppliedToast,
+  NO_TEAM_CLEARED_TOAST,
+  NO_TEAM_SAVED_TOAST,
   SET_TEAM_PICKER_LABELS,
+  setNoTeamConfirmCopy,
   teamCascadeConfirmCopy,
   teamClearConfirmCopy,
+  teamHintCopy,
   teamSavedToast,
 } from "./SetAttributesPanel";
 import { DEFAULT_TEAM_PICKER_LABELS } from "./TeamPicker";
+import { NO_TEAM_LABELS } from "./team-picker-labels";
 import { SET_ROW_ACTION_TONE_CLASSES } from "./SetRowActionButton";
 import { goToSetNameInTitles } from "./set-name-in-titles-jump";
 
@@ -366,6 +424,8 @@ function makeRow(overrides: Partial<{
   teamIds: string[];
   /** NEO-277 — present while a cascade is (believed to be) still running. */
   teamCascadeStartedAt: number;
+  /** NEO-556 — the row's Team is No Team. */
+  noTeamDefault: { setAt: number; setByUserId: string };
 }> = {}) {
   return {
     _id: SELECTOR_OPTION_ID,
@@ -2747,7 +2807,7 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
     expect(group.getAttribute("aria-describedby")).toBeTruthy();
     expect(
       within(group).getByText(
-        "Team issues, police sets, college sets, stadium giveaways: pick the team once and every card in this set gets it.",
+        "Team issues, police sets, college sets, stadium giveaways: pick the team once and every card in this set gets it. Cards with no team at all? Choose No Team.",
       ),
     ).toBeTruthy();
 
@@ -2774,7 +2834,7 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
       renderPanel();
       expect(
         within(teamGroup()).getByText(
-          `Every card in this ${noun} gets this team. Pick it once.`,
+          `Every card in this ${noun} gets this team. Pick it once, or choose No Team.`,
         ),
       ).toBeTruthy();
     },
@@ -2904,6 +2964,13 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
     expect(screen.getByTestId("team-picker-value").textContent).toBe(
       "team-bulls",
     );
+    // Applying adds an answer: green yes, pink Cancel (NEO-556).
+    expect(
+      within(dialog).getByRole("button", { name: "Yes, apply" }).style.getPropertyValue("--nb-fill"),
+    ).toBe("var(--neon-green)");
+    expect(
+      within(dialog).getByRole("button", { name: "Cancel" }).style.getPropertyValue("--nb-fill"),
+    ).toBe("var(--neon-pink)");
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Yes, apply" }));
 
@@ -3026,6 +3093,13 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
         ),
       ).toBeTruthy();
       expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+      // A clear takes away: it keeps the pink yes beside a cyan Cancel.
+      expect(
+        within(dialog).getByRole("button", { name: "Yes, clear" }).style.getPropertyValue("--nb-fill"),
+      ).toBe("var(--neon-pink)");
+      expect(
+        within(dialog).getByRole("button", { name: "Cancel" }).style.getPropertyValue("--nb-fill"),
+      ).toBe("var(--neon-blue)");
 
       fireEvent.click(
         within(dialog).getByRole("button", { name: "Yes, clear" }),
@@ -4362,5 +4436,371 @@ describe("SetAttributesPanel — Player on every card (NEO-528)", () => {
     fireEvent.click(screen.getByRole("button", { name: "Stub dismiss collapsed" }));
     expect(document.activeElement).toBe(toggle);
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-556 — No Team, the Team row's third answer
+// ---------------------------------------------------------------------------
+
+describe("SetAttributesPanel — No Team (NEO-556)", () => {
+  const NOTHING_FOLLOWS = {
+    nodesFollowing: 0,
+    cardsFollowing: 0,
+    cardsStaying: 0,
+    cardsOverridden: 0,
+    cardsTeamless: 0,
+    cardsPendingName: 0,
+    cardsCarryingCurrent: 0,
+    truncated: false,
+  };
+  const BULLS = { _id: "team-bulls", name: "Bulls", location: "Durham" };
+  const NO_TEAM = { setAt: 1, setByUserId: "admin-1" };
+  const toggle = () => screen.getByRole("button", { name: NO_TEAM_LABELS.everyCard });
+
+  function armPreview(preview: typeof NOTHING_FOLLOWS) {
+    mockConvexQuery.mockImplementation(async (ref: string) => {
+      if (ref === "getSelectorOptionTeamCascadePreview") return preview;
+      if (ref === "teams.getManyByIds") return [BULLS];
+      throw new Error(`unexpected convex.query(${ref})`);
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockSetSelectorOptionTeams.mockResolvedValue(null);
+    currentHoldings = { holds: [], protected: false };
+    currentTeamRows = undefined;
+    currentChain = makeChain("Baseball");
+    pickNext = "team-bulls";
+    armPreview(NOTHING_FOLLOWS);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("offers No Team on the Team row, named for new cards here, unpressed on an unset row", () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    renderPanel();
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("saves No Team straight away when nothing beneath follows and no card carries a team being replaced", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    renderPanel();
+
+    fireEvent.click(toggle());
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionTeams).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        teamIds: [],
+        noTeam: true,
+      });
+    });
+    expect(mockConvexQuery).toHaveBeenCalledWith("getSelectorOptionTeamCascadePreview", {
+      selectorOptionId: SELECTOR_OPTION_ID,
+      teamIds: [],
+      noTeam: true,
+    });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(await screen.findByText(NO_TEAM_SAVED_TOAST)).toBeTruthy();
+  });
+
+  it("asks first when checklists beneath follow, and saves on Yes", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    armPreview({ ...NOTHING_FOLLOWS, nodesFollowing: 3 });
+    renderPanel();
+
+    fireEvent.click(toggle());
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Set this set to No Team?")).toBeTruthy();
+    expect(within(dialog).getByText(/3 checklists under this set switch to No Team too\./)).toBeTruthy();
+    // Pending while the question is open: the toggle already reads pressed.
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+    // Setting an answer, not taking one away: the green yes beside a pink
+    // Cancel, as the Mark confirm that follows it shows.
+    const fill = (el: HTMLElement) => el.style.getPropertyValue("--nb-fill");
+    expect(fill(within(dialog).getByRole("button", { name: "Yes, set No Team" }))).toBe("var(--neon-green)");
+    expect(fill(within(dialog).getByRole("button", { name: "Cancel" }))).toBe("var(--neon-pink)");
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Yes, set No Team" }));
+    await waitFor(() => {
+      expect(mockSetSelectorOptionTeams).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        teamIds: [],
+        noTeam: true,
+      });
+    });
+  });
+
+  it("Cancel on the question saves nothing and the toggle reads the row again", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: ["team-bulls"] });
+    currentTeamRows = [BULLS];
+    armPreview({ ...NOTHING_FOLLOWS, cardsCarryingCurrent: 28 });
+    renderPanel();
+
+    fireEvent.click(toggle());
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText(/28 cards keep Durham Bulls\./)).toBeTruthy();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(mockSetSelectorOptionTeams).not.toHaveBeenCalled();
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("team-picker-value").textContent).toBe("team-bulls");
+  });
+
+  it("a stored No Team shows pressed; pressing it clears the row (no No Team, no teams)", async () => {
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    renderPanel();
+
+    expect(toggle().getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(toggle());
+
+    await waitFor(() => {
+      expect(mockSetSelectorOptionTeams).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        teamIds: [],
+      });
+    });
+    const args = mockSetSelectorOptionTeams.mock.calls[0][0] as { noTeam?: boolean };
+    expect(args.noTeam).toBeUndefined();
+    expect(await screen.findByText(NO_TEAM_CLEARED_TOAST)).toBeTruthy();
+  });
+
+  it("picking a team over a stored No Team previews that team and shows No Team off while it is asked", async () => {
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    let release: (v: typeof NOTHING_FOLLOWS) => void = () => {};
+    mockConvexQuery.mockImplementation((ref: string) => {
+      if (ref === "getSelectorOptionTeamCascadePreview") {
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      }
+      if (ref === "teams.getManyByIds") return Promise.resolve([BULLS]);
+      throw new Error(`unexpected convex.query(${ref})`);
+    });
+    renderPanel();
+
+    fireEvent.click(screen.getByLabelText(PICK));
+    await waitFor(() => expect(toggle().getAttribute("aria-pressed")).toBe("false"));
+    expect(mockConvexQuery).toHaveBeenCalledWith("getSelectorOptionTeamCascadePreview", {
+      selectorOptionId: SELECTOR_OPTION_ID,
+      teamIds: ["team-bulls"],
+    });
+
+    await act(async () => release(NOTHING_FOLLOWS));
+    await waitFor(() => {
+      expect(mockSetSelectorOptionTeams).toHaveBeenCalledWith({
+        selectorOptionId: SELECTOR_OPTION_ID,
+        teamIds: ["team-bulls"],
+      });
+    });
+  });
+
+  it("the collapsed summary bar reads No Team", () => {
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    render(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed />);
+    expect(screen.getByText("No Team")).toBeTruthy();
+  });
+
+  it("a row carrying a team (even with a stray No Team) reads as its team, never No Team", () => {
+    currentRow = makeRow({ level: "setName", teamIds: ["team-bulls"], noTeamDefault: NO_TEAM });
+    currentTeamRows = [BULLS];
+    renderPanel();
+    expect(toggle().getAttribute("aria-pressed")).toBe("false");
+    // The stub draws only for a No Team row.
+    expect(screen.queryByLabelText("No Team cards control (stub)")).toBeNull();
+  });
+
+  it("hands the run control the row and its No Team state, at the Team levels only", () => {
+    currentRow = makeRow({ level: "insert", value: "Diamond Kings", noTeamDefault: NO_TEAM });
+    renderPanel();
+    const stub = screen.getByLabelText("No Team cards control (stub)");
+    expect(stub.getAttribute("data-selector-option-id")).toBe(SELECTOR_OPTION_ID);
+    expect(stub.getAttribute("data-is-no-team")).toBe("true");
+    expect(stub.getAttribute("data-expanded")).toBe("true");
+  });
+
+  it.each(["sport", "year", "manufacturer"])("has no run control at %s", (level) => {
+    currentRow = makeRow({ level, value: `node-${level}`, noTeamDefault: NO_TEAM });
+    renderPanel();
+    expect(screen.queryByLabelText("No Team cards control (stub)")).toBeNull();
+  });
+
+  it("a dismissed run hands focus to the No Team toggle while expanded", () => {
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    renderPanel();
+    fireEvent.click(screen.getByRole("button", { name: "Stub No Team dismiss" }));
+    expect(document.activeElement).toBe(toggle());
+  });
+
+  it("a dismissed run never reaches into another panel's Team row", () => {
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    // Another panel's toggle, earlier in the document, with the same name.
+    const stray = document.createElement("button");
+    stray.setAttribute("aria-label", NO_TEAM_LABELS.everyCard);
+    document.body.prepend(stray);
+    try {
+      renderPanel();
+      fireEvent.click(screen.getByRole("button", { name: "Stub No Team dismiss" }));
+      expect(document.activeElement).not.toBe(stray);
+      expect(document.activeElement?.closest('[role="group"][aria-labelledby]')).toBeTruthy();
+    } finally {
+      stray.remove();
+    }
+  });
+
+  it("a dismissed run lands on Hide attributes when the toggle is disabled (a cascade in flight)", () => {
+    currentRow = makeRow({
+      level: "setName",
+      noTeamDefault: NO_TEAM,
+      teamCascadeStartedAt: Date.now() - 5_000,
+    });
+    renderPanel();
+    expect((toggle() as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Stub No Team dismiss" }));
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Hide attributes" }));
+  });
+
+  it("after a straight No Team save, focus rests on the toggle once the row is free again", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    mockSetSelectorOptionTeams.mockImplementation(async () => {
+      currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+      return null;
+    });
+    renderPanel();
+    toggle().focus();
+    fireEvent.click(toggle());
+    await waitFor(() => expect(mockSetSelectorOptionTeams).toHaveBeenCalled());
+    await waitFor(() => expect(document.activeElement).toBe(toggle()));
+    expect((toggle() as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("after a confirmed No Team save that leaves the row in flight, focus rests on the Team row, never <body>", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    armPreview({ ...NOTHING_FOLLOWS, nodesFollowing: 3 });
+    // The save schedules the node pass: the row comes back in flight, so the
+    // toggle is disabled when focus is parked.
+    mockSetSelectorOptionTeams.mockImplementation(async () => {
+      currentRow = makeRow({
+        level: "setName",
+        noTeamDefault: NO_TEAM,
+        teamCascadeStartedAt: Date.now(),
+      });
+      return null;
+    });
+    const { rerender } = renderPanel();
+    fireEvent.click(toggle());
+    const dialog = await screen.findByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: "Yes, set No Team" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+    const group = screen.getByRole("group", { name: "Team" });
+    await waitFor(() => expect(document.activeElement).toBe(group));
+    expect((toggle() as HTMLButtonElement).disabled).toBe(true);
+    expect(within(group).getByRole("status").textContent).toBe("Applying to cards…");
+
+    // The cascade's last chunk clears the field: the toggle is free again and
+    // focus goes back to it from the row.
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    rerender(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} />);
+    await waitFor(() => expect(document.activeElement).toBe(toggle()));
+    expect((toggle() as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("a focused toggle that the save disables hands focus to its row, and gets it back after", async () => {
+    currentRow = makeRow({ level: "setName", teamIds: [] });
+    let release: () => void = () => {};
+    mockSetSelectorOptionTeams.mockImplementation(
+      () =>
+        new Promise<null>((resolve) => {
+          release = () => {
+            currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+            resolve(null);
+          };
+        }),
+    );
+    renderPanel();
+    toggle().focus();
+    fireEvent.click(toggle());
+    await waitFor(() => expect(mockSetSelectorOptionTeams).toHaveBeenCalled());
+    // Busy: the toggle is disabled, and focus is on the row, not <body>.
+    expect((toggle() as HTMLButtonElement).disabled).toBe(true);
+    expect(document.activeElement).toBe(screen.getByRole("group", { name: "Team" }));
+    await act(async () => release());
+    await waitFor(() => expect(document.activeElement).toBe(toggle()));
+  });
+
+  it("when a No Team save's cascade finishes, the line speaks of checklists, never 'Team applied to cards'", async () => {
+    currentRow = makeRow({
+      level: "setName",
+      noTeamDefault: NO_TEAM,
+      teamCascadeStartedAt: Date.now() - 5_000,
+    });
+    const { rerender } = renderPanel();
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    rerender(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} />);
+    expect(await screen.findByText("No Team applied to the checklists under this set")).toBeTruthy();
+    expect(noTeamAppliedToast("Insert")).toBe("No Team applied to the checklists under this insert");
+  });
+
+  it("the finish toast comes down when the Mark confirm opens, rather than sitting over it", async () => {
+    currentRow = makeRow({
+      level: "setName",
+      noTeamDefault: NO_TEAM,
+      teamCascadeStartedAt: Date.now() - 5_000,
+    });
+    const { rerender } = renderPanel();
+    currentRow = makeRow({ level: "setName", noTeamDefault: NO_TEAM });
+    rerender(<SetAttributesPanel selectorOptionId={SELECTOR_OPTION_ID} defaultCollapsed={false} />);
+    const finish = "No Team applied to the checklists under this set";
+    expect(await screen.findByText(finish)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Stub No Team mark offer" }));
+    await waitFor(() => expect(screen.queryByText(finish)).toBeNull());
+    expect(screen.queryByText("Team applied to cards")).toBeNull();
+  });
+});
+
+describe("teamHintCopy with No Team on (NEO-556)", () => {
+  it("says what No Team does and how to replace it, at every level", () => {
+    const on = "No Team: new cards with nothing naming a team get it. Pick a team to replace it.";
+    expect(teamHintCopy("setName", true)).toBe(on);
+    expect(teamHintCopy("insert", true)).toBe(on);
+    expect(teamHintCopy("insert")).toBe(
+      "Every card in this insert gets this team. Pick it once, or choose No Team.",
+    );
+  });
+});
+
+describe("setNoTeamConfirmCopy (NEO-556)", () => {
+  it("says what new cards get, what follows, what stays, and the next step", () => {
+    expect(
+      setNoTeamConfirmCopy({
+        levelLabel: "Set",
+        preview: { nodesFollowing: 1, cardsCarryingCurrent: 1 },
+        currentTeamNames: "Durham Bulls",
+      }),
+    ).toEqual({
+      title: "Set this set to No Team?",
+      description:
+        "New cards with nothing naming a team get No Team. 1 checklist under this set switches to No Team too. 1 card keeps Durham Bulls. Cards already here stay as they are; you can mark the teamless ones next.",
+    });
+  });
+
+  it("drops the parts with nothing in them", () => {
+    expect(
+      setNoTeamConfirmCopy({
+        levelLabel: "Insert",
+        preview: { nodesFollowing: 0, cardsCarryingCurrent: 0 },
+        currentTeamNames: null,
+      }).description,
+    ).toBe(
+      "New cards with nothing naming a team get No Team. Cards already here stay as they are; you can mark the teamless ones next.",
+    );
   });
 });

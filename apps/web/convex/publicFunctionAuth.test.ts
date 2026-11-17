@@ -3681,6 +3681,73 @@ describe("NEO-528: the also-pictured surface is admin-gated; ruleFits is signed-
 });
 
 /**
+ * NEO-556 — "Mark the teamless cards No Team" is operator tooling
+ * (`requireAdmin`): the run's target list and counts, and the page that
+ * stamps. A refused page must not have stamped a card.
+ */
+describe("NEO-556: the No Team run is admin-gated", () => {
+  async function seedIds(t: ReturnType<typeof convexTest>) {
+    const sportId = await seedSport(t);
+    return t.run(async (ctx) => {
+      const variantId = await ctx.db.insert("selectorOptions", {
+        level: "variantType",
+        value: "Base",
+        parentId: sportId,
+        platformData: {},
+        children: [],
+        lastUpdated: 1_700_000_000_000,
+        noTeamDefault: { setAt: 1_700_000_000_000, setByUserId: "admin" },
+      });
+      const cardId = await insertTestCard(ctx, {
+        selectorOptionId: variantId,
+        cardNumber: "1",
+        cardName: "Card",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: 1_700_000_000_000,
+      });
+      return { variantId, cardId };
+    });
+  }
+  const stamped = (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) =>
+    t.run(async (ctx) => (await ctx.db.get(ids.cardId))?.teamNoneConfirmedAt ?? null);
+  const ADMIN_GATED: Array<
+    [string, (t: ReturnType<typeof convexTest>, ids: Awaited<ReturnType<typeof seedIds>>) => Promise<unknown>]
+  > = [
+    [
+      "cardNoTeamBulk.noTeamTargets",
+      (t, ids) => t.query(api.cardNoTeamBulk.noTeamTargets, { selectorOptionId: ids.variantId }),
+    ],
+    [
+      "cardNoTeamBulk.applyNoTeamPage",
+      (t, ids) => t.mutation(api.cardNoTeamBulk.applyNoTeamPage, { selectorOptionId: ids.variantId, cursor: null }),
+    ],
+  ];
+
+  test.each(ADMIN_GATED)("%s rejects an anonymous caller and stamps nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t, ids)).rejects.toThrow(/not authenticated/i);
+    expect(await stamped(t, ids)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s rejects a signed-in non-admin and stamps nothing", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity({ subject: "member", role: "member" }) as never, ids)).rejects.toThrow(
+      /admin access required/i,
+    );
+    expect(await stamped(t, ids)).toBeNull();
+  });
+
+  test.each(ADMIN_GATED)("%s answers an admin", async (_name, call) => {
+    const t = convexTest(schema, modules);
+    const ids = await seedIds(t);
+    await expect(call(t.withIdentity(ADMIN) as never, ids)).resolves.toBeDefined();
+  });
+});
+
+/**
  * NEO-520 — `testing.seedMyTestEbayOrder`, the unmatched-eBay-sale spec's seed
  * hop, by the same two locks as `seedMyTestPickOrder`: an anonymous caller is
  * refused, and a deployment without `TESTING_RESET_SECRET` (every production

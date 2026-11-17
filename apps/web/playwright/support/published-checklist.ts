@@ -440,6 +440,31 @@ export async function usePublishersChecklist(
 }
 
 /**
+ * NEO-556: a checklist a spec writes itself, pasted into the dialog's textbox, for a real set
+ * no capture file exists for (the Leaf Vivid proofs: no capture tool run, so the file names only
+ * the rows the spec is about; every other card is asked of BSC like any left-out row). `rows` is
+ * the data rows pasted (the preview's count). Same contract as `usePublishersChecklist`: ENTRY a
+ * checklist section with the button (or the chip) on screen; EXIT the dialog is closed and the
+ * chip is showing, nothing fetched. A chip already showing the same row count is the proof of a
+ * second visit.
+ */
+export async function usePastedChecklist(page: Page, csv: string, rows: number): Promise<ChecklistFacts> {
+  const chip = publishersChecklistChip(page, rows);
+  await expect(publishersChecklistButton(page).or(chip).first()).toBeVisible();
+  const facts: ChecklistFacts = { path: "(pasted)", rows, matched: rows };
+  if (await chip.isVisible()) return facts;
+  await publishersChecklistButton(page).click();
+  const dialog = publishersChecklistDialog(page);
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("textbox", { name: "Paste the checklist" }).fill(csv);
+  await expect(previewRowCount(dialog, rows)).toBeVisible();
+  await dialog.getByRole("button", { name: "Use this checklist" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(chip).toBeVisible();
+  return facts;
+}
+
+/**
  * The Sync result line: "Teams from your checklist: N of M cards", appended to
  * the sync's message. N is `facts.matched`; M is the set's card count on the
  * marketplace (it can differ from the file's rows: a card the checklist never

@@ -195,7 +195,7 @@ const optionNames = () =>
 
 describe("C7 — the whole-set team hint", () => {
   const HINT =
-    "Most of these share one team? Set a whole-set team in Set details and every new card gets it.";
+    "Most of these share one team, or show none at all? Pick a set team, or No Team, under Edit attributes and every new card gets it.";
 
   it("renders the approved hint only when the host asks", () => {
     const { unmount } = render(<Harness cards={[card("1", ["A"])]} showSetTeamHint />);

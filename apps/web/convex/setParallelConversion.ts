@@ -69,7 +69,11 @@ import {
   deriveOwnLevelFeatures,
   inheritableFeatures,
 } from "./features/deriveCardFeatures";
-import { inheritedTeamIds } from "./lib/selectorTeams";
+import {
+  inheritedTeamDefault,
+  teamDefaultFields,
+  teamDefaultOf,
+} from "./lib/selectorTeams";
 import { newRowSubtreeCounts } from "./cardCounts";
 import {
   allocateSlots,
@@ -728,9 +732,13 @@ export const convertSetToParallel = mutation({
         ...sourceData.features,
         ...deriveOwnLevelFeatures("insert", check.name, flags),
       };
-      const teamIds = sourceData.teamIds
-        ? [...sourceData.teamIds]
-        : inheritedTeamIds(targetType);
+      // The source's own team default (NEO-556: or No Team), else the
+      // Parallel type's, copied down.
+      const sourceTeamDefault = teamDefaultOf(sourceData);
+      const teamDefault =
+        sourceTeamDefault.kind !== "unset"
+          ? teamDefaultFields(sourceTeamDefault)
+          : inheritedTeamDefault(targetType);
       // NEO-334: `flags` feed the features above and are never stored.
       const metadata = {
         ...(sourceData.cardNumberPrefix !== undefined
@@ -753,7 +761,7 @@ export const convertSetToParallel = mutation({
         createdByUserId: adminUserId,
         ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
         ...(Object.keys(features).length > 0 ? { features } : {}),
-        ...(teamIds ? { teamIds } : {}),
+        ...teamDefault,
         lastUpdated: now,
       });
       await ctx.db.patch(targetType._id, {

@@ -70,7 +70,11 @@ import {
   newSelectorRowCache,
   type EffectiveCardPlayerDefaults,
 } from "./cardPlayersBulk";
-import { bornSecondaryPlayerFields, bornSecondaryPlayers } from "./cardSecondaryPlayers";
+import {
+  bornSecondaryPlayerFields,
+  bornSecondaryPlayers,
+  refreshedGeneratedDescription,
+} from "./cardSecondaryPlayers";
 import { listingNamesAPlayer } from "./lib/cardPlayerDefaults";
 import { newStoredCardReadCache } from "./storedCardTitle";
 import { MAX_PARALLEL_GROUPING_ENTRIES } from "./parallelGroupingPlan";
@@ -241,9 +245,14 @@ import {
   cardTeamFollowOutcome,
   cardTeamFollowVerdict,
   defaultTeamOnCardIds,
-  inheritedTeamIds,
+  inheritedTeamDefault,
+  noTeamCardVerdict,
   sameTeamSet,
-  teamFollowVerdict,
+  stampNoTeam,
+  teamDefaultFollowVerdict,
+  teamDefaultOf,
+  teamDefaultPatch,
+  type TeamDefault,
 } from "./lib/selectorTeams";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
@@ -1062,6 +1071,12 @@ export const getAncestorChain = query({
       // NEO-277: the set-level team, so a caller holding the chain can show
       // where a card's default team comes from. Derived from the schema.
       teamIds: selectorOptionFields.teamIds,
+      // NEO-556: and the set-level "No Team", its third state, as a flag.
+      // True exactly when the server reads the row as No Team
+      // (`teamDefaultOf`: a row that somehow carries teams too reads as its
+      // teams). Never the stored `noTeamDefault` object: who set it and when
+      // stay on the server.
+      noTeam: v.boolean(),
     }),
   ),
   handler: async (ctx, args) => {
@@ -1087,6 +1102,7 @@ export const getAncestorChain = query({
       metadata?: Doc<"selectorOptions">["metadata"];
       features?: Record<string, string>;
       teamIds?: Array<Id<"teams">>;
+      noTeam: boolean;
     }> = [];
     let currentId: Id<"selectorOptions"> | undefined = args.id;
 
@@ -1103,6 +1119,7 @@ export const getAncestorChain = query({
         metadata: option.metadata,
         features: option.features,
         teamIds: option.teamIds,
+        noTeam: teamDefaultOf(option).kind === "noTeam",
       });
       currentId = option.parentId;
     }
@@ -2867,7 +2884,7 @@ export const storeSelectorOptions = mutation({
     // NEO-277: the parent's set-level team, copied onto every fresh insert
     // below exactly as `features` is — once, at creation. Never re-applied to
     // a row that already exists (see schema.ts `teamIds`).
-    const parentTeamIds = inheritedTeamIds(parentRowForCopyDown);
+    const parentTeamDefault = inheritedTeamDefault(parentRowForCopyDown);
 
     // The sibling snapshot. This is the ONLY set of rows this call may touch —
     // tier 0's client-supplied ids are resolved against it rather than through
@@ -3425,7 +3442,7 @@ export const storeSelectorOptions = mutation({
           ? { metadata: insertMetadata }
           : {}),
         ...(Object.keys(features).length > 0 ? { features } : {}),
-        ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
+        ...parentTeamDefault,
         ...(sportConfig ? { sportConfig } : {}),
         lastUpdated: Date.now(),
       });
@@ -4019,7 +4036,7 @@ export const addCustomSelectorOption = mutation({
     // answer stored beside it to drift.
     // NEO-277: the parent's set-level team comes down with the features —
     // once, here, at creation (see schema.ts `teamIds`).
-    const parentTeamIds = inheritedTeamIds(parent);
+    const parentTeamDefault = inheritedTeamDefault(parent);
 
     // NEO-237 — a manufacturer row is born with its set-name prefix, equal to
     // its value. The one default; edited afterwards only through
@@ -4087,7 +4104,7 @@ export const addCustomSelectorOption = mutation({
       createdByUserId: userId,
       ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       ...(Object.keys(features).length > 0 ? { features } : {}),
-      ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
+      ...parentTeamDefault,
       lastUpdated: Date.now(),
     });
 
@@ -6167,12 +6184,24 @@ export const addCustomCard = mutation({
      * helper `updateCard` uses — see `resolveTeamOnCardIdsForWrite`.
      */
     teamOnCardIds: v.optional(v.array(v.id("teams"))),
+    /**
+     * NEO-556 — "No Team": the operator says this card carries no team.
+     * Stamped server-side (`teamNoneConfirmedAt` now, this admin), never a
+     * client timestamp. The card's own answer, so it beats the leaf's
+     * set-level team as a picker value does; refused beside a picked team
+     * or a typed name. Absent, a card under a No Team leaf is still born
+     * stamped (it has no listing and no lookup to wait on). `false` is the
+     * operator turning that off for this one card: it is born teamless and
+     * unstamped, so the missing-team item asks about it. `false` never
+     * touches a set-level TEAM: under a team leaf the card still takes it.
+     */
+    teamNone: v.optional(v.boolean()),
     /** NEO-367 — NB's own note about the card; see `normalizeCardNotes`. */
     notes: v.optional(v.string()),
   },
   returns: v.id("cardChecklist"),
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
+    const operatorUserId = await requireAdmin(ctx);
     // NEO-367 — refused before anything is written, like the ids below.
     const notes = normalizeCardNotes(args.notes);
     const typedPlayerNames = normalizePendingNames(
@@ -6185,6 +6214,14 @@ export const addCustomCard = mutation({
       "team",
       MAX_PENDING_TEAM_NAMES,
     );
+    const explicitTeamNone = args.teamNone === true;
+    const explicitNoStamp = args.teamNone === false;
+    if (
+      explicitTeamNone &&
+      ((args.teamOnCardIds?.length ?? 0) > 0 || (typedTeamNames?.length ?? 0) > 0)
+    ) {
+      throw new ConvexError(CARD_NO_TEAM_WITH_TEAMS_REFUSAL);
+    }
 
     // NEO-528 round 3 — "Player on every card": a card added with no player
     // picked and no name typed is born with the default player of the nearest
@@ -6244,14 +6281,18 @@ export const addCustomCard = mutation({
     // the card's own answer and wins; see `defaultTeamOnCardIds`. The default
     // goes through the SAME validation as a picked team below, so a set-level
     // id that no longer resolves is refused rather than quietly written.
-    const requestedTeamIds =
-      defaultTeamOnCardIds(
-        {
-          teamOnCardIds: args.teamOnCardIds,
-          pendingTeamNames: typedTeamNames,
-        },
-        parentNode,
-      ).ids ?? [];
+    //
+    // NEO-556 — an explicit "No Team" is the card's own answer too: no
+    // default under it.
+    const requestedTeamIds = explicitTeamNone
+      ? []
+      : (defaultTeamOnCardIds(
+          {
+            teamOnCardIds: args.teamOnCardIds,
+            pendingTeamNames: typedTeamNames,
+          },
+          parentNode,
+        ).ids ?? []);
 
     // NEO-208 — validated BEFORE anything is written, so a bad id (unknown,
     // wrong sport, over the cap) leaves no half-created card behind. The
@@ -6272,6 +6313,23 @@ export const addCustomCard = mutation({
     // sends ids only, an old bundle sends names only); this is what keeps a
     // future caller from producing a row that says its team twice.
     const pendingTeamNames = hasLinkedTeams ? undefined : typedTeamNames;
+
+    // NEO-556 — "No Team": the operator's explicit answer, or the leaf's
+    // set-level No Team for a card that arrived with no team of its own. A
+    // hand-added card has no listing and no BSC ref, so the verdict is
+    // `stamp` whenever it has no team and no typed name; asked anyway, so
+    // this path and every other birth path apply one rule. `teamNone: false`
+    // opts this card out of the leaf's No Team.
+    const bornNoTeam =
+      explicitTeamNone ||
+      (!explicitNoStamp &&
+        teamDefaultOf(parentNode).kind === "noTeam" &&
+        noTeamCardVerdict({
+          teamOnCardIds,
+          pendingTeamNames,
+          platformData: {},
+        }).verdict === "stamp");
+    const noTeamStamp = bornNoTeam ? stampNoTeam(operatorUserId, Date.now()) : {};
 
     // NEO-71-74: `parentNode` (read above) is the full resolved feature
     // inheritance. Precedence = that snapshot < card-observed facts (a fact
@@ -6415,6 +6473,8 @@ export const addCustomCard = mutation({
       // their one writer.
       ...cameoFields,
       ...(hasLinkedTeams ? { teamOnCardIds } : {}),
+      // NEO-556 — server-stamped, never a client value.
+      ...noTeamStamp,
       ...(featuresOrUndefined ? { features: featuresOrUndefined } : {}),
       ...(notes ? { notes } : {}),
       listingTitle: listingTitle.title,
@@ -6475,6 +6535,58 @@ export const addCustomCard = mutation({
     return id;
   },
 });
+
+/**
+ * NEO-556 — the listing title and description a card gets when "No Team"
+ * empties its teams, for the text nobody typed.
+ *
+ * The rule `cardPlayersBulk` keeps: a stored title (or description) equal to
+ * what the generator builds for the card as it stands is generated, and is
+ * rebuilt without the team; one a person typed is kept. A value the caller
+ * SENT in the same `updateCard` call counts as typed unless it is the stored
+ * one unchanged (`CardDetailPanel` sends the title on every save). Returns
+ * only the fields to write: nothing for a card that had no team to drop.
+ */
+async function regeneratedTextWithoutTeams(
+  ctx: MutationCtx,
+  stored: Doc<"cardChecklist">,
+  sent: { title?: string; description?: string },
+): Promise<{
+  listingTitle?: string;
+  listingTitleTruncated?: true | undefined;
+  listingDescription?: string;
+}> {
+  const hadTeam =
+    (stored.teamOnCardIds?.length ?? 0) > 0 ||
+    (stored.pendingTeamNames?.length ?? 0) > 0;
+  if (!hadTeam) return {};
+  const cache = newStoredCardReadCache();
+  const next: Doc<"cardChecklist"> = {
+    ...stored,
+    teamOnCardIds: [],
+    pendingTeamNames: undefined,
+  };
+  const out: {
+    listingTitle?: string;
+    listingTitleTruncated?: true | undefined;
+    listingDescription?: string;
+  } = {};
+  if (sent.title === undefined || sent.title === stored.listingTitle) {
+    const before = await titleForStoredCard(ctx, stored, cache);
+    if (stored.listingTitle === before.title) {
+      const after = await titleForStoredCard(ctx, next, cache);
+      out.listingTitle = after.title;
+      // As the commit writes it: flagged only when the core was cut;
+      // `undefined` in a patch clears a flag the old title carried.
+      out.listingTitleTruncated = after.coreFits ? undefined : true;
+    }
+  }
+  if (sent.description === undefined || sent.description === stored.listingDescription) {
+    const description = await refreshedGeneratedDescription(ctx, stored, next, cache);
+    if (description !== undefined) out.listingDescription = description;
+  }
+  return out;
+}
 
 export const updateCard = mutation({
   args: {
@@ -6553,10 +6665,30 @@ export const updateCard = mutation({
     // `setCardFeature` so the propagation-engine semantics around the
     // "matches old set-level value" rule stay consistent.
     features: featuresValidator,
+    /**
+     * NEO-556 — "No Team": the operator says this card carries no team.
+     *
+     * A REQUEST, not a field: the stamp (`teamNoneConfirmedAt` now,
+     * `teamNoneConfirmedByUserId` this admin) is written server-side, for the
+     * reason the NEO-102 note below gives — a client-supplied timestamp is
+     * review suppression the client can mint. The same patch empties
+     * `teamOnCardIds` (and its `cardTeamLinks`) and `pendingTeamNames`, and a
+     * listing title or description nobody typed is regenerated without the
+     * team. Refused beside a team (picked or typed). An existing
+     * confirmation keeps its original stamp. Giving the card a team also
+     * retires the stamp (NEO-102, below).
+     *
+     * `false` UN-confirms: both stamp fields are cleared and the card is
+     * teamless again, so the missing-team item asks about it. Nothing else
+     * moves — its teams were already empty, and the listing text never named
+     * "No Team" — so there is no text to regenerate. A no-op on a card that
+     * is not stamped. Absent does nothing.
+     */
+    teamNone: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
+    const operatorUserId = await requireAdmin(ctx);
     /*
      * NEO-254 — `playerNamesOnCard` is an INPUT, not a column.
      *
@@ -6565,12 +6697,25 @@ export const updateCard = mutation({
      * `updates` it would be spread straight into `ctx.db.patch` and refused by
      * the schema as an unexpected field — which is exactly what happened.
      */
+    //
+    // NEO-556 — `teamNone` likewise: it asks for a stamp the server writes.
+    // NEO-535 — and `regenerateDescription`: a request, not a column.
     const {
       id,
       playerNamesOnCard: _printedNames,
+      teamNone: teamNoneArg,
       regenerateDescription,
       ...updates
     } = args;
+    const teamNone = teamNoneArg === true;
+    const teamNoneUndone = teamNoneArg === false;
+    if (
+      teamNone &&
+      ((args.teamOnCardIds?.length ?? 0) > 0 ||
+        (args.pendingTeamNames ?? []).some((name) => name.trim() !== ""))
+    ) {
+      throw new ConvexError(CARD_NO_TEAM_WITH_TEAMS_REFUSAL);
+    }
     const filtered: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(updates)) {
       if (value !== undefined) {
@@ -6790,6 +6935,46 @@ export const updateCard = mutation({
         "team",
         MAX_PENDING_TEAM_NAMES,
       );
+    }
+
+    // NEO-556 — "No Team": empty both team fields (the explicitly-emptied
+    // loop below turns `[]` into an absent `pendingTeamNames`; the index is
+    // synced after the patch), stamp the card, and regenerate listing text
+    // nobody typed, which named the team the card no longer carries.
+    if (teamNone) {
+      const stored = await loadStoredCard();
+      filtered.teamOnCardIds = [];
+      filtered.pendingTeamNames = [];
+      if (stored.teamNoneConfirmedAt === undefined) {
+        Object.assign(filtered, stampNoTeam(operatorUserId, Date.now()));
+      }
+      const regenerated = await regeneratedTextWithoutTeams(ctx, stored, {
+        title: filtered.listingTitle as string | undefined,
+        description: filtered.listingDescription as string | undefined,
+      });
+      Object.assign(filtered, regenerated);
+      // NEO-535 — a title rebuilt without the team is new eBay item content
+      // too, so it queues the card like an operator's edit does.
+      if (
+        regenerated.listingTitle !== undefined &&
+        regenerated.listingTitle !== stored.listingTitle
+      ) {
+        titleChanged = true;
+      }
+    }
+
+    // NEO-556 — `teamNone: false`, the operator taking "No Team" back. Both
+    // stamp fields go together (`undefined` in a patch deletes a field);
+    // only when the card carries a stamp, so a no-op call writes nothing.
+    if (teamNoneUndone) {
+      const stored = await loadStoredCard();
+      if (
+        stored.teamNoneConfirmedAt !== undefined ||
+        stored.teamNoneConfirmedByUserId !== undefined
+      ) {
+        filtered.teamNoneConfirmedAt = undefined;
+        filtered.teamNoneConfirmedByUserId = undefined;
+      }
     }
 
     // NEO-102: giving this card a real team RETIRES the operator's "no team"
@@ -7761,6 +7946,28 @@ const TEAM_CASCADE_PREVIEW_CARD_CAP = 2000;
 const TEAM_CASCADE_STALE_MS = 10 * 60 * 1000;
 
 /**
+ * NEO-556 — a set-level team and "No Team" are two answers to one question;
+ * the one writer refuses both at once rather than picking one. Shared with
+ * the preview so the dialog can never count a write that would be refused.
+ */
+export const NO_TEAM_WITH_TEAMS_REFUSAL =
+  "Pick a team or No Team, not both.";
+
+/**
+ * NEO-556 — the card-level twin, for `addCustomCard` and `updateCard`: a
+ * card's "No Team" beside a team (picked or typed) would say two things.
+ */
+export const CARD_NO_TEAM_WITH_TEAMS_REFUSAL =
+  "A card gets a team or No Team, not both.";
+
+/**
+ * NEO-556 — the No Team value the PREVIEW compares against. Only the kind is
+ * ever read (`sameTeamDefault` ignores who set it and when); the preview
+ * stores nothing.
+ */
+const PREVIEW_NO_TEAM = { setAt: 0, setByUserId: "" } as const;
+
+/**
  * The server's half of the "is this a set?" decision, shared by the mutation
  * and its preview so the dialog can never count a cascade the write would
  * refuse. Throws the operator-facing sentence; returns the row.
@@ -7816,6 +8023,13 @@ export const getSelectorOptionTeamCascadePreview = query({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     teamIds: v.array(v.id("teams")),
+    /**
+     * NEO-556 — preview setting the row to "No Team" instead (`teamIds` must
+     * then be empty, as the mutation demands). Rows follow by the same
+     * three-state rule; no existing card moves, so every card count but
+     * `cardsCarryingCurrent` is 0.
+     */
+    noTeam: v.optional(v.boolean()),
   },
   returns: v.object({
     nodesFollowing: v.number(),
@@ -7834,12 +8048,20 @@ export const getSelectorOptionTeamCascadePreview = query({
     // set the write will store; a client that double-submits a chip must not
     // see a different answer here than it gets there.
     const next = [...new Set(args.teamIds)];
+    const noTeam = args.noTeam === true;
+    if (noTeam && next.length > 0) {
+      throw new ConvexError(NO_TEAM_WITH_TEAMS_REFUSAL);
+    }
     if (next.length > MAX_CARD_TEAMS) {
       throw new ConvexError(tooManyTeamsMessage("set"));
     }
-    const isClear = next.length === 0;
-    const current = row.teamIds ?? [];
+    const isClear = !noTeam && next.length === 0;
+    const currentDefault = teamDefaultOf(row);
+    const current = currentDefault.kind === "teams" ? currentDefault.teamIds : [];
     const hasCurrent = current.length > 0;
+    const nextDefault: TeamDefault = noTeam
+      ? { kind: "noTeam", noTeamDefault: PREVIEW_NO_TEAM }
+      : { kind: "teams", teamIds: next };
 
     const descendantIds = await collectDescendantIds(ctx, row._id);
     let nodesFollowing = 0;
@@ -7847,7 +8069,10 @@ export const getSelectorOptionTeamCascadePreview = query({
       for (const id of descendantIds) {
         const node = await ctx.db.get(id);
         if (!node) continue;
-        if (teamFollowVerdict(node.teamIds, current, next) === "follow") {
+        if (
+          teamDefaultFollowVerdict(teamDefaultOf(node), currentDefault, nextDefault) ===
+          "follow"
+        ) {
           nodesFollowing += 1;
         }
       }
@@ -7879,7 +8104,9 @@ export const getSelectorOptionTeamCascadePreview = query({
         if (hasCurrent && sameTeamSet(card.teamOnCardIds, current)) {
           cardsCarryingCurrent += 1;
         }
-        if (isClear) continue;
+        // NEO-556 — No Team never moves an existing card (the operator's
+        // explicit run does that, with its own counts).
+        if (isClear || noTeam) continue;
         const outcome = cardTeamFollowOutcome(card, current, next);
         if (outcome.verdict === "follow") cardsFollowing += 1;
         else if (outcome.verdict === "stay") {
@@ -7930,10 +8157,19 @@ export const setSelectorOptionTeams = mutation({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     teamIds: v.array(v.id("teams")),
+    /**
+     * NEO-556 — set the row to "No Team": the cards beneath it carry no team.
+     * `teamIds` must be empty (refused otherwise). Stored as
+     * `noTeamDefault`, stamped with the server's time and this admin; a row
+     * already No Team keeps its original stamp. Descendant NODES follow by
+     * the three-state equal-to-previous rule; existing CARDS are never
+     * touched (the operator's explicit run stamps them).
+     */
+    noTeam: v.optional(v.boolean()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await requireAdmin(ctx);
+    const userId = await requireAdmin(ctx);
     const row = await requireTeamEditableRow(ctx, args.selectorOptionId);
     const now = Date.now();
     if (
@@ -7944,28 +8180,52 @@ export const setSelectorOptionTeams = mutation({
         "Still applying the last team change. Try again in a moment.",
       );
     }
-    const { ids } = await resolveTeamOnCardIdsForWrite(
-      ctx,
-      row._id,
-      args.teamIds,
-      "set",
-    );
-    const previousTeamIds = row.teamIds ?? [];
+    const noTeam = args.noTeam === true;
+    if (noTeam && args.teamIds.length > 0) {
+      throw new ConvexError(NO_TEAM_WITH_TEAMS_REFUSAL);
+    }
+    let next: TeamDefault;
+    if (noTeam) {
+      next = {
+        kind: "noTeam",
+        // Re-saving No Team is the same decision: keep who made it, and when.
+        noTeamDefault: row.noTeamDefault ?? { setAt: now, setByUserId: userId },
+      };
+    } else {
+      const { ids } = await resolveTeamOnCardIdsForWrite(
+        ctx,
+        row._id,
+        args.teamIds,
+        "set",
+      );
+      next = ids.length > 0 ? { kind: "teams", teamIds: ids } : { kind: "unset" };
+    }
+    const previous = teamDefaultOf(row);
+    const cascades = next.kind !== "unset";
 
     await ctx.db.patch(row._id, {
-      // An empty array is never stored — absent IS "no set-level team".
-      teamIds: ids.length > 0 ? ids : undefined,
+      // Exactly one state stored: the other field is removed in the same
+      // patch (NEO-556), and an empty array is never stored — absent IS "no
+      // set-level team".
+      ...teamDefaultPatch(next),
       // Stamped only when a cascade is actually scheduled; a clear schedules
       // nothing, and also wipes a stale stamp it was allowed past.
-      teamCascadeStartedAt: ids.length > 0 ? now : undefined,
+      teamCascadeStartedAt: cascades ? now : undefined,
       lastUpdated: now,
     });
 
-    if (ids.length > 0) {
+    if (cascades) {
       await ctx.scheduler.runAfter(
         0,
         internal.selectorOptions.cascadeSelectorOptionTeams,
-        { rootId: row._id, previousTeamIds, teamIds: ids, startedAt: now },
+        {
+          rootId: row._id,
+          previousTeamIds: previous.kind === "teams" ? previous.teamIds : [],
+          ...(previous.kind === "noTeam" ? { previousNoTeam: true } : {}),
+          teamIds: next.kind === "teams" ? next.teamIds : [],
+          ...(next.kind === "noTeam" ? { noTeamDefault: next.noTeamDefault } : {}),
+          startedAt: now,
+        },
       );
     }
     return null;
@@ -8009,6 +8269,20 @@ export const cascadeSelectorOptionTeams = internalMutation({
     rootId: v.id("selectorOptions"),
     previousTeamIds: v.array(v.id("teams")),
     teamIds: v.array(v.id("teams")),
+    /**
+     * NEO-556 — the root said "No Team" BEFORE this edit (`previousTeamIds`
+     * is then empty). Optional: a run scheduled before this existed had no
+     * No Team to remember.
+     */
+    previousNoTeam: v.optional(v.boolean()),
+    /**
+     * NEO-556 — the new value is "No Team" (`teamIds` is then empty): the
+     * stamp nodes that follow are given. The card pass does not run — No
+     * Team never touches an existing card.
+     */
+    noTeamDefault: v.optional(
+      v.object({ setAt: v.number(), setByUserId: v.string() }),
+    ),
     // The `teamCascadeStartedAt` this run was scheduled under; the final
     // invocation removes the root's stamp only if it is still this one.
     startedAt: v.optional(v.number()),
@@ -8035,8 +8309,32 @@ export const cascadeSelectorOptionTeams = internalMutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const next = args.teamIds;
-    if (next.length === 0) return null; // a clear never cascades
+    if (args.noTeamDefault && next.length > 0) {
+      // Only `setSelectorOptionTeams` schedules this, and it refuses both.
+      throw new Error("cascadeSelectorOptionTeams: teams and No Team together");
+    }
+    const nextDefault: TeamDefault | null = args.noTeamDefault
+      ? { kind: "noTeam", noTeamDefault: args.noTeamDefault }
+      : next.length > 0
+        ? { kind: "teams", teamIds: next }
+        : null;
+    if (!nextDefault) return null; // a clear never cascades
     const previous = args.previousTeamIds;
+    const previousDefault: TeamDefault = args.previousNoTeam
+      ? { kind: "noTeam", noTeamDefault: PREVIEW_NO_TEAM }
+      : previous.length > 0
+        ? { kind: "teams", teamIds: previous }
+        : { kind: "unset" };
+    // NEO-556 — the walk state every reschedule carries, so a chain never
+    // forgets which edit it is applying.
+    const carried = {
+      rootId: args.rootId,
+      previousTeamIds: previous,
+      ...(args.previousNoTeam ? { previousNoTeam: true } : {}),
+      teamIds: next,
+      ...(args.noTeamDefault ? { noTeamDefault: args.noTeamDefault } : {}),
+      ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {}),
+    };
 
     let nodeIds = args.nodeIds;
     if (!nodeIds) {
@@ -8080,9 +8378,13 @@ export const cascadeSelectorOptionTeams = internalMutation({
       for (; nodeTeamsIndex < end; nodeTeamsIndex++) {
         const node = await ctx.db.get(nodeIds[nodeTeamsIndex]);
         if (!node) continue;
-        if (teamFollowVerdict(node.teamIds, previous, next) === "follow") {
+        if (
+          teamDefaultFollowVerdict(teamDefaultOf(node), previousDefault, nextDefault) ===
+          "follow"
+        ) {
           await ctx.db.patch(node._id, {
-            teamIds: [...next],
+            // NEO-556 — one state, the other removed in the same patch.
+            ...teamDefaultPatch(nextDefault),
             lastUpdated: Date.now(),
           });
         }
@@ -8092,20 +8394,14 @@ export const cascadeSelectorOptionTeams = internalMutation({
         await ctx.scheduler.runAfter(
           0,
           internal.selectorOptions.cascadeSelectorOptionTeams,
-          {
-            rootId: args.rootId,
-            previousTeamIds: previous,
-            teamIds: next,
-            ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {}),
-            nodeIds,
-            nodeTeamsIndex,
-          },
+          { ...carried, nodeIds, nodeTeamsIndex },
         );
         return null;
       }
     }
 
-    let nodeIndex = args.nodeIndex ?? 0;
+    // NEO-556 — No Team never touches an existing card: no card pass.
+    let nodeIndex = nextDefault.kind === "noTeam" ? nodeIds.length : (args.nodeIndex ?? 0);
     let cursor: number | undefined = args.cursor;
     let budget = TEAM_CASCADE_CARD_PAGE;
     const descriptionCache = newStoredCardReadCache();
@@ -8155,10 +8451,7 @@ export const cascadeSelectorOptionTeams = internalMutation({
         0,
         internal.selectorOptions.cascadeSelectorOptionTeams,
         {
-          rootId: args.rootId,
-          previousTeamIds: previous,
-          teamIds: next,
-          ...(args.startedAt !== undefined ? { startedAt: args.startedAt } : {}),
+          ...carried,
           nodeIds,
           // NEO-296 — the node pass is finished by the time the card pass
           // reschedules; carrying its index says so, or a resumed chain would
@@ -13119,7 +13412,7 @@ export const ensureBrandUnknownRow = internalMutation({
     const alloc = args.sl
       ? initialSlots({ sportlots: [{ id: args.sl.id, label: args.sl.label }] })
       : undefined;
-    const parentTeamIds = inheritedTeamIds(year);
+    const parentTeamDefault = inheritedTeamDefault(year);
     const id = await ctx.db.insert("selectorOptions", {
       ...newRowSubtreeCounts("manufacturer"),
       level: "manufacturer",
@@ -13131,7 +13424,7 @@ export const ensureBrandUnknownRow = internalMutation({
       children: [],
       metadata: { isBrandUnknown: true },
       ...(Object.keys(features).length > 0 ? { features } : {}),
-      ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
+      ...parentTeamDefault,
       lastUpdated: now,
     });
     const nextChildren = unionChildren(year.children, [id]);
@@ -20208,8 +20501,8 @@ function settleCardTeamAnswer(a: {
   if (a.teamNone && !a.hasPendingTeam && a.operatorUserId) {
     return {
       fields: {
-        teamNoneConfirmedAt: a.now,
-        teamNoneConfirmedByUserId: a.operatorUserId,
+        // NEO-556 — the one stamp builder every writer shares.
+        ...stampNoTeam(a.operatorUserId, a.now),
         // NEO-489 — provenance: a checklist's "No Team" records the outcome
         // the checklist branch below would, beside the stamp it goes with
         // (never over an earlier check's outcome).
@@ -20223,7 +20516,23 @@ function settleCardTeamAnswer(a: {
       enqueue: false,
     };
   }
-  if (!a.hasBscRef || a.teamCheckDone) return { fields: {}, enqueue: false };
+  if (a.teamCheckDone) return { fields: {}, enqueue: false };
+  if (!a.hasBscRef) {
+    // NEO-556 (product invariant 8) — a card with no BSC ref has no lookup to
+    // record, but a listing team that reached commit still NAMES a team: keep
+    // it as the "Listed as:" hint, so the leaf's "No Team" (`noTeamCardVerdict`
+    // reads `bscTeamName`) holds back and the operator is asked. A lookup is
+    // by ref, so the real client never sends this pairing; a malformed one
+    // must not be stamped over the name it carried.
+    const hint =
+      a.teamLookup === "answered" && !a.hasPendingTeam
+        ? (a.bscTeamHint ?? "").trim()
+        : "";
+    return {
+      fields: hint ? { bscTeamName: hint.slice(0, MAX_BSC_TEAM_NAME_LENGTH) } : {},
+      enqueue: false,
+    };
+  }
   // PR 451 (NEO-478) — the publisher checklist answered this card at fetch:
   // it matched by number (exactly one on both sides) and its row named a team.
   // A row with a blank team cell is no claim and never sets "checklist" (B1);
@@ -20518,7 +20827,12 @@ export const commitCardChecklistChunk = internalMutation({
     // keeps it (`defaultTeamOnCardIds`); only the insert branch reads this —
     // an existing card's team is NB content the re-sync may only suggest a
     // change to, never default over.
-    const leafTeamIds = inheritedTeamIds(parentRow);
+    //
+    // NEO-556 — or the leaf's "No Team", which stamps a card born with no
+    // team when `noTeamCardVerdict` says so (below, after the team answer).
+    const leafDefault = teamDefaultOf(parentRow);
+    const leafTeamIds = leafDefault.kind === "teams" ? leafDefault.teamIds : undefined;
+    const leafNoTeam = leafDefault.kind === "noTeam" ? leafDefault.noTeamDefault : undefined;
     const leafTeamNames: string[] = [];
     if (leafTeamIds) {
       for (const teamId of leafTeamIds) {
@@ -20992,6 +21306,30 @@ export const commitCardChecklistChunk = internalMutation({
           now: Date.now(),
         });
 
+        // NEO-556 — the leaf's "No Team", for a card the answer above left
+        // with no team and no ruling. Asked of the card as it will be born
+        // (its teams, pending names, and the lookup bookkeeping just
+        // settled), so a listing that names a team, or a BSC lookup still to
+        // run, holds the stamp back (product invariant 8):
+        // `applyBscTeamResolution` stamps it once BSC answers with no team.
+        // Credited to the committing admin, else whoever set the No Team.
+        // A set team X beats a checklist's "No team" exactly as before
+        // (NEO-556 Q3) — that card has a team, so it never reaches here.
+        const insertNoTeamStamp =
+          leafNoTeam &&
+          insertTeamAnswer.fields.teamNoneConfirmedAt === undefined &&
+          noTeamCardVerdict({
+            teamOnCardIds: insertTeamOnCardIds,
+            pendingTeamNames: insertPendingTeamNames,
+            bscTeamName: insertTeamAnswer.fields.bscTeamName,
+            teamCheckDoneAt: insertTeamAnswer.fields.teamCheckDoneAt,
+            teamCheckOutcome: insertTeamAnswer.fields.teamCheckOutcome,
+            platformData: card.platformData?.bsc ? { bsc: { ref: card.platformData.bsc.ref } } : {},
+          }).verdict === "stamp"
+            ? stampNoTeam(args.operatorUserId ?? leafNoTeam.setByUserId, Date.now())
+            : {};
+        const insertCarried = { ...insertTeamAnswer.fields, ...insertNoTeamStamp };
+
         // NEO-335 — the operator's pre-save title answer. The action already
         // refused an over-cap one before any phase wrote; capped again here
         // because this is the writer (`checkTitleAnswer`).
@@ -21063,8 +21401,8 @@ export const commitCardChecklistChunk = internalMutation({
             teamNames: insertTeamNames,
             // NEO-335 — written with the row rather than patched after it, so
             // an answered card costs this chunk no extra operation.
-            ...(Object.keys(insertTeamAnswer.fields).length > 0
-              ? { carried: insertTeamAnswer.fields }
+            ...(Object.keys(insertCarried).length > 0
+              ? { carried: insertCarried }
               : {}),
             // NEO-335 — the "Card titles" answer: the operator's own title,
             // or the trimmed one kept. Absent on every card nobody answered,

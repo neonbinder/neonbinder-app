@@ -46,7 +46,7 @@ import EntityReviewWizard from "./EntityReviewWizard";
 const CONFIRM_SAVE_NAME = "Confirm & Save (Enter) — commit this review";
 const TITLES_LEAD = "These titles lost a first name or ran long. Keep 'em, or make 'em yours.";
 const SET_TEAM_HINT =
-  "Most of these share one team? Set a whole-set team in Set details and every new card gets it.";
+  "Most of these share one team, or show none at all? Pick a set team, or No Team, under Edit attributes and every new card gets it.";
 /** A set name long enough that every new card's title runs over the cap (NEO-535: kept as built). */
 const LONG_TITLES = {
   sportValue: "Baseball",

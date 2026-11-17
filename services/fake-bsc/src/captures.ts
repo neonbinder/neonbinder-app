@@ -8,9 +8,17 @@ import { readShape, shapeOf, synthConformsTo, type Shape } from "./shape";
 import { photoAnswer, putAnswer } from "./synth/sheet";
 import type { Listing, NamespaceState } from "./state";
 import type { ObjectStore } from "./store/types";
+import { EBAY_CAPTURE_ENDPOINTS, ebayCaptureSlug, ebaySynthesisedCapture, isEbayCaptureEndpoint } from "./ebay/captures";
+
+/** A BSC write endpoint, or an eBay read or write capture name (`src/ebay/captures.ts`). */
+export type CaptureEndpoint = WriteEndpoint | string;
+
+function captureObject(endpoint: CaptureEndpoint): string {
+  return `write-captures/${isWriteEndpoint(endpoint) ? WRITE_ENDPOINTS[endpoint] : ebayCaptureSlug(endpoint)}.json`;
+}
 
 export interface WriteCapture {
-  endpoint: WriteEndpoint;
+  endpoint: CaptureEndpoint;
   status: number;
   shape: Shape;
   capturedAt: string;
@@ -21,7 +29,9 @@ export type CaptureRead = { ok: true; capture: WriteCapture } | { ok: false; err
 export function readCapture(input: unknown, now: () => Date = () => new Date()): CaptureRead {
   if (!input || typeof input !== "object") return { ok: false, error: "body must be an object" };
   const b = input as Record<string, unknown>;
-  if (!isWriteEndpoint(b.endpoint)) return { ok: false, error: `endpoint must be one of: ${Object.keys(WRITE_ENDPOINTS).join(", ")}` };
+  if (!isWriteEndpoint(b.endpoint) && !isEbayCaptureEndpoint(b.endpoint)) {
+    return { ok: false, error: `endpoint must be one of: ${Object.keys(WRITE_ENDPOINTS).join(", ")}, or an eBay capture endpoint (CONTRACT.md, "Write and read captures (eBay)")` };
+  }
   if (typeof b.status !== "number" || !Number.isInteger(b.status) || b.status < 100 || b.status > 599) return { ok: false, error: "status" };
   const shape = readShape(b.shape);
   if (!shape) return { ok: false, error: "shape must map key paths to type lists" };
@@ -58,7 +68,8 @@ const SAMPLE_LISTING: Listing = {
 };
 
 /** The status and shape the fake answers a successful write with. */
-export function synthesisedWrite(endpoint: WriteEndpoint): { status: number; shape: Shape } {
+export function synthesisedWrite(endpoint: CaptureEndpoint): { status: number; shape: Shape } {
+  if (!isWriteEndpoint(endpoint)) return ebaySynthesisedCapture(endpoint);
   switch (endpoint) {
     case "PUT seller/bulk-upload":
       return { status: 200, shape: shapeOf(putAnswer([SAMPLE_LISTING], SAMPLE_STATE)) };
@@ -68,7 +79,7 @@ export function synthesisedWrite(endpoint: WriteEndpoint): { status: number; sha
 }
 
 export interface CaptureVerdict {
-  endpoint: WriteEndpoint;
+  endpoint: CaptureEndpoint;
   capturedAt: string;
   verdict: "ok" | "shape_drift";
   paths: string[];
@@ -84,23 +95,26 @@ export function checkCapture(capture: WriteCapture): CaptureVerdict {
 }
 
 export class Captures {
-  private readonly latest = new Map<WriteEndpoint, WriteCapture>();
+  private readonly latest = new Map<CaptureEndpoint, WriteCapture>();
 
   constructor(private readonly store: ObjectStore) {}
 
   async load(): Promise<number> {
     this.latest.clear();
-    for (const [endpoint, slug] of Object.entries(WRITE_ENDPOINTS)) {
-      const raw = await this.store.read(`write-captures/${slug}.json`);
-      if (raw === null) continue;
+    const endpoints = [...Object.keys(WRITE_ENDPOINTS), ...EBAY_CAPTURE_ENDPOINTS];
+    // In parallel: the eBay names add about thirty reads to the boot.
+    const raws = await Promise.all(endpoints.map((e) => this.store.read(captureObject(e))));
+    endpoints.forEach((endpoint, i) => {
+      const raw = raws[i];
+      if (raw === null) return;
       const r = readCapture(raw);
       if (r.ok && r.capture.endpoint === endpoint) this.latest.set(r.capture.endpoint, r.capture);
-    }
+    });
     return this.latest.size;
   }
 
   async save(c: WriteCapture): Promise<void> {
-    await this.store.write(`write-captures/${WRITE_ENDPOINTS[c.endpoint]}.json`, c);
+    await this.store.write(captureObject(c.endpoint), c);
     this.latest.set(c.endpoint, c);
   }
 
@@ -114,6 +128,7 @@ export class Captures {
    * fake's synthesised write answer is checked against nothing.
    */
   missing(): WriteEndpoint[] {
+    // BSC only: no eBay endpoint is required until the cutover (NEO-555 PR B).
     return (Object.keys(WRITE_ENDPOINTS) as WriteEndpoint[]).filter((e) => !this.latest.has(e));
   }
 }
