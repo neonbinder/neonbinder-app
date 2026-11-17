@@ -19,26 +19,32 @@ import { pairKey, type CoverageAsk } from "./career-check";
  * not want a re-run when a player is edited elsewhere (a heavy answer is read
  * once on demand).
  *
- * A read that fails is answered "covered" for the pairs in it: the check is
- * an extra question, never a gate on saving, and the commit's own link rule
- * still holds. The failure is logged.
+ * A read that fails is NOT answered "covered": its keys go to `onFailed`, so
+ * the step can say the check could not run and offer Retry (Next still saves;
+ * the check is an extra question, never a gate). The failure is logged. A
+ * result the answer does not carry for a pair counts as a failure too.
  */
 export function CareerCoverageFetcher({
   selectorOptionId,
   asks,
   onAnswered,
+  onFailed,
 }: {
   selectorOptionId: Id<"selectorOptions">;
   asks: readonly CoverageAsk[];
   onAnswered: (answers: Record<string, boolean>) => void;
+  /** The read failed for these pair keys. They are NOT answered "covered". */
+  onFailed: (keys: string[]) => void;
 }) {
   const convex = useConvex();
   const asked = useRef(new Set<string>());
   const live = useRef(true);
   const onAnsweredRef = useRef(onAnswered);
+  const onFailedRef = useRef(onFailed);
   useEffect(() => {
     onAnsweredRef.current = onAnswered;
-  }, [onAnswered]);
+    onFailedRef.current = onFailed;
+  }, [onAnswered, onFailed]);
   useEffect(() => {
     live.current = true;
     return () => {
@@ -64,17 +70,19 @@ export function CareerCoverageFetcher({
         .then((answer) => {
           if (!live.current) return;
           const out: Record<string, boolean> = {};
+          const missing: string[] = [];
           chunk.forEach((c, i) => {
-            out[c.key] = answer.results[i]?.covered ?? true;
+            const covered = answer.results[i]?.covered;
+            if (covered === undefined) missing.push(c.key);
+            else out[c.key] = covered;
           });
-          onAnsweredRef.current(out);
+          if (Object.keys(out).length > 0) onAnsweredRef.current(out);
+          if (missing.length > 0) onFailedRef.current(missing);
         })
         .catch((error: unknown) => {
           console.warn("Career check: coverage read failed", error);
           if (!live.current) return;
-          const out: Record<string, boolean> = {};
-          for (const c of chunk) out[c.key] = true;
-          onAnsweredRef.current(out);
+          onFailedRef.current(chunk.map((c) => c.key));
         });
     }
   }, [asks, convex, selectorOptionId]);

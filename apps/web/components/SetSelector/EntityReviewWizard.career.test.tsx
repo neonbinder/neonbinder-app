@@ -17,11 +17,21 @@ vi.mock("../../convex/_generated/api", () => {
 });
 
 let currentRows: unknown[];
+/** The ids the wizard asked `players.getManyByIds` for, per render. */
+let playerIdReads: string[][];
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
     if (ref === "entityReviewQueue.getBatch") return currentRows;
+    if (ref === "players.getManyByIds") {
+      playerIdReads.push((args as { ids: string[] }).ids);
+      const known: Record<string, string> = {
+        "p-tatis": "Fernando Tatis Jr.",
+        "p-trout": "Mike Trout",
+      };
+      return (args as { ids: string[] }).ids.map((id) => ({ _id: id, name: known[id] ?? `Name of ${id}` }));
+    }
     return undefined;
   },
   useQueries: (queries: Record<string, { args: { players: unknown[] } }>) => {
@@ -46,13 +56,40 @@ vi.mock("./EntityLinkSearch", () => ({
     </button>
   ),
 }));
-vi.mock("./career-reads", () => ({
-  CareerCoverageFetcher: () => null,
-  useRelinkCandidates: () => ({ state: "ready", candidates: [] }),
-}));
+/** What the coverage fetcher does on mount, per test: answer, or fail. */
+let fetcherBehaviour: (
+  asks: Array<{ playerId: string; teamId?: string; teamName?: string }>,
+  cb: { onAnswered: (a: Record<string, boolean>) => void; onFailed: (k: string[]) => void },
+) => void;
+let fetcherMounts = 0;
+
+vi.mock("./career-reads", async () => {
+  const React = await import("react");
+  return {
+    CareerCoverageFetcher: (props: {
+      asks: Array<{ playerId: string; teamId?: string; teamName?: string }>;
+      onAnswered: (a: Record<string, boolean>) => void;
+      onFailed: (k: string[]) => void;
+    }) => {
+      React.useEffect(() => {
+        fetcherMounts += 1;
+        fetcherBehaviour(props.asks, props);
+        // Asked once per mount, as the real one does.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+      }, []);
+      return null;
+    },
+    useRelinkCandidates: () => ({ state: "ready", candidates: [] }),
+  };
+});
 
 import EntityReviewWizard from "./EntityReviewWizard";
-import { CAREER_STEP_HEADING, type CareerContext } from "./career-check";
+import {
+  CAREER_READ_FAILED,
+  CAREER_RETRY_LABEL,
+  CAREER_STEP_HEADING,
+  type CareerContext,
+} from "./career-check";
 import { STEP_SUBTITLE } from "./entity-review-steps";
 
 const NEXT_NAME = "Next (Enter)";
@@ -114,6 +151,9 @@ const next = () => screen.getByRole("button", { name: NEXT_NAME });
 
 beforeEach(() => {
   currentRows = [];
+  fetcherMounts = 0;
+  playerIdReads = [];
+  fetcherBehaviour = () => {};
 });
 
 describe("when the step is asked", () => {
@@ -230,5 +270,139 @@ describe("a re-teamed card leaves the teams step", () => {
     reteam();
     fireEvent.click(next());
     expect(screen.queryAllByText(STEP_SUBTITLE.teams)).toHaveLength(0);
+  });
+});
+
+/** A batch where the operator linked a player and a team: the gate judged neither pair. */
+function linkedRows() {
+  return [
+    {
+      _id: "row-p",
+      _creationTime: 1,
+      selectorOptionId: "selopt-1",
+      batchId: "batch-1",
+      kind: "player",
+      name: "Mike Trout",
+      sportId: "sport-1",
+      sportValue: "Baseball",
+      setSportId: "sport-1",
+      setSportValue: "Baseball",
+      status: "ready",
+      decision: { action: "link", linkedPlayerId: "p-trout" },
+    },
+    {
+      _id: "row-t",
+      _creationTime: 2,
+      selectorOptionId: "selopt-1",
+      batchId: "batch-1",
+      kind: "team",
+      name: "Angels",
+      sportId: "sport-1",
+      sportValue: "Baseball",
+      setSportId: "sport-1",
+      setSportValue: "Baseball",
+      status: "ready",
+      decision: { action: "link", linkedTeamId: "t-angels" },
+    },
+  ];
+}
+
+function readWizard() {
+  return wizard(
+    { teamsOnly: false, batchId: "batch-1", careerContext: { setYear: 2022, players: [], teams: [], gaps: [] } },
+    [CARDS[1]],
+  );
+}
+
+describe("a coverage read that fails (never silently 'covered')", () => {
+  it("says the career check could not run, with a Retry, and Next still goes on", () => {
+    currentRows = linkedRows();
+    fetcherBehaviour = (asks, cb) => cb.onFailed(asks.map((a) => `${a.playerId}|${a.teamId}`));
+    render(readWizard());
+    expect(screen.getByRole("heading", { name: CAREER_STEP_HEADING })).toBeTruthy();
+    expect(screen.getAllByText(CAREER_READ_FAILED).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: CAREER_RETRY_LABEL })).toBeTruthy();
+    expect(next().getAttribute("aria-disabled")).not.toBe("true");
+    fireEvent.click(next());
+    expect(screen.queryByRole("heading", { name: CAREER_STEP_HEADING })).toBeNull();
+  });
+
+  it("Retry asks again, and a good answer clears the line", () => {
+    currentRows = linkedRows();
+    fetcherBehaviour = (asks, cb) => cb.onFailed(asks.map((a) => `${a.playerId}|${a.teamId}`));
+    render(readWizard());
+    expect(fetcherMounts).toBe(1);
+    fetcherBehaviour = (asks, cb) =>
+      cb.onAnswered(Object.fromEntries(asks.map((a) => [`${a.playerId}|${a.teamId}`, false])));
+    fireEvent.click(screen.getByRole("button", { name: CAREER_RETRY_LABEL }));
+    expect(fetcherMounts).toBe(2);
+    expect(screen.queryByRole("button", { name: CAREER_RETRY_LABEL })).toBeNull();
+    expect(screen.getByRole("radiogroup")).toBeTruthy();
+    expect(screen.queryByText(CAREER_READ_FAILED)).toBeNull();
+  });
+
+  it("is not a gap: a read that answers 'covered' passes the step without a line", () => {
+    currentRows = linkedRows();
+    fetcherBehaviour = (asks, cb) =>
+      cb.onAnswered(Object.fromEntries(asks.map((a) => [`${a.playerId}|${a.teamId}`, true])));
+    render(readWizard());
+    expect(screen.queryByRole("heading", { name: CAREER_STEP_HEADING })).toBeNull();
+  });
+});
+
+describe("a New Team nobody names any more (NEO-574)", () => {
+  /** The operator linked Mike Trout and decided to create a team called Angels. */
+  function createRows() {
+    const [player, team] = linkedRows();
+    return [
+      player,
+      {
+        ...team,
+        decision: { action: "create", create: { location: "Los Angeles", name: "Angels" } },
+      },
+    ];
+  }
+  const summaryCount = () => {
+    const label = screen.getByText("New players and teams");
+    return label.parentElement?.textContent ?? "";
+  };
+
+  function toSummary() {
+    currentRows = createRows();
+    fetcherBehaviour = (asks, cb) =>
+      cb.onAnswered(
+        Object.fromEntries(asks.map((a) => [`${a.playerId}|${a.teamId ?? `~${a.teamName}`.toLowerCase()}`, false])),
+      );
+    render(readWizard());
+  }
+
+  it("counts the team it would create while the card still prints it", () => {
+    toSummary();
+    // On the career step: Leave it, Next. Then the save step's summary.
+    fireEvent.click(next());
+    expect(summaryCount()).toBe("New players and teams1");
+  });
+
+  it("does not count it once 'Different team' took its only reference off the card", () => {
+    toSummary();
+    const group = screen.getAllByRole("radiogroup")[0];
+    fireEvent.click(within(group).getByRole("radio", { name: "Different team" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
+    fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
+    fireEvent.click(next());
+    // A zero row is not listed at all.
+    expect(screen.queryByText("New players and teams")).toBeNull();
+    expect(screen.getByText("Linked to existing")).toBeTruthy();
+  });
+});
+
+describe("a relinked player reaches the titles step (NEO-574)", () => {
+  it("asks for the picked player's own name, so the title can use it", () => {
+    render(wizard());
+    const group = screen.getAllByRole("radiogroup")[0];
+    fireEvent.click(within(group).getByRole("radio", { name: "Different player" }));
+    fireEvent.click(screen.getByRole("button", { name: "Someone else for Fernando Tatis Jr." }));
+    fireEvent.click(screen.getByRole("button", { name: "Search result player" }));
+    expect(playerIdReads.at(-1)).toContain("picked-player");
   });
 });

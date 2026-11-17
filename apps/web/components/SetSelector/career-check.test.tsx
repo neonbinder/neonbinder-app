@@ -20,6 +20,7 @@ import {
   parseStintDraft,
   reteamedIndexes,
   toLines,
+  unreferencedCreatedTeamRows,
   type CareerAnswers,
   type CareerContext,
   type CareerRow,
@@ -319,7 +320,10 @@ describe("applyCareerCardEdit", () => {
     expect(applyCareerCardEdit(card, undefined)).toBe(card);
   });
   it("drops the replaced team from teams and the legacy team, case-folded, and keeps the others", () => {
-    const card = { team: "padres", teams: ["Padres", "Angels"] };
+    const card: { team?: string; teams?: string[]; teamIds?: Id<"teams">[] } = {
+      team: "padres",
+      teams: ["Padres", "Angels"],
+    };
     const out = applyCareerCardEdit(card, { dropTeams: ["Padres"], teamIds: [tid("t1")] });
     expect(out.teams).toEqual(["Angels"]);
     expect(out.team).toBeUndefined();
@@ -332,5 +336,76 @@ describe("applyCareerCardEdit", () => {
     }) as typeof card & { playerIdByName?: unknown };
     expect(out.players).toEqual(["A"]);
     expect(out.playerIdByName).toEqual([{ name: "A", playerId: "p1" }]);
+  });
+});
+
+describe("classifyPairs with a failed read", () => {
+  const rows: CareerRow[] = [
+    { kind: "player", name: "Mike Trout", decision: { action: "link", linkedPlayerId: "p-other" } },
+  ];
+  const pairs = deriveSittingPairs({ cards: CARDS, rows, context: CONTEXT });
+  const judged = gateJudgedKeys({ cards: CARDS, context: CONTEXT });
+  const other = pairs.find((p) => p.playerId === "p-other")!;
+
+  it("is neither covered nor a gap nor waiting: it is reported as failed", () => {
+    const out = classifyPairs({
+      pairs,
+      judgedByGate: judged,
+      context: CONTEXT,
+      coverage: {},
+      failed: { [pairKey(other)]: true },
+    });
+    expect(out.failed).toEqual([other]);
+    expect(out.pending).toEqual([]);
+    expect(out.gaps.map((p) => p.playerId)).toEqual(["p-tatis"]);
+  });
+
+  it("an answer that arrived wins over an old failure", () => {
+    const out = classifyPairs({
+      pairs,
+      judgedByGate: judged,
+      context: CONTEXT,
+      coverage: { [pairKey(other)]: false },
+      failed: { [pairKey(other)]: true },
+    });
+    expect(out.failed).toEqual([]);
+    expect(out.gaps.map((p) => p.playerId)).toContain("p-other");
+  });
+});
+
+describe("unreferencedCreatedTeamRows", () => {
+  const rows: CareerRow[] = [
+    { kind: "team", name: "Angels", decision: { action: "create" } },
+    { kind: "team", name: "Padres", decision: { action: "create" } },
+    { kind: "team", name: "Reds", decision: { action: "link", linkedTeamId: "t-reds" } },
+  ];
+
+  it("lists a New Team whose only printed reference came off its card", () => {
+    const before = [{ teams: ["Angels"] }, { teams: ["Padres"] }];
+    const after = [{ teams: [] as string[] }, { teams: ["Padres"] }];
+    expect(unreferencedCreatedTeamRows(before, after, rows)).toEqual(["angels"]);
+  });
+
+  it("keeps a team another card still prints", () => {
+    const before = [{ teams: ["Angels"] }, { teams: ["Angels"] }];
+    const after = [{ teams: [] as string[] }, { teams: ["Angels"] }];
+    expect(unreferencedCreatedTeamRows(before, after, rows)).toEqual([]);
+  });
+
+  it("keeps a team the same card still prints beside the dropped one", () => {
+    const before = [{ teams: ["Angels", "Padres"] }];
+    const after = [{ teams: ["Padres"] }];
+    expect(unreferencedCreatedTeamRows(before, after, rows)).toEqual(["angels"]);
+  });
+
+  it("reads the legacy single team, and ignores linked rows and rows no card named", () => {
+    expect(unreferencedCreatedTeamRows([{ team: "Angels" }], [{}], rows)).toEqual(["angels"]);
+    expect(unreferencedCreatedTeamRows([{ team: "Reds" }], [{}], rows)).toEqual([]);
+    expect(unreferencedCreatedTeamRows([{}], [{}], rows)).toEqual([]);
+  });
+
+  it("is nothing when nothing changed", () => {
+    const cards = [{ teams: ["Angels"] }];
+    expect(unreferencedCreatedTeamRows(cards, cards, rows)).toEqual([]);
   });
 });

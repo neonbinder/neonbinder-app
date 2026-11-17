@@ -102,6 +102,38 @@ describe("names — a data claim, never a guess", () => {
     expect(row.leftOut).toEqual(["Dwight"]);
   });
 
+  test("NEO-574: a name the career step relinked is titled by the PICKED player", () => {
+    const relinked = card("1", {
+      players: ["Shohei Ohtani"],
+      playerIdByName: [{ name: "Shohei Ohtani", playerId: "p-doc" }],
+    });
+    const names = { playerNameById: new Map([["p-doc", "Dwight Gooden"]]) };
+    const [row] = rowsOf(buildTitleGroups([relinked], context(), undefined, { names }).titleGroups);
+    expect(row.title).toContain("Gooden");
+    expect(row.title).not.toContain("Ohtani");
+  });
+
+  test("NEO-574: the relink matches the printed name loosely, and only that name on the card", () => {
+    const two = card("1", {
+      players: ["shohei  ohtani", "Ken Griffey Jr."],
+      playerIdByName: [{ name: "Shohei Ohtani", playerId: "p-doc" }],
+    });
+    const names = { playerNameById: new Map([["p-doc", "Dwight Gooden"]]) };
+    const [row] = rowsOf(buildTitleGroups([two], context(), undefined, { names }).titleGroups);
+    expect(row.title).toContain("Gooden");
+    expect(row.title).toContain("Griffey");
+    expect(row.title).not.toContain("Ohtani");
+  });
+
+  test("NEO-574: a relinked player whose name has not arrived falls back to the printed name's own reading", () => {
+    const relinked = card("1", {
+      players: ["Shohei Ohtani"],
+      playerIdByName: [{ name: "Shohei Ohtani", playerId: "p-doc" }],
+    });
+    const [row] = rowsOf(buildTitleGroups([relinked], context()).titleGroups);
+    expect(row.title).toContain("Ohtani");
+  });
+
   test("a printed name that did not resolve and has no wizard answer is not on the card", () => {
     const [row] = rowsOf(
       buildTitleGroups([card("1", { players: ["Unknown Rookie"] })], OVER).titleGroups,

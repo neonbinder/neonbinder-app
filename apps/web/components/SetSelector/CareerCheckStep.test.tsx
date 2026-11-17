@@ -44,6 +44,8 @@ vi.mock("./EntityLinkSearch", () => ({
 import CareerCheckStep, { careerLineLabel } from "./CareerCheckStep";
 import {
   CAREER_NEXT_BLOCKED,
+  CAREER_READ_FAILED,
+  CAREER_RETRY_LABEL,
   CAREER_STEP_HEADING,
   careerStepLead,
   deriveSittingPairs,
@@ -89,22 +91,32 @@ const TEAMS: Record<string, string> = {
 let coverage: Record<string, boolean>;
 let asked: CoverageAsk[];
 let answersSeen: CareerAnswers;
-let allDone: ReturnType<typeof vi.fn>;
+let allDone: () => void;
 
-function Harness(props: { checking?: boolean; showBlockedHint?: boolean }) {
+let failed: Record<string, boolean>;
+let onRetry: () => void;
+
+function Harness(props: {
+  checking?: boolean;
+  showBlockedHint?: boolean;
+  readFailed?: boolean;
+  empty?: boolean;
+}) {
   const [answers, setAnswers] = useState<CareerAnswers>({});
   useEffect(() => {
     answersSeen = answers;
   }, [answers]);
   return (
     <CareerCheckStep
-      lines={LINES}
+      lines={props.empty ? [] : LINES}
       setYear={2022}
       selectorOptionId={SET}
       sportId={SPORT}
       answers={answers}
       onAnswer={(key, answer) => setAnswers((prev) => ({ ...prev, [key]: answer }))}
       coverage={coverage}
+      failed={failed}
+      onRetry={onRetry}
       requestCoverage={(asks) => asked.push(...asks)}
       playerNameOf={(l) => NAMES[l.playerId]}
       teamNameOf={(l) => TEAMS[l.teamId ?? ""]}
@@ -128,7 +140,9 @@ beforeEach(() => {
   relinkArgs = [];
   coverage = {};
   asked = [];
-  allDone = vi.fn();
+  allDone = vi.fn() as unknown as () => void;
+  failed = {};
+  onRetry = vi.fn() as unknown as () => void;
 });
 
 describe("the lines", () => {
@@ -357,5 +371,41 @@ describe("the status line", () => {
     expect(screen.getByRole("status").textContent).toBe("");
     rerender(<Harness showBlockedHint />);
     expect(screen.getByRole("status").textContent).toBe(CAREER_NEXT_BLOCKED);
+  });
+});
+
+describe("when the career check could not run (NEO-574)", () => {
+  it("says so in the status line, beside lines that did read, with a Retry", () => {
+    render(<Harness readFailed />);
+    expect(screen.getByRole("status").textContent).toBe(CAREER_READ_FAILED);
+    fireEvent.click(screen.getByRole("button", { name: CAREER_RETRY_LABEL }));
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    // The lines are still there and still default to Leave it.
+    expect(radio(tatis(), "Leave it").getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("with no line to list, still shows the heading, the line and Retry", () => {
+    render(<Harness empty readFailed />);
+    expect(screen.getByRole("heading", { name: CAREER_STEP_HEADING })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe(CAREER_READ_FAILED);
+    expect(screen.getByRole("button", { name: CAREER_RETRY_LABEL })).toBeTruthy();
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+  });
+
+  it("offers no Retry when nothing failed", () => {
+    render(<Harness />);
+    expect(screen.queryByRole("button", { name: CAREER_RETRY_LABEL })).toBeNull();
+  });
+
+  it("a failed re-check of a picked player says so, instead of 'Checking…' for ever", () => {
+    candidates = [
+      { playerId: pid("p-sr"), name: "Fernando Tatis Sr.", careerSummary: "", covers: false },
+    ];
+    failed = { "p-sr|t-padres": true };
+    render(<Harness readFailed />);
+    fireEvent.click(radio(tatis(), "Different player"));
+    fireEvent.click(screen.getByRole("button", { name: /Fernando Tatis Sr\./ }));
+    expect(screen.getByText("Couldn’t check Fernando Tatis Sr.’s career.")).toBeTruthy();
+    expect(screen.queryByText(/^Checking /)).toBeNull();
   });
 });

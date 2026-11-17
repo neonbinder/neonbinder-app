@@ -9,6 +9,9 @@ import { useRelinkCandidates } from "./career-reads";
 import {
   CAREER_CHECKING,
   CAREER_NEXT_BLOCKED,
+  CAREER_READ_FAILED,
+  CAREER_RETRY_LABEL,
+  careerFollowUpFailed,
   CAREER_STEP_HEADING,
   LEAVE_FOLLOW_UP,
   careerStepLead,
@@ -86,12 +89,17 @@ export type CareerCheckStepProps = {
   onAnswer: (key: string, answer: CareerAnswer) => void;
   /** `coverageForPreview` answers by pair key (true = covered). */
   coverage: Readonly<Record<string, boolean>>;
+  /** Pair keys whose read failed: not an answer, never "covered". */
+  failed: Readonly<Record<string, boolean>>;
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   /** Canonical names, when the wizard has them; the printed text otherwise. */
   playerNameOf: (line: CareerLine) => string;
   teamNameOf: (line: CareerLine) => string;
   /** The coverage read is still on its way for some pairs: nothing to list yet. */
   checking?: boolean;
+  /** The career check could not run for something on screen: say so, offer Retry. */
+  readFailed?: boolean;
+  onRetry?: () => void;
   /** Enter on the last line: the host moves focus on (to Next). */
   onAllDone?: () => void;
   disabled?: boolean;
@@ -115,10 +123,13 @@ export default function CareerCheckStep({
   answers,
   onAnswer,
   coverage,
+  failed,
   requestCoverage,
   playerNameOf,
   teamNameOf,
   checking = false,
+  readFailed = false,
+  onRetry,
   onAllDone,
   disabled = false,
   headingId,
@@ -143,15 +154,17 @@ export default function CareerCheckStep({
     rowRef(next.key)?.querySelector<HTMLElement>('[role="radio"][tabindex="0"]')?.focus();
   };
 
-  if (checking && lines.length === 0) {
+  if (lines.length === 0) {
+    // Nothing to list yet: waiting on the reads, or the reads failed.
     return (
       <div className="space-y-3">
         <h3 id={headingId} className="text-sm font-semibold text-ink">
           {CAREER_STEP_HEADING}
         </h3>
         <p id={hintId} role="status" className="text-sm text-ink-2">
-          {CAREER_CHECKING}
+          {readFailed ? CAREER_READ_FAILED : checking ? CAREER_CHECKING : ""}
         </p>
+        {readFailed && <RetryButton onRetry={onRetry} disabled={disabled} />}
       </div>
     );
   }
@@ -177,6 +190,7 @@ export default function CareerCheckStep({
               answer={answers[line.key]}
               onAnswer={(answer) => onAnswer(line.key, answer)}
               coverage={coverage}
+              failed={failed}
               requestCoverage={requestCoverage}
               playerName={playerNameOf(line)}
               teamName={teamNameOf(line)}
@@ -187,10 +201,12 @@ export default function CareerCheckStep({
           </li>
         ))}
       </ul>
-      {/* Always mounted: a live region must exist before it speaks. */}
+      {/* Always mounted: a live region must exist before it speaks. A failed
+          read and held years are both news worth saying here. */}
       <p id={hintId} role="status" className="text-xs text-ink-2">
-        {showBlockedHint ? CAREER_NEXT_BLOCKED : ""}
+        {showBlockedHint ? CAREER_NEXT_BLOCKED : readFailed ? CAREER_READ_FAILED : ""}
       </p>
+      {readFailed && <RetryButton onRetry={onRetry} disabled={disabled} />}
     </div>
   );
 }
@@ -207,6 +223,7 @@ function CareerLineRow({
   answer,
   onAnswer,
   coverage,
+  failed,
   requestCoverage,
   playerName,
   teamName,
@@ -221,6 +238,7 @@ function CareerLineRow({
   answer: CareerAnswer | undefined;
   onAnswer: (answer: CareerAnswer) => void;
   coverage: Readonly<Record<string, boolean>>;
+  failed: Readonly<Record<string, boolean>>;
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   playerName: string;
   teamName: string;
@@ -346,6 +364,7 @@ function CareerLineRow({
                 answer={answer}
                 onAnswer={onAnswer}
                 coverage={coverage}
+              failed={failed}
                 requestCoverage={requestCoverage}
                 playerName={playerName}
                 teamName={teamName}
@@ -364,6 +383,7 @@ function CareerLineRow({
                 answer={answer}
                 onAnswer={onAnswer}
                 coverage={coverage}
+              failed={failed}
                 requestCoverage={requestCoverage}
                 playerName={playerName}
                 disabled={disabled}
@@ -452,6 +472,7 @@ function FollowUp({
   answer,
   onAnswer,
   coverage,
+  failed,
   subject,
   team,
   disabled,
@@ -462,6 +483,7 @@ function FollowUp({
   answer: Extract<CareerAnswer, { kind: "player" | "team" }>;
   onAnswer: (answer: CareerAnswer) => void;
   coverage: Readonly<Record<string, boolean>>;
+  failed: Readonly<Record<string, boolean>>;
   /** Whose career, and which team, the re-check is about. */
   subject: string;
   team: string;
@@ -472,6 +494,13 @@ function FollowUp({
   const groupId = useId();
   if (!pair) return null;
   const covered = coverage[pair.key];
+  if (covered === undefined && failed[pair.key]) {
+    return (
+      <p role="status" className="text-sm text-ink-2">
+        {careerFollowUpFailed(subject)}
+      </p>
+    );
+  }
   if (covered === undefined) {
     return (
       <p role="status" className="text-sm text-ink-2">
@@ -572,6 +601,7 @@ function PlayerPanel({
   answer,
   onAnswer,
   coverage,
+  failed,
   requestCoverage,
   playerName,
   teamName,
@@ -587,6 +617,7 @@ function PlayerPanel({
   answer: Extract<CareerAnswer, { kind: "player" }>;
   onAnswer: (answer: CareerAnswer) => void;
   coverage: Readonly<Record<string, boolean>>;
+  failed: Readonly<Record<string, boolean>>;
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   playerName: string;
   teamName: string;
@@ -680,6 +711,7 @@ function PlayerPanel({
           answer={answer}
           onAnswer={onAnswer}
           coverage={coverage}
+              failed={failed}
           subject={picked.name}
           team={teamName}
           disabled={disabled}
@@ -747,6 +779,7 @@ function TeamPanel({
   answer,
   onAnswer,
   coverage,
+  failed,
   requestCoverage,
   playerName,
   disabled,
@@ -761,6 +794,7 @@ function TeamPanel({
   answer: Extract<CareerAnswer, { kind: "team" }>;
   onAnswer: (answer: CareerAnswer) => void;
   coverage: Readonly<Record<string, boolean>>;
+  failed: Readonly<Record<string, boolean>>;
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   playerName: string;
   disabled: boolean;
@@ -819,12 +853,33 @@ function TeamPanel({
           answer={answer}
           onAnswer={onAnswer}
           coverage={coverage}
+              failed={failed}
           subject={playerName}
           team={picked.name}
           disabled={disabled}
           onWalk={onWalk}
         />
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Retry, when the coverage read failed
+// ---------------------------------------------------------------------------
+
+function RetryButton({ onRetry, disabled }: { onRetry?: () => void; disabled: boolean }) {
+  return (
+    <div>
+      <NeonButton
+        variant="secondary"
+        type="button"
+        aria-label={CAREER_RETRY_LABEL}
+        disabled={disabled}
+        onClick={() => onRetry?.()}
+      >
+        Retry
+      </NeonButton>
     </div>
   );
 }

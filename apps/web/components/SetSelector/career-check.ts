@@ -186,17 +186,23 @@ export type CareerClassification = {
   gaps: CareerPair[];
   /** The pairs still waiting on `coverageForPreview`. */
   pending: CareerPair[];
+  /** The pairs whose coverage read failed: neither listed nor passed, until Retry. */
+  failed: CareerPair[];
 };
 
 /**
- * Sort pairs into listed, passed and waiting. `coverage` holds the read
- * answers by `pairKey` (true = covered).
+ * Sort pairs into listed, passed, waiting and failed. `coverage` holds the
+ * read answers by `pairKey` (true = covered); `failed` the keys whose read
+ * failed. A failed read is NOT an answer: the pair is not called covered (it
+ * is reported as one the check could not run for), and it does not wait either,
+ * so the rest of the step is not held up by it.
  */
 export function classifyPairs(input: {
   pairs: readonly CareerPair[];
   judgedByGate: ReadonlySet<string>;
   context: CareerContext | undefined;
   coverage: Readonly<Record<string, boolean>>;
+  failed?: Readonly<Record<string, boolean>>;
 }): CareerClassification {
   const gapKeys = new Set<string>();
   for (const gap of input.context?.gaps ?? []) {
@@ -204,6 +210,7 @@ export function classifyPairs(input: {
   }
   const gaps: CareerPair[] = [];
   const pending: CareerPair[] = [];
+  const failed: CareerPair[] = [];
   for (const pair of input.pairs) {
     const key = pairKey(pair);
     if (input.judgedByGate.has(key)) {
@@ -211,10 +218,12 @@ export function classifyPairs(input: {
       continue;
     }
     const covered = input.coverage[key];
-    if (covered === undefined) pending.push(pair);
-    else if (!covered) gaps.push(pair);
+    if (covered === undefined) {
+      if (input.failed?.[key]) failed.push(pair);
+      else pending.push(pair);
+    } else if (!covered) gaps.push(pair);
   }
-  return { gaps, pending };
+  return { gaps, pending, failed };
 }
 
 /**
@@ -466,7 +475,7 @@ type EditableCard = {
   team?: string;
   teams?: string[];
   teamIds?: Array<Id<"teams">>;
-  playerIdByName?: Array<{ name: string; playerId: Id<"players"> }>;
+  playerIdByName?: ReadonlyArray<{ name: string; playerId: string }>;
 };
 
 /**
@@ -496,6 +505,50 @@ export function applyCareerCardEdit<T extends EditableCard>(
   return next;
 }
 
+/**
+ * NEO-574 — New Team rows the batch would create that no card names any more.
+ *
+ * A "Different team" answer takes the card's printed team string off the card.
+ * When that string was the only reference to a team the operator had decided
+ * to create, nothing is left to ask for it: the commit walks the team names on
+ * the cards it receives (`commitCardChecklist`'s `teamNames`), so a name no
+ * card carries is never created. This is that same reading, on the client, for
+ * what the summary says Confirm will do. Rows whose string another card (or
+ * the same card's other team) still prints stay in: "something else still
+ * references it".
+ *
+ * `before` is the cards as they reached the career step, `after` the same
+ * cards with the answers put on them. Only a row that was referenced before
+ * and is not now counts; a row nobody ever referenced here (a pending name on
+ * a stored card, say) is left to the server as it always was.
+ */
+export function unreferencedCreatedTeamRows(
+  before: ReadonlyArray<{ team?: string; teams?: readonly string[] }>,
+  after: ReadonlyArray<{ team?: string; teams?: readonly string[] }>,
+  rows: ReadonlyArray<Pick<CareerRow, "kind" | "name" | "decision">>,
+): string[] {
+  const keysOf = (cards: typeof before): Set<string> => {
+    const out = new Set<string>();
+    for (const card of cards) {
+      const named = (card.teams ?? []).filter((t) => t.trim());
+      for (const t of named.length > 0 ? named : card.team ? [card.team] : []) {
+        const key = norm(t);
+        if (key) out.add(key);
+      }
+    }
+    return out;
+  };
+  const was = keysOf(before);
+  const is = keysOf(after);
+  const out: string[] = [];
+  for (const row of rows) {
+    if (row.kind !== "team" || row.decision?.action !== "create") continue;
+    const key = norm(row.name);
+    if (key && was.has(key) && !is.has(key) && !out.includes(key)) out.push(key);
+  }
+  return out;
+}
+
 /** Positions whose team the operator replaced: the Teams step does not ask about them. */
 export function reteamedIndexes(edits: ReadonlyArray<CareerCardEdit | undefined>): number[] {
   const out: number[] = [];
@@ -522,3 +575,9 @@ export function noStintText(team: string, year: number): string {
 
 export const CAREER_NEXT_BLOCKED = "Fix the years first — then Next.";
 export const CAREER_CHECKING = "Checking careers…";
+/** The coverage read failed. Next still saves; Retry asks again. */
+export const CAREER_READ_FAILED = "The career check couldn’t run.";
+export const CAREER_RETRY_LABEL = "Retry career check";
+/** A relinked player or re-teamed pair whose re-check failed. */
+export const careerFollowUpFailed = (subject: string): string =>
+  `Couldn’t check ${subject}’s career.`;

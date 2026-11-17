@@ -124,6 +124,6 @@ describe("careerPrefill", () => {
   });
 
   it("offers nothing for a player no card prints solo", () => {
-    expect(careerPrefill(base({ cards: [{ cardNumber: "1", players: ["Someone Else"], teams: ["Padres"] }] })).prefill).toBeNull();
+    expect(careerPrefill(base({ cards: [{ players: ["Someone Else"], teams: ["Padres"] }] })).prefill).toBeNull();
   });
 });

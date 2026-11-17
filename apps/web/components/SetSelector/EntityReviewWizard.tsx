@@ -92,10 +92,13 @@ import {
   coverageAskOf,
   deriveSittingPairs,
   gateJudgedKeys,
+  followUpPair,
   linesWithBadYears,
+  pairKey,
   reteamedIndexes,
   stintDraftOf,
   toLines,
+  unreferencedCreatedTeamRows,
   type CareerAnswer,
   type CareerAnswers,
   type CareerCommitFields,
@@ -1410,6 +1413,13 @@ export default function EntityReviewWizard({
   /** `coverageForPreview` answers by pair key, and the follow-up pairs asked for. */
   const [careerCoverage, setCareerCoverage] = useState<Record<string, boolean>>({});
   const [careerFollowUpAsks, setCareerFollowUpAsks] = useState<CoverageAsk[]>([]);
+  /**
+   * Pair keys whose coverage read failed. Not "covered": the step says the
+   * check could not run and offers Retry (`retryCareerCheck`), and Next still
+   * works. `careerFetchRun` remounts the fetcher so a retry asks again.
+   */
+  const [careerFailed, setCareerFailed] = useState<Record<string, boolean>>({});
+  const [careerFetchRun, setCareerFetchRun] = useState(0);
   const [careerAnswers, setCareerAnswers] = useState<CareerAnswers>({});
   const careerPairs = useMemo(
     () =>
@@ -1442,8 +1452,9 @@ export default function EntityReviewWizard({
         judgedByGate: careerJudged,
         context: careerContext,
         coverage: careerCoverage,
+        failed: careerFailed,
       }),
-    [careerPairs, careerJudged, careerContext, careerCoverage],
+    [careerPairs, careerJudged, careerContext, careerCoverage, careerFailed],
   );
   /** The pairs that will be listed — held back while any answer is still on its way. */
   const careerChecking = careerClass.pending.length > 0;
@@ -1453,9 +1464,28 @@ export default function EntityReviewWizard({
   );
   /** What the coverage read is asked: the waiting pairs, and any re-checks. */
   const careerAsks = useMemo(
-    () => [...careerClass.pending.map(coverageAskOf), ...careerFollowUpAsks],
-    [careerClass.pending, careerFollowUpAsks],
+    () =>
+      [...careerClass.pending.map(coverageAskOf), ...careerFollowUpAsks].filter(
+        (ask) => careerCoverage[pairKey(ask)] === undefined,
+      ),
+    [careerClass.pending, careerFollowUpAsks, careerCoverage],
   );
+  /**
+   * The career check could not run for something the step shows: a listed
+   * pair's read failed, or the re-check of a player or team the operator just
+   * picked did. (A failed read for a pick since changed is not news.)
+   */
+  const careerReadFailed = useMemo(() => {
+    if (careerClass.failed.length > 0) return true;
+    return careerLines.some((line) => {
+      const key = followUpPair(line, careerAnswers[line.key])?.key;
+      return key !== undefined && careerFailed[key] === true && careerCoverage[key] === undefined;
+    });
+  }, [careerClass.failed, careerLines, careerAnswers, careerFailed, careerCoverage]);
+  const retryCareerCheck = useCallback(() => {
+    setCareerFailed({});
+    setCareerFetchRun((n) => n + 1);
+  }, []);
   const requestCareerCoverage = useCallback((asks: readonly CoverageAsk[]) => {
     setCareerFollowUpAsks((prev) => [...prev, ...asks]);
   }, []);
@@ -1829,10 +1859,14 @@ export default function EntityReviewWizard({
       if (row.decision?.action !== "link") continue;
       if (row.decision.linkedPlayerId) ids.add(row.decision.linkedPlayerId);
     }
-    // NEO-574 — the players the career check lists, by their own names.
+    // NEO-574 — the players the career check lists, by their own names, and
+    // the ones it relinked a card to (the titles step names those).
     for (const line of careerLines) ids.add(line.playerId as Id<"players">);
+    for (const edit of careerFields?.cardEdits ?? []) {
+      for (const r of edit?.playerIdByName ?? []) ids.add(r.playerId);
+    }
     return [...ids].sort();
-  }, [rows, careerLines]);
+  }, [rows, careerLines, careerFields]);
   const linkedTeams = useQuery(
     api.teams.getManyByIds,
     linkedTeamIds.length > 0 ? { ids: linkedTeamIds } : "skip",
@@ -3469,8 +3503,10 @@ export default function EntityReviewWizard({
     const byId = teamIdNamesFromRefs(
       (linkedTeams ?? []).map((t) => ({ teamId: t._id, label: teamFullName(t) })),
     );
-    return { rows: rows ?? [], linkedTeamNameById: byId, teamNameById: byId };
-  }, [rows, linkedTeams]);
+    const playerNameById = new Map<string, string>();
+    for (const p of linkedPlayers ?? []) playerNameById.set(p._id, p.name);
+    return { rows: rows ?? [], linkedTeamNameById: byId, teamNameById: byId, playerNameById };
+  }, [rows, linkedTeams, linkedPlayers]);
   /** The cards the titles step would ask about, recomputed from the team answers. */
   const titleIndexes = useMemo(
     () =>
@@ -3485,7 +3521,7 @@ export default function EntityReviewWizard({
   const postLive = {
     checklist: checklistIndexes.length > 0,
     // NEO-574 — lines to ask about, or answers still on their way.
-    career: careerEnabled && (careerLines.length > 0 || careerChecking),
+    career: careerEnabled && (careerLines.length > 0 || careerChecking || careerReadFailed),
     teams: teamsStepCards.length > 0,
     autograph: autographIndexes.length > 0,
     titles: titleIndexes.length > 0,
@@ -4454,11 +4490,20 @@ export default function EntityReviewWizard({
     !(createBlocked && !pickStep) &&
     !(footerStatus !== null && autoAddPending);
 
+  /**
+   * NEO-574 — a New Team row whose only printed reference the career step took
+   * off its card is not created (the commit makes teams from the names on the
+   * cards), so the summary does not count it.
+   */
+  const droppedNewTeams =
+    checklistedCards && careerFields && rows
+      ? unreferencedCreatedTeamRows(checklistedCards, previewCards ?? [], rows).length
+      : 0;
   const summaryRows: Array<[string, number]> = [
     ["Cards to save", summary.cardCount],
     ["Cards to delete", summary.deleteCount],
     ["Cards with field updates", summary.reviewDecisionCount],
-    ["New players and teams", outcome.created],
+    ["New players and teams", Math.max(0, outcome.created - droppedNewTeams)],
     ["Linked to existing", outcome.linked],
     ["Skipped as not a name", outcome.skipped],
   ];
@@ -6139,10 +6184,16 @@ export default function EntityReviewWizard({
                     setCareerAnswers((prev) => ({ ...prev, [key]: answer }))
                   }
                   coverage={careerCoverage}
+                  failed={careerFailed}
                   requestCoverage={requestCareerCoverage}
                   playerNameOf={(line) => linkedNameById.get(line.playerId) ?? line.printedPlayer}
                   teamNameOf={(line) => careerTeamLabel(line)}
                   checking={careerChecking}
+                  readFailed={careerReadFailed}
+                  onRetry={() => {
+                    retryCareerCheck();
+                    nextStepButtonRef.current?.focus();
+                  }}
                   onAllDone={() => nextStepButtonRef.current?.focus()}
                   disabled={saving}
                   headingId={careerLeadId}
@@ -6335,9 +6386,17 @@ export default function EntityReviewWizard({
                 mounted only while some pair has no answer yet. */}
             {careerEnabled && careerAsks.length > 0 && (
               <CareerCoverageFetcher
+                key={careerFetchRun}
                 selectorOptionId={selectorOptionId}
                 asks={careerAsks}
                 onAnswered={(answers) => setCareerCoverage((prev) => ({ ...prev, ...answers }))}
+                onFailed={(keys) =>
+                  setCareerFailed((prev) => {
+                    const next = { ...prev };
+                    for (const k of keys) next[k] = true;
+                    return next;
+                  })
+                }
               />
             )}
             {onPostReview && previewCards && onTeamAnswersChange && (
