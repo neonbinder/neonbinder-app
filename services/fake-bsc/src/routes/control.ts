@@ -12,6 +12,9 @@ import { SANITISE_ALLOWLIST_VERSION } from "../sanitise";
 import type { StateStore } from "../state";
 import { addOrder, readFakeOrder } from "../synth/orders";
 import { log } from "../log";
+import { mountEbayControls } from "../ebay/control";
+import { compareEbayDrift } from "../ebay/drift";
+import type { EbayTokens } from "../ebay/tokens";
 
 export interface ControlDeps {
   catalogue: Catalogue;
@@ -27,6 +30,8 @@ export interface ControlDeps {
   afterMissesRestore?: (req: Request, res: Response, next: NextFunction) => void | Promise<void>;
   /** Drops identity sessions; only `/__fake/reset-all` calls it. */
   resetIdentity?: (sel: NamespaceSelector) => void;
+  /** The fake eBay's tokens: its consent mints codes, `/__fake/reset-all` revokes them. Absent: no eBay controls. */
+  ebayTokens?: EbayTokens;
 }
 
 export const MAX_RECORDINGS_PER_UPLOAD = 50;
@@ -108,6 +113,9 @@ export function controlRouter(deps: ControlDeps): Router {
     res.json({ ok: true, ...(added.length === 1 ? { orderId: added[0].orderId } : {}), orderIds: added.map((o) => o.orderId), orders: added });
   });
 
+  // The fake eBay's consent, seller seeding and orders (CONTRACT.md, "Fake eBay").
+  if (deps.ebayTokens) mountEbayControls(router, { state, tokens: deps.ebayTokens, now, json: small });
+
   // `?all=1` lists every owner's misses and is admin-only (CONTRACT.md,
   // "Durable misses"); `?ns=` / `?prefix=` need only caller auth.
   const adminForAll = (req: Request, res: Response, next: NextFunction): void => {
@@ -161,6 +169,7 @@ export function controlRouter(deps: ControlDeps): Router {
   router.post("/reset-all", requireAdmin, afterMissesRestore, async (_req, res) => {
     const cleared = state.resetAll();
     deps.resetIdentity?.({});
+    deps.ebayTokens?.revokeAll();
     // The kept misses go too; `missesRemoved: false` means some deletes were still running.
     const missesRemoved = await state.flushMisses(MISS_RESET_ALL_BUDGET_MS);
     res.json({ ok: true, cleared, missesRemoved });
@@ -229,6 +238,21 @@ export function controlRouter(deps: ControlDeps): Router {
   });
 
   router.post("/drift-compare", requireAdmin, small, (req, res) => {
+    const marketplace = (req.body as { marketplace?: unknown } | undefined)?.marketplace;
+    if (marketplace === "ebay") {
+      const ebay = compareEbayDrift(req.body, catalogue);
+      if (!ebay.ok) {
+        res.status(400).json({ error: ebay.error });
+        return;
+      }
+      log("drift_compare", { marketplace: "ebay", outcome: ebay.result.outcome, paths: ebay.result.paths.length, warnings: ebay.result.warnings.length });
+      res.json(ebay.result);
+      return;
+    }
+    if (marketplace !== undefined && marketplace !== "bsc") {
+      res.status(400).json({ error: "marketplace must be \"bsc\" or \"ebay\"" });
+      return;
+    }
     const out = compareDrift(req.body, catalogue);
     if (!out.ok) {
       res.status(400).json({ error: out.error });

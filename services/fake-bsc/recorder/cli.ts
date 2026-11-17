@@ -17,7 +17,27 @@ import { FakeClient, adcIdTokenMinter, isLoopback } from "./fake-client";
 import { bscSession, loadBrowserModules } from "./bsc";
 import { MAX_REQUESTS_PER_SESSION, bscCaller, describeRequest, planMisses, runRecordSession } from "./record";
 import { describeRefusal, describeUndo, describeUndoCheck, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite, type CaptureResult, type UndoResult } from "./capture-write";
-import { askOnTerminal } from "./confirm";
+import { askOnTerminal, typeOnTerminal } from "./confirm";
+import { EbayApi, EbayStop, type EbayEnv } from "./ebay-api";
+import { promptEbayCreds, readCredsFile, readProductionCreds } from "./ebay-credentials";
+import { ebayCallFor, ebayRecordPlan, runEbayRecord } from "./ebay-record";
+import {
+  captureSku,
+  checkCaptureSku,
+  prodFailureLines,
+  prodPlanLines,
+  runEbayUndo,
+  runProdCapture,
+  runSandboxCapture,
+  sandboxPlanLines,
+  captureDate,
+  holdStdioErrors,
+  type CaptureSink,
+  type Picture,
+} from "./ebay-capture";
+import { imageMetadataProblem } from "./capture-write";
+import { readFile, stat } from "node:fs/promises";
+import { extname, resolve } from "node:path";
 import type { Shape } from "../src/shape";
 
 const FORBIDDEN_FLAGS = new Set(["--password", "--username", "--user", "--pass", "--credentials"]);
@@ -299,20 +319,209 @@ export async function undoWrite(flags: Map<string, string | true>): Promise<numb
   return undoSucceeded(r) ? 0 : 2;
 }
 
+// ── eBay (CONTRACT.md, "Recorder: eBay") ───────────────────────────────────
+
+/** The fake's media/eBay flags never carry a credential: refuse the obvious ones. */
+const EBAY_FORBIDDEN = new Set(["--cert-id", "--refresh-token", "--client-secret", "--token"]);
+
+function refuseEbaySecrets(flags: Map<string, string | true>): void {
+  for (const f of flags.keys()) if (EBAY_FORBIDDEN.has(f)) throw new Error(`${f} is not accepted: credentials come from --creds-file, a prompt, or gcloud`);
+}
+
+/** The production credential flags the private wrapper passes (no value is a secret). */
+export function readProdCredFlags(flags: Map<string, string | true>): { clientId: string; certSecret: string; sessionSecret: string; project: string } {
+  const clientId = str(flags, "--client-id");
+  const certSecret = str(flags, "--cert-secret");
+  const sessionSecret = str(flags, "--session-secret");
+  const project = str(flags, "--project");
+  if (!clientId || !certSecret || !sessionSecret || !project) throw new Error("--prod needs --client-id, --cert-secret <name>, --session-secret <name> and --project <id>");
+  return { clientId, certSecret, sessionSecret, project };
+}
+
+/**
+ * The eBay commands' seams (tests only; the CLI passes none). Each default is
+ * the real thing: the controlling terminal, the credential readers, the fake.
+ */
+export interface EbayCliDeps {
+  /** The production capture's typed-SKU confirmation. */
+  typeToConfirm?: (question: string, expected: string) => Promise<boolean>;
+  /** Reads the credentials and builds the client: the only step that reads a credential. */
+  ebayApi?: (env: EbayEnv, flags: Map<string, string | true>) => Promise<EbayApi>;
+  /** Where captures go. */
+  sink?: (flags: Map<string, string | true>) => CaptureSink;
+  /** The production capture's second-signal exit. */
+  exit?: (code: number) => void;
+}
+
+async function ebayApi(env: EbayEnv, flags: Map<string, string | true>): Promise<EbayApi> {
+  if (env === "production") {
+    const creds = await readProductionCreds(readProdCredFlags(flags));
+    return new EbayApi({ env, creds });
+  }
+  const file = str(flags, "--creds-file");
+  const creds = file ? await readCredsFile(file) : await promptEbayCreds(process.stdin, process.stderr);
+  return new EbayApi({ env, creds });
+}
+
+function stopLine(err: unknown): string {
+  return err instanceof EbayStop ? `stopped: ${err.message}` : `error: ${err instanceof Error ? err.message : "unknown"}`;
+}
+
+export async function ebayRecord(flags: Map<string, string | true>): Promise<number> {
+  refuseEbaySecrets(flags);
+  const fake = fakeClient(flags);
+  const prefix = str(flags, "--misses");
+  if (flags.has("--misses") && (!prefix || prefix.length < 3)) throw new Error("--misses <prefix> needs a prefix of at least 3 characters");
+  const plan = ebayRecordPlan(prefix ? await fake.misses(prefix) : null);
+  for (const r of plan.refused) say(`refused (never sent): ${r}`);
+  say(`would refresh one sandbox user token, then send ${plan.todo.length} read(s) to the eBay sandbox:`);
+  plan.todo.forEach((p, i) => say(`  ${i + 1}. ${ebayCallFor(p).label}`));
+  if (plan.todo.length === 0) return 0;
+  if (flags.get("--yes") !== true && !(await askOnTerminal("Send these to the eBay sandbox? Type yes: "))) {
+    say("not confirmed; nothing sent");
+    return 0;
+  }
+  const api = await ebayApi("sandbox", flags);
+  try {
+    const r = await runEbayRecord({ api, fake, todo: plan.todo, report: say });
+    for (const l of r.lines) say(l);
+    return r.recorded === plan.todo.length ? 0 : 2;
+  } catch (err) {
+    say(stopLine(err));
+    return 2;
+  } finally {
+    api.forget();
+  }
+}
+
+/** The production picture: `--picture <file>`, else NB's public fictional test card. Exif refused. */
+export async function loadPicture(file: string | undefined): Promise<Picture> {
+  const path = file ?? resolve(__dirname, "../../../../apps/web/public/placeholder-fixtures/01-vorkle-front.jpg");
+  const types: Record<string, string> = { ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp", ".gif": "image/gif" };
+  const contentType = types[extname(path).toLowerCase()];
+  if (!contentType) throw new Error("--picture must be a .jpg, .png, .webp or .gif");
+  const st = await stat(path).catch(() => null);
+  if (!st || !st.isFile()) throw new Error("the picture file was not found");
+  if (st.size > 4 * 1024 * 1024) throw new Error("the picture is over 4 MB");
+  const bytes = await readFile(path);
+  const problem = imageMetadataProblem(bytes, contentType);
+  if (problem) throw new Error(`picture refused: ${problem}`);
+  return { filename: `front${extname(path).toLowerCase()}`, contentType, bytes };
+}
+
+export async function ebayCapture(flags: Map<string, string | true>, now: () => number = Date.now, deps: EbayCliDeps = {}): Promise<number> {
+  refuseEbaySecrets(flags);
+  const makeApi = deps.ebayApi ?? ebayApi;
+  const makeSink = deps.sink ?? fakeClient;
+  if (flags.get("--prod") === true) {
+    const sku = captureSku("production", now());
+    const given = str(flags, "--sku");
+    if (given !== undefined && given !== sku) throw new Error(`refusing SKU: the production capture uses ${sku} only`);
+    checkCaptureSku("production", sku);
+    say(`would refresh one production user token, run the read-only pre-checks, then send exactly 7 requests that change your eBay account:`);
+    for (const l of prodPlanLines(sku)) say(`  ${l}`);
+    if (flags.get("--yes") !== true) {
+      say("dry run: nothing sent; add --yes to send it (you will be asked to type the SKU)");
+      return 0;
+    }
+    const fake = makeSink(flags);
+    const picture = await loadPicture(str(flags, "--picture"));
+    // Before any credential is read: no terminal (a pipe, CI) throws here.
+    const typed = await (deps.typeToConfirm ?? typeOnTerminal)(`This creates a REAL listing on your eBay account. Type ${sku} to go on: `, sku);
+    if (!typed) {
+      say("not confirmed; nothing sent");
+      return 0;
+    }
+    const api = await makeApi("production", flags);
+    try {
+      const out = await runProdCapture({ api, sink: fake, sku, picture, report: say, ...(deps.exit ? { exit: deps.exit } : {}) });
+      if (out.ok) {
+        say(`done: ${out.stored} capture(s) stored; the listing was ended and the item deleted (verified)`);
+        return 0;
+      }
+      for (const l of prodFailureLines(out, sku)) say(l);
+      return 2;
+    } catch (err) {
+      say(stopLine(err));
+      say(`check the account: node dist/recorder/cli.js ebay-undo --prod --sku ${sku} --yes   (same credential flags), or end it in Seller Hub`);
+      return 2;
+    } finally {
+      api.forget();
+    }
+  }
+  const sku = captureSku("sandbox", now());
+  const kid = str(flags, "--public-key-id") ?? null;
+  if (kid !== null && !/^[A-Za-z0-9-]{1,64}$/.test(kid)) throw new Error("--public-key-id is malformed");
+  say("would refresh one sandbox user token and one app token, then:");
+  for (const l of sandboxPlanLines(sku, captureDate(now()), kid)) say(`  ${l}`);
+  if (flags.get("--yes") !== true) {
+    say("dry run: nothing sent; add --yes to send it");
+    return 0;
+  }
+  const fake = makeSink(flags);
+  const api = await makeApi("sandbox", flags);
+  try {
+    const out = await runSandboxCapture({ api, sink: fake, now: now(), publicKeyId: kid, report: say });
+    say(`stored ${out.stored} capture(s)${out.reason ? `; ${out.reason}` : ""}`);
+    for (const l of out.leftovers) say(`LEFT ON THE SANDBOX: ${l}`);
+    if (out.leftovers.length > 0) say(`  remove the item with: node dist/recorder/cli.js ebay-undo --sandbox --sku ${sku} --yes`);
+    return out.ok ? 0 : 2;
+  } finally {
+    api.forget();
+  }
+}
+
+export async function ebayUndo(flags: Map<string, string | true>, deps: Pick<EbayCliDeps, "ebayApi"> = {}): Promise<number> {
+  refuseEbaySecrets(flags);
+  const prod = flags.get("--prod") === true;
+  const sandbox = flags.get("--sandbox") === true;
+  if (prod === sandbox) throw new Error("ebay-undo needs exactly one of --sandbox or --prod");
+  const env: EbayEnv = prod ? "production" : "sandbox";
+  const sku = str(flags, "--sku");
+  if (!sku) throw new Error("--sku NBCAPTURE-... is required");
+  checkCaptureSku(env, sku);
+  say(`would withdraw ${sku}'s live offer on eBay ${env}, delete the item, then check both are gone`);
+  if (flags.get("--yes") !== true) {
+    say("dry run: nothing sent; add --yes to send it");
+    return 0;
+  }
+  const api = await (deps.ebayApi ?? ebayApi)(env, flags);
+  try {
+    const out = await runEbayUndo(api, sku);
+    for (const l of out.lines) say(l);
+    return out.ok ? 0 : 2;
+  } catch (err) {
+    say(stopLine(err));
+    say("end it in Seller Hub if it is still live");
+    return 2;
+  } finally {
+    api.forget();
+  }
+}
+
 async function main(argv: string[]): Promise<number> {
   const { command, flags } = parseArgs(argv);
   if (command === "record") return record(flags);
   if (command === "capture-write") return captureWrite(flags);
   if (command === "undo-write") return undoWrite(flags);
+  if (command === "ebay-record") return ebayRecord(flags);
+  if (command === "ebay-capture") return ebayCapture(flags);
+  if (command === "ebay-undo") return ebayUndo(flags);
   say(
     "usage: cli.js record --fake <url> (--prefix <p> | --all) [--watch] [--max N] [--include-anon] [--yes]\n" +
       "     | capture-write --fake <url> --request <file> [--file <img>] [--yes]\n" +
-      "     | undo-write --request <file> [--yes]",
+      "     | undo-write --request <file> [--yes]\n" +
+      "     | ebay-record --fake <url> [--creds-file <path>] [--misses <prefix>] [--yes]\n" +
+      "     | ebay-capture --fake <url> [--creds-file <path>] [--public-key-id <kid>] [--yes]\n" +
+      "     | ebay-capture --prod --fake <url> --client-id <id> --cert-secret <name> --session-secret <name> --project <id> [--picture <file>] [--yes]\n" +
+      "     | ebay-undo (--sandbox [--creds-file <path>] | --prod --client-id ... --cert-secret ... --session-secret ... --project ...) --sku <NBCAPTURE-...> [--yes]",
   );
   return 1;
 }
 
 if (require.main === module) {
+  // A closed pipe or hung-up terminal must not end the process mid-command.
+  holdStdioErrors();
   main(process.argv.slice(2)).then(
     (code) => process.exit(code),
     (err: unknown) => {

@@ -16,4 +16,5 @@
 - [Never log fully-qualified resource names](feedback_never_log_fully_qualified_resource_names.md) — bare secret id + version ordinal in logs; NEO-294 reversed the old "resource names are safe to log" position
 - [Node version in agent shells](node-version-in-agent-shells.md) — agent Bash runs default Node 24, not the .nvmrc 22; prepend nvm 22 bin before browser gates
 - [Cross-service TS in node --test](reference_cross_service_ts_in_node_test.md) — strip types to a temp .mjs to run a sibling service's dependency-free TS against browser code
+- [Read-only by construction guard](reference_read_only_by_construction_guard.md) — wrap transport once, header-name allowlist, scoped scan + plants, root afterEach, key-presence leaks
 - [Secret Manager expiry update](reference_secret_manager_expiry_update.md) — sliding expiry: expireTime + mask expire_time (ttl on update unverified); extend before add

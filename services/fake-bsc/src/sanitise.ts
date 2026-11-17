@@ -1,6 +1,6 @@
 /**
- * Field allowlists for the three recorded catalogue endpoints (CONTRACT.md,
- * "Recorded vs synthesised"), shared by the recorder (before upload) and the
+ * Field allowlists for the recorded catalogue endpoints (CONTRACT.md,
+ * "Recorded vs synthesised"; the two eBay reads: "Fake eBay"), shared by the recorder (before upload) and the
  * server (on upload, and again on load).
  *
  * Derived from exactly what NeonBinder's parsers read, plus the structural ids
@@ -26,6 +26,9 @@
  * never truncated. Everything else (seller, buyer, listing, image and price
  * fields, at any depth) is dropped.
  *
+ * Adding a spec for a new endpoint (the two eBay reads, NEO-555) changes no
+ * existing recording and so needs no bump.
+ *
  * Bump SANITISE_ALLOWLIST_VERSION whenever a spec changes: recordings carry
  * the version they were cleaned under, and the server treats any other
  * version as unrecorded, so they are fetched again.
@@ -33,7 +36,25 @@
 
 export const SANITISE_ALLOWLIST_VERSION = 1;
 
-export type CatalogueEndpoint = "filters" | "results" | "cardListing";
+export type BscCatalogueEndpoint = "filters" | "results" | "cardListing";
+/**
+ * The two recorded eBay reads (CONTRACT.md, "Fake eBay"): rows 5 and 7,
+ * public metadata NB reads (`adapters/ebaySeller.ts` getShippingServices and
+ * getItemAspects). Their paths are the fake's (`ebay/api/...`).
+ */
+export type EbayCatalogueEndpoint = "ebayShippingServices" | "ebayItemAspects";
+export type CatalogueEndpoint = BscCatalogueEndpoint | EbayCatalogueEndpoint;
+
+export const BSC_CATALOGUE_ENDPOINTS: readonly BscCatalogueEndpoint[] = ["filters", "results", "cardListing"];
+export const EBAY_CATALOGUE_ENDPOINTS: readonly EbayCatalogueEndpoint[] = ["ebayShippingServices", "ebayItemAspects"];
+
+export function isBscCatalogueEndpoint(e: CatalogueEndpoint | null | undefined): e is BscCatalogueEndpoint {
+  return e === "filters" || e === "results" || e === "cardListing";
+}
+
+export function isEbayCatalogueEndpoint(e: CatalogueEndpoint | null | undefined): e is EbayCatalogueEndpoint {
+  return e === "ebayShippingServices" || e === "ebayItemAspects";
+}
 
 type Leaf = "string" | "number" | "boolean";
 
@@ -62,7 +83,89 @@ const facetList: Spec = { kind: "array", items: facetItem, maxItems: 5000 };
 /** The BSC facets NeonBinder filters on (convex/bscFacets.ts). */
 export const BSC_FACETS = ["sport", "year", "setName", "variant", "variantName"] as const;
 
+/**
+ * eBay's `get_shipping_services` answer: every field of the Metadata API's
+ * ShippingService schema (public metadata, no account data). NB reads all of
+ * them (`ebaySeller.ts` narrowShippingServices); `description` decides policy
+ * summaries.
+ */
+const ebayShippingServices: Spec = {
+  kind: "object",
+  fields: {
+    shippingServices: {
+      kind: "array",
+      maxItems: 5000,
+      items: {
+        kind: "object",
+        fields: {
+          description: str(256),
+          internationalService: bool,
+          maxShippingTime: num,
+          minShippingTime: num,
+          packageLimits: {
+            kind: "object",
+            fields: {
+              dimensionUnit: str(32),
+              weightUnit: str(32),
+              ...Object.fromEntries(
+                ["maxGirth", "maxHeight", "maxLength", "maxWeight", "maxWidth", "minGirth", "minHeight", "minLength", "minWeight", "minWidth"].map((k) => [k, num]),
+              ),
+            },
+          },
+          shippingCarrier: str(128),
+          shippingCategory: str(64),
+          shippingCostTypes: { kind: "array", items: str(32), maxItems: 20 },
+          shippingService: str(128),
+          validForSellingFlow: bool,
+        },
+      },
+    },
+  },
+};
+
+/**
+ * eBay's `get_item_aspects_for_category` answer, cut to what NB reads
+ * (`localizedAspectName`, `aspectConstraint.aspectRequired`,
+ * `aspectConstraint.aspectMaxLength`) plus the rest of `aspectConstraint`.
+ * `aspectValues` and `relevanceIndicator` are dropped: NB never reads them,
+ * and the value lists (every player's name) would put the recording far past
+ * the upload cap.
+ */
+const ebayItemAspects: Spec = {
+  kind: "object",
+  fields: {
+    aspects: {
+      kind: "array",
+      maxItems: 1000,
+      items: {
+        kind: "object",
+        fields: {
+          localizedAspectName: str(256),
+          aspectConstraint: {
+            kind: "object",
+            fields: {
+              aspectAdvancedDataType: str(64),
+              aspectApplicableTo: { kind: "array", items: str(64), maxItems: 20 },
+              aspectDataType: str(64),
+              aspectEnabledForVariations: bool,
+              aspectFormat: str(64),
+              aspectMaxLength: num,
+              aspectMode: str(64),
+              aspectRequired: bool,
+              aspectUsage: str(64),
+              expectedRequiredByDate: str(64),
+              itemToAspectCardinality: str(64),
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
 export const SPECS: Readonly<Record<CatalogueEndpoint, Spec>> = {
+  ebayShippingServices,
+  ebayItemAspects,
   filters: {
     kind: "object",
     fields: {
@@ -108,8 +211,15 @@ export function catalogueEndpointFor(method: string, path: string): CatalogueEnd
   if (m === "POST" && path === "search/bulk-upload/filters") return "filters";
   if (m === "POST" && path === "search/bulk-upload/results") return "results";
   if (m === "GET" && CARD_LISTING_RE.test(path)) return "cardListing";
+  if (m === "GET" && EBAY_SHIPPING_SERVICES_RE.test(path)) return "ebayShippingServices";
+  if (m === "GET" && EBAY_ITEM_ASPECTS_RE.test(path)) return "ebayItemAspects";
   return null;
 }
+
+/** Row 5 on the fake: `ebay/api/sell/metadata/v1/shipping/marketplace/<id>/get_shipping_services`. */
+export const EBAY_SHIPPING_SERVICES_RE = /^ebay\/api\/sell\/metadata\/v1\/shipping\/marketplace\/([A-Z0-9_]{1,32})\/get_shipping_services$/;
+/** Row 7 on the fake: `ebay/api/commerce/taxonomy/v1/category_tree/<id>/get_item_aspects_for_category`. */
+export const EBAY_ITEM_ASPECTS_RE = /^ebay\/api\/commerce\/taxonomy\/v1\/category_tree\/([0-9]{1,10})\/get_item_aspects_for_category$/;
 
 export const CARD_LISTING_RE = /^marketplace\/card\/([A-Za-z0-9_-]{1,64})\/card-listing$/;
 
@@ -117,6 +227,8 @@ export const CATALOGUE_PATH_TEMPLATES: Readonly<Record<CatalogueEndpoint, string
   filters: "search/bulk-upload/filters",
   results: "search/bulk-upload/results",
   cardListing: "marketplace/card/:id/card-listing",
+  ebayShippingServices: "ebay/api/sell/metadata/v1/shipping/marketplace/:marketplaceId/get_shipping_services",
+  ebayItemAspects: "ebay/api/commerce/taxonomy/v1/category_tree/:categoryTreeId/get_item_aspects_for_category",
 };
 
 // Values that are never catalogue data whatever key they sit under.

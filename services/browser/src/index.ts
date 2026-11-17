@@ -11,6 +11,7 @@ import { createEasypostRouter } from "./routes/easypost";
 import { createEbayOAuthRouter } from "./routes/ebay-oauth";
 import { createHealthRouter } from "./routes/health";
 import { createBscProbeRouter } from "./routes/bsc-probe";
+import { createEbayProbeRouter } from "./routes/ebay-probe";
 import { assertBscTargetAllowed } from "./bsc-endpoints";
 import { parseTransientCredentials } from "./transient-credentials";
 import { respondIfCanaryPaused } from "./canary-pause";
@@ -430,6 +431,14 @@ app.post("/login/bsc", async (req: Request<{}, {}, LoginRequestBody>, res: Respo
 // sign-in plus pinned reads, returning shapes and statuses only, never values.
 // See ./routes/bsc-probe for which account it uses and its 1/minute cap.
 app.use(createBscProbeRouter());
+
+// --- eBay probe (NEO-555) ---
+// POST /probe/ebay: the prod deploy gate's eBay leg and the daily eBay drift
+// source. Strictly read-only (a frozen GET allowlist; the only POST is a
+// token grant), its own 1/minute cap, and in prod it reads the account named
+// by NEONBINDER_EBAY_PROBE_CREDENTIAL_KEY, never one from the request. See
+// ./routes/ebay-probe.
+app.use(createEbayProbeRouter());
 
 // --- Credential CRUD endpoints ---
 //
