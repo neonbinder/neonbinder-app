@@ -4,8 +4,10 @@
  * players and teams decide (or fail to decide) one sport.
  */
 import { describe, expect, test } from "vitest";
+import { SEARCH_QUERY_MAX_CHARS, SEARCH_QUERY_MAX_TOKENS } from "./searchQueryClamp";
 import {
   TITLE_SEARCH_MAX_TERMS,
+  boundedTitle,
   decideTitleSport,
   nameInTitle,
   teamInTitle,
@@ -147,6 +149,16 @@ describe("titleNameText (the words searched for players and teams)", () => {
 
   test("with no # token, the whole title (whitespace collapsed)", () => {
     expect(titleNameText("2023  Rookie Card Zorbo Quillfeather")).toBe("2023 Rookie Card Zorbo Quillfeather");
+  });
+
+  test("clamps the raw title first: a # past the clamp point is never seen, the whole clamped title comes back", () => {
+    const head = Array.from({ length: SEARCH_QUERY_MAX_TOKENS }, (_, i) => `w${i}`).join(" ");
+    const title = `${head} #12 Zorbo Quillfeather`;
+    expect(titleNameText(title)).toBe(head);
+    expect(titleNameText(title)).toBe(boundedTitle(title));
+    // The character cut too: a # beyond the first 200 characters is dropped with the rest.
+    const long = `${"x".repeat(SEARCH_QUERY_MAX_CHARS)} #12 Zorbo Quillfeather`;
+    expect(titleNameText(long)).toBe("x".repeat(SEARCH_QUERY_MAX_CHARS));
   });
 
   test("a # as the last token, or with only digits or symbols after it, falls back to the whole title", () => {

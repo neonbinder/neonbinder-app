@@ -1043,6 +1043,33 @@ describe("the signed-in Pick List's ways out", () => {
     }
   });
 
+  it("NEO-590: a sport's Sales NB didn't list heading says it is not matched to a set when an NB set on the list carries the same title", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const order = { id: "oe", venue: "eBay", number: "27-11111-22222" };
+    const hockey = DEMO_PICK_DATA.lines.find((l) => l.card?.set.sport.name === "Hockey")!;
+    // An NB set whose label ("<season> <name>") reads exactly like the title band's.
+    const twinSet = { ...hockey.card!.set, id: "twin-set", season: "Sales", name: "NB didn't list" };
+    const nbTwin = { ...hockey, id: "nb-twin", card: { ...hockey.card!, id: "nb-twin-card", set: twinSet } };
+    const titled = {
+      id: "t1",
+      quantity: 1,
+      condition: "",
+      order,
+      card: null,
+      sportCode: null,
+      listingTitle: "Lot t1",
+      listed: { title: "Lot t1", titleSport: null },
+      problem: "NB didn't list this one. Check the order's photo.",
+    };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, nbTwin, titled] }, true);
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      expect(within(region).getByRole("heading", { level: 3, name: "Other Sales NB didn't list, not matched to a set" })).toBeTruthy();
+      // NB's own set of that name stays plain.
+      expect(within(region).getByRole("heading", { level: 3, name: "Sales NB didn't list" })).toBeTruthy();
+    }
+  });
+
   it("NEO-590: grouped by order, a title row's sport chip is read out, since no band above it names the sport", async () => {
     const { DEMO_PICK_DATA } = await import("./demoPickStore");
     const extra = {

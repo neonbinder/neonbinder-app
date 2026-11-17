@@ -32,19 +32,35 @@ export function boundedTitle(title: string): string {
 }
 
 /**
+ * THE one definition of a listing title's card-number token (NEO-590): given
+ * text that STARTS at a `#`, the `#` and the token after it (`#12`, `# 12`,
+ * `#BC-2,`), or null when nothing follows the `#`. `[0]` is the whole match,
+ * `[1]` the raw token (trailing punctuation included; callers that want the
+ * bare number trim it). `titleNameText` here and `parseListingTitle`
+ * (app/collection/final/pick/model.ts) both read the number through this, so
+ * the two cannot drift.
+ */
+export function cardNumberToken(fromHash: string): RegExpExecArray | null {
+  return /^#\s*(\S+)/.exec(fromHash);
+}
+
+/**
  * The part of a title that names the player and team. A listing title runs
  * year, then set info, then the card number (`#<token>`), then player and
  * team, so the words after the first `#<token>` are searched, and the set's
  * generic words ("Rookie Card") cannot crowd the named player out of the
- * `take` window. Mirrors the number rule of `parseListingTitle`
- * (app/collection/final/pick/model.ts), which convex code cannot import.
- * With no `#` token, or nothing with a letter after it, the whole title.
+ * `take` window. The number rule is `cardNumberToken`, shared with
+ * `parseListingTitle`. With no `#` token, or nothing with a letter after it,
+ * the whole (clamped) title.
+ *
+ * Clamps the RAW title first (the house rule of searchQueryClamp.ts), so a
+ * `#` past the clamp point is never seen and the regexes run on bounded text.
  */
 export function titleNameText(title: string): string {
-  const text = title.replace(/\s+/g, " ").trim();
+  const text = boundedTitle(title).replace(/\s+/g, " ").trim();
   const at = text.indexOf("#");
   if (at < 0) return text;
-  const number = /^#\s*(\S+)/.exec(text.slice(at));
+  const number = cardNumberToken(text.slice(at));
   if (!number) return text;
   const tail = text.slice(at + number[0].length).trim();
   return /\p{L}/u.test(tail) ? tail : text;

@@ -23,6 +23,7 @@
  * for Pick List order only, never matched to a card and never written to NB.
  */
 
+import { cardNumberToken } from "@/convex/lib/titleSport";
 import { variantTypeKindFromTitle } from "@/convex/variantRole";
 import { setLabel } from "../data/labels";
 import type { Card, SetRef } from "../data/types";
@@ -332,7 +333,7 @@ export function parseListingTitle(title: string): ParsedTitle {
   const rest = year !== null && lead ? (lead[2] ?? "") : text;
   const at = rest.indexOf("#");
   if (at < 0) return { year, cardNumber: "", setText: rest.trim() };
-  const number = /^#\s*(\S+)/.exec(rest.slice(at))?.[1].replace(/[.,;:]+$/, "") ?? "";
+  const number = cardNumberToken(rest.slice(at))?.[1].replace(/[.,;:]+$/, "") ?? "";
   return { year, cardNumber: number, setText: rest.slice(0, at).trim() };
 }
 
