@@ -317,3 +317,54 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(before.length);
   });
 });
+
+describe("NEO-574 adversarial: narrowTeamRowsByCardPlayers year rule", () => {
+  test("an undated stint counts at any set year", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const p = await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Undated Guy",
+        nameNormalized: "guy undated",
+        sportId: w.sportId,
+        teamYears: [{ teamId: w.early }],
+        lastUpdated: Date.now(),
+      }),
+    );
+    expect(await narrow(t, [w.early, w.late], [[p]], 1925)).toBe(w.early);
+  });
+
+  test("a stint that ended before the set year still counts", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const p = await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Old Timer",
+        nameNormalized: "old timer",
+        sportId: w.sportId,
+        teamYears: [{ teamId: w.early, fromYear: 1910, toYear: 1912 }],
+        lastUpdated: Date.now(),
+      }),
+    );
+    expect(await narrow(t, [w.early, w.late], [[p]], 1950)).toBe(w.early);
+  });
+
+  test("a later-starting stint on one era is ignored, leaving the other era the answer", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const p = await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Mixed Career",
+        nameNormalized: "career mixed",
+        sportId: w.sportId,
+        teamYears: [
+          { teamId: w.early, fromYear: 1920, toYear: 1925 },
+          { teamId: w.late, fromYear: 1962, toYear: 1964 },
+        ],
+        lastUpdated: Date.now(),
+      }),
+    );
+    expect(await narrow(t, [w.early, w.late], [[p]], 1930)).toBe(w.early);
+    expect(await narrow(t, [w.early, w.late], [[p]], 1963)).toBeNull();
+  });
+});

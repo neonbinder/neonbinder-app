@@ -249,3 +249,116 @@ describe("deriveCareerPairs", () => {
     expect(pairs[0].cardIndexes).toEqual([0, 2]);
   });
 });
+
+describe("adversarial: keys and edges", () => {
+  test("text that normalises to nothing gives no name key", () => {
+    expect(teamNameKey("   ")).toBeNull();
+    expect(teamNameKey("")).toBeNull();
+  });
+
+  test("a team row never contributes an empty or duplicate key", () => {
+    const keys = teamRowKeys({ id: "x", fullName: "Padres", name: "Padres" });
+    expect(keys.filter((k) => k === teamNameKey("Padres"))).toHaveLength(1);
+    const blank = teamRowKeys({ id: "x", fullName: "  ", name: "" });
+    expect(blank).toEqual([teamIdKey("x")]);
+  });
+
+  test("a known card row carries no nickname key", () => {
+    const keys = teamRowCardKeys({ id: "auburn", fullName: "Auburn Tigers" });
+    expect(keys).not.toContain(teamNameKey("Tigers"));
+  });
+
+  test("a later stint on the card's team does not count while an earlier one on another team does", () => {
+    const later = padresStint({ fromYear: 2000 });
+    const other: CoverageStint = { keys: [teamIdKey("cubs")], fromYear: 1980 };
+    expect(careerCoversCardTeam([other, later], [teamIdKey("padres1")], 1999)).toBe(false);
+    expect(careerCoversCardTeam([other, later], [teamIdKey("padres1")], 2000)).toBe(true);
+  });
+
+  test("a stint dated year 0 is dated, not undated", () => {
+    expect(stintCountsForYear({ fromYear: 0 }, -1)).toBe(false);
+  });
+
+  test("a franchise stint covers across sports-neutral keys only through the franchise id", () => {
+    const stint: CoverageStint = { keys: teamRowKeys({ id: "a", franchiseId: "f1", fullName: "A B", name: "B" }) };
+    expect(careerCoversCardTeam([stint], [franchiseIdKey("f2")], 2000)).toBe(false);
+    expect(careerCoversCardTeam([stint], [franchiseIdKey("f1")], 2000)).toBe(true);
+  });
+});
+
+describe("adversarial: deriveCareerPairs", () => {
+  const base = {
+    playerIdFor: (p: string) => ({ A: "pa", B: "pb" } as Record<string, string>)[p],
+    teamFor: (p: string) => (p === "Mariners" ? { teamId: "tm" } : p === "Fresh" ? { teamName: "Fresh" } : undefined),
+  };
+
+  test("a fractional set year checks nothing", () => {
+    expect(
+      deriveCareerPairs({ cards: [{ cardNumber: "1", players: ["A"], teams: ["Mariners"] }], setYear: 1990.5, ...base }),
+    ).toEqual([]);
+  });
+
+  test("two printed players, one of them unresolved, is still a multi-player card and never checked", () => {
+    expect(
+      deriveCareerPairs({
+        cards: [{ cardNumber: "1", players: ["A", "Nobody"], teams: ["Mariners"] }],
+        setYear: 1990,
+        ...base,
+      }),
+    ).toEqual([]);
+  });
+
+  test("blank player entries do not make a solo card multi-player", () => {
+    const pairs = deriveCareerPairs({
+      cards: [{ cardNumber: "1", players: ["", "  ", "A"], teams: ["Mariners"] }],
+      setYear: 1990,
+      ...base,
+    });
+    expect(pairs).toHaveLength(1);
+  });
+
+  test("a blank printed team and a team ref with blank text are skipped", () => {
+    const pairs = deriveCareerPairs({
+      cards: [{ cardNumber: "1", players: ["A"], teams: ["  "] }],
+      setYear: 1990,
+      playerIdFor: base.playerIdFor,
+      teamFor: () => ({ teamName: "   " }),
+    });
+    expect(pairs).toEqual([]);
+  });
+
+  test("the same team printed twice on one card is one pair with the card listed once", () => {
+    const pairs = deriveCareerPairs({
+      cards: [{ cardNumber: "1", players: ["A"], teams: ["Mariners", "Mariners"] }],
+      setYear: 1990,
+      ...base,
+    });
+    expect(pairs).toHaveLength(1);
+    expect(pairs[0].cardNumbers).toEqual(["1"]);
+  });
+
+  test("two cards sharing a card number stay two entries (card number is not a key)", () => {
+    const pairs = deriveCareerPairs({
+      cards: [
+        { cardNumber: "7", players: ["A"], teams: ["Mariners"] },
+        { cardNumber: "7", players: ["A"], teams: ["Mariners"] },
+      ],
+      setYear: 1990,
+      ...base,
+    });
+    expect(pairs[0].cardIndexes).toEqual([0, 1]);
+    expect(pairs[0].cardNumbers).toEqual(["7", "7"]);
+  });
+
+  test("one player on two different new-team texts gives two pairs", () => {
+    const pairs = deriveCareerPairs({
+      cards: [
+        { cardNumber: "1", players: ["A"], teams: ["Fresh"] },
+        { cardNumber: "2", players: ["A"], teams: ["Mariners"] },
+      ],
+      setYear: 1990,
+      ...base,
+    });
+    expect(pairs.map((p) => p.teamId ?? p.teamName)).toEqual(["Fresh", "tm"]);
+  });
+});

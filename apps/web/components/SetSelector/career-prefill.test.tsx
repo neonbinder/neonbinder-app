@@ -126,4 +126,31 @@ describe("careerPrefill", () => {
   it("offers nothing for a player no card prints solo", () => {
     expect(careerPrefill(base({ cards: [{ players: ["Someone Else"], teams: ["Padres"] }] })).prefill).toBeNull();
   });
+
+  it("adversarial: one card printing a team in two spellings counts for that team once", () => {
+    // Without the fold a single card inflates its team past a genuine two-card lead.
+    const out = careerPrefill(
+      base({
+        cards: [
+          { cardNumber: "1", players: ["Fernando Tatis Jr."], teams: ["Padres", "PADRES"] },
+          solo("Cubs", "2"),
+          solo("Cubs", "3"),
+        ],
+      }),
+    );
+    expect(out.prefill?.team).toBe("Cubs");
+  });
+
+  it("adversarial: a New Team decision and the same text printed plainly are one team", () => {
+    const rows = [
+      {
+        kind: "team" as const,
+        name: "Padres",
+        decision: { action: "create" as const, create: { location: "San Diego", name: "Padres" } },
+      },
+    ];
+    const out = careerPrefill(base({ cards: [solo("Padres", "1"), solo("San Diego Padres", "2")], rows }));
+    expect(out.prefill?.team).toBe("San Diego Padres");
+    expect(out.quickPicks).toEqual([]);
+  });
 });

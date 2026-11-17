@@ -512,3 +512,75 @@ describe("players.appendCareerStints", () => {
     ).rejects.toThrow(/fromYear/);
   });
 });
+
+describe("players.appendCareerStints adversarial", () => {
+  test("the same stint twice in one call is added once and counted existing once", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres");
+    const gwynn = await insertPlayer(t, ids.sportId, "Tony Gwynn");
+    const out = await t.mutation(internal.players.appendCareerStints, {
+      stints: [
+        { playerId: gwynn, teamId: padres, fromYear: 1982 },
+        { playerId: gwynn, teamId: padres, fromYear: 1982, toYear: 1990 },
+      ],
+    });
+    expect(out).toEqual({ added: 1, existing: 1, skipped: 0 });
+    expect(await teamYearsOf(t, gwynn)).toEqual([{ teamId: padres, fromYear: 1982 }]);
+  });
+
+  test("an existing (team, year) with a different end year is left exactly as it was", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres");
+    const gwynn = await insertPlayer(t, ids.sportId, "Tony Gwynn", [{ teamId: padres, fromYear: 1982, toYear: 1985 }]);
+    const out = await t.mutation(internal.players.appendCareerStints, {
+      stints: [{ playerId: gwynn, teamId: padres, fromYear: 1982, toYear: 2001 }],
+    });
+    expect(out).toEqual({ added: 0, existing: 1, skipped: 0 });
+    expect(await teamYearsOf(t, gwynn)).toEqual([{ teamId: padres, fromYear: 1982, toYear: 1985 }]);
+  });
+
+  test("a deleted team is skipped and counted, never written", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    const ghost = await insertTeam(t, ids.sportId, "Gone", "Ghosts");
+    await t.run((ctx) => ctx.db.delete(ghost));
+    const gwynn = await insertPlayer(t, ids.sportId, "Tony Gwynn");
+    const out = await t.mutation(internal.players.appendCareerStints, {
+      stints: [{ playerId: gwynn, teamId: ghost, fromYear: 1982 }],
+    });
+    expect(out).toEqual({ added: 0, existing: 0, skipped: 1 });
+    expect(await teamYearsOf(t, gwynn)).toEqual([]);
+  });
+
+  test("toYear before fromYear is refused and nothing is written for the other stints either", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres");
+    const gwynn = await insertPlayer(t, ids.sportId, "Tony Gwynn");
+    await expect(
+      t.mutation(internal.players.appendCareerStints, {
+        stints: [
+          { playerId: gwynn, teamId: padres, fromYear: 1982 },
+          { playerId: gwynn, teamId: padres, fromYear: 1990, toYear: 1985 },
+        ],
+      }),
+    ).rejects.toThrow(/toYear/);
+    expect(await teamYearsOf(t, gwynn)).toEqual([]);
+  });
+
+  test("exactly the stint limit is accepted; one more is refused", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    const padres = await insertTeam(t, ids.sportId, "San Diego", "Padres");
+    const gwynn = await insertPlayer(t, ids.sportId, "Tony Gwynn");
+    const mk = (n: number) =>
+      Array.from({ length: n }, () => ({ playerId: gwynn, teamId: padres, fromYear: 1982 }));
+    const ok = await t.mutation(internal.players.appendCareerStints, { stints: mk(MAX_CAREER_STINT_APPENDS) });
+    expect(ok.added + ok.existing + ok.skipped).toBe(MAX_CAREER_STINT_APPENDS);
+    await expect(
+      t.mutation(internal.players.appendCareerStints, { stints: mk(MAX_CAREER_STINT_APPENDS + 1) }),
+    ).rejects.toThrow(/limit/);
+  });
+});

@@ -2127,3 +2127,114 @@ describe("NEO-574: rule 6b counts a stint only when it began by the card's year,
     expect(resolved.narrowedBy).toBe("careerTeam");
   });
 });
+
+describe("NEO-574 adversarial: rule 6b's exactly-one guard holds under the widened matching", () => {
+  async function franchiseOf(t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("franchises", {
+        name: "Titans / Oilers",
+        nameNormalized: "oilers titans",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+  async function teamOf(
+    t: ReturnType<typeof convexTest>,
+    sportId: Id<"selectorOptions">,
+    location: string,
+    name: string,
+    franchiseId?: Id<"franchises">,
+  ) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        location,
+        name,
+        nameNormalized: `${location} ${name}`.toLowerCase().split(" ").sort().join(" "),
+        sportId,
+        ...(franchiseId ? { franchiseId } : {}),
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+
+  test("two namesakes on DIFFERENT rows of the card team's franchise are both covered: review, not a pick", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1999");
+    const franchiseId = await franchiseOf(t, sportId);
+    const oilers = await teamOf(t, sportId, "Houston", "Oilers", franchiseId);
+    const titans = await teamOf(t, sportId, "Tennessee", "Titans", franchiseId);
+    await insertBobAllen(t, sportId, [{ teamId: oilers, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: titans, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 1999, cardTeamNames: ["Tennessee Titans"] });
+
+    expect(resolved.playerId).toBeUndefined();
+    expect(resolved.narrowedBy).toBeUndefined();
+  });
+
+  test("a franchise-row stint that begins after the card year does not cover it", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1999");
+    const franchiseId = await franchiseOf(t, sportId);
+    const oilers = await teamOf(t, sportId, "Houston", "Oilers", franchiseId);
+    await teamOf(t, sportId, "Tennessee", "Titans", franchiseId);
+    const cubs = await teamOf(t, sportId, "Chicago", "Cubs");
+    await insertBobAllen(t, sportId, [{ teamId: oilers, fromYear: 2005, toYear: 2006 }]);
+    await insertBobAllen(t, sportId, [{ teamId: cubs, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 1999, cardTeamNames: ["Tennessee Titans"] });
+
+    expect(resolved.playerId).toBeUndefined();
+  });
+
+  test("a bare printed nickname shared by two clubs matches both namesakes: review", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "1995");
+    const lsu = await teamOf(t, sportId, "LSU", "Tigers");
+    const auburn = await teamOf(t, sportId, "Auburn", "Tigers");
+    await insertBobAllen(t, sportId, [{ teamId: lsu, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: auburn, ...LONG_AGO }]);
+
+    const resolved = await resolve(t, { sportId, cardYear: 1995, cardTeamNames: ["Tigers"] });
+
+    expect(resolved.playerId).toBeUndefined();
+  });
+
+  test("an undated stint on the card's team makes a second namesake a rival: review", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await teamOf(t, sportId, "San Diego", "Padres");
+    // Two undated careers: unknown spans are never excluded, so rules 4-5
+    // cannot pick, and both "have a stint" on the card's team.
+    for (let i = 0; i < 2; i++) {
+      await t.run(async (ctx) =>
+        ctx.db.insert("players", {
+          name: "Bob Allen",
+          nameNormalized: "allen bob",
+          sportId,
+          teamYears: [{ teamId: padres }],
+          lastUpdated: Date.now(),
+        }),
+      );
+    }
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBeUndefined();
+  });
+
+  test("a stint whose team row was deleted covers nothing and does not make the player a rival", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSetOfYear(t, "2024");
+    const padres = await teamOf(t, sportId, "San Diego", "Padres");
+    const gone = await teamOf(t, sportId, "Gone", "Ghosts");
+    const onPadres = await insertBobAllen(t, sportId, [{ teamId: padres, ...LONG_AGO }]);
+    await insertBobAllen(t, sportId, [{ teamId: gone, ...LONG_AGO }]);
+    await t.run(async (ctx) => ctx.db.delete(gone));
+
+    const resolved = await resolve(t, { sportId, cardYear: 2024, cardTeamNames: ["Padres"] });
+
+    expect(resolved.playerId).toBe(onPadres);
+  });
+});

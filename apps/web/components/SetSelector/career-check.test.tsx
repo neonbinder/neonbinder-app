@@ -409,3 +409,50 @@ describe("unreferencedCreatedTeamRows", () => {
     expect(unreferencedCreatedTeamRows(cards, cards, rows)).toEqual([]);
   });
 });
+
+describe("adversarial: careerCommitFields and parseStintDraft", () => {
+  it("parseStintDraft holds the year bounds exactly and refuses a to-year before the from-year", () => {
+    expect(parseStintDraft({ fromYear: "2030", toYear: "" }, 2030)).toEqual({ fromYear: 2030 });
+    expect(parseStintDraft({ fromYear: "2031", toYear: "" }, 2030)).toBeNull();
+    expect(parseStintDraft({ fromYear: "2022", toYear: "2021" }, 2030)).toBeNull();
+    expect(parseStintDraft({ fromYear: "2022", toYear: "2022" }, 2030)).toEqual({ fromYear: 2022, toYear: 2022 });
+    expect(parseStintDraft({ fromYear: "2022.5", toYear: "" }, 2030)).toBeNull();
+    expect(parseStintDraft({ fromYear: "abc", toYear: "" }, 2030)).toBeNull();
+  });
+
+  it("two lines on one card, both re-teamed, drop both printed teams and keep both picks", () => {
+    const cards = [
+      { cardNumber: "5", cardName: "Two", players: ["Mike Trout"], teams: ["Angels", "Padres"] },
+    ];
+    const context: CareerContext = {
+      ...CONTEXT,
+      gaps: [
+        { teamId: tid("t-angels"), playerIds: [pid("p-trout")] },
+        { teamId: tid("t-padres"), playerIds: [pid("p-trout")] },
+      ],
+    };
+    const lines = toLines(deriveSittingPairs({ cards, rows: [], context }));
+    expect(lines).toHaveLength(2);
+    const answers: CareerAnswers = {
+      [lines[0].key]: { kind: "team", pick: { teamId: tid("t-a2"), name: "A2" }, then: { kind: "leave" } },
+      [lines[1].key]: { kind: "team", pick: { teamId: tid("t-p2"), name: "P2" }, then: { kind: "leave" } },
+    };
+    const out = careerCommitFields({ lines, answers, cards, maxYear: 2030 });
+    const applied = applyCareerCardEdit({ ...cards[0], teamIds: [] as Id<"teams">[] }, out?.cardEdits[0]);
+    expect(applied.teams).toEqual([]);
+    expect(applied.teamIds).toEqual(["t-a2", "t-p2"]);
+  });
+
+  it("an add on a line sends exactly one stint", () => {
+    const lines = toLines(deriveSittingPairs({ cards: CARDS, rows: [], context: CONTEXT }));
+    const tatis = lines[0];
+    const out = careerCommitFields({
+      lines,
+      answers: { [tatis.key]: { kind: "add", fromYear: "2022", toYear: "" } },
+      cards: CARDS,
+      maxYear: 2030,
+    });
+    expect(out?.stints).toHaveLength(1);
+  });
+});
+
