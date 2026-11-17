@@ -12,6 +12,7 @@ import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
 import {
   nameHasQueryPrefix,
   nameMatchesQuery,
+  nameSearchKey,
 } from "../../lib/entities/name-search";
 import NeonButton from "@/components/modules/NeonButton";
 
@@ -185,6 +186,9 @@ export default function CareerTeamEntry({
   const justAddedRef = useRef(false);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
+  /** ArrowDown was pressed since the last keystroke: show the list even when
+   *  the box already holds a known team (see `exactMatch`). */
+  const [browsing, setBrowsing] = useState(false);
   const nameInputRef = useRef<HTMLInputElement>(null);
   /** Where focus goes after a suggestion is taken — the next thing to fill in. */
   const fromYearRef = useRef<HTMLInputElement>(null);
@@ -297,6 +301,28 @@ export default function CareerTeamEntry({
 
     return [...staged, ...saved].slice(0, MAX_SUGGESTIONS);
   }, [stagedNames, searched, trimmedName]);
+
+  /**
+   * NEO-574 — the typed text IS one of the suggestions (case and accents
+   * aside). There is nothing left to pick, so the list steps out of the way.
+   *
+   * It is an overlay, so while open it sits over the From/To years and + Add
+   * directly under the field. Typing a team's whole name ("Memphis
+   * RiverKings") and then clicking + Add used to land on the suggestion under
+   * the pointer: the click picked a team (maybe a different one, ranked
+   * first by the set) instead of adding. A list that offers back exactly what
+   * is already in the box has no job, so it is not shown. A partial name still
+   * shows its list, which is what the list is for, and ArrowDown asks for it
+   * on purpose (`browsing`): a keyboard operator who does that is not about to
+   * click + Add.
+   */
+  const exactMatch = useMemo(() => {
+    if (!trimmedName) return false;
+    const key = nameSearchKey(trimmedName);
+    return suggestions.some((s) => nameSearchKey(s.name) === key);
+  }, [suggestions, trimmedName]);
+  /** What the combobox actually shows: open, with rows, and not an echo. */
+  const listOpen = suggestionsOpen && suggestions.length > 0 && (!exactMatch || browsing);
 
   /**
    * The "did you mean?" prompt: a name that is CLOSE to something already in
@@ -461,16 +487,18 @@ export default function CareerTeamEntry({
           placeholder="Team name (search or type new)…"
           aria-label="Career team name"
           role="combobox"
-          aria-expanded={suggestionsOpen && suggestions.length > 0}
+          aria-expanded={listOpen}
           aria-autocomplete="list"
           onChange={(e) => {
             setName(e.target.value);
             setSuggestionsOpen(true);
+            setBrowsing(false);
           }}
           onKeyDown={(e) => {
             if (e.key === "ArrowDown") {
               e.preventDefault();
               setSuggestionsOpen(true);
+              setBrowsing(true);
               setHighlightIdx((i) => Math.min(i + 1, suggestions.length - 1));
             } else if (e.key === "ArrowUp") {
               e.preventDefault();
@@ -478,10 +506,15 @@ export default function CareerTeamEntry({
             } else if (e.key === "Enter") {
               // Never let Enter here bubble to the wizard's confirm shortcut
               // or add a half-filled entry. If a suggestion is highlighted,
-              // fill the name from it; otherwise just close the dropdown.
+              // fill the name from it; if the box already holds a known
+              // team's name (NEO-574), move on to From year as a pick would;
+              // otherwise just close the dropdown.
               e.preventDefault();
-              if (suggestionsOpen && suggestions[highlightIdx]) {
+              if (listOpen && suggestions[highlightIdx]) {
                 pickSuggestion(suggestions[highlightIdx].name);
+              } else if (exactMatch && !browsing) {
+                setSuggestionsOpen(false);
+                fromYearRef.current?.focus();
               } else {
                 setSuggestionsOpen(false);
               }
@@ -505,7 +538,7 @@ export default function CareerTeamEntry({
                */
               e.preventDefault();
               e.stopPropagation();
-              if (suggestionsOpen && suggestions.length > 0) {
+              if (listOpen) {
                 setSuggestionsOpen(false);
               } else if (name !== "") {
                 setName("");
@@ -516,7 +549,7 @@ export default function CareerTeamEntry({
           }}
           className="w-full p-1.5 text-sm"
         />
-        {suggestionsOpen && suggestions.length > 0 && (
+        {listOpen && (
           <ul
             role="listbox"
             aria-label="Existing team suggestions"

@@ -766,6 +766,110 @@ describe("CareerTeamEntry — dismissing the suggestion list", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// NEO-574 — a list that only echoes the box does not cover + Add
+// ---------------------------------------------------------------------------
+
+describe("CareerTeamEntry — whole team name typed (NEO-574)", () => {
+  const listbox = () => screen.queryByRole("listbox", { name: "Existing team suggestions" });
+  const RIVERKINGS = makeTeam("Memphis RiverKings", "t-rk");
+  const RIVERKINGS_II = makeTeam("Memphis RiverKings II", "t-rk2");
+  const nameBox = () => screen.getByLabelText("Career team name") as HTMLInputElement;
+
+  it("shows no list once the box holds a known team's whole name, so + Add is clickable", () => {
+    // The list is an overlay under the field: it used to sit on the years and
+    // + Add, and a click on + Add picked a suggestion instead of adding.
+    currentTeams = [RIVERKINGS, RIVERKINGS_II];
+    const { onAdd } = renderEntry();
+
+    typeName("Memphis RiverKings");
+
+    expect(listbox()).toBeNull();
+    expect(nameBox().getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.change(screen.getByLabelText("From year"), { target: { value: "2012" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+    expect(onAdd).toHaveBeenCalledWith({ name: "Memphis RiverKings", fromYear: 2012 });
+  });
+
+  it("treats case and accents as the same name", () => {
+    currentTeams = [RIVERKINGS];
+    renderEntry();
+
+    typeName("memphis riverkings");
+
+    expect(listbox()).toBeNull();
+  });
+
+  it("applies to a staged name too", () => {
+    renderEntry({ stagedNames: ["Toronto Blue Jays"] });
+
+    typeName("Toronto Blue Jays");
+
+    expect(listbox()).toBeNull();
+  });
+
+  it("still lists the team while the name is only part-typed", () => {
+    currentTeams = [RIVERKINGS, RIVERKINGS_II];
+    renderEntry();
+
+    typeName("Memphis River");
+
+    expect(listbox()).toBeTruthy();
+    expect(nameBox().getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("brings the list back when typing moves off the whole name", () => {
+    currentTeams = [RIVERKINGS, RIVERKINGS_II];
+    renderEntry();
+    typeName("Memphis RiverKings");
+    expect(listbox()).toBeNull();
+
+    typeName("Memphis RiverKings I");
+
+    expect(
+      screen.getByRole("option", { name: "Use Memphis RiverKings II" }),
+    ).toBeTruthy();
+  });
+
+  it("Enter moves to From year and leaves the typed name alone", () => {
+    // The sibling ranked first must not replace what the operator typed.
+    currentTeams = [RIVERKINGS_II, RIVERKINGS];
+    const { onAdd } = renderEntry();
+    typeName("Memphis RiverKings");
+
+    fireEvent.keyDown(nameBox(), { key: "Enter" });
+
+    expect(nameBox().value).toBe("Memphis RiverKings");
+    expect(document.activeElement).toBe(screen.getByLabelText("From year"));
+    expect(onAdd).not.toHaveBeenCalled();
+  });
+
+  it("ArrowDown still shows the list on purpose, and typing hides it again", () => {
+    currentTeams = [RIVERKINGS, RIVERKINGS_II];
+    renderEntry();
+    typeName("Memphis RiverKings");
+    expect(listbox()).toBeNull();
+
+    fireEvent.keyDown(nameBox(), { key: "ArrowDown" });
+    expect(listbox()).toBeTruthy();
+
+    typeName("Memphis RiverKing");
+    typeName("Memphis RiverKings");
+    expect(listbox()).toBeNull();
+  });
+
+  it("Escape on a whole name with the list hidden clears the name, as for any closed list", () => {
+    currentTeams = [RIVERKINGS];
+    renderEntry();
+    typeName("Memphis RiverKings");
+
+    fireEvent.keyDown(nameBox(), { key: "Escape" });
+
+    expect(nameBox().value).toBe("");
+  });
+});
+
 // ===========================================================================
 // NEO-326 — Enter in a year field is "+ Add"
 //
