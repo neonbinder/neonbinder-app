@@ -47,3 +47,4 @@
 - [Fake-BSC miss store tests](reference_fake_bsc_miss_store_test_patterns.md) — unref timer hang, owner reachability, dist break-checks, sheet drift fixtures
 - [NEO-555 probe/capture adversarial](reference_neo555_probe_capture_adversarial.md) — shallow-freeze trap, signal guard, body-read leak, break-check by revert
 - [NEO-556 No Team adversarial patterns](reference_neo556_no_team_adversarial_patterns.md) — oracle cartesian, ?raw source pins, client-vs-server commit agreement
+- [NEO-587 rAF status race sweep](reference_neo587_raf_status_race_sweep.md) — slow-rAF shim to find one-frame-late status races; useLiveWords joins words; vacuous negatives

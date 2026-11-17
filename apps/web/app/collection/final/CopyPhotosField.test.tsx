@@ -552,7 +552,9 @@ describe("the drawer's Add form holds photos (NEO-431)", () => {
     expect(within(field).getByRole("alert").textContent).toMatch(/^Your copy is in, but the back photo didn't save\. .*Add it again here\.$/);
     expect(within(field).getByRole("button", { name: /^Open front of / })).toBeTruthy();
     expect(within(field).getByText("No back photo yet")).toBeTruthy();
-    expect(screen.getAllByRole("status").some((s) => /Its back photo didn't save\. Try again under Edit\.$/.test(s.textContent ?? ""))).toBe(true);
+    await waitFor(() =>
+      expect(screen.getAllByRole("status").some((s) => /Its back photo didn't save\. Try again under Edit\.$/.test(s.textContent ?? ""))).toBe(true),
+    );
     await waitFor(() => expect(document.activeElement).toBe(within(field).getByRole("button", { name: "Add back" })));
 
     // Trying again there works, and clears the failure.

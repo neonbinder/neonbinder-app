@@ -292,7 +292,9 @@ describe("↑ ↓ step through the run of cards the panel was opened from", () =
     }
     expect(button("Previous card").getAttribute("aria-disabled")).toBe("true");
     expect(button("Next card").getAttribute("aria-disabled")).toBeNull();
-  });
+    // Steps the drawer through every card of the batch and back, one render each:
+    // heavy by nature, so a scoped 30 s rather than the 5 s default on a loaded runner.
+  }, 30_000);
 
   it("a shared link carries no list: the panel holds just its card", async () => {
     const data = renderDashboard("/demo");

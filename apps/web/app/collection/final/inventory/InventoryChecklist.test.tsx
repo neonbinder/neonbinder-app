@@ -53,6 +53,8 @@ const adding = () => screen.getByRole("combobox", { name: "Adding to" }) as HTML
 const qty = () => screen.getAllByRole("textbox", { name: /^Quantity of / }) as HTMLInputElement[];
 const says = (re: RegExp) => screen.getAllByRole("status").some((s) => re.test(s.textContent ?? ""));
 const flush = () => act(async () => {});
+/** Resolves once a frame has run after the caller's: the status line writes its words in one (NEO-529), so a "says nothing" check is only meaningful after this. */
+const afterFrame = () => act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())); });
 
 /** The numbers on the rows, in the order the list shows them. */
 const numbers = () => qty().map((el) => /Quantity of #(\S+) /.exec(el.getAttribute("aria-label") ?? "")![1]);
@@ -161,6 +163,7 @@ describe("the inventory's checklist", () => {
     fireEvent.change(b, { target: { value: "" } });
     fireEvent.blur(b);
     await flush();
+    await afterFrame();
     expect(says(/^Boxed 3 more of /)).toBe(true);
     expect(says(/Nothing changed/)).toBe(false);
     expect(b.value).toBe("0");
@@ -175,7 +178,7 @@ describe("the inventory's checklist", () => {
     fireEvent.change(a, { target: { value: "" } });
     fireEvent.blur(a);
     await flush();
-    expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true);
+    await waitFor(() => expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true));
   });
 
   it("after Dismiss, the same blank blur is allowed to speak", async () => {
@@ -189,7 +192,7 @@ describe("the inventory's checklist", () => {
     fireEvent.change(b, { target: { value: "" } });
     fireEvent.blur(b);
     await flush();
-    expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true);
+    await waitFor(() => expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true));
   });
 
   it("a collection copy never counts: nothing held in a binder lights a field", () => {

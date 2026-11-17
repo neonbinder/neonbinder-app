@@ -1719,14 +1719,35 @@ describe("SetAttributesPanel — Set name in titles row (NEO-335)", () => {
         if (selector.includes('data-feat-key="listingShortName"')) return null;
         return real.call(this, selector);
       });
+    // The panel looks again on each of SHORT_NAME_FRAMES frames before it gives
+    // up. Frames are driven by hand here, so the test counts them rather than
+    // racing the clock (a wall-clock waitFor failed on a loaded runner).
+    const queued = new Map<number, FrameRequestCallback>();
+    let nextFrame = 0;
+    const rafSpy = vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => {
+      queued.set(++nextFrame, cb);
+      return nextFrame;
+    });
+    const cafSpy = vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+      queued.delete(id);
+    });
     try {
       act(() => {
         goToSetNameInTitles();
       });
       const region = screen.getByRole("region", { name: "Set attributes panel" });
-      await waitFor(() => expect(document.activeElement).toBe(region));
+      // Generous cap, so a panel that never gives up fails the assertion below.
+      for (let i = 0; i < 50 && queued.size > 0; i++) {
+        const [id, cb] = [...queued][0];
+        queued.delete(id);
+        act(() => cb(0));
+      }
+      expect(queued.size).toBe(0);
+      expect(document.activeElement).toBe(region);
       expect(region.getAttribute("tabindex")).toBe("-1");
     } finally {
+      rafSpy.mockRestore();
+      cafSpy.mockRestore();
       spy.mockRestore();
     }
   });
@@ -4243,19 +4264,26 @@ describe("SetAttributesPanel — opens itself at the set level, checklist first 
   });
 
   it("with storage blocked, a set still opens by default and the toggle still works", () => {
-    vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+    // Restored in finally: a Storage spy left behind breaks whichever test runs next
+    // (seen under --sequence.shuffle).
+    const blocked = () => {
       throw new Error("blocked");
-    });
-    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
-      throw new Error("blocked");
-    });
-    currentRow = makeRow({ level: "setName" });
-    render(collapsedPanel());
-    fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
-    expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Edit attributes" }));
-    expect(screen.getByRole("button", { name: "Hide attributes" })).toBeTruthy();
+    };
+    const getItem = vi.spyOn(Storage.prototype, "getItem").mockImplementation(blocked);
+    const setItem = vi.spyOn(Storage.prototype, "setItem").mockImplementation(blocked);
+    try {
+      currentRow = makeRow({ level: "setName" });
+      render(collapsedPanel());
+      fireEvent.click(screen.getByRole("button", { name: "Hide attributes" }));
+      expect(screen.getByRole("button", { name: "Edit attributes" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Edit attributes" }));
+      expect(screen.getByRole("button", { name: "Hide attributes" })).toBeTruthy();
+    } finally {
+      getItem.mockRestore();
+      setItem.mockRestore();
+    }
   });
+
 });
 
 /**
