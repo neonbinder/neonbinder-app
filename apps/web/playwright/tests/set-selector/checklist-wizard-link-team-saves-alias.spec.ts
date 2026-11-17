@@ -53,6 +53,10 @@
 //     the nested "Career for Todd Helton" prompt comes up), each read back on the saved card.
 //     A catalogue player's career is never written: "Wrong player" puts P on the card, and
 //     Helton's prompt stays on "Keep as is".
+//   - Not shown live: "Wrong player" picking a same-name candidate ("Which <name>?"). No
+//     catalogue player on these sets has a same-name twin (each name here matches one player,
+//     measured NEO-574), so Wright goes through "Someone else". The candidates and their order
+//     (the ones covering the card's team first) are unit-covered in convex/careerCoverage.test.ts.
 // Fresh-only like the rest of the spec (committed cards are never checked again).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { editCardButton } from "../../support/cards";
