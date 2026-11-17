@@ -569,3 +569,31 @@ describe("adversarial: careerCommitFields and parseStintDraft", () => {
   });
 });
 
+
+describe("a card settled from the uploaded checklist is checked like any other", () => {
+  // The marketplace said Trout; the operator took the checklist's Tatis. The
+  // gate resolved and judged the checklist side up front (`gaps` below), so the
+  // settled card has its pair, judged by the gate, with no read to wait for.
+  const settled = [
+    { cardNumber: "7", cardName: "Tatis", players: ["Fernando Tatis Jr."], teams: ["Padres"] },
+  ];
+
+  it("lists the settled card's pair from the gate's own answers", () => {
+    const pairs = deriveSittingPairs({ cards: settled, rows: [], context: CONTEXT });
+    expect(pairs.map(pairKey)).toEqual(["p-tatis|t-padres"]);
+    const judged = gateJudgedKeys({ cards: settled, context: CONTEXT });
+    const { gaps, pending } = classifyPairs({
+      pairs,
+      judgedByGate: judged,
+      context: CONTEXT,
+      coverage: {},
+    });
+    expect(gaps.map(pairKey)).toEqual(["p-tatis|t-padres"]);
+    expect(pending).toEqual([]);
+  });
+
+  it("had no pair at all when the gate left the checklist's names out of the context", () => {
+    const withoutChecklistNames: CareerContext = { ...CONTEXT, players: [], teams: [], gaps: [] };
+    expect(deriveSittingPairs({ cards: settled, rows: [], context: withoutChecklistNames })).toEqual([]);
+  });
+});

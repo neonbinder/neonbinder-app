@@ -319,14 +319,38 @@ export async function buildCareerContext(
       teams?: string[];
       team?: string;
       teamIds?: ReadonlyArray<Id<"teams">>;
+      checklistConflict?: {
+        players?: { marketplace: string[]; checklist: string[] };
+        teams?: { marketplace: string[]; checklist: string[] };
+      };
     }>;
     resolved: ResolvedNames;
   },
 ): Promise<CareerContext> {
   const { resolved } = args;
+  // A card the operator's publisher checklist disagrees with is settled in the
+  // wizard, and EITHER side can become the card. The card as sent carries the
+  // marketplace's side; the checklist's side is a second card the operator
+  // may choose, and it is checked all the same: a card behaves the same
+  // whichever source its names came from (product invariant 6). The settle
+  // is the wizard's `applyChecklistChoice`: one side for every part in
+  // dispute. A gap on a side nobody picks is harmless (the wizard reads only
+  // the pairs of the cards it ends up with).
+  const cards = args.cards.flatMap((card) => {
+    const conflict = card.checklistConflict;
+    if (!conflict || (!conflict.players && !conflict.teams)) return [card];
+    const settled = { ...card };
+    delete settled.checklistConflict;
+    if (conflict.players) settled.players = [...conflict.players.checklist];
+    if (conflict.teams) {
+      settled.teams = [...conflict.teams.checklist];
+      delete settled.team;
+    }
+    return [card, settled];
+  });
   const players = new Map<string, Id<"players">>();
   const teams = new Map<string, Id<"teams">>();
-  for (const card of args.cards) {
+  for (const card of cards) {
     for (const raw of card.players ?? []) {
       const printed = raw.trim();
       if (!printed || players.has(printed)) continue;
@@ -350,7 +374,7 @@ export async function buildCareerContext(
   if (resolved.setYear === undefined) return context;
 
   const pairs = deriveCareerPairs({
-    cards: args.cards,
+    cards,
     setYear: resolved.setYear,
     playerIdFor: (printed) => players.get(printed),
     teamFor: (printed) => {

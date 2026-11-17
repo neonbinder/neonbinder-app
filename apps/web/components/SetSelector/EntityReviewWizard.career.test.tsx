@@ -5,7 +5,7 @@
  * rules are career-check.test.tsx. The harness is
  * EntityReviewWizard.autograph.test.tsx's.
  */
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -368,6 +368,28 @@ describe("a coverage read that fails (never silently 'covered')", () => {
     expect(live).toBeTruthy();
     expect(live?.isConnected).toBe(true);
     expect(CAREER_CHECKING).toBe("Checking careers…");
+  });
+
+  it("holds Next while the reads are on their way, with the footer status as the reason, then lets it through", () => {
+    currentRows = linkedRows();
+    let answer: ((a: Record<string, boolean>) => void) | undefined;
+    fetcherBehaviour = (_asks, cb) => {
+      answer = cb.onAnswered;
+    };
+    render(readWizard());
+    const status = screen.getAllByRole("status").find((el) => el.textContent === CAREER_CHECKING)!;
+    expect(next().getAttribute("aria-disabled")).toBe("true");
+    // The reason the button is held is the footer's own live status line.
+    expect((next().getAttribute("aria-describedby") ?? "").split(" ")).toContain(status.id);
+    // A press (click or Enter) goes nowhere while the answer is out.
+    fireEvent.click(next());
+    fireEvent.keyDown(next(), { key: "Enter" });
+    expect(screen.queryByRole("button", { name: /^Confirm & Save/ })).toBeNull();
+    // The answer lands: Next is live again.
+    act(() => {
+      answer?.({ "p-trout|t-angels": false });
+    });
+    expect(next().getAttribute("aria-disabled")).not.toBe("true");
   });
 
   it("after a Retry that finds nothing missing, focus lands on the next screen's control, not the page", () => {

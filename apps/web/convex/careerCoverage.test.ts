@@ -455,6 +455,88 @@ describe("resolveChecklistEntities — careerContext", () => {
     expect(result.careerContext?.gaps).toEqual([]);
   });
 
+  test("a card from an uploaded checklist is checked like any other: the checklist's players are resolved and judged too", async () => {
+    // The marketplace says Sandberg; the operator's checklist says Gwynn, on a
+    // card printing the Cubs. Either side may become the card in the wizard,
+    // so Gwynn-with-the-Cubs (a gap) must be known before it is chosen.
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedSet(t, "1990");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs");
+    const gwynn = await insertPlayer(t, sportId, "Tony Gwynn", [{ teamId: padres, fromYear: 1982 }]);
+    const sandberg = await insertPlayer(t, sportId, "Ryne Sandberg", [{ teamId: cubs, fromYear: 1982 }]);
+
+    const result = await t.withIdentity(ADMIN).action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        {
+          ...card("7", ["Ryne Sandberg"], ["Chicago Cubs"]),
+          checklistConflict: {
+            players: { marketplace: ["Ryne Sandberg"], checklist: ["Tony Gwynn"] },
+          },
+        },
+      ],
+    });
+
+    expect(result.careerContext?.players).toEqual(
+      expect.arrayContaining([
+        { printed: "Ryne Sandberg", playerId: sandberg },
+        { printed: "Tony Gwynn", playerId: gwynn },
+      ]),
+    );
+    expect(result.careerContext?.gaps).toEqual([{ teamId: cubs, playerIds: [gwynn] }]);
+  });
+
+  test("a card whose checklist disagrees about the TEAM is judged on the checklist's team too", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedSet(t, "1990");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres");
+    const cubs = await insertTeam(t, sportId, "Chicago", "Cubs");
+    const sandberg = await insertPlayer(t, sportId, "Ryne Sandberg", [{ teamId: cubs, fromYear: 1982 }]);
+
+    const result = await t.withIdentity(ADMIN).action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        {
+          ...card("7", ["Ryne Sandberg"], ["Chicago Cubs"]),
+          checklistConflict: {
+            teams: { marketplace: ["Chicago Cubs"], checklist: ["San Diego Padres"] },
+          },
+        },
+      ],
+    });
+
+    expect(result.careerContext?.teams).toEqual(
+      expect.arrayContaining([
+        { printed: "Chicago Cubs", teamId: cubs },
+        { printed: "San Diego Padres", teamId: padres },
+      ]),
+    );
+    // The marketplace side (Cubs) is covered; the checklist side (Padres) is the gap.
+    expect(result.careerContext?.gaps).toEqual([{ teamId: padres, playerIds: [sandberg] }]);
+  });
+
+  test("a checklist that says 'no team' adds no pair", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedSet(t, "1990");
+    await insertTeam(t, sportId, "San Diego", "Padres");
+    await insertPlayer(t, sportId, "Bare Career");
+
+    const result = await t.withIdentity(ADMIN).action(api.selectorOptions.resolveChecklistEntities, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        {
+          ...card("7", ["Bare Career"], []),
+          checklistConflict: { teams: { marketplace: [], checklist: [] } },
+        },
+      ],
+    });
+    expect(result.careerContext?.gaps).toEqual([]);
+  });
+
   test("a name the gate sends to the wizard is in neither list", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedSet(t, "1990");

@@ -1244,6 +1244,8 @@ export default function EntityReviewWizard({
   const [checklistBlockedPresses, setChecklistBlockedPresses] = useState(0);
   /** NEO-574 — the career step's heading and status line; its Next is described by both. */
   const careerLeadId = useId();
+  /** The footer's status line: the reason Next is held while careers are checked. */
+  const footerStatusId = useId();
   /** NEO-574 — the first line's tab-stop radio, focused on arrival. */
   const careerFirstRef = useRef<HTMLButtonElement>(null);
   /** NEO-574 (a11y) — Next pressed while an add form holds years that are not a stint. */
@@ -4330,7 +4332,7 @@ export default function EntityReviewWizard({
     saving ||
     (postStep === "autograph" && autographUnanswered) ||
     (postStep === "checklist" && checklistUnanswered) ||
-    (postStep === "career" && careerBadYears.length > 0);
+    (postStep === "career" && (careerBadYears.length > 0 || careerChecking));
   /**
    * NEO-345 (a11y) — a press (click, Enter or Space) on Next while the
    * autograph step is unanswered: say why in the step's status line and move
@@ -6732,7 +6734,9 @@ export default function EntityReviewWizard({
                         postStep === "checklist"
                           ? `${checklistLeadId} ${checklistHintId}`
                           : postStep === "career"
-                            ? careerLeadId
+                            ? careerChecking
+                              ? `${careerLeadId} ${footerStatusId}`
+                              : careerLeadId
                           : postStep === "teams"
                           ? teamsIntroId
                           : postStep === "autograph"
@@ -6962,6 +6966,7 @@ export default function EntityReviewWizard({
                       "flex-1 text-pretty"
                     : `truncate ${createBlocked && !pickStep ? "shrink-0" : "flex-1"}`
                 }`}
+                id={footerStatusId}
                 role="status"
                 aria-live="polite"
               >
