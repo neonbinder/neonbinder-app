@@ -88,7 +88,7 @@ export interface CaptureVerdict {
 /** Does the fake's answer fit the real one? Paths only. */
 export function checkCapture(capture: WriteCapture): CaptureVerdict {
   const synth = synthesisedWrite(capture.endpoint);
-  const paths = synthConformsTo(synth.shape, capture.shape, isWriteEndpoint(capture.endpoint) ? undefined : (p) => isOptionalCapturePath(capture.endpoint, p)).paths;
+  const paths = synthConformsTo(synth.shape, capture.shape, isWriteEndpoint(capture.endpoint) ? undefined : (p) => isOptionalCapturePath(capture.endpoint, p, capture.shape)).paths;
   const statusClass = (s: number) => Math.floor(s / 100);
   if (statusClass(synth.status) !== statusClass(capture.status)) paths.unshift("$status");
   return { endpoint: capture.endpoint, capturedAt: capture.capturedAt, verdict: paths.length ? "shape_drift" : "ok", paths };

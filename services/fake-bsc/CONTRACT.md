@@ -977,7 +977,7 @@ extracted from eBay's OpenAPI contracts). Every error answer is eBay's
   offer's three policies exist on the seller (fulfillment missing: 25007;
   payment or return missing: 25002) and its location exists and is enabled
   (else 25002). `POST offer/:offerId/withdraw` ends the listing (200
-  `{listingId, warnings: []}`); an offer that is not live answers 404 errorId
+  `{listingId}`, no `warnings`: production's answer); an offer that is not live answers 404 errorId
   25713, which NB reads as already ended (UNVERIFIED). `bulk_update_price_quantity`
   (1-25) answers one response per offer (`{statusCode, sku, offerId}`) and
   updates the item's and offers' quantity and price.

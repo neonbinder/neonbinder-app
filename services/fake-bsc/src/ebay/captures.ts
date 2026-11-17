@@ -60,33 +60,60 @@ export function ebayCaptureSlug(endpoint: string): string {
 }
 
 /**
+ * One path a capture may lack. By default it covers everything below it (a
+ * prefix). `parentOnly` covers the path itself, and what is below it only when
+ * the capture lacks the path altogether: an object that is present must still
+ * carry its required fields.
+ */
+interface OptionalRule {
+  readonly path: string;
+  readonly parentOnly?: true;
+}
+
+/**
  * Paths the fake's answer carries that a stored capture may legitimately lack,
  * because eBay includes them only for some objects and the capture saw one
  * object. A path here is never required of the capture; if the capture has it
- * its types are still compared. A prefix covers everything below it.
+ * its types are still compared. Scoped per endpoint.
  * Evidence is the first sandbox capture (2026-11-16): each was documented in
  * eBay's contract and absent from the answer the sandbox gave.
  */
-const CAPTURE_OPTIONAL: Record<string, readonly string[]> = {
+const CAPTURE_OPTIONAL: Record<string, readonly OptionalRule[]> = {
   // Account state: the sandbox seller's user answer has no `status`; NB reads userId and username only.
-  [endpointName("identityUser")]: ["status"],
+  [endpointName("identityUser")]: [{ path: "status" }],
   // A return policy made some other way (Seller Hub, the older API) has no `default` on its category type.
-  [endpointName("listReturnPolicies")]: ["returnPolicies[].categoryTypes[].default"],
-  // `listing` exists only once an offer has been published; the capture's offer was not.
-  [endpointName("getOffers")]: ["offers[].listing"],
+  [endpointName("listReturnPolicies")]: [{ path: "returnPolicies[].categoryTypes[].default" }],
+  // `listing` exists only once an offer has been published; the capture's offer was not. NB reads
+  // `listing.listingId` and `status`, so once `listing` is there `listingId` is required and type-checked.
+  // `listingStatus` and `soldQuantity` are not read by NB and may vary.
+  [endpointName("getOffers")]: [
+    { path: "offers[].listing", parentOnly: true },
+    { path: "offers[].listing.listingStatus" },
+    { path: "offers[].listing.soldQuantity" },
+  ],
   // The capture reads the seller's FIRST item (limit=1), which need not be the one NB just sent: the
-  // descriptors and package type are optional on an item, and aspect names with a space or a digit run
-  // collapse to `*` in a shape, so which aspect paths exist depends on the item's names.
+  // descriptors, package type and aspects are optional on an item, and aspect names with a space or a digit
+  // run collapse to `*` in a shape, so which aspect paths exist depends on the item's names (a first item
+  // may lack a name such as Sport, or carry no aspects at all).
   [endpointName("listItems")]: [
-    "inventoryItems[].conditionDescriptors",
-    "inventoryItems[].packageWeightAndSize.packageType",
-    "inventoryItems[].product.aspects.*",
+    { path: "inventoryItems[].conditionDescriptors" },
+    { path: "inventoryItems[].packageWeightAndSize.packageType" },
+    { path: "inventoryItems[].product.aspects" },
   ],
 };
 
-/** Is `path` one a capture of `endpoint` may lack? (Exact, or below a listed path.) */
-export function isOptionalCapturePath(endpoint: string, path: string): boolean {
-  return (CAPTURE_OPTIONAL[endpoint] ?? []).some((p) => path === p || path.startsWith(`${p}.`) || path.startsWith(`${p}[]`));
+const isBelow = (path: string, parent: string): boolean => path.startsWith(`${parent}.`) || path.startsWith(`${parent}[]`);
+
+/** Is `path` one a capture of `endpoint` may lack? `capture` is the stored shape being checked. */
+export function isOptionalCapturePath(endpoint: string, path: string, capture: Shape): boolean {
+  const rules = Object.hasOwn(CAPTURE_OPTIONAL, endpoint) ? CAPTURE_OPTIONAL[endpoint] : [];
+  return rules.some((r) => {
+    if (path === r.path) return true;
+    if (!isBelow(path, r.path)) return false;
+    if (!r.parentOnly) return true;
+    // Below a parent-only rule: optional only while the parent is wholly absent from the capture.
+    return capture[r.path] === undefined && !Object.keys(capture).some((k) => isBelow(k, r.path));
+  });
 }
 
 let cached: Record<string, { status: number; shape: Shape }> | null = null;

@@ -94,3 +94,4 @@
 - [Cloud Run: load before listen](reference_cloud_run_load_before_listen.md) — throttled CPU starves post-listen boot work; load first, budget optional loads; spy Server.prototype.listen
 - [Stdio EPIPE is a late 'error' event](reference_stdio_epipe_error_is_a_late_event.md) — closed pipe/tty kills Node via nextTick 'error'; release scoped listeners on setImmediate; spy emit
 - [Capture diff paths are what the fake invents](reference_capture_diff_paths_are_what_the_fake_invents.md) — shape_drift paths = fake-only fields; stored shapes unreadable; CAPTURE_OPTIONAL; name variants by kind not id
+- [Capture optional paths: parent-only](reference_capture_optional_parent_only.md) — fake-bsc prefix exemption hides read fields under a present object; use parentOnly + list children
