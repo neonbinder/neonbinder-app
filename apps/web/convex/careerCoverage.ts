@@ -26,9 +26,12 @@ import {
   type TeamFactsMemo,
 } from "./lib/careerCoverageFacts";
 import { CAREER_COVERAGE_MAX_PAIRS, careerCoversCardTeam } from "./lib/careerCoverage";
+import type { Doc, Id } from "./_generated/dataModel";
+import type { QueryCtx } from "./_generated/server";
 import {
   narrowSameNamePlayersByCardYear,
   normalizePlayerName,
+  playerBelongsToSport,
   renderExistingPlayerCandidates,
   sameNamePlayers,
 } from "./players";
@@ -58,6 +61,58 @@ function assertPairText(pairs: ReadonlyArray<{ teamName?: string }>): void {
       );
     }
   }
+}
+
+/**
+ * The commit refuses an id outside the set's sport, so the preview must not
+ * read one either (it would hand back another sport's career as an answer).
+ * A pair naming a player or team that is not this sport's (or is gone) is
+ * answered `covered: true` WITHOUT reading its career: there is nothing here
+ * to check, and nothing the commit would accept. Results stay aligned with the
+ * input.
+ */
+async function coverageInSport(
+  ctx: QueryCtx,
+  sportId: Id<"selectorOptions">,
+  setYear: number | null,
+  pairs: ReadonlyArray<{ playerId: Id<"players">; teamId?: Id<"teams">; teamName?: string }>,
+) {
+  const playerOk = new Map<string, boolean>();
+  const teamOk = new Map<string, boolean>();
+  const allowed: boolean[] = [];
+  for (const pair of pairs) {
+    const pKey = pair.playerId as string;
+    if (!playerOk.has(pKey)) {
+      const player: Doc<"players"> | null = await ctx.db.get(pair.playerId);
+      playerOk.set(pKey, player !== null && (await playerBelongsToSport(ctx, player, sportId)));
+    }
+    let ok = playerOk.get(pKey) === true;
+    if (ok && pair.teamId) {
+      const tKey = pair.teamId as string;
+      if (!teamOk.has(tKey)) {
+        const team = await ctx.db.get(pair.teamId);
+        teamOk.set(tKey, team !== null && team.sportId === sportId);
+      }
+      ok = teamOk.get(tKey) === true;
+    }
+    allowed.push(ok);
+  }
+  const answered = await computeCoverage(ctx, {
+    sportId,
+    setYear,
+    pairs: pairs.filter((_, i) => allowed[i]),
+  });
+  let next = 0;
+  return pairs.map((pair, i) =>
+    allowed[i]
+      ? answered[next++]
+      : {
+          playerId: pair.playerId,
+          ...(pair.teamId ? { teamId: pair.teamId } : {}),
+          ...(pair.teamName !== undefined ? { teamName: pair.teamName } : {}),
+          covered: true,
+        },
+  );
 }
 
 /**
@@ -91,7 +146,7 @@ export const coverageForPreview = query({
       throw new Error("coverageForPreview: the set has no sport ancestor");
     }
     const setYear = (await findSetYearForSelectorOption(ctx, args.selectorOptionId)) ?? null;
-    const results = await computeCoverage(ctx, { sportId, setYear, pairs: args.pairs });
+    const results = await coverageInSport(ctx, sportId, setYear, args.pairs);
     return { setYear, results };
   },
 });
@@ -168,16 +223,23 @@ export const relinkCandidates = query({
     const setYear = (await findSetYearForSelectorOption(ctx, args.selectorOptionId)) ?? null;
     const normalized = normalizePlayerName(args.printedName);
     if (!normalized) return { setYear, candidates: [] };
-    const namesakes = (await sameNamePlayers(ctx, normalized, sportId)).filter(
-      (player) => player._id !== args.excludePlayerId,
-    );
+    // Fail closed, as the commit does: only players that belong to this
+    // set's sport are ever offered, whatever leg of the lookup found them.
+    const namesakes: Array<Doc<"players">> = [];
+    for (const player of await sameNamePlayers(ctx, normalized, sportId)) {
+      if (player._id === args.excludePlayerId) continue;
+      if (await playerBelongsToSport(ctx, player, sportId)) namesakes.push(player);
+    }
     if (namesakes.length === 0) return { setYear, candidates: [] };
 
     const memo: TeamFactsMemo = new Map();
+    // A team id from another sport contributes no keys: nothing covers it.
+    const cardTeam = args.teamId ? await ctx.db.get(args.teamId) : null;
+    const teamId = cardTeam && cardTeam.sportId === sportId ? args.teamId : undefined;
     const cardKeys = await cardTeamKeysFor(
       ctx,
       sportId,
-      { teamId: args.teamId, teamName: args.teamName },
+      { teamId, teamName: teamId || !args.teamId ? args.teamName : undefined },
       memo,
     );
     const covers = new Map<string, boolean>();

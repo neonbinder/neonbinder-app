@@ -276,6 +276,47 @@ describe("coverageForPreview", () => {
   });
 });
 
+describe("N1: ids outside the set's sport are never read", () => {
+  test("coverageForPreview answers a foreign player or team as covered without reading its career", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedSet(t, "1990");
+    const football = await seedSet(t, "1990");
+    const padres = await insertTeam(t, sportId, "San Diego", "Padres");
+    const foreignTeam = await insertTeam(t, football.sportId, "Green Bay", "Packers");
+    const home = await insertPlayer(t, sportId, "Home Guy");
+    const foreignPlayer = await insertPlayer(t, football.sportId, "Foreign Guy");
+
+    const out = await t.withIdentity(ADMIN).query(api.careerCoverage.coverageForPreview, {
+      selectorOptionId: leafId,
+      pairs: [
+        { playerId: home, teamId: padres },
+        { playerId: foreignPlayer, teamId: padres },
+        { playerId: home, teamId: foreignTeam },
+      ],
+    });
+    // Aligned with the input: the home pair is a real gap, the foreign ones
+    // are not checked at all.
+    expect(out.results.map((r) => r.covered)).toEqual([false, true, true]);
+  });
+
+  test("relinkCandidates never offers another sport's player or reads another sport's team", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedSet(t, "1990");
+    const football = await seedSet(t, "1990");
+    const foreignTeam = await insertTeam(t, football.sportId, "Green Bay", "Packers");
+    const mine = await insertPlayer(t, sportId, "Bob Allen");
+    await insertPlayer(t, football.sportId, "Bob Allen");
+
+    const out = await t.withIdentity(ADMIN).query(api.careerCoverage.relinkCandidates, {
+      selectorOptionId: leafId,
+      printedName: "Bob Allen",
+      teamId: foreignTeam,
+    });
+    expect(out.candidates.map((c) => c.playerId)).toEqual([mine]);
+    expect(out.candidates[0].covers).toBe(false);
+  });
+});
+
 describe("coverageForPairs (internal)", () => {
   test("answers the same question for the gate and refuses an oversized page", async () => {
     const t = convexTest(schema, modules);

@@ -426,6 +426,66 @@ describe("commitCardChecklist — a card's playerIdByName", () => {
     expect(card.playerIds).toEqual([only]);
   });
 
+  test("a re-link onto the player another name on the card already resolves to is written once", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    const bob = await insertPlayer(t, ids.sportId, "Bob Allen");
+    const jim = await insertPlayer(t, ids.sportId, "Jim Beam");
+
+    // "Jim Beam" resolves to jim; the operator re-linked "Bob Allen" to jim too.
+    await commit(t, ids, [
+      makeCard({
+        players: ["Jim Beam", "Bob Allen"],
+        playerIdByName: [{ name: "Bob Allen", playerId: jim }],
+      }),
+    ]);
+
+    const [card] = await cardsOf(t, ids.leafId);
+    expect(card.playerIds).toEqual([jim]);
+    expect(card.playerLinks).toEqual([{ playerId: jim, nameOnCard: "Jim Beam" }]);
+    expect(card.playerIds).not.toContain(bob);
+  });
+
+  test("the same collision in the other order (re-link first) is also written once", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    await insertPlayer(t, ids.sportId, "Bob Allen");
+    const jim = await insertPlayer(t, ids.sportId, "Jim Beam");
+
+    await commit(t, ids, [
+      makeCard({
+        players: ["Bob Allen", "Jim Beam"],
+        playerIdByName: [{ name: "Bob Allen", playerId: jim }],
+      }),
+    ]);
+
+    const [card] = await cardsOf(t, ids.leafId);
+    expect(card.playerIds).toEqual([jim]);
+    expect(card.playerLinks).toHaveLength(1);
+  });
+
+  test("two names re-linked to one player give that player one link", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    const jim = await insertPlayer(t, ids.sportId, "Jim Beam");
+
+    await commit(t, ids, [
+      makeCard({
+        players: ["Bobby One", "Bobby Two"],
+        playerIdByName: [
+          { name: "Bobby One", playerId: jim },
+          { name: "Bobby Two", playerId: jim },
+        ],
+      }),
+    ]);
+
+    const [card] = await cardsOf(t, ids.leafId);
+    expect(card.playerIds).toEqual([jim]);
+    expect(card.playerLinks).toEqual([{ playerId: jim, nameOnCard: "Bobby One" }]);
+    // The skipped name was not answered by anything, so it is still pending.
+    expect(card.pendingPlayerNames ?? []).toContain("Bobby Two");
+  });
+
   test("more re-links than a card may print is refused", async () => {
     const t = convexTest(schema, modules);
     const ids = await seedSet(t);

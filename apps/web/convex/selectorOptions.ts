@@ -24130,13 +24130,31 @@ export const commitCardChecklist = action({
           relinkedByName.set(e.name.trim(), e.playerId);
         }
       }
+      // A card names a player once. An operator re-link that lands on a player
+      // the card already carries (another name's ordinary resolution, or an
+      // earlier re-link to the same id) is skipped, not written twice: the
+      // names stay one list, and the skipped name is NOT counted as answered
+      // (`relinkApplied`), so it still shows as pending when nothing resolved
+      // it. Ordinary resolutions keep their pre-NEO-574 behaviour.
+      const relinkApplied = new Set<string>();
+      const relinkedIds = new Set<string>();
       for (const p of c.players ?? []) {
         const nameOnCard = p.trim();
-        const id = relinkedByName.get(nameOnCard) ?? playerIdByName.get(nameOnCard);
-        if (id) {
-          playerIds.push(id);
-          playerLinks.push({ playerId: id, nameOnCard });
+        const relinked = relinkedByName.get(nameOnCard);
+        const id = relinked ?? playerIdByName.get(nameOnCard);
+        if (!id) continue;
+        if (
+          (relinked !== undefined || relinkedIds.has(id)) &&
+          playerIds.includes(id)
+        ) {
+          continue;
         }
+        if (relinked !== undefined) {
+          relinkedIds.add(id);
+          relinkApplied.add(nameOnCard);
+        }
+        playerIds.push(id);
+        playerLinks.push({ playerId: id, nameOnCard });
       }
       let teamOnCardIds: Array<Id<"teams">> = [];
       const teamSources = c.teams?.length ? c.teams : c.team ? [c.team] : [];
@@ -24192,7 +24210,7 @@ export const commitCardChecklist = action({
             (c.players ?? [])
               .map((p) => p.trim())
               // NEO-574 — a name the operator re-linked is answered, not pending.
-              .filter((p) => p && unreviewedPlayers.has(p) && !relinkedByName.has(p)),
+              .filter((p) => p && unreviewedPlayers.has(p) && !relinkApplied.has(p)),
           ),
         ),
         MAX_PENDING_PLAYER_NAMES,
