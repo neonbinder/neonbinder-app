@@ -848,7 +848,7 @@ describe("the signed-in Pick List's ways out", () => {
     expect(within(thin).getAllByText("Hockey", { exact: true }).length).toBeGreaterThan(0);
   });
 
-  it("NEO-520: an eBay line known only by its title sits under Can't find it, named by the title and its order, with no Not in NB chip", async () => {
+  it("NEO-520: an eBay line known only by its title files under Other as a sale NB didn't list, named by the title and its order, with no Not in NB chip", async () => {
     const { DEMO_PICK_DATA } = await import("./demoPickStore");
     const title = "Vintage binder lot";
     const extra = {
@@ -865,8 +865,8 @@ describe("the signed-in Pick List's ways out", () => {
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
     const toggle = within(region).getByRole("button", { name: `Pulled ${title}, not in NB, eBay 27-11111-22222` });
     const row = toggle.closest("tr")!;
-    expect(row.closest("tbody")!.textContent).toContain("Can't find it");
-    expect(row.closest("tbody")!.textContent).toContain("NB couldn't place these sales. Each listing's photo shows what sold.");
+    expect(row.closest("tbody")!.textContent).toContain("Other");
+    expect(row.closest("tbody")!.textContent).toContain("Sales NB didn't list");
     // The seller sees the title; the Not in NB chip belongs to rows the listing describes as a card.
     // Both row sizes name it by its title and keep its problem line (Spacious hides the note only
     // on a line the listing describes, where the Not in NB chip says it).

@@ -3582,6 +3582,7 @@ describe("NEO-500: the Pick List is the signed-in seller's own", () => {
     ["pickList.open", (t) => t.query(api.pickList.open, {})],
     ["pickList.cards", (t) => t.query(api.pickList.cards, { cardIds: [] })],
     ["pickList.sports", (t) => t.query(api.pickList.sports, { sportIds: [] })],
+    ["pickList.titleSports", (t) => t.query(api.pickList.titleSports, { titles: [] })],
     ["pickList.soldPhotos", (t) => t.query(api.pickList.soldPhotos, { copyIds: [] })],
     ["pickList.setPulled", (t) => t.mutation(api.pickList.setPulled, { ids: [], pulled: true })],
   ];

@@ -368,7 +368,7 @@ describe("NEO-509: the sports a sale names", () => {
     await mountWith([lostLine(1, { title: "  Vintage   binder lot " }, { platform: "ebay", orderNo: "27-1" })]);
     const [only] = store!.data!.lines;
     expect(only.listingTitle).toBe("Vintage binder lot");
-    expect(only.listed).toEqual({ title: "Vintage binder lot" });
+    expect(only.listed).toEqual({ title: "Vintage binder lot", titleSport: null });
     expect(only.order.venue).toBe("eBay");
     expect(only.problem).toBe("NB didn't list this one. Check the order's photo.");
   });

@@ -856,8 +856,10 @@ export const saleItemListedValidator = v.object({
    * NB did not make): the Pick List, and the Sales tab via
    * `listingSync.publicSale`. Bounded at the
    * sync boundary (`lib/ebayListing.ts`): trimmed, control characters
-   * refused, an over-long title dropped, never cut. Never parsed, matched or
-   * written to any NB row. BSC lines never carry it.
+   * refused, an over-long title dropped, never cut. Parsed for Pick List
+   * order only (NEO-590: its year, its set words and the sport of an NB
+   * player or team it names), never matched to a card or written to any NB
+   * row. BSC lines never carry it.
    */
   title: v.optional(v.string()),
 });

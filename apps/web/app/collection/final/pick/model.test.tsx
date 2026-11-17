@@ -679,16 +679,17 @@ describe("NEO-520: a listing named only by its own title", () => {
     expect(listedTitle(titled("Whole lot of cards", { players: "Someone" }))).toBe("Someone");
   });
 
-  it("a title-only line stays in Can't find it, however much its title reads like a set, and never joins an NB set", () => {
+  it("a title-only line files by its title (NEO-590), however much it reads like a set, and never joins an NB set", () => {
     const nb = line(card({ setId: "a", setName: "Topps Chrome", sport: "Baseball", season: "2024", number: "205" }));
     const only = line(null, { order: EBAY_1, listingTitle: "2024 Topps Chrome #205 Some Player", sportCode: null, listed: titled("2024 Topps Chrome #205 Some Player") });
     const sections = buildSections([nb, only], {}, { sort: null, dir: "asc", groupByOrder: false });
-    const cant = sections.find((x) => x.kind === "cantFind")!;
-    expect(cant.rows).toHaveLength(1);
-    expect(cant.rows[0].card).toBeNull();
-    const set = sections.find((x) => x.kind === "set")!;
+    expect(sections.find((x) => x.kind === "cantFind")).toBeUndefined();
+    const [set, other] = sections.filter((x) => x.kind === "set");
     expect(set.rows).toHaveLength(1);
-    expect(rowFacts(cant.rows[0])).toBeNull();
+    expect(other.title).toBe("Sales NB didn't list");
+    expect(other.rows).toHaveLength(1);
+    expect(other.rows[0].card).toBeNull();
+    expect(rowFacts(other.rows[0])).toMatchObject({ sportName: "Other", year: 2024, setName: "Topps Chrome", cardNumber: "205", fromTitle: true });
     expect(listedSetFor(only.listed!, setsOnList([nb, only]))).toBeNull();
   });
 });

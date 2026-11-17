@@ -1408,7 +1408,7 @@ async function pollOwnerSteps(
  *   as `platformCardId`, an empty condition, the SKU as sent (if any) and not
  *   graded. The apply refuses it as "unmatched" and lowers nothing.
  * - Every line carries eBay's title (`listed.title`) when it was readable: a
- *   label only, never parsed or matched.
+ *   label, parsed for Pick List order only (NEO-590), never matched to a card.
  *
  * Null when the order has no readable line, or when it holds no NB line and
  * was placed before `opts.otherOrdersFrom` (the floor: `ebayOrdersFloor`;

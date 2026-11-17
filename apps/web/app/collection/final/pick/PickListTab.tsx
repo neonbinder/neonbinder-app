@@ -27,6 +27,7 @@ import {
   naturalCompare,
   orderLabel,
   NOT_IN_NB,
+  cardFacts,
   rowFacts,
   setSections,
   SORT_KEYS,
@@ -653,7 +654,7 @@ function FilterBar({
       const facts = rowFacts(r);
       if (facts) {
         sports.set(facts.sportKey, { name: facts.sportName, nb: !facts.sportKey.startsWith("sport:") });
-        years.add(facts.year);
+        if (facts.year !== null) years.add(facts.year);
       }
       conditions.add(conditionOf(r));
     }
@@ -1420,7 +1421,8 @@ function Markers({ row, salesLink }: { row: PickRow; salesLink: boolean }) {
   // A sale filed with its set by the listing's words alone: NB has no card
   // for it, and the chip says so (the dashed edge echoes the "?" picture).
   // Can't find it never shows it: its heading already says as much.
-  const notInNb = !row.card && rowFacts(row) !== null;
+  // A row filed by its title alone is Can't find it's kin, not a listing with a place: no chip.
+  const notInNb = !row.card && cardFacts(row) !== null;
   if (!row.lastOnes && !row.short && !row.isNew && !noBox && !notInNb) return null;
   const why = salesLink ? COPY.notInNbWhyLinked : COPY.notInNbWhy;
   // NEO-522: they ride the name's line, after it, big enough to read beside it.
@@ -1484,7 +1486,9 @@ function Row({
 }) {
   const c = row.card;
   // A card's facts, or a listing's when it says enough to file by (NEO-509).
-  const facts = rowFacts(row);
+  // A row filed by its title alone (NEO-590) draws as it always has: the title across the columns.
+  const facts = cardFacts(row);
+  const titleFacts = facts ? null : rowFacts(row);
   const role = facts?.role ?? null;
   const tag = facts ? variantTag(facts) : null;
   const tab = tabbable ? 0 : -1;
@@ -1540,7 +1544,11 @@ function Row({
   // Nothing to file by: the listing's sport, when it names one (the box it might sit in),
   // and why NB could not file it, the one clue the row has. Wide, the sport keeps the Set
   // column and the reason rides under the listing's words, where it has room to read.
-  const listedSport = !facts && row.listed?.sportName ? <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} /> : null;
+  const listedSport = titleFacts ? (
+    <SportChip code={titleFacts.sportCode} name={titleFacts.sportName} />
+  ) : !facts && row.listed?.sportName ? (
+    <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />
+  ) : null;
   const problem = !facts && row.problem ? <span className="block text-base leading-6 text-notice-warn-ink">{row.problem}</span> : null;
 
   // Condition, or a slab's grade and cert.
@@ -1777,7 +1785,8 @@ function CondensedMarkers({ row, salesLink }: { row: PickRow; salesLink: boolean
   // A sale filed with its set by the listing's words alone: NB has no card
   // for it, and the chip says so (the dashed edge echoes the "?" picture).
   // Can't find it never shows it: its heading already says as much.
-  const notInNb = !row.card && rowFacts(row) !== null;
+  // A row filed by its title alone is Can't find it's kin, not a listing with a place: no chip.
+  const notInNb = !row.card && cardFacts(row) !== null;
   if (!row.lastOnes && !row.short && !row.isNew && !noBox && !notInNb) return null;
   const why = salesLink ? COPY.notInNbWhyLinked : COPY.notInNbWhy;
   return (
@@ -1842,7 +1851,9 @@ function CondensedRow({
 }) {
   const c = row.card;
   // A card's facts, or a listing's when it says enough to file by (NEO-509).
-  const facts = rowFacts(row);
+  // A row filed by its title alone (NEO-590) draws as it always has: the title across the columns.
+  const facts = cardFacts(row);
+  const titleFacts = facts ? null : rowFacts(row);
   const role = facts?.role ?? null;
   const vWord = facts?.variantWord ?? null;
   const vName = facts?.variantName ?? null;
@@ -1897,7 +1908,11 @@ function CondensedRow({
   ) : (
     <span className="flex min-w-0 flex-col items-start gap-1">
       {/* The listing's sport, when it names one: the box it might sit in. */}
-      {row.listed?.sportName && <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />}
+      {titleFacts ? (
+        <SportChip code={titleFacts.sportCode} name={titleFacts.sportName} />
+      ) : (
+        row.listed?.sportName && <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />
+      )}
       <span className="text-notice-warn-ink">{row.problem}</span>
     </span>
   );

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { flushSync } from "react-dom";
 import { playerNames } from "../data/labels";
 import { SPORT_LINE, VARIANT_STRIPE, sportHue } from "./colours";
-import { isPulled, NOT_IN_NB, orderLabel, rowFacts, VARIANT_ROLE_LABEL, type PickRow, type PickSection } from "./model";
+import { cardFacts, isPulled, NOT_IN_NB, orderLabel, VARIANT_ROLE_LABEL, type PickRow, type PickSection } from "./model";
 
 /**
  * NEO-500 — the printed pick sheet: the screen's rows as a dense list, one
@@ -47,13 +47,13 @@ export function usePrinting(): boolean {
 
 /** "Parallel Gold Foil", "Insert parallel 8 Bit Ballers Red", "Base", a listing's "Variation". */
 function variantText(row: PickRow): string {
-  const facts = rowFacts(row);
+  const facts = cardFacts(row);
   if (!facts) return "";
   return [facts.role && VARIANT_ROLE_LABEL[facts.role], facts.variantWord, facts.variantName].filter(Boolean).join(" ");
 }
 
 function markersText(row: PickRow): string {
-  const notInNb = !row.card && rowFacts(row) !== null;
+  const notInNb = !row.card && cardFacts(row) !== null;
   const marks = [notInNb && NOT_IN_NB, row.isNew && "New", row.lastOnes && "Last ones", row.short > 0 && `Short ${row.short}`].filter(Boolean);
   return marks.length ? marks.join(", ") : "";
 }
@@ -123,7 +123,8 @@ export default function PrintSheet({
             )}
             {section.rows.map((row) => {
               const c = row.card;
-              const facts = rowFacts(row);
+              // A row filed by its title alone (NEO-590) prints its title, as it always has.
+              const facts = cardFacts(row);
               const done = isPulled(row, pulled);
               const role = facts?.role ?? null;
               // Outside a set's divider the line names its set too.

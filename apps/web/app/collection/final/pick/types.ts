@@ -96,11 +96,17 @@ export interface ListedCard {
   /** The insert or parallel's name as the listing gives it: "1991 Throwback". */
   variantName?: string;
   /**
-   * NEO-520 — the listing's own title as the platform sent it (eBay). Only a
-   * label: it names the line when the fields above say nothing, and is never
-   * parsed, so a title-only line always stays in "Can't find it".
+   * NEO-520 — the listing's own title as the platform sent it (eBay). It names
+   * the line when the fields above say nothing. NEO-590: parsed for Pick List
+   * order only (`./model` `parseListingTitle`), never matched to a card.
    */
   title?: string;
+  /**
+   * NEO-590 — the NB sport of the player or team the title names, asked of the
+   * server once per title (`pickList.titleSports`). Null: asked, and no single
+   * sport was found (the row files under Other). Absent: not asked.
+   */
+  titleSport?: { id: string; name: string; code: string | null } | null;
 }
 
 /**
