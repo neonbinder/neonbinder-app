@@ -406,4 +406,33 @@ describe("NEO-581 — the button follows the cards", () => {
     await waitFor(() => expect(doorButton(/card titles?$/)).toBeNull());
     expect(document.activeElement).toBe(document.body);
   });
+
+  test("a blur that hands focus straight back to the door still parks it when the door leaves", async () => {
+    // Held recount, so the door can be focused and removed on our terms.
+    let answer: (value: unknown) => void = () => {};
+    mockQuery.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    render(<ParallelBuildPanel run={oneParallel(4, { phase: "left" })} onStop={() => {}} />);
+    const button = screen.getByRole("button", { name: "Fix 4 card titles" });
+    act(() => button.focus());
+    // A blur with no relatedTarget, and focus back on the door before the
+    // microtask that reads it runs (Chrome, when a dialog's button is removed).
+    act(() => {
+      button.dispatchEvent(new FocusEvent("focusout", { bubbles: true, relatedTarget: null }));
+      button.focus();
+    });
+    await settle();
+    expect(document.activeElement).toBe(button);
+    await act(async () =>
+      answer({
+        parallel: { _id: A, value: "Anime Gold" },
+        boxPrefill: "",
+        cards: [],
+        failingInPage: 0,
+        cursor: null,
+      }),
+    );
+    await waitFor(() => expect(doorButton(/card titles?$/)).toBeNull());
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.activeElement?.tagName).toBe("SECTION");
+  });
 });

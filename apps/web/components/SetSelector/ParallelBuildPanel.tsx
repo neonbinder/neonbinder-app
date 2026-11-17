@@ -1416,10 +1416,14 @@ export default function ParallelBuildPanel({
             }
             // No `relatedTarget`: focus went nowhere (a click on blank page)
             // or the door was removed under it. After the commit the wrapper
-            // is still there in the first case, gone in the second.
+            // is still there in the first case, gone in the second; and if focus is
+            // back inside it by then (a blur on removal, then the door regained
+            // focus at once), the door still holds it.
             const wrapper = event.currentTarget;
             queueMicrotask(() => {
-              if (wrapper.isConnected) doorHadFocusRef.current = false;
+              if (wrapper.isConnected && !wrapper.contains(document.activeElement)) {
+                doorHadFocusRef.current = false;
+              }
             });
           }}
         >
