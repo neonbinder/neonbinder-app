@@ -252,7 +252,7 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   from here, do not re-derive.
 - `support/bscFake.ts` (NEO-552): the fake BuySportsCards controls and the one
   place a spec makes BSC misbehave: `BSC_PATH`, the `bscFault` rule builders
-  (`slow`, `tooManyRequests`, `unavailable`, `hangs`, `dropsConnection`), and the
+  (`slow`, `tooManyRequests`, `unavailable`, `hangs`, `answersUnavailable`), and the
   `BscFake` class behind the `bscFake` fixture (`setFaults`, `addOrder`, `clear`;
   teardown is automatic). See "BuySportsCards is the fake" under Worker-state seeding.
 - `support/marketplace-wait.ts` (NEO-487, NEO-552): `expectAfterMarketplace(page, target,
@@ -716,7 +716,8 @@ this before diagnosing anything that touches BSC:
 - **A spec makes BSC misbehave through `support/bscFake.ts`, and only there.**
   The `bscFake` fixture's `setFaults([...])` puts rules on the worker's own
   account (`bscFault.slow`, `.tooManyRequests`, `.unavailable`, `.hangs`,
-  `.dropsConnection`, each aimed at a `BSC_PATH`, optionally one `cardId`);
+  `.answersUnavailable` (the `reset` kind: a 503 at once, never a dropped
+  socket), each aimed at a `BSC_PATH`, optionally one `cardId`);
   `addOrder(...)` injects a buyer's order. It goes through the
   `/testing/bsc-fake` hop (`api.testing.setMyBscFaults` / `addMyBscOrder` /
   `clearMyBscFaults` / `clearBscCallGate`), on a second page, so the spec's own
@@ -727,8 +728,10 @@ this before diagnosing anything that touches BSC:
   that waits for BSC to be slow, and never add a deployment switch for a fault.
 - **Convex has ONE BSC call gate per deployment** (`convex/bscCallGate.ts`: a
   breaker, plus a token bucket that is not applied against the fake, so there is no rate cap). A 429 opens it at once (honouring `Retry-After`);
-  five consecutive 5xx, timeouts or dropped connections open it too; while it is
-  open every caller on the deployment is refused without a request. So a fault of
+  five consecutive 5xx or timeouts open it too (no fault drops the connection: a
+  `reset` answers 503 at once, and a `hang` the caller outwaits ends in a 503 at
+  its 2-minute cap); while it is open every caller on the deployment is refused
+  without a request. So a fault of
   kind `429`, `503`, `hang` or `reset` stops every shard's BSC calls. **Such a
   spec carries `@bsc-breaker` and is listed in `BREAKER_SPECS`
   (`project-scope.mjs`)**: no shard plans it; e2e.yml's `breaker-desktop` /

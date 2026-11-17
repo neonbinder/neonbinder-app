@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 #
-# Wait until the revision behind a tag on a preprocess Cloud Run service was
+# Wait until the revision behind a tag on a preview Cloud Run service was
 # built from a given commit (NEO-484; the guard NEO-191 first wrote inline).
+# Despite the name it is service-generic: wire-browser-url uses it for the
+# browser service too (NEO-555), whose deploy-preview stamps PREVIEW_SHA the
+# same way.
 #
 # preprocess.yml's deploy-preview and deploy-preview-fast stamp every pr-<N>
 # revision with PREVIEW_SHA=<PR head sha>. A URL that merely answers is not
@@ -62,5 +65,5 @@ for attempt in $(seq 1 "$attempts"); do
   fi
   [[ "$attempt" -lt "$attempts" ]] && sleep "$interval"
 done
-echo "::error::$service tag $tag never served a revision built from $sha (last seen: $last). preprocess.yml deploy-preview / deploy-preview-fast may have failed or been cancelled; E2E is not run against a stale revision."
+echo "::error::$service tag $tag never served a revision built from $sha (last seen: $last). the service's deploy-preview job (preprocess.yml or browser.yml) may have failed or been cancelled; E2E is not run against a stale revision."
 exit 1

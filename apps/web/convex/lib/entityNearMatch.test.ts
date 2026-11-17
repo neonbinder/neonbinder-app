@@ -263,9 +263,70 @@ describe("rankPlayerCandidates", () => {
       ]),
     ).toEqual([
       ["Shohei Ohtani", "exact"],
-      ["Ohtani", "close"],
       ["S. Ohtani", "close"],
     ]);
+  });
+
+  describe("surname-only stored names (NEO-578)", () => {
+    test("a full-name query never returns a one-word stored name", () => {
+      expect(
+        rankedPlayerNames("Jonah Williams", [
+          { name: "Williams" },
+          { name: "Jonah Williams" },
+        ]),
+      ).toEqual([["Jonah Williams", "exact"]]);
+      expect(rankedPlayerNames("Jonah Williams", [{ name: "Williams" }])).toEqual(
+        [],
+      );
+    });
+
+    test("a stored name that is one word once its suffix is stripped is dropped", () => {
+      expect(
+        rankedPlayerNames("Jonah Williams", [{ name: "Williams Jr." }]),
+      ).toEqual([]);
+    });
+
+    test("a one-word query still finds the fuller name (NEO-463 fragment)", () => {
+      expect(rankedPlayerNames("Williams", [{ name: "Jonah Williams" }])).toEqual(
+        [["Jonah Williams", "close"]],
+      );
+    });
+
+    test("a one-word query still finds an equally one-word stored name", () => {
+      expect(rankedPlayerNames("Williams", [{ name: "Williams" }])).toEqual([
+        ["Williams", "exact"],
+      ]);
+    });
+
+    test("an initialled first name still finds the full name", () => {
+      expect(
+        rankedPlayerNames("J. Williams", [{ name: "Jonah Williams" }]),
+      ).toEqual([["Jonah Williams", "close"]]);
+    });
+
+    test("a truncated first name still finds the full name", () => {
+      expect(
+        rankedPlayerNames("Rob Williams", [{ name: "Robert Williams" }]),
+      ).toEqual([["Robert Williams", "close"]]);
+    });
+
+    test("a different first name on the same surname stays dropped", () => {
+      expect(
+        rankedPlayerNames("Jonah Williams", [{ name: "Mike Williams" }]),
+      ).toEqual([]);
+    });
+
+    test("a query whose suffix strips to one word keeps the surname row", () => {
+      expect(rankedPlayerNames("Williams Jr.", [{ name: "Williams" }])).toEqual([
+        ["Williams", "close"],
+      ]);
+    });
+
+    test("a three-word query never returns a one-word stored name", () => {
+      expect(
+        rankedPlayerNames("Jonah Michael Williams", [{ name: "Williams" }]),
+      ).toEqual([]);
+    });
   });
 
   test("an empty query matches nothing", () => {
