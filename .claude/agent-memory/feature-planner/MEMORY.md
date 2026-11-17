@@ -76,3 +76,4 @@
 - [CI step timings live in the HTML report](ci-step-timings-live-in-the-html-report.md) — per-step duration by file:line in the embedded zip; unexecuted line = other flag branch; one run = two samples
 - [Account-wide batch counts need a baseline](account-wide-batch-counts-need-a-baseline.md) — hopper seed leaves a collecting job; "running" counts/cap leak across specs on a worker (NEO-529)
 - [Fake code deploys only from main](fake-service-code-deploys-only-from-main.md) — fake capability merges before the PR whose E2E calls it; browser-facing steps go on a /testing SPA route
+- [Set team default: copy-down vs lookup](set-team-default-copy-down-vs-lookup.md) — teamIds copied down + cascaded; NEO-528 defaults looked up; never mix for one attribute

@@ -79,7 +79,7 @@ import {
 // `setSelectorOptionCardNumberPrefix` so the modal and the panel agree.
 import { normalizeCardNumberPrefix } from "./cardNumberPrefix";
 // NEO-277: the set-level team a fresh child inherits from its parent.
-import { inheritedTeamIds } from "./lib/selectorTeams";
+import { inheritedTeamDefault } from "./lib/selectorTeams";
 import { newRowSubtreeCounts } from "./cardCounts";
 import { bornSetLeagueIds } from "./leagues";
 // NEO-535 — a modal title edit reaches the descriptions of the row's cards.
@@ -2408,7 +2408,7 @@ export const storeReconciledOptions = mutation({
     // NEO-277: the parent's set-level team, copied onto every fresh insert
     // below exactly as `features` is — once, at creation, never onto a row the
     // reconciler merely re-links (see schema.ts `teamIds`).
-    const parentTeamIds = inheritedTeamIds(parentRowForCopyDown);
+    const parentTeamDefault = inheritedTeamDefault(parentRowForCopyDown);
 
     const existingOptions = await ctx.db
       .query("selectorOptions")
@@ -3234,7 +3234,7 @@ export const storeReconciledOptions = mutation({
           ? { metadata: insertMetadata }
           : {}),
         ...(Object.keys(features).length > 0 ? { features } : {}),
-        ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
+        ...parentTeamDefault,
         // NEO-569 — a new set is born with its sport's major league.
         ...(level === "setName" && parentId
           ? await bornSetLeagueIds(ctx, parentId).then((ids) => (ids ? { leagueIds: ids } : {}))

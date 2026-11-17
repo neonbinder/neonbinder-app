@@ -1807,3 +1807,77 @@ describe("parallelTypeOf is bounded (NEO-306 security audit)", () => {
     }
   });
 });
+
+// ───────────────────────────────────────────────────────────────────────────
+// NEO-556 — the team default (a team, or No Team) reaches the new parallel
+// ───────────────────────────────────────────────────────────────────────────
+
+describe.each<"noTeam" | "team">(["noTeam", "team"])(
+  "NEO-556 the new parallel's team default, %s",
+  (kind) => {
+    const NO_TEAM = { setAt: 1_600_000_000_000, setByUserId: "admin_earlier" };
+
+    async function theDefault(t: T, yearId: RowId) {
+      if (kind === "noTeam") return { noTeamDefault: NO_TEAM };
+      const teamId = await t.run(async (ctx) => {
+        const year = (await ctx.db.get(yearId))!;
+        return ctx.db.insert("teams", {
+          ...teamRowFields({ name: "Bulls", location: "Durham" }),
+          sportId: year.parentId!,
+          lastUpdated: SENTINEL,
+        } as never);
+      });
+      return { teamIds: [teamId as Id<"teams">] };
+    }
+
+    function expectDefault(
+      row: Awaited<ReturnType<typeof get>>,
+      expected: Awaited<ReturnType<typeof theDefault>>,
+    ) {
+      expect(row).not.toBeNull();
+      if ("noTeamDefault" in expected) {
+        expect(row!.noTeamDefault).toEqual(expected.noTeamDefault);
+        expect(row!.teamIds).toBeUndefined();
+      } else {
+        expect(row!.teamIds).toEqual(expected.teamIds);
+        expect(row!.noTeamDefault).toBeUndefined();
+      }
+    }
+
+    test("the source Base's own default comes with it", async () => {
+      const t = convexTest(schema, modules);
+      const ids = await seed(t);
+      const sl = await slSets(t, ids.brandId, [{ id: "SL-FUCHSIA", label: "Bowman Fuchsia" }]);
+      const { setId, baseId } = sl["Bowman Fuchsia"];
+      const d = await theDefault(t, ids.yearId);
+      await t.run((ctx) => ctx.db.patch(baseId, d));
+
+      const result = await t
+        .withIdentity(ADMIN)
+        .mutation(api.setParallelConversion.convertSetToParallel, {
+          setId,
+          targetParallelTypeId: ids.parallelTypeId,
+        });
+
+      expectDefault(await get(t, result.parallelId), d);
+    });
+
+    test("with no default of its own, the Parallel type's default is copied down", async () => {
+      const t = convexTest(schema, modules);
+      const ids = await seed(t);
+      const sl = await slSets(t, ids.brandId, [{ id: "SL-FUCHSIA", label: "Bowman Fuchsia" }]);
+      const { setId } = sl["Bowman Fuchsia"];
+      const d = await theDefault(t, ids.yearId);
+      await t.run((ctx) => ctx.db.patch(ids.parallelTypeId, d));
+
+      const result = await t
+        .withIdentity(ADMIN)
+        .mutation(api.setParallelConversion.convertSetToParallel, {
+          setId,
+          targetParallelTypeId: ids.parallelTypeId,
+        });
+
+      expectDefault(await get(t, result.parallelId), d);
+    });
+  },
+);

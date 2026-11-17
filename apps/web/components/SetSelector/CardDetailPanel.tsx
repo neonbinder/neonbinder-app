@@ -10,6 +10,7 @@ import { api } from "../../convex/_generated/api";
 import { userFacingMessage } from "@/lib/errors/user-facing-message";
 import type { Id } from "../../convex/_generated/dataModel";
 import TeamPicker from "./TeamPicker";
+import { NO_TEAM_LABELS } from "./team-picker-labels";
 import PlayerPicker from "./PlayerPicker";
 import {
   ALSO_ON_THIS_CARD_HEADING,
@@ -164,6 +165,11 @@ export const ALSO_PICTURED_SAVED = `Saved ${ALSO_ON_THIS_CARD_HEADING}`;
 export const ALSO_PICTURED_MOVED_TO_PLAYERS = `Saved Players and moved them out of ${ALSO_ON_THIS_CARD_HEADING}`;
 const ALSO_PICTURED_SAVE_FAILED = `Couldn't save ${ALSO_ON_THIS_CARD_HEADING}. Give it another go.`;
 
+/** NEO-556 — the drawer's No Team toasts. */
+export const NO_TEAM_SAVED_ON_CARD = "Saved No Team";
+/** The card is teamless again, and is asked about its team like any other. */
+export const NO_TEAM_CLEARED_ON_CARD = "Cleared No Team";
+
 const BLANK_TITLE_MESSAGE =
   "A card needs a title. Type one in, or hit Regenerate for a fresh one.";
 
@@ -231,6 +237,12 @@ type CardDetailCard = {
    * team; there is nothing here for them to edit or delete directly.
    */
   pendingTeamNames?: string[];
+  /**
+   * NEO-556 — the operator (or a checklist that said so) confirmed this card
+   * carries no team. Server-stamped; the drawer shows it as the pressed
+   * "No Team" toggle beside the picker, and picking a team retires it.
+   */
+  teamNoneConfirmedAt?: number;
   attributes?: string[];
   isRookie?: boolean;
   isRelic?: boolean;
@@ -834,6 +846,36 @@ export default function CardDetailPanel({
     });
   }, [card.playerLinks, linkedPlayerRows, playersPending]);
 
+  /**
+   * NEO-556 — No Team, as the picker's toggle. `null` = show what is stored.
+   * Pressing it asks the server to stamp the card (the same patch empties the
+   * teams); pressing it again sends `teamNone: false`, which takes the stamp
+   * off and leaves the card teamless, so it is asked about its team again.
+   * Picking a team retires the stamp too (the server's rule on a team write).
+   */
+  const [noTeamPending, setNoTeamPending] = useState<boolean | null>(null);
+  const noTeamOn =
+    noTeamPending ??
+    (teamsPending !== null && teamsPending.length > 0
+      ? false
+      : card.teamNoneConfirmedAt !== undefined && teamIds.length === 0);
+  const saveNoTeam = async (next: boolean) => {
+    setNoTeamPending(next);
+    if (next) setTeamsPending([]);
+    try {
+      await commitField(
+        { teamNone: next },
+        next ? NO_TEAM_SAVED_ON_CARD : NO_TEAM_CLEARED_ON_CARD,
+      );
+      setTeamsError(null);
+    } catch (e) {
+      setTeamsError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setNoTeamPending(null);
+      setTeamsPending(null);
+    }
+  };
+
   const saveTeams = async (next: Array<Id<"teams">>) => {
     setTeamsPending(next);
     try {
@@ -1212,9 +1254,14 @@ export default function CardDetailPanel({
               onChange={(next) => void saveTeams(next)}
               sportId={ancestorSportId}
               contextOptionId={contextOptionId}
+              noTeam={{
+                value: noTeamOn,
+                onChange: (next) => void saveNoTeam(next),
+                label: NO_TEAM_LABELS.card,
+              }}
             />
             <FieldFeedback
-              busy={teamsPending !== null}
+              busy={teamsPending !== null || noTeamPending !== null}
               error={teamsError}
               errorId={teamsErrorId}
             />

@@ -60,7 +60,7 @@ import {
   inheritableFeatures,
 } from "./features/deriveCardFeatures";
 import { matchKnownBrand } from "./knownBrands";
-import { inheritedTeamIds } from "./lib/selectorTeams";
+import { inheritedTeamDefault } from "./lib/selectorTeams";
 import { newRowSubtreeCounts } from "./cardCounts";
 import { MAX_SLOT_LABEL_LENGTH, initialSlots, slotIds } from "./platformSlots";
 import { brandSubtreeSlIds, createSetsFromSlRootsImpl } from "./selectorOptions";
@@ -950,7 +950,7 @@ export const createSlRowsUnderVariantType = internalMutation({
     for (const id of siblings.flatMap((s) => slotIds(s, "sportlots"))) heldIds.add(id);
 
     const flags = derivedVariantFlags("insert", type);
-    const teamIds = inheritedTeamIds(type);
+    const teamDefault = inheritedTeamDefault(type);
     const now = Date.now();
     const prefix = brand.metadata?.setNamePrefix;
     const newIds: RowId[] = [];
@@ -1013,7 +1013,7 @@ export const createSlRowsUnderVariantType = internalMutation({
         children: [],
         createdByUserId: args.createdByUserId,
         ...(Object.keys(features).length > 0 ? { features } : {}),
-        ...(teamIds ? { teamIds } : {}),
+        ...teamDefault,
         lastUpdated: now,
       });
       siblingKeys.set(key, { _id: id, value: named.value });

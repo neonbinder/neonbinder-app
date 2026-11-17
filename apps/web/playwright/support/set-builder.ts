@@ -30,7 +30,8 @@ export type Column =
   | "Sets"
   | "Variant Types"
   | "Inserts"
-  | "Parallels";
+  | "Parallels"
+  | "Proofs";
 
 /** `s` as a literal inside a RegExp. */
 export function escapeRe(s: string): string {
@@ -150,6 +151,9 @@ export const CUSTOM_CONFIRM: Record<Column, string> = {
   "Variant Types": "Create variant type",
   Inserts: "Create insert",
   Parallels: "Create insert",
+  // Unused by any spec so far; the label is read from VariantSelector, which opens this column at
+  // the insert level (like "Parallels"), so EntityColumn's `Create ${noun}` says "Create insert".
+  Proofs: "Create insert",
 };
 
 export interface AddCustomEntryOptions {

@@ -29,6 +29,8 @@ import {
   blockedSidePaused,
 } from "./parallelChecklistBuild";
 import { insertTestCard } from "../lib/testing/card-row";
+import { captureBscTeamLane } from "../lib/testing/bsc-team-lane";
+import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (
   import.meta as unknown as {
@@ -517,19 +519,43 @@ describe("buildParallelChecklist — the happy path", () => {
     expect(copy).not.toHaveProperty("imageUrls");
   });
 
-  test("no enrichment is queued by a build", async () => {
+  test("a build queues nothing but the BSC team lookups its copies owe (NEO-556)", async () => {
     const t = convexTest(schema, modules);
-    const { insert } = await seedTree(t);
-    const parallelId = await seedParallel(t, insert);
-    await insertCard(t, insert, { cardNumber: "1", cardName: "Team Card" });
-    bscState.cards = [{ cardNumber: "1", cardName: "Team Card", platformRef: "bsc-1" }];
+    // The lane's component is not mounted here: the enqueue lands in a list.
+    const lane = captureBscTeamLane();
+    try {
+      const { insert } = await seedTree(t);
+      const parallelId = await seedParallel(t, insert);
+      // A hand-added card: no lookup ever ran.
+      await insertCard(t, insert, { cardNumber: "1", cardName: "Team Card" });
+      // A card whose lookup has been and gone: its answer travels instead.
+      await insertCard(t, insert, {
+        cardNumber: "2",
+        cardName: "Answered Card",
+        teamCheckDoneAt: SENTINEL,
+        teamCheckOutcome: "answered",
+      });
+      bscState.cards = [
+        { cardNumber: "1", cardName: "Team Card", platformRef: "bsc-1" },
+        { cardNumber: "2", cardName: "Answered Card", platformRef: "bsc-2" },
+      ];
 
-    await t
-      .withIdentity(ADMIN)
-      .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+      await t
+        .withIdentity(ADMIN)
+        .action(api.parallelChecklistBuild.buildParallelChecklist, { parallelId });
+      await drainScheduled(t);
 
-    const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
-    expect(scheduled).toHaveLength(0);
+      const copies = await cardsOn(t, parallelId);
+      const one = copies.find((c) => c.cardNumber === "1")!;
+      const scheduled = await t.run((ctx) => ctx.db.system.query("_scheduled_functions").collect());
+      expect(scheduled.map((s) => s.name)).toEqual(["bscTeamPool:enqueueBscTeamChecks"]);
+      expect(scheduled[0].args).toEqual([{ cardChecklistIds: [one._id] }]);
+      // It reached the lane. (Filtered: another test's late job can land in
+      // the same spy, and convex-test ids repeat across instances.)
+      expect(lane.some((l) => l.item.cardChecklistId === one._id)).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 
   test("a card with no link on any side is not copied (J2)", async () => {

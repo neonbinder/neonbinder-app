@@ -61,6 +61,7 @@ import type * as cardCounts from "../cardCounts.js";
 import type * as cardDescriptionFanOut from "../cardDescriptionFanOut.js";
 import type * as cardDescriptionRefresh from "../cardDescriptionRefresh.js";
 import type * as cardLeague from "../cardLeague.js";
+import type * as cardNoTeamBulk from "../cardNoTeamBulk.js";
 import type * as cardNotes from "../cardNotes.js";
 import type * as cardNumberPrefix from "../cardNumberPrefix.js";
 import type * as cardPlayerLinks from "../cardPlayerLinks.js";
@@ -293,6 +294,7 @@ declare const fullApi: ApiFromModules<{
   cardDescriptionFanOut: typeof cardDescriptionFanOut;
   cardDescriptionRefresh: typeof cardDescriptionRefresh;
   cardLeague: typeof cardLeague;
+  cardNoTeamBulk: typeof cardNoTeamBulk;
   cardNotes: typeof cardNotes;
   cardNumberPrefix: typeof cardNumberPrefix;
   cardPlayerLinks: typeof cardPlayerLinks;
