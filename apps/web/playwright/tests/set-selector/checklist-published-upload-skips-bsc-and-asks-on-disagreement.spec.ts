@@ -47,7 +47,7 @@
 //     at least one subset first", and ticking one subset narrows the preview to
 //     that subset's rows (axe on that state);
 //   * NEO-489: four of the set's cards with four kinds of team cell. The preview's Teams
-//     column reads the team, "No team" (a "No Team" cell is the checklist's claim), and
+//     column reads the team, "No Team" (the checklist's claim), and
 //     "We'll look it up" (a blank cell is no claim); a "No Team; <team>" line is no row and is
 //     listed under Skipped lines with "Says No Team and names a team — pick one." (axe on
 //     that state). A throwaway paste: the real one below is unchanged.
@@ -204,7 +204,7 @@ test(
     // A throwaway paste, read and replaced by the real one below, so the fetch's own arithmetic
     // ("17 of 18") and its BSC lookups are untouched: four of the set's own cards, each with a
     // different team cell. A named team reads as itself; "No Team" is the checklist's CLAIM that
-    // the card shows no team, so it reads "No team"; a blank cell makes no claim, so it reads
+    // the card shows no team, so it reads "No Team"; a blank cell makes no claim, so it reads
     // "We'll look it up"; "No Team" beside a team contradicts itself, so that line is not a row
     // and is listed under Skipped lines with the parser's own reason.
     const [teamed, claimed, blank, both] = rows.slice(0, 4);
@@ -223,7 +223,7 @@ test(
     const teamCell = (player: string, text: string) =>
       previewTable.getByRole("row").filter({ hasText: player }).getByRole("cell", { name: text, exact: true });
     await expect(teamCell(teamed.player, teamed.team)).toBeVisible();
-    await expect(teamCell(claimed.player, "No team")).toBeVisible();
+    await expect(teamCell(claimed.player, "No Team")).toBeVisible();
     await expect(teamCell(blank.player, "We'll look it up")).toBeVisible();
     // The contradicting line is no row of the preview, and is listed with the reason, not dropped.
     await expect(previewTable.getByRole("row").filter({ hasText: both.player })).toHaveCount(0);

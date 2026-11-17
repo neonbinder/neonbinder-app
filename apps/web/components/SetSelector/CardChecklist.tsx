@@ -31,6 +31,8 @@ import type { TitleContext } from "../../convex/features/listingInputs";
 import {
   defaultPlayerPositions,
   sameTeamAnswers,
+  setDefaultSettlesNewRow,
+  setTeamDefaultKind,
   storedPeople,
   teamlessCardIndexes,
   withTeamAnswer,
@@ -78,6 +80,7 @@ import { Textarea } from "../primitives/Textarea";
 import { CARD_NOTES_MAX } from "../../convex/cardNotes";
 import { NotesLengthMeter } from "./NotesLengthMeter";
 import TeamPicker from "./TeamPicker";
+import { NO_TEAM_LABELS } from "./team-picker-labels";
 import PlayerPicker, { type PlayerPickerLabels } from "./PlayerPicker";
 import { attachedSidesOf } from "../../convex/marketplaceResolvability";
 import { pausedSyncMessage } from "../../convex/selectorSyncStore";
@@ -673,6 +676,14 @@ const NO_HAYSTACK: CardSearchHaystack = {
   attention: false,
 };
 
+/**
+ * NEO-556 — under the quick-add form's No Team toggle when it reads pressed
+ * because this checklist's Team is No Team, not because the operator pressed
+ * it.
+ */
+export const QUICK_ADD_NO_TEAM_FROM_SET_HINT =
+  "From the set. Pick a team, or press No Team to turn it off.";
+
 function needsYouLabel(count: number): string {
   return count === 1 ? "1 needs you" : `${count} need you`;
 }
@@ -1111,6 +1122,24 @@ export default function CardChecklist({
    * `openAddForm` / `closeAddForm`.
    */
   const [addFormTeamIds, setAddFormTeamIds] = useState<Array<Id<"teams">>>([]);
+  /**
+   * NEO-556 — the quick-add form's "No Team" toggle, as the operator's own
+   * answer: `true` pressed, `false` un-pressed, `null` untouched. Untouched,
+   * the toggle shows what the save will do on its own: under a set whose
+   * Team is No Team a teamless new card gets No Team, so it reads pressed
+   * (`addFormNoTeamOn`, with a "From the set" line). State for the same
+   * reasons as the teams above, reset at the same two edges. Picking a team
+   * puts it back to untouched (the team replaces No Team on screen and in
+   * the save).
+   */
+  const [addFormNoTeam, setAddFormNoTeam] = useState<boolean | null>(null);
+  /** NEO-556 — this checklist's own Team is No Team (copied down from the set). */
+  const setIsNoTeam = setTeamDefaultKind(variantRow) === "noTeam";
+  const addFormNoTeamOn =
+    addFormNoTeam ?? (setIsNoTeam && addFormTeamIds.length === 0);
+  /** Pressed, and not by the operator: the set's answer, said as such. */
+  const addFormNoTeamFromSet = addFormNoTeam === null && addFormNoTeamOn;
+  const addFormNoTeamHintId = `${variantId}-quick-add-no-team-hint`;
   /**
    * NEO-220 — the quick-add form's picked players. React STATE for exactly
    * the reasons spelled out for `addFormTeamIds` above (a picker changes only
@@ -2184,11 +2213,15 @@ export default function CardChecklist({
     const existingIdByIndex = new Map(
       (diff?.cards ?? []).flatMap((c) => (c.existingId ? [[c.index, c.existingId] as const] : [])),
     );
-    const setTeamCoversNewRows = (variantRow?.teamIds?.length ?? 0) > 0;
-    const settledTeamIndexes = kept.flatMap(({ index }, position) => {
+    // NEO-556 — under a "No Team" node a new row is settled only when the
+    // commit will stamp it: a BSC card whose lookup has not answered, or
+    // whose listing names a team, is held back and asked about
+    // (`setDefaultSettlesNewRow`, invariant 8).
+    const setDefault = setTeamDefaultKind(variantRow);
+    const settledTeamIndexes = kept.flatMap(({ card, index }, position) => {
       const existingId = existingIdByIndex.get(index);
       if (existingId) return storedTeamedCardIds.has(existingId) ? [position] : [];
-      return diff && setTeamCoversNewRows ? [position] : [];
+      return diff && setDefaultSettlesNewRow(card, setDefault) ? [position] : [];
     });
     // NEO-335 Phase 2 — the same `existingId` map: a card that re-syncs a
     // stored row keeps that row's title, so the titles step never asks.
@@ -2655,12 +2688,14 @@ export default function CardChecklist({
   const openAddForm = useCallback(() => {
     setAddFormNotesLength(0);
     setAddFormTeamIds([]);
+    setAddFormNoTeam(null);
     setAddFormPlayerIds([]);
     setShowAddForm(true);
   }, []);
   const closeAddForm = useCallback(() => {
     setShowAddForm(false);
     setAddFormTeamIds([]);
+    setAddFormNoTeam(null);
     setAddFormPlayerIds([]);
   }, []);
 
@@ -2706,6 +2741,17 @@ export default function CardChecklist({
         // is what leaves the card correctly badged as needing one. Note we
         // never send the legacy `teams` name array from here any more.
         ...(teamOnCardIds.length > 0 ? { teamOnCardIds } : {}),
+        // NEO-556: "No Team" is an answer, sent only with no team picked (the
+        // server refuses the two together; the picker never shows both).
+        // Pressed (by hand or from the set) → `true`; un-pressed under a No
+        // Team set → `false`, "don't mark this card"; otherwise nothing.
+        ...(teamOnCardIds.length > 0
+          ? {}
+          : addFormNoTeamOn
+            ? { teamNone: true }
+            : setIsNoTeam
+              ? { teamNone: false }
+              : {}),
         ...(notes ? { notes } : {}),
       });
       // Closing the form unmounts it; the uncontrolled inputs reset to empty
@@ -3706,12 +3752,31 @@ export default function CardChecklist({
               </label>
               <TeamPicker
                 value={addFormTeamIds}
-                onChange={setAddFormTeamIds}
+                onChange={(next) => {
+                  setAddFormTeamIds(next);
+                  if (next.length > 0) setAddFormNoTeam(null);
+                }}
                 sportId={ancestorSportId}
                 // NEO-331: this checklist's row orders the candidates by the
                 // set's league and year.
                 contextOptionId={variantId}
+                noTeam={{
+                  value: addFormNoTeamOn,
+                  onChange: (next) => {
+                    setAddFormNoTeam(next);
+                    if (next) setAddFormTeamIds([]);
+                  },
+                  label: NO_TEAM_LABELS.newCard,
+                }}
+                ariaDescribedBy={addFormNoTeamFromSet ? addFormNoTeamHintId : undefined}
               />
+              {/* NEO-556: a pressed No Team the operator did not press says
+                  where it came from and how to change it. */}
+              {addFormNoTeamFromSet && (
+                <p id={addFormNoTeamHintId} className="mt-1 text-xs text-ink-3">
+                  {QUICK_ADD_NO_TEAM_FROM_SET_HINT}
+                </p>
+              )}
             </div>
             {/* NEO-367 — NB's own note about the card. A real <label> this
                 time: a textarea's placeholder vanishes as soon as the admin
@@ -4439,8 +4504,10 @@ export default function CardChecklist({
           // NEO-335: and the team names they rule "not a team".
           skippedTeamNames={skippedTeamNames}
           // NEO-335 Phase 2 (C7): with no set-level team on this node, a long
-          // teams step points at Set details instead.
-          hasSetTeam={(variantRow?.teamIds?.length ?? 0) > 0}
+          // teams step points at "Edit attributes" instead.
+          // NEO-556: a "No Team" default counts too — the hint then points
+          // at the answer already given rather than at setting one.
+          hasSetTeam={setTeamDefaultKind(variantRow) !== "none"}
           // NEO-497: "Tidy up 2024 Topps Chrome", not "this set".
           title={tidyTitle}
           // NEO-221 (D6): the whole account of what Confirm is about to do,

@@ -50,3 +50,13 @@ One trap when charging a read budget: a SHARED lookup helper hides its own cost
 so a budget charged from the rows returned is an estimate. Document which
 direction it errs in rather than re-implementing the helper inline to count
 exactly — a second copy of an identity lookup is worse than a loose bound.
+
+**A truncation flag must say WHICH cap, and what it costs the reader.** When a
+preview has two caps that mean different things (a walk cap whose rows the
+action will also never visit, and a count cap the paged action ignores), one
+`truncated` boolean forces the UI to pick the scarier copy for both. Return one
+flag per cap (`cardNoTeamBulk.noTeamTargets`: `walkTruncated` /
+`countTruncated`). And do not set a count's floor flag on `room <= 0` alone: a
+cap reached EXACTLY, with nothing on the later rows, is a full count. Keep
+reading `take(room + 1)` (that is `take(1)` at room 0) until a card past the cap
+is actually seen; only then stop reading.

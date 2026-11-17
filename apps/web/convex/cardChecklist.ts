@@ -77,6 +77,8 @@ import {
   isAutographFormat,
 } from "./features/deriveCardFeatures";
 import { variantTypeKind } from "./variantRole";
+// NEO-556: the leaf's set-level "No Team", stamped once BSC answers with none.
+import { noTeamCardVerdict, stampNoTeam, teamDefaultOf } from "./lib/selectorTeams";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -635,6 +637,42 @@ async function findSkippedTeamNameKeys(
   return skipped;
 }
 
+/**
+ * NEO-556 — the leaf's "No Team" stamp for a card BSC has just answered with
+ * no team (nothing on file, or the whole claim ruled "not a team").
+ *
+ * The card's birth held the stamp back while this lookup was outstanding
+ * (`noTeamCardVerdict` → `awaitingLookup`, product invariant 8). Now the data
+ * is in and names no team, so the set's answer applies: asked of the card as
+ * this patch leaves it (no team, no hint, the lookup stamped), and only when
+ * the card's OWN leaf says No Team — copied down at the leaf's creation and
+ * moved by the cascade, so no walk up the chain. A pending team name still
+ * holds it back. Credited to whoever set the No Team (`stampNoTeam`); the
+ * caller has already returned for a card carrying a team or a ruling.
+ *
+ * Returns the fields to spread into the caller's patch (`{}` for none).
+ */
+async function leafNoTeamStamp(
+  ctx: MutationCtx,
+  row: Doc<"cardChecklist">,
+  now: number,
+): Promise<{ teamNoneConfirmedAt?: number; teamNoneConfirmedByUserId?: string }> {
+  const leaf = await ctx.db.get(row.selectorOptionId);
+  const leafDefault = teamDefaultOf(leaf);
+  if (leafDefault.kind !== "noTeam") return {};
+  const verdict = noTeamCardVerdict({
+    teamOnCardIds: row.teamOnCardIds,
+    pendingTeamNames: row.pendingTeamNames,
+    teamNoneConfirmedAt: row.teamNoneConfirmedAt,
+    teamCheckDoneAt: now,
+    teamCheckOutcome: "answered",
+    platformData: row.platformData?.bsc ? { bsc: { ref: row.platformData.bsc.ref } } : {},
+  });
+  return verdict.verdict === "stamp"
+    ? stampNoTeam(leafDefault.noTeamDefault.setByUserId, now)
+    : {};
+}
+
 export const applyBscTeamResolution = internalMutation({
   args: {
     cardChecklistId: v.id("cardChecklist"),
@@ -760,10 +798,14 @@ export const applyBscTeamResolution = internalMutation({
       // has no team, so a stale "The listing names …" from before (or from a
       // value that was really the attribute label, "AU  SN1") would contradict
       // the answer the operator is about to act on.
+      //
+      // NEO-556: and the leaf's "No Team", now that BSC has named none.
+      const now = Date.now();
       await ctx.db.patch(row._id, {
-        teamCheckDoneAt: Date.now(),
+        teamCheckDoneAt: now,
         teamCheckOutcome: "answered",
         bscTeamName: undefined,
+        ...(await leafNoTeamStamp(ctx, row, now)),
       });
       return { applied: false, unmatched: false };
     }
@@ -814,10 +856,15 @@ export const applyBscTeamResolution = internalMutation({
       // again), no team is written, and any hint is cleared: a hint naming
       // the skipped string is the contradiction this exists to prevent. Not
       // `unmatched` — "not a team" is an answer, not an unknown name.
+      //
+      // NEO-556: the claim ruled out leaves the card naming no team, so the
+      // leaf's "No Team" applies here too.
+      const now = Date.now();
       await ctx.db.patch(row._id, {
-        teamCheckDoneAt: Date.now(),
+        teamCheckDoneAt: now,
         teamCheckOutcome: "answered",
         bscTeamName: undefined,
+        ...(await leafNoTeamStamp(ctx, row, now)),
       });
       return { applied: false, unmatched: false };
     }
@@ -1345,10 +1392,8 @@ export const confirmCardNoTeam = mutation({
     }
     if (row.teamNoneConfirmedAt) return { confirmed: true, stamped: false };
 
-    await ctx.db.patch(row._id, {
-      teamNoneConfirmedAt: Date.now(),
-      teamNoneConfirmedByUserId: userId,
-    });
+    // NEO-556 — the one stamp builder every writer shares.
+    await ctx.db.patch(row._id, stampNoTeam(userId, Date.now()));
     return { confirmed: true, stamped: true };
   },
 });

@@ -248,5 +248,9 @@
 - [New table naming a variant has six pins](reference_new_table_naming_a_variant_has_six_pins.md) — wipe graph, reset batch + exact count pin, cli.mjs list, test reset, api.d.ts, auth registry
 - [Inline-block is a reader group](reference_inline_block_is_a_reader_group.md) — inline-block span in a one-phrase <p> = Chrome AX generic; role="presentation" flattens it
 - [convex-test: stub a module via the glob map](reference_convex_test_stub_a_module_via_the_glob_map.md) — add a "./x.ts" key to the modules map; check {ok:false} results; mutation→action flip breaks .mutation() call sites repo-wide
+- [Team change refreshes the description](reference_team_change_refreshes_description_via_owner.md) — description prints "Team:"; refresh via cardSecondaryPlayers.refreshedGeneratedDescription (cameo pin)
+- [Focus park after ConfirmDialog races its restore](reference_focus_park_after_confirmdialog_races_its_restore.md) — setTimeout loses to the unmount restore; focus-request effect + layout effect on disabled
+- [Late scheduled jobs cross convex-test instances](reference_late_scheduled_jobs_cross_convex_test_instances.md) — an undrained job lands in a later test's spy; ids repeat across instances
+- [Stacked branch merge after parent squash](reference_stacked_branch_merge_after_parent_squash.md) — merge base predates the parent: clean hunks duplicate code; re-merge with merge-tree base
 - [New listing problem reason: hand lists](reference_new_listing_problem_reason_has_hand_lists.md) — SYNC_HELD_REASONS, REPORTABLE_SYNC_REASONS judgement, test Reason union, spec copy literals
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators

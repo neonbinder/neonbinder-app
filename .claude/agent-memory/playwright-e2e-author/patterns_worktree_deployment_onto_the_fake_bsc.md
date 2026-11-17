@@ -34,6 +34,16 @@ metadata:
 - A page scroll a reader does is `page.mouse.move(<left margin>)` + `page.mouse.wheel(0, n)`; the old
   `evaluate(scrollIntoView)` could leave the page unmoved, and `scrollIntoViewIfNeeded` on a row would move the
   list and void a list-scroll proof (column-reexpand spec).
+- A PR's tagged browser revision (`<tag>---neonbinder-browser-...`) is removed when its PR merges. After the fake landed on main
+  the CANONICAL browser service's 100% revision is itself fake-aware (check env NAMES with `gcloud run revisions describe`), so
+  set `NEONBINDER_BROWSER_URL` to the service's own `status.url`. A stale tag URL reds as "Browser service health check failed
+  (404)" in the Convex log and every BSC read says "No BSC token available" (a `sync failed` that is not a 501).
+- With the recorder running live (watch mode) a first unrecorded read FAILS once (a column "Couldn't sync", a fetch "BSC answered
+  with an error"), is recorded within seconds, and the miss list is empty again by the time you read it. Retry the product's own
+  button (`Sync Variant Types`, `Retry`, `Sync card checklist`) instead of re-seeding. A column that failed stays failed in the
+  server's state until retried: re-running the same drill sees the old failure, not the new recording.
+- One reseed round trip (script `--seed`, re-set the three env names, `setup`, `bootstrap`) is about 7 min; script it once
+  (re-seed -> set env -> setup -> bootstrap -> spec) and run it in the background. Fresh-only specs need one per run per project.
 - Real-set specs on the fake: write them FETCH-OR-ADOPT (branch on `No cards in this checklist yet.` vs
   `Cards (N)`), and keep `fake-bsc.sh record <slug>- --yes` running in the background. Each rerun then
   unlocks one more level (year filters, set filters, base results, insert sync, parallel filters, a
