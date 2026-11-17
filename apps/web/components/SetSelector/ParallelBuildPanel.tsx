@@ -1151,22 +1151,13 @@ export default function ParallelBuildPanel({
     () => runTitlesToFix(run),
     [run],
   );
-  // The door stays mounted while it is busy: a save that clears the last
-  // title would otherwise tear the dialog out mid-save (CardChecklist's
-  // `titlesDoorActive`, the same pattern). Held with its run.
-  const [titlesActive, setTitlesActive] = useState<{ run: string; active: boolean } | null>(
-    null,
-  );
-  const onTitlesActive = useCallback(
-    (active: boolean) => setTitlesActive({ run: runKey, active }),
-    [runKey],
-  );
-  const titlesBusy = titlesActive?.run === runKey && titlesActive.active;
-  const doorShown = !live && (titleParallels.length > 0 || titlesBusy);
-  // The button's name keeps its last count while the door is busy at zero.
-  const [lastTitleTotal, setLastTitleTotal] = useState(titleTotal);
-  if (titleTotal > 0 && titleTotal !== lastTitleTotal) setLastTitleTotal(titleTotal);
-  const doorLabel = fixRunTitlesLabel(titleTotal > 0 ? titleTotal : lastTitleTotal);
+  // The door leaves the moment the live count reaches zero. Its dialog is
+  // already closed by then (the recount runs after a close, and a load that
+  // finds nothing opens none), so nothing is torn out. The door's busy
+  // window is its own (`aria-busy`); the checklist, whose door hangs off a
+  // live flag count, needs `onActiveChange` and this panel does not.
+  const doorShown = !live && titleParallels.length > 0;
+  const doorLabel = fixRunTitlesLabel(titleTotal);
   const titlesAutoOpenKey =
     run.phase === "finished" || run.phase === "stopped" ? runKey : undefined;
   // NEO-535 (a11y) — the Card titles door's lines ("Loading titles…", "Saved
@@ -1182,14 +1173,19 @@ export default function ParallelBuildPanel({
   /**
    * a11y (WCAG 2.4.3) — the door leaves once its last title is fixed. If it
    * had focus the browser drops it to `<body>`; park it on the panel, whose
-   * live line has just said "Saved N titles." Only when focus really was
-   * dropped: anywhere else, the operator put it there.
+   * live line has just said "Saved N titles." Only when the door really held
+   * focus (a silent recount on a reload focused nothing, and must not steal
+   * it) and focus was then dropped: anywhere else, the operator put it there.
    */
   const wasDoorShownRef = useRef(doorShown);
+  const doorHadFocusRef = useRef(false);
   useEffect(() => {
     const gone = wasDoorShownRef.current && !doorShown;
     wasDoorShownRef.current = doorShown;
     if (!gone) return;
+    const hadFocus = doorHadFocusRef.current;
+    doorHadFocusRef.current = false;
+    if (!hadFocus) return;
     const active = document.activeElement;
     if (active && active !== document.body) return;
     panelRef.current?.focus({ preventScroll: true });
@@ -1407,14 +1403,23 @@ export default function ParallelBuildPanel({
       )}
 
       {doorShown && (
-        <div className="mt-2">
+        <div
+          className="mt-2"
+          // Whether the door held focus when it left: a removal blur has no
+          // `relatedTarget`, a real move away has one.
+          onFocusCapture={() => {
+            doorHadFocusRef.current = true;
+          }}
+          onBlurCapture={(event) => {
+            if (event.relatedTarget) doorHadFocusRef.current = false;
+          }}
+        >
           <ParallelTitlesDoor
             parallels={titleParallels}
             label={doorLabel}
             autoOpenKey={titlesAutoOpenKey}
             announceStatus={false}
             onStatusChange={onTitlesLine}
-            onActiveChange={onTitlesActive}
             onCounts={onTitleCounts}
             countOnMount
           />

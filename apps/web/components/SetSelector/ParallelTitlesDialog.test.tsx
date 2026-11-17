@@ -532,4 +532,57 @@ describe("NEO-581 — the live count goes back to the host", () => {
     await act(async () => press.resolve(page()));
     await waitFor(() => expect(onCounts).toHaveBeenLastCalledWith(counts(2)));
   });
+
+  test("leaving without a save when the cards were fixed elsewhere says why the button goes", async () => {
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} />);
+    await openByHand();
+    mockQuery.mockResolvedValue(answerCount(0));
+    fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    await waitFor(() => expect(screen.getByText(ALL_TITLES_FIT)).toBeTruthy());
+  });
+
+  test("leaving without a save with titles still failing says nothing", async () => {
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} />);
+    await openByHand();
+    mockQuery.mockResolvedValue(answerCount(2));
+    fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    await act(async () => {});
+    expect(screen.queryByText(ALL_TITLES_FIT)).toBeNull();
+  });
+
+  test("the silent recount on mount never speaks", async () => {
+    mockQuery.mockResolvedValue(answerCount(0));
+    const onCounts = vi.fn();
+    render(
+      <ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} countOnMount />,
+    );
+    await waitFor(() => expect(onCounts).toHaveBeenCalledWith(counts(0)));
+    expect(screen.queryByText(ALL_TITLES_FIT)).toBeNull();
+  });
+
+  test("during the recount after a close the button is busy and a press does nothing", async () => {
+    const active = vi.fn();
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onActiveChange={active} />);
+    await openByHand();
+    let answer: (value: unknown) => void = () => {};
+    mockQuery.mockReturnValue(new Promise((resolve) => (answer = resolve)));
+    active.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    await waitFor(() => expect(door().getAttribute("aria-busy")).toBe("true"));
+    expect(door().getAttribute("aria-disabled")).toBe("true");
+    mockQuery.mockClear();
+    fireEvent.click(door());
+    fireEvent.keyDown(door(), { key: "Enter" });
+    await act(async () => {});
+    // No second open started, so nothing can be released out from under it.
+    expect(mockQuery).not.toHaveBeenCalled();
+    expect(active).not.toHaveBeenCalled();
+    await act(async () => answer(answerCount(2)));
+    await waitFor(() => expect(active).toHaveBeenLastCalledWith(false));
+    expect(door().getAttribute("aria-busy")).toBeNull();
+    expect(door().getAttribute("aria-disabled")).toBeNull();
+  });
 });

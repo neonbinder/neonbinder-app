@@ -374,28 +374,11 @@ describe("NEO-581 — the button follows the cards", () => {
     expect(clause()).toBeTruthy();
   });
 
-  test("while the door is busy with a save that clears the last title, its name keeps the last count", async () => {
-    cardsStandAt({ n: 2 }, 0);
-    const { container } = render(
-      <ParallelBuildPanel run={oneParallel(2, { announcement: "Built 1 parallel." })} onStop={() => {}} />,
-    );
-    await waitFor(() => expect(screen.getByRole("dialog")).toBeTruthy());
-    // Every name the door's button wears from here on, in the order it wears them.
-    const names: string[] = [];
-    const note = () => {
-      const b = container.querySelector('button[aria-haspopup="dialog"]');
-      if (b) names.push(b.getAttribute("aria-label") ?? b.textContent ?? "");
-    };
-    const watcher = new MutationObserver(note);
-    watcher.observe(container, { subtree: true, childList: true, attributes: true, characterData: true });
-    fireEvent.click(screen.getByRole("button", { name: "Save titles" }));
-    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  test("a silent recount on a reload takes nothing from focus", async () => {
+    cardsStandAt({ n: 0 }, 0);
+    render(<ParallelBuildPanel run={oneParallel(4, { phase: "left" })} onStop={() => {}} />);
     await waitFor(() => expect(doorButton(/card titles?$/)).toBeNull());
-    watcher.disconnect();
-    // Never "Fix 0 card titles": the count was zero while the door still held the dialog.
-    expect(names.filter((n) => /Fix 0/.test(n))).toEqual([]);
-    expect(names.every((n) => n === "Fix 2 card titles")).toBe(true);
-    // Once the door is gone, the plain line is all that is left of it.
-    expect(screen.getByText("Saved 2 titles.", { selector: "span" })).toBeTruthy();
+    // Nothing held focus, so nothing is parked on the panel.
+    expect(document.activeElement).toBe(document.body);
   });
 });

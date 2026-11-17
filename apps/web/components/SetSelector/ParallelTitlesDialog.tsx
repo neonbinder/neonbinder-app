@@ -305,14 +305,21 @@ export function ParallelTitlesDoor({
     [me],
   );
 
-  /** Counts only, told to the host. A failed read says nothing: a press says what is true. */
-  const recount = useCallback(async () => {
+  /**
+   * Counts only, told to the host. Returns what it read, or null when the read
+   * failed or a newer one took over. A failed read says nothing: a press says
+   * what is true.
+   */
+  const recount = useCallback(async (): Promise<ParallelTitleCount[] | null> => {
     const token = ++countSeq.current;
     try {
       const counts = await countFailing(convex, parallelsRef.current);
-      if (token === countSeq.current) hostRef.current.onCounts?.(counts);
+      if (token !== countSeq.current) return null;
+      hostRef.current.onCounts?.(counts);
+      return counts;
     } catch {
       // Pressing the button loads again and says why it could not.
+      return null;
     }
   }, [convex]);
 
@@ -421,8 +428,25 @@ export function ParallelTitlesDoor({
             say(saved ?? "");
             // A save (even one that stopped partway) moved the count: read it
             // before the door lets go, so the host drops a button that has
-            // nothing left to open, or lowers the count it shows.
-            void recount().finally(settle);
+            // nothing left to open, or lowers the count it shows. The read
+            // is a busy window like a load: a press then does nothing, so a
+            // second open can never be released by this one's settle.
+            loadingRef.current = true;
+            setLoading(true);
+            void recount()
+              .then((counts) => {
+                // Left without a save and the cards were fixed elsewhere: the
+                // button is about to go, so say why (a save already said its
+                // own line).
+                if (!saved && counts && counts.length > 0 && counts.every((c) => c.count === 0)) {
+                  say(ALL_TITLES_FIT);
+                }
+              })
+              .finally(() => {
+                loadingRef.current = false;
+                setLoading(false);
+                settle();
+              });
           }}
         />
       )}
