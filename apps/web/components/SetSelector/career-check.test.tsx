@@ -7,8 +7,14 @@
 import { describe, expect, it } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
 import {
+  CAREER_READ_FAILED,
+  NO_CAREER_TEXT,
   applyCareerCardEdit,
   careerCommitFields,
+  careerHeading,
+  noStintText,
+  playedForText,
+  uncoveredAgainText,
   careerContextAsks,
   classifyPairs,
   deriveSittingPairs,
@@ -159,6 +165,37 @@ describe("careerContextAsks (no names to review)", () => {
   });
 });
 
+describe("toLines ordering and copy", () => {
+  it("sorts by team, then by card number (numerically)", () => {
+    const cards = [
+      { cardNumber: "100", cardName: "a", players: ["Mike Trout"], teams: ["Angels"] },
+      { cardNumber: "9", cardName: "b", players: ["Fernando Tatis Jr."], teams: ["Padres"] },
+      { cardNumber: "20", cardName: "c", players: ["Mike Trout"], teams: ["Padres"] },
+      { cardNumber: "7", cardName: "d", players: ["Fernando Tatis Jr."], teams: ["Angels"] },
+    ];
+    const lines = toLines(deriveSittingPairs({ cards, rows: [], context: CONTEXT }));
+    expect(lines.map((l) => `${l.printedTeam}|${l.printedPlayer}|${l.cardNumbers[0]}`)).toEqual([
+      "Angels|Fernando Tatis Jr.|7",
+      "Angels|Mike Trout|100",
+      "Padres|Fernando Tatis Jr.|9",
+      "Padres|Mike Trout|20",
+    ]);
+  });
+  it("is the same order whatever order the pairs arrive in", () => {
+    const pairs = deriveSittingPairs({ cards: CARDS, rows: [], context: CONTEXT });
+    expect(toLines([...pairs].reverse()).map((l) => l.key)).toEqual(toLines(pairs).map((l) => l.key));
+  });
+  it("words the line, the heading and the failed read as the collector asked", () => {
+    expect(careerHeading(3)).toBe("Career check · 3 to look at");
+    expect(careerHeading(0)).toBe("Career check");
+    expect(noStintText("Padres", 2022)).toBe("No Padres in the career by 2022.");
+    expect(NO_CAREER_TEXT).toBe("No career on file yet.");
+    expect(CAREER_READ_FAILED).toBe("Couldn’t check careers. Retry, or Next saves without it.");
+    expect(uncoveredAgainText("Ana", "Padres", 2022)).toBe("Ana doesn’t have Padres by 2022 either.");
+    expect(playedForText("Padres")).toBe("Played for Padres");
+  });
+});
+
 describe("parseStintDraft", () => {
   it("accepts a From year, with or without a To year", () => {
     expect(parseStintDraft({ fromYear: "2022", toYear: "" }, 2030)).toEqual({ fromYear: 2022 });
@@ -174,6 +211,16 @@ describe("parseStintDraft", () => {
     expect(parseStintDraft({ fromYear: "2022", toYear: "2020" }, 2030)).toBeNull();
     expect(parseStintDraft({ fromYear: "20.5", toYear: "" }, 2030)).toBeNull();
   });
+  it("takes four digits and nothing else: no hex, exponent, sign or padding (U3)", () => {
+    for (const bad of ["0x7C6", "1.99e3", "+2022", "2022.0", " 20 22", "02022", "202", "0b11111100110"]) {
+      expect(parseStintDraft({ fromYear: bad, toYear: "" }, 2030)).toBeNull();
+      expect(parseStintDraft({ fromYear: "2020", toYear: bad }, 2030)).toBeNull();
+    }
+    expect(parseStintDraft({ fromYear: " 2022 ", toYear: " 2024 " }, 2030)).toEqual({
+      fromYear: 2022,
+      toYear: 2024,
+    });
+  });
   it("opens on the set's year", () => {
     expect(freshStint(2022)).toEqual({ fromYear: "2022", toYear: "" });
     expect(freshStint(undefined)).toEqual({ fromYear: "", toYear: "" });
@@ -183,8 +230,9 @@ describe("parseStintDraft", () => {
 describe("careerCommitFields", () => {
   const pairs = deriveSittingPairs({ cards: CARDS, rows: [], context: CONTEXT });
   const lines = toLines(pairs);
-  const tatis = lines[0];
-  const trout = lines[1];
+  // Sorted by team: Angels (Trout) before Padres (Tatis).
+  const tatis = lines.find((l) => l.playerId === "p-tatis")!;
+  const trout = lines.find((l) => l.playerId === "p-trout")!;
 
   it("is nothing when every line is left", () => {
     expect(careerCommitFields({ lines, answers: {}, cards: CARDS, maxYear: 2030 })).toBeUndefined();
@@ -206,7 +254,7 @@ describe("careerCommitFields", () => {
       rows: [{ kind: "team", name: "Padres", decision: { action: "create" } }],
       context: CONTEXT,
     });
-    const line = toLines(created)[0];
+    const line = toLines(created).find((l) => l.playerId === "p-tatis")!;
     const out = careerCommitFields({
       lines: [line],
       answers: { [line.key]: { kind: "add", fromYear: "2022", toYear: "2023" } },
@@ -262,7 +310,11 @@ describe("careerCommitFields", () => {
       },
     };
     const out = careerCommitFields({ lines, answers, cards: CARDS, maxYear: 2030 });
-    expect(out?.cardEdits[2]).toEqual({ dropTeams: ["Angels"], teamIds: ["t-other"] });
+    expect(out?.cardEdits[2]).toEqual({
+      dropTeams: ["Angels"],
+      dropTeamIds: ["t-angels"],
+      teamIds: ["t-other"],
+    });
     expect(out?.stints).toEqual([{ playerId: "p-trout", teamId: "t-other", fromYear: 2022 }]);
     expect(reteamedIndexes(out!.cardEdits)).toEqual([2]);
   });
@@ -291,7 +343,9 @@ describe("careerCommitFields", () => {
 });
 
 describe("followUpPair", () => {
-  const line = toLines(deriveSittingPairs({ cards: CARDS, rows: [], context: CONTEXT }))[0];
+  const line = toLines(deriveSittingPairs({ cards: CARDS, rows: [], context: CONTEXT })).find(
+    (l) => l.playerId === "p-tatis",
+  )!;
   it("asks about the new player on the card's team", () => {
     const f = followUpPair(line, {
       kind: "player",
@@ -328,6 +382,26 @@ describe("applyCareerCardEdit", () => {
     expect(out.teams).toEqual(["Angels"]);
     expect(out.team).toBeUndefined();
     expect(out.teamIds).toEqual(["t1"]);
+  });
+  it("drops the replaced team's id too, so a team that came from a picked id goes off the card (U2)", () => {
+    const card: { team?: string; teams?: string[]; teamIds?: Id<"teams">[] } = {
+      teams: [],
+      teamIds: [tid("t-old"), tid("t-keep")],
+    };
+    const out = applyCareerCardEdit(card, {
+      dropTeamIds: [tid("t-old")],
+      teamIds: [tid("t-new")],
+    });
+    expect(out.teamIds).toEqual(["t-keep", "t-new"]);
+    // Picking the very team that is being replaced keeps it (drop first, then add).
+    const same = applyCareerCardEdit(card, { dropTeamIds: [tid("t-old")], teamIds: [tid("t-old")] });
+    expect(same.teamIds).toEqual(["t-keep", "t-old"]);
+    // Without the id drop nothing leaves teamIds.
+    expect(applyCareerCardEdit(card, { teamIds: [tid("t-new")] }).teamIds).toEqual([
+      "t-old",
+      "t-keep",
+      "t-new",
+    ]);
   });
   it("puts the relink on the card without touching its printed players", () => {
     const card = { players: ["A"], teams: ["T"] } as { players: string[]; teams: string[] };
@@ -445,7 +519,7 @@ describe("adversarial: careerCommitFields and parseStintDraft", () => {
 
   it("an add on a line sends exactly one stint", () => {
     const lines = toLines(deriveSittingPairs({ cards: CARDS, rows: [], context: CONTEXT }));
-    const tatis = lines[0];
+    const tatis = lines.find((l) => l.playerId === "p-tatis")!;
     const out = careerCommitFields({
       lines,
       answers: { [tatis.key]: { kind: "add", fromYear: "2022", toYear: "" } },

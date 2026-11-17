@@ -6,6 +6,9 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { CAREER_COVERAGE_MAX_PAIRS } from "../../convex/lib/careerCoverage";
 import { pairKey, type CoverageAsk } from "./career-check";
 
+/** How many coverage chunks are read at once. */
+export const CAREER_COVERAGE_PARALLEL = 2;
+
 /**
  * NEO-574 — the career check's coverage reads, asked once each.
  *
@@ -60,30 +63,44 @@ export function CareerCoverageFetcher({
       asked.current.add(key);
       fresh.push({ key, ask });
     }
+    // Chunks of at most CAREER_COVERAGE_MAX_PAIRS, and no more than
+    // CAREER_COVERAGE_PARALLEL of them in flight: a big set is read two at a
+    // time rather than all at once (each is a query over careers and teams).
+    const chunks: Array<typeof fresh> = [];
     for (let at = 0; at < fresh.length; at += CAREER_COVERAGE_MAX_PAIRS) {
-      const chunk = fresh.slice(at, at + CAREER_COVERAGE_MAX_PAIRS);
-      convex
-        .query(api.careerCoverage.coverageForPreview, {
+      chunks.push(fresh.slice(at, at + CAREER_COVERAGE_MAX_PAIRS));
+    }
+    const readChunk = async (chunk: typeof fresh): Promise<void> => {
+      try {
+        const answer = await convex.query(api.careerCoverage.coverageForPreview, {
           selectorOptionId,
           pairs: chunk.map((c) => c.ask),
-        })
-        .then((answer) => {
-          if (!live.current) return;
-          const out: Record<string, boolean> = {};
-          const missing: string[] = [];
-          chunk.forEach((c, i) => {
-            const covered = answer.results[i]?.covered;
-            if (covered === undefined) missing.push(c.key);
-            else out[c.key] = covered;
-          });
-          if (Object.keys(out).length > 0) onAnsweredRef.current(out);
-          if (missing.length > 0) onFailedRef.current(missing);
-        })
-        .catch((error: unknown) => {
-          console.warn("Career check: coverage read failed", error);
-          if (!live.current) return;
-          onFailedRef.current(chunk.map((c) => c.key));
         });
+        if (!live.current) return;
+        const out: Record<string, boolean> = {};
+        const missing: string[] = [];
+        chunk.forEach((c, i) => {
+          const covered = answer.results[i]?.covered;
+          if (covered === undefined) missing.push(c.key);
+          else out[c.key] = covered;
+        });
+        if (Object.keys(out).length > 0) onAnsweredRef.current(out);
+        if (missing.length > 0) onFailedRef.current(missing);
+      } catch (error: unknown) {
+        console.warn("Career check: coverage read failed", error);
+        if (!live.current) return;
+        onFailedRef.current(chunk.map((c) => c.key));
+      }
+    };
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (live.current && next < chunks.length) {
+        const chunk = chunks[next++];
+        await readChunk(chunk);
+      }
+    };
+    for (let i = 0; i < Math.min(CAREER_COVERAGE_PARALLEL, chunks.length); i += 1) {
+      void worker();
     }
   }, [asks, convex, selectorOptionId]);
 

@@ -87,7 +87,9 @@ import EntityReviewWizard from "./EntityReviewWizard";
 import {
   CAREER_READ_FAILED,
   CAREER_RETRY_LABEL,
-  CAREER_STEP_HEADING,
+  CAREER_CHECKING,
+  CAREER_NEXT_BLOCKED,
+  careerHeading,
   CAREER_TEAM_NOT_NEEDED,
   type CareerContext,
 } from "./career-check";
@@ -160,7 +162,7 @@ beforeEach(() => {
 describe("when the step is asked", () => {
   it("opens on it, first of the steps, when a new card's team is missing from its player's career", () => {
     render(wizard());
-    expect(screen.getByRole("heading", { name: CAREER_STEP_HEADING })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: careerHeading(1) })).toBeTruthy();
     expect(screen.getAllByText(STEP_SUBTITLE.career).length).toBeGreaterThan(0);
     expect(counter()).toBe("Step 1 of 2");
   });
@@ -205,19 +207,19 @@ describe("when the step is asked", () => {
 });
 
 describe("answers", () => {
-  it("every line starts on 'Leave it', so nothing is reported and Next just passes", () => {
+  it("every line starts on 'Keep as is', so nothing is reported and Next just passes", () => {
     const onCareerChange = vi.fn();
     render(wizard({ onCareerChange }));
     expect(onCareerChange).toHaveBeenLastCalledWith(undefined);
     fireEvent.click(next());
-    expect(screen.queryByRole("heading", { name: CAREER_STEP_HEADING })).toBeNull();
+    expect(screen.queryByRole("heading", { name: careerHeading(1) })).toBeNull();
   });
 
   it("adding a stint reports it up, with the team by id", () => {
     const onCareerChange = vi.fn();
     render(wizard({ onCareerChange }));
     const group = screen.getAllByRole("radiogroup")[0];
-    fireEvent.click(within(group).getByRole("radio", { name: "Add the stint" }));
+    fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
     const fields = onCareerChange.mock.calls.at(-1)?.[0];
     expect(fields?.stints).toEqual([{ playerId: "p-tatis", teamId: "t-padres", fromYear: 2022 }]);
   });
@@ -225,12 +227,17 @@ describe("answers", () => {
   it("holds Next while an add form's years are not a stint, and says so", () => {
     render(wizard());
     const group = screen.getAllByRole("radiogroup")[0];
-    fireEvent.click(within(group).getByRole("radio", { name: "Add the stint" }));
+    fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
     const from = screen.getByLabelText(/^From year for /);
     fireEvent.change(from, { target: { value: "" } });
     fireEvent.click(next());
-    expect(screen.getByRole("heading", { name: CAREER_STEP_HEADING })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: careerHeading(1) })).toBeTruthy();
     expect(next().getAttribute("aria-disabled")).toBe("true");
+    // Why Next is held is said in the wizard's live region, not the step's.
+    expect(
+      screen.getAllByRole("status").some((el) => el.textContent === CAREER_NEXT_BLOCKED),
+    ).toBe(true);
+    expect(CAREER_NEXT_BLOCKED).toBe("Fix the years first — then Next.");
   });
 });
 
@@ -242,7 +249,7 @@ describe("a re-teamed card leaves the teams step", () => {
 
   function reteam() {
     const group = screen.getAllByRole("radiogroup")[0];
-    fireEvent.click(within(group).getByRole("radio", { name: "Different team" }));
+    fireEvent.click(within(group).getByRole("radio", { name: "Fix card’s team" }));
     fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
     fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
   }
@@ -252,7 +259,11 @@ describe("a re-teamed card leaves the teams step", () => {
     render(wizard({ careerContext: ANGELS_GAP, onCareerChange }, [CARDS[1]]));
     reteam();
     const fields = onCareerChange.mock.calls.at(-1)?.[0];
-    expect(fields?.cardEdits[0]).toEqual({ dropTeams: ["Angels"], teamIds: ["picked-team"] });
+    expect(fields?.cardEdits[0]).toEqual({
+      dropTeams: ["Angels"],
+      dropTeamIds: ["t-angels"],
+      teamIds: ["picked-team"],
+    });
   });
 
   it("does not ask the teams step about it afterwards, but still asks about a card with no team", () => {
@@ -260,7 +271,7 @@ describe("a re-teamed card leaves the teams step", () => {
     render(wizard({ careerContext: ANGELS_GAP }, cards));
     reteam();
     fireEvent.click(next());
-    expect(screen.queryByRole("heading", { name: CAREER_STEP_HEADING })).toBeNull();
+    expect(screen.queryByRole("heading", { name: careerHeading(1) })).toBeNull();
     // The teams step is about card #77 only.
     expect(screen.getAllByText(STEP_SUBTITLE.teams).length).toBeGreaterThan(0);
     expect(screen.queryByText(/Mike Trout/)).toBeNull();
@@ -320,12 +331,40 @@ describe("a coverage read that fails (never silently 'covered')", () => {
     currentRows = linkedRows();
     fetcherBehaviour = (asks, cb) => cb.onFailed(asks.map((a) => `${a.playerId}|${a.teamId}`));
     render(readWizard());
-    expect(screen.getByRole("heading", { name: CAREER_STEP_HEADING })).toBeTruthy();
-    expect(screen.getAllByText(CAREER_READ_FAILED).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: careerHeading(0) })).toBeTruthy();
+    // The words ride the wizard's one live region, not a new one on the step.
+    const live = screen
+      .getAllByRole("status")
+      .find((el) => el.textContent === CAREER_READ_FAILED);
+    expect(live).toBeTruthy();
+    expect(CAREER_READ_FAILED).toBe("Couldn’t check careers. Retry, or Next saves without it.");
     expect(screen.getByRole("button", { name: CAREER_RETRY_LABEL })).toBeTruthy();
     expect(next().getAttribute("aria-disabled")).not.toBe("true");
     fireEvent.click(next());
-    expect(screen.queryByRole("heading", { name: CAREER_STEP_HEADING })).toBeNull();
+    expect(screen.queryByRole("heading", { name: careerHeading(0) })).toBeNull();
+  });
+
+  it("says 'Checking careers…' in that same live region while the reads are on their way (A4)", () => {
+    currentRows = linkedRows();
+    fetcherBehaviour = () => {};
+    render(readWizard());
+    const live = screen.getAllByRole("status").find((el) => el.textContent === CAREER_CHECKING);
+    expect(live).toBeTruthy();
+    expect(live?.isConnected).toBe(true);
+    expect(CAREER_CHECKING).toBe("Checking careers…");
+  });
+
+  it("after a Retry that finds nothing missing, focus lands on the next screen's control, not the page", () => {
+    currentRows = linkedRows();
+    fetcherBehaviour = (asks, cb) => cb.onFailed(asks.map((a) => `${a.playerId}|${a.teamId}`));
+    render(readWizard());
+    fetcherBehaviour = (asks, cb) =>
+      cb.onAnswered(Object.fromEntries(asks.map((a) => [`${a.playerId}|${a.teamId}`, true])));
+    fireEvent.click(screen.getByRole("button", { name: CAREER_RETRY_LABEL }));
+    expect(screen.queryByRole("button", { name: CAREER_RETRY_LABEL })).toBeNull();
+    // Every pair read as covered, so the step is gone: focus follows the walk
+    // to the next screen's own control rather than falling to the page.
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: /^Confirm & Save/ }));
   });
 
   it("Retry asks again, and a good answer clears the line", () => {
@@ -340,6 +379,7 @@ describe("a coverage read that fails (never silently 'covered')", () => {
     expect(screen.queryByRole("button", { name: CAREER_RETRY_LABEL })).toBeNull();
     expect(screen.getByRole("radiogroup")).toBeTruthy();
     expect(screen.queryByText(CAREER_READ_FAILED)).toBeNull();
+    expect(screen.getByRole("heading", { name: careerHeading(1) })).toBeTruthy();
   });
 
   it("is not a gap: a read that answers 'covered' passes the step without a line", () => {
@@ -347,7 +387,7 @@ describe("a coverage read that fails (never silently 'covered')", () => {
     fetcherBehaviour = (asks, cb) =>
       cb.onAnswered(Object.fromEntries(asks.map((a) => [`${a.playerId}|${a.teamId}`, true])));
     render(readWizard());
-    expect(screen.queryByRole("heading", { name: CAREER_STEP_HEADING })).toBeNull();
+    expect(screen.queryByRole("heading", { name: careerHeading(1) })).toBeNull();
   });
 });
 
@@ -384,10 +424,10 @@ describe("a New Team nobody names any more (NEO-574)", () => {
     expect(summaryCount()).toBe("New players and teams1");
   });
 
-  it("does not count it once 'Different team' took its only reference off the card", () => {
+  it("does not count it once 'Fix card’s team' took its only reference off the card", () => {
     toSummary();
     const group = screen.getAllByRole("radiogroup")[0];
-    fireEvent.click(within(group).getByRole("radio", { name: "Different team" }));
+    fireEvent.click(within(group).getByRole("radio", { name: "Fix card’s team" }));
     fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
     fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
     fireEvent.click(next());
@@ -404,10 +444,10 @@ describe("a New Team nobody names any more (NEO-574)", () => {
     expect(decided.queryByText(CAREER_TEAM_NOT_NEEDED)).toBeNull();
   });
 
-  it("says 'not needed' for it in the Decided list once 'Different team' dropped it", () => {
+  it("says 'not needed' for it in the Decided list once 'Fix card’s team' dropped it", () => {
     toSummary();
     const group = screen.getAllByRole("radiogroup")[0];
-    fireEvent.click(within(group).getByRole("radio", { name: "Different team" }));
+    fireEvent.click(within(group).getByRole("radio", { name: "Fix card’s team" }));
     fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
     fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
     fireEvent.click(next());
@@ -423,7 +463,7 @@ describe("a relinked player reaches the titles step (NEO-574)", () => {
   it("asks for the picked player's own name, so the title can use it", () => {
     render(wizard());
     const group = screen.getAllByRole("radiogroup")[0];
-    fireEvent.click(within(group).getByRole("radio", { name: "Different player" }));
+    fireEvent.click(within(group).getByRole("radio", { name: "Wrong player" }));
     fireEvent.click(screen.getByRole("button", { name: "Someone else for Fernando Tatis Jr." }));
     fireEvent.click(screen.getByRole("button", { name: "Search result player" }));
     expect(playerIdReads.at(-1)).toContain("picked-player");

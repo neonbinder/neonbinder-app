@@ -252,3 +252,4 @@
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
 - [Convex new-module gotchas](convex-new-module-gotchas.md) — api.d.ts hand-registration, playerIds pin, lib/*Facts for cycles, pdfjs env failure
 - [Symlinked node_modules can lag the lockfile](reference_symlinked_node_modules_can_lag_the_lockfile.md) — build/one lib test red on a missing package you never touched = stale shared install, not your diff
+- [Wizard step status rides the footer live region](reference_wizard_step_status_rides_the_footer_live_region.md) — a step that mounts/unmounts cannot own a role=status; compute words in the wizard, step renders only Retry

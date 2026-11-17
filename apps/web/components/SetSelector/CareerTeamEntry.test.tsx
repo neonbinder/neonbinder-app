@@ -980,6 +980,21 @@ describe("CareerTeamEntry — prefill and quick picks (NEO-574)", () => {
     expect(screen.queryByRole("button", { name: "Fill in Chicago Cubs" })).toBeNull();
   });
 
+  it("quick-pick chips are at least 24px tall on desktop and 44px on a phone (A7)", () => {
+    renderEntry({ quickPicks: [{ team: "Chicago Cubs", fromYear: 2022 }] });
+    const chip = screen.getByRole("button", { name: "Fill in Chicago Cubs" });
+    expect(chip.className).toContain("min-h-6");
+    expect(chip.className).toContain("max-sm:min-h-11");
+    expect(chip.className).toContain("py-1");
+    expect(chip.className).not.toContain("py-0.5");
+  });
+
+  it("the To year box says 'To year' and keeps (optional) in its name", () => {
+    renderEntry();
+    const to = screen.getByLabelText("To year (optional)");
+    expect(to.getAttribute("placeholder")).toBe("To year");
+  });
+
   it("shows no quick-pick group when there are none", () => {
     renderEntry({ quickPicks: [] });
     expect(screen.queryByRole("group", { name: "Also on the cards" })).toBeNull();

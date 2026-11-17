@@ -92,6 +92,9 @@ import {
   coverageAskOf,
   deriveSittingPairs,
   gateJudgedKeys,
+  CAREER_CHECKING,
+  CAREER_NEXT_BLOCKED,
+  CAREER_READ_FAILED,
   CAREER_TEAM_NOT_NEEDED,
   followUpPair,
   linesWithBadYears,
@@ -1241,7 +1244,6 @@ export default function EntityReviewWizard({
   const [checklistBlockedPresses, setChecklistBlockedPresses] = useState(0);
   /** NEO-574 — the career step's heading and status line; its Next is described by both. */
   const careerLeadId = useId();
-  const careerHintId = useId();
   /** NEO-574 — the first line's tab-stop radio, focused on arrival. */
   const careerFirstRef = useRef<HTMLButtonElement>(null);
   /** NEO-574 (a11y) — Next pressed while an add form holds years that are not a stint. */
@@ -4387,6 +4389,34 @@ export default function EntityReviewWizard({
     }
     return printed || "the team";
   };
+  /**
+   * NEO-574 — the same team as its rows show it: the nickname ("Padres"),
+   * not the full "San Diego Padres".
+   */
+  const careerShortTeamLabel = (line: CareerLine): string => {
+    if (line.teamId) {
+      const team = (linkedTeams ?? []).find((t) => t._id === line.teamId);
+      if (team) return team.name;
+    }
+    const printed = line.teamName ?? "";
+    const key = normalizeEntityName(printed);
+    const created = rows.find(
+      (r) =>
+        r.kind === "team" &&
+        r.decision?.action === "create" &&
+        r.decision.create &&
+        normalizeEntityName(r.name) === key,
+    );
+    if (created?.decision?.action === "create" && created.decision.create) {
+      return created.decision.create.name;
+    }
+    return printed || "the team";
+  };
+  /** The listed player has no stints on file at all (loaded, and empty). */
+  const careerPlayerHasNoCareer = (line: CareerLine): boolean => {
+    const player = (linkedPlayers ?? []).find((p) => p._id === line.playerId);
+    return player !== undefined && (player.teamYears ?? []).length === 0;
+  };
 
   const linkedNameFor = (row: (typeof rows)[number]) => {
     const decision = row.decision;
@@ -4465,15 +4495,26 @@ export default function EntityReviewWizard({
    * on that step, then the status comes back. `footerStatus` alone still
    * decides whether "Stop" shows — the notice is news, not a running walk.
    */
+  const careerLine: string | null =
+    postStep !== "career"
+      ? null
+      : careerChecking
+        ? CAREER_CHECKING
+        : careerReadFailed
+          ? CAREER_READ_FAILED
+          : careerBlockedPresses > 0 && careerBadYears.length > 0
+            ? CAREER_NEXT_BLOCKED
+            : null;
   const footerLine: string | null =
-    !expired &&
+    careerLine ??
+    (!expired &&
     pickNotice &&
     current &&
     pickNotice.rowId === current._id &&
     // NEO-424 — and the suggestion step "Back to the suggestion" returns to.
     (pickStep || preselectShown)
       ? pickNotice.text
-      : footerStatus;
+      : footerStatus);
 
   /**
    * NEO-482 — with no row on screen (the checklist step, a post-review step,
@@ -6197,7 +6238,8 @@ export default function EntityReviewWizard({
                   requestCoverage={requestCareerCoverage}
                   playerNameOf={(line) => linkedNameById.get(line.playerId) ?? line.printedPlayer}
                   teamNameOf={(line) => careerTeamLabel(line)}
-                  checking={careerChecking}
+                  shortTeamNameOf={(line) => careerShortTeamLabel(line)}
+                  hasNoCareer={(line) => careerPlayerHasNoCareer(line)}
                   readFailed={careerReadFailed}
                   onRetry={() => {
                     retryCareerCheck();
@@ -6207,8 +6249,6 @@ export default function EntityReviewWizard({
                   disabled={saving}
                   headingId={careerLeadId}
                   firstRef={careerFirstRef}
-                  hintId={careerHintId}
-                  showBlockedHint={careerBlockedPresses > 0 && careerBadYears.length > 0}
                 />
               ) : null
             ) : postStep === "autograph" ? (
@@ -6685,7 +6725,7 @@ export default function EntityReviewWizard({
                         postStep === "checklist"
                           ? `${checklistLeadId} ${checklistHintId}`
                           : postStep === "career"
-                            ? `${careerLeadId} ${careerHintId}`
+                            ? careerLeadId
                           : postStep === "teams"
                           ? teamsIntroId
                           : postStep === "autograph"

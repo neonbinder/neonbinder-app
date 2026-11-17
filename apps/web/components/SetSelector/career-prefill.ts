@@ -181,10 +181,14 @@ export function careerPrefill(input: CareerPrefillInput): CareerPrefill {
     if (existing.has(index)) return;
     const people = cardPlayerKeys(card, ignored);
     if (people.length !== 1 || people[0] !== player) return;
+    // One card counts for a team once, whatever spellings it prints it in.
+    const counted = new Set<string>();
     for (const printed of cardTeamStrings(card)) {
       const team = teamTextFor(printed, input);
       if (!team) continue;
       const key = norm(team);
+      if (counted.has(key)) continue;
+      counted.add(key);
       const seen = tally.get(key);
       if (seen) seen.cards += 1;
       else tally.set(key, { team, cards: 1, first: index });

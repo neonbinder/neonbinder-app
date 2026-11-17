@@ -3,23 +3,25 @@ import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
+import { NOTHING_ON_FILE, formatPlayerDescription } from "../../lib/players/player-description";
 import EntityLinkSearch from "./EntityLinkSearch";
 import { cardNumbersSummary } from "./teams-on-cards";
 import { useRelinkCandidates } from "./career-reads";
 import {
-  CAREER_CHECKING,
-  CAREER_NEXT_BLOCKED,
-  CAREER_READ_FAILED,
   CAREER_RETRY_LABEL,
-  careerFollowUpFailed,
-  CAREER_STEP_HEADING,
   LEAVE_FOLLOW_UP,
-  careerStepLead,
+  NO_CAREER_TEXT,
+  careerFollowUpFailed,
+  careerHeading,
   coverageAskOf,
+  coveredText,
   followUpPair,
   freshStint,
   noStintText,
   parseStintDraft,
+  playedForText,
+  uncoveredAgainText,
+  yearsHintText,
   type CareerAnswer,
   type CareerAnswers,
   type CareerFollowUp,
@@ -67,10 +69,10 @@ const KINDS = ["leave", "add", "player", "team"] as const;
 type Kind = (typeof KINDS)[number];
 
 export const KIND_LABEL: Readonly<Record<Kind, string>> = {
-  leave: "Leave it",
-  add: "Add the stint",
-  player: "Different player",
-  team: "Different team",
+  leave: "Keep as is",
+  add: "Add to career",
+  player: "Wrong player",
+  team: "Fix card’s team",
 };
 
 /** "Fernando Tatis Jr. on the San Diego Padres" — each line's radio group name. */
@@ -94,10 +96,20 @@ export type CareerCheckStepProps = {
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   /** Canonical names, when the wizard has them; the printed text otherwise. */
   playerNameOf: (line: CareerLine) => string;
+  /** The full team name ("San Diego Padres"): names each line's radio group. */
   teamNameOf: (line: CareerLine) => string;
-  /** The coverage read is still on its way for some pairs: nothing to list yet. */
+  /** The short name as the team's rows show it ("Padres"): the line's own text. */
+  shortTeamNameOf?: (line: CareerLine) => string;
+  /** The player has no stints at all: "No career on file yet." instead of the team. */
+  hasNoCareer?: (line: CareerLine) => boolean;
+  /**
+   * The coverage read is still on its way for some pairs: nothing to list yet.
+   * The words ("Checking careers…", the failure, the years hint) are said by
+   * the wizard's own status line, so they are announced from one live region
+   * that was there before they were.
+   */
   checking?: boolean;
-  /** The career check could not run for something on screen: say so, offer Retry. */
+  /** The career check could not run for something on screen: offer Retry. */
   readFailed?: boolean;
   onRetry?: () => void;
   /** Enter on the last line: the host moves focus on (to Next). */
@@ -106,9 +118,6 @@ export type CareerCheckStepProps = {
   headingId: string;
   /** The first line's first radio, which the host focuses on arrival. */
   firstRef?: Ref<HTMLButtonElement>;
-  hintId: string;
-  /** Next was pressed while an add form holds years that are not a stint. */
-  showBlockedHint?: boolean | number;
 };
 
 function kindOf(answer: CareerAnswer | undefined): Kind {
@@ -127,17 +136,15 @@ export default function CareerCheckStep({
   requestCoverage,
   playerNameOf,
   teamNameOf,
-  checking = false,
+  shortTeamNameOf,
+  hasNoCareer,
   readFailed = false,
   onRetry,
   onAllDone,
   disabled = false,
   headingId,
   firstRef,
-  hintId,
-  showBlockedHint = false,
 }: CareerCheckStepProps) {
-  const leadId = useId();
   const rowRef = (key: string) =>
     Array.from(document.querySelectorAll<HTMLElement>("[data-career-line]")).find(
       (el) => el.dataset.careerLine === key,
@@ -155,15 +162,13 @@ export default function CareerCheckStep({
   };
 
   if (lines.length === 0) {
-    // Nothing to list yet: waiting on the reads, or the reads failed.
+    // Nothing to list yet: waiting on the reads, or the reads failed. The
+    // words are the wizard's status line's.
     return (
       <div className="space-y-3">
         <h3 id={headingId} className="text-sm font-semibold text-ink">
-          {CAREER_STEP_HEADING}
+          {careerHeading(0)}
         </h3>
-        <p id={hintId} role="status" className="text-sm text-ink-2">
-          {readFailed ? CAREER_READ_FAILED : checking ? CAREER_CHECKING : ""}
-        </p>
         {readFailed && <RetryButton onRetry={onRetry} disabled={disabled} />}
       </div>
     );
@@ -171,15 +176,10 @@ export default function CareerCheckStep({
 
   return (
     <div className="space-y-3">
-      <div>
-        <h3 id={headingId} className="text-sm font-semibold text-ink">
-          {CAREER_STEP_HEADING}
-        </h3>
-        <p id={leadId} className="mt-0.5 text-sm text-ink-2">
-          {careerStepLead(lines.length)}
-        </p>
-      </div>
-      <ul className="space-y-3" aria-describedby={leadId}>
+      <h3 id={headingId} className="text-sm font-semibold text-ink">
+        {careerHeading(lines.length)}
+      </h3>
+      <ul className="space-y-3" aria-labelledby={headingId}>
         {lines.map((line, i) => (
           <li key={line.key} data-career-line={line.key}>
             <CareerLineRow
@@ -194,6 +194,8 @@ export default function CareerCheckStep({
               requestCoverage={requestCoverage}
               playerName={playerNameOf(line)}
               teamName={teamNameOf(line)}
+              shortTeamName={shortTeamNameOf ? shortTeamNameOf(line) : teamNameOf(line)}
+              noCareer={hasNoCareer ? hasNoCareer(line) : false}
               disabled={disabled}
               firstRef={i === 0 ? firstRef : undefined}
               onWalk={() => walkFrom(line.key)}
@@ -201,11 +203,6 @@ export default function CareerCheckStep({
           </li>
         ))}
       </ul>
-      {/* Always mounted: a live region must exist before it speaks. A failed
-          read and held years are both news worth saying here. */}
-      <p id={hintId} role="status" className="text-xs text-ink-2">
-        {showBlockedHint ? CAREER_NEXT_BLOCKED : readFailed ? CAREER_READ_FAILED : ""}
-      </p>
       {readFailed && <RetryButton onRetry={onRetry} disabled={disabled} />}
     </div>
   );
@@ -227,6 +224,8 @@ function CareerLineRow({
   requestCoverage,
   playerName,
   teamName,
+  shortTeamName,
+  noCareer,
   disabled,
   firstRef,
   onWalk,
@@ -242,6 +241,8 @@ function CareerLineRow({
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   playerName: string;
   teamName: string;
+  shortTeamName: string;
+  noCareer: boolean;
   disabled: boolean;
   firstRef?: Ref<HTMLButtonElement>;
   onWalk: () => void;
@@ -249,6 +250,8 @@ function CareerLineRow({
   const groupLabel = careerLineLabel(playerName, teamName);
   const current = kindOf(answer);
   const panelRef = useRef<HTMLDivElement>(null);
+  const noteId = useId();
+  const cardsId = useId();
   /** The player/team search opens on an Enter-walk, and on its own button. */
   const [searchOpen, setSearchOpen] = useState(false);
 
@@ -305,14 +308,21 @@ function CareerLineRow({
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 border-b border-rule px-3 py-2">
         <div>
           <h4 className="text-sm font-semibold text-ink">{playerName}</h4>
-          <p className="text-sm text-ink-2">{noStintText(teamName, setYear)}</p>
+          <p id={noteId} className="text-sm text-ink-2">
+            {noCareer ? NO_CAREER_TEXT : noStintText(shortTeamName, setYear)}
+          </p>
         </div>
-        <p className="text-xs text-ink-3">
+        <p id={cardsId} className="text-xs text-ink-3">
           Cards {cardNumbersSummary(line.cardNumbers.map((cardNumber) => ({ cardNumber })))}
         </p>
       </div>
       <div className="space-y-3 p-3">
-        <div role="radiogroup" aria-label={groupLabel} className="flex flex-wrap gap-2">
+        <div
+          role="radiogroup"
+          aria-label={groupLabel}
+          aria-describedby={`${noteId} ${cardsId}`}
+          className="flex flex-wrap gap-2"
+        >
           {KINDS.map((kind) => {
             const picked = kind === current;
             return (
@@ -364,10 +374,10 @@ function CareerLineRow({
                 answer={answer}
                 onAnswer={onAnswer}
                 coverage={coverage}
-              failed={failed}
+                failed={failed}
                 requestCoverage={requestCoverage}
                 playerName={playerName}
-                teamName={teamName}
+                teamName={shortTeamName}
                 disabled={disabled}
                 searchOpen={searchOpen}
                 setSearchOpen={setSearchOpen}
@@ -383,7 +393,7 @@ function CareerLineRow({
                 answer={answer}
                 onAnswer={onAnswer}
                 coverage={coverage}
-              failed={failed}
+                failed={failed}
                 requestCoverage={requestCoverage}
                 playerName={playerName}
                 disabled={disabled}
@@ -419,45 +429,68 @@ function StintFields({
 }) {
   const valid = parseStintDraft(draft) !== null;
   const max = maxCareerYear();
+  const errorId = useId();
+  /** Enter was pressed on years that are not a stint: say why, even if a box is blank. */
+  const [pressed, setPressed] = useState(false);
+  const fromFilled = draft.fromYear.trim() !== "";
+  const toFilled = draft.toYear.trim() !== "";
+  const showError = !valid && (pressed || fromFilled || toFilled);
   const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
     if (event.key !== "Enter") return;
     // Enter in a year is "done with this line": on to the next, never the
-    // wizard's own Enter. An invalid stint stays put (Next says why).
+    // wizard's own Enter. Years that are not a stint stay put, and say why.
     event.preventDefault();
     event.stopPropagation();
-    if (event.repeat || !valid) return;
+    if (event.repeat) return;
+    if (!valid) {
+      setPressed(true);
+      return;
+    }
     onEnter?.();
   };
   return (
-    <div className="flex flex-wrap items-center gap-2">
-      <Input
-        bare
-        type="number"
-        value={draft.fromYear}
-        placeholder="From year"
-        aria-label={`From year for ${label}`}
-        aria-invalid={!valid && draft.fromYear.trim() !== "" ? true : undefined}
-        min={MIN_CAREER_YEAR}
-        max={max}
-        disabled={disabled}
-        onChange={(e) => onChange({ ...draft, fromYear: e.target.value })}
-        onKeyDown={onKeyDown}
-        className="w-24 p-1.5 text-sm"
-      />
-      <Input
-        bare
-        type="number"
-        value={draft.toYear}
-        placeholder="To year (opt)"
-        aria-label={`To year (optional) for ${label}`}
-        aria-invalid={!valid && draft.toYear.trim() !== "" ? true : undefined}
-        min={MIN_CAREER_YEAR}
-        max={max}
-        disabled={disabled}
-        onChange={(e) => onChange({ ...draft, toYear: e.target.value })}
-        onKeyDown={onKeyDown}
-        className="w-28 p-1.5 text-sm"
-      />
+    <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
+      <label className="flex flex-col gap-0.5 text-xs text-ink-2">
+        <span>From year</span>
+        <Input
+          bare
+          type="number"
+          value={draft.fromYear}
+          placeholder="From year"
+          aria-label={`From year for ${label}`}
+          aria-invalid={showError && (pressed || fromFilled) ? true : undefined}
+          aria-describedby={showError ? errorId : undefined}
+          min={MIN_CAREER_YEAR}
+          max={max}
+          disabled={disabled}
+          onChange={(e) => onChange({ ...draft, fromYear: e.target.value })}
+          onKeyDown={onKeyDown}
+          className="w-24 p-1.5 text-sm"
+        />
+      </label>
+      <label className="flex flex-col gap-0.5 text-xs text-ink-2">
+        <span>To year (optional)</span>
+        <Input
+          bare
+          type="number"
+          value={draft.toYear}
+          placeholder="To year"
+          aria-label={`To year (optional) for ${label}`}
+          aria-invalid={showError && toFilled ? true : undefined}
+          aria-describedby={showError ? errorId : undefined}
+          min={MIN_CAREER_YEAR}
+          max={max}
+          disabled={disabled}
+          onChange={(e) => onChange({ ...draft, toYear: e.target.value })}
+          onKeyDown={onKeyDown}
+          className="w-28 p-1.5 text-sm"
+        />
+      </label>
+      {/* Always mounted, text swapped in: a live region that exists before it
+          speaks. */}
+      <p id={errorId} role="status" className="basis-full text-xs text-neon-pink-text">
+        {showError ? yearsHintText() : ""}
+      </p>
     </div>
   );
 }
@@ -492,98 +525,113 @@ function FollowUp({
 }) {
   const pair = followUpPair(line, answer);
   const groupId = useId();
+  const boxRef = useRef<HTMLDivElement>(null);
   if (!pair) return null;
   const covered = coverage[pair.key];
-  if (covered === undefined && failed[pair.key]) {
-    return (
-      <p role="status" className="text-sm text-ink-2">
-        {careerFollowUpFailed(subject)}
-      </p>
-    );
-  }
-  if (covered === undefined) {
-    return (
-      <p role="status" className="text-sm text-ink-2">
-        Checking {subject}’s career…
-      </p>
-    );
-  }
-  if (covered) {
-    return (
-      <p role="status" className="text-sm text-ink-2">
-        {subject} has {team} on file.
-      </p>
-    );
-  }
+  const read = covered === undefined && failed[pair.key] ? "failed" : covered === undefined ? "checking" : "done";
+  // ONE status line for the whole follow-up, its words swapped in place, so
+  // a screen reader hears each change rather than a region that is new.
+  const statusText =
+    read === "failed"
+      ? careerFollowUpFailed(subject)
+      : read === "checking"
+        ? `Checking ${subject}’s career…`
+        : covered
+          ? coveredText(subject, team)
+          : uncoveredAgainText(subject, team, setYear);
   const then: CareerFollowUp = answer.then;
   const setThen = (next: CareerFollowUp) => onAnswer({ ...answer, then: next });
+  const addNow = () => setThen({ kind: "add", ...freshStint(setYear) });
+  /** Into the years, as the line's own "Add to career" does. */
+  const intoYears = () => {
+    setTimeout(() => {
+      boxRef.current?.querySelector<HTMLElement>("input")?.focus();
+    }, 0);
+  };
   return (
-    <div className="space-y-2">
+    <div ref={boxRef} className="space-y-2">
       <p role="status" className="text-sm text-ink-2">
-        {subject} has no {team} stint by {setYear} either.
+        {statusText}
       </p>
-      <div
-        role="radiogroup"
-        aria-label={`Career for ${subject}`}
-        id={groupId}
-        className="flex flex-wrap gap-2"
-      >
-        {(["leave", "add"] as const).map((kind) => {
-          const picked = then.kind === kind;
-          return (
-            <button
-              key={kind}
-              type="button"
-              role="radio"
-              aria-checked={picked}
-              aria-disabled={disabled || undefined}
-              tabIndex={picked ? 0 : -1}
-              data-career-follow={kind}
-              onClick={() => {
-                if (disabled || picked) return;
-                setThen(kind === "leave" ? LEAVE_FOLLOW_UP : { kind: "add", ...freshStint(setYear) });
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "ArrowRight" || event.key === "ArrowLeft" || event.key === "ArrowUp" || event.key === "ArrowDown") {
-                  event.preventDefault();
-                  if (disabled) return;
-                  const to = kind === "leave" ? "add" : "leave";
-                  setThen(to === "leave" ? LEAVE_FOLLOW_UP : { kind: "add", ...freshStint(setYear) });
-                  event.currentTarget.parentElement
-                    ?.querySelector<HTMLElement>(`[data-career-follow="${to}"]`)
-                    ?.focus();
-                } else if (event.key === "Enter") {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  if (event.repeat) return;
-                  if (kind === "leave") onWalk();
-                  else if (!picked) setThen({ kind: "add", ...freshStint(setYear) });
-                }
-              }}
-              className={`rounded-md border-2 px-3 py-1.5 text-sm font-semibold transition-colors focus-outline max-sm:min-h-11 ${
-                picked
-                  ? "border-neon-green-text text-neon-green-text"
-                  : "border-control text-ink-2 hover:border-ink-2"
-              }`}
-            >
-              {picked && (
-                <span aria-hidden="true" className="mr-1.5">
-                  ✓
-                </span>
-              )}
-              {KIND_LABEL[kind]}
-            </button>
-          );
-        })}
-      </div>
-      {then.kind === "add" && (
-        <StintFields
-          label={`${subject}, ${team}`}
-          draft={then}
-          onChange={(draft) => setThen({ kind: "add", ...draft })}
-          onEnter={onWalk}
-          disabled={disabled}
-        />
+      {read === "done" && !covered && (
+        <>
+          <div
+            role="radiogroup"
+            aria-label={`Career for ${subject}`}
+            id={groupId}
+            className="flex flex-wrap gap-2"
+          >
+            {(["leave", "add"] as const).map((kind) => {
+              const picked = then.kind === kind;
+              return (
+                <button
+                  key={kind}
+                  type="button"
+                  role="radio"
+                  aria-checked={picked}
+                  aria-disabled={disabled || undefined}
+                  tabIndex={picked ? 0 : -1}
+                  data-career-follow={kind}
+                  onClick={() => {
+                    if (disabled || picked) return;
+                    if (kind === "leave") setThen(LEAVE_FOLLOW_UP);
+                    else addNow();
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      event.key === "ArrowRight" ||
+                      event.key === "ArrowLeft" ||
+                      event.key === "ArrowUp" ||
+                      event.key === "ArrowDown"
+                    ) {
+                      event.preventDefault();
+                      if (disabled) return;
+                      const to = kind === "leave" ? "add" : "leave";
+                      if (to === "leave") setThen(LEAVE_FOLLOW_UP);
+                      else addNow();
+                      event.currentTarget.parentElement
+                        ?.querySelector<HTMLElement>(`[data-career-follow="${to}"]`)
+                        ?.focus();
+                    } else if (event.key === "Enter") {
+                      // As the line's own radios: "Keep as is" moves on, "Add to
+                      // career" picks and steps into the years.
+                      event.preventDefault();
+                      event.stopPropagation();
+                      if (event.repeat || disabled) return;
+                      if (kind === "leave") {
+                        onWalk();
+                        return;
+                      }
+                      if (!picked) addNow();
+                      intoYears();
+                    }
+                  }}
+                  className={`rounded-md border-2 px-3 py-1.5 text-sm font-semibold transition-colors focus-outline max-sm:min-h-11 ${
+                    picked
+                      ? "border-neon-green-text text-neon-green-text"
+                      : "border-control text-ink-2 hover:border-ink-2"
+                  }`}
+                >
+                  {picked && (
+                    <span aria-hidden="true" className="mr-1.5">
+                      ✓
+                    </span>
+                  )}
+                  {KIND_LABEL[kind]}
+                </button>
+              );
+            })}
+          </div>
+          {then.kind === "add" && (
+            <StintFields
+              label={`${subject}, ${team}`}
+              draft={then}
+              onChange={(draft) => setThen({ kind: "add", ...draft })}
+              onEnter={onWalk}
+              disabled={disabled}
+            />
+          )}
+        </>
       )}
     </div>
   );
@@ -592,6 +640,14 @@ function FollowUp({
 // ---------------------------------------------------------------------------
 // Different player
 // ---------------------------------------------------------------------------
+
+type Candidate = {
+  playerId: Id<"players">;
+  name: string;
+  /** "b. 1971 · Reds 1973–90", or what is on file. */
+  detail: string;
+  covers?: boolean;
+};
 
 function PlayerPanel({
   line,
@@ -620,6 +676,7 @@ function PlayerPanel({
   failed: Readonly<Record<string, boolean>>;
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   playerName: string;
+  /** The short team name, for "Played for …". */
   teamName: string;
   disabled: boolean;
   searchOpen: boolean;
@@ -632,6 +689,7 @@ function PlayerPanel({
     ...(line.teamName ? { teamName: line.teamName } : {}),
     excludePlayerId: line.playerId as Id<"players">,
   });
+  const elseRef = useRef<HTMLButtonElement>(null);
   const pick = (playerId: Id<"players">, name: string) => {
     const next: CareerAnswer = { kind: "player", pick: { playerId, name }, then: LEAVE_FOLLOW_UP };
     onAnswer(next);
@@ -643,12 +701,28 @@ function PlayerPanel({
       setTimeout(() => elseRef.current?.focus(), 0);
     }
   };
-  const elseRef = useRef<HTMLButtonElement>(null);
+  /** Leaving the search without a pick: focus goes back to the button that opened it. */
+  const cancelSearch = () => {
+    setSearchOpen(false);
+    setTimeout(() => elseRef.current?.focus(), 0);
+  };
   const picked = answer.pick;
   // A pick made with "Someone else…" is not among the candidates: it joins
   // the list so the choice stays visible.
   const extra =
     picked && !read.candidates.some((c) => c.playerId === picked.playerId) ? picked : null;
+  const choices: Candidate[] = [
+    ...(extra ? [{ playerId: extra.playerId, name: extra.name, detail: "" }] : []),
+    ...read.candidates.map((c) => ({
+      playerId: c.playerId,
+      name: c.name,
+      // b. year and the career with its years; a bare row says so.
+      detail:
+        formatPlayerDescription({ birthYear: c.birthYear, career: c.careerSummary }) ||
+        NOTHING_ON_FILE,
+      covers: c.covers,
+    })),
+  ];
 
   return (
     <div className="space-y-2">
@@ -657,30 +731,15 @@ function PlayerPanel({
           Looking for players…
         </p>
       )}
-      {(read.candidates.length > 0 || extra) && (
-        <div role="group" aria-label="Which player is this?" className="space-y-1">
-          {extra && (
-            <PlayerChoice
-              name={extra.name}
-              detail=""
-              picked
-              disabled={disabled}
-              onPick={() => undefined}
-            />
-          )}
-          {read.candidates.map((c) => (
-            <PlayerChoice
-              key={c.playerId}
-              name={c.name}
-              detail={c.careerSummary}
-              covers={c.covers}
-              team={teamName}
-              picked={picked?.playerId === c.playerId}
-              disabled={disabled}
-              onPick={() => pick(c.playerId, c.name)}
-            />
-          ))}
-        </div>
+      {choices.length > 0 && (
+        <PlayerChoices
+          label={`Which ${line.printedPlayer}?`}
+          choices={choices}
+          team={teamName}
+          pickedId={picked?.playerId}
+          disabled={disabled}
+          onPick={pick}
+        />
       )}
       {searchOpen ? (
         <EntityLinkSearch
@@ -688,7 +747,7 @@ function PlayerPanel({
           sportId={sportId}
           contextOptionId={selectorOptionId}
           onSelect={(id, name) => pick(id as Id<"players">, name)}
-          onCancel={() => setSearchOpen(false)}
+          onCancel={cancelSearch}
         />
       ) : (
         <NeonButton
@@ -711,7 +770,7 @@ function PlayerPanel({
           answer={answer}
           onAnswer={onAnswer}
           coverage={coverage}
-              failed={failed}
+          failed={failed}
           subject={picked.name}
           team={teamName}
           disabled={disabled}
@@ -722,48 +781,85 @@ function PlayerPanel({
   );
 }
 
-function PlayerChoice({
-  name,
-  detail,
-  covers,
+/**
+ * The namesakes, one radio group with one tab stop: arrows move and pick,
+ * Space or a click picks, Enter picks. "Someone else…" is a button outside it.
+ */
+function PlayerChoices({
+  label,
+  choices,
   team,
-  picked,
+  pickedId,
   disabled,
   onPick,
 }: {
-  name: string;
-  detail: string;
-  covers?: boolean;
-  team?: string;
-  picked: boolean;
+  label: string;
+  choices: readonly Candidate[];
+  team: string;
+  pickedId?: Id<"players">;
   disabled: boolean;
-  onPick: () => void;
+  onPick: (playerId: Id<"players">, name: string) => void;
 }) {
+  const pickedAt = choices.findIndex((c) => c.playerId === pickedId);
+  const stop = pickedAt >= 0 ? pickedAt : 0;
   return (
-    <button
-      type="button"
-      aria-pressed={picked}
-      aria-disabled={disabled || undefined}
-      onClick={() => {
-        if (!disabled) onPick();
-      }}
-      className={`flex w-full flex-col rounded-md border px-3 py-1.5 text-left text-sm focus-outline max-sm:min-h-11 ${
-        picked
-          ? "border-neon-green-text bg-list-hover-raised"
-          : "border-control hover:border-ink-2"
-      }`}
-    >
-      <span className="font-semibold text-ink">
-        {picked && (
-          <span aria-hidden="true" className="mr-1.5 text-neon-green-text">
-            ✓
-          </span>
-        )}
-        {name}
-      </span>
-      {detail && <span className="text-xs text-ink-3">{detail}</span>}
-      {covers && team && <span className="text-xs text-ink-2">Has {team} on file</span>}
-    </button>
+    <div role="radiogroup" aria-label={label} className="space-y-1">
+      {choices.map((c, i) => {
+        const picked = i === pickedAt;
+        const choose = () => {
+          if (disabled || picked) return;
+          onPick(c.playerId, c.name);
+        };
+        return (
+          <button
+            key={c.playerId}
+            type="button"
+            role="radio"
+            aria-checked={picked}
+            aria-disabled={disabled || undefined}
+            tabIndex={i === stop ? 0 : -1}
+            onClick={choose}
+            onKeyDown={(event) => {
+              const step =
+                event.key === "ArrowDown" || event.key === "ArrowRight"
+                  ? 1
+                  : event.key === "ArrowUp" || event.key === "ArrowLeft"
+                    ? -1
+                    : 0;
+              if (step !== 0) {
+                event.preventDefault();
+                if (disabled) return;
+                const to = (i + step + choices.length) % choices.length;
+                onPick(choices[to].playerId, choices[to].name);
+                const radios =
+                  event.currentTarget.parentElement?.querySelectorAll<HTMLElement>('[role="radio"]');
+                radios?.[to]?.focus();
+              } else if (event.key === "Enter") {
+                event.preventDefault();
+                event.stopPropagation();
+                if (!event.repeat) choose();
+              }
+            }}
+            className={`flex w-full flex-col rounded-md border px-3 py-1.5 text-left text-sm focus-outline max-sm:min-h-11 ${
+              picked
+                ? "border-neon-green-text bg-list-hover-raised"
+                : "border-control hover:border-ink-2"
+            }`}
+          >
+            <span className="font-semibold text-ink">
+              {picked && (
+                <span aria-hidden="true" className="mr-1.5 text-neon-green-text">
+                  ✓
+                </span>
+              )}
+              {c.name}
+            </span>
+            {c.detail && <span className="text-xs text-ink-3">{c.detail}</span>}
+            {c.covers && team && <span className="text-xs text-ink-2">{playedForText(team)}</span>}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
@@ -803,6 +899,7 @@ function TeamPanel({
   onWalk: () => void;
 }) {
   const picked = answer.pick;
+  const buttonRef = useRef<HTMLButtonElement>(null);
   const pick = (teamId: Id<"teams">, name: string) => {
     const next: CareerAnswer = { kind: "team", pick: { teamId, name }, then: LEAVE_FOLLOW_UP };
     onAnswer(next);
@@ -812,8 +909,12 @@ function TeamPanel({
     // The search is about to unmount with focus in it.
     setTimeout(() => buttonRef.current?.focus(), 0);
   };
+  /** Leaving the search without a pick: focus goes back to the button that opened it. */
+  const cancelSearch = () => {
+    setSearchOpen(false);
+    setTimeout(() => buttonRef.current?.focus(), 0);
+  };
   const open = searchOpen;
-  const buttonRef = useRef<HTMLButtonElement>(null);
 
   return (
     <div className="space-y-2">
@@ -823,7 +924,7 @@ function TeamPanel({
           sportId={sportId}
           contextOptionId={selectorOptionId}
           onSelect={(id, name) => pick(id as Id<"teams">, name)}
-          onCancel={() => setSearchOpen(false)}
+          onCancel={cancelSearch}
         />
       ) : (
         <div className="flex flex-wrap items-center gap-2">
@@ -853,7 +954,7 @@ function TeamPanel({
           answer={answer}
           onAnswer={onAnswer}
           coverage={coverage}
-              failed={failed}
+          failed={failed}
           subject={playerName}
           team={picked.name}
           disabled={disabled}

@@ -596,7 +596,7 @@ export default function CareerTeamEntry({
           bare
           type="number"
           value={toYear}
-          placeholder="To year (opt)"
+          placeholder="To year"
           aria-label="To year (optional)"
           min={MIN_CAREER_YEAR}
           max={maxYear}
@@ -631,7 +631,7 @@ export default function CareerTeamEntry({
               type="button"
               aria-label={`Fill in ${q.team}`}
               onClick={() => takeQuickPick(q.team, q.fromYear)}
-              className="rounded-full border border-rule-strong bg-raised px-2 py-0.5 text-xs text-ink-2 hover:border-ink-2 hover:text-ink focus-outline max-sm:min-h-11"
+              className="rounded-full border border-rule-strong bg-raised min-h-6 px-2 py-1 text-xs text-ink-2 hover:border-ink-2 hover:text-ink focus-outline max-sm:min-h-11"
             >
               {q.team}
             </button>

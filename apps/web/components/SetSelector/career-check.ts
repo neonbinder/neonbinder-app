@@ -85,8 +85,12 @@ export function pairKey(pair: Pick<CareerPair, "playerId" | "teamId" | "teamName
   return `${pair.playerId}|${pair.teamId ?? `~${fold(pair.teamName ?? "")}`}`;
 }
 
-/** One line on the step. */
-export type CareerLine = CareerPair & { key: string };
+/**
+ * One line on the step. `printedTeam` is the team text the first card prints
+ * for it: stable data (the cards as they arrived), so the order of the lines
+ * never shifts when a team's name loads.
+ */
+export type CareerLine = CareerPair & { key: string; printedTeam?: string };
 
 /**
  * The pairs this sitting's cards produce, after the names are decided:
@@ -100,7 +104,7 @@ export function deriveSittingPairs(input: {
   rows: readonly CareerRow[];
   skippedPlayerNames?: readonly string[];
   context: CareerContext | undefined;
-}): CareerPair[] {
+}): Array<CareerPair & { printedTeam?: string }> {
   const { context } = input;
   if (!context || context.setYear === undefined) return [];
   const ignored = ignoredPlayerKeys(input.rows, input.skippedPlayerNames);
@@ -120,7 +124,18 @@ export function deriveSittingPairs(input: {
     ...card,
     players: (card.players ?? []).filter((p) => !ignored.has(norm(p))),
   }));
-  return deriveCareerPairs({
+  const teamFor = (printed: string): { teamId?: string; teamName?: string } | undefined => {
+    const row = teamRows.get(norm(printed));
+    if (row) {
+      const d = row.decision;
+      if (d?.action === "create") return { teamName: printed };
+      if (d?.action === "link" && d.linkedTeamId) return { teamId: d.linkedTeamId };
+      return undefined;
+    }
+    const teamId = gateTeams.get(fold(printed));
+    return teamId ? { teamId } : undefined;
+  };
+  const pairs = deriveCareerPairs({
     cards,
     existingIndexes: new Set(input.existingIndexes ?? []),
     setYear: context.setYear,
@@ -131,17 +146,20 @@ export function deriveSittingPairs(input: {
       }
       return gatePlayers.get(fold(printed));
     },
-    teamFor: (printed) => {
-      const row = teamRows.get(norm(printed));
-      if (row) {
-        const d = row.decision;
-        if (d?.action === "create") return { teamName: printed };
-        if (d?.action === "link" && d.linkedTeamId) return { teamId: d.linkedTeamId };
-        return undefined;
-      }
-      const teamId = gateTeams.get(fold(printed));
-      return teamId ? { teamId } : undefined;
-    },
+    teamFor,
+  });
+  // The team text the pair's first card prints for it (for ordering the lines).
+  return pairs.map((pair) => {
+    const card = cards[pair.cardIndexes[0]];
+    const strings = (card?.teams ?? []).filter((t) => t.trim());
+    const printed = (strings.length > 0 ? strings : card?.team ? [card.team] : []).find((t) => {
+      const ref = teamFor(t);
+      if (!ref) return false;
+      return pair.teamId
+        ? ref.teamId === pair.teamId
+        : fold(ref.teamName ?? "") === fold(pair.teamName ?? "");
+    });
+    return printed ? { ...pair, printedTeam: printed.trim() } : pair;
   });
 }
 
@@ -255,8 +273,26 @@ export function careerContextAsks(
   return gaps.length > 0 || pending.length > 0;
 }
 
-export function toLines(pairs: readonly CareerPair[]): CareerLine[] {
-  return pairs.map((pair) => ({ ...pair, key: pairKey(pair) }));
+const numeric = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+
+/**
+ * The step's lines: by team, then by the first card number, so a team's
+ * players sit together and a team's cards read in order. The team is the
+ * text the cards print (stable); a pair without one sorts after the others.
+ */
+export function toLines(
+  pairs: ReadonlyArray<CareerPair & { printedTeam?: string }>,
+): CareerLine[] {
+  return pairs
+    .map((pair) => ({ ...pair, key: pairKey(pair) }))
+    .sort((a, b) => {
+      const ta = a.printedTeam ? fold(a.printedTeam) : "\uffff";
+      const tb = b.printedTeam ? fold(b.printedTeam) : "\uffff";
+      if (ta !== tb) return ta < tb ? -1 : 1;
+      const byNumber = numeric.compare(a.cardNumbers[0] ?? "", b.cardNumbers[0] ?? "");
+      if (byNumber !== 0) return byNumber;
+      return a.key < b.key ? -1 : a.key > b.key ? 1 : 0;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -288,19 +324,23 @@ export function freshStint(setYear: number | undefined): StintDraft {
   return { fromYear: setYear === undefined ? "" : String(setYear), toYear: "" };
 }
 
+const YEAR_TEXT = /^\d{4}$/;
+
 /** The years a draft means, or null when they are not a valid stint yet. */
 export function parseStintDraft(
   draft: StintDraft,
   maxYear: number = maxCareerYear(),
 ): { fromYear: number; toYear?: number } | null {
   const from = draft.fromYear.trim();
-  if (from === "") return null;
+  // Four digits and nothing else: `Number()` would take "0x7C6" or "1.99e3".
+  if (!YEAR_TEXT.test(from)) return null;
   const fromYear = Number(from);
-  if (!Number.isInteger(fromYear) || fromYear < MIN_CAREER_YEAR || fromYear > maxYear) return null;
+  if (fromYear < MIN_CAREER_YEAR || fromYear > maxYear) return null;
   const to = draft.toYear.trim();
   if (to === "") return { fromYear };
+  if (!YEAR_TEXT.test(to)) return null;
   const toYear = Number(to);
-  if (!Number.isInteger(toYear) || toYear > maxYear || toYear < fromYear) return null;
+  if (toYear > maxYear || toYear < fromYear) return null;
   return { fromYear, toYear };
 }
 
@@ -359,6 +399,12 @@ export type CareerCardEdit = {
   playerIdByName?: Array<{ name: string; playerId: Id<"players"> }>;
   /** Printed team strings the operator replaced. */
   dropTeams?: string[];
+  /**
+   * NB team ids the operator replaced. A pair's team can come from a card's
+   * `teamIds` rather than its printed text (an earlier answer put it there),
+   * and taking the string off would leave that id on the card.
+   */
+  dropTeamIds?: Array<Id<"teams">>;
   /** NB teams the operator picked. */
   teamIds?: Array<Id<"teams">>;
 };
@@ -451,6 +497,11 @@ export function careerCommitFields(input: {
       for (const index of line.cardIndexes) {
         const e = edit(index);
         if (line.teamName) e.dropTeams = [...(e.dropTeams ?? []), line.teamName];
+        if (line.teamId) {
+          e.dropTeamIds = Array.from(
+            new Set([...(e.dropTeamIds ?? []), line.teamId as Id<"teams">]),
+          );
+        }
         e.teamIds = Array.from(new Set([...(e.teamIds ?? []), teamId]));
       }
       if (answer.then.kind === "add") {
@@ -499,8 +550,13 @@ export function applyCareerCardEdit<T extends EditableCard>(
     if (card.teams) next.teams = kept;
     if (card.team !== undefined && dropped.has(fold(card.team))) delete next.team;
   }
+  if (edit.dropTeamIds?.length && card.teamIds) {
+    // Off first, then the pick goes on: picking the very team replaced keeps it.
+    const droppedIds = new Set<string>(edit.dropTeamIds);
+    next.teamIds = card.teamIds.filter((id) => !droppedIds.has(id));
+  }
   if (edit.teamIds?.length) {
-    next.teamIds = Array.from(new Set([...(card.teamIds ?? []), ...edit.teamIds]));
+    next.teamIds = Array.from(new Set([...(next.teamIds ?? card.teamIds ?? []), ...edit.teamIds]));
   }
   return next;
 }
@@ -562,21 +618,43 @@ export function reteamedIndexes(edits: ReadonlyArray<CareerCardEdit | undefined>
 // Copy (exported so the tests read it rather than restating it)
 // ---------------------------------------------------------------------------
 
-export function careerStepLead(count: number): string {
-  return count === 1
-    ? "A career doesn’t show the team on the card. Leave it, or fix what’s off."
-    : `${count} careers don’t show the team on the card. Leave them, or fix what’s off.`;
+/** "Career check · 3 to look at" — the count lives in the heading, not a lead sentence. */
+export function careerHeading(count: number): string {
+  return count > 0 ? `${CAREER_STEP_HEADING} · ${count} to look at` : CAREER_STEP_HEADING;
 }
 
-/** "No San Diego Padres stint by 2022." */
+/** "No Padres in the career by 2022." The team is the short name, as its rows show it. */
 export function noStintText(team: string, year: number): string {
-  return `No ${team} stint by ${year}.`;
+  return `No ${team} in the career by ${year}.`;
+}
+
+/** A player with no stints at all: there is nothing to compare the team with. */
+export const NO_CAREER_TEXT = "No career on file yet.";
+
+/** The follow-up after a different player or team is picked and is uncovered too. */
+export function uncoveredAgainText(subject: string, team: string, year: number): string {
+  return `${subject} doesn’t have ${team} by ${year} either.`;
+}
+
+/** …and when the pick's career does show the team. */
+export function coveredText(subject: string, team: string): string {
+  return `${subject} played for ${team}.`;
+}
+
+/** A namesake's career shows the card's team. */
+export function playedForText(team: string): string {
+  return `Played for ${team}`;
+}
+
+/** Why the years are not a stint. */
+export function yearsHintText(): string {
+  return `Years run from ${MIN_CAREER_YEAR} to ${maxCareerYear()}, and To can’t be before From.`;
 }
 
 export const CAREER_NEXT_BLOCKED = "Fix the years first — then Next.";
 export const CAREER_CHECKING = "Checking careers…";
 /** The coverage read failed. Next still saves; Retry asks again. */
-export const CAREER_READ_FAILED = "The career check couldn’t run.";
+export const CAREER_READ_FAILED = "Couldn’t check careers. Retry, or Next saves without it.";
 /** A New Team row the career step made unnecessary, in the Decided list. */
 export const CAREER_TEAM_NOT_NEEDED = "Not needed — card’s team changed";
 export const CAREER_RETRY_LABEL = "Retry career check";
