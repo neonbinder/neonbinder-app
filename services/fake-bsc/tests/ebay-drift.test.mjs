@@ -201,6 +201,8 @@ describe("eBay drift: compare", () => {
     const src = readFileSync(new URL("../../browser/src/routes/ebay-probe-allowlist.ts", import.meta.url), "utf8");
     const block = /^  aspects: Object\.freeze\(\[\n([\s\S]*?)\n  \]\),/m.exec(src);
     assert.ok(block, "EBAY_PROBE_SHAPE_PATHS.aspects not found");
+    // A list built from a named constant would slip past the literal-only read below.
+    assert.deepEqual([...block[1].matchAll(/\.\.\.[A-Za-z_$][\w$]*/g)].map((m) => m[0]), ["...ERROR_PATHS"], "the aspects block spreads something other than ...ERROR_PATHS");
     const reported = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).filter((p) => p.startsWith("aspects"));
     assert.deepEqual(reported.sort(), ["aspects[].aspectConstraint.aspectMaxLength", "aspects[].aspectConstraint.aspectRequired", "aspects[].localizedAspectName"]);
     // Every reported path, and each of its ancestors (the allowlist reports parents implicitly).
