@@ -198,16 +198,20 @@ describe("CardFeaturesEditor — write-once feature snapshot reads (NEO-71-74)",
     expect(mockSetCardFeature).not.toHaveBeenCalled();
   });
 
-  it("hides League when ancestorSport is a non stick-and-ball sport (Pokemon)", () => {
-    renderEditor({ cardFeatures: {}, ancestorSport: "Pokemon" });
-
-    expect(screen.queryByLabelText("Feature League")).toBeNull();
-  });
-
-  it("shows League when ancestorSport is a stick-and-ball sport (Baseball)", () => {
-    renderEditor({ cardFeatures: {}, ancestorSport: "Baseball" });
-
-    expect(screen.getByLabelText("Feature League")).toBeTruthy();
+  it("NEO-569: never offers the retired free-text League, whatever the sport or a stray legacy value", () => {
+    // The card's league is `cardChecklist.leagueId`, edited in the drawer's
+    // own League row (CardLeagueRow), not here.
+    for (const ancestorSport of ["Baseball", "Pokemon", undefined]) {
+      const { unmount } = renderEditor({
+        cardFeatures: { league: "MLB" },
+        ancestorSport,
+      });
+      expect(screen.queryByLabelText("Feature League")).toBeNull();
+      expect(screen.queryByLabelText("Value for League")).toBeNull();
+      // The rest of the list is still there.
+      expect(screen.getByLabelText("Feature Era")).toBeTruthy();
+      unmount();
+    }
   });
 });
 

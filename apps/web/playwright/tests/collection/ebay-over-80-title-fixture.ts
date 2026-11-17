@@ -27,10 +27,14 @@
 //   1. The card. In the Set Builder, under a per-attempt hand-made insert whose
 //      name never fits (the same 60-character insert `card-title-uses-short-name-
 //      for-titles` uses for its card C), they add one card for the catalogue's
-//      George Brett with a team of their own. Every cut the title generator
-//      makes still leaves it at 99 characters, so it is stored over 80 and kept
-//      whole (the drawer says so): this is the only way a title ever gets past
-//      the 80-character write check, which refuses a TYPED one.
+//      George Brett with a team of their own, made in the New team dialog to
+//      play in Major League Baseball: the card takes its league from its team
+//      (NEO-569; a card with a team never reads the set's leagues) and the
+//      listing sends League, so the drawer's "Card league" must read it. Every
+//      cut the title generator makes still leaves it at 99 characters, so it is
+//      stored over 80 and kept whole (the drawer says so): this is the only way
+//      a title ever gets past the 80-character write check, which refuses a
+//      TYPED one.
 //   2. Stock it. A box of their own (every other box set to in-person BEFORE
 //      eBay connects, so the connection lists nothing else), eBay connected
 //      through the seed hop (eBay's consent screen is a third party's page that
@@ -63,7 +67,8 @@
 //
 // What would turn this red: the drain cutting the title to 80 and listing it
 // ("1 listed" at step 3, no held-back card); a hold that names another reason
-// (a missing detail, a photo, eBay turning the card down); a save at step 4 that
+// (a missing detail, a photo, eBay turning the card down, a card with no league,
+// held noLeague, which step 1 rules out at the drawer); a save at step 4 that
 // leaves the card out of the queue (the queue never shows it, or the second Sync
 // finds nothing to send and "1 listed" never appears); a card that stays held
 // after the title fits.
@@ -95,8 +100,9 @@
 // seller-account row), so it runs only in the seller job, one PR at a time. Its
 // NB writes are the signed-in user's own rows: the eBay connection and setup, a
 // minted box, one copy with a photo, the common price. It adds a minted team (no
-// delete-team affordance exists; the token keeps it unique), links the
-// catalogue's George Brett, deletes nothing of the catalogue, and leaves the
+// delete-team affordance exists; the token keeps it unique) that links the
+// seed's existing Major League Baseball row and writes nothing to leagues, links
+// the catalogue's George Brett, deletes nothing of the catalogue, and leaves the
 // per-attempt set and card in place (nothing reads them again).
 //
 // Fixture arithmetic, exact on every runner: ATTEMPT_TOKEN's length varies with
@@ -142,6 +148,8 @@ const SPORT = "Baseball";
 const YEAR = "2024";
 const MANUFACTURER = "Topps";
 const PLAYER = "George Brett";
+/** The catalogue league the minted team plays in, so the card has a league for the listing (NEO-569). */
+const MLB = "Major League Baseball";
 /** The same 60-character insert `card-title-uses-short-name-for-titles` uses: nothing the generator cuts brings the title under 80. */
 const LONG_INSERT = "Commemorative Anniversary Collectors Edition Hologram Series";
 /** The card's number, a single token. */
@@ -325,6 +333,12 @@ export async function runOver80Flow({ page, signIn, env, isMobile }: Args, throu
     const newTeam = page.getByRole("dialog", { name: `New team: ${team}` });
     await expect(newTeam).toBeVisible();
     await expect(newTeam.getByRole("textbox", { name: "New team name" })).toHaveValue(team);
+    // The team plays in the catalogue's Major League Baseball (linked, never created): the card takes its
+    // league from its team (NEO-569), and a card with no league is held back for that before its title.
+    const teamLeague = newTeam.getByRole("combobox", { name: "League" });
+    await teamLeague.fill(MLB);
+    await newTeam.getByRole("option", { name: new RegExp(`^${MLB}`) }).click();
+    await expect(teamLeague).toHaveValue(MLB);
     await newTeam.getByRole("button", { name: `Create team ${team}` }).click();
     await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();
     // Focusing another field closes the team search.
@@ -348,6 +362,8 @@ export async function runOver80Flow({ page, signIn, env, isMobile }: Args, throu
     await expect(cardTitle).toBeVisible();
     await expect(cardTitle).toHaveValue(longTitle);
     await expect(overCap).toBeVisible();
+    // The card has a league (its team's), so the listing has one to send and the hold can only be the title's.
+    await expect(drawer.getByRole("combobox", { name: "Card league" }), "the card takes Major League Baseball from its team").toHaveValue(MLB);
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
 

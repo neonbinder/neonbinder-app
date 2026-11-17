@@ -1784,6 +1784,21 @@ describe("TeamPicker — labels prop (NEO-277)", () => {
       expect(onNoTeam).not.toHaveBeenCalled();
     });
 
+    it("is described by its own element when the caller names one, else by the picker's", () => {
+      const { unmount } = renderPicker({
+        ariaDescribedBy: "picker-hint",
+        noTeam: { value: false, onChange: vi.fn(), describedBy: "toggle-hint" },
+      });
+      expect(toggle().getAttribute("aria-describedby")).toBe("toggle-hint");
+      expect(screen.getByLabelText("Add team").getAttribute("aria-describedby")).toBe("picker-hint");
+      unmount();
+      renderPicker({
+        ariaDescribedBy: "picker-hint",
+        noTeam: { value: false, onChange: vi.fn() },
+      });
+      expect(toggle().getAttribute("aria-describedby")).toBe("picker-hint");
+    });
+
     it("takes a per-instance accessible name", () => {
       const onNoTeam = vi.fn();
       renderPicker({

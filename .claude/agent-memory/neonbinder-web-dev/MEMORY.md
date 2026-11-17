@@ -225,7 +225,8 @@
 - [A name in a NeonButton needs free height](reference_a_name_in_a_neonbutton_needs_free_height.md) — Radix fixes height, not nowrap; h-auto min-h-8 py-1.5 max-w-full wrap-anywhere (size 1: min-h-6 py-1)
 - [Demo content column is ~806px at 1024](reference_demo_content_column_is_806px_at_e2e_width.md) — lg:pr-170 rail gutter; budget demo tables to ~800px or they slide under the exit rail
 - [No NB account-deletion sweep](reference_no_nb_account_deletion_sweep.md) — deletion is manual; per-user scrubs are operator-run internal mutations (forgetUploader pattern)
-- [Picker context league is the row's own feature](reference_picker_context_league_is_the_rows_own_feature.md) — pickerCandidates reads L off the context row only (year walks up); prove tiers on a tree built via addCustomSelectorOption
+- [Set leagues are ids, nearest wins](reference_set_leagues_are_ids_nearest_wins.md) — NEO-569: leagueIds setName-and-below, any-of; features.league retired; seed leagues before a real-way set
+- [Seam signature change breaks call-text pins](reference_seam_signature_change_breaks_call_text_pins.md) — pin tests regex exact seam calls; new required opts crash untyped tests; optional cache + fallback
 - [sr-only suffix in a name is unstable](reference_sr_only_suffix_in_a_name_is_unstable.md) — extra screen-reader words on a role=heading: aria-label, not an sr-only child (happy-dom pads it)
 - [Image-sized link is 0 px wide before decode](reference_image_sized_link_is_zero_wide_before_decode.md) — `h-N w-auto` img in a link fails axe target-size pre-load; frame the link aspect-[5/7] h-N
 - [Wrapping label with hint names the control](reference_wrapping_label_with_hint_names_the_control.md) — checkbox label holding a help line: name it via aria-labelledby on the title span
@@ -248,6 +249,7 @@
 - [New table naming a variant has six pins](reference_new_table_naming_a_variant_has_six_pins.md) — wipe graph, reset batch + exact count pin, cli.mjs list, test reset, api.d.ts, auth registry
 - [Inline-block is a reader group](reference_inline_block_is_a_reader_group.md) — inline-block span in a one-phrase <p> = Chrome AX generic; role="presentation" flattens it
 - [convex-test: stub a module via the glob map](reference_convex_test_stub_a_module_via_the_glob_map.md) — add a "./x.ts" key to the modules map; check {ok:false} results; mutation→action flip breaks .mutation() call sites repo-wide
+- [Card panel sees crew only over dashboard](reference_card_panel_sees_crew_only_over_the_dashboard.md) — useCrew null on Collection/Inventory/demo; no SyncStatus import from CardDetail
 - [Team change refreshes the description](reference_team_change_refreshes_description_via_owner.md) — description prints "Team:"; refresh via cardSecondaryPlayers.refreshedGeneratedDescription (cameo pin)
 - [Focus park after ConfirmDialog races its restore](reference_focus_park_after_confirmdialog_races_its_restore.md) — setTimeout loses to the unmount restore; focus-request effect + layout effect on disabled
 - [Late scheduled jobs cross convex-test instances](reference_late_scheduled_jobs_cross_convex_test_instances.md) — an undrained job lands in a later test's spy; ids repeat across instances
@@ -257,3 +259,4 @@
 - [Convex new-module gotchas](convex-new-module-gotchas.md) — api.d.ts hand-registration, playerIds pin, lib/*Facts for cycles, pdfjs env failure
 - [Symlinked node_modules can lag the lockfile](reference_symlinked_node_modules_can_lag_the_lockfile.md) — build/one lib test red on a missing package you never touched = stale shared install, not your diff
 - [Wizard step status rides the footer live region](reference_wizard_step_status_rides_the_footer_live_region.md) — a step that mounts/unmounts cannot own a role=status; compute words in the wizard, step renders only Retry
+- [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first

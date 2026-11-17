@@ -505,7 +505,7 @@ export function heldBackReason(
   platform: SyncAlertsRaw["sets"][number]["platform"],
 ): string {
   if (problem.reason === "noPrice") return "No price yet. Set one on the card, or a common price for the set.";
-  return problemSentence(problem, false, platform);
+  return problemSentence(problem, false, platform, "dashboard");
 }
 
 /**

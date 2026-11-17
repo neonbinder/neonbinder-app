@@ -19,6 +19,8 @@ import {
   contentFingerprint,
   ebayBucketOf,
   ebayGroundAdvantageService,
+  ebayLeagueMissing,
+  ebayLeagueValue,
   ebayOrderDisposition,
   ebayOrderStatus,
   ebayEnvelopePackage,
@@ -205,6 +207,49 @@ describe("buildEbayAspects (NEO-415)", () => {
     expect(buildEbayAspects({ ...base, printRun: 99 })["Print Run"]).toEqual(["99"]);
     expect(buildEbayAspects({ ...base, printRun: 0 })["Print Run"]).toBeUndefined();
     expect(buildEbayAspects({ ...base, printRun: 2.5 })["Print Run"]).toBeUndefined();
+  });
+});
+
+describe("League (NEO-569)", () => {
+  const base = { cardNumber: "12", sport: "Baseball" };
+
+  test("the card's league goes as the League aspect, verbatim", () => {
+    expect(buildEbayAspects({ ...base, league: "MLB" }).League).toEqual(["MLB"]);
+    expect(buildEbayAspects({ ...base, league: "  NCAA  " }).League).toEqual(["NCAA"]);
+  });
+
+  test("no league leaves the aspect out; a blank one too", () => {
+    expect(buildEbayAspects(base).League).toBeUndefined();
+    expect(buildEbayAspects({ ...base, league: "  " }).League).toBeUndefined();
+  });
+
+  test("a league over the category's own cap is dropped, never cut", () => {
+    const caps = new Map([["League", 3]]);
+    expect(buildEbayAspects({ ...base, league: "NCAA" }, caps).League).toBeUndefined();
+    expect(buildEbayAspects({ ...base, league: "MLB" }, caps).League).toEqual(["MLB"]);
+  });
+
+  test("ebayLeagueValue: the abbreviation, else the name; a blank part is absent; no row is no value", () => {
+    expect(ebayLeagueValue({ name: "Major League Baseball", abbreviation: "MLB" })).toBe("MLB");
+    expect(ebayLeagueValue({ name: "Pacific Coast League" })).toBe("Pacific Coast League");
+    expect(ebayLeagueValue({ name: "Pacific Coast League", abbreviation: "  " })).toBe("Pacific Coast League");
+    expect(ebayLeagueValue({ name: " ", abbreviation: undefined })).toBeUndefined();
+    expect(ebayLeagueValue(null)).toBeUndefined();
+    expect(ebayLeagueValue(undefined)).toBeUndefined();
+  });
+
+  test("ebayLeagueMissing: only when the sport has leagues and the card has none", () => {
+    expect(ebayLeagueMissing({ league: undefined, sportHasLeagues: true })).toBe(true);
+    expect(ebayLeagueMissing({ league: "  ", sportHasLeagues: true })).toBe(true);
+    expect(ebayLeagueMissing({ league: "MLB", sportHasLeagues: true })).toBe(false);
+    // A sport with no leagues at all lists without the aspect, as before NEO-569.
+    expect(ebayLeagueMissing({ league: undefined, sportHasLeagues: false })).toBe(false);
+  });
+
+  test("adding the League aspect changes a listing's content fingerprint (each live listing is re-sent once)", () => {
+    const before = buildEbayAspects(base);
+    const after = buildEbayAspects({ ...base, league: "MLB" });
+    expect(contentFingerprint({ aspects: before })).not.toBe(contentFingerprint({ aspects: after }));
   });
 });
 

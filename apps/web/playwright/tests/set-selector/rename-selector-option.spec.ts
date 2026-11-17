@@ -1,6 +1,6 @@
 // Origin: .maestro/flows/set-selector/rename-selector-option.yaml (Maestro suite retired in NEO-341; see git history)
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { setBuilderReady, drillToCustom, selectOrCreate } from "../../support/set-builder";
+import { setBuilderReady, drillToCustom, selectOrCreate, openAttributesPanel } from "../../support/set-builder";
 import type { Page } from "@playwright/test";
 
 // NEO-334 (Jason, 2026-10-10): a variant type's TITLE is its kind ("Base",
@@ -14,6 +14,9 @@ import type { Page } from "@playwright/test";
 
 /** Rename the option the attributes panel is showing, via its pencil control. */
 async function rename(page: Page, from: string, to: string, what: string) {
+  // NEO-569: the pencil sits in the open panel only. The set opens itself; a
+  // variant type starts shut.
+  await openAttributesPanel(page);
   await page.getByRole("button", { name: `Rename ${from}` }).click();
   const field = page.getByRole("textbox", { name: `Edit name for ${from}` });
   await expect(field).toBeVisible();

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { PencilSquareIcon } from "@heroicons/react/24/outline";
 import { useMutation } from "convex/react";
 import { api } from "../../convex/_generated/api";
@@ -102,14 +102,33 @@ function refusalMessage(e: unknown): string | null {
     ? message
     : "This name can't be changed.";
 }
+/** NEO-569 — what a host may ask of the control: put focus in its name field. */
+export type RenameEntityHandle = { focusField: () => void };
+
 export default function RenameEntityControl({
   id,
   currentValue,
   disabled,
+  onBusyChange,
+  ref,
 }: {
   id: Id<"selectorOptions">;
   currentValue: string;
   disabled?: boolean;
+  /**
+   * NEO-569 — told `true` while the name field is open or its save is in
+   * flight, and `false` when neither (and on unmount). A host that can unmount
+   * this control (the Attributes panel shutting) holds off while it is `true`:
+   * the refusal line and the typed name live in this control's own state, and a
+   * collapse would drop both and leave focus on <body>.
+   */
+  onBusyChange?: (busy: boolean) => void;
+  /**
+   * NEO-569 — a press on the host's toggle while this control is busy is
+   * refused; the host sends focus here so the refusal (the field's
+   * `aria-describedby`) is read, rather than leaving it on the toggle.
+   */
+  ref?: Ref<RenameEntityHandle>;
 }) {
   const rename = useMutation(api.selectorOptions.renameSelectorOption);
   const fieldClass = useFieldTestClass();
@@ -125,10 +144,25 @@ export default function RenameEntityControl({
   // mount (where `editing` is already false and there is nothing to restore
   // focus FROM).
   const wasEditingRef = useRef(false);
+  useImperativeHandle(ref, () => ({
+    focusField: () => inputRef.current?.focus({ preventScroll: true }),
+  }));
 
   useEffect(() => {
     if (editing) inputRef.current?.focus();
   }, [editing]);
+
+  // Held in a ref so a host passing a fresh callback each render does not
+  // re-run the effect below (and so flicker `false` then `true`).
+  const onBusyChangeRef = useRef(onBusyChange);
+  useEffect(() => {
+    onBusyChangeRef.current = onBusyChange;
+  });
+  const busy = editing || saving;
+  useEffect(() => {
+    onBusyChangeRef.current?.(busy);
+  }, [busy]);
+  useEffect(() => () => onBusyChangeRef.current?.(false), []);
 
   // The input unmounts the instant `editing` goes false (commit succeeding,
   // or Escape reverting) and the pencil button takes its place — with nothing

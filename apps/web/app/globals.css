@@ -525,7 +525,15 @@ html:root,
 }
 
 /* Slide-in panels from the right edge: the mobile menu and the card detail
- * drawer. Under reduced motion the panel fades in where it stands. */
+ * drawer. Under reduced motion the panel fades in where it stands.
+ *
+ * Fill mode `backwards`, never `both` (NEO-569): a held end frame keeps
+ * `transform: translateX(0)` on the panel for as long as it is open, and any
+ * transform makes the panel the containing block of every `position: fixed`
+ * element inside it. The shared Autocomplete's list is one, placed in
+ * viewport pixels, so it landed a whole panel-offset to the right, off the
+ * edge. The end frame is the panel's resting style anyway, so nothing needs
+ * holding. Same for any entrance animation that ends where the element rests. */
 @keyframes slide-in-right {
   from { transform: translateX(100%); }
   to   { transform: translateX(0); }
@@ -536,12 +544,12 @@ html:root,
 }
 
 .animate-slide-in-right {
-  animation: slide-in-right 0.24s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: slide-in-right 0.24s cubic-bezier(0.16, 1, 0.3, 1) backwards;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .animate-slide-in-right {
-    animation: panel-fade-in 0.15s linear both;
+    animation: panel-fade-in 0.15s linear backwards;
   }
 }
 
@@ -560,7 +568,9 @@ html:root,
 }
 
 .animate-neon-ignite {
-  animation: neon-sign-ignite 0.8s linear 0.15s both;
+  /* backwards: dark through the delay; it ends at brightness(1), its resting
+   * look, so no filter (a containing block too) is held after it. */
+  animation: neon-sign-ignite 0.8s linear 0.15s backwards;
 }
 
 @media (prefers-reduced-motion: reduce) {

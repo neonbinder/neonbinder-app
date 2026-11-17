@@ -42,19 +42,28 @@ describe("addCustomCard inherits the write-once feature snapshot (NEO-71-74)", (
       api.selectorOptions.addCustomSelectorOption,
       { level: "sport", value: "Baseball" },
     );
-    // auto: sportId.features = { league: "MLB" }
-
+    // NEO-569: a new set LINKS its sport's major league when the row exists
+    // (it never creates one), so the fixture has it.
+    const mlbId = await t.run((ctx) =>
+      ctx.db.insert("leagues", {
+        name: "Major League Baseball",
+        nameNormalized: "major league baseball",
+        sportId,
+        level: "major",
+        lastUpdated: 1_700_000_000_000,
+      }),
+    );
     const yearId = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
       { level: "year", value: "2024", parentId: sportId },
     );
-    // auto: copies league="MLB" down + own era="Modern (1980-Now)", vintage="false"
+    // auto: own era="Modern (1980-Now)", vintage="false"
 
     const mfrId = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
       { level: "manufacturer", value: "Topps", parentId: yearId },
     );
-    // auto: copies league/era/vintage down + own manufacturer="Topps"
+    // auto: copies era/vintage down + own manufacturer="Topps"
 
     const setNameId = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
@@ -81,8 +90,15 @@ describe("addCustomCard inherits the write-once feature snapshot (NEO-71-74)", (
     expect(cards).toHaveLength(1);
     const f = cards[0].features ?? {};
 
+    // NEO-569: no free-text League; the card carries its set's league id
+    // instead (the set was born linked to the sport's major league, and a
+    // teamless card in a one-league set takes it). Read back through getCardChecklist,
+    // whose strict return validator must admit the field.
+    expect(f).not.toHaveProperty("league");
+    const setLeagueIds = await t.run(async (ctx) => (await ctx.db.get(setNameId))?.leagueIds);
+    expect(setLeagueIds).toEqual([mlbId]);
+    expect(cards[0].leagueId).toBe(mlbId);
     // Copied down from the leaf node's complete, self-contained snapshot.
-    expect(f.league).toBe("MLB");
     expect(f.era).toBe("Modern (1980-Now)");
     expect(f.vintage).toBe("false");
     expect(f.manufacturer).toBe("Topps");
@@ -113,21 +129,19 @@ describe("addCustomCard inherits the write-once feature snapshot (NEO-71-74)", (
       api.selectorOptions.addCustomSelectorOption,
       { level: "sport", value: "Baseball" },
     );
-    // auto: sportId.features = { league: "MLB" }
-
     const setNameId = await asAdmin.mutation(
       api.selectorOptions.addCustomSelectorOption,
       { level: "setName", value: "BBM", parentId: sportId },
     );
-    // auto: copies league="MLB" down + own isReprint="false"
+    // auto: own isReprint="false"
 
-    // Operator overrides league at the setName level (e.g. a Japanese set)
+    // Operator overrides a key at the setName level
     // BEFORE the variantType child is created, so copy-down carries the
     // override forward — this is the single-row edit (NEO-71-74), applied
     // ahead of the next node's creation, not a cascade after the fact.
     await asAdmin.mutation(api.selectorOptions.setSelectorOptionFeature, {
       selectorOptionId: setNameId,
-      key: "league",
+      key: "subsetLabel",
       value: "NPB",
     });
 
@@ -135,7 +149,7 @@ describe("addCustomCard inherits the write-once feature snapshot (NEO-71-74)", (
       api.selectorOptions.addCustomSelectorOption,
       { level: "variantType", value: "Base", parentId: setNameId },
     );
-    // auto: copies the OVERRIDDEN league="NPB" down (copy-down reads the
+    // auto: copies the OVERRIDDEN subsetLabel="NPB" down (copy-down reads the
     // parent's current features at creation time, override included) + own
     // cardType="Base"
 
@@ -150,7 +164,7 @@ describe("addCustomCard inherits the write-once feature snapshot (NEO-71-74)", (
     });
     // The operator override reached the card purely via creation-time
     // copy-down — no cascade involved.
-    expect((cards[0].features ?? {}).league).toBe("NPB");
+    expect((cards[0].features ?? {}).subsetLabel).toBe("NPB");
   });
 });
 

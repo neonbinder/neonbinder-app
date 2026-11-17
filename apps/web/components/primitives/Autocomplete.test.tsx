@@ -49,6 +49,7 @@ function Harness({
   | "listMaxHeightClassName"
   | "inputGeometryClassName"
   | "holdEnter"
+  | "getGroup"
 >) {
   const [query, setQuery] = useState(initialQuery);
   return (
@@ -852,5 +853,49 @@ describe("Autocomplete — an open list never swallows a click outside it", () =
     const list = screen.getByRole("listbox");
     expect(list.dataset.placement).toBe("bottom");
     expect(list.style.maxHeight).toBe("240px");
+  });
+});
+
+describe("Autocomplete — grouped rows (NEO-569)", () => {
+  const group = (r: Row) => (r.id === "1" ? "Hall of Famers" : "Everyone else");
+
+  it("puts each run under an ARIA group named by its heading; the heading is not an option", () => {
+    render(<Harness getGroup={group} />);
+    openList();
+    const famers = screen.getByRole("group", { name: "Hall of Famers" });
+    const rest = screen.getByRole("group", { name: "Everyone else" });
+    expect(famers.querySelectorAll('[role="option"]')).toHaveLength(1);
+    expect(rest.querySelectorAll('[role="option"]')).toHaveLength(2);
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Ken Griffey Jr.Baseball",
+      "Ken CaminitiBaseball",
+      "Kenny LoftonBaseball",
+    ]);
+    // Headings are not options and not in an option's name.
+    expect(screen.queryByRole("option", { name: /Hall of Famers/ })).toBeNull();
+  });
+
+  it("arrows and Enter run straight through the groups in one order", () => {
+    const onSelect = vi.fn();
+    render(<Harness getGroup={group} onSelect={onSelect} />);
+    openList();
+    fireEvent.keyDown(input(), { key: "ArrowDown" });
+    expect(screen.getByText("Ken Caminiti").closest("li")!.getAttribute("aria-selected")).toBe("true");
+    expect(input().getAttribute("aria-activedescendant")).toBe(
+      screen.getByText("Ken Caminiti").closest("li")!.id,
+    );
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith(ROWS[1]);
+  });
+
+  it("an item with no heading renders ungrouped, and no getGroup means no groups", () => {
+    const { unmount } = render(<Harness getGroup={(r) => (r.id === "3" ? "Later" : undefined)} />);
+    openList();
+    expect(screen.getAllByRole("group")).toHaveLength(1);
+    expect(screen.getAllByRole("option")).toHaveLength(3);
+    unmount();
+    render(<Harness />);
+    openList();
+    expect(screen.queryByRole("group")).toBeNull();
   });
 });

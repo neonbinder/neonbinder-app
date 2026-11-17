@@ -337,13 +337,14 @@ export function alreadyThePlayerText(playerName: string): string {
   return `${playerName} is already the player on every card.`;
 }
 
-/** The hint under the heading; a parallel has no parallels of its own. */
-export function bulkHintText(level: PanelLevel): string {
-  const lead =
-    level === "parallel"
-      ? "Same face on every card in this parallel? Pick them once."
-      : "Same face on every card? Pick them once.";
-  return `${lead} "${L.addPlayer}" makes them the player wherever nobody's there yet; "${L.addCameo}" tucks them under "${ALSO_ON_THIS_CARD_HEADING}". New cards get them too.`;
+/**
+ * The cameo button's accessible description (NEO-569: the visible hint under
+ * the section went, "too much text on the screen"). "Add as cameo" alone does
+ * not say where a cameo shows; the player button needs no such line, and the
+ * confirm before either says what happens to every card.
+ */
+export function cameoHintText(): string {
+  return `Tucks them under "${ALSO_ON_THIS_CARD_HEADING}" on each card.`;
 }
 
 export type ConfirmCopy = { title: string; description: string; confirmLabel: string };
@@ -1104,21 +1105,20 @@ export default function EveryCardPlayerControl({
                 sportId={sportId}
                 disabled={busy}
                 labels={EVERY_CARD_PLAYER_PICKER_LABELS}
-                ariaDescribedBy={hintId}
                 roomyTriggerOnPhones
                 chipLook="outline"
               />
               {/* a11y — the names never change while counting or saving
                   (a spec, and a screen reader, keeps finding the button it
                   pressed); `aria-busy` and the line below say what is going
-                  on. The hint describes both: it says what each one does. */}
+                  on. Only the cameo button carries a description: where a
+                  cameo shows, which its name does not say. */}
               <NeonButton
                 type="button"
                 size={BULK_BUTTON_SIZE}
                 data-bulk-op="player"
                 aria-disabled={blocked || undefined}
                 aria-busy={checking || counting === "player" || saving === "player" || undefined}
-                aria-describedby={hintId}
                 onClick={() => press("player")}
               >
                 {L.addPlayer}
@@ -1155,9 +1155,9 @@ export default function EveryCardPlayerControl({
               {prepError}
             </p>
           )}
-          <p id={hintId} className="text-xs text-ink-3">
-            {bulkHintText(level)}
-          </p>
+          <span id={hintId} className="sr-only">
+            {cameoHintText()}
+          </span>
           {asking && (
             <ConfirmDialog
               title={asking.copy.title}

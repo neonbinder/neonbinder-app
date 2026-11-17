@@ -89,6 +89,10 @@ const HAND_EDIT = "2026 Bowman Anime Murakami #BA-3";
 const CARRIED_TITLE = `${descriptionOf(CARRY_PARALLEL)} Murakami #BA-3`;
 /** Rename the option the attributes panel is showing, by its pencil. */
 async function renameSelected(page: Page, from: string, to: string): Promise<void> {
+  // NEO-569: the pencil sits in the open panel only, and a parallel starts it
+  // shut. Gate on the row's own header first, so the open lands on `from`.
+  await expect(page.getByRole("heading", { name: new RegExp(`^Attributes for ${escapeRe(from)} \\(Parallel\\)$`) })).toBeVisible();
+  await openAttributesPanel(page);
   await page.getByRole("button", { name: `Rename ${from}`, exact: true }).click();
   const field = page.getByRole("textbox", { name: `Edit name for ${from}`, exact: true });
   await field.fill(to);

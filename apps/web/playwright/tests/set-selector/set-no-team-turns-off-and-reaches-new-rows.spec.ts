@@ -3,7 +3,7 @@
 // answer in force when a card or a checklist row is made is the answer it is made with.
 //   - a checklist row created under a No Team set copies it down (its own Team row reads
 //     No Team), so a card added there is born No Team;
-//   - turning it off on the set bar un-says it ("Cleared No Team");
+//   - turning it off on the set's Team row un-says it ("Cleared No Team");
 //   - on that checklist row: off -> a card added now is teamless and badged; a real team
 //     -> a card added now is born with it; No Team again (it replaces the team) -> a card
 //     added now is born No Team.
@@ -76,9 +76,9 @@ test(
     await expect(toggle(false)).toBeVisible();
     await toggle(false).click();
     await expect(toggle(true)).toBeVisible();
-    await expect(
-      panel.getByText("No Team: new cards with nothing naming a team get it. Pick a team to replace it."),
-    ).toBeVisible();
+    await expect(panel.getByRole("group", { name: "Team", exact: true })).toHaveAccessibleDescription(
+      "No Team: new cards with nothing naming a team get it. Pick a team to replace it.",
+    );
 
     // ── STEP 2: a checklist row made NOW copies the answer down, and a card added to it is
     // born No Team.
@@ -145,23 +145,33 @@ test(
     // The cards that carried the team keep it (No Team never moves an existing card).
     await expect(rowSays("793", TEAM)).toBeVisible();
 
-    // ── STEP 6: back on the SET bar: it is still No Team (the checklist row's changes never
-    // touched it); off, and the collapsed bar stops saying it.
+    // ── STEP 6: back on the SET's Team row: it is still No Team (the checklist row's changes
+    // never touched it); off, and shut and opened again it stays off. NEO-569: the shut
+    // panel draws only its title and toggle, so the answer is read on the reopened Team row.
     await drillToCustom(page, target);
     await expect(panel.getByRole("heading", { name: `Attributes for ${SET} (Set)` })).toBeVisible();
     await openPanel();
+    await expect(toggle(true)).toBeVisible();
+    // Shut, the bar draws only its title and toggle; the toggle says the answer.
+    const title = panel.getByRole("heading", { name: `Attributes for ${SET} (Set)` });
     await hide.click();
     await expect(edit).toBeVisible();
-    await expect(panel.getByText("No Team", { exact: true })).toBeVisible();
+    await expect(title).toBeVisible();
+    await expect(edit).toHaveAccessibleDescription(/^Team: No Team$/);
+    await expect(panel.getByText("No Team", { exact: true })).toHaveCount(0);
     await edit.click();
-    await expect(toggle(true)).toBeVisible();
     await toggle(true).click();
     await expect(toggle(false)).toBeVisible();
     await expect(page.getByText("Cleared No Team · cards unchanged")).toBeVisible();
+    // Off, the shut toggle says nothing about a team (the set has no team default).
     await hide.click();
     await expect(edit).toBeVisible();
-    await expect(panel.getByText("No Team", { exact: true })).toBeHidden();
-    await expectAccessible(page, { label: "Set attributes panel collapsed after No Team was turned off" });
+    await expect(title).toBeVisible();
+    await expect(edit).toHaveAccessibleDescription("");
+    await expect(panel.getByText("No Team", { exact: true })).toHaveCount(0);
+    await edit.click();
+    await expect(toggle(false)).toBeVisible();
+    await expectAccessible(page, { label: "Set attributes panel reopened after No Team was turned off" });
 
     // Cleanup: every card goes, leaving the checklist empty.
     await openInsertBase();

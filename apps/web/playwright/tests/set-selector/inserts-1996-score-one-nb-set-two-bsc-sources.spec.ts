@@ -106,6 +106,8 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   // so the rename cannot change what is fetched.
   await columnOption(page, "Inserts", SERIES_1).click();
   await expect(page.getByRole("heading", { name: `Attributes for ${SERIES_1}` })).toBeVisible();
+  // NEO-569: the pencil sits in the open panel only, and an insert row starts it shut.
+  await openAttributesPanel(page);
   await page.getByRole("button", { name: `Rename ${SERIES_1}` }).click();
   const edit = page.getByRole("textbox", { name: `Edit name for ${SERIES_1}` });
   await edit.fill(LONG_INSERT);

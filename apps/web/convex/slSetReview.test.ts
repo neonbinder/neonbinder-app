@@ -726,7 +726,9 @@ describe("applySlSetReview — every landing", () => {
     const [gold] = await childrenAt(t, ids.parallelTypeId, "insert");
     expect(gold.value).toBe("Gold");
     expect(gold.metadata).toBeUndefined();
-    expect(gold.features).toMatchObject({ league: "MLB", set: "Bowman", cardType: "Parallel" });
+    expect(gold.features).toMatchObject({ set: "Bowman", cardType: "Parallel" });
+    // NEO-569: the retired League is never copied down.
+    expect(gold.features).not.toHaveProperty("league");
     expect(gold.teamIds).toEqual([teamId]);
     expect(gold.platformData).toEqual({ sportlots: { s0: "sl-gold" } });
     expect(gold.platformLabels).toEqual({ sportlots: { s0: "Gold" } });
@@ -899,7 +901,7 @@ describe("applySlSetReview — every landing", () => {
 });
 
 describe("createSlRowsUnderVariantType never copies a node-only autographFormat down (NEO-345)", () => {
-  test("a SportLots name filed under an answered type keeps the type's league and starts unanswered", async () => {
+  test("a SportLots name filed under an answered type keeps the type's features and starts unanswered", async () => {
     const t = convexTest(schema, modules);
     const { yearId, bowmanId } = await seedYear(t);
     const ids = await seedBowmanSets(t, bowmanId);
@@ -915,7 +917,9 @@ describe("createSlRowsUnderVariantType never copies a node-only autographFormat 
     await save(t, bowmanId, [{ slId: "sl-aa-autos", variantTypeId: ids.insertTypeId }]);
 
     const [autos] = await childrenAt(t, ids.insertTypeId, "insert");
-    expect(autos.features).toMatchObject({ league: "MLB", set: "Bowman" });
+    expect(autos.features).toMatchObject({ set: "Bowman" });
+    // NEO-569: the retired League is never copied down.
+    expect(autos.features).not.toHaveProperty("league");
     expect(autos.features).not.toHaveProperty("autographFormat");
   });
 });
