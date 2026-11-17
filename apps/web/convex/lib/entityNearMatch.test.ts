@@ -315,6 +315,18 @@ describe("rankPlayerCandidates", () => {
         rankedPlayerNames("Jonah Williams", [{ name: "Mike Williams" }]),
       ).toEqual([]);
     });
+
+    test("a query whose suffix strips to one word keeps the surname row", () => {
+      expect(rankedPlayerNames("Williams Jr.", [{ name: "Williams" }])).toEqual([
+        ["Williams", "close"],
+      ]);
+    });
+
+    test("a three-word query never returns a one-word stored name", () => {
+      expect(
+        rankedPlayerNames("Jonah Michael Williams", [{ name: "Williams" }]),
+      ).toEqual([]);
+    });
   });
 
   test("an empty query matches nothing", () => {

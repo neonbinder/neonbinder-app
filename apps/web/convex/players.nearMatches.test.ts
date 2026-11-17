@@ -127,6 +127,34 @@ describe("players.nearMatches", () => {
     ]);
   });
 
+  // NEO-578: the ranked name for an alias-matched row is the ALIAS, so a
+  // one-word alias is a surname-only name to the guard. Deliberate: a full
+  // name is not offered a one-word alias.
+  test("drops a player whose matching alias is one word for a full-name query", async () => {
+    const t = convexTest(schema, modules);
+    const basketball = await seedSport(t, "Basketball", "BK");
+    await t.run(async (ctx) => {
+      const id = await ctx.db.insert("players", {
+        name: "Metta World Peace",
+        nameNormalized: normalizePlayerName("Metta World Peace"),
+        sportId: basketball,
+        aliases: ["Artest"],
+        lastUpdated: 1_700_000_000_000,
+      });
+      await ctx.db.insert("playerAliases", {
+        playerId: id,
+        sportId: basketball,
+        aliasNormalized: normalizePlayerName("Artest"),
+      });
+    });
+
+    const rows = await t
+      .withIdentity(ADMIN)
+      .query(api.players.nearMatches, { name: "Ron Artest", sportId: basketball });
+
+    expect(rows).toEqual([]);
+  });
+
   test("finds the full name from an initialled first name", async () => {
     const t = convexTest(schema, modules);
     const baseball = await seedSport(t, "Baseball", "BB");
