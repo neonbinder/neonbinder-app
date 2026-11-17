@@ -4,6 +4,7 @@
  * Cloud Run IAM and again in `x-nb-fake-id-token` for the fake's own check,
  * the caller key, and the admin key for uploads.
  */
+import { readFile } from "node:fs/promises";
 import { GoogleAuth, Impersonated } from "google-auth-library";
 
 export interface MissEntry {
@@ -46,6 +47,33 @@ export function adcIdTokenMinter(audience: string, auth: IdTokenAuth = new Googl
     if (client instanceof Impersonated) return client.fetchIdToken(audience, { includeEmail: true });
     const idClient = await auth.getIdTokenClient(audience);
     return idClient.idTokenProvider.fetchIdToken(audience);
+  };
+}
+
+/**
+ * The fake's ID token. When `FAKE_BSC_ID_TOKEN_FILE` names a file, the token is
+ * read from it on EVERY call (a watch session outlives a one-hour token, so
+ * whatever refreshes the file is picked up) and trimmed. A missing or empty
+ * file is an error that names the variable; it never falls back to ADC. With
+ * the variable unset, the ADC minter is used unchanged.
+ */
+export function idTokenSource(
+  audience: string,
+  env: NodeJS.ProcessEnv = process.env,
+  adc: (audience: string) => () => Promise<string> = adcIdTokenMinter,
+): () => Promise<string> {
+  const file = env.FAKE_BSC_ID_TOKEN_FILE;
+  if (!file) return adc(audience);
+  return async () => {
+    let raw: string;
+    try {
+      raw = await readFile(file, "utf8");
+    } catch {
+      throw new Error("FAKE_BSC_ID_TOKEN_FILE is set but the file cannot be read");
+    }
+    const token = raw.trim();
+    if (!token) throw new Error("FAKE_BSC_ID_TOKEN_FILE is set but the file is empty");
+    return token;
   };
 }
 

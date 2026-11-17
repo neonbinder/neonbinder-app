@@ -9,11 +9,12 @@
  * BSC credentials come from stdin or a prompt only. The fake's caller and
  * admin keys come from FAKE_BSC_CALLER_KEY / FAKE_BSC_ADMIN_KEY in this
  * process's environment (README: read them from Secret Manager into the
- * command, never into a file). The fake is reached as the loader SA through
- * ADC impersonation.
+ * command, never into a file). The fake is reached with a Google ID token:
+ * from FAKE_BSC_ID_TOKEN_FILE (a file re-read on each request) when set,
+ * otherwise from ADC.
  */
 import { readCredentials } from "./credentials";
-import { FakeClient, adcIdTokenMinter, isLoopback } from "./fake-client";
+import { FakeClient, idTokenSource, isLoopback } from "./fake-client";
 import { bscSession, loadBrowserModules } from "./bsc";
 import { MAX_REQUESTS_PER_SESSION, bscCaller, describeRequest, planMisses, runRecordSession } from "./record";
 import { describeRefusal, describeUndo, describeUndoCheck, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite, type CaptureResult, type UndoResult } from "./capture-write";
@@ -86,7 +87,7 @@ function fakeClient(flags: Map<string, string | true>): FakeClient {
   const noIdToken = flags.get("--no-id-token") === true;
   if (noIdToken && !isLoopback(url)) throw new Error("--no-id-token is only for a fake on localhost");
   const audience = str(flags, "--audience") ?? new URL(url).origin;
-  return new FakeClient({ baseUrl: url, callerKey, adminKey, idToken: noIdToken ? null : adcIdTokenMinter(audience) });
+  return new FakeClient({ baseUrl: url, callerKey, adminKey, idToken: noIdToken ? null : idTokenSource(audience) });
 }
 
 const say = (line: string) => process.stderr.write(`${line}\n`);
