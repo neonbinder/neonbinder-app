@@ -254,3 +254,4 @@
 - [Stacked branch merge after parent squash](reference_stacked_branch_merge_after_parent_squash.md) — merge base predates the parent: clean hunks duplicate code; re-merge with merge-tree base
 - [New listing problem reason: hand lists](reference_new_listing_problem_reason_has_hand_lists.md) — SYNC_HELD_REASONS, REPORTABLE_SYNC_REASONS judgement, test Reason union, spec copy literals
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
+- [Host-stored count goes stale](host-stored-count-goes-stale-ask-the-door.md) — door reports live counts (onCounts + recount + countOnMount); no subscription for big parents

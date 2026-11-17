@@ -62,6 +62,19 @@ import {
  * it loads the button keeps its name (`aria-busy`) and the status line says
  * "Loading titles…".
  *
+ * ## Counts back to the host
+ *
+ * What the host stored when the build ended goes stale the moment a title is
+ * fixed, so the door reports the live count (`onCounts`, per parallel) from
+ * what it just read: the load that opens the dialog, and a recount after the
+ * dialog closes. The recount is the same one-shot paged `failingTitles` call
+ * with `wantCards: 0` (counts only, no card's inputs read, never subscribed).
+ * A host that cannot trust a stored count (the build ticker) also asks for one
+ * when the door mounts (`countOnMount`), so a reload or a run picked up after
+ * leaving never shows a button for titles that were fixed. The latest read
+ * wins, and a read that fails says nothing: pressing the button loads
+ * and says what is true.
+ *
  * ## Keys and focus
  *
  * Portalled to `document.body` with everything behind it `inert`; Tab is
@@ -123,12 +136,44 @@ function errorText(error: unknown): string {
   return userFacingMessage(error, error instanceof Error ? error.message : "Unknown error");
 }
 
-/** Every page of every parallel, before the dialog opens. Sections with nothing to fix are dropped. */
+/** How many titles still fail on one parallel. */
+export type ParallelTitleCount = { id: Id<"selectorOptions">; count: number };
+
+/** Every page of every parallel, counts only: one-shot, never subscribed. */
+async function countFailing(
+  convex: TitlesClient,
+  parallels: readonly ParallelTitlesTarget[],
+): Promise<ParallelTitleCount[]> {
+  const counts: ParallelTitleCount[] = [];
+  for (const target of parallels) {
+    let count = 0;
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const args: FunctionArgs<typeof api.parallelCopyTitles.failingTitles> = {
+        parallelId: target.id,
+        wantCards: 0,
+      };
+      if (cursor) args.cursor = cursor;
+      const result = await convex.query(api.parallelCopyTitles.failingTitles, args);
+      count += result.failingInPage;
+      if (result.cursor === null) break;
+      cursor = result.cursor;
+    }
+    counts.push({ id: target.id, count });
+  }
+  return counts;
+}
+
+/**
+ * Every page of every parallel, before the dialog opens. Sections with
+ * nothing to fix are dropped; `counts` is every parallel's live count.
+ */
 async function loadSections(
   convex: TitlesClient,
   parallels: readonly ParallelTitlesTarget[],
-): Promise<ParallelTitlesSection[]> {
+): Promise<{ sections: ParallelTitlesSection[]; counts: ParallelTitleCount[] }> {
   const sections: ParallelTitlesSection[] = [];
+  const counts: ParallelTitleCount[] = [];
   for (const target of parallels) {
     const cards: StoredTitleCard[] = [];
     let failing = 0;
@@ -155,6 +200,7 @@ async function loadSections(
       if (result.cursor === null) break;
       cursor = result.cursor;
     }
+    counts.push({ id: target.id, count: failing });
     if (cards.length > 0) {
       sections.push({
         parallelId: target.id,
@@ -165,7 +211,7 @@ async function loadSections(
       });
     }
   }
-  return sections;
+  return { sections, counts };
 }
 
 function anotherDialogOpen(): boolean {
@@ -185,6 +231,8 @@ export function ParallelTitlesDoor({
   heldDescribedBy,
   onActiveChange,
   onStatusChange,
+  onCounts,
+  countOnMount = false,
   announceStatus = true,
 }: {
   /** Memoise: a new array per render reloads nothing, but re-arms the handler. */
@@ -205,6 +253,14 @@ export function ParallelTitlesDoor({
   /** Told every line the status shows, so a host can say the last one after the door has gone. */
   onStatusChange?: (line: string) => void;
   /**
+   * Told how many titles still fail on each parallel, from the load that
+   * opens the dialog and from a recount when it closes. A host that stored a
+   * count lowers it here.
+   */
+  onCounts?: (counts: readonly ParallelTitleCount[]) => void;
+  /** Recount once on mount (counts only), for a host whose stored count may be stale. */
+  countOnMount?: boolean;
+  /**
    * False when the host already has a live line and says the door's lines
    * through it: the line still shows here, but as plain text, never a second
    * live region.
@@ -219,10 +275,18 @@ export function ParallelTitlesDoor({
   const loadingRef = useRef(false);
   // This door's token for `openingDoor`.
   const [me] = useState(() => ({}));
-  const hostRef = useRef({ onActiveChange, onStatusChange });
+  const hostRef = useRef({ onActiveChange, onStatusChange, onCounts });
   useEffect(() => {
-    hostRef.current = { onActiveChange, onStatusChange };
-  }, [onActiveChange, onStatusChange]);
+    hostRef.current = { onActiveChange, onStatusChange, onCounts };
+  }, [onActiveChange, onStatusChange, onCounts]);
+  // The parallels as of the latest render: a recount must not re-arm on the
+  // host narrowing the list as counts come in.
+  const parallelsRef = useRef(parallels);
+  useEffect(() => {
+    parallelsRef.current = parallels;
+  }, [parallels]);
+  // The newest read of the counts wins: a slower, older one is dropped.
+  const countSeq = useRef(0);
 
   const say = useCallback((line: string) => {
     setStatus(line);
@@ -241,6 +305,17 @@ export function ParallelTitlesDoor({
     [me],
   );
 
+  /** Counts only, told to the host. A failed read says nothing: a press says what is true. */
+  const recount = useCallback(async () => {
+    const token = ++countSeq.current;
+    try {
+      const counts = await countFailing(convex, parallelsRef.current);
+      if (token === countSeq.current) hostRef.current.onCounts?.(counts);
+    } catch {
+      // Pressing the button loads again and says why it could not.
+    }
+  }, [convex]);
+
   const open = useCallback(async () => {
     if (loadingRef.current) return;
     loadingRef.current = true;
@@ -250,8 +325,10 @@ export function ParallelTitlesDoor({
     // The button keeps its name; this is what says the press took.
     say(LOADING_TITLES_LABEL);
     let opened = false;
+    const token = ++countSeq.current;
     try {
-      const loaded = await loadSections(convex, parallels);
+      const { sections: loaded, counts } = await loadSections(convex, parallels);
+      if (token === countSeq.current) hostRef.current.onCounts?.(counts);
       if (loaded.length === 0) {
         say(ALL_TITLES_FIT);
       } else {
@@ -267,6 +344,13 @@ export function ParallelTitlesDoor({
       if (!opened) settle();
     }
   }, [convex, parallels, me, say, settle]);
+
+  // A stored count may be stale (a reload, a run picked up after leaving).
+  useEffect(() => {
+    if (countOnMount) void recount();
+    // Once, on mount: later changes to the list are this very count landing.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // The self-open: once per key, a beat after mount (so a StrictMode double
   // effect cancels the first try instead of spending the key on it).
@@ -335,7 +419,10 @@ export function ParallelTitlesDoor({
           onClose={(saved) => {
             setSections(null);
             say(saved ?? "");
-            settle();
+            // A save (even one that stopped partway) moved the count: read it
+            // before the door lets go, so the host drops a button that has
+            // nothing left to open, or lowers the count it shows.
+            void recount().finally(settle);
           }}
         />
       )}

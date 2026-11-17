@@ -400,3 +400,97 @@ describe("ParallelTitlesDialog — leaving", () => {
     await waitFor(() => expect(document.activeElement).toBe(door()));
   });
 });
+
+describe("NEO-581 — the live count goes back to the host", () => {
+  const counts = (n: number) => [{ id: PARALLEL_ID, count: n }];
+  const answerCount = (n: number) => ({ ...page([]), failingInPage: n, cursor: null });
+
+  test("the load that opens the dialog reports each parallel's count", async () => {
+    const onCounts = vi.fn();
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} />);
+    await openByHand();
+    expect(onCounts).toHaveBeenCalledWith(counts(2));
+  });
+
+  test("nothing left to fix reports zero", async () => {
+    mockQuery.mockResolvedValue(page([]));
+    const onCounts = vi.fn();
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} />);
+    fireEvent.click(door());
+    await waitFor(() => expect(screen.getByText(ALL_TITLES_FIT)).toBeTruthy());
+    expect(onCounts).toHaveBeenLastCalledWith(counts(0));
+  });
+
+  test("a save recounts (counts only) and reports what is left before the door lets go", async () => {
+    const onCounts = vi.fn();
+    const active = vi.fn();
+    render(
+      <ParallelTitlesDoor
+        parallels={PARALLELS}
+        label={LABEL}
+        onCounts={onCounts}
+        onActiveChange={active}
+      />,
+    );
+    await openByHand();
+    mockQuery.mockResolvedValue(answerCount(1));
+    active.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: SAVE_TITLES_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    await waitFor(() => expect(active).toHaveBeenLastCalledWith(false));
+    expect(mockQuery).toHaveBeenLastCalledWith("failingTitles", {
+      parallelId: PARALLEL_ID,
+      wantCards: 0,
+    });
+    expect(onCounts).toHaveBeenLastCalledWith(counts(1));
+    // Reported before it let go: the host never sees "idle" with a stale count.
+    expect(onCounts.mock.invocationCallOrder.at(-1)!).toBeLessThan(
+      active.mock.invocationCallOrder.at(-1)!,
+    );
+  });
+
+  test("a recount reads every page", async () => {
+    const onCounts = vi.fn();
+    render(<ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} />);
+    await openByHand();
+    mockQuery
+      .mockResolvedValueOnce({ ...answerCount(3), cursor: "c1" })
+      .mockResolvedValueOnce(answerCount(4));
+    fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
+    await waitFor(() => expect(dialog()).toBeNull());
+    await waitFor(() => expect(onCounts).toHaveBeenLastCalledWith(counts(7)));
+  });
+
+  test("a recount that fails says nothing and still lets go", async () => {
+    const onCounts = vi.fn();
+    const active = vi.fn();
+    render(
+      <ParallelTitlesDoor
+        parallels={PARALLELS}
+        label={LABEL}
+        onCounts={onCounts}
+        onActiveChange={active}
+      />,
+    );
+    await openByHand();
+    onCounts.mockClear();
+    mockQuery.mockRejectedValue(new Error("offline"));
+    fireEvent.click(screen.getByRole("button", { name: NOT_NOW_LABEL }));
+    await waitFor(() => expect(active).toHaveBeenLastCalledWith(false));
+    expect(onCounts).not.toHaveBeenCalled();
+  });
+
+  test("countOnMount counts without opening or touching a card", async () => {
+    mockQuery.mockResolvedValue(answerCount(1));
+    const onCounts = vi.fn();
+    render(
+      <ParallelTitlesDoor parallels={PARALLELS} label={LABEL} onCounts={onCounts} countOnMount />,
+    );
+    await waitFor(() => expect(onCounts).toHaveBeenCalledWith(counts(1)));
+    expect(mockQuery).toHaveBeenCalledWith("failingTitles", {
+      parallelId: PARALLEL_ID,
+      wantCards: 0,
+    });
+    expect(dialog()).toBeNull();
+  });
+});
