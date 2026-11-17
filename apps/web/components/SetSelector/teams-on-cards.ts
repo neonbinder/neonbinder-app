@@ -295,6 +295,72 @@ export function cardTeamStrings(card: PreviewCardForTeams): string[] {
 }
 
 /**
+ * NEO-556 — the set-level team default a checklist row carries, in its three
+ * states: a team (or teams) every new card gets, "No Team", or nothing. A row
+ * that somehow carries both reads as teams, as the server reads it
+ * (`teamDefaultOf`).
+ */
+export type SetTeamDefaultKind = "teams" | "noTeam" | "none";
+
+export function setTeamDefaultKind(
+  row:
+    | {
+        teamIds?: ReadonlyArray<unknown>;
+        /** `getAncestorChain`'s row: the third state as a plain flag. */
+        noTeam?: boolean;
+        /** `getSelectorOptionById`'s whole document: the stored stamp. */
+        noTeamDefault?: unknown;
+      }
+    | null
+    | undefined,
+): SetTeamDefaultKind {
+  if ((row?.teamIds?.length ?? 0) > 0) return "teams";
+  if (row?.noTeam === true) return "noTeam";
+  if (row?.noTeamDefault !== undefined && row?.noTeamDefault !== null) return "noTeam";
+  return "none";
+}
+
+/** The fields of a confirmed card `setDefaultSettlesNewRow` reads. */
+export interface NewRowTeamCard extends PreviewCardForTeams {
+  /** BSC's unsplit team value — the commit's "Listed as:" hint. */
+  rawTeamName?: string;
+  platformData?: { bsc?: unknown };
+}
+
+/**
+ * NEO-556 — will the set-level default settle the team of this card when the
+ * commit inserts it as a NEW row, so the wizard need not ask?
+ *
+ *  - A set team: always. The commit gives a teamless new row that team, and
+ *    a card that resolves a team of its own has one anyway (NEO-277).
+ *  - "No Team": only when the commit will STAMP the card No Team — the
+ *    client half of `noTeamCardVerdict` as the commit asks it. Product
+ *    invariant 8: a listing that names a team, or a BSC lookup that has not
+ *    answered (still to run, or failed), holds the stamp back, and the
+ *    operator answers. So settled means the card prints no team string, no
+ *    listing value, and either has no BSC ref (nothing to look up) or a
+ *    lookup that already ended with no team ("answered", or the publisher
+ *    checklist's "checklist").
+ *  - Nothing: never.
+ *
+ * Deliberately one-sided: a card whose only team strings were ruled "not a
+ * team" would be stamped by the commit, but is still asked here. Asking about
+ * a card the commit would have settled costs a click; settling one it would
+ * not would save it teamless with nobody asked.
+ */
+export function setDefaultSettlesNewRow(
+  card: NewRowTeamCard,
+  setDefault: SetTeamDefaultKind,
+): boolean {
+  if (setDefault === "teams") return true;
+  if (setDefault !== "noTeam") return false;
+  if (cardTeamStrings(card).length > 0) return false;
+  if ((card.rawTeamName?.trim() ?? "") !== "") return false;
+  if (!card.platformData?.bsc) return true;
+  return card.teamLookup === "answered" || card.teamLookup === "checklist";
+}
+
+/**
  * Who and what is on the cards, as the STORED data says it — the half the
  * review rows cannot say. All are facts NB already holds (sets → cards →
  * players, and the set's skip records); nothing here is a stored wizard

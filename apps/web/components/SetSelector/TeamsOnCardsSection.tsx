@@ -134,10 +134,11 @@ function liveryTextColor(colors: TeamRef["colors"], mode: ThemeMode): string | n
 }
 
 // Copy. OTHER_LABEL, NONE_LABEL, SET_TEAM_HINT are Jason-approved (NEO-335
-// Phase 2). The rest are drafts awaiting sign-off, flagged in the build
-// report.
+// Phase 2; SET_TEAM_HINT gained "No Team" and the panel's real "Edit attributes"
+// name in NEO-556). The rest are drafts
+// awaiting sign-off, flagged in the build report.
 const SET_TEAM_HINT =
-  "Most of these share one team? Set a whole-set team in Set details and every new card gets it.";
+  "Most of these share one team, or show none at all? Pick a set team, or No Team, under Edit attributes and every new card gets it.";
 const NONE_LABEL = "No team on this card";
 const LATER_LABEL = "Leave for later";
 const OTHER_LABEL = "Other team…";

@@ -39,6 +39,8 @@ import {
   type StoredPeople,
   type TeamsGroup,
   type TeamsReviewRow,
+  setDefaultSettlesNewRow,
+  setTeamDefaultKind,
 } from "./teams-on-cards";
 
 /** What a line's chips say, in order. */
@@ -1316,6 +1318,57 @@ describe("NEO-489 — a card the checklist answered No Team is never asked", () 
     expect(groups[0].cards.map((c) => c.index)).toEqual([1]);
     expect(groups[0].suggestion).toBeNull();
     expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+  });
+});
+
+describe("NEO-556 setTeamDefaultKind", () => {
+  test("teams, No Team, or nothing — teams win over a stray No Team", () => {
+    expect(setTeamDefaultKind(undefined)).toBe("none");
+    expect(setTeamDefaultKind({})).toBe("none");
+    expect(setTeamDefaultKind({ teamIds: [] })).toBe("none");
+    expect(setTeamDefaultKind({ teamIds: ["t"] })).toBe("teams");
+    expect(setTeamDefaultKind({ noTeamDefault: { setAt: 1 } })).toBe("noTeam");
+    expect(setTeamDefaultKind({ teamIds: ["t"], noTeamDefault: { setAt: 1 } })).toBe("teams");
+  });
+
+  test("reads getAncestorChain's `noTeam` flag as well as the stored stamp", () => {
+    expect(setTeamDefaultKind({ noTeam: true })).toBe("noTeam");
+    expect(setTeamDefaultKind({ noTeam: false })).toBe("none");
+    expect(setTeamDefaultKind({ teamIds: ["t"], noTeam: true })).toBe("teams");
+  });
+});
+
+describe("NEO-556 setDefaultSettlesNewRow", () => {
+  const card = { cardNumber: "1", cardName: "One" };
+  const bsc = { platformData: { bsc: { ref: "b1" } } };
+
+  test("a set team settles every new row; no default settles none", () => {
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc }, "teams")).toBe(true);
+    expect(setDefaultSettlesNewRow(card, "none")).toBe(false);
+  });
+
+  test("No Team settles a card with nothing to look up", () => {
+    expect(setDefaultSettlesNewRow(card, "noTeam")).toBe(true);
+  });
+
+  test("No Team settles a BSC card whose lookup ended with no team", () => {
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "answered" }, "noTeam")).toBe(true);
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "checklist" }, "noTeam")).toBe(true);
+  });
+
+  test("invariant 8: a BSC lookup outstanding or given up holds the stamp back", () => {
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc }, "noTeam")).toBe(false);
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "failed" }, "noTeam")).toBe(false);
+  });
+
+  test("invariant 8: a listing or printed team string holds the stamp back", () => {
+    expect(
+      setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "answered", rawTeamName: "Padres" }, "noTeam"),
+    ).toBe(false);
+    expect(setDefaultSettlesNewRow({ ...card, teams: ["Padres"] }, "noTeam")).toBe(false);
+    expect(setDefaultSettlesNewRow({ ...card, team: "Padres" }, "noTeam")).toBe(false);
+    // Blank strings are no claim.
+    expect(setDefaultSettlesNewRow({ ...card, teams: ["  "], rawTeamName: " " }, "noTeam")).toBe(true);
   });
 });
 

@@ -34,7 +34,7 @@ import { internalQuery, type ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
-import { inheritedTeamIds } from "./lib/selectorTeams";
+import { teamDefaultOf } from "./lib/selectorTeams";
 import { teamFullName } from "../lib/teams/team-name";
 import type { TitleContext } from "./features/listingInputs";
 import { normalizePlayerName } from "./players";
@@ -125,9 +125,12 @@ export const titleSetFacts = internalQuery({
     const sportRow = await ctx.db.get(args.sportId);
 
     // NEO-277 — a new card with no team of its own is born with these.
+    // NEO-556 — a No Team leaf names none: a stamped card's title carries no
+    // team, exactly as a teamless one's does.
     const setTeamNames: string[] = [];
+    const leafDefault = teamDefaultOf(leaf);
     // Not sliced: the chunk reads the whole list, and this must match it.
-    for (const teamId of inheritedTeamIds(leaf) ?? []) {
+    for (const teamId of leafDefault.kind === "teams" ? leafDefault.teamIds : []) {
       const team = await ctx.db.get(teamId);
       if (team) setTeamNames.push(teamFullName(team));
     }

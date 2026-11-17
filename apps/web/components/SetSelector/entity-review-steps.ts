@@ -130,7 +130,8 @@ export { AUTOGRAPH_FORMATS, type AutographFormat };
 
 /**
  * The two answers' display names, keyed by the stored value — the wizard's
- * tiles, the checklist prompt's buttons and Set details' select all say
+ * tiles, the checklist prompt's buttons and the Attributes panel's select (under
+ * "Edit attributes") all say
  * these words (NEO-345 a11y: one name per answer everywhere).
  */
 export const AUTOGRAPH_CHOICE_LABEL: Readonly<Record<AutographFormat, string>> = {
