@@ -10,6 +10,7 @@ import {
   nameInTitle,
   teamInTitle,
   titleSearchTerm,
+  titleTeamSearchTerm,
   titleWords,
 } from "./titleSport";
 
@@ -115,5 +116,17 @@ describe("decideTitleSport", () => {
 
   test("nothing named: null", () => {
     expect(decideTitleSport([], [])).toBeNull();
+  });
+});
+
+describe("titleTeamSearchTerm", () => {
+  test("folds accents and punctuation the way team names are stored, and drops digit-only words", () => {
+    expect(titleTeamSearchTerm("2023-24 Montréal Canadiens #12 /99")).toBe("montreal canadiens");
+    expect(titleTeamSearchTerm("St. Louis Blues")).toBe("st louis blues");
+  });
+
+  test("keeps at most the search term bound and is empty when no words are left", () => {
+    expect(titleTeamSearchTerm(Array.from({ length: 30 }, (_, i) => `w${i}`).join(" ")).split(" ")).toHaveLength(16);
+    expect(titleTeamSearchTerm("2024 #12 /99")).toBe("");
   });
 });

@@ -44,6 +44,21 @@ export function titleSearchTerm(title: string): string {
     .join(" ");
 }
 
+/**
+ * The text the `teams` index is searched by: `nameNormalized` is lowercased,
+ * accent-folded and stripped of punctuation ("Montréal" is stored "montreal",
+ * "St. Louis" "st louis"), so the title is run through the same word chain
+ * (`titleWords`), not searched raw. Words with no letter in them (a year, a
+ * season "2023-24", a number, a print run) are dropped, at most
+ * `TITLE_SEARCH_MAX_TERMS`. Empty when nothing is left.
+ */
+export function titleTeamSearchTerm(title: string): string {
+  return titleWords(title)
+    .filter((word) => /\p{L}/u.test(word))
+    .slice(0, TITLE_SEARCH_MAX_TERMS)
+    .join(" ");
+}
+
 /** The title's normalised words, in order, for `nameInTitle`. */
 export function titleWords(title: string): string[] {
   // A comma is deleted by the name chain, so "Topps,Mike Trout" would glue to

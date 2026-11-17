@@ -155,7 +155,8 @@ test(
       const baseball = titleBand("Baseball");
       await expect(pulledToggle(baseball, title)).toBeVisible();
       await expect(pulledToggle(baseball, title)).toHaveAttribute("aria-pressed", "false");
-      await expect(baseball.getByRole("heading", { level: 3, name: TITLE_DIVIDER, exact: true })).toBeVisible();
+      // The heading leads with its sport, so the bands that share the divider's words read apart.
+      await expect(baseball.getByRole("heading", { level: 3, name: `Baseball ${TITLE_DIVIDER}`, exact: true })).toBeVisible();
       // A line NB didn't list is never called a card (NEO-520), in its band's count as in its order's.
       await expect(baseball.getByText("1 item", { exact: true })).toBeVisible();
       await expect(baseball.getByText("1 card", { exact: true })).toHaveCount(0);

@@ -245,10 +245,15 @@ describe("NEO-590: titleSports", () => {
     const baseball = await sport("Pitching Baseball", "PB");
     const football = await sport("Gridiron Football", "GF");
     const hockey = await sport("Ice Hockey", "IH");
+    // `playerSports` is the authority for a player's extra sports; the row's `alsoSportIds`
+    // is a display copy (NEO-318), so the helper writes both as `syncPlayerSports` does.
     const player = (name: string, sportId: Id<"selectorOptions">, alsoSportIds?: Id<"selectorOptions">[]) =>
-      t.run(async (ctx) =>
-        ctx.db.insert("players", { name, nameNormalized: normalizePlayerName(name), sportId, ...(alsoSportIds ? { alsoSportIds } : {}), lastUpdated: 0 }),
-      );
+      t.run(async (ctx) => {
+        const nameNormalized = normalizePlayerName(name);
+        const id = await ctx.db.insert("players", { name, nameNormalized, sportId, ...(alsoSportIds ? { alsoSportIds } : {}), lastUpdated: 0 });
+        for (const also of alsoSportIds ?? []) await ctx.db.insert("playerSports", { playerId: id, sportId: also, nameNormalized });
+        return id;
+      });
     const team = (name: string, sportId: Id<"selectorOptions">, location?: string) =>
       t.run(async (ctx) =>
         ctx.db.insert("teams", {
@@ -286,6 +291,27 @@ describe("NEO-590: titleSports", () => {
     await w.team("Krakens", w.football, "Harbor");
     const out = await w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather Harbor Krakens card"] });
     expect(out).toEqual([{ id: w.football, name: "Gridiron Football", code: "GF" }]);
+  });
+
+  test("a player's extra sports come from playerSports, not the alsoSportIds display copy", async () => {
+    const w = await world();
+    const id = await w.player("Zorbo Quillfeather", w.baseball);
+    await w.team("Krakens", w.football, "Harbor");
+    // A stale display copy naming football, with no playerSports row: the copy decides nothing.
+    await w.t.run(async (ctx) => ctx.db.patch(id, { alsoSportIds: [w.football] }));
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["Zorbo Quillfeather Harbor Krakens card"] });
+    expect(out).toEqual([{ id: w.baseball, name: "Pitching Baseball", code: "PB" }]);
+  });
+
+  test("a team whose name carries an accent or punctuation is found by the plain words of a title", async () => {
+    const w = await world();
+    await w.team("Canadiens", w.hockey, "Montréal");
+    await w.team("Blues", w.hockey, "St. Louis");
+    const out = await w.me.query(api.pickList.titleSports, {
+      titles: ["Montreal Canadiens pennant", "Montréal Canadiens pennant", "St Louis Blues puck", "St. Louis Blues puck"],
+    });
+    const hit = { id: w.hockey, name: "Ice Hockey", code: "IH" };
+    expect(out).toEqual([hit, hit, hit, hit]);
   });
 
   test("a nickname shared by teams of two sports is null", async () => {

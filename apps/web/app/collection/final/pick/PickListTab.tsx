@@ -1318,6 +1318,15 @@ function PickTable({
 }
 
 /**
+ * NEO-590 — a sport's "Sales NB didn't list" group: a set-kind section whose
+ * rows are filed by their listing's title. Several bands share that title, so
+ * their headings carry the sport too.
+ */
+function isTitleSection(section: PickSection): boolean {
+  return section.kind === "set" && section.rows.some((r) => rowFacts(r)?.fromTitle);
+}
+
+/**
  * A group's count. NEO-520: a line NB didn't list is never called a card, so
  * an order holding one counts items; every other group counts cards. Both row
  * sizes read it from here.
@@ -1326,9 +1335,7 @@ function sectionCount(section: PickSection): string {
   const count = section.rows.reduce((n, r) => n + r.quantity, 0);
   // NEO-520: a line NB didn't list is never called a card, in its order's group
   // or in a sport's "Sales NB didn't list" group (NEO-590).
-  const items =
-    (section.kind === "order" && section.rows.some((r) => !r.card)) ||
-    (section.kind === "set" && section.rows.some((r) => rowFacts(r)?.fromTitle));
+  const items = (section.kind === "order" && section.rows.some((r) => !r.card)) || isTitleSection(section);
   return `${count} ${items ? (count === 1 ? "item" : "items") : count === 1 ? "card" : "cards"}`;
 }
 
@@ -1336,6 +1343,7 @@ function SectionHead({ section, columns, condensed }: { section: PickSection; co
   if (section.kind === "flat") return null;
   if (condensed) return <CondensedSectionHead section={section} columns={columns} />;
   const cards = sectionCount(section);
+  const titleBand = isTitleSection(section);
   // A heading element may not sit in a table header cell, so the title takes
   // the heading role: heading navigation still reaches every set and group.
   // `label` names a heading apart when its words alone would read like another's.
@@ -1353,10 +1361,22 @@ function SectionHead({ section, columns, condensed }: { section: PickSection; co
     line = SPORT_LINE[hue];
     body = (
       <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
-        <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-sm font-bold ${SPORT_TAB[hue]}`}>
-          {section.sportName}
-        </span>
-        {heading(`pb-1 text-ink ${title}`, section.title, section.unmatchedTwin ? `${section.title}${COPY.unmatchedTwin}` : undefined)}
+        {titleBand ? (
+          // Bands share this title, so the heading's name leads with the sport ("Baseball Sales NB didn't list").
+          <span role="heading" aria-level={3} className="flex flex-wrap items-end gap-x-3 gap-y-1">
+            <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-sm font-bold ${SPORT_TAB[hue]}`}>
+              {section.sportName}
+            </span>{" "}
+            <span className={`pb-1 text-ink ${title}`}>{section.title}</span>
+          </span>
+        ) : (
+          <>
+            <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-sm font-bold ${SPORT_TAB[hue]}`}>
+              {section.sportName}
+            </span>
+            {heading(`pb-1 text-ink ${title}`, section.title, section.unmatchedTwin ? `${section.title}${COPY.unmatchedTwin}` : undefined)}
+          </>
+        )}
         <span className="pb-1.5 text-sm text-ink-3">{cards}</span>
       </div>
     );
@@ -1411,10 +1431,11 @@ function VariantTag({ tag }: { tag: VariantTagModel }) {
   );
 }
 
-function SportChip({ code, name }: { code: string | null; name: string }) {
+/** `decorative`: the group's own band already names this sport, so a screen reader skips the repeat. */
+function SportChip({ code, name, decorative = false }: { code: string | null; name: string; decorative?: boolean }) {
   const hue = sportHue(code);
   return (
-    <span className={`nb-pick-band nb-pick-chip inline-flex shrink-0 items-center rounded px-1.5 text-xs font-bold leading-5 ${SPORT_TAB[hue]}`}>
+    <span aria-hidden={decorative || undefined} className={`nb-pick-band nb-pick-chip inline-flex shrink-0 items-center rounded px-1.5 text-xs font-bold leading-5 ${SPORT_TAB[hue]}`}>
       {name}
     </span>
   );
@@ -1549,7 +1570,7 @@ function Row({
   // and why NB could not file it, the one clue the row has. Wide, the sport keeps the Set
   // column and the reason rides under the listing's words, where it has room to read.
   const listedSport = titleFacts ? (
-    <SportChip code={titleFacts.sportCode} name={titleFacts.sportName} />
+    <SportChip code={titleFacts.sportCode} name={titleFacts.sportName} decorative={!showSet} />
   ) : !facts && row.listed?.sportName ? (
     <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />
   ) : null;
@@ -1718,6 +1739,7 @@ function Row({
 
 function CondensedSectionHead({ section, columns }: { section: PickSection; columns: number }) {
   const cards = sectionCount(section);
+  const titleBand = isTitleSection(section);
   // A heading element may not sit in a table header cell, so the title takes
   // the heading role: heading navigation still reaches every set and group.
   // `label` names a heading apart when its words alone would read like another's.
@@ -1733,10 +1755,21 @@ function CondensedSectionHead({ section, columns }: { section: PickSection; colu
     line = SPORT_LINE[hue];
     body = (
       <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
-        <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-xs font-bold ${SPORT_TAB[hue]}`}>
-          {section.sportName}
-        </span>
-        {heading("pb-1 text-base font-bold text-ink", section.title, section.unmatchedTwin ? `${section.title}${COPY.unmatchedTwin}` : undefined)}
+        {titleBand ? (
+          <span role="heading" aria-level={3} className="flex flex-wrap items-end gap-x-3 gap-y-1">
+            <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-xs font-bold ${SPORT_TAB[hue]}`}>
+              {section.sportName}
+            </span>{" "}
+            <span className="pb-1 text-base font-bold text-ink">{section.title}</span>
+          </span>
+        ) : (
+          <>
+            <span className={`nb-pick-band inline-flex items-center rounded-t-md px-3 py-1 text-xs font-bold ${SPORT_TAB[hue]}`}>
+              {section.sportName}
+            </span>
+            {heading("pb-1 text-base font-bold text-ink", section.title, section.unmatchedTwin ? `${section.title}${COPY.unmatchedTwin}` : undefined)}
+          </>
+        )}
         <span className="pb-1 text-xs text-ink-3">{cards}</span>
       </div>
     );
@@ -1913,7 +1946,7 @@ function CondensedRow({
     <span className="flex min-w-0 flex-col items-start gap-1">
       {/* The listing's sport, when it names one: the box it might sit in. */}
       {titleFacts ? (
-        <SportChip code={titleFacts.sportCode} name={titleFacts.sportName} />
+        <SportChip code={titleFacts.sportCode} name={titleFacts.sportName} decorative={!showSet} />
       ) : (
         row.listed?.sportName && <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />
       )}

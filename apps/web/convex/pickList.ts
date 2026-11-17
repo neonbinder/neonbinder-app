@@ -48,8 +48,10 @@ import {
   nameInTitle,
   teamInTitle,
   titleSearchTerm,
+  titleTeamSearchTerm,
   titleWords,
 } from "./lib/titleSport";
+import { additionalSportIds } from "./players";
 import { lineOnPickList, orderOnPickList, pullOpenOf, saleIdOfLine, saleLineKeys } from "./lib/pickLines";
 import { collectionCopyConditionValidator, listingPlatformValidator, saleItemListedValidator } from "./schema";
 
@@ -372,8 +374,9 @@ export const sports = query({
  * sport of the NB player (else team) the title says by its whole name, when
  * exactly one sport is named; null otherwise (the row files under Other).
  * Catalog data only, so any signed-in caller may read it. Per distinct title:
- * one `players` and one `teams` name search (`take(TITLE_SEARCH_TAKE)` each)
- * and a point read per distinct sport, at most `MAX_TITLE_SPORTS` titles.
+ * one `players` and one `teams` name search (`take(TITLE_SEARCH_TAKE)` each),
+ * one `playerSports` read per player the title names, and a point read per
+ * distinct sport, at most `MAX_TITLE_SPORTS` titles.
  * Display order only: nothing here matches a card or writes NB data.
  */
 export const titleSports = query({
@@ -409,14 +412,24 @@ export const titleSports = query({
         .query("players")
         .withSearchIndex("search_name", (q) => q.search("name", term))
         .take(TITLE_SEARCH_TAKE);
-      const teams = await ctx.db
-        .query("teams")
-        .withSearchIndex("search_name", (q) => q.search("nameNormalized", term))
-        .take(TITLE_SEARCH_TAKE);
+      // `teams.nameNormalized` is accent-folded and punctuation-free, so the teams
+      // are searched by the title's normalised words, not its raw text.
+      const teamTerm = titleTeamSearchTerm(title);
+      const teams = teamTerm
+        ? await ctx.db
+            .query("teams")
+            .withSearchIndex("search_name", (q) => q.search("nameNormalized", teamTerm))
+            .take(TITLE_SEARCH_TAKE)
+        : [];
+      // `playerSports` is the authority for a player's extra sports (the player row's
+      // "also" list is only a display copy): one indexed read per player the title really names.
+      const named = players.filter((p) => nameInTitle(p.name, words));
+      const playerSportLists: string[][] = [];
+      for (const p of named) {
+        playerSportLists.push([p.sportId as string, ...(await additionalSportIds(ctx, p._id)).map((id) => id as string)]);
+      }
       const sportId = decideTitleSport(
-        players
-          .filter((p) => nameInTitle(p.name, words))
-          .map((p) => [p.sportId as string, ...(p.alsoSportIds ?? []).map((id) => id as string)]),
+        playerSportLists,
         teams.filter((t) => teamInTitle(t, words)).map((t) => [t.sportId as string]),
       );
       answers.set(title, sportId ? await sportOf(sportId) : null);

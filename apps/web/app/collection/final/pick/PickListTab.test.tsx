@@ -1009,6 +1009,40 @@ describe("the signed-in Pick List's ways out", () => {
     }
   });
 
+  it("NEO-590: each sport's Sales NB didn't list heading names its sport, its group header keeps the whole reading, and the row's sport chip is skipped by a screen reader", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const order = { id: "oe", venue: "eBay", number: "27-11111-22222" };
+    const titled = (id: string, sport: { id: string; name: string; code: string | null } | null) => ({
+      id,
+      quantity: 1,
+      condition: "",
+      order,
+      card: null,
+      sportCode: null,
+      listingTitle: `Lot ${id}`,
+      listed: { title: `Lot ${id}`, titleSport: sport },
+      problem: "NB didn't list this one. Check the order's photo.",
+    });
+    const zz = { id: "sp-zz", name: "Zorbball", code: "ZB" };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, titled("a", zz), titled("c", null)] }, true);
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      // Two bands share the words; the headings tell them apart without an aria-label.
+      expect(within(region).getByRole("heading", { level: 3, name: "Zorbball Sales NB didn't list" })).toBeTruthy();
+      expect(within(region).getByRole("heading", { level: 3, name: "Other Sales NB didn't list" })).toBeTruthy();
+      expect(within(region).queryByRole("heading", { level: 3, name: "Sales NB didn't list" })).toBeNull();
+      expect(within(region).getByRole("rowheader", { name: /^Zorbball Sales NB didn't list 1 item$/ })).toBeTruthy();
+      expect(within(region).getByRole("rowheader", { name: /^Other Sales NB didn't list 1 item$/ })).toBeTruthy();
+      // The row's own sport chip repeats the band: visible, but not read out again.
+      const row = within(region).getByRole("button", { name: /Lot a/ }).closest("tr")!;
+      // (The wide cell and the phone's one cell each carry it; CSS shows one.)
+      const chips = within(row as HTMLElement).getAllByText("Zorbball", { exact: true });
+      expect(chips.length).toBeGreaterThan(0);
+      for (const chip of chips) expect(chip.getAttribute("aria-hidden")).toBe("true");
+      expect(within(row as HTMLElement).queryByRole("heading")).toBeNull();
+    }
+  });
+
   it("a line NB couldn't match names its order, and its order opens that sale on the Sales tab", async () => {
     const region = await show({}, true);
     // The toggle carries the order: two orders' strays never read alike.
