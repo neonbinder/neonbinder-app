@@ -610,7 +610,28 @@ export interface TrackStepsInput {
   autographStep?: boolean;
   titlesStep: boolean;
   onSave: boolean;
+  /**
+   * Where the operator is. The growth line only counts and names steps AFTER
+   * it: a step that turns up while the operator is standing on it (the career
+   * check goes live as the last name is decided and lands them on it) or
+   * behind them is not "more steps" to come. Absent = no filtering.
+   */
+  position?: StepPosition;
 }
+
+/**
+ * Where each screen sits in the walk, for "is this step still ahead?".
+ * Review rows share one slot: a row staged mid-review is always ahead.
+ */
+const WALK_RANK: Readonly<Record<StepPosition["kind"], number>> = {
+  checklist: 0,
+  review: 1,
+  career: 2,
+  teams: 3,
+  autograph: 4,
+  titles: 5,
+  save: 6,
+};
 
 export function trackSteps(prev: StepTracker | null, input: TrackStepsInput): StepTracker {
   const plan: StepPlanInput = {
@@ -637,20 +658,43 @@ export function trackSteps(prev: StepTracker | null, input: TrackStepsInput): St
   const addedRows = count.frozen
     ? []
     : input.rows.filter((r) => !prev.knownRowIds.has(r._id));
+  const knownRowIds = new Set(prev.knownRowIds);
+  for (const row of input.rows) knownRowIds.add(row._id);
+  // A step is announced only while it is still ahead of the operator.
+  const ahead = (step: StepPosition["kind"]): boolean =>
+    input.position === undefined || WALK_RANK[step] > WALK_RANK[input.position.kind];
+  const checklistGrew = count.checklistStep === true && prev.count.checklistStep !== true;
+  const careerGrew = count.careerStep === true && prev.count.careerStep !== true;
+  const teamsGrew = count.teamsStep && !prev.count.teamsStep;
+  const autographGrew = count.autographStep && !prev.count.autographStep;
+  const titlesGrew = count.titlesStep && !prev.count.titlesStep;
+  const checklistStepAdded = checklistGrew && ahead("checklist");
+  const careerStepAdded = careerGrew && ahead("career");
+  const teamsStepAdded = teamsGrew && ahead("teams");
+  const autographStepAdded = autographGrew && ahead("autograph");
+  const titlesStepAdded = titlesGrew && ahead("titles");
+  const behind =
+    (checklistGrew && !checklistStepAdded ? 1 : 0) +
+    (careerGrew && !careerStepAdded ? 1 : 0) +
+    (teamsGrew && !teamsStepAdded ? 1 : 0) +
+    (autographGrew && !autographStepAdded ? 1 : 0) +
+    (titlesGrew && !titlesStepAdded ? 1 : 0);
+  const announced = added - behind;
+  // Nothing ahead grew: the count moves, the line says nothing and the last
+  // one stands.
+  if (announced <= 0) return { ...prev, count, knownRowIds };
   const reasons = growthReasons({
     addedRows,
     allRows: input.rows,
-    teamsStepAdded: count.teamsStep && !prev.count.teamsStep,
-    checklistStepAdded: count.checklistStep === true && prev.count.checklistStep !== true,
-    careerStepAdded: count.careerStep === true && prev.count.careerStep !== true,
-    autographStepAdded: count.autographStep && !prev.count.autographStep,
-    titlesStepAdded: count.titlesStep && !prev.count.titlesStep,
+    teamsStepAdded,
+    checklistStepAdded,
+    careerStepAdded,
+    autographStepAdded,
+    titlesStepAdded,
   });
-  const knownRowIds = new Set(prev.knownRowIds);
-  for (const row of input.rows) knownRowIds.add(row._id);
   return {
     count,
     knownRowIds,
-    growth: { seq: (prev.growth?.seq ?? 0) + 1, text: growthLine(added, reasons) },
+    growth: { seq: (prev.growth?.seq ?? 0) + 1, text: growthLine(announced, reasons) },
   };
 }

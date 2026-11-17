@@ -448,7 +448,37 @@ describe("CareerTeamEntry — 'Did you mean' prompt", () => {
     renderEntry();
 
     typeName("NY Yankees");
+    // The list is open and already offers that team, so the prompt waits...
+    expect(screen.getByRole("option", { name: "Use New York Yankees" })).toBeTruthy();
+    expect(screen.queryByText(/Did you mean/)).toBeNull();
 
+    // ...and shows once the list is closed.
+    fireEvent.keyDown(screen.getByLabelText("Career team name"), { key: "Escape" });
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    expect(
+      screen.getByRole("button", { name: "Did you mean New York Yankees?" }),
+    ).toBeTruthy();
+  });
+
+  it("says nothing while the open list already offers the team it would name", () => {
+    renderEntry({ stagedNames: ["New York Yankees"] });
+
+    typeName("New York Yankee");
+
+    expect(screen.getByRole("option", { name: "Use New York Yankees" })).toBeTruthy();
+    expect(screen.queryByText(/Did you mean/)).toBeNull();
+  });
+
+  it("shows beside an open list that offers a different team", () => {
+    // The server returns a row that is not the near match: the list is open,
+    // but it does not list the team the prompt would name.
+    currentTeams = [makeTeam("Hudson Valley Renegades", "t9")];
+    renderEntry({ stagedNames: ["New York Yankees"] });
+
+    typeName("NY Yankees");
+
+    expect(screen.getByRole("option", { name: "Use Hudson Valley Renegades" })).toBeTruthy();
+    expect(screen.queryByRole("option", { name: "Use New York Yankees" })).toBeNull();
     expect(
       screen.getByRole("button", { name: "Did you mean New York Yankees?" }),
     ).toBeTruthy();
@@ -568,6 +598,9 @@ describe("CareerTeamEntry — one box", () => {
 
     // The nickname alone is a near match against "San Diego Padres"...
     typeName("Padres");
+    // The open list offers it already; the prompt shows once the list is closed.
+    expect(screen.queryByText(/Did you mean/)).toBeNull();
+    fireEvent.keyDown(screen.getByLabelText("Career team name"), { key: "Escape" });
     expect(screen.getByText("Did you mean San Diego Padres?")).toBeTruthy();
 
     // ...and typing the whole name is an EXACT one, so there is nothing to

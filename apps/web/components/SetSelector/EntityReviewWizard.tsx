@@ -3720,6 +3720,9 @@ export default function EntityReviewWizard({
    * THIS render. `trackSteps` returns the same object while nothing moved,
    * so the update settles in one extra pass.
    */
+  const stepPosition: StepPosition = postStep
+    ? { kind: postStep }
+    : { kind: "review", index: reviewStepIndex(rows ?? [], current?._id ?? null) };
   const trackedSteps: StepTracker | null =
     isOpen && rows !== undefined && !expired
       ? trackSteps(stepTracker, {
@@ -3730,15 +3733,14 @@ export default function EntityReviewWizard({
           autographStep: postLive.autograph,
           titlesStep: postLive.titles,
           onSave: postStep === "save",
+          // The growth line names only the steps still AHEAD of this one.
+          position: stepPosition,
         })
       : isOpen
         ? stepTracker
         : null;
   if (trackedSteps !== stepTracker) setStepTracker(trackedSteps);
 
-  const stepPosition: StepPosition = postStep
-    ? { kind: postStep }
-    : { kind: "review", index: reviewStepIndex(rows ?? [], current?._id ?? null) };
   const stepX = trackedSteps ? stepNumber(trackedSteps.count, stepPosition) : 0;
   const stepY = expired ? 0 : (trackedSteps?.count.total ?? 0);
   const stepKind: WizardStepKind =

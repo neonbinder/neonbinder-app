@@ -186,6 +186,19 @@ describe("when the step is asked", () => {
     expect(counter()).toBe("Step 1 of 2");
   });
 
+  it("counts the step it lands on, but does not announce it as one more to come", () => {
+    // The career check is judged once the names are decided, so it can turn up
+    // under the operator's feet: y grows, and the growth line stays quiet
+    // rather than naming the step they are already on.
+    const { rerender } = render(wizard({ careerContext: { ...CONTEXT, gaps: [] } }));
+    expect(counter()).toBe("Step 1 of 1");
+    rerender(wizard());
+    expect(screen.getByRole("heading", { name: careerHeading(1) })).toBeTruthy();
+    expect(counter()).toBe("Step 1 of 2");
+    const growth = document.querySelector("header")!.querySelector('[aria-live="polite"]')!;
+    expect(growth.textContent).toBe("");
+  });
+
   it("lists only the pair the gate called a gap", () => {
     render(wizard());
     expect(screen.getAllByRole("radiogroup")).toHaveLength(1);

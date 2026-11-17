@@ -392,6 +392,20 @@ export default function CareerTeamEntry({
     return pool[ranked[0].index] ?? null;
   }, [composedName, stagedNames, freshSearched]);
 
+  /**
+   * The prompt that shows. While the list is open and already offers the very
+   * team the prompt would name, the prompt is a second way to say the same
+   * thing, so it waits until the list is closed (or offers something else).
+   */
+  const didYouMeanShown =
+    didYouMean !== null &&
+    !(
+      listOpen &&
+      suggestions.some((s) => nameSearchKey(s.name) === nameSearchKey(didYouMean))
+    )
+      ? didYouMean
+      : null;
+
   const fromNum = Number(fromYear);
   const toNum = toYear.trim() === "" ? undefined : Number(toYear);
 
@@ -711,7 +725,7 @@ export default function CareerTeamEntry({
         </p>
       </div>
 
-      {didYouMean && (
+      {didYouMeanShown && (
         <p className="text-xs text-ink-3" onMouseDown={holdListWhilePressed}>
           {/* NEO-212 (a11y): no aria-label. The visible text IS the name, so
               an "Use {name}" override replaced a readable label with one that
@@ -719,10 +733,10 @@ export default function CareerTeamEntry({
               mean New York Yankees" matched nothing (WCAG 2.2 SC 2.5.3). */}
           <button
             type="button"
-            onClick={() => pickSuggestion(didYouMean)}
+            onClick={() => pickSuggestion(didYouMeanShown)}
             className="text-neon-blue-text underline decoration-dotted hover:text-neon-green-text focus:text-neon-green-text focus-outline"
           >
-            Did you mean {didYouMean}?
+            Did you mean {didYouMeanShown}?
           </button>
         </p>
       )}

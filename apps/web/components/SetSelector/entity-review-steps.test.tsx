@@ -571,6 +571,92 @@ describe("career step (NEO-574) — counting and position", () => {
   });
 });
 
+describe("growth line counts only steps AHEAD of the operator (NEO-574)", () => {
+  const row: StepRow = { _id: "p", kind: "player", name: "Mike Trout" };
+  const base = { rows: [row], teamsStep: false, titlesStep: false, onSave: false };
+
+  it("says nothing when the career step turns up under the operator's feet", () => {
+    const first = trackSteps(null, { ...base, position: { kind: "review", index: 0 } });
+    const grown = trackSteps(first, {
+      ...base,
+      careerStep: true,
+      position: { kind: "career" },
+    });
+    // y still grows (the header's "Step 1 of 3"), but nothing is "more to come".
+    expect(grown.count.total).toBe(3);
+    expect(grown.count.careerStep).toBe(true);
+    expect(grown.growth).toBeNull();
+  });
+
+  it("still announces it from a review row, where it is ahead", () => {
+    const first = trackSteps(null, { ...base, position: { kind: "review", index: 0 } });
+    const grown = trackSteps(first, {
+      ...base,
+      careerStep: true,
+      position: { kind: "review", index: 0 },
+    });
+    expect(grown.growth?.text).toBe(`1 more step: ${CAREER_GROWTH_REASON}`);
+  });
+
+  it("on the career step, announces teams and titles that turn up AFTER it", () => {
+    const first = trackSteps(null, { ...base, careerStep: true, position: { kind: "career" } });
+    const grown = trackSteps(first, {
+      ...base,
+      careerStep: true,
+      teamsStep: true,
+      titlesStep: true,
+      position: { kind: "career" },
+    });
+    expect(grown.growth?.text).toBe("2 more steps: cards with no team, card titles");
+  });
+
+  it("counts only the ahead steps when ahead and current grow together", () => {
+    const first = trackSteps(null, { ...base, position: { kind: "review", index: 0 } });
+    const grown = trackSteps(first, {
+      ...base,
+      careerStep: true,
+      teamsStep: true,
+      position: { kind: "career" },
+    });
+    expect(grown.count.total).toBe(4);
+    expect(grown.growth?.text).toBe("1 more step: cards with no team");
+  });
+
+  it("does not name a step the operator has already passed", () => {
+    const first = trackSteps(null, { ...base, teamsStep: true, position: { kind: "teams" } });
+    const grown = trackSteps(first, {
+      ...base,
+      careerStep: true,
+      teamsStep: true,
+      position: { kind: "teams" },
+    });
+    expect(grown.count.careerStep).toBe(true);
+    expect(grown.growth).toBeNull();
+  });
+
+  it("keeps the last line standing, with its seq, when a later growth is all behind", () => {
+    const first = trackSteps(null, { ...base, position: { kind: "review", index: 0 } });
+    const teams = trackSteps(first, {
+      ...base,
+      teamsStep: true,
+      position: { kind: "review", index: 0 },
+    });
+    const career = trackSteps(teams, {
+      ...base,
+      teamsStep: true,
+      careerStep: true,
+      position: { kind: "career" },
+    });
+    expect(career.growth).toEqual(teams.growth);
+  });
+
+  it("an absent position filters nothing, as before", () => {
+    const first = trackSteps(null, base);
+    const grown = trackSteps(first, { ...base, careerStep: true });
+    expect(grown.growth?.text).toBe(`1 more step: ${CAREER_GROWTH_REASON}`);
+  });
+});
+
 describe("career step (NEO-574) — the walk", () => {
   const all = { career: true, teams: true, autograph: true, titles: true };
 
