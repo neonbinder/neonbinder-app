@@ -92,6 +92,7 @@ import {
   coverageAskOf,
   deriveSittingPairs,
   gateJudgedKeys,
+  CAREER_TEAM_NOT_NEEDED,
   followUpPair,
   linesWithBadYears,
   pairKey,
@@ -4495,10 +4496,25 @@ export default function EntityReviewWizard({
    * off its card is not created (the commit makes teams from the names on the
    * cards), so the summary does not count it.
    */
-  const droppedNewTeams =
+  const droppedTeamKeys =
     checklistedCards && careerFields && rows
-      ? unreferencedCreatedTeamRows(checklistedCards, previewCards ?? [], rows).length
-      : 0;
+      ? unreferencedCreatedTeamRows(checklistedCards, previewCards ?? [], rows)
+      : [];
+  const droppedNewTeams = droppedTeamKeys.length;
+  /** What the Decided list says about a row: a dropped New Team is "not needed". */
+  const describeRowDecision = (row: (typeof rows)[number]): string =>
+    row.kind === "team" &&
+    row.decision?.action === "create" &&
+    droppedTeamKeys.includes(normalizeEntityName(row.name))
+      ? CAREER_TEAM_NOT_NEEDED
+      : describeDecision(
+          row.decision,
+          linkedNameFor(row),
+          row.name,
+          sameNameLinkDetailFor(row),
+          autoLinkOtherSport(row),
+          careerTeamContextFor(row, incomingPreviewCards),
+        );
   const summaryRows: Array<[string, number]> = [
     ["Cards to save", summary.cardCount],
     ["Cards to delete", summary.deleteCount],
@@ -5563,14 +5579,7 @@ export default function EntityReviewWizard({
                     <p className="text-sm text-ink-3">
                       Already decided:{" "}
                       <span className="text-ink">
-                        {describeDecision(
-                          current.decision,
-                          linkedNameFor(current),
-                          current.name,
-                          sameNameLinkDetailFor(current),
-                          autoLinkOtherSport(current),
-                          careerTeamContextFor(current, incomingPreviewCards),
-                        )}
+                        {describeRowDecision(current)}
                       </span>
                     </p>
                     <div className="flex items-center gap-3">
@@ -6474,15 +6483,8 @@ export default function EntityReviewWizard({
                           batch will DO with the name beside it, so it is
                           content rather than decoration. */}
                       <span className="text-ink-3">
-                        {describeDecision(
-                          row.decision,
-                          linkedNameFor(row),
-                          row.name,
-                          sameNameLinkDetailFor(row),
-                          autoLinkOtherSport(row),
-                          // NEO-490 — what on the card settled a careerTeam link.
-                          careerTeamContextFor(row, incomingPreviewCards),
-                        )}
+                        {/* NEO-490 — what on the card settled a careerTeam link. */}
+                        {describeRowDecision(row)}
                       </span>
                       <button
                         type="button"

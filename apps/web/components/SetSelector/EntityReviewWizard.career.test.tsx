@@ -88,6 +88,7 @@ import {
   CAREER_READ_FAILED,
   CAREER_RETRY_LABEL,
   CAREER_STEP_HEADING,
+  CAREER_TEAM_NOT_NEEDED,
   type CareerContext,
 } from "./career-check";
 import { STEP_SUBTITLE } from "./entity-review-steps";
@@ -393,6 +394,28 @@ describe("a New Team nobody names any more (NEO-574)", () => {
     // A zero row is not listed at all.
     expect(screen.queryByText("New players and teams")).toBeNull();
     expect(screen.getByText("Linked to existing")).toBeTruthy();
+  });
+
+  it("still says 'Added as new' while the card prints the team", () => {
+    toSummary();
+    fireEvent.click(next());
+    const decided = within(screen.getByRole("list", { name: "Decided names" }));
+    expect(decided.getByText("Added as new")).toBeTruthy();
+    expect(decided.queryByText(CAREER_TEAM_NOT_NEEDED)).toBeNull();
+  });
+
+  it("says 'not needed' for it in the Decided list once 'Different team' dropped it", () => {
+    toSummary();
+    const group = screen.getAllByRole("radiogroup")[0];
+    fireEvent.click(within(group).getByRole("radio", { name: "Different team" }));
+    fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
+    fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
+    fireEvent.click(next());
+    const decided = within(screen.getByRole("list", { name: "Decided names" }));
+    expect(decided.queryByText("Added as new")).toBeNull();
+    expect(decided.getByText(CAREER_TEAM_NOT_NEEDED)).toBeTruthy();
+    // The linked player's line is still there.
+    expect(decided.getByText("Mike Trout")).toBeTruthy();
   });
 });
 

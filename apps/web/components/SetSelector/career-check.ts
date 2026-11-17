@@ -577,6 +577,8 @@ export const CAREER_NEXT_BLOCKED = "Fix the years first — then Next.";
 export const CAREER_CHECKING = "Checking careers…";
 /** The coverage read failed. Next still saves; Retry asks again. */
 export const CAREER_READ_FAILED = "The career check couldn’t run.";
+/** A New Team row the career step made unnecessary, in the Decided list. */
+export const CAREER_TEAM_NOT_NEEDED = "Not needed — card’s team changed";
 export const CAREER_RETRY_LABEL = "Retry career check";
 /** A relinked player or re-teamed pair whose re-check failed. */
 export const careerFollowUpFailed = (subject: string): string =>
