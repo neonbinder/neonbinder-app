@@ -879,6 +879,54 @@ describe("the signed-in Pick List's ways out", () => {
     }
   });
 
+  it("NEO-590: a title row shows no card number, no Not in NB chip, keeps its problem line, and its sport and year file it", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const title = "2019 Zork Chrome #RC-77 Some Player";
+    const problem = "NB didn't list this one. Check the order's photo.";
+    const extra = {
+      id: "x-590",
+      quantity: 1,
+      condition: "",
+      order: { id: "oe", venue: "eBay", number: "27-11111-22222" },
+      card: null,
+      sportCode: null,
+      listingTitle: title,
+      listed: { title, titleSport: { id: "sp-zz", name: "Zorbball", code: "ZB" } },
+      problem,
+    };
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
+    for (const size of ["Spacious", "Condensed"] as const) {
+      fireEvent.click(within(region).getByRole("radio", { name: size }));
+      const row = within(region).getByRole("button", { name: `Pulled ${title}, not in NB, eBay 27-11111-22222` }).closest("tr")!;
+      expect(row.closest("tbody")!.textContent).toContain("Sales NB didn't list");
+      expect(within(row).queryByText("Not in NB", { exact: true })).toBeNull();
+      // The title is the only place the number's "#" shows; no cell of its own carries it.
+      expect([...row.querySelectorAll("td, th")].some((c) => c.textContent === "#RC-77")).toBe(false);
+      expect(within(row).getAllByText(problem).length).toBeGreaterThan(0);
+      expect(within(row).getAllByText("Zorbball", { exact: false }).length).toBeGreaterThan(0);
+    }
+    expect(within(region).getByRole("option", { name: "2019" })).toBeTruthy();
+  });
+
+  it("NEO-590: a title row with no year adds no Year option", async () => {
+    const { DEMO_PICK_DATA } = await import("./demoPickStore");
+    const noYear = (id: string, title: string) => ({
+      id,
+      quantity: 1,
+      condition: "",
+      order: { id: "oe", venue: "eBay", number: "27-1" },
+      card: null,
+      sportCode: null,
+      listingTitle: title,
+      listed: { title },
+      problem: "NB didn't list this one. Check the order's photo.",
+    });
+    const region = await show({ lines: [...DEMO_PICK_DATA.lines, noYear("y1", "Binder lot A")] }, true);
+    const year = within(region).getByRole("combobox", { name: "Year" });
+    const values = [...year.querySelectorAll("option")].map((o) => o.textContent);
+    expect(values.every((v) => v === "Every year" || /^\d{4}$/.test(v ?? ""))).toBe(true);
+  });
+
   it("NEO-520: a 200-character title with no spaces wraps in the wide cell and the phone's cell (WCAG 1.4.10)", async () => {
     const { DEMO_PICK_DATA } = await import("./demoPickStore");
     const title = "X".repeat(200);

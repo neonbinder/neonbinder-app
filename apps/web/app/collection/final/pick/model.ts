@@ -303,7 +303,7 @@ const LAST_YEAR = 2100;
 
 /** "2021" is 2021; a season files under its start: "2023-24" and "2023/2024" are 2023. */
 export function listedYear(season: string): number | undefined {
-  const m = /^(\d{4})(?:\s*[-/]\s*(?:\d{2}|\d{4}))?$/.exec(season);
+  const m = /^(\d{4})(?:\s*[-–/]\s*(?:\d{2}|\d{4}))?$/.exec(season);
   if (!m) return undefined;
   const year = Number(m[1]);
   return year >= FIRST_YEAR && year <= LAST_YEAR ? year : undefined;

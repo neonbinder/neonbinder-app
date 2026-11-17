@@ -12,6 +12,7 @@ import {
   boxWalk,
   CANT_FIND_STOP,
   buildSections,
+  cardFacts,
   compareBoxes,
   compareDefault,
   copiesLeft,
@@ -23,6 +24,7 @@ import {
   mergeLines,
   naturalCompare,
   NOT_IN_BOX_STOP,
+  parseListingTitle,
   rowFacts,
   setSections,
   setsOnList,
@@ -903,5 +905,161 @@ describe("NEO-509: one total order over cards and listings", () => {
     const sections = buildSections(mix(), {}, { sort: null, dir: "asc", groupByOrder: false }).filter((x) => x.kind === "set");
     const keys = sections.map((x) => x.key);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("NEO-590: parseListingTitle", () => {
+  it("reads a leading year, the set words, and the # token", () => {
+    expect(parseListingTitle("2023 Panini Prizm #12 Justin Herbert")).toEqual({ year: 2023, cardNumber: "12", setText: "Panini Prizm" });
+  });
+
+  it("files a season under its start year, hyphen or slash", () => {
+    expect(parseListingTitle("2023-24 Hoops #5 Someone")).toMatchObject({ year: 2023, setText: "Hoops", cardNumber: "5" });
+    expect(parseListingTitle("2023/24 Hoops #5")).toMatchObject({ year: 2023, setText: "Hoops" });
+    expect(parseListingTitle("2023/2024 Hoops")).toMatchObject({ year: 2023, setText: "Hoops" });
+    // eBay sellers paste an en dash as often as a hyphen.
+    expect(parseListingTitle("2023\u201324 Hoops #5")).toMatchObject({ year: 2023, setText: "Hoops", cardNumber: "5" });
+  });
+
+  it("keeps a lettered card number whole and trims its trailing punctuation", () => {
+    expect(parseListingTitle("2021 Score #RC-12, Justin Fields").cardNumber).toBe("RC-12");
+    expect(parseListingTitle("2021 Score # 7 Fields").cardNumber).toBe("7");
+  });
+
+  it("a title with no # has an empty card number and the rest as set words", () => {
+    expect(parseListingTitle("2020 Topps Update Mike Trout")).toEqual({ year: 2020, cardNumber: "", setText: "Topps Update Mike Trout" });
+  });
+
+  it("a title that opens with no year has no year and keeps its whole text", () => {
+    expect(parseListingTitle("Topps Chrome #205 Some Player")).toEqual({ year: null, cardNumber: "205", setText: "Topps Chrome" });
+    expect(parseListingTitle("PSA 10 2023 Topps Chrome")).toEqual({ year: null, cardNumber: "", setText: "PSA 10 2023 Topps Chrome" });
+  });
+
+  it("a year that is no year (out of range, glued to letters) is not one", () => {
+    expect(parseListingTitle("1799 Relic").year).toBeNull();
+    expect(parseListingTitle("2021a Relic").year).toBeNull();
+    expect(parseListingTitle("21 Relic").year).toBeNull();
+  });
+
+  it("collapses whitespace and survives clothing, lot and empty text", () => {
+    expect(parseListingTitle("  2022   Bowman \t #7  ")).toEqual({ year: 2022, cardNumber: "7", setText: "Bowman" });
+    expect(parseListingTitle("Vintage binder lot of 50")).toEqual({ year: null, cardNumber: "", setText: "Vintage binder lot of 50" });
+    expect(parseListingTitle("Mens XL Baseball Jersey #99")).toEqual({ year: null, cardNumber: "99", setText: "Mens XL Baseball Jersey" });
+    expect(parseListingTitle("")).toEqual({ year: null, cardNumber: "", setText: "" });
+    expect(parseListingTitle("   ")).toEqual({ year: null, cardNumber: "", setText: "" });
+  });
+
+  it("a lone year and a bare # do not throw", () => {
+    expect(parseListingTitle("2023")).toEqual({ year: 2023, cardNumber: "", setText: "" });
+    expect(parseListingTitle("2023 Topps #")).toEqual({ year: 2023, cardNumber: "", setText: "Topps" });
+    expect(parseListingTitle("2023 Topps #...")).toMatchObject({ cardNumber: "" });
+  });
+
+  it("odd punctuation and accents stay in the set words untouched", () => {
+    expect(parseListingTitle("2019 Topps Chrome Sapphire O'Neal Jr. Ramírez #3")).toEqual({
+      year: 2019,
+      cardNumber: "3",
+      setText: "Topps Chrome Sapphire O'Neal Jr. Ramírez",
+    });
+  });
+});
+
+describe("NEO-590: filing a card-less sale by its title", () => {
+  const titled = (title: string, sport?: { id: string; name: string; code: string | null } | null): ListedCard => ({
+    title,
+    ...(sport !== undefined ? { titleSport: sport } : {}),
+  });
+  const FOOTBALL = { id: "sp-fb", name: "Football", code: "FB" };
+  const HOCKEY = { id: "sp-hk", name: "Hockey", code: "HK" };
+  const title = (t: string, sport?: typeof FOOTBALL | null) => line(null, { order: EBAY_1, listingTitle: t, sportCode: null, listed: titled(t, sport) });
+  const defaults = { sort: null, dir: "asc", groupByOrder: false } as const;
+
+  it("files a sport's title rows in a sport section behind the Sales NB didn't list divider, not under Can't find it", () => {
+    const sections = buildSections([title("2023 Prizm #4 A Player", FOOTBALL)], {}, defaults);
+    expect(sections.map((s) => s.kind)).toEqual(["set"]);
+    expect(sections[0]).toMatchObject({ kind: "set", sportName: "Football", sportCode: "FB", title: "Sales NB didn't list" });
+  });
+
+  it("an untitled sale (and a card-worded listing is not one) stays in Can't find it", () => {
+    const sections = buildSections([line(null, { order: EBAY_1, listingTitle: "Unmatched sale", sportCode: null })], {}, defaults);
+    expect(sections.map((s) => s.kind)).toEqual(["cantFind"]);
+  });
+
+  it("a title with no sport found files under Other", () => {
+    const facts = rowFacts(mergeLines([title("Mystery lot", null)])[0]);
+    expect(facts).toMatchObject({ sportName: "Other", sportKey: "title:other", year: null, fromTitle: true, sportCode: null });
+  });
+
+  it("walks Other last, whatever the sports' names are", () => {
+    const rows = mergeLines([title("Zed lot", null), title("A thing", HOCKEY), title("Another", FOOTBALL)]);
+    expect(sortRows(rows, null).map((r) => rowFacts(r)!.sportName)).toEqual(["Football", "Hockey", "Other"]);
+  });
+
+  it("walks a sport's NB set rows before its title rows, even when the title is newer", () => {
+    const nb = line(card({ sport: "Football", season: "2001", number: "1", setId: "old" }));
+    const rows = mergeLines([title("2024 Prizm #1 New", FOOTBALL), nb]);
+    const sorted = sortRows(rows, null);
+    expect(sorted.map((r) => Boolean(r.card))).toEqual([true, false]);
+  });
+
+  it("walks title rows newest year first, rows with no year last, then by set text", () => {
+    const rows = mergeLines([
+      title("Zebra #1", FOOTBALL),
+      title("2021 Select #1", FOOTBALL),
+      title("2024 Prizm #1", FOOTBALL),
+      title("Absolutely #1", FOOTBALL),
+      title("2024 Mosaic #1", FOOTBALL),
+    ]);
+    expect(sortRows(rows, null).map((r) => r.listingTitle)).toEqual([
+      "2024 Mosaic #1",
+      "2024 Prizm #1",
+      "2021 Select #1",
+      "Absolutely #1",
+      "Zebra #1",
+    ]);
+  });
+
+  it("is a total order: two title rows compare consistently both ways", () => {
+    const [a, b] = mergeLines([title("2024 Prizm #1", FOOTBALL), title("2024 Prizm #2", FOOTBALL)]);
+    expect(Math.sign(compareDefault(a, b))).toBe(-Math.sign(compareDefault(b, a)));
+  });
+
+  it("a title naming an NB set on the list never joins that set's divider", () => {
+    const nb = line(card({ setId: "a", setName: "Topps Chrome", sport: "Football", season: "2024", number: "205" }));
+    const only = title("2024 Topps Chrome #205 Some Player", FOOTBALL);
+    const sections = buildSections([nb, only], {}, defaults).filter((s) => s.kind === "set");
+    expect(sections.map((s) => [s.title, s.rows.length])).toEqual([
+      ["2024 Topps Chrome", 1],
+      ["Sales NB didn't list", 1],
+    ]);
+    expect(sections[0].rows[0].card).not.toBeNull();
+  });
+
+  it("title rows of one sport share one divider, other sports get their own", () => {
+    const sections = buildSections([title("2024 A #1", FOOTBALL), title("2023 B #1", FOOTBALL), title("2024 C #1", HOCKEY)], {}, defaults);
+    expect(sections.map((s) => s.kind === "set" && [s.sportName, s.rows.length])).toEqual([["Football", 2], ["Hockey", 1]]);
+  });
+
+  it("boxStops puts title rows under Not in a box, in walking order, and leaves Can't find it for the untitled", () => {
+    const stops = boxStops(
+      [title("2021 B #1", FOOTBALL), title("2024 A #1", FOOTBALL), line(null, { listingTitle: "Unmatched sale", sportCode: null })],
+      [],
+    );
+    expect(stops.map((s) => s.box.id)).toEqual([NOT_IN_BOX_STOP, CANT_FIND_STOP]);
+    expect(stops[0].rows.map((r) => r.listingTitle)).toEqual(["2024 A #1", "2021 B #1"]);
+  });
+
+  it("cardFacts is null for a title row and the facts for a card", () => {
+    const rows = mergeLines([title("2024 A #1", FOOTBALL), line(card({ number: "1" }))]);
+    const [t, c] = [rows.find((r) => !r.card)!, rows.find((r) => r.card)!];
+    expect(cardFacts(t)).toBeNull();
+    expect(cardFacts(c)).not.toBeNull();
+    expect(rowFacts(t)).not.toBeNull();
+  });
+
+  it("filtering by text finds a title row by its set words and gives its empty number no '#'", () => {
+    const rows = mergeLines([title("2024 Prizm Zork", FOOTBALL)]);
+    expect(filterRows(rows, { text: "zork" })).toHaveLength(1);
+    expect(filterRows(rows, { text: "#" })).toHaveLength(0);
   });
 });

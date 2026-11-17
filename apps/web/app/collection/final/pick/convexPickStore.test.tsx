@@ -373,6 +373,56 @@ describe("NEO-509: the sports a sale names", () => {
     expect(only.problem).toBe("NB didn't list this one. Check the order's photo.");
   });
 
+  const titleCalls = () =>
+    query.mock.calls.filter(([, args]) => (args as { titles?: string[] }).titles).map(([, args]) => (args as { titles: string[] }).titles);
+  const ebayTitled = (n: number, title: string) => lostLine(n, { title }, { platform: "ebay", orderNo: "27-1" });
+
+  it("NEO-590: holds the list until titleSports has answered, then files the line under the sport it names", async () => {
+    let land!: (answer: unknown) => void;
+    query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
+      args.titles ? new Promise((resolve) => (land = resolve)) : Promise.resolve([]),
+    );
+    await mountWith([ebayTitled(1, "2023 Prizm #4 Some Player")]);
+    expect(titleCalls()).toEqual([["2023 Prizm #4 Some Player"]]);
+    expect(store?.data).toBeUndefined();
+    await act(async () => land([{ id: "sp-fb", name: "Football", code: "FB" }]));
+    expect(store?.data?.lines[0].listed?.titleSport).toEqual({ id: "sp-fb", name: "Football", code: "FB" });
+  });
+
+  it("NEO-590: a titleSports call that fails settles the line to Other and does not hold the list", async () => {
+    query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
+      args.titles ? Promise.reject(new Error("offline")) : Promise.resolve([]),
+    );
+    await mountWith([ebayTitled(1, "Vintage binder lot")]);
+    expect(store?.data?.lines).toHaveLength(1);
+    expect(store!.data!.lines[0].listed?.titleSport).toBeNull();
+  });
+
+  it("NEO-590: a title no sport was found for (null answer) is null, not unasked", async () => {
+    query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
+      Promise.resolve(args.titles ? args.titles.map(() => null) : []),
+    );
+    await mountWith([ebayTitled(1, "Mystery lot")]);
+    expect(store!.data!.lines[0].listed).toEqual({ title: "Mystery lot", titleSport: null });
+  });
+
+  it("NEO-590: asks 21 distinct titles in a call of 20 and a call of 1, a repeated title once, and none for a line without a title", async () => {
+    await mountWith([
+      ...Array.from({ length: 21 }, (_, n) => ebayTitled(n, `Lot ${n}`)),
+      ebayTitled(30, "Lot 0"),
+      lostLine(31, { year: "2021", setName: "Score" }),
+    ]);
+    const calls = titleCalls();
+    expect(calls.map((c) => c.length)).toEqual([20, 1]);
+    expect(new Set(calls.flat()).size).toBe(21);
+    expect(store?.data?.lines).toHaveLength(23);
+  });
+
+  it("NEO-590: a matched line's title is never asked about", async () => {
+    await mount();
+    expect(titleCalls()).toEqual([]);
+  });
+
   it("NEO-520: an eBay line with no title and no card words reads as the Sales tab does, never a card or a match", async () => {
     await mountWith([
       lostLine(1, {}, { platform: "ebay", orderNo: "27-1" }),

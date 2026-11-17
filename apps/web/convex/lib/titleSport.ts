@@ -46,7 +46,9 @@ export function titleSearchTerm(title: string): string {
 
 /** The title's normalised words, in order, for `nameInTitle`. */
 export function titleWords(title: string): string[] {
-  return nameTokens(boundedTitle(title));
+  // A comma is deleted by the name chain, so "Topps,Mike Trout" would glue to
+  // "toppsmike": a comma always ends a word here, spaced or not.
+  return nameTokens(boundedTitle(title).replace(/,/g, " "));
 }
 
 /** Whether `name`'s words appear in `words` as one consecutive run. */

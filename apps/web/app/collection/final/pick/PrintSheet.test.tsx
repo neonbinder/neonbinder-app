@@ -158,6 +158,27 @@ describe("the printed sheet's lines for sales NB has no card for", () => {
     expect(cells[6]).toBe("eBay 27-11111-22222");
   });
 
+  it("NEO-590: prints title rows by sport under one Sales NB didn't list divider each, Other last, with no Not in NB mark", () => {
+    const EBAY: PickOrder = { id: "o9", venue: "eBay", number: "27-1" };
+    const named = (t: string, sport: { id: string; name: string; code: string | null } | null) =>
+      stray({ title: t, titleSport: sport }, { listingTitle: t, order: EBAY });
+    const { table } = sheet([
+      named("Mystery lot", null),
+      named("2024 Prizm #3 Someone", { id: "sp-fb", name: "Football", code: "FB" }),
+    ]);
+    const headers = within(table).getAllByRole("rowheader").map((h) => h.textContent ?? "");
+    expect(headers).toHaveLength(2);
+    expect(headers[0]).toContain("Football");
+    expect(headers[1]).toContain("Other");
+    for (const h of headers) expect(h).toContain("Sales NB didn't list");
+    for (const row of table.querySelectorAll("tbody tr.nb-pick-sheet-lost")) {
+      const cells = [...row.querySelectorAll("td")].map((td) => td.textContent);
+      expect(cells[2]).toBe("");
+      expect(cells[3]).not.toContain("Not in NB");
+      expect(cells[4]).toBe(PROBLEM);
+    }
+  });
+
   it("ticks a pulled described line and counts its copies", () => {
     const line = stray(LISTED, { quantity: 2 });
     const { table } = sheet([line], new Set([line.id]));
