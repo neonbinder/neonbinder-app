@@ -79,3 +79,4 @@
 ## From the NEO-552 consolidation
 - [Local run backend, Vite, previews](patterns_local_run_backend_and_vite.md) — function-spec check, one Vite per worktree, CI seed resets
 - [BSC budget rules and the SportLots helper](patterns_bsc_budget_rules_and_sportlots_helper.md) — rules 1-3, expectStepWithSportLots, TSV mis-match trap
+- [Near-match absence proved by the same locator](patterns_near_match_absence_proved_by_the_same_locator.md) — NEO-578: pin row count, flip query so the locator matches; admin add form = minted route
