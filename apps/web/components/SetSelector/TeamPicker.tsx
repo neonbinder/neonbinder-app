@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "convex/react";
+import { CheckIcon, NoSymbolIcon } from "@heroicons/react/16/solid";
 import { Input } from "../primitives/Input";
 import { api } from "../../convex/_generated/api";
 import { teamFullName } from "../../lib/teams/team-name";
@@ -11,6 +12,7 @@ import NewTeamDialog from "./NewTeamDialog";
 import PickerPopover, { popoverFocusables } from "./PickerPopover";
 import { SportTagById } from "./PlayerPicker";
 import SportSwitch from "./SportSwitch";
+import { NO_TEAM_LABELS, NO_TEAM_TEXT } from "./team-picker-labels";
 
 /**
  * NEO-277 — the four container-level accessible names, overridable per
@@ -54,6 +56,29 @@ export const DEFAULT_TEAM_PICKER_LABELS: TeamPickerLabels = {
   trigger: "Add team",
   search: "Search teams",
   results: "Team typeahead results",
+};
+
+/**
+ * NEO-556 — the optional "No Team" answer beside "+ Add team".
+ *
+ * One toggle button, never a typeahead entry: No Team is not a team, and an
+ * option in the team list would be found by typing "no", sorted among real
+ * clubs, and offered for creation. Pressed, it reads as the row's one chip.
+ *
+ * One user action, one callback:
+ *  - pressing it calls `onChange(true)`: the caller stores No Team AND drops
+ *    any teams (the two answers never coexist; the server refuses both);
+ *  - pressing it again calls `onChange(false)`: No Team is withdrawn, nothing
+ *    else changes;
+ *  - picking a team while it is pressed calls ONLY the picker's own
+ *    `onChange([team])`: a non-empty team list is the caller's signal that No
+ *    Team was replaced (the server retires the stamp on a team write).
+ */
+export type TeamPickerNoTeam = {
+  value: boolean;
+  onChange: (next: boolean) => void;
+  /** Accessible name; one of `NO_TEAM_LABELS`. Default `NO_TEAM_LABELS.card`. */
+  label?: string;
 };
 
 /**
@@ -135,6 +160,7 @@ export default function TeamPicker({
   labels = DEFAULT_TEAM_PICKER_LABELS,
   ariaDescribedBy,
   contextOptionId,
+  noTeam,
 }: {
   value: Array<Id<"teams">>;
   onChange: (next: Array<Id<"teams">>) => void;
@@ -172,7 +198,14 @@ export default function TeamPicker({
    * Kept through a cross-sport switch — the server decides what it means there.
    */
   contextOptionId?: Id<"selectorOptions">;
+  /**
+   * NEO-556 — offer "No Team" beside "+ Add team". Omit where No Team is not
+   * an answer (Player Management's career teams, the missing-team fixer, which
+   * has its own "No team on this card" button). See `TeamPickerNoTeam`.
+   */
+  noTeam?: TeamPickerNoTeam;
 }) {
+  const noTeamOn = noTeam?.value === true;
   // Resolve currently-selected ids → display rows for the chip labels.
   // Convex deduplicates this between sibling pickers on the same page.
   const selectedRows = useQuery(api.teams.getManyByIds, { ids: value });
@@ -488,7 +521,10 @@ export default function TeamPicker({
   const addChip = (id: Id<"teams">) => {
     if (disabled) return;
     if (value.includes(id)) return;
-    onChange([...value, id]);
+    // NEO-556: a team picked over No Team REPLACES it. The list is only the
+    // new team (No Team carries none), and that non-empty list is the one
+    // signal the caller needs — see `TeamPickerNoTeam`.
+    onChange(noTeamOn ? [id] : [...value, id]);
     setQuery("");
     setHighlightIdx(0);
     // Stay open so the user can pick a second team on a dual-team
@@ -621,7 +657,7 @@ export default function TeamPicker({
           // control's boundary, and `dark:border-gray-600` measures 2.35:1 on
           // the dark surface — under the 3:1 floor. gray-500 is 3.67:1 there
           // and the light-theme gray-400 already passes.
-          className="px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2"
+          className="px-2 py-0.5 text-xs rounded border border-dashed border-control hover:border-neon-green-text focus:border-neon-green-text focus-outline text-ink-2 [@media(pointer:coarse)]:min-h-11"
         >
           {/* The visible text IS the accessible name, plus the "+": an
               instance that renames the trigger renames what people see, so
@@ -892,6 +928,53 @@ export default function TeamPicker({
           </PickerPopover>
         )}
       </div>
+
+      {noTeam && (
+        /*
+          NEO-556 — "No Team": a state toggle, so a plain <button> with
+          `aria-pressed` (theme rule: chips and toggles are state, not
+          NeonButtons). After "+ Add team" in the tab order: picking a team
+          is the common answer, this the deliberate one.
+
+          At rest it wears a chip's outline, so it reads as an answer you can
+          choose rather than an action. Pressed it IS the row's chip: filled
+          like a team chip, with the selection line as well as the fill (a tint
+          alone is a colour-only mark in light mode, DESIGN.md "No Glow Alone").
+          The slashed circle is the "none" sign in both states, so the word is
+          never carried by colour. Pressed also adds a shape and a weight: a
+          check after the word and semibold type (SC 1.4.1, the state is
+          never the tint alone).
+
+          `min-h-6`: the 24px target floor (SC 2.5.8) on a chip-sized face;
+          on a touch screen (`pointer: coarse`) it grows to the 44px finger
+          target, as "+ Add team" beside it does.
+          `aria-describedby` follows "+ Add team"'s: the caller's hint says
+          what the answer reaches, for this control as much as the trigger.
+
+          The same element in both states, so focus never moves under the
+          operator's finger when it toggles.
+        */
+        <button
+          type="button"
+          disabled={disabled}
+          aria-pressed={noTeamOn}
+          aria-label={noTeam.label ?? NO_TEAM_LABELS.card}
+          aria-describedby={ariaDescribedBy}
+          onClick={() => {
+            if (disabled) return;
+            noTeam.onChange(!noTeamOn);
+          }}
+          className={`inline-flex min-h-6 [@media(pointer:coarse)]:min-h-11 items-center gap-1 px-2 py-0.5 text-xs rounded-full border focus-outline disabled:cursor-not-allowed disabled:opacity-50 ${
+            noTeamOn
+              ? "bg-chip border-selection text-ink font-semibold"
+              : "border-control text-ink-2 hover:border-neon-green-text"
+          }`}
+        >
+          <NoSymbolIcon aria-hidden="true" className="size-3 shrink-0" />
+          {NO_TEAM_TEXT}
+          {noTeamOn && <CheckIcon aria-hidden="true" data-pressed-mark="" className="size-3 shrink-0" />}
+        </button>
+      )}
 
       {/*
         Portalled to `document.body` by the dialog itself, so its position in

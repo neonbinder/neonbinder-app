@@ -233,8 +233,12 @@ so the ones the recorder could replay are also kept in the recordings bucket.
 kind: "429"|"503"|"delay"|"hang"|"reset", delayMs?, retryAfterS?, times?,
 ttlS?}]}`. eBay templates and the eBay-only kinds `ebayError` and
 `unauthorized`: "Fake eBay", "Faults on eBay paths". Default TTL 10 minutes. Replaces
-`NEONBINDER_TEST_BSC_STALL_CARD_IDS`. A `hang` holds the socket for at most
-2 minutes. Held sockets are capped per scope (namespace, prefix, or no
+`NEONBINDER_TEST_BSC_STALL_CARD_IDS`. A `hang` holds the request for at most
+2 minutes, then answers 503 (`Service Unavailable`); `reset` answers that 503
+at once. Neither drops the socket: on Cloud Run a container-side drop
+mid-request makes the platform replace the only instance, which wipes every
+namespace's state and answers 429 while the new one starts (NEO-582), and a
+client behind Cloud Run never sees a real TCP reset anyway. Held sockets are capped per scope (namespace, prefix, or no
 namespace): 4 in a `hang`, 24 in a `delay` (`bscFault.slow` delays
 card-listing in waves of 10 per namespace, and a 503 there would count as a
 BSC failure). Hangs and delays together are capped at 64 for the whole

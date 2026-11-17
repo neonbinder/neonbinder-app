@@ -506,6 +506,17 @@ export async function cancelAndDiscard(page: Page): Promise<void> {
 }
 
 /**
+ * NEO-556: Cancel out of a wizard with NO decision on it. There is nothing to discard, so the
+ * product asks nothing and says the fetch is cancelled at once (`cancelAndDiscard` waits for
+ * the "Discard N decisions?" question, which a batch with no decision never raises).
+ */
+export async function cancelUndecided(page: Page): Promise<void> {
+  await page.getByRole("button", { name: "Cancel (Esc)" }).click();
+  await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible();
+  await expect(reviewWizard(page)).toBeHidden();
+}
+
+/**
  * util-discard-resumed-review-batch.yaml: a batch an earlier flow left behind
  * opens with decisions already on it ("Step k+1 of M", k names decided);
  * throw it away and fetch again so this flow starts at "Step 1 of N".

@@ -71,7 +71,7 @@ import { pausedSides } from "./marketplacePause";
 import { initialSlots } from "./platformSlots";
 import { SL_ALL_BRANDS_BRAND_ID } from "./slBrandAxis";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
-import { inheritedTeamIds } from "./lib/selectorTeams";
+import { inheritedTeamDefault } from "./lib/selectorTeams";
 import { newRowSubtreeCounts, createCardCountLedger } from "./cardCounts";
 import {
   refreshDescriptionsAfterRename,
@@ -800,7 +800,7 @@ export async function ensureBrandRowForName(
     ...(year.features ?? {}),
     ...deriveOwnLevelFeatures("manufacturer", name),
   };
-  const parentTeamIds = inheritedTeamIds(year);
+  const parentTeamDefault = inheritedTeamDefault(year);
   const now = Date.now();
   const id = await ctx.db.insert("selectorOptions", {
     ...newRowSubtreeCounts("manufacturer"),
@@ -813,7 +813,7 @@ export async function ensureBrandRowForName(
     children: [],
     metadata: { setNamePrefix: name },
     ...(Object.keys(features).length > 0 ? { features } : {}),
-    ...(parentTeamIds ? { teamIds: parentTeamIds } : {}),
+    ...parentTeamDefault,
     lastUpdated: now,
   });
   const nextChildren = unionChildren(year.children, [id]);

@@ -136,6 +136,7 @@ vi.mock("convex/react", () => ({
 // ---------------------------------------------------------------------------
 
 import TeamPicker from "./TeamPicker";
+import { NO_TEAM_LABELS, NO_TEAM_TEXT } from "./team-picker-labels";
 import type { Id } from "../../convex/_generated/dataModel";
 import { nameMatchesQuery } from "../../lib/entities/name-search";
 import { teamFullName } from "../../lib/teams/team-name";
@@ -1667,5 +1668,150 @@ describe("TeamPicker — labels prop (NEO-277)", () => {
     expect(screen.getByLabelText("Team: New York Yankees")).toBeTruthy();
     expect(screen.getByLabelText("Remove team New York Yankees")).toBeTruthy();
     expect(screen.getByLabelText("Add Boston Red Sox")).toBeTruthy();
+  });
+
+  // -------------------------------------------------------------------------
+  // NEO-556 — "No Team", a toggle beside "+ Add team"
+  // -------------------------------------------------------------------------
+
+  describe("No Team", () => {
+    function renderWithNoTeam(
+      noTeamValue: boolean,
+      props: Partial<Parameters<typeof TeamPicker>[0]> = {},
+    ) {
+      const onNoTeam = vi.fn();
+      const utils = renderPicker({
+        noTeam: { value: noTeamValue, onChange: onNoTeam },
+        ...props,
+      });
+      return { ...utils, onNoTeam };
+    }
+    const toggle = () =>
+      screen.getByRole("button", { name: NO_TEAM_LABELS.card });
+
+    it("is absent unless the caller offers it", () => {
+      renderPicker();
+      expect(screen.queryByRole("button", { name: /no team/i })).toBeNull();
+    });
+
+    it("is one toggle after the trigger, visibly 'No Team', named with the visible words first", () => {
+      renderWithNoTeam(false);
+      const button = toggle();
+      expect(button.getAttribute("aria-pressed")).toBe("false");
+      expect(button.textContent?.trim()).toBe(NO_TEAM_TEXT);
+      expect(NO_TEAM_LABELS.card.startsWith(NO_TEAM_TEXT)).toBe(true);
+      const trigger = screen.getByLabelText("Add team");
+      // DOCUMENT_POSITION_FOLLOWING: the toggle comes after "+ Add team".
+      expect(
+        trigger.compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
+
+    it("is never an entry in the typeahead", () => {
+      currentCandidates = [makeTeam("t1", "New York Yankees")];
+      renderWithNoTeam(false);
+      openPopover();
+      fireEvent.change(screen.getByLabelText("Search teams"), {
+        target: { value: "no" },
+      });
+      const listbox = screen.getByRole("listbox");
+      expect(within(listbox).queryByText(/no team/i)).toBeNull();
+    });
+
+    it("pressing it asks for No Team and touches nothing else", () => {
+      const { onNoTeam, onChange } = renderWithNoTeam(false);
+      fireEvent.click(toggle());
+      expect(onNoTeam).toHaveBeenCalledWith(true);
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("pressed, it reads as the chosen answer and pressing again withdraws it", () => {
+      const { onNoTeam } = renderWithNoTeam(true);
+      expect(toggle().getAttribute("aria-pressed")).toBe("true");
+      fireEvent.click(toggle());
+      expect(onNoTeam).toHaveBeenCalledWith(false);
+    });
+
+    it("picking a team over No Team replaces it with that one team, in one callback", () => {
+      currentCandidates = [makeTeam("t1", "New York Yankees")];
+      const { onNoTeam, onChange } = renderWithNoTeam(true);
+      openPopover();
+      fireEvent.click(screen.getByLabelText("Add New York Yankees"));
+      expect(onChange).toHaveBeenCalledWith([tid("t1")]);
+      expect(onNoTeam).not.toHaveBeenCalled();
+    });
+
+    it("keeps focus on itself when toggled (the same element in both states)", () => {
+      const { rerender } = renderWithNoTeam(false);
+      const before = toggle();
+      before.focus();
+      fireEvent.click(before);
+      rerender(
+        <TeamPicker
+          value={[]}
+          onChange={vi.fn()}
+          sportId={SPORT_ID}
+          noTeam={{ value: true, onChange: vi.fn() }}
+        />,
+      );
+      expect(toggle()).toBe(before);
+      expect(document.activeElement).toBe(before);
+    });
+
+    it("carries the caller's hint, as '+ Add team' does", () => {
+      renderWithNoTeam(false, { ariaDescribedBy: "team-hint" });
+      expect(toggle().getAttribute("aria-describedby")).toBe("team-hint");
+      expect(screen.getByLabelText("Add team").getAttribute("aria-describedby")).toBe("team-hint");
+    });
+
+    it("meets the 24px target floor and marks pressed by shape and weight, not tint alone", () => {
+      const { unmount } = renderWithNoTeam(false);
+      expect(toggle().className).toContain("min-h-6");
+      expect(toggle().querySelector("[data-pressed-mark]")).toBeNull();
+      expect(toggle().className).not.toContain("font-semibold");
+      unmount();
+      renderWithNoTeam(true);
+      expect(toggle().querySelector("[data-pressed-mark]")).not.toBeNull();
+      expect(toggle().className).toContain("font-semibold");
+      // The added mark is decoration; the name stays the visible words.
+      expect(toggle().textContent?.trim()).toBe(NO_TEAM_TEXT);
+    });
+
+    it("is disabled with the picker", () => {
+      const { onNoTeam } = renderWithNoTeam(false, { disabled: true });
+      expect((toggle() as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(toggle());
+      expect(onNoTeam).not.toHaveBeenCalled();
+    });
+
+    it("takes a per-instance accessible name", () => {
+      const onNoTeam = vi.fn();
+      renderPicker({
+        noTeam: { value: false, onChange: onNoTeam, label: NO_TEAM_LABELS.everyCard },
+      });
+      expect(
+        screen.getByRole("button", { name: NO_TEAM_LABELS.everyCard }),
+      ).toBeTruthy();
+      expect(screen.queryByRole("button", { name: NO_TEAM_LABELS.card })).toBeNull();
+    });
+
+    it("no two instance names contain one another, nor the fixer's 'No team on this card'", () => {
+      const names = [
+        ...Object.values(NO_TEAM_LABELS),
+        "No team on this card",
+        "Add team",
+        "Add set team",
+      ].map((n) => n.toLowerCase());
+      for (const a of names) {
+        for (const b of names) {
+          if (a === b) continue;
+          expect(`${a} ⊄ ${b}: ${b.includes(a)}`).toBe(`${a} ⊄ ${b}: false`);
+        }
+      }
+      // Each visible-word-first name starts with what the button shows.
+      for (const name of Object.values(NO_TEAM_LABELS)) {
+        expect(name.startsWith(NO_TEAM_TEXT)).toBe(true);
+      }
+    });
   });
 });

@@ -46,3 +46,4 @@
 - [NEO-483 background chain tests](reference_neo483_background_chain_test_patterns.md) — scheduled args array, stub arg widening, timeout retry doubles reads, token-guard break-checks
 - [Fake-BSC miss store tests](reference_fake_bsc_miss_store_test_patterns.md) — unref timer hang, owner reachability, dist break-checks, sheet drift fixtures
 - [NEO-555 probe/capture adversarial](reference_neo555_probe_capture_adversarial.md) — shallow-freeze trap, signal guard, body-read leak, break-check by revert
+- [NEO-556 No Team adversarial patterns](reference_neo556_no_team_adversarial_patterns.md) — oracle cartesian, ?raw source pins, client-vs-server commit agreement

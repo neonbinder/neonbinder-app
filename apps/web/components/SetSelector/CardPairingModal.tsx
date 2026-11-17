@@ -1492,7 +1492,9 @@ function baseReducer(state: State, action: Action): State {
      * commit, one 300ms HTTP call at a time: the data eventually appears,
      * having been fetched twice and reviewed never.
      *
-     * ONLY `teams` is merged. `cardName` in particular must not be: it is what
+     * ONLY `teams` is merged, plus (NEO-556) the BSC lookup's outcome and raw
+     * listed team on a row that has none (`enrichLookup`). `cardName` in
+     * particular must not be: it is what
      * `CHOOSE_NAME` rewrites when an operator settles a name conflict, and a
      * later stream update would silently undo their choice.
      */
@@ -1549,9 +1551,54 @@ function baseReducer(state: State, action: Action): State {
         if (sl) incomingByRef.set(sl, c);
       }
 
+      // The same rows by their BSC ref alone: the fetch-time team lookup is
+      // BSC's, so only a BSC ref may carry its outcome onto a held row.
+      const incomingByBscRef = new Map<string, PairingCard>();
+      for (const c of [
+        ...action.autoMatched.map((m) => m.card),
+        ...action.unmatchedBsc,
+      ]) {
+        const bsc = c.platformData.bsc?.ref;
+        if (bsc) incomingByBscRef.set(bsc, c);
+      }
+
       let enriched = false;
+      /**
+       * NEO-556 — adopt how the fetch-time BSC team lookup ENDED, for a row
+       * absorbed before it landed. The dialog opens on the first streamed
+       * rows, still pending, so without this a row whose lookup came back
+       * "answered" reached `onConfirm` with no `teamLookup` and the commit
+       * queued it for the same BSC lookup a second time (NEO-335's "an
+       * answered card is not asked again"), holding back a set-level No Team
+       * stamp until the background lane got to it.
+       *
+       * Separate from `enrich` because it is a different fact: a lookup can
+       * answer with no team at all, and a row that already holds a team still
+       * needs the outcome. `rawTeamName` comes with it, because a listing that
+       * names a team is a claim that must keep blocking a guess (rule 8).
+       *
+       * Never replaces an outcome the row already has, never adopts
+       * `"checklist"` (the publisher row's answer, not a BSC lookup — a pair
+       * the operator unlinked must not take it back), and never touches
+       * `teams`.
+       */
+      const enrichLookup = (c: PairingCard): PairingCard => {
+        if (c.teamLookup !== undefined) return c;
+        const bscRef = c.platformData.bsc?.ref;
+        const fresh = bscRef ? incomingByBscRef.get(bscRef) : undefined;
+        const outcome = fresh?.teamLookup;
+        if (!fresh || !outcome || outcome === "checklist") return c;
+        enriched = true;
+        return {
+          ...c,
+          teamLookup: outcome,
+          ...(fresh.rawTeamName !== undefined && c.rawTeamName === undefined
+            ? { rawTeamName: fresh.rawTeamName }
+            : {}),
+        };
+      };
       /** Adopt a team that resolved after this row was absorbed. Nothing else. */
-      const enrich = (c: PairingCard): PairingCard => {
+      const enrichTeams = (c: PairingCard): PairingCard => {
         if (c.teams?.length) return c;
         const bscRef = c.platformData.bsc?.ref;
         const slRef = c.platformData.sportlots?.ref;
@@ -1566,6 +1613,7 @@ function baseReducer(state: State, action: Action): State {
         enriched = true;
         return { ...c, teams: fresh.teams };
       };
+      const enrich = (c: PairingCard): PairingCard => enrichTeams(enrichLookup(c));
 
       const matched = state.matched.map((m) => {
         const card = enrich(m.card);

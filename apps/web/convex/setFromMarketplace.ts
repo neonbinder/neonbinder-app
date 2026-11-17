@@ -1,7 +1,7 @@
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { deriveOwnLevelFeatures } from "./features/deriveCardFeatures";
-import { inheritedTeamIds } from "./lib/selectorTeams";
+import { inheritedTeamDefault } from "./lib/selectorTeams";
 import { newRowSubtreeCounts } from "./cardCounts";
 import { initialSlots } from "./platformSlots";
 import {
@@ -31,7 +31,7 @@ import { unionChildren } from "./selectorSyncStore";
  *  - The SET is NB's row: `platformData: {}`, no marketplace ids. Its
  *    `features` are the brand's plus the level's own derivation
  *    (`deriveOwnLevelFeatures("setName", name)`), its `teamIds` the brand's
- *    set-level team copied down (`inheritedTeamIds`), `children: []` until
+ *    set-level team (or No Team) copied down (`inheritedTeamDefault`), `children: []` until
  *    the Base exists, and `createdByUserId` from the caller's identity when
  *    there is one — never a client argument.
  *  - The BASE is the one row that carries the marketplace link, exactly
@@ -398,7 +398,7 @@ export async function insertSetWithBaseFromSl(
   }
 
   const now = Date.now();
-  const brandTeamIds = inheritedTeamIds(brand);
+  const brandTeamDefault = inheritedTeamDefault(brand);
   const audit = args.createdByUserId
     ? { createdByUserId: args.createdByUserId }
     : {};
@@ -417,7 +417,7 @@ export async function insertSetWithBaseFromSl(
     children: [],
     ...audit,
     ...(Object.keys(setFeatures).length > 0 ? { features: setFeatures } : {}),
-    ...(brandTeamIds ? { teamIds: brandTeamIds } : {}),
+    ...brandTeamDefault,
     lastUpdated: now,
   });
 
@@ -440,7 +440,7 @@ export async function insertSetWithBaseFromSl(
     children: [],
     ...audit,
     ...(Object.keys(baseFeatures).length > 0 ? { features: baseFeatures } : {}),
-    ...(brandTeamIds ? { teamIds: [...brandTeamIds] } : {}),
+    ...inheritedTeamDefault(brand),
     lastUpdated: now,
   });
 
