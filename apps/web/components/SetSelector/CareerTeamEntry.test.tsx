@@ -887,3 +887,101 @@ describe("CareerTeamEntry — Enter in a year field adds", () => {
     expect(fromInput().value).toBe("2021");
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-574 — a prefill (the card's team and the set's year) and quick picks
+// ---------------------------------------------------------------------------
+
+describe("CareerTeamEntry — prefill and quick picks (NEO-574)", () => {
+  const nameInput = () => screen.getByLabelText("Career team name") as HTMLInputElement;
+  const fromInput = () => screen.getByLabelText("From year") as HTMLInputElement;
+
+  it("opens with the team and year filled in, and adds nothing by itself", () => {
+    const { onAdd } = renderEntry({ initialTeam: "San Diego Padres", initialFromYear: 2022 });
+    expect(nameInput().value).toBe("San Diego Padres");
+    expect(fromInput().value).toBe("2022");
+    expect(onAdd).not.toHaveBeenCalled();
+  });
+
+  it("a prefill left as it came is not dirty; a change to it is", () => {
+    const onDirtyChange = vi.fn();
+    renderEntry({ initialTeam: "San Diego Padres", initialFromYear: 2022, onDirtyChange });
+    expect(onDirtyChange).not.toHaveBeenCalledWith(true);
+    fireEvent.change(fromInput(), { target: { value: "2020" } });
+    expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+  });
+
+  it("+ Add sends the prefilled entry", () => {
+    const { onAdd } = renderEntry({ initialTeam: "San Diego Padres", initialFromYear: 2022 });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+    expect(onAdd).toHaveBeenCalledWith({ name: "San Diego Padres", fromYear: 2022 });
+  });
+
+  it("follows a new prefill when the form is untouched, and focuses From year after an add", () => {
+    const onAdd = vi.fn();
+    const { rerender } = render(
+      <CareerTeamEntry
+        sportId={SPORT_ID}
+        stagedNames={[]}
+        onAdd={onAdd}
+        initialTeam="San Diego Padres"
+        initialFromYear={2022}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+    rerender(
+      <CareerTeamEntry
+        sportId={SPORT_ID}
+        stagedNames={[]}
+        onAdd={onAdd}
+        initialTeam="Chicago Cubs"
+        initialFromYear={2022}
+      />,
+    );
+    expect(nameInput().value).toBe("Chicago Cubs");
+    expect(fromInput().value).toBe("2022");
+    expect(document.activeElement).toBe(fromInput());
+  });
+
+  it("leaves a form the operator has typed in alone when the prefill changes", () => {
+    const onAdd = vi.fn();
+    const { rerender } = render(
+      <CareerTeamEntry
+        sportId={SPORT_ID}
+        stagedNames={[]}
+        onAdd={onAdd}
+        initialTeam="San Diego Padres"
+        initialFromYear={2022}
+      />,
+    );
+    typeName("Somewhere Else");
+    rerender(
+      <CareerTeamEntry
+        sportId={SPORT_ID}
+        stagedNames={[]}
+        onAdd={onAdd}
+        initialTeam="Chicago Cubs"
+        initialFromYear={2022}
+      />,
+    );
+    expect(nameInput().value).toBe("Somewhere Else");
+  });
+
+  it("quick picks fill the team and year without adding, and move focus to From year", () => {
+    const { onAdd } = renderEntry({
+      quickPicks: [{ team: "Chicago Cubs", fromYear: 2022 }],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Fill in Chicago Cubs" }));
+    expect(nameInput().value).toBe("Chicago Cubs");
+    expect(fromInput().value).toBe("2022");
+    expect(document.activeElement).toBe(fromInput());
+    expect(onAdd).not.toHaveBeenCalled();
+    // Already in the form, so no longer offered.
+    expect(screen.queryByRole("button", { name: "Fill in Chicago Cubs" })).toBeNull();
+  });
+
+  it("shows no quick-pick group when there are none", () => {
+    renderEntry({ quickPicks: [] });
+    expect(screen.queryByRole("group", { name: "Also on the cards" })).toBeNull();
+  });
+});

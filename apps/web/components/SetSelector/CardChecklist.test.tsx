@@ -192,8 +192,14 @@ vi.mock("./EntityReviewWizard", () => ({
     onListingShortNameChange,
     hasAutographFormat,
     onAutographFormatChange,
+    onCareerChange,
+    careerContext,
     title,
   }: {
+    // NEO-574 — the career step, reduced to the parent's half: the context it
+    // is handed, and the answer channel.
+    onCareerChange?: (fields: unknown) => void;
+    careerContext?: unknown;
     // NEO-497 — the header's title, which the parent reads off the chain.
     title?: string;
     // NEO-345 — the autograph step, reduced to the parent's half: whether the
@@ -302,6 +308,28 @@ vi.mock("./EntityReviewWizard", () => ({
       {onListingShortNameChange && (
         <button type="button" onClick={() => onListingShortNameChange(undefined)}>
           Report no short name
+        </button>
+      )}
+      <p>{`Career context: ${careerContext ? "yes" : "no"}`}</p>
+      {onCareerChange && (
+        <button
+          type="button"
+          onClick={() =>
+            onCareerChange({
+              stints: [{ playerId: "p-solo", teamId: "t-solo", fromYear: 2022 }],
+              cardEdits: [
+                { dropTeams: ["Solo Team"], teamIds: ["t-other"] },
+                undefined,
+              ],
+            })
+          }
+        >
+          Report career answers
+        </button>
+      )}
+      {onCareerChange && (
+        <button type="button" onClick={() => onCareerChange(undefined)}>
+          Report no career answers
         </button>
       )}
       <p>{`Leaf has autograph format: ${hasAutographFormat ? "yes" : "no"}`}</p>
@@ -1575,6 +1603,98 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
         screen.getByLabelText("Sync card checklist"),
       ),
     );
+  });
+
+  /**
+   * NEO-574 — a new card whose team its existing player's career does not
+   * show is a question for the wizard, even with every name known and every
+   * card teamed; the answers ride on the commit as `careerStints` and as edits
+   * on the cards.
+   */
+  describe("NEO-574: the career check", () => {
+    const playerBatch = {
+      ...arrivedBatch,
+      cards: slCandidates.map((card) => ({ ...card, players: ["Solo Player"] })),
+    };
+    const careerContext = {
+      setYear: 2022,
+      players: [{ printed: "Solo Player", playerId: "p-solo" }],
+      teams: [{ printed: "Solo Team", teamId: "t-solo" }],
+      gaps: [{ teamId: "t-solo", playerIds: ["p-solo"] }],
+    };
+
+    async function syncPlayers(rerender: Parameters<typeof streamCandidates>[0], context?: unknown) {
+      mockResolveEntities.mockResolvedValue({
+        unknownPlayers: [],
+        unknownTeams: [],
+        batchId: undefined,
+        ...(context ? { careerContext: context } : {}),
+      });
+      fireEvent.click(screen.getByLabelText("Sync card checklist"));
+      await streamCandidates(rerender, playerBatch);
+      await act(async () => {
+        resolveFetch({
+          success: true,
+          message: "0 matched, 0 BSC-only, 2 SL-only",
+          candidateCount: 2,
+          attachedSides: ["sportlots"],
+        });
+      });
+      await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+    }
+
+    it("opens the wizard instead of committing when the gate lists a gap", async () => {
+      state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+      const { rerender } = renderChecklist();
+      await syncPlayers(rerender, careerContext);
+      await screen.findByText("Wizard opened teams-only");
+      expect(mockCommitChecklist).not.toHaveBeenCalled();
+      expect(screen.getByText("Career context: yes")).toBeTruthy();
+    });
+
+    it("commits straight away when the gate listed no gap", async () => {
+      state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+      const { rerender } = renderChecklist();
+      await syncPlayers(rerender, { ...careerContext, gaps: [] });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      expect(screen.queryByText("Wizard opened teams-only")).toBeNull();
+      expect(mockCommitChecklist.mock.calls[0][0]).not.toHaveProperty("careerStints");
+    });
+
+    it("sends the stints at the top level and puts the edits on their cards", async () => {
+      state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+      const { rerender } = renderChecklist();
+      await syncPlayers(rerender, careerContext);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Report career answers"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      const args = mockCommitChecklist.mock.calls[0][0];
+      expect(args.careerStints).toEqual([{ playerId: "p-solo", teamId: "t-solo", fromYear: 2022 }]);
+      // The re-teamed card lost its printed team and carries the picked one;
+      // the other card is as it arrived.
+      expect(args.cards[0].teams ?? []).not.toContain("Solo Team");
+      expect(args.cards[0].teamIds).toEqual(["t-other"]);
+      expect(args.cards[1].teams).toEqual(["Solo Team"]);
+    });
+
+    it("an answer withdrawn sends no stints", async () => {
+      state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+      const { rerender } = renderChecklist();
+      await syncPlayers(rerender, careerContext);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Report career answers"));
+      fireEvent.click(screen.getByText("Report no career answers"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      const args = mockCommitChecklist.mock.calls[0][0];
+      expect(args).not.toHaveProperty("careerStints");
+      expect(args.cards[1].teams).toEqual(["Solo Team"]);
+    });
   });
 
   /**

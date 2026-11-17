@@ -111,6 +111,9 @@ export default function CareerTeamEntry({
   stagedNames,
   onAdd,
   onDirtyChange,
+  initialTeam,
+  initialFromYear,
+  quickPicks,
 }: {
   /** NEO-96: the sport-level selectorOptions row id, not its display name. */
   sportId: Id<"selectorOptions">;
@@ -137,11 +140,49 @@ export default function CareerTeamEntry({
    * per keystroke.
    */
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * NEO-574 — a team and From year the form opens with: the card's team and
+   * the set's year (`career-prefill.ts`). A PREFILL, not work: it does not
+   * make the form dirty, and nothing is added until the operator presses
+   * + Add. When these change (the next team after an add, a lookup landing)
+   * a form the operator has not touched follows them; a form they have is
+   * left alone.
+   */
+  initialTeam?: string;
+  initialFromYear?: number;
+  /**
+   * NEO-574 — other teams the cards print for this player, as one-press
+   * fills for the team and From year. Parent-filtered: a team already
+   * added is not offered again.
+   */
+  quickPicks?: ReadonlyArray<{ team: string; fromYear: number }>;
 }) {
-  const [name, setName] = useState("");
-  const [debouncedName, setDebouncedName] = useState("");
-  const [fromYear, setFromYear] = useState("");
+  const initialName = initialTeam ?? "";
+  const initialYear = initialFromYear === undefined ? "" : String(initialFromYear);
+  const [name, setName] = useState(initialName);
+  const [debouncedName, setDebouncedName] = useState(initialName);
+  const [fromYear, setFromYear] = useState(initialYear);
   const [toYear, setToYear] = useState("");
+  /*
+   * The prefill the fields last followed (render-phase "previous props"
+   * pattern). A form still sitting on that prefill — or empty, which is what
+   * + Add leaves — takes the new one; anything the operator changed stays.
+   */
+  const [followed, setFollowed] = useState({ name: initialName, year: initialYear });
+  if (followed.name !== initialName || followed.year !== initialYear) {
+    setFollowed({ name: initialName, year: initialYear });
+    const untouched =
+      toYear === "" &&
+      ((name === followed.name && fromYear === followed.year) ||
+        (name === "" && fromYear === ""));
+    if (untouched) {
+      setName(initialName);
+      setDebouncedName(initialName);
+      setFromYear(initialYear);
+    }
+  }
+  /** + Add just fired: the next prefill, if one arrives, is where Enter goes. */
+  const justAddedRef = useRef(false);
   const [suggestionsOpen, setSuggestionsOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState(0);
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -156,9 +197,13 @@ export default function CareerTeamEntry({
   /**
    * Anything typed into any of the three fields counts. A name alone is enough:
    * it is the half the operator cannot get back by re-picking a suggestion.
+   * NEO-574: a prefill left as it came is not typing (`followed`), and an
+   * emptied form never is.
    */
+  const blank = name.trim() === "" && fromYear.trim() === "";
   const dirty =
-    name.trim() !== "" || fromYear.trim() !== "" || toYear.trim() !== "";
+    toYear.trim() !== "" ||
+    (!blank && (name.trim() !== followed.name.trim() || fromYear.trim() !== followed.year));
 
   /*
    * Emitted on the TRANSITIONS only, and through a ref rather than a dep.
@@ -305,10 +350,36 @@ export default function CareerTeamEntry({
     setFromYear("");
     setToYear("");
     setSuggestionsOpen(false);
+    justAddedRef.current = true;
     // Safe to refocus now: the list opens on TYPING, not on focus. See the
     // note on `pickSuggestion`.
     nameInputRef.current?.focus();
   };
+
+  /*
+   * NEO-574 — if the parent answered the add with the NEXT prefill (the next
+   * team the cards print), the form is ready to add again: park focus on
+   * From year, where Enter adds, instead of on the name. Runs once, on the
+   * first render after an add; a prefill that arrives later never moves
+   * focus.
+   */
+  useEffect(() => {
+    if (!justAddedRef.current) return;
+    justAddedRef.current = false;
+    if (followed.name !== "" && followed.year !== "") fromYearRef.current?.focus();
+  });
+
+  /** A quick pick fills the team and From year, and leaves the add to the operator. */
+  const takeQuickPick = (team: string, year: number) => {
+    setName(team);
+    setDebouncedName(team);
+    setFromYear(String(year));
+    setSuggestionsOpen(false);
+    fromYearRef.current?.focus();
+  };
+  const shownQuickPicks = (quickPicks ?? []).filter(
+    (q) => !(q.team === trimmedName && String(q.fromYear) === fromYear.trim()),
+  );
 
   /**
    * Enter in either year field is "+ Add" (Jason, 2026-10-04): the years are
@@ -544,6 +615,29 @@ export default function CareerTeamEntry({
           + Add
         </NeonButton>
       </div>
+
+      {shownQuickPicks.length > 0 && (
+        <div
+          role="group"
+          aria-label="Also on the cards"
+          className="flex flex-wrap items-center gap-1.5"
+        >
+          <span aria-hidden="true" className="text-xs text-ink-3">
+            Also on the cards:
+          </span>
+          {shownQuickPicks.map((q) => (
+            <button
+              key={`${q.team}:${q.fromYear}`}
+              type="button"
+              aria-label={`Fill in ${q.team}`}
+              onClick={() => takeQuickPick(q.team, q.fromYear)}
+              className="rounded-full border border-rule-strong bg-raised px-2 py-0.5 text-xs text-ink-2 hover:border-ink-2 hover:text-ink focus-outline max-sm:min-h-11"
+            >
+              {q.team}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
