@@ -30,5 +30,9 @@ What to check instead:
   mutation arg or `useMutation` path) and the server fn must be a `query` (cannot write).
 - Marketplace sale text (eBay line title) already on the client (NEO-520) sent back as a
   query arg is not a new exposure: it is the caller's own sale data, not a marketplace id.
+- Sharing a rule between a convex/lib helper and client code (NEO-590 `cardNumberToken`):
+  walk the helper module's WHOLE import graph, not just the export; a module the client
+  imports must reach no `_generated/server`. Grep hits in doc comments ("no _generated
+  import here") are false positives; read the import lines.
 
 Related: [[neo330-by-id-twin-and-search]], [[neo331-context-id-side-channel]], [[public-function-auth-registry]].
