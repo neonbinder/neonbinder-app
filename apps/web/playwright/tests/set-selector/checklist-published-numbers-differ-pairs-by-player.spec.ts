@@ -96,6 +96,7 @@ import {
   expectChecklistDisagreementFirst,
   nextStepButton,
   openDecidedList,
+  passCareerCheck,
   pickDisagreementSide,
   readBackDecision,
   reviewWizard,
@@ -326,6 +327,9 @@ test(
     // OFF first, while the combobox is closed: no alias is saved (PHASE B reads the decision back).
     await answerClubStep(page);
 
+    // NEO-574: the catalogue's prospects here have no stint with their card's club by 2026, so a
+    // "Career check" comes first; it is not this spec's business ("Leave it" writes nothing).
+    await passCareerCheck(page);
     // "Cards with no team" holds Mike Lowell ONLY: the other 13 took their team from the checklist.
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
     await expect(wizard.getByRole("radiogroup", { name: /^Team for / })).toHaveCount(1);
@@ -380,6 +384,8 @@ test(
     // checklist, and all 14 reach the save.
     await expectClubStep();
     await answerClubStep(page);
+    // Past the career check (NEO-574), the step that is up is not the teams step.
+    await passCareerCheck(page);
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
     await advanceToSave(page);
     await expect(wizard.getByText(`Save ${MIXED.cards} cards?`)).toBeVisible();
@@ -415,7 +421,9 @@ test(
 
     await expectClubStep();
     await answerClubStep(page);
-    // Every card has its team, so the walk goes straight past the teams step.
+    // Every card has its team, so the walk goes straight past the teams step (past the career
+    // check first, NEO-574: the step that is up is then not the teams step).
+    await passCareerCheck(page);
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
     await advanceToSave(page);
     await expect(wizard.getByText(`Save ${WHOLE.cards} cards?`)).toBeVisible();

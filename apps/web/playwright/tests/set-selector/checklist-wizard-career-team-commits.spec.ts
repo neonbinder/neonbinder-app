@@ -2,7 +2,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { CHECKLISTS, checklistFacts, expectTeamsFromChecklist } from "../../support/published-checklist";
 import { setBuilderReady } from "../../support/set-builder";
-import { expectTeamsLoaded, teamsCounter } from "../../support/players";
+import { expectPlayersLoaded, expectTeamsLoaded, PLAYERS_MATCHES, playersCounter, teamsCounter } from "../../support/players";
 import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   answerPlayerAsNew,
@@ -19,14 +19,23 @@ import {
 // (NEO-330), replacing Topps Baltimore Orioles: the reference catalogue knows
 // every Orioles player, so that fetch committed straight through with no
 // wizard. MEASURED on PR #314's preview: 18 cards, 15 unknown names, all
-// players, 0 teams. Re-seed before re-running.
+// players, 0 teams; since the uploaded checklist names the club, "Memphis
+// RiverKings" is a New Team step too (measured NEO-574), which this spec adds.
+// Re-seed before re-running.
 // NEO-413: the staged career team is looked up when it stages, so it is a
 // real club from support/recorded-names.ts (a hurling club, one word) that the
 // recording holds as a Hockey no-match and the reference catalogue does not
 // hold: the lookup sends nothing to Wikidata, the step still reads "New Team",
 // and Team Management's filter finds this one row. One name per worker.
 const SET = "Memphis RiverKings CHL";
+// NEO-574: what the New player step's career form opens with on this set: the team
+// every card prints, by the name its New Team step creates it under (the catalogue
+// holds no such club, so the walk adds it), and the set's year.
+const CARD_TEAM = "Memphis RiverKings";
+const SET_YEAR = "1995";
 
+// NEO-574 rides this fixture too: the career form opens PREFILLED with the card's team
+// and the set's year, and a prefill nobody presses + Add on never reaches the career.
 test(
   "Entity review — a hand-staged career team survives the commit and becomes a real team row",
   { tag: ["@set-selector"] },
@@ -39,14 +48,31 @@ test(
     const wizard = reviewWizard(page);
     await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
     // readyToCreate: this spec creates the player, so the walk also passes any
-    // player whose create is held by a career team it skipped.
-    await walkToPlayerRow(page, { readyToCreate: true });
+    // player whose create is held by a career team it skipped. creatingTeams
+    // (NEO-574): the catalogue does not hold the club the checklist names, so its
+    // New Team step is ADDED, not skipped: a team ruled "not a team" is never
+    // offered to the career form, and the prefill below is the point.
+    await walkToPlayerRow(page, { creatingTeams: true, readyToCreate: true });
 
-    // Stage a career team by hand on the first player row.
-    await expect(wizard.getByRole("combobox", { name: "Career team name" })).toBeVisible();
-    await expectAccessible(page, { within: wizard, label: "Entity review wizard, career team entry" });
-    await wizard.getByRole("combobox", { name: "Career team name" }).fill(team);
-    await wizard.getByRole("spinbutton", { name: "From year" }).fill("2001");
+    // NEO-574: the career form OPENS on the team this player's cards print, in the
+    // set's year (every Memphis card prints the club; the text is the name its New
+    // Team step creates it under). A prefill, not an entry: nothing is staged
+    // until + Add, which this spec never presses on it (the save's read-back below
+    // proves it never reached the player's career).
+    const careerName = wizard.getByRole("combobox", { name: "Career team name" });
+    const fromYear = wizard.getByRole("spinbutton", { name: "From year" });
+    await expect(careerName).toHaveValue(CARD_TEAM);
+    await expect(fromYear).toHaveValue(SET_YEAR);
+    await expect(wizard.getByRole("spinbutton", { name: /^To year/ })).toHaveValue("");
+    await expect(wizard.getByRole("list", { name: "Staged career teams" })).toBeHidden();
+    await expect(wizard.getByRole("button", { name: "Add career team" })).toBeEnabled();
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, career team entry prefilled" });
+    const playerName = ((await wizard.getByRole("heading", { level: 3 }).textContent()) ?? "").trim();
+    expect(playerName, "the New player step names its player").not.toBe("");
+
+    // Stage a career team by hand on the first player row, over the prefill.
+    await careerName.fill(team);
+    await fromYear.fill("2001");
     await wizard.getByRole("spinbutton", { name: /^To year/ }).fill("2005");
     await wizard.getByRole("button", { name: "Add career team" }).click();
 
@@ -104,5 +130,17 @@ test(
     await expect(teamsCounter(page, "1 match")).toBeVisible();
     await expect(page.getByRole("button", { name: new RegExp(team) })).toBeVisible();
     await expectAccessible(page, { label: "Team Management filtered to the new career team" });
+
+    // NEO-574: the created player's career holds the staged team and NOT the prefilled
+    // card team: a prefill nobody added is never written.
+    await page.goto("/admin/players");
+    await expectPlayersLoaded(page, 30_000);
+    await page.getByRole("textbox", { name: "Filter players" }).fill(playerName);
+    await expect(playersCounter(page, PLAYERS_MATCHES)).toBeVisible();
+    await page.getByRole("button", { name: playerName }).first().click();
+    await expect(page.getByRole("heading", { name: playerName, exact: true })).toBeVisible();
+    const career = page.getByRole("list", { name: "Career history" }).getByRole("listitem");
+    await expect(career.filter({ hasText: `${team} · 2001–2005` })).toHaveCount(1);
+    await expect(career.filter({ hasText: CARD_TEAM })).toHaveCount(0);
   },
 );

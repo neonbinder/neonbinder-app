@@ -45,6 +45,7 @@ import {
   confirmSaveButton,
   fetchOneMarketplaceSetChecklistToWizard,
   nextStepButton,
+  passCareerCheck,
   readStep,
   reviewWizard,
   stepCounter,
@@ -224,6 +225,9 @@ test(
     // teamless and the wizard is on a later step or already on Save. The footer's forward
     // control is the positive the hidden title is read against.
     await expect(nextStepButton(page).or(confirmSaveButton(page))).toBeVisible();
+    // NEO-574: the cards' known players have no stint with the linked fixture team, so a
+    // "Career check" comes first; this spec's feature is the alias ("Leave it" writes nothing).
+    await passCareerCheck(page);
     await expect(wizard.getByText(/^(Card titles|Autographed cards|Ready to save)$/)).toBeVisible();
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
     // The teams / titles steps stay on their defaults; this spec's feature is the alias.

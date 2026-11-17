@@ -278,6 +278,84 @@ export async function walkToAutographStep(page: Page): Promise<void> {
 }
 
 /**
+ * NEO-574: the "Career check" step's subtitle (STEP_SUBTITLE.career). The
+ * step's own heading reads the same, so a bare `getByText` of it resolves to
+ * two elements on that step; scope or take `.first()`.
+ */
+export const CAREER_STEP_SUBTITLE = "Career check";
+
+/**
+ * NEO-574: one line of the "Career check" step, a radio group named
+ * "<player> on <team>" (`careerLineLabel`), holding "Leave it", "Add the
+ * stint", "Different player" and "Different team". Contract: a locator,
+ * nothing waited for; exact, so "Ann on Reds" never answers for "Ann on Reds II".
+ */
+export function careerLine(page: Page, player: string, team: string): Locator {
+  return reviewWizard(page).getByRole("radiogroup", { name: `${player} on ${team}`, exact: true });
+}
+
+/**
+ * The subtitle of whichever post-name step is up ("Career check", "Cards with
+ * no team", "Autographed cards", "Card titles", "Ready to save"); a name step's
+ * subtitle never matches, so waiting on it waits for the names to be done. The
+ * career step's heading reads the same as its subtitle, hence `.first()`.
+ */
+export function postNameSubtitle(page: Page): Locator {
+  return reviewWizard(page)
+    .getByText(new RegExp(`^(${CAREER_STEP_SUBTITLE}|Cards with no team|${AUTOGRAPH_STEP_SUBTITLE}|Card titles|Ready to save)$`))
+    .first();
+}
+
+/**
+ * NEO-574: press Next past the "Career check" step when it comes (every line
+ * left on "Leave it", which writes nothing), and stop on the step after it.
+ * For a spec that asserts what the LATER steps hold (the teams step's lines,
+ * or that there is no teams step) and whose fixture's known players may or may
+ * not have the card's team on file: the branch waits for a settled post-name
+ * step first, and ends on a positive assert of a step that is not the career
+ * check, so a negative assert after it is about a live step (R2).
+ *
+ * Contract: ENTRY every name is decided. EXIT a post-name step other than the
+ * career check is up (its subtitle visible).
+ */
+export async function passCareerCheck(page: Page): Promise<void> {
+  const subtitle = postNameSubtitle(page);
+  await expect(subtitle, "a post-name step is up").toBeVisible();
+  if (((await subtitle.textContent()) ?? "").trim() === CAREER_STEP_SUBTITLE) {
+    const { x } = await readStep(page);
+    await nextStepButton(page).click();
+    await expectStepLeft(page, x);
+  }
+  await expect(subtitle, "the wizard is past its Career check").toBeVisible();
+  await expect(subtitle).not.toHaveText(CAREER_STEP_SUBTITLE);
+}
+
+/**
+ * Press Next past the "Career check" (NEO-574) and "Cards with no team" steps
+ * when they come, leaving every line on its default ("Leave it", "Leave for
+ * later"), and stop on the first step after them (autograph, titles or Save).
+ * For a spec whose feature is a LATER step (the titles step) and which reads
+ * where it is from the subtitle; a spec that only needs Save calls
+ * `advanceToSave`.
+ *
+ * Contract: ENTRY every name is decided (the names-done footer is up). EXIT the
+ * subtitle is neither "Career check" nor "Cards with no team"; each press is
+ * proved to have moved the counter. A runaway guard of 3 (two such steps).
+ */
+export async function passCareerAndTeamsSteps(page: Page): Promise<void> {
+  const subtitle = postNameSubtitle(page);
+  for (let i = 0; i < 3; i++) {
+    await expect(subtitle, "a post-name step is up").toBeVisible();
+    const text = ((await subtitle.textContent()) ?? "").trim();
+    if (text !== CAREER_STEP_SUBTITLE && text !== "Cards with no team") return;
+    const { x } = await readStep(page);
+    await nextStepButton(page).click();
+    await expectStepLeft(page, x);
+  }
+  await expect(subtitle).not.toHaveText(new RegExp(`^(${CAREER_STEP_SUBTITLE}|Cards with no team)$`));
+}
+
+/**
  * util-fetch-real-set-checklist-to-wizard.yaml: drill to a real set's Base
  * checklist (2024 Topps Stars of MLB Network by default, a 10-card set the
  * seed maps and leaves empty; NEO-475, it was Topps Big League's 310 cards),
@@ -784,8 +862,8 @@ export async function walkToPlayerRow(
 
 /**
  * util-wizard-advance-to-save.yaml (NEO-335): from "every name decided" walk
- * the teams / autograph / titles steps to the Save step, and answer nothing
- * on them that the product does not REQUIRE.
+ * the career / teams / autograph / titles steps to the Save step, and answer
+ * nothing on them that the product does not REQUIRE.
  *
  * Contract:
  * - ENTRY the wizard is open and every name is decided: its footer shows
@@ -793,9 +871,10 @@ export async function walkToPlayerRow(
  * - Presses Next until the Save step is up; each press is proved to have MOVED
  *   the wizard (the "Step x of y" x it left is gone), so a Next that does
  *   nothing fails by name. Next leaves every line on its default (a pre-filled
- *   team, else "Leave for later"; every title kept) - the same answers the old
- *   final step's Confirm & Save saved. A spec whose FEATURE is the teams or
- *   titles step drives that step itself and does not call this.
+ *   team, else "Leave for later"; every title kept; NEO-574: every "Career
+ *   check" line on "Leave it", which writes nothing) - the same answers the old
+ *   final step's Confirm & Save saved. A spec whose FEATURE is the career,
+ *   teams or titles step drives that step itself and does not call this.
  * - NEO-345: the "Autographed cards" step (new AU cards on a part with no
  *   autograph format) is the one step whose answer is REQUIRED - its Next is
  *   aria-disabled until a tile is picked - so this picks "On card" there
@@ -806,15 +885,17 @@ export async function walkToPlayerRow(
  *   nothing pressed. The caller asserts its own "Save N cards?" and owns the
  *   commit.
  *
- * All 7 s: Next is a client-side step change. The loop is a runaway guard of 4
- * (at most three screens sit between the names and Save).
+ * All 7 s: Next is a client-side step change. The loop is a runaway guard of 5
+ * (at most four screens sit between the names and Save: career, teams,
+ * autograph, titles; NEO-574 added the career step, first of them, and a
+ * gap-only re-sync now opens the wizard straight onto it).
  */
 export async function advanceToSave(page: Page): Promise<void> {
   const wizard = reviewWizard(page);
   const next = nextStepButton(page);
   const save = confirmSaveButton(page);
   const autograph = autographChoices(page);
-  for (let i = 0; i < 4; i++) {
+  for (let i = 0; i < 5; i++) {
     await expect(next.or(save)).toBeVisible();
     if (await save.isVisible()) break;
     const { x } = await readStep(page);
