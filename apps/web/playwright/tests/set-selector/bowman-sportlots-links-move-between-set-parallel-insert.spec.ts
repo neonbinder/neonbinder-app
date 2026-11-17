@@ -105,7 +105,7 @@ test(
     // it shut. Open it, and anchor on the pencil the open panel draws beside the
     // title (R2), so the paused branch's absence is read on the open panel.
     await openAttributesPanel(page);
-    await expect(page.getByRole("button", { name: new RegExp(`^Rename ${COLOUR}`) })).toBeVisible();
+    await expect(page.getByRole("button", { name: `Rename ${COLOUR}`, exact: true })).toBeVisible();
     if (env.SL_PAUSED) {
       await expect(page.getByRole("button", { name: "Promote to set" })).toBeHidden();
     } else {

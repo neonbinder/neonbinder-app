@@ -31,4 +31,22 @@ brand, variant type, insert, parallel) starts shut, cards or not
   ` › `, `Titled Base`, and the Set action labels; `custom-card-crud`'s
   `Delete Base` (an insert row with a card) is an easy one to miss.
 
+Later NEO-569 additions (all proven live in a browser):
+- Shut toggle carries an sr-only description: `Team: <full names>` or
+  `Team: No Team`, none with no team default. Assert with
+  `toHaveAccessibleDescription(/^Team: No Team$/)` / `("")`, plus
+  `panel.getByText(<short name or "No Team">, { exact: true })` count 0.
+- Rename hold: a press on Hide blurs the field, which COMMITS. An accepted name
+  closes the field when its save lands, so the only still hold in a browser is a
+  REFUSED rename (variant-type kind refusal): field focused, value kept, Hide
+  still there; Escape then Hide shuts it and focus parks on the toggle.
+- Delete hold: the confirm is a fixed overlay (a click there cancels it), so a
+  click on the toggle cannot be tested. Prove `inert` with `hide.focus()` and then
+  check that Cancel (the dialog's opening focus) is still focused. The `setOpen`
+  delete guard is unreachable from a browser; the unit tests cover it.
+- Page fit without evaluate: `toBeInViewport({ ratio: 1 })` on title and
+  toggle, `title.hover()` + `page.mouse.wheel(400, 0)`, re-assert ratio 1.
+- A product plant hot-reloads into EVERY run on the shared worktree Vite: a
+  coordinator's parallel mobile run saw a plant as a red. Say so before planting.
+
 Related: [[patterns_set_league_and_card_league_specs]].

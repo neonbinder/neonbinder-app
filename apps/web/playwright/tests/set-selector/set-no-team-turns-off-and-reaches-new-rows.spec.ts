@@ -152,11 +152,23 @@ test(
     await expect(panel.getByRole("heading", { name: `Attributes for ${SET} (Set)` })).toBeVisible();
     await openPanel();
     await expect(toggle(true)).toBeVisible();
+    // Shut, the bar draws only its title and toggle; the toggle says the answer.
+    const title = panel.getByRole("heading", { name: `Attributes for ${SET} (Set)` });
+    await hide.click();
+    await expect(edit).toBeVisible();
+    await expect(title).toBeVisible();
+    await expect(edit).toHaveAccessibleDescription(/^Team: No Team$/);
+    await expect(panel.getByText("No Team", { exact: true })).toHaveCount(0);
+    await edit.click();
     await toggle(true).click();
     await expect(toggle(false)).toBeVisible();
     await expect(page.getByText("Cleared No Team · cards unchanged")).toBeVisible();
+    // Off, the shut toggle says nothing about a team (the set has no team default).
     await hide.click();
     await expect(edit).toBeVisible();
+    await expect(title).toBeVisible();
+    await expect(edit).toHaveAccessibleDescription("");
+    await expect(panel.getByText("No Team", { exact: true })).toHaveCount(0);
     await edit.click();
     await expect(toggle(false)).toBeVisible();
     await expectAccessible(page, { label: "Set attributes panel reopened after No Team was turned off" });

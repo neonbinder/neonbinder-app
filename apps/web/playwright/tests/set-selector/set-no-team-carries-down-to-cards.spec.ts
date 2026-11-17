@@ -150,10 +150,13 @@ test(
     await ledger.getByRole("button", { name: "Dismiss the No Team run" }).click();
     await expect(ledger).toBeHidden();
     // Shut and opened again, the set still answers No Team. NEO-569: the shut
-    // panel draws only its title and toggle, so the answer is read where it is
-    // set, on the reopened Team row.
+    // panel draws only its title and toggle (no "No Team" on the bar); the toggle
+    // says the answer to a screen reader, and the reopened Team row still has it.
     await hide.click();
     await expect(edit).toBeVisible();
+    await expect(panel.getByRole("heading", { name: `Attributes for ${SET} (Set)` })).toBeVisible();
+    await expect(edit).toHaveAccessibleDescription(/^Team: No Team$/);
+    await expect(panel.getByText("No Team", { exact: true })).toHaveCount(0);
     await edit.click();
     await expect(setToggle(true)).toBeVisible();
 

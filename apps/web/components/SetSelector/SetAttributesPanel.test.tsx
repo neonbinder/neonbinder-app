@@ -2779,8 +2779,9 @@ describe("SetAttributesPanel — Team row (NEO-277)", () => {
     _id: "team-knights",
     name: "Knights",
     location: "Charlotte",
-    // A near-black primary that fails the panel's contrast floor, and a pale
-    // secondary that clears it — the fallback order the livery relies on.
+    // A team's colours as the catalogue stores them (a near-black primary and a
+    // pale secondary). Nothing here reads them since NEO-569 took the collapsed
+    // bar's livery away; this fixture is the second chip of a multi-team row.
     colors: { primary: "#0b1a33", secondary: "#e8e8e8" },
   };
   const NOTHING_FOLLOWS = {

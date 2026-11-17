@@ -116,6 +116,10 @@ test(
     const SECOND_TYPE = `vtksec${T}`;
     const CARD_NUMBER = `vtknum${T}`;
     const CARD_NAME = `Vtkcard${T}`;
+    const panel = page.getByRole("region", { name: "Set attributes panel" });
+    const edit = panel.getByRole("button", { name: "Edit attributes" });
+    const hide = panel.getByRole("button", { name: "Hide attributes" });
+    const baseTag = page.getByTitle("Titled Base, so this type holds the set's base checklist.");
 
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
@@ -230,9 +234,31 @@ test(
     await expect(panelFor(page, "Inserts")).toBeVisible();
     await expectAccessible(page, { label: "Rename refused while sub-variants exist" });
 
-    // The field stays open holding "Promos" after a refusal, so replace it.
-    await field.fill("Insert");
-    await field.press("Enter");
+    // NEO-569: the panel will not shut over an open name field. A press on "Hide
+    // attributes" blurs the field (which sends "Promos" again, refused again), is
+    // itself refused, and hands focus to the field with what was typed still in it.
+    // A refused name is the hold a real browser can keep still: an accepted one
+    // closes the field as soon as its save lands.
+    await hide.click();
+    await expect(field).toBeFocused();
+    await expect(field).toHaveValue("Promos");
+    await expect(refusal(page, /only live under an Insert type/)).toBeVisible();
+    // The re-sent save has answered (the field is read-only while it is in flight).
+    await expect(field).toBeEditable();
+    await expect(hide).toBeVisible();
+    await expect(edit).toHaveCount(0);
+    await expectAccessible(page, { label: "Hide refused while the name field is open" });
+    // Escape lets the field go; the next press shuts the panel, and focus parks on its toggle.
+    await field.press("Escape");
+    await expect(field).toHaveCount(0);
+    await hide.click();
+    await expect(edit).toBeFocused();
+    await expect(panelFor(page, "Inserts")).toBeVisible();
+
+    // Same kind, so the rename goes through.
+    const sameKind = await openRename(page, "Inserts");
+    await sameKind.fill("Insert");
+    await sameKind.press("Enter");
     // Same kind (insert -> insert), so the guard lets it through. The header is
     // the stored row, still the selection.
     await expect(panelFor(page, "Insert")).toBeVisible();
@@ -271,10 +297,19 @@ test(
     await expect(page.getByRole("button", { name: `Add custom ${PROMO_TYPE}s` })).toBeHidden();
     // The panel header is the stored title, with the static Base tag beside it ...
     await expect(panelFor(page, "Base")).toBeVisible();
-    await expect(page.getByTitle("Titled Base, so this type holds the set's base checklist.")).toBeVisible();
+    await expect(baseTag).toBeVisible();
     // ... and the checklist hangs off the type itself, with no variant picked.
     await expect(page.getByRole("button", { name: "Open add card form" })).toBeVisible();
     await expectAccessible(page, { label: "A type titled Base: terminal, with its checklist" });
+    // NEO-569: shut, the panel keeps its title and drops the Base tag with the pencil and the delete.
+    await hide.click();
+    await expect(edit).toBeVisible();
+    await expect(panelFor(page, "Base")).toBeVisible();
+    await expect(baseTag).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Rename Base", exact: true })).toHaveCount(0);
+    await expect(panel.getByRole("button", { name: "Delete Base", exact: true })).toHaveCount(0);
+    await edit.click();
+    await expect(baseTag).toBeVisible();
     // Claim 6's source: one hand-made card on the Base.
     await addCardViaForm(page, { cardNumber: CARD_NUMBER, playerName: CARD_NAME });
 

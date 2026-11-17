@@ -82,6 +82,8 @@ test(
     await expect(setActions).toBeVisible();
     await hide.click();
     await expect(edit).toBeVisible();
+    // The press that shut it leaves focus on the toggle, not on <body>.
+    await expect(edit).toBeFocused();
     await expect(title).toBeVisible();
     await expect(hide).toBeHidden();
     await expect(renameSet).toHaveCount(0);
@@ -89,6 +91,15 @@ test(
     await expect(breadcrumb).toHaveCount(0);
     await expect(setActions).toHaveCount(0);
     await expectAccessible(page, { label: "Set attributes panel collapsed to its title" });
+    // The shut line fits the screen: title and toggle sit wholly inside it, and a
+    // sideways swipe over it moves nothing (NEO-341: a line that escapes its clip
+    // widens a 412px phone page and slides it sideways).
+    await expect(title).toBeInViewport({ ratio: 1 });
+    await expect(edit).toBeInViewport({ ratio: 1 });
+    await title.hover();
+    await page.mouse.wheel(400, 0);
+    await expect(title).toBeInViewport({ ratio: 1 });
+    await expect(edit).toBeInViewport({ ratio: 1 });
     await edit.click();
     await expect(hide).toBeVisible();
     await expect(renameSet).toBeVisible();
@@ -100,9 +111,38 @@ test(
     await selectOrCreate(page, "Variant Types", child, { via: "list" });
     await expect(page.getByRole("heading", { name: `${child}s`, exact: true })).toBeVisible();
 
+    // A variant type starts shut, and shut it has no pencil and no delete (NEO-569).
+    // Positive first (R2): the panel is on the child, with its toggle.
+    const renameChild = panel.getByRole("button", { name: `Rename ${child}`, exact: true });
+    const deleteChild = panel.getByRole("button", { name: `Delete ${child}`, exact: true });
+    await expect(panel.getByRole("heading", { name: new RegExp(`^Attributes for ${child} \\(`) })).toBeVisible();
+    await expect(edit).toBeVisible();
+    await expect(renameChild).toHaveCount(0);
+    await expect(deleteChild).toHaveCount(0);
+
     // The panel's breadcrumb followed the pick down to the variant type.
     await ensureExpanded();
     await expect(panel.getByText(new RegExp(`›.*${child}`)).first()).toBeVisible();
+    await expect(renameChild).toBeVisible();
     await expectAccessible(page, { label: "Set attributes panel scoped to a variant type" });
+
+    // NEO-569: while the delete confirm is open the panel's toggle is out of reach
+    // (inert behind the modal), so the panel cannot shut under the dialog. Cancel
+    // releases it. The type is empty, so the trash can asks rather than explains.
+    await deleteChild.click();
+    const confirm = page.getByRole("dialog", { name: new RegExp(`^Delete .*"${child}"\\?$`) });
+    await expect(confirm).toBeVisible();
+    const cancel = confirm.getByRole("button", { name: "Cancel" });
+    await expect(cancel).toBeFocused();
+    // A screen reader's cursor or a scripted focus cannot land on the toggle; focus stays in the dialog.
+    await hide.focus();
+    await expect(cancel).toBeFocused();
+    await expect(hide).not.toBeFocused();
+    await expect(hide).toBeVisible();
+    await cancel.click();
+    await expect(confirm).toBeHidden();
+    await hide.click();
+    await expect(edit).toBeFocused();
+    await expect(deleteChild).toHaveCount(0);
   },
 );
