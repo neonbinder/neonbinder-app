@@ -176,6 +176,8 @@ test(
       await unlinkHeld.click();
       await expect(unlinkHeld).toHaveCount(0);
       await pairing.getByRole("textbox", { name: "Filter checklist rows" }).fill(`#${HELD_PROSPECT.number}`);
+      await expect(pairing.getByRole("radio", { name: `Select ${heldRow}`, exact: true })).toBeVisible();
+      await expectAccessible(page, { within: pairing, label: "Match Cards, the held Prospect (X) row unlinked onto the checklist list" });
       await pairing.getByRole("radio", { name: `Select ${heldRow}`, exact: true }).click();
       await pairing
         .getByRole("button", { name: `Link selected checklist row to #${HELD_PROSPECT.number} ${HELD_PROSPECT.card}`, exact: true })

@@ -129,6 +129,7 @@ test(
     const rememberPlace = linkTo.getByRole("checkbox", { name: `Remember “${AMBIGUOUS.cell}” as a name for this team`, exact: true });
     await expect(rememberPlace).toBeEnabled();
     await expect(rememberPlace).not.toBeChecked();
+    await expectAccessible(page, { within: wizard, label: "Tidy-up name step for a team printed as an ambiguous place" });
     await wizard.getByRole("button", { name: `Skip ${AMBIGUOUS.cell} — not a team`, exact: true }).click();
 
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
@@ -159,6 +160,8 @@ test(
     await expect(chicagoChoices.getByRole("radio", { name: `Chicago Cubs — ${AMBIGUOUS.player}`, exact: true })).not.toBeChecked();
     await expect(chicagoChoices.getByRole("radio", { checked: true })).toHaveAccessibleName(`Leave for later — ${AMBIGUOUS.player}`);
     await expect(chicago.getByRole("checkbox")).toHaveCount(0);
+    // Skipped as not a team, "Chicago" is the operator's ruling, so it is no longer listed.
+    await expect(chicago.getByText(/Listed as/)).toHaveCount(0);
     await expectAccessible(page, { within: wizard, label: "Tidy-up teams step with a held Prospect (X) card" });
 
     // The held card's team: one existing team, minted here through the line's own field.
@@ -181,6 +184,7 @@ test(
     await expect(wizard.getByRole("heading", { name: `Save ${ROWS} cards?` })).toBeVisible();
     await confirmSaveButton(page).click();
     await expect(wizard).toBeHidden();
+    // The count includes checklist-named teams the operator still settles (Chicago, saved teamless), as it counts unresolved checklist teams: intended.
     await expect(page.getByText(`Saved ${ROWS} cards. Teams from your checklist: ${ROWS} of ${ROWS} cards.`)).toBeVisible();
 
     // ── 4. Read back: the rows, then each card's drawer ──
