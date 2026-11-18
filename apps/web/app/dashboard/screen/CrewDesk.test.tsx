@@ -478,6 +478,35 @@ describe("the crew section under Sync status", () => {
     }
   });
 
+  it("two withdraws that say the same words: the older one's timer still never clears the newer line", async () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      // The same report asked for twice (same words on both lines), told apart by id.
+      const twin = ask({ id: "r2", kind: "report", label: "2024 Topps Chrome Base", platform: "ebay" });
+      render(<WithdrawHarness asks={[REPORT_ASK, twin]} data={getDashboard()} />);
+      const withdrawName = /^Withdraw report for 2024 Topps Chrome Base on eBay/;
+      await act(async () => {
+        fireEvent.click(screen.getAllByRole("button", { name: withdrawName })[0]);
+      });
+      const firstTimer = spy.mock.calls.filter(([, ms]) => ms === WITHDREW_SHOWN_MS).at(-1)![0] as () => void;
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: withdrawName }));
+      });
+      // The first line's timer fires in the gap before React cleaned it up.
+      act(() => firstTimer());
+      const line = screen.getByText("Withdrew the report on 2024 Topps Chrome Base (eBay).");
+      expect(line.textContent).not.toBe("");
+      act(() => {
+        vi.advanceTimersByTime(WITHDREW_SHOWN_MS);
+      });
+      expect(line.textContent).toBe("");
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it(`the withdraw line clears itself after ${WITHDREW_SHOWN_MS} ms, and the line stays mounted`, async () => {
     vi.useFakeTimers();
     try {

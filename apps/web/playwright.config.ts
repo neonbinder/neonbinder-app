@@ -38,9 +38,12 @@
  * report: the gate counts it as passed, and playwright/support/flaky-reporter.mjs
  * lists it, with its first attempt's error, in <PW_REPORT_DIR>/flaky.json for the
  * job summary. The seed (`setup`) never
- * retries. Every red spec on e2e / e2e-mobile is followed by the failure reset
+ * retries, and neither does a `@marketplace-seller` or `@bsc-breaker` spec: each
+ * says `test.describe.configure({ retries: 0 })`, which beats this value and
+ * `--retries` (support/fixtures.ts `noRetryOnSharedAccounts` refuses one that
+ * forgot). In CI every red spec on e2e / e2e-mobile is followed by the failure reset
  * (support/fixtures.ts `resetAfterFailure`), so a retry starts from a clean
- * account, locally as in CI.
+ * account; locally it runs only with PW_FAILURE_RESET=1.
  */
 import { defineConfig, devices } from "@playwright/test";
 import { ignoredSpecs } from "./playwright/project-scope.mjs";

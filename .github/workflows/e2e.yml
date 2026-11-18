@@ -811,6 +811,8 @@ jobs:
       - name: Stop Convex latency probe (desktop seed)
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_PROBE_PID:-}" ]; then
@@ -820,7 +822,15 @@ jobs:
           OUT="${RUNNER_TEMP}/convex-probe-seed-desktop.jsonl"
           if [ -s "$OUT" ]; then
             node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
-            gzip -c "$OUT" > "convex-probe-seed-desktop.jsonl.gz" || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-seed-desktop.jsonl.gz" || true
+            else
+              rm -f "convex-probe-seed-desktop.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
           else
             echo "No latency probe data for this seed."
           fi
@@ -847,9 +857,9 @@ jobs:
 
       - name: Mark the preview degraded (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
-        env:
-          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-        run: printf '%s\n' "$CONVEX_NAME" > "$RUNNER_TEMP/preview-degraded.txt"
+        # recreate-degraded-preview.yml only counts artifacts by name; the file
+        # holds a fixed string, never the (public-artifact) deployment name.
+        run: printf 'degraded\n' > "$RUNNER_TEMP/preview-degraded.txt"
 
       - name: Upload the degraded marker (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
@@ -1147,7 +1157,8 @@ jobs:
       # NEO-592: this shard's retried specs (failed once, passed on retry) in the
       # job summary. The flaky reporter writes flaky.json beside the blob report
       # (PW_REPORT_DIR); the e2e job prints the combined table for the run.
-      # Informational only: a missing file prints nothing, never fails the job.
+      # Informational only: it says "no retried specs" for an empty list and "not
+      # written" for a missing file, and never fails the job.
       - name: Retried specs (desktop shard ${{ matrix.shard }})
         if: always()
         working-directory: apps/web
@@ -1207,6 +1218,8 @@ jobs:
       - name: Stop Convex latency probe (desktop shard ${{ matrix.shard }})
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_PROBE_PID:-}" ]; then
@@ -1216,7 +1229,15 @@ jobs:
           OUT="${RUNNER_TEMP}/convex-probe-desktop-${{ matrix.shard }}.jsonl"
           if [ -s "$OUT" ]; then
             node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
-            gzip -c "$OUT" > "convex-probe-desktop-${{ matrix.shard }}.jsonl.gz" || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-desktop-${{ matrix.shard }}.jsonl.gz" || true
+            else
+              rm -f "convex-probe-desktop-${{ matrix.shard }}.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
           else
             echo "No latency probe data for this shard."
           fi
@@ -1963,6 +1984,8 @@ jobs:
       - name: Stop Convex latency probe (mobile seed)
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_PROBE_PID:-}" ]; then
@@ -1972,7 +1995,15 @@ jobs:
           OUT="${RUNNER_TEMP}/convex-probe-seed-mobile.jsonl"
           if [ -s "$OUT" ]; then
             node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
-            gzip -c "$OUT" > "convex-probe-seed-mobile.jsonl.gz" || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-seed-mobile.jsonl.gz" || true
+            else
+              rm -f "convex-probe-seed-mobile.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
           else
             echo "No latency probe data for this seed."
           fi
@@ -1999,9 +2030,9 @@ jobs:
 
       - name: Mark the preview degraded (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
-        env:
-          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-        run: printf '%s\n' "$CONVEX_NAME" > "$RUNNER_TEMP/preview-degraded.txt"
+        # recreate-degraded-preview.yml only counts artifacts by name; the file
+        # holds a fixed string, never the (public-artifact) deployment name.
+        run: printf 'degraded\n' > "$RUNNER_TEMP/preview-degraded.txt"
 
       - name: Upload the degraded marker (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
@@ -2264,7 +2295,8 @@ jobs:
       # NEO-592: this shard's retried specs (failed once, passed on retry) in the
       # job summary. The flaky reporter writes flaky.json beside the blob report
       # (PW_REPORT_DIR); the e2e job prints the combined table for the run.
-      # Informational only: a missing file prints nothing, never fails the job.
+      # Informational only: it says "no retried specs" for an empty list and "not
+      # written" for a missing file, and never fails the job.
       - name: Retried specs (mobile shard ${{ matrix.shard }})
         if: always()
         working-directory: apps/web
@@ -2324,6 +2356,8 @@ jobs:
       - name: Stop Convex latency probe (mobile shard ${{ matrix.shard }})
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_PROBE_PID:-}" ]; then
@@ -2333,7 +2367,15 @@ jobs:
           OUT="${RUNNER_TEMP}/convex-probe-mobile-${{ matrix.shard }}.jsonl"
           if [ -s "$OUT" ]; then
             node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
-            gzip -c "$OUT" > "convex-probe-mobile-${{ matrix.shard }}.jsonl.gz" || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-mobile-${{ matrix.shard }}.jsonl.gz" || true
+            else
+              rm -f "convex-probe-mobile-${{ matrix.shard }}.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
           else
             echo "No latency probe data for this shard."
           fi

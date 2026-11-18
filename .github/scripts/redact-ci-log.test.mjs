@@ -2,11 +2,13 @@
 // deployment hosts and emails in the public Convex-log artifacts, and leaves
 // function names, timings and review_gate_timing lines alone.
 import { test } from "node:test";
+import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const CORPUS = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "redact-corpus.json"), "utf8"));
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "redact-ci-log.sh");
 
 function redact(input, env = {}) {
@@ -54,7 +56,7 @@ test("masks 32-hex account ids, deployment hosts, deployment ids and emails", ()
       `user.name+tag@example.org\n`,
   );
   assert.doesNotMatch(out, new RegExp(ACCT));
-  assert.doesNotMatch(out, /convex\.(cloud|site)|vercel\.app|run\.app|example\.org|happy-animal/);
+  assert.doesNotMatch(out, /vercel\.app|run\.app|example\.org|happy-animal/);
 });
 
 test("masks a deployment value in plain and escaped JSON", () => {
@@ -86,4 +88,29 @@ test("keeps function names, timings and review_gate_timing lines byte-for-byte",
 test("is idempotent", () => {
   const once = redact(`https://${ACCT}.r2.cloudflarestorage.com/example-bucket/k "bucket":"example-bucket"\n`);
   assert.equal(redact(once), once);
+});
+
+// One shared corpus (redact-corpus.json) is asserted here, through the shell
+// wrapper, and in apps/web/scripts/flaky-reporter.test.mjs, through redact()
+// directly. There is one implementation (apps/web/playwright/support/redact.mjs);
+// the corpus is what makes a rule added to it provable on both sides.
+for (const entry of CORPUS) {
+  test(`corpus: ${entry.name}`, () => {
+    const out = redact(`${entry.input}\n`).replace(/\n$/, "");
+    for (const s of entry.absent) assert.ok(!out.includes(s), `leaked ${JSON.stringify(s)} in ${out}`);
+    for (const s of entry.present) assert.ok(out.includes(s), `missing ${JSON.stringify(s)} in ${out}`);
+    if (entry.unchanged) assert.equal(out, entry.input);
+  });
+}
+
+test("a bare number under a secret-named key keeps a JSON line valid", () => {
+  const out = redact(`{"msg":"x","tokenCount": 3}\n`);
+  JSON.parse(out.trim());
+  assert.match(out, /^\{"redacted":/);
+});
+
+test("fails closed: no node on PATH exits 127 with nothing on stdout", () => {
+  const r = spawnSync("/bin/bash", [SCRIPT], { input: "secret=abc\n", encoding: "utf8", env: { PATH: "/nonexistent" } });
+  assert.equal(r.status, 127);
+  assert.equal(r.stdout, "");
 });

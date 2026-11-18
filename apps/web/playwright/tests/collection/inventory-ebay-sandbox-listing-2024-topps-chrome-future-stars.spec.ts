@@ -344,6 +344,10 @@ test.afterEach(async ({ context }, testInfo) => {
   }
 });
 
+// GUIDE hard rule 5: a seller spec never retries. A retry would write to the one
+// shared eBay sandbox seller again, and the failure reset cannot undo that.
+test.describe.configure({ retries: 0 });
+
 test(
   "Inventory: connecting eBay and finishing its setup lists a box's 2024 Topps Chrome Future Stars cards on the eBay sandbox, and an in-person box takes them down",
   // NEO-453, TEMPORARY: out of the suite (project-scope.mjs). Put @marketplace-seller back with it.

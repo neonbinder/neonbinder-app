@@ -61,5 +61,14 @@ export async function expectWorkerReset(page: Page, env: Pick<FlowEnv, "SL_PAUSE
   await expect(page).toHaveURL(/\/profile\/credentials/);
 }
 
-/** How long the failure reset may take in all: the live seed, plus the sign-in hop's launch. */
-export const WORKER_RESET_CAP_MS = LIVE_SEED_MS + 45_000;
+/** The sign-in hop's first navigation: the launch gate (fixtures.ts LAUNCH_GATE). */
+export const WORKER_RESET_LAUNCH_MS = 45_000;
+/** expectWorkerReset's three closing checks, one UX budget each. */
+const CLOSING_CHECKS_MS = 3 * 7_000;
+
+/**
+ * How long the failure reset may take in all: its summed step budgets at their
+ * worst (SportLots live), the sign-in hop's launch, the chain, and the three
+ * closing checks. The reset gives itself up there (fixtures.ts).
+ */
+export const WORKER_RESET_CAP_MS = WORKER_RESET_LAUNCH_MS + LIVE_SEED_MS + CLOSING_CHECKS_MS;

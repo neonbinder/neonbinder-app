@@ -1,0 +1,117 @@
+[
+  {
+    "name": "R2 virtual-host with bucket prefix and account id",
+    "input": "https://example-bucket.0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/photos/a.jpg",
+    "absent": ["example-bucket", "0123456789abcdef0123456789abcdef", "cloudflarestorage"],
+    "present": ["<storage-host>"]
+  },
+  {
+    "name": "R2 path-style bucket",
+    "input": "PUT https://0123456789abcdef0123456789abcdef.r2.cloudflarestorage.com/example-bucket/photos/a.jpg ok",
+    "absent": ["example-bucket", "0123456789abcdef0123456789abcdef"],
+    "present": ["photos/a.jpg"]
+  },
+  {
+    "name": "GCS path-style bucket",
+    "input": "GET https://storage.googleapis.com/example-bucket/o/seed.tar",
+    "absent": ["example-bucket"],
+    "present": ["<bucket>", "seed.tar"]
+  },
+  {
+    "name": "S3 and other object-store hosts",
+    "input": "https://example-bucket.s3.us-east-1.amazonaws.com/k pub-abc123.r2.dev/x example-bucket.blob.core.windows.net/c",
+    "absent": ["example-bucket", "amazonaws", "r2.dev", "blob.core"],
+    "present": ["<storage-host>"]
+  },
+  {
+    "name": "gs, s3 and r2 URIs",
+    "input": "gs://example-bucket/ref/seed.tar s3://example-bucket/k r2://example-bucket/k",
+    "absent": ["example-bucket"],
+    "present": ["<bucket-uri>"]
+  },
+  {
+    "name": "bucket names in key/value, JSON, escaped JSON and quoted forms",
+    "input": "Bucket=example-bucket {\"bucket\":\"example-bucket\"} {\"m\":\"{\\\"bucketName\\\":\\\"example-bucket\\\"}\"} bucket \"example-bucket\" does not exist",
+    "absent": ["example-bucket"],
+    "present": ["<bucket>"]
+  },
+  {
+    "name": "uppercase BUCKET environment keys",
+    "input": "R2_BUCKET=nb-example-store GCS_BUCKET: nb-example-store",
+    "absent": ["nb-example-store"],
+    "present": ["R2_BUCKET=<bucket>"]
+  },
+  {
+    "name": "32-hex account id",
+    "input": "acct 0123456789abcdef0123456789abcdef done",
+    "absent": ["0123456789abcdef0123456789abcdef"],
+    "present": ["<hex32>"]
+  },
+  {
+    "name": "Convex, Vercel and Cloud Run hosts",
+    "input": "happy-animal-123.convex.cloud other-thing-45.convex.site neonbinder-abc-neon-binder.vercel.app svc-xyz-uc.a.run.app web-abc123-uc.a.run.app svc.example.run.app",
+    "absent": ["happy-animal", "other-thing", "neonbinder-abc", "svc-xyz", "web-abc123", "svc.example"],
+    "present": ["<preview-host>", "<run-host>"]
+  },
+  {
+    "name": "Convex deployment ids and deployment values (plain and escaped JSON)",
+    "input": "dev:happy-animal-123 {\"deployment\":\"quiet-fox-9\"} {\"m\":\"{\\\"deployment\\\":\\\"quiet-fox-9\\\"}\"}",
+    "absent": ["happy-animal", "quiet-fox"],
+    "present": ["<convex-deployment>"]
+  },
+  {
+    "name": "email, including one a cut would have halved",
+    "input": "signed in as user.name+tag@example.org then sometest@neonbinder.example",
+    "absent": ["user.name", "example.org", "sometest@"],
+    "present": ["[email removed]"]
+  },
+  {
+    "name": "Bearer and Basic values",
+    "input": "Authorization: Bearer abc.DEF-123_xyz== and Basic dXNlcjpwYXNz",
+    "absent": ["abc.DEF-123_xyz", "dXNlcjpwYXNz"],
+    "present": ["Bearer [removed]", "Basic [removed]"]
+  },
+  {
+    "name": "JWT",
+    "input": "got eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl back",
+    "absent": ["eyJhbGciOiJIUzI1NiJ9", "c2lnbmF0dXJl"],
+    "present": ["[jwt removed]"]
+  },
+  {
+    "name": "URL query string and fragment",
+    "input": "GET https://files.example.test/o/a.jpg?X-Amz-Credential=AKIAFAKE%2F2026&X-Amz-Signature=deadbeef#frag now",
+    "absent": ["X-Amz-Credential", "X-Amz-Signature", "deadbeef", "frag"],
+    "present": ["https://files.example.test/o/a.jpg?[query removed]"]
+  },
+  {
+    "name": "Clerk testing token in a scheme-less address",
+    "input": "fetch /v1/client?__clerk_testing_token=FAKETOKEN123 failed",
+    "absent": ["FAKETOKEN123", "__clerk_testing_token"],
+    "present": ["/v1/client?[query removed]"]
+  },
+  {
+    "name": "secret-named pairs",
+    "input": "token=abc123 password: hunter2 api_key=\"k 1\" {\"cookie\":\"sess-value\"} __session=fakevalue secret = s3cr3t",
+    "absent": ["abc123", "hunter2", "k 1", "sess-value", "fakevalue", "s3cr3t"],
+    "present": ["token=[removed]", "password: [removed]"]
+  },
+  {
+    "name": "secret-named pair around a JWT is masked once, not twice",
+    "input": "__session=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.c2lnbmF0dXJl;",
+    "absent": ["eyJ", "removed] removed]"],
+    "present": ["__session=[removed];"]
+  },
+  {
+    "name": "long opaque run",
+    "input": "id AbCdEfGh1234AbCdEfGh1234AbCdEfGh1234 end",
+    "absent": ["AbCdEfGh1234AbCdEfGh1234"],
+    "present": ["[long token removed]"]
+  },
+  {
+    "name": "kept: function names, timings, review_gate_timing, request ids, hyphenated file names",
+    "input": "{\"identifier\":\"auth:getSession\",\"executionTime\":0.0123,\"msg\":\"review_gate_timing\",\"ms\":812,\"requestId\":\"b7d2c0c5-9a9e-4c7f-8f1e-3a6d6e1d2f00\"} collection/copy-photo-upload-retry.spec.ts",
+    "absent": [],
+    "present": ["auth:getSession", "\"executionTime\":0.0123", "review_gate_timing", "\"ms\":812", "b7d2c0c5-9a9e-4c7f-8f1e-3a6d6e1d2f00", "copy-photo-upload-retry.spec.ts"],
+    "unchanged": true
+  }
+]

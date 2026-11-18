@@ -100,7 +100,7 @@ test(
 
       // Self-cleaning: the copy goes, and the card needs again.
       await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Near Mint`, exact: true }).click();
-      await confirmRemoved(drawer);
+      await confirmRemoved(drawer, `Removed ${short}, Raw, Near Mint`);
       await expect(drawer.getByText("Need it")).toBeVisible();
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();

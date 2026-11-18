@@ -158,6 +158,6 @@ test(
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${short}, Raw, Excellent`);
   },
 );

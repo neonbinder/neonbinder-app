@@ -3,10 +3,17 @@
 // under playwright/support/; the unit tests sit here, where vitest collects .mjs.
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 import FlakyReporter, { flakyEntries } from "../playwright/support/flaky-reporter.mjs";
 import { redact, stripAnsi } from "../playwright/support/redact.mjs";
+
+// The corpus CI's shell redactor is also tested against (.github/scripts/
+// redact-ci-log.test.mjs): one implementation, one list of cases.
+const CORPUS = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../../.github/scripts/redact-corpus.json"), "utf8"),
+);
 
 const TEST_DIR = "/repo/apps/web/playwright/tests";
 
@@ -126,6 +133,14 @@ describe("redact", () => {
 
   it("keeps the shape of a masked Convex host", () => {
     expect(redact("fetch https://happy-otter-123.convex.site/x?y=1")).toBe("fetch https://<deployment>.convex.site/x?[query removed]");
+  });
+
+  it.each(CORPUS.map((c) => [c.name, c]))("shared corpus: %s", (_name, entry) => {
+    const out = redact(entry.input);
+    for (const s of entry.absent) expect(out).not.toContain(s);
+    for (const s of entry.present) expect(out).toContain(s);
+    if (entry.unchanged) expect(out).toBe(entry.input);
+    expect(redact(out)).toBe(out);
   });
 
   it("strips terminal colour codes", () => {

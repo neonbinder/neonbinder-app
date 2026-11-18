@@ -93,6 +93,13 @@ Reference specs that show the patterns below:
    queue. One worker per shard, each owning one test account
    (`TEST_EMAIL_<WORKER_INDEX>`); tests must not depend on order. After any red
    spec the harness resets that account (see "The failure reset").
+   **`@marketplace-seller` and `@bsc-breaker` specs never retry.** A seller
+   spec's retry writes to the one eBay sandbox (or SportLots) seller every PR
+   shares, and a breaker spec's opens the deployment-wide BSC call gate again;
+   the failure reset undoes neither. Each such file says
+   `test.describe.configure({ retries: 0 })` (it beats the config and
+   `--retries`), and the `noRetryOnSharedAccounts` fixture refuses the retry of
+   a tagged spec that forgot, before its body runs.
 6. **Public repo.** No secrets, account ids, internal URLs or deployment
    slugs in any file, comment, log line or artifact. Never `git add -A`,
    never `git stash` in a shared worktree.
@@ -261,9 +268,14 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
 - `support/worker-reset.ts`: the worker account's reset chain
   (`WORKER_RESET_REDIRECT`, `expectWorkerReset`), shared by the bootstrap and the
   failure reset.
-- `support/redact.mjs`: the one scrubber for text the suite publishes (URL
-  queries, tokens, JWTs, secret-named pairs, Convex hosts, emails, long opaque
-  runs). `support/flaky-reporter.mjs`: CI's reporter of retried-then-passed specs
+- `support/redact.mjs`: the one scrubber for text the suite and CI publish (URL
+  queries, tokens, JWTs, secret-named pairs, Convex hosts, storage hosts and
+  buckets, `*.vercel.app` and `*.run.app` hosts, deployment ids, emails, long
+  opaque runs, and any literals the caller passes). CI runs the same scrubber on
+  its logs and summary tables through `.github/scripts/redact-cli.mjs`, and both
+  sides are tested against one shared corpus,
+  `.github/scripts/redact-corpus.json`: add a new rule's case there.
+  `support/flaky-reporter.mjs`: CI's reporter of retried-then-passed specs
   (`<PW_REPORT_DIR>/flaky.json`, `[{file, title, project, firstError}]`).
 - `support/a11y.ts`: what `expectAccessible` runs: the WCAG tags, the one
   list of excluded third-party regions (each with its reason), the failure
@@ -707,7 +719,14 @@ After a test on `e2e` or `e2e-mobile` ends red (failed or timed out), the
 `resetAfterFailure` fixture resets that worker's MAIN account by the bootstrap's
 own route (`support/worker-reset.ts`: sign-in, `/testing/reset`, then
 `/testing/seed-credentials`), on a page of its own, before the worker's next test
-or CI's retry. Locally too, with retries 0, so a local run behaves as CI does.
+or CI's retry.
+
+- **CI by default, locally on opt-in.** It runs when `CI` is set
+  (`PW_FAILURE_RESET=0` turns it off) and locally only with `PW_FAILURE_RESET=1`:
+  a local worker may be a user others share (shared dev, or a worker with its own
+  `TEST_EMAIL_<n>` that CI signs in as), and the reset wipes that user's rows and
+  re-saves its Clerk-user-keyed marketplace sign-ins. Opt in on your own
+  deployment only.
 
 - **Harness only.** No spec calls it; it never runs for `setup` or `bootstrap`,
   after a pass, or after an interrupted run.
@@ -723,8 +742,10 @@ or CI's retry. Locally too, with retries 0, so a local run behaves as CI does.
   teardown and the red page's context close. Its page is left blank before its
   own context closes (hard rule 7: it shows the credentials page).
 - **Bounded, and never the error that counts.** Its waits are the bootstrap's
-  (14 s paused, 90 s with SportLots live, the sign-in hop the launch gate),
-  capped by the fixture's own timeout. The report shows a `failure-reset`
+  (14 s paused, 90 s with SportLots live, the sign-in hop the launch gate, three
+  7 s closing checks). It gives itself up at their sum (`WORKER_RESET_CAP_MS`),
+  then blanks and closes its page; the fixture's timeout is that cap plus the
+  teardown plus 30 s, so the blank page is always reached first. The report shows a `failure-reset`
   annotation with the seconds it took; when it fails, the annotation says so, a
   `failure-reset` attachment carries the scrubbed reason, and the spec's own
   error is still the one the report shows.

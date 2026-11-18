@@ -18,11 +18,14 @@
  *            the deployment's BSC call gate when a rule could have opened it).
  *
  * Harness fixtures no spec names (NEO-592):
+ *   noRetryOnSharedAccounts — automatic. Refuses a retry of a `@marketplace-seller`
+ *            or `@bsc-breaker` spec (GUIDE hard rule 5): each such file says
+ *            `test.describe.configure({ retries: 0 })`; this catches one that forgot.
  *   resetAfterFailure — automatic. After a test on `e2e` or `e2e-mobile` ends
  *            red, resets the worker's main account by the bootstrap's own route
  *            (./worker-reset.ts) before the worker's next test or retry. Bounded;
  *            its own failure is logged and attached, never thrown over the
- *            spec's error. Runs locally too (retries 0), so local matches CI.
+ *            spec's error. On in CI; locally only with PW_FAILURE_RESET=1.
  *   captureConsole — an option, off by default: `test.use({ captureConsole: true })`
  *            keeps the page's console lines and attaches them, scrubbed
  *            (./redact.mjs), to a red result as `console`.
@@ -35,12 +38,13 @@
  *     await expect(page.getByText("Build set parameters using marketplace APIs")).toBeVisible({ timeout: LAUNCH_GATE });
  *   });
  */
-import { test as base, expect, type Browser, type Page, type TestInfo } from "@playwright/test";
+import { test as base, expect, type Browser, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
+import { BREAKER_TAG, SELLER_TAG } from "../project-scope.mjs";
 import { checkAccessibility, type AccessibleOptions } from "./a11y";
 import { BscFake } from "./bscFake";
 import { makeEnv, type FlowEnv } from "./env";
 import { redact } from "./redact.mjs";
-import { expectWorkerReset, WORKER_RESET_CAP_MS, WORKER_RESET_REDIRECT } from "./worker-reset";
+import { expectWorkerReset, WORKER_RESET_CAP_MS, WORKER_RESET_LAUNCH_MS, WORKER_RESET_REDIRECT } from "./worker-reset";
 
 export type SignIn = (
   redirect: string,
@@ -61,12 +65,31 @@ export function signInUrl(redirect: string, worker: string, account?: string): s
   return `/testing/sign-in?redirect=${redirect}${acct}&worker=${worker}`;
 }
 
+/**
+ * The failure reset runs in CI by default (PW_FAILURE_RESET=0 turns it off) and
+ * locally only on opt-in (PW_FAILURE_RESET=1). Locally a worker is often a user
+ * other sessions share (shared dev, or a worker with its own TEST_EMAIL_<n> that CI
+ * also signs in as), and the reset wipes that user's rows and re-saves its
+ * marketplace sign-ins, which are keyed by the Clerk user, not the deployment.
+ */
+const FAILURE_RESET_ON = process.env.PW_FAILURE_RESET ? process.env.PW_FAILURE_RESET === "1" : !!process.env.CI;
+
+/** The tags whose specs never retry (hard rule 5): shared seller accounts, the BSC call gate. */
+const NO_RETRY_TAGS: ReadonlySet<string> = new Set([SELLER_TAG, BREAKER_TAG]);
+
+/** The reset's teardown: the page sent to about:blank, then its context closed (one UX budget each). */
+const RESET_STEP_MS = 7_000;
+const RESET_TEARDOWN_MS = 2 * RESET_STEP_MS;
+/** Margin over the reset's own cap and teardown before the fixture's timeout fires. */
+const RESET_HEADROOM_MS = 30_000;
+
 export const test = base.extend<{
   env: FlowEnv;
   signIn: SignIn;
   bscFake: BscFake;
   captureConsole: boolean;
   consoleOnFailure: void;
+  noRetryOnSharedAccounts: void;
   resetAfterFailure: void;
 }>({
   env: async ({}, use, testInfo) => {
@@ -110,6 +133,24 @@ export const test = base.extend<{
     await use(fake);
     await fake.teardown();
   },
+  // NEO-592, GUIDE hard rule 5: a `@marketplace-seller` spec writes to a seller account
+  // every PR shares (eBay sandbox, SportLots) and a `@bsc-breaker` spec opens the
+  // deployment-wide BSC call gate; neither is undone by the failure reset, so neither
+  // retries. Each such file says `test.describe.configure({ retries: 0 })`; this refuses
+  // the retry of one that forgot, before its body writes anything. Registered before
+  // `resetAfterFailure`, so a refused retry is not followed by a second reset.
+  noRetryOnSharedAccounts: [
+    async ({}, use, testInfo) => {
+      const tag = testInfo.tags.find((t) => NO_RETRY_TAGS.has(t));
+      if (tag && testInfo.retry > 0) {
+        throw new Error(
+          `A ${tag} spec never retries (GUIDE hard rule 5): add \`test.describe.configure({ retries: 0 })\` to ${testInfo.file.split("/playwright/").pop()}.`,
+        );
+      }
+      await use();
+    },
+    { auto: true },
+  ],
   // NEO-592 (Jason, 2026-11-18): after a red test the worker's account is reset by
   // the bootstrap's own route, so the worker's next test, or the CI retry, starts
   // clean instead of inheriting the red spec's half-done writes (a copy left on a
@@ -118,16 +159,21 @@ export const test = base.extend<{
   // and depends on no page or context), so it is torn down last: the spec's own
   // afterEach, `bscFake`'s teardown and the red test's context close all finish
   // before it runs, and no write from the red page can land after the reset.
+  // On in CI; locally only with PW_FAILURE_RESET=1 (FAILURE_RESET_ON, below).
   resetAfterFailure: [
     async ({ browser, baseURL, env }, use, testInfo) => {
       await use();
+      if (!FAILURE_RESET_ON) return;
       if (!RESET_PROJECTS.has(testInfo.project.name)) return;
       if (testInfo.status === testInfo.expectedStatus) return;
       // Interrupted (a local Ctrl-C) or skipped: nothing ran to completion, nothing to undo.
       if (testInfo.status === "interrupted" || testInfo.status === "skipped") return;
       await resetWorkerAccount(browser, baseURL, env, testInfo);
     },
-    { auto: true, timeout: WORKER_RESET_CAP_MS + 15_000 },
+    // The reset gives itself up at WORKER_RESET_CAP_MS (resetWorkerAccount), then
+    // blanks and closes its page; the fixture's timeout leaves room for both and a
+    // margin, so the blank page is always reached before Playwright gives up on it.
+    { auto: true, timeout: WORKER_RESET_CAP_MS + RESET_TEARDOWN_MS + RESET_HEADROOM_MS },
   ],
   // NEO-592: a red result carries the page's console, so the next red is readable
   // from its artifacts. Opt-in per file (`test.use({ captureConsole: true })`).
@@ -184,16 +230,37 @@ async function resetWorkerAccount(
 ): Promise<void> {
   const started = Date.now();
   const seconds = () => `${((Date.now() - started) / 1000).toFixed(1)} s`;
-  const context = await browser.newContext({ baseURL, colorScheme: "dark" });
-  const page = await context.newPage();
+  let context: BrowserContext | undefined;
+  let gaveUp = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    // The step budgets inside expectWorkerReset bound every wait but the first
-    // navigation, which gets the launch gate; the fixture's own timeout caps the rest.
-    await page.goto(signInUrl(WORKER_RESET_REDIRECT, env.WORKER_INDEX), {
-      waitUntil: "domcontentloaded",
-      timeout: LAUNCH_GATE,
+    const chain = (async () => {
+      const opened = await browser.newContext({ baseURL, colorScheme: "dark" });
+      if (gaveUp) {
+        // The cap passed while the context opened: nobody else will close it.
+        await opened.close().catch(() => {});
+        throw new Error("gave up before the reset's page opened");
+      }
+      context = opened;
+      const page = await opened.newPage();
+      // The step budgets inside expectWorkerReset bound every wait but the first
+      // navigation, which gets the launch gate.
+      await page.goto(signInUrl(WORKER_RESET_REDIRECT, env.WORKER_INDEX), {
+        waitUntil: "domcontentloaded",
+        timeout: WORKER_RESET_LAUNCH_MS,
+      });
+      await expectWorkerReset(page, env);
+    })();
+    // The chain loses the race when the cap passes; its late rejection (its page
+    // blanked and closed under it) is expected and has nowhere to go.
+    chain.catch(() => {});
+    const cap = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        gaveUp = true;
+        reject(new Error(`the reset passed its cap of ${WORKER_RESET_CAP_MS / 1000} s (its summed step budgets)`));
+      }, WORKER_RESET_CAP_MS);
     });
-    await expectWorkerReset(page, env);
+    await Promise.race([chain, cap]);
     testInfo.annotations.push({
       type: "failure-reset",
       description: `worker ${env.WORKER_INDEX}'s account reset and re-seeded after the red result, in ${seconds()}`,
@@ -209,10 +276,16 @@ async function resetWorkerAccount(
       .catch(() => {});
     console.warn(`failure-reset: worker ${env.WORKER_INDEX}: ${message.split("\n")[0]}`);
   } finally {
+    clearTimeout(timer);
+    gaveUp = true;
     // Playwright screenshots every page of a red test as its context closes, and
     // this page shows the account's credentials: leave it blank first (hard rule 7).
-    await page.goto("about:blank").catch(() => {});
-    await context.close().catch(() => {});
+    if (context) {
+      for (const page of context.pages()) {
+        await page.goto("about:blank", { timeout: RESET_STEP_MS }).catch(() => {});
+      }
+      await context.close().catch(() => {});
+    }
   }
 }
 
