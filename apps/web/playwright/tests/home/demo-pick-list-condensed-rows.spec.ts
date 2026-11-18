@@ -3,13 +3,14 @@
 // NEO-522, and this device remembers the choice. On the public demo's sheet:
 //   - Row size opens on Spacious, and the arrow keys move to Condensed and pick
 //     it (a radio group: one Tab stop, the choice in aria-checked);
-//   - Condensed is the old screen's content, on one line (NEO-598): the kind
-//     chip ("Insert", "Parallel") beside the variant's name in the Set column,
-//     the "couldn't match" note beside a sale filed with its set (Nabers), thin
+//   - Condensed is the old screen's content, dense (NEO-598): the kind chip
+//     ("Insert", "Parallel") beside the variant's name in the Set column, the
+//     "couldn't match" note beside a sale filed with its set (Nabers), thin
 //     dividers only (no heavier rule where the variant changes), a 24px bordered
-//     checkbox (32px on a phone) and, on a wide screen, no Variant column, the
-//     team beside the name, and every row a single line, a long listing title
-//     in "Can't find it" and a slab's cert included;
+//     checkbox (on a phone too) and, on a wide screen, no Variant column, the
+//     team beside the name, and a row on one line wherever its columns fit
+//     (every demo row at 1920; at 1280 all but the long listing titles and
+//     notes), wrapping where a line cannot fit and never clipping anything;
 //   - it uses the same wide page as Spacious at the same width, so more text
 //     fits each line;
 //   - it passes axe in light and dark;
@@ -21,7 +22,7 @@
 // The demo is hard-coded data in the browser (demoPickStore.tsx), never
 // Convex, so nothing here writes anywhere (R7). Public: signed out (R4).
 import { test, expect, expectAccessible } from "../../support/fixtures";
-import { expectWithinCell, nameCell, pickList, pickRow, pictureButton, pulledToggle, rowLines, seen, variantTag } from "../../support/pick-list";
+import { expectNothingClipped, expectWithinCell, nameCell, pickList, pickRow, pictureButton, pulledToggle, rowLines, seen, variantTag } from "../../support/pick-list";
 
 // The rows the spec reads, by how each row's name begins (demoPickStore.tsx).
 const TROUT = "#27 Mike Trout, 2026 Topps Series 1";
@@ -40,7 +41,6 @@ const SANDERS_SLAB = "#257 Barry Sanders, 1989 Score";
 const JUDGE = "#8B-12 Aaron Judge, 2026 Topps Series 1 8 Bit Ballers Red";
 const FIELDS = "#330 Malachi Fields, 2026 Topps";
 const FLAGG = "#1 Cooper Flagg, 2025-26 Topps Chrome";
-const BCP = "2025 Bowman Chrome Prospects #BCP-77 Auto";
 
 test(
   "Pick List demo: Condensed rows bring back the pre-NEO-522 screen, and this device remembers the choice",
@@ -78,6 +78,18 @@ test(
     await expect(rowSize.condensed).toBeFocused();
     await expect(rowSize.spacious).toHaveAttribute("aria-checked", "false");
 
+    // Rows on one line: the team and chips beside the name, the note beside the set, a slab's grade
+    // and cert, two orders joined (the line is its own line-height, so 1.5 or less is one line).
+    const expectOneLine = async (rows: string[]) => {
+      for (const row of rows) {
+        await expect.poll(() => rowLines(pickRow(table, row)), { message: row }).toBeLessThanOrEqual(1.5);
+      }
+    };
+    const ALL_ROWS = [TROUT, SKENES, SCHLITTLER, OHTANI_INSERT, NABERS, WITT, OHTANI_SLAB, SANDERS_SLAB, JUDGE, FIELDS, FLAGG];
+    // At 1280 the page's side nav leaves 1062px, which every column but the longest listing
+    // titles and notes (WITT, NABERS, JUDGE's serial, FLAGG) fits.
+    const ROWS_AT_1280 = [TROUT, SKENES, SCHLITTLER, OHTANI_INSERT, OHTANI_SLAB, SANDERS_SLAB, FIELDS];
+
     const expectCondensed = async () => {
       // The kind chip and the variant's own name, in the Set column (a phone's one cell).
       await expect(seen(pickRow(table, OHTANI_INSERT).getByText("Insert", { exact: true }))).toBeVisible();
@@ -87,13 +99,15 @@ test(
       await expect(seen(pickRow(table, NABERS).getByText(NOTE, { exact: true }))).toBeVisible();
       // The old thin dividers: no heavier rule where the variant changes.
       await expect(ruleUnder(SKENES)).toHaveCSS("border-bottom-width", "1px");
-      // The bordered checkbox: the button is the box. 24px (the WCAG 2.2 target floor) on a
-      // wide screen, 32px on a phone; never the old 44px.
+      // The bordered checkbox: the button is the box. 24px (the WCAG 2.2 target floor) on every
+      // screen; never the old 44px. Its hit area is larger and invisible.
       const toggle = pulledToggle(table, TROUT);
       await expect(toggle).toHaveCSS("border-top-width", "2px");
       const box = (await toggle.boundingBox())!;
       expect(box.width).toBeGreaterThanOrEqual(24);
-      expect(box.width).toBeLessThan(isMobile ? 36 : 25);
+      expect(box.width).toBeLessThan(25);
+      // Nothing is clipped or pushed past the page, whatever the width (rows wrap instead).
+      await expectNothingClipped(table, region);
       if (!isMobile) {
         // No Variant column, and the team beside the name on the same line.
         await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toHaveCount(0);
@@ -102,17 +116,8 @@ test(
         const pic = (await pictureButton(table, TROUT).boundingBox())!;
         expect(pic.height).toBeLessThanOrEqual(25);
         expect(pic.width / pic.height).toBeCloseTo(5 / 7, 1);
-        // One line per row: the team and chips beside the name, the note beside the set, the
-        // slab's grade and cert, a long listing title in Can't find it (clipped, never wrapped).
-        // SKENES has two orders (BSC and eBay), joined on the line; JUDGE, FIELDS, FLAGG and NABERS
-        // carry a marker chip beside the name, which must stay whole inside its cell.
-        const rows = [TROUT, SKENES, SCHLITTLER, OHTANI_INSERT, NABERS, WITT, OHTANI_SLAB, SANDERS_SLAB, JUDGE, FIELDS, FLAGG];
-        for (const row of rows) {
-          await expect.poll(() => rowLines(pickRow(table, row)), { message: row }).toBeLessThanOrEqual(1.5);
-        }
-        // The one-line rows never push the table past its page: long words clip with an ellipsis
-        // instead of widening a column (a fixed layout), so the list never scrolls sideways.
-        await expect.poll(async () => (await table.boundingBox())!.width - (await region.boundingBox())!.width).toBeLessThanOrEqual(1);
+        // The marker chips (JUDGE, FIELDS, FLAGG, NABERS) stay whole inside their cell, wherever
+        // the row wraps; SKENES has two orders (BSC and eBay), joined by a comma.
         await expect(seen(pickRow(table, SANDERS_SLAB).getByText("Cert 4021337", { exact: true }))).toBeVisible();
         await expect(seen(pickRow(table, SKENES).getByText("BSC 88213", { exact: true }))).toBeVisible();
         await expect(seen(pickRow(table, SKENES).getByText("eBay 12-3456", { exact: true }))).toBeVisible();
@@ -131,23 +136,16 @@ test(
     await expectCondensed();
 
     if (!isMobile) {
-      // A keyboard cannot hover for a title: the row it is on unclips and wraps its words (the long
-      // Witt title), and the row it leaves goes back to one line. Arrow keys move between toggles.
-      await pulledToggle(table, BCP).focus();
-      await page.keyboard.press("ArrowDown");
-      await expect(pulledToggle(table, WITT)).toBeFocused();
-      await expect.poll(() => rowLines(pickRow(table, WITT))).toBeGreaterThan(1.5);
-      await page.keyboard.press("ArrowDown");
-      await expect(pulledToggle(table, TROUT)).toBeFocused();
-      await expect.poll(() => rowLines(pickRow(table, WITT))).toBeLessThanOrEqual(1.5);
-    }
-
-    if (!isMobile) {
       // Condensed takes the same wide page as Spacious: at 1024 and at 1920 the list is as wide
       // as Spacious's, so more text fits each line.
       await expect.poll(regionWidth).toBe(spaciousAtConfig);
+      // At 1280 the rows that fit are on one line, and at 1024 (the config) nothing is clipped.
+      await page.setViewportSize({ width: 1280, height: viewport.height });
+      await expectOneLine(ROWS_AT_1280);
+      await expectCondensed();
       await page.setViewportSize({ width: 1920, height: viewport.height });
       await expect.poll(regionWidth).toBe(spaciousWide);
+      await expectOneLine(ALL_ROWS);
       await expectCondensed();
       await expectAccessible(page, { label: "Pick List demo, Condensed rows at 1920" });
       await page.setViewportSize(viewport);

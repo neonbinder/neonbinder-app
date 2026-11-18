@@ -524,11 +524,11 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     // A sale filed with its set keeps the old note under its variant.
     const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
     expect(within(nabers).getAllByText("NB couldn't match this line. Check the order's photo.").length).toBeGreaterThan(0);
-    // The bordered button is the box, 24px on a wide screen (NEO-598), 32px on a phone.
+    // The bordered button is the box, 24px on every screen (NEO-598), with a larger invisible hit area.
     const tick = within(trout).getByRole("button", { name: /^Pulled #27 Mike Trout/ });
-    expect(tick.className).toContain("md:size-6");
-    expect(tick.className).toContain("max-md:size-8");
-    expect(tick.className).not.toContain("size-11");
+    expect(tick.className).toContain("size-6");
+    expect(tick.className).not.toMatch(/size-(8|11)/);
+    expect(tick.className).toContain("after:absolute");
     expect(tick.className).toContain("border-2");
     // The old thin dividers: no heavier variant rule inside a set.
     expect(table.querySelector("td[class*='border-b-[3px]']")).toBeNull();
@@ -581,45 +581,51 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect(frame().className).toContain("max-w-[1600px]");
   });
 
-  it("draws a wide Condensed row on one line: dense cells, no wrapping, the team after the name, the long words clipped with a title (NEO-598)", async () => {
+  it("draws a wide Condensed row for one line, sized to its content and never clipped: dense cells, the team after the name, atomic pieces nowrap (NEO-598)", async () => {
     renderPick();
-    fireEvent.click(option("Condensed"));
     const table = await screen.findByRole("table", { name: "Cards to pull" });
-    expect(table.className).toContain("md:table-fixed");
+    fireEvent.click(option("Condensed"));
+    // Columns size to their content (auto layout), and nothing clips: no ellipsis, no hidden overflow.
+    expect(table.className).not.toContain("table-fixed");
+    // (The picture's cell is the card art's own markup, which clips its tiny type by design.)
+    const words = [...table.querySelectorAll("td:not(.nb-pick-pic)")].map((td) => td.innerHTML).join("");
+    expect(words).not.toMatch(/truncate|text-ellipsis|overflow-hidden|line-clamp/);
     const trout = await rowOf(/^Pulled #27 Mike Trout/);
     const cells = [...trout.querySelectorAll("td")];
     // Dense cells: the 24px controls set the row's height, and the cells add only py-0.5.
     expect(cells[0].className).toContain("md:py-0.5");
     expect(cells[2].className).toContain("md:py-0.5");
-    // The picture: one text line tall, 5:7.
+    // The picture: one text line tall, 5:7, on a phone too, with a larger invisible hit area.
     const thumb = within(trout).getByRole("button", { name: /^Bigger picture of #27 Mike Trout/ });
-    expect(thumb.className).toContain("md:w-[1.07rem]");
-    // The team sits beside the name on the same line, with the full text in a title.
-    const team = within(trout).getAllByText("Angels").find((el) => el.getAttribute("title") === "Angels")!;
-    expect(team.className).toContain("truncate");
+    expect(thumb.className).toContain("w-[1.07rem]");
+    expect(thumb.className).not.toContain("w-8");
+    expect(thumb.className).toContain("after:absolute");
+    // The team sits right after the name, in the same flex-wrap line, and never breaks inside.
+    const team = within(trout).getAllByText("Angels").find((el) => el.className.includes("whitespace-nowrap") && el.className.includes("text-xs"))!;
     expect(team.previousElementSibling?.textContent).toBe("Mike Trout");
-    expect(team.parentElement?.className).not.toContain("flex-col");
-    // The name keeps a floor (the team and chips give way first); the keyboard's row can unclip it.
-    const name = within(trout).getAllByText("Mike Trout").find((el) => el.getAttribute("title") === "Mike Trout")!;
-    expect(name.className).toContain("min-w-[6ch]");
-    expect(name.className).toContain("nb-pick-clip");
-    // The 24px toggle carries an invisible hit area (a pseudo-element) inside the row's own height.
-    expect(within(trout).getByRole("button", { name: /^Pulled #27 Mike Trout/ }).className).toContain("md:after:-inset-y-1");
-    // The wide cells hold their words on one line.
-    const wide = cells.filter((td) => td.className.includes("nb-pick-line") && td.className.includes("md:whitespace-nowrap"));
-    expect(wide.length).toBeGreaterThanOrEqual(5);
+    expect(team.parentElement?.className).toContain("flex-wrap");
+    // The card number never breaks.
+    expect(cells.some((td) => td.className.includes("whitespace-nowrap") && td.textContent === "#27")).toBe(true);
+    // The wide columns that hold a number, a condition and an order shrink to their content.
+    const heads = [...table.querySelectorAll("thead th")].filter((th) => th.className.includes("md:w-1"));
+    expect(heads.map((th) => th.textContent?.replace(/\s+/g, " ").trim()).sort()).toEqual(expect.arrayContaining(["Condition", "No.", "Order"]));
   });
 
-  it("puts a slab's grade and cert, and several orders, inline on a wide Condensed row (NEO-598)", async () => {
+  it("keeps a slab's grade and cert together, and joins up to two orders with a comma on a wide Condensed row (NEO-598)", async () => {
     renderPick();
-    fireEvent.click(option("Condensed"));
     await screen.findByRole("table", { name: "Cards to pull" });
+    fireEvent.click(option("Condensed"));
     const slab = [...document.querySelectorAll("tr")].find((tr) => /Cert /.test(tr.textContent ?? ""))!;
     const grade = [...slab.querySelectorAll("span")].find((el) => /^Cert /.test(el.textContent ?? ""))!;
-    // Inline beside the grade on a wide screen, stacked under it on a phone.
+    // Inline beside the grade on a wide screen, stacked under it on a phone, never apart.
     expect(grade.className).toContain("md:ml-1.5");
-    expect(grade.parentElement?.className).toContain("md:block");
+    expect(grade.parentElement?.className).toContain("md:whitespace-nowrap");
     expect(grade.parentElement?.className).toContain("max-md:flex-col");
+    // Two orders (Skenes: BSC and eBay) read "BSC 88213, eBay 12-3456" on one nowrap line.
+    const skenes = await rowOf(/^Pulled #150 Paul Skenes/);
+    const orderCell = [...skenes.querySelectorAll("td")].find((td) => td.textContent?.includes("eBay 12-3456") && !td.className.split(/\s+/).includes("md:hidden"))!;
+    expect(orderCell.textContent).toMatch(/BSC 88213,\s*eBay 12-3456/);
+    expect(orderCell.firstElementChild?.className).toContain("md:whitespace-nowrap");
   });
 
   it("is one Tab stop: the checked option; the arrow keys, Home and End move and pick", async () => {
@@ -922,7 +928,7 @@ describe("the signed-in Pick List's ways out", () => {
     }
   });
 
-  it("NEO-520: a 200-character title with no spaces wraps (Spacious wide cell, phone's cell) or clips on one line (Condensed wide cell) (WCAG 1.4.10)", async () => {
+  it("NEO-520: a 200-character title with no spaces wraps in the wide cell and the phone's cell (WCAG 1.4.10)", async () => {
     const { DEMO_PICK_DATA } = await import("./demoPickStore");
     const title = "X".repeat(200);
     const extra = {
@@ -941,15 +947,11 @@ describe("the signed-in Pick List's ways out", () => {
     const cells = within(region).getAllByText(title);
     expect(cells).toHaveLength(2);
     for (const cell of cells) expect(cell.className).toContain("wrap-anywhere");
-    // NEO-598: Condensed keeps a wide row to one line, so the wide cell clips the title with an
-    // ellipsis (the whole text stays in the page, and in a title); the phone's cell still wraps it.
+    // NEO-598: Condensed wraps it too (nothing is clipped), on a wide screen and a phone.
     fireEvent.click(within(region).getByRole("radio", { name: "Condensed" }));
     const condensed = within(region).getAllByText(title);
     expect(condensed).toHaveLength(2);
-    const [wide, phone] = condensed;
-    expect(wide.className).toContain("truncate");
-    expect(wide.getAttribute("title")).toBe(title);
-    expect(phone.className).toContain("wrap-anywhere");
+    for (const cell of condensed) expect(cell.className).toContain("wrap-anywhere");
   });
 
   it("NEO-520: grouped by order, an order holding a line NB didn't list counts items, and an all-card order counts cards", async () => {

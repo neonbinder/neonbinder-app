@@ -85,7 +85,7 @@ import {
   pickRow,
   pictureButton,
   pulledToggle,
-  rowLines,
+  expectNothingClipped,
   seedPickOrder,
   seen,
   shipPickOrder,
@@ -382,10 +382,10 @@ test(
       };
       await expectCondensed();
       if (!isMobile) {
-        // NEO-598: on a wide screen a Condensed row is one line, the described line's note included.
-        for (const row of [rowA, pickRow(table, CARD_I.short), pickRow(table, listedTitle)]) {
-          await expect.poll(() => rowLines(row)).toBeLessThanOrEqual(1.5);
-        }
+        // NEO-598: a Condensed row wraps where a line cannot fit and never clips: no cut text,
+        // no sideways scroll, the described line's note included. (Line counts live in the demo
+        // spec, whose rows are fixed; these rows carry the seed's own titles.)
+        await expectNothingClipped(table, region);
       }
       await expectAccessible(page, { label: "Pick List, Condensed rows" });
       await expect(pick.matches).toHaveText("6 match.");

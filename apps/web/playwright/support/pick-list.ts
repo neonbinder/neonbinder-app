@@ -101,8 +101,7 @@ export async function rowLines(row: Locator): Promise<number> {
 }
 
 /**
- * NEO-598: a chip or text sits whole inside its cell, not clipped at the cell's
- * edge (a Condensed row clips long words with an ellipsis, never a chip).
+ * NEO-598: a chip or text sits whole inside its cell, not cut at the cell's edge.
  */
 export async function expectWithinCell(inner: Locator): Promise<void> {
   const box = (await inner.boundingBox())!;
@@ -112,6 +111,29 @@ export async function expectWithinCell(inner: Locator): Promise<void> {
   });
   expect(box.x).toBeGreaterThanOrEqual(cell.x - 0.5);
   expect(box.x + box.width).toBeLessThanOrEqual(cell.x + cell.width + 0.5);
+}
+
+/**
+ * NEO-598: nothing in the table is clipped or pushed past the page. A Condensed row
+ * wraps its words where a line cannot fit; it never cuts them with an ellipsis or
+ * hidden overflow, and it never makes the list scroll sideways. So no element in a
+ * text cell holds more than its box shows (`scrollWidth <= clientWidth`), and the
+ * table is no wider than its region. The toggle and picture cells are left out: their
+ * invisible hit areas are meant to reach past the cell.
+ */
+export async function expectNothingClipped(table: Locator, region: Locator): Promise<void> {
+  const tableWidth = (await table.boundingBox())!.width;
+  const regionWidth = (await region.boundingBox())!.width;
+  expect(tableWidth).toBeLessThanOrEqual(regionWidth + 1);
+  const clipped = await table.evaluate((t) =>
+    [...t.querySelectorAll("td")]
+      .filter((td) => !td.querySelector("button"))
+      .flatMap((td) => [td, ...td.querySelectorAll("*")])
+      // (an sr-only span is 1px wide by design)
+      .filter((el) => el.clientWidth > 1 && el.scrollWidth > el.clientWidth + 1)
+      .map((el) => (el.textContent ?? "").trim().slice(0, 50)),
+  );
+  expect(clipped, "elements with clipped text").toEqual([]);
 }
 
 /** The table row that carries `row`'s Pulled toggle. */
