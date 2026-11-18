@@ -39620,6 +39620,24 @@ exports[`golden — CSV fixtures > prospect-team-cells.csv: leaf and set parses 
       ],
       "teams": [],
     },
+    {
+      "number": "4",
+      "players": [
+        "J.P. Crawford",
+      ],
+      "teams": [
+        "Seattle",
+      ],
+    },
+    {
+      "number": "5",
+      "players": [
+        "Seiya Suzuki",
+      ],
+      "teams": [
+        "Chicago",
+      ],
+    },
   ],
   "skipped": [],
 }
@@ -39645,6 +39663,16 @@ exports[`golden — CSV fixtures > prospect-team-cells.csv: leaf and set parses 
       "line": 4,
       "reason": "Not under any section heading",
       "text": "3,Bobby Witt Jr.,Prospect (Dallas Baptist)",
+    },
+    {
+      "line": 5,
+      "reason": "Not under any section heading",
+      "text": "4,J.P. Crawford,Seattle",
+    },
+    {
+      "line": 6,
+      "reason": "Not under any section heading",
+      "text": "5,Seiya Suzuki,Chicago",
     },
   ],
   "skippedSections": [],
