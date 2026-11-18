@@ -86,3 +86,4 @@
 - [Attributes panel header needs the open panel](patterns_attributes_panel_header_controls_need_the_open_panel.md) — NEO-569: shut = title+toggle only; open before Rename/Delete/breadcrumb/Set actions
 - [Pick List title bands; probe a query first](patterns_pick_list_title_bands_and_probing_a_query.md) — NEO-590: band by rowheader; absence by /Sales NB didn't list$/; row order; --identity probe
 - [Seeding a review state for screenshots](patterns_seeding_a_review_state_for_screenshots.md) — scratchpad script over /testing hops; titleSports probe; colorScheme only under System
+- [Dashboard Out the Door handles](patterns_dashboard_out_the_door_handles.md) — region/article "eBay order #<no>" (hash, unlike Sales), count line, hidden lines, goto+goBack gates

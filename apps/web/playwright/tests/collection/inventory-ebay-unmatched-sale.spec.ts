@@ -20,6 +20,11 @@
 //     set gets no row, and the box keeps its copy;
 //   - lets the seller pull it (and it stays pulled), and a line eBay sends no
 //     title for reads "A sale with no title" and stays under "Can't find it";
+//   - NEO-590: on the dashboard's Out the Door, names each such order by its
+//     title ("A sale with no title" when eBay sent none), counts it in items,
+//     wraps a very long title on the screen, and never says the card is not in
+//     NB: no "matched" words and no Needs a Look entry for the order (all that
+//     matters there is that it sold);
 //   - takes it off the list once the order ships.
 //
 // Orders come from `/testing/seed-pick-order?platform=ebay` (support/pick-list.ts,
@@ -262,9 +267,7 @@ test(
       await wideLink.scrollIntoViewIfNeeded();
       await expect(wideLink).toBeInViewport({ ratio: 1 });
       await expectAccessible(page, { label: "Pick List, a line with a 150-character unspaced title" });
-      await shipEbayOrder(page, long);
-      await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
-      open.delete(long);
+      // The long order stays open until the dashboard has shown it (shipped with the others below).
 
       // --- An eBay line that sends no title reads in plain words, on the Sales tab and the Pick List ---
       await seedEbayOrder(page, { orderNo: untitled, lines: [{ quantity: 1 }] }, "/inventory?tab=sales");
@@ -277,6 +280,38 @@ test(
       await expect(bareLine).toContainText(`1× ${NO_TITLE_NAME}`);
       await expect(bareLine.getByText(WHY_SALES, { exact: true })).toBeVisible();
       await expectAccessible(page, { label: "Sales, an eBay line with no title" });
+
+      // --- NEO-590: Out the Door names each sale by its title and never says it is unmatched -------
+      // Three orders NB holds no card for are open: titled (pulled), long and untitled.
+      await page.goto("/dashboard");
+      // A full page load: the launch gate.
+      await expect(page.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible({ timeout: LAUNCH_GATE });
+      const outTheDoor = page.getByRole("region", { name: "Out the Door" });
+      const doorOrder = (orderNo: string) => outTheDoor.getByRole("article", { name: `eBay order #${orderNo}`, exact: true });
+      const titledDoor = doorOrder(titled);
+      await expect(titledDoor.getByText(title, { exact: true })).toBeVisible();
+      // Counted in items, as the Sales tab counts it: the line may not be a card at all.
+      await expect(titledDoor.getByText("1 item. Sold today.", { exact: true })).toBeVisible();
+      // The 150-character unspaced title wraps: the row's last line sits wholly on screen (one that
+      // overflowed would push it past the edge). Scrolled to first: below the fold is not the question.
+      const longDoor = doorOrder(long);
+      await expect(longDoor.getByText(longTitle, { exact: true })).toBeVisible();
+      const longSold = longDoor.getByText("1 item. Sold today.", { exact: true });
+      await longSold.scrollIntoViewIfNeeded();
+      await expect(longSold).toBeInViewport({ ratio: 1 });
+      await expect(doorOrder(untitled).getByText(NO_TITLE_NAME, { exact: true })).toBeVisible();
+      // R2: the positives above first; then nothing says a line is not matched (hidden lines counted too) ...
+      await expect(outTheDoor.getByText(/matched/i)).toHaveCount(0);
+      // ... and none of these orders is a Needs a Look entry. Needs a Look itself may show (the box above
+      // holds a card not listed), so only these orders' own entries are asked about.
+      for (const orderNo of [titled, long, untitled]) {
+        await expect(page.getByRole("link", { name: `Jump to order #${orderNo}`, exact: true })).toHaveCount(0);
+      }
+      await expectAccessible(page, { within: outTheDoor, label: "Dashboard, Out the Door with sales NeonBinder did not list" });
+      await page.goBack();
+      // Back is a full page load of the Sales tab: the launch gate.
+      await expect(bare).toBeVisible({ timeout: LAUNCH_GATE });
+      await expect(page).toHaveURL(/[?&]tab=sales(&|$)/);
       await tabs.getByRole("link", { name: "Pick List", exact: true }).click();
       await expect(pick.heading).toBeVisible();
       await filterBy(page, isMobile, "Order", ebayOrder(untitled));
@@ -294,6 +329,9 @@ test(
       await expectAccessible(page, { label: "Pick List, an eBay line with no title" });
 
       // --- Shipping takes the line off the list ---------------------------------------------------
+      await shipEbayOrder(page, long);
+      await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
+      open.delete(long);
       await shipEbayOrder(page, untitled);
       await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
       open.delete(untitled);

@@ -4,7 +4,8 @@
 // everything, so every section shows, an order waiting to ship leads, and the
 // Hopper holds one block per open run, each linked to the Add cards tab that
 // finishes it (here, the demo's Inventory side), and Out the Door links to the
-// Pick List where its orders are pulled (NEO-539). Signed out, fake data, read-only (R7).
+// Pick List where its orders are pulled (NEO-539); an order NB holds no card for is named by its
+// listing title, never called unmatched (NEO-590). Signed out, fake data, read-only (R7).
 // With no binder open, the first stands shut where the pocket page opens; its
 // cover opens it. The panels the screen opens (a binder's pocket page, an order's cards) are
 // checked for accessibility OPEN, as well as the closed page: the open state is
@@ -137,6 +138,15 @@ test(
     await page.goBack();
     await expect(page).toHaveURL(/\/demo$/);
     await expect(orders).toBeVisible();
+
+    // NEO-590: an order whose only line NB holds no card for is named by its listing title and counted in
+    // items; all that matters is that it sold, so Out the Door never says a line is not matched (hidden
+    // lines counted too, DEMO-1003's title-only second line among them). Needs a Look still shows above,
+    // for the demo's oversold order.
+    const titleOnly = orders.getByRole("article", { name: "eBay order #12-34567-89099", exact: true });
+    await expect(titleOnly.getByText("2023 Topps Chrome #121 Gunnar Henderson RC Orioles", { exact: true })).toBeVisible();
+    await expect(titleOnly.getByText("1 item. Sold today.", { exact: true })).toBeVisible();
+    await expect(orders.getByText(/matched/i)).toHaveCount(0);
 
     // An order opens to every card on it: check the opened order.
     const showCards = orders.getByRole("button", { name: /^Show all \d+ cards? in .+ order / }).first();
