@@ -371,7 +371,7 @@ describe("NEO-509: the sports a sale names", () => {
     // It does not parse (no leading year), so titleSports was never asked: no answer, not a null one.
     expect(only.listed).toEqual({ title: "Vintage binder lot" });
     expect(only.order.venue).toBe("eBay");
-    expect(only.problem).toBe("NB didn't list this one. Check the order's photo.");
+    expect(only.problem).toBe("Neon Binder didn't list this one. Check the sales platform.");
   });
 
   const titleCalls = () =>
@@ -470,7 +470,7 @@ describe("NEO-509: the sports a sale names", () => {
     expect(alone.listingTitle).toBe(unmatchedSale("ebay"));
     expect([first.listingTitle, second.listingTitle]).toEqual(["A sale with no title (1 of 2)", "A sale with no title (2 of 2)"]);
     for (const line of [first, second, alone]) {
-      expect(line.problem).toBe("NB didn't list this one. Check the order's photo.");
+      expect(line.problem).toBe("Neon Binder didn't list this one. Check the sales platform.");
       expect(`${line.listingTitle} ${line.problem}`).not.toMatch(/\bcard\b|match/i);
     }
   });
@@ -480,7 +480,7 @@ describe("NEO-509: the sports a sale names", () => {
     const [only] = store!.data!.lines;
     expect(only.order.venue).toBe("BSC");
     expect(only.listingTitle).toBe("Unmatched sale");
-    expect(only.problem).toBe("NB couldn't match this line. Check the order's photo.");
+    expect(only.problem).toBe("Neon Binder couldn't match this line. Check the order's photo.");
   });
 
   it("NEO-520: lines of one order with the same title are numbered like any other twins", async () => {

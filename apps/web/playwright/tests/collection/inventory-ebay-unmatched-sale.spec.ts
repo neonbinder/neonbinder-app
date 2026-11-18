@@ -73,14 +73,14 @@ import {
 const CARD = { no: "215", short: "#215 Nolan Arenado" };
 const SET_TITLE = "2024 Topps Chrome";
 
-const WHY_PICK = "NB didn't list this one. Check the order's photo.";
+const WHY_PICK = "Neon Binder didn't list this one. Check the sales platform.";
 const WHY_SALES = "NeonBinder didn't list this one. Boxes untouched. Pull it by hand.";
 const NO_TITLE_NAME = "A sale with no title";
 /** NEO-590: the one divider a sport's title-filed sales sit behind. */
-const TITLE_DIVIDER = "Sales NB didn't list";
+const TITLE_DIVIDER = "Sales Neon Binder didn't list";
 
 test(
-  "Sales and Pick List: an eBay sale NeonBinder did not list shows under eBay's title, unmatched, with no Not in NB chip, and the box keeps its card",
+  "Sales and Pick List: an eBay sale NeonBinder did not list shows under eBay's title, unmatched, with no Not in Neon Binder chip, and the box keeps its card",
   { tag: ["@collection"] },
   async ({ page, signIn, env, isMobile }) => {
     const boxName = `Ebay${env.ATTEMPT_TOKEN}`;
@@ -214,12 +214,12 @@ test(
       const row = pickRow(baseball, title);
       await expect(seen(row.getByText(title, { exact: true }))).toBeVisible();
       await expect(seen(row.getByText(WHY_PICK, { exact: true }))).toBeVisible();
-      await expect(seen(row.getByText("Not in NB", { exact: true }))).toHaveCount(0);
-      await expect(table.getByText("Not in NB", { exact: true })).toHaveCount(0);
+      await expect(seen(row.getByText("Not in Neon Binder", { exact: true }))).toHaveCount(0);
+      await expect(table.getByText("Not in Neon Binder", { exact: true })).toHaveCount(0);
       // Filed by its title, never tied to a card by it: the real card it names is not on the list, and its set has no row.
       await expect(pulledToggle(table, CARD.short)).toHaveCount(0);
       await expect(pickGroup(table, SET_TITLE).getByRole("button", { name: /^Pulled / })).toHaveCount(0);
-      await expectAccessible(page, { label: "Pick List, an eBay sale NeonBinder did not list, under Baseball's Sales NB didn't list" });
+      await expectAccessible(page, { label: "Pick List, an eBay sale NeonBinder did not list, under Baseball's Sales Neon Binder didn't list" });
 
       // --- Its order opens on the Sales tab, that order focused; Back returns ---------------------
       await row.getByRole("link", { name: `${ebayOrder(titled)} on your Sales tab`, exact: true }).click();
@@ -343,7 +343,7 @@ test(
       // No title, nothing to file by: no sport's "Sales NB didn't list" band holds it (each band's
       // heading reads "<Sport> Sales NB didn't list"; it sits in Can't find it, asserted just above).
       await expect(table.getByRole("heading", { level: 3, name: new RegExp(`${escapeRe(TITLE_DIVIDER)}$`) })).toHaveCount(0);
-      await expect(table.getByText("Not in NB", { exact: true })).toHaveCount(0);
+      await expect(table.getByText("Not in Neon Binder", { exact: true })).toHaveCount(0);
       await expectAccessible(page, { label: "Pick List, an eBay line with no title" });
 
       // --- Shipping takes the line off the list ---------------------------------------------------

@@ -48,11 +48,11 @@ export function pickList(page: Page) {
     table: region.getByRole("table", { name: "Cards to pull" }),
     boxTable: (boxName: string) => region.getByRole("table", { name: `Cards to pull from ${boxName}`, exact: true }),
     /** By the Box, the "Not in a box" stop: sales NB has no card for but whose listing says what they are, by set. */
-    notInBoxTable: region.getByRole("table", { name: "Sales not in NB, by set", exact: true }),
+    notInBoxTable: region.getByRole("table", { name: "Sales not in Neon Binder, by set", exact: true }),
     /** By the Box, the last stop: sales that say too little to file. */
-    cantFindTable: region.getByRole("table", { name: "Sales NB couldn't place", exact: true }),
+    cantFindTable: region.getByRole("table", { name: "Sales Neon Binder couldn't place", exact: true }),
     /** The "Only not in NB" quick filter (a toggle: `aria-pressed`). */
-    onlyNotInNb: region.getByRole("group", { name: "Quick filters" }).getByRole("button", { name: "Only not in NB", exact: true }),
+    onlyNotInNb: region.getByRole("group", { name: "Quick filters" }).getByRole("button", { name: "Only not in Neon Binder", exact: true }),
     views: region.getByRole("navigation", { name: "Pick List views" }),
     /** The list's own filter count ("4 match."), always mounted, empty when unfiltered. */
     matches: region.getByRole("status"),

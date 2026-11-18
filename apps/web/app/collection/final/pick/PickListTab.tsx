@@ -111,12 +111,12 @@ const COPY = {
   noMatch: "Nothing on the list matches these filters.",
   matches: (n: number) => (n === 1 ? "1 match." : `${n} match.`),
   cantFind: "Can't find it",
-  cantFindNote: "NB couldn't place these sales. Each listing's photo shows what sold.",
+  cantFindNote: "Neon Binder couldn't place these sales. Each listing's photo shows what sold.",
   cantFindStopNote: "These sales don't say enough to file. The order's photo is your best clue.",
   notInBox: "Not in a box",
-  notInBoxNote: "NB has no copy of these, so no box to check. Go by each listing, set by set.",
-  notInNbWhy: "NB doesn't have this copy. Go by the listing.",
-  notInNbWhyLinked: "NB doesn't have this copy. Go by the listing; the order link has the photo.",
+  notInBoxNote: "Neon Binder has no copy of these, so no box to check. Go by each listing, set by set.",
+  notInNbWhy: "Neon Binder doesn't have this copy. Go by the listing.",
+  notInNbWhyLinked: "Neon Binder doesn't have this copy. Go by the listing; the order link has the photo.",
   /** Read after a listing's own divider titled just like an NB set's. */
   unmatchedTwin: ", not matched to a set",
   truncated: "Your Pick List is too long to show at once, so it starts with your oldest orders. Pull these and the rest will show up.",
@@ -124,14 +124,14 @@ const COPY = {
   pullFailed: "That pull didn't save. Try it again.",
   putBackFailed: "That one didn't go back on the list. Try it again.",
   noBox: "Box not recorded",
-  noBoxNote: "These sold before NB kept track of boxes. Look wherever you keep the set.",
+  noBoxNote: "These sold before Neon Binder kept track of boxes. Look wherever you keep the set.",
   fresh: "Sold since you started",
   freshNote: "These came in mid-pull. Grab them on your way out.",
   boxesDone: "Every box is clear. Totally tubular.",
   lastStop: (n: number) =>
     n === 1
-      ? "Plus 1 sale NB couldn't place. It waits after the boxes."
-      : `Plus ${n} sales NB couldn't place. They wait after the boxes.`,
+      ? "Plus 1 sale Neon Binder couldn't place. It waits after the boxes."
+      : `Plus ${n} sales Neon Binder couldn't place. They wait after the boxes.`,
 };
 
 function filtersFrom(params: URLSearchParams): PickFilters {
@@ -307,7 +307,7 @@ function PickList({ store, onTitleDetail }: { store: PickListStore; onTitleDetai
             : scope.unrecorded
               ? `Pulled ${n} with no box noted.`
               : scope.notInBox
-                ? `Pulled ${n} not in NB.`
+                ? `Pulled ${n} not in Neon Binder.`
                 : `Pulled ${n} from ${scope.name}.`;
       mark(ids, true, message);
     }
@@ -810,7 +810,7 @@ function FilterBar({
             Only numbered
           </Toggle>
           <Toggle pressed={Boolean(filters.notInNb)} onClick={() => setParam(PICK_PARAMS.notInNb, filters.notInNb ? null : "1")}>
-            Only not in NB
+            Only not in Neon Binder
           </Toggle>
           <Toggle pressed={groupByOrder} onClick={() => setParam(PICK_PARAMS.group, groupByOrder ? null : "order")}>
             Group by order
@@ -1016,9 +1016,9 @@ function BoxView({
       <PickTable
         caption={
           stop.cantFind
-            ? "Sales NB couldn't place"
+            ? "Sales Neon Binder couldn't place"
             : stop.notInBox
-              ? "Sales not in NB, by set"
+              ? "Sales not in Neon Binder, by set"
               : stop.unrecorded
                 ? "Cards with no box noted"
                 : `Cards to pull from ${stop.box.name}`
@@ -1045,7 +1045,7 @@ function BoxView({
  * beside an old one, two slots in one box), and each of those is named.
  */
 /** How a toggle's name says a row is not in NB: "…, not in NB, BSC 1234". */
-const NOT_IN_NB_NAME = "not in NB";
+const NOT_IN_NB_NAME = "not in Neon Binder";
 
 function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolean; withTeam?: boolean } = {}): string {
   const c = row.card;

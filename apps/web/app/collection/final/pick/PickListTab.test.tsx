@@ -78,18 +78,18 @@ describe("the Pick List demo", () => {
   it("files a sale NB couldn't match with its set when the listing says what it is, marked Not in NB (NEO-509)", async () => {
     renderPick();
     // The toggle reads the title's parts as pauses: "2024 Score #302 · Malik Nabers" visibly.
-    const nabers = await screen.findByRole("button", { name: "Pulled 2024 Score #302, Malik Nabers, not in NB, BSC 88240" });
+    const nabers = await screen.findByRole("button", { name: "Pulled 2024 Score #302, Malik Nabers, not in Neon Binder, BSC 88240" });
     const row = nabers.closest("tr")!;
-    expect(within(row).getAllByText("Not in NB", { exact: true }).length).toBeGreaterThan(0);
+    expect(within(row).getAllByText("Not in Neon Binder", { exact: true }).length).toBeGreaterThan(0);
     // The chip says why, to a pointer and to a screen reader (the demo has no Sales tab to link to).
-    const chip = within(row).getAllByText("Not in NB", { exact: true })[0].parentElement!;
-    expect(chip.getAttribute("title")).toBe("NB doesn't have this copy. Go by the listing.");
-    expect(chip.textContent).toBe("Not in NB. NB doesn't have this copy. Go by the listing.");
+    const chip = within(row).getAllByText("Not in Neon Binder", { exact: true })[0].parentElement!;
+    expect(chip.getAttribute("title")).toBe("Neon Binder doesn't have this copy. Go by the listing.");
+    expect(chip.textContent).toBe("Not in Neon Binder. Neon Binder doesn't have this copy. Go by the listing.");
     expect(within(row).queryByText("Unmatched")).toBeNull();
     expect(within(row).getAllByText("#302").length).toBeGreaterThan(0);
     // The listing said Base, so the Base tag. NEO-522: no note under it; the chip already says where to look.
     expect(within(row).getAllByText("Base", { exact: true }).length).toBeGreaterThan(0);
-    expect(within(row).queryByText("NB couldn't match this line. Check the order's photo.")).toBeNull();
+    expect(within(row).queryByText("Neon Binder couldn't match this line. Check the order's photo.")).toBeNull();
     // Under the 2024 Score divider, before that set's insert, not in Can't find it.
     const group = row.closest("tbody")!;
     expect(within(group).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
@@ -171,25 +171,25 @@ describe("the Pick List demo", () => {
     fireEvent.click(await screen.findByRole("link", { name: "By the Box" }));
     expect(document.title).toContain("2026 Baseball");
     // Three: the demo's listing NB filed by its words (Not in a box) and its two strays (Can't find it).
-    expect(screen.getByText("Plus 3 sales NB couldn't place. They wait after the boxes.")).toBeTruthy();
+    expect(screen.getByText("Plus 3 sales Neon Binder couldn't place. They wait after the boxes.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Print this box" })).toBeTruthy();
     for (let i = 0; i < 4; i += 1) fireEvent.click(screen.getByRole("button", { name: "Next box" }));
     fireEvent.click(screen.getByRole("button", { name: "Not in a box (1)" }));
     expect(screen.getByRole("heading", { level: 3, name: "Not in a box · 1 to pull" })).toBeTruthy();
-    expect(screen.getByText("NB has no copy of these, so no box to check. Go by each listing, set by set.")).toBeTruthy();
-    const described = screen.getByRole("table", { name: "Sales not in NB, by set" });
+    expect(screen.getByText("Neon Binder has no copy of these, so no box to check. Go by each listing, set by set.")).toBeTruthy();
+    const described = screen.getByRole("table", { name: "Sales not in Neon Binder, by set" });
     // The list's own set divider, its sport's tab beside it.
     expect(within(described).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
-    expect(within(described).getByRole("button", { name: "Pulled 2024 Score #302, Malik Nabers, not in NB, BSC 88240" })).toBeTruthy();
-    expect(within(described).getAllByText("Not in NB", { exact: true }).length).toBeGreaterThan(0);
+    expect(within(described).getByRole("button", { name: "Pulled 2024 Score #302, Malik Nabers, not in Neon Binder, BSC 88240" })).toBeTruthy();
+    expect(within(described).getAllByText("Not in Neon Binder", { exact: true }).length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "All found" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Can't find it (2)" }));
     expect(screen.getByRole("heading", { level: 3, name: "Last stop · Can't find it · 2 to pull" })).toBeTruthy();
     expect(screen.getByText("These sales don't say enough to file. The order's photo is your best clue.")).toBeTruthy();
-    const lost = screen.getByRole("table", { name: "Sales NB couldn't place" });
+    const lost = screen.getByRole("table", { name: "Sales Neon Binder couldn't place" });
     expect(within(lost).getAllByRole("button", { name: /^Pulled / })).toHaveLength(2);
     // The heading already says it: no Not in NB chip here.
-    expect(within(lost).queryByText("Not in NB", { exact: true })).toBeNull();
+    expect(within(lost).queryByText("Not in Neon Binder", { exact: true })).toBeNull();
     // Back steps to Not in a box.
     fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
     expect(screen.getByRole("heading", { level: 3, name: "Not in a box · 1 to pull" })).toBeTruthy();
@@ -197,9 +197,9 @@ describe("the Pick List demo", () => {
 
   it("Only not in NB keeps just the sales NB has no card for, and Back to default clears it", async () => {
     renderPick();
-    fireEvent.click(await screen.findByRole("button", { name: "Only not in NB" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Only not in Neon Binder" }));
     expect(pageUrl().get("pnotnb")).toBe("1");
-    expect(screen.getByRole("button", { name: "Only not in NB" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByRole("button", { name: "Only not in Neon Binder" }).getAttribute("aria-pressed")).toBe("true");
     const names = screen.getAllByRole("button", { name: /^Pulled / }).map((b) => b.getAttribute("aria-label"));
     expect(names).toHaveLength(3);
     expect(names.every((n) => !n!.startsWith("Pulled #"))).toBe(true);
@@ -275,8 +275,8 @@ describe("the Pick List demo", () => {
     // The described sale prints like a card, marked Not in NB, its next step kept and free to wrap.
     const nabers = lines.find((r) => r.textContent?.includes("Malik Nabers"))!;
     expect(nabers.textContent).toContain("#302");
-    expect(nabers.textContent).toContain("Not in NB");
-    expect(nabers.textContent).toContain("Base NB couldn't match this line. Check the order's photo.");
+    expect(nabers.textContent).toContain("Not in Neon Binder");
+    expect(nabers.textContent).toContain("Base Neon Binder couldn't match this line. Check the order's photo.");
     expect(nabers.className).toContain("nb-pick-sheet-lost");
     act(() => {
       window.dispatchEvent(new Event("afterprint"));
@@ -403,7 +403,7 @@ describe("NEO-522: a row read from across the room", () => {
   it("files Can't find it's reason under the listing's words, leaving the Set column to the sport", async () => {
     renderPick();
     const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
-    const why = "NB has no 2026 Topps Heritage checklist yet.";
+    const why = "Neon Binder has no 2026 Topps Heritage checklist yet.";
     const wide = [...witt.querySelectorAll("td")].find((td) => td.getAttribute("colspan") === "3")!;
     expect(within(wide).getByText(why)).toBeTruthy();
     expect(wide.textContent).toContain("Bobby Witt Jr.");
@@ -438,7 +438,7 @@ describe("NEO-522: a row read from across the room", () => {
     expect(thick(box)).toHaveLength(0);
     cleanup();
     renderPick(`${PICK_URL}&pv=box&pbox=cant-find`);
-    expect(thick(await screen.findByRole("table", { name: "Sales NB couldn't place" }))).toHaveLength(0);
+    expect(thick(await screen.findByRole("table", { name: "Sales Neon Binder couldn't place" }))).toHaveLength(0);
   });
 
   it("names the card's team on its picture, where the row no longer prints it", async () => {
@@ -476,9 +476,9 @@ describe("NEO-522: a row read from across the room", () => {
   it("drops the couldn't-match note from a sale filed with its set, and keeps Can't find it's reason", async () => {
     renderPick();
     await screen.findByRole("table", { name: "Cards to pull" });
-    expect(screen.queryByText("NB couldn't match this line. Check the order's photo.")).toBeNull();
+    expect(screen.queryByText("Neon Binder couldn't match this line. Check the order's photo.")).toBeNull();
     const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
-    expect(within(witt).getAllByText("NB has no 2026 Topps Heritage checklist yet.").length).toBeGreaterThan(0);
+    expect(within(witt).getAllByText("Neon Binder has no 2026 Topps Heritage checklist yet.").length).toBeGreaterThan(0);
   });
 });
 
@@ -523,7 +523,7 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect(within(schlittler).getAllByText("Parallel", { exact: true }).length).toBeGreaterThan(0);
     // A sale filed with its set keeps the old note under its variant.
     const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
-    expect(within(nabers).getAllByText("NB couldn't match this line. Check the order's photo.").length).toBeGreaterThan(0);
+    expect(within(nabers).getAllByText("Neon Binder couldn't match this line. Check the order's photo.").length).toBeGreaterThan(0);
     // The old 40px checkbox: the bordered button is the box.
     const tick = within(trout).getByRole("button", { name: /^Pulled #27 Mike Trout/ });
     expect(tick.className).toContain("size-11");
@@ -808,7 +808,7 @@ describe("the signed-in Pick List's ways out", () => {
   it("a listed row keeps every variant word, its sport on Can't find it, and a twin divider reads apart", async () => {
     const { DEMO_PICK_DATA } = await import("./demoPickStore");
     const order = { id: "ox", venue: "BSC", number: "99001" };
-    const base = { quantity: 1, condition: "NM", order, card: null, sportCode: null, problem: "NB couldn't match this line. Check the order's photo." };
+    const base = { quantity: 1, condition: "NM", order, card: null, sportCode: null, problem: "Neon Binder couldn't match this line. Check the order's photo." };
     const extra = [
       {
         ...base,
@@ -832,18 +832,18 @@ describe("the signed-in Pick List's ways out", () => {
       },
     ];
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, ...extra] }, true);
-    const variation = within(region).getByRole("button", { name: "Pulled 2024 Score Variation #302, Malik Nabers, not in NB, BSC 99001" }).closest("tr")!;
+    const variation = within(region).getByRole("button", { name: "Pulled 2024 Score Variation #302, Malik Nabers, not in Neon Binder, BSC 99001" }).closest("tr")!;
     // The listing's own word, never a Base chip it did not say.
     expect(within(variation).getAllByText("Variation", { exact: true }).length).toBeGreaterThan(0);
     expect(within(variation).queryByText("Base", { exact: true })).toBeNull();
     // With a Sales tab, the chip points at the order link.
-    const chip = within(variation).getAllByText("Not in NB", { exact: true })[0].parentElement!;
-    expect(chip.getAttribute("title")).toBe("NB doesn't have this copy. Go by the listing; the order link has the photo.");
+    const chip = within(variation).getAllByText("Not in Neon Binder", { exact: true })[0].parentElement!;
+    expect(chip.getAttribute("title")).toBe("Neon Binder doesn't have this copy. Go by the listing; the order link has the photo.");
     // NB's 2024 Score heading stays plain; the listing's own reads apart.
     expect(within(region).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
     expect(within(region).getByRole("heading", { level: 3, name: "2024 Score, not matched to a set" })).toBeTruthy();
     // Can't find it shows the listing's sport.
-    const thin = within(region).getByRole("button", { name: "Pulled Hockey only, Somebody, not in NB, BSC 99001" }).closest("tr")!;
+    const thin = within(region).getByRole("button", { name: "Pulled Hockey only, Somebody, not in Neon Binder, BSC 99001" }).closest("tr")!;
     expect(thin.closest("tbody")!.textContent).toContain("Can't find it");
     expect(within(thin).getAllByText("Hockey", { exact: true }).length).toBeGreaterThan(0);
   });
@@ -860,29 +860,29 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: title,
       listed: { title },
-      problem: "NB didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the order's photo.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
-    const toggle = within(region).getByRole("button", { name: `Pulled ${title}, not in NB, eBay 27-11111-22222` });
+    const toggle = within(region).getByRole("button", { name: `Pulled ${title}, not in Neon Binder, eBay 27-11111-22222` });
     const row = toggle.closest("tr")!;
     expect(row.closest("tbody")!.textContent).toContain("Other");
-    expect(row.closest("tbody")!.textContent).toContain("Sales NB didn't list");
+    expect(row.closest("tbody")!.textContent).toContain("Sales Neon Binder didn't list");
     // The seller sees the title; the Not in NB chip belongs to rows the listing describes as a card.
     // Both row sizes name it by its title and keep its problem line (Spacious hides the note only
     // on a line the listing describes, where the Not in NB chip says it).
     for (const size of ["Spacious", "Condensed"] as const) {
       fireEvent.click(within(region).getByRole("radio", { name: size }));
-      const line = within(region).getByRole("button", { name: `Pulled ${title}, not in NB, eBay 27-11111-22222` }).closest("tr")!;
+      const line = within(region).getByRole("button", { name: `Pulled ${title}, not in Neon Binder, eBay 27-11111-22222` }).closest("tr")!;
       expect(within(line).getAllByText(title).length).toBeGreaterThan(0);
-      expect(within(line).getAllByText("NB didn't list this one. Check the order's photo.").length).toBeGreaterThan(0);
-      expect(within(line).queryByText("Not in NB", { exact: true })).toBeNull();
+      expect(within(line).getAllByText("Neon Binder didn't list this one. Check the order's photo.").length).toBeGreaterThan(0);
+      expect(within(line).queryByText("Not in Neon Binder", { exact: true })).toBeNull();
     }
   });
 
   it("NEO-590: a title row shows no card number, no Not in NB chip, keeps its problem line, and its sport and year file it", async () => {
     const { DEMO_PICK_DATA } = await import("./demoPickStore");
     const title = "2019 Zork Chrome #RC-77 Some Player";
-    const problem = "NB didn't list this one. Check the order's photo.";
+    const problem = "Neon Binder didn't list this one. Check the order's photo.";
     const extra = {
       id: "x-590",
       quantity: 1,
@@ -897,9 +897,9 @@ describe("the signed-in Pick List's ways out", () => {
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
     for (const size of ["Spacious", "Condensed"] as const) {
       fireEvent.click(within(region).getByRole("radio", { name: size }));
-      const row = within(region).getByRole("button", { name: `Pulled ${title}, not in NB, eBay 27-11111-22222` }).closest("tr")!;
-      expect(row.closest("tbody")!.textContent).toContain("Sales NB didn't list");
-      expect(within(row).queryByText("Not in NB", { exact: true })).toBeNull();
+      const row = within(region).getByRole("button", { name: `Pulled ${title}, not in Neon Binder, eBay 27-11111-22222` }).closest("tr")!;
+      expect(row.closest("tbody")!.textContent).toContain("Sales Neon Binder didn't list");
+      expect(within(row).queryByText("Not in Neon Binder", { exact: true })).toBeNull();
       // The title is the only place the number's "#" shows; no cell of its own carries it.
       expect([...row.querySelectorAll("td, th")].some((c) => c.textContent === "#RC-77")).toBe(false);
       expect(within(row).getAllByText(problem).length).toBeGreaterThan(0);
@@ -919,7 +919,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: title,
       listed: { title },
-      problem: "NB didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the order's photo.",
     });
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, noYear("y1", "Binder lot A")] }, true);
     const year = within(region).getByRole("combobox", { name: "Year" });
@@ -939,7 +939,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: title,
       listed: { title },
-      problem: "NB didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the order's photo.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
     for (const size of ["Spacious", "Condensed"] as const) {
@@ -962,7 +962,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: `Lot ${id}`,
       listed: { title: `Lot ${id}` },
-      problem: "NB didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the order's photo.",
     });
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, lost("a"), lost("b")] }, true, "/inventory?tab=pick&pgroup=order");
     const countOf = (name: string) => within(region).getByRole("heading", { level: 3, name }).parentElement!.textContent!.slice(name.length);
@@ -988,7 +988,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: `2021 Lot ${id}`,
       listed: { title: `2021 Lot ${id}`, titleSport: sport },
-      problem: "NB didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the order's photo.",
     });
     const zz = { id: "sp-zz", name: "Zorbball", code: "ZB" };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, titled("a", zz), titled("b", zz), titled("c", null)] }, true);
@@ -996,7 +996,7 @@ describe("the signed-in Pick List's ways out", () => {
       fireEvent.click(within(region).getByRole("radio", { name: size }));
       const heads = within(region).getAllByRole("heading", { level: 3 });
       const band = (sport: string) => {
-        const head = heads.find((h) => h.closest("tr")?.textContent?.includes("Sales NB didn't list") && h.closest("tr")?.textContent?.includes(sport));
+        const head = heads.find((h) => h.closest("tr")?.textContent?.includes("Sales Neon Binder didn't list") && h.closest("tr")?.textContent?.includes(sport));
         return head!.closest("tr")!.textContent!;
       };
       expect(band("Zorbball")).toMatch(/list2 items$/);
@@ -1004,7 +1004,7 @@ describe("the signed-in Pick List's ways out", () => {
       expect(band("Zorbball")).not.toMatch(/card/i);
       expect(band("Other")).not.toMatch(/card/i);
       // A band of NB's own set still counts cards.
-      const nbBand = heads.map((h) => h.closest("tr")!.textContent!).find((t) => /\d+ cards?$/.test(t) && !t.includes("Sales NB didn't list"));
+      const nbBand = heads.map((h) => h.closest("tr")!.textContent!).find((t) => /\d+ cards?$/.test(t) && !t.includes("Sales Neon Binder didn't list"));
       expect(nbBand).toBeTruthy();
     }
   });
@@ -1021,18 +1021,18 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: `2021 Lot ${id}`,
       listed: { title: `2021 Lot ${id}`, titleSport: sport },
-      problem: "NB didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the order's photo.",
     });
     const zz = { id: "sp-zz", name: "Zorbball", code: "ZB" };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, titled("a", zz), titled("c", null)] }, true);
     for (const size of ["Spacious", "Condensed"] as const) {
       fireEvent.click(within(region).getByRole("radio", { name: size }));
       // Two bands share the words; the headings tell them apart without an aria-label.
-      expect(within(region).getByRole("heading", { level: 3, name: "Zorbball Sales NB didn't list" })).toBeTruthy();
-      expect(within(region).getByRole("heading", { level: 3, name: "Other Sales NB didn't list" })).toBeTruthy();
-      expect(within(region).queryByRole("heading", { level: 3, name: "Sales NB didn't list" })).toBeNull();
-      expect(within(region).getByRole("rowheader", { name: /^Zorbball Sales NB didn't list 1 item$/ })).toBeTruthy();
-      expect(within(region).getByRole("rowheader", { name: /^Other Sales NB didn't list 1 item$/ })).toBeTruthy();
+      expect(within(region).getByRole("heading", { level: 3, name: "Zorbball Sales Neon Binder didn't list" })).toBeTruthy();
+      expect(within(region).getByRole("heading", { level: 3, name: "Other Sales Neon Binder didn't list" })).toBeTruthy();
+      expect(within(region).queryByRole("heading", { level: 3, name: "Sales Neon Binder didn't list" })).toBeNull();
+      expect(within(region).getByRole("rowheader", { name: /^Zorbball Sales Neon Binder didn't list 1 item$/ })).toBeTruthy();
+      expect(within(region).getByRole("rowheader", { name: /^Other Sales Neon Binder didn't list 1 item$/ })).toBeTruthy();
       // The row's own sport chip repeats the band: visible, but not read out again.
       const row = within(region).getByRole("button", { name: /Lot a/ }).closest("tr")!;
       // (The wide cell and the phone's one cell each carry it; CSS shows one.)
@@ -1048,7 +1048,7 @@ describe("the signed-in Pick List's ways out", () => {
     const order = { id: "oe", venue: "eBay", number: "27-11111-22222" };
     const hockey = DEMO_PICK_DATA.lines.find((l) => l.card?.set.sport.name === "Hockey")!;
     // An NB set whose label ("<season> <name>") reads exactly like the title band's.
-    const twinSet = { ...hockey.card!.set, id: "twin-set", season: "Sales", name: "NB didn't list" };
+    const twinSet = { ...hockey.card!.set, id: "twin-set", season: "Sales", name: "Neon Binder didn't list" };
     const nbTwin = { ...hockey, id: "nb-twin", card: { ...hockey.card!, id: "nb-twin-card", set: twinSet } };
     const titled = {
       id: "t1",
@@ -1059,14 +1059,14 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: "Lot t1",
       listed: { title: "Lot t1", titleSport: null },
-      problem: "NB didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the order's photo.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, nbTwin, titled] }, true);
     for (const size of ["Spacious", "Condensed"] as const) {
       fireEvent.click(within(region).getByRole("radio", { name: size }));
-      expect(within(region).getByRole("heading", { level: 3, name: "Other Sales NB didn't list, not matched to a set" })).toBeTruthy();
+      expect(within(region).getByRole("heading", { level: 3, name: "Other Sales Neon Binder didn't list, not matched to a set" })).toBeTruthy();
       // NB's own set of that name stays plain.
-      expect(within(region).getByRole("heading", { level: 3, name: "Sales NB didn't list" })).toBeTruthy();
+      expect(within(region).getByRole("heading", { level: 3, name: "Sales Neon Binder didn't list" })).toBeTruthy();
     }
   });
 
@@ -1081,7 +1081,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: "2021 Lot order-chip",
       listed: { title: "2021 Lot order-chip", titleSport: { id: "sp-zz", name: "Zorbball", code: "ZB" } },
-      problem: "NB didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the order's photo.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true, "/inventory?tab=pick&pgroup=order");
     for (const size of ["Spacious", "Condensed"] as const) {
@@ -1162,7 +1162,7 @@ describe("the Pick List's rare states pass axe", () => {
     const lines = DEMO_PICK_DATA.lines.map((l) => (l.card ? { ...l, boxUnrecorded: true as const, spot: undefined } : l));
     const { region, violations } = await violationsFor({ lines }, "/inventory?tab=pick&pv=box");
     expect(within(region).getByRole("heading", { level: 3, name: /^Box not recorded · \d+ to pull$/ })).toBeTruthy();
-    expect(within(region).getByText("These sold before NB kept track of boxes. Look wherever you keep the set.")).toBeTruthy();
+    expect(within(region).getByText("These sold before Neon Binder kept track of boxes. Look wherever you keep the set.")).toBeTruthy();
     expect(violations).toEqual([]);
   });
 });

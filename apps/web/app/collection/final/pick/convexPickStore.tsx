@@ -143,14 +143,14 @@ export function toSaleLines(
     // NEO-520: an eBay line NB can't tie to a card is one NB didn't list (as `saleItemProblem` says it).
     const unmatchedProblem =
       raw.platform === "ebay"
-        ? "NB didn't list this one. Check the order's photo."
-        : "NB couldn't match this line. Check the order's photo.";
+        ? "Neon Binder didn't list this one. Check the sales platform."
+        : "Neon Binder couldn't match this line. Check the order's photo.";
     const problem =
       raw.cantFind === "linkMismatch"
-        ? "This listing's card doesn't match NB's card. Check the order's photo."
+        ? "This listing's card doesn't match Neon Binder's card. Check the order's photo."
         : raw.cantFind === "unmatched" || !raw.cardId
           ? unmatchedProblem
-          : "This card isn't in NB's catalog any more. Check the order's photo.";
+          : "This card isn't in Neon Binder's catalog any more. Check the order's photo.";
     const listed = options.listed && listedTitle(options.listed) ? options.listed : undefined;
     return [
       {

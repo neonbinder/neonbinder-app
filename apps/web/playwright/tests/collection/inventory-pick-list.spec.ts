@@ -123,7 +123,7 @@ test(
     /** The no-number line's toggle: its description names it (the set's words may lead). */
     const nonumToggle = (scope: Locator | Page) =>
       scope.getByRole("button", { name: new RegExp(`^Pulled .*${escapeRe(nonumPlayers)}`) });
-    const notInNbWhy = "NB doesn't have this copy. Go by the listing; the order link has the photo.";
+    const notInNbWhy = "Neon Binder doesn't have this copy. Go by the listing; the order link has the photo.";
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
     const pick = pickList(page);
     const { region, table } = pick;
@@ -262,7 +262,7 @@ test(
       await expect(
         seen(
           pickRow(cantFind, unmatchedLine(first)).getByText(
-            "NB couldn't match this line. Check the order's photo.",
+            "Neon Binder couldn't match this line. Check the order's photo.",
             { exact: true },
           ),
         ),
@@ -278,7 +278,7 @@ test(
       const rowNonum = cantFind.getByRole("row").filter({ has: nonumToggle(page) });
       await expect(seen(rowNonum.getByText(new RegExp(escapeRe(nonumPlayers))))).toBeVisible();
       await expect(seen(rowNonum.getByText(/Unmatched sale/))).toHaveCount(0);
-      await expect(seen(rowNonum.getByText("Not in NB", { exact: true }))).toHaveCount(0);
+      await expect(seen(rowNonum.getByText("Not in Neon Binder", { exact: true }))).toHaveCount(0);
       await expect(table.getByRole("button", { name: /^Pulled Unmatched sale \(/ })).toHaveCount(0);
       await expect(nonumToggle(pickGroup(table, SET_TITLE))).toHaveCount(0);
       // The described line: filed in the set's own group, between #205 and #211 (the insert
@@ -287,21 +287,21 @@ test(
       await expect(inSet).toHaveCount(4);
       await expect(inSet.nth(0)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(CARD_A.short)}`));
       await expect(inSet.nth(1)).toHaveAccessibleName(
-        new RegExp(`^Pulled ${escapeRe(listedName)}, not in NB, ${escapeRe(bscOrder(first))}$`),
+        new RegExp(`^Pulled ${escapeRe(listedName)}, not in Neon Binder, ${escapeRe(bscOrder(first))}$`),
       );
       await expect(inSet.nth(2)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(CARD_B.short)}`));
       await expect(inSet.nth(3)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(CARD_I.short)}`));
       await expect(pulledToggle(cantFind, listedTitle)).toHaveCount(0);
       await expect(pulledToggle(table, listedTitle)).toHaveAttribute("aria-pressed", "false");
       const rowListed = pickRow(table, listedTitle);
-      await expect(seen(rowListed.getByText("Not in NB", { exact: true }))).toBeVisible();
+      await expect(seen(rowListed.getByText("Not in Neon Binder", { exact: true }))).toBeVisible();
       await expect(seen(rowListed.getByTitle(notInNbWhy, { exact: true }))).toBeVisible();
       await expect(seen(rowListed.getByText(listedPlayers, { exact: true }))).toBeVisible();
       await expect(seen(rowListed.getByText(`#${LISTED_NO}`, { exact: true }))).toBeVisible();
       // NEO-522: no "couldn't match" note on a line filed with its set; the chip's title says where to look.
-      await expect(rowListed.getByText("NB couldn't match this line. Check the order's photo.")).toHaveCount(0);
+      await expect(rowListed.getByText("Neon Binder couldn't match this line. Check the order's photo.")).toHaveCount(0);
       // A matched row wears no such chip.
-      await expect(seen(rowB.getByText("Not in NB", { exact: true }))).toHaveCount(0);
+      await expect(seen(rowB.getByText("Not in Neon Binder", { exact: true }))).toHaveCount(0);
       await expectAccessible(page, { label: "Pick List, one order to pull, a described line filed in its set, a no-number line in Can't find it" });
 
       // --- The printed sheet: the described line under its set with its number, the no-number one without ---
@@ -318,11 +318,11 @@ test(
       // The described line prints like a card, number and players in their columns, with the chip's words.
       await expect(sheetRow(listedPlayers)).toHaveCount(1);
       await expect(sheetRow(listedPlayers).getByRole("cell", { name: `#${LISTED_NO}`, exact: true })).toBeVisible();
-      await expect(sheetRow(listedPlayers).filter({ hasText: "Not in NB" })).toHaveCount(1);
+      await expect(sheetRow(listedPlayers).filter({ hasText: "Not in Neon Binder" })).toHaveCount(1);
       // The no-number line prints its description, no number and no chip, as the screen shows it.
       await expect(sheetRow(nonumPlayers)).toHaveCount(1);
       await expect(sheetRow(nonumPlayers).getByRole("cell", { name: /^#/ })).toHaveCount(0);
-      await expect(sheetRow(nonumPlayers).filter({ hasText: "Not in NB" })).toHaveCount(0);
+      await expect(sheetRow(nonumPlayers).filter({ hasText: "Not in Neon Binder" })).toHaveCount(0);
       await expect(pick.table).toBeHidden();
       await page.emulateMedia({ media: null });
       await expect(pick.table).toBeVisible();
@@ -373,7 +373,7 @@ test(
         await expect(seen(pickRow(table, CARD_I.short).getByText("Future Stars", { exact: true }))).toBeVisible();
         await expect(seen(rowA.getByText("Base", { exact: true }))).toBeVisible();
         await expect(
-          seen(pickRow(table, listedTitle).getByText("NB couldn't match this line. Check the order's photo.", { exact: true })),
+          seen(pickRow(table, listedTitle).getByText("Neon Binder couldn't match this line. Check the order's photo.", { exact: true })),
         ).toBeVisible();
         // No heavier rule where the run turns from Base to the insert.
         await expect(ruleUnder(rowB)).toHaveCSS("border-bottom-width", "1px");
@@ -391,7 +391,7 @@ test(
       await expect(rowSize.spacious).toHaveAttribute("aria-checked", "true");
       await expect(variantTag(rowI, "Future Stars", "Insert")).toHaveText("Insert: Future Stars");
       await expect(ruleUnder(rowB)).toHaveCSS("border-bottom-width", "3px");
-      await expect(pickRow(table, listedTitle).getByText("NB couldn't match this line. Check the order's photo.")).toHaveCount(0);
+      await expect(pickRow(table, listedTitle).getByText("Neon Binder couldn't match this line. Check the order's photo.")).toHaveCount(0);
       if (!isMobile) await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toBeVisible();
 
       // A's bigger picture is the photo of the copy that sold, and it really loads.
@@ -421,7 +421,7 @@ test(
       }
       // No box holds the three sales NB has no card for: the first box says they wait after the boxes.
       await expect(
-        region.getByText("Plus 3 sales NB couldn't place. They wait after the boxes.", { exact: true }),
+        region.getByText("Plus 3 sales Neon Binder couldn't place. They wait after the boxes.", { exact: true }),
       ).toBeVisible();
       await expectAccessible(page, { label: "Pick List, By the Box" });
 
@@ -432,12 +432,12 @@ test(
       await expect(notInBoxHeading).toBeVisible();
       await expect(notInBoxHeading).toBeFocused();
       await expect(
-        region.getByText("NB has no copy of these, so no box to check. Go by each listing, set by set.", { exact: true }),
+        region.getByText("Neon Binder has no copy of these, so no box to check. Go by each listing, set by set.", { exact: true }),
       ).toBeVisible();
       await expect(pick.notInBoxTable).toBeVisible();
       const notInBoxSet = pickGroup(pick.notInBoxTable, SET_TITLE);
       await expect(pulledToggle(notInBoxSet, listedTitle)).toBeVisible();
-      await expect(seen(pickRow(notInBoxSet, listedTitle).getByText("Not in NB", { exact: true }))).toBeVisible();
+      await expect(seen(pickRow(notInBoxSet, listedTitle).getByText("Not in Neon Binder", { exact: true }))).toBeVisible();
       await expect(pulledToggle(pick.notInBoxTable, unmatchedLine(first))).toHaveCount(0);
       await expect(nonumToggle(pick.notInBoxTable)).toHaveCount(0);
       await expect(region.getByRole("button", { name: "All found", exact: true })).toBeVisible();
@@ -524,7 +524,7 @@ test(
       await expect(nonumToggle(cantFind)).toHaveAttribute("aria-pressed", "false");
       await expect(pulledToggle(table, CARD_A.short)).toHaveCount(0);
       await expect(pulledToggle(pickGroup(table, SET_TITLE), listedTitle)).toHaveAttribute("aria-pressed", "false");
-      await expect(seen(pickRow(table, listedTitle).getByText("Not in NB", { exact: true }))).toBeVisible();
+      await expect(seen(pickRow(table, listedTitle).getByText("Not in Neon Binder", { exact: true }))).toBeVisible();
       // Now pull it for good: the notice waits for the server, so a second tab sees it gone below.
       await pulledToggle(table, listedTitle).click();
       await expect(pulledToggle(table, listedTitle)).toHaveAttribute("aria-pressed", "true");

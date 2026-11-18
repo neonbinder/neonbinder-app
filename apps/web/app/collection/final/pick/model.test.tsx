@@ -500,7 +500,7 @@ describe("NEO-509: a sale filed by its listing's words", () => {
     const rows = mergeLines([line(card({ number: "1" })), stray(listed({ role: "insert", variantName: "1991 Throwback" }))]);
     expect(filterRows(rows, { variant: "insert" })).toHaveLength(1);
     expect(filterRows(rows, { text: "throwback" })).toHaveLength(1);
-    expect(filterRows(rows, { text: "not in nb" })).toHaveLength(1);
+    expect(filterRows(rows, { text: "not in neon binder" })).toHaveLength(1);
     expect(filterRows(rows, { text: "unmatched" })).toHaveLength(0);
     expect(filterRows(rows, { sport: "baseball", year: "2026" })).toHaveLength(2);
     // Only not in NB: every sale NB has no card for, described or not.
@@ -689,7 +689,7 @@ describe("NEO-520: a listing named only by its own title", () => {
     expect(sections.find((x) => x.kind === "cantFind")).toBeUndefined();
     const [set, other] = sections.filter((x) => x.kind === "set");
     expect(set.rows).toHaveLength(1);
-    expect(other.title).toBe("Sales NB didn't list");
+    expect(other.title).toBe("Sales Neon Binder didn't list");
     expect(other.rows).toHaveLength(1);
     expect(other.rows[0].card).toBeNull();
     expect(rowFacts(other.rows[0])).toMatchObject({ sportName: "Other", year: 2024, setName: "Topps Chrome", cardNumber: "205", fromTitle: true });
@@ -1012,7 +1012,7 @@ describe("NEO-590: filing a card-less sale by its title", () => {
   it("files a sport's title rows in a sport section behind the Sales NB didn't list divider, not under Can't find it", () => {
     const sections = buildSections([title("2023 Prizm #4 A Player", FOOTBALL)], {}, defaults);
     expect(sections.map((s) => s.kind)).toEqual(["set"]);
-    expect(sections[0]).toMatchObject({ kind: "set", sportName: "Football", sportCode: "FB", title: "Sales NB didn't list" });
+    expect(sections[0]).toMatchObject({ kind: "set", sportName: "Football", sportCode: "FB", title: "Sales Neon Binder didn't list" });
   });
 
   it("an untitled sale (and a card-worded listing is not one) stays in Can't find it", () => {
@@ -1088,7 +1088,7 @@ describe("NEO-590: filing a card-less sale by its title", () => {
     const sections = buildSections([nb, only], {}, defaults).filter((s) => s.kind === "set");
     expect(sections.map((s) => [s.title, s.rows.length])).toEqual([
       ["2024 Topps Chrome", 1],
-      ["Sales NB didn't list", 1],
+      ["Sales Neon Binder didn't list", 1],
     ]);
     expect(sections[0].rows[0].card).not.toBeNull();
   });

@@ -239,7 +239,7 @@ export interface RowFacts {
 export const TITLE_OTHER_SPORT = "title:other";
 
 /** The one divider a sport's title rows file behind, after its NB sets. */
-export const TITLE_SET_TITLE = "Sales NB didn't list";
+export const TITLE_SET_TITLE = "Sales Neon Binder didn't list";
 
 /**
  * The variant words a listing gives that are worth writing: its own word NB
@@ -768,7 +768,7 @@ export function hasFilters(f: PickFilters): boolean {
 }
 
 /** The chip a row NB has no card for wears (and a search finds it by). */
-export const NOT_IN_NB = "Not in NB";
+export const NOT_IN_NB = "Not in Neon Binder";
 
 function haystack(row: PickRow): string {
   const facts = rowFacts(row);

@@ -14,7 +14,7 @@ import PrintSheet from "./PrintSheet";
 import type { ListedCard, PickOrder, SaleLine } from "./types";
 
 const ORDER: PickOrder = { id: "o1", venue: "BSC", number: "88240" };
-const PROBLEM = "NB couldn't match this line. Check the order's photo.";
+const PROBLEM = "Neon Binder couldn't match this line. Check the order's photo.";
 
 const CARD: Card = {
   id: "c1",
@@ -94,7 +94,7 @@ describe("the printed sheet's lines for sales NB has no card for", () => {
     // tick, qty, number, players + marks, card, condition, order
     expect(cells[2]).toBe("#302");
     expect(cells[3]).toContain("Malik Nabers");
-    expect(cells[3]).toContain("Not in NB");
+    expect(cells[3]).toContain("Not in Neon Binder");
     expect(cells[4]).toContain("Base");
     expect(cells[4]).toContain(PROBLEM);
     expect(cells[6]).toBe("BSC 88240");
@@ -110,7 +110,7 @@ describe("the printed sheet's lines for sales NB has no card for", () => {
   it("never marks a matched card Not in NB", () => {
     const { table } = sheet([matched(), stray(LISTED)]);
     const row = rowOf(table, "Matched Player");
-    expect(row.textContent).not.toContain("Not in NB");
+    expect(row.textContent).not.toContain("Not in Neon Binder");
     expect(row.className).not.toContain("nb-pick-sheet-lost");
     expect(row.textContent).not.toContain(PROBLEM);
   });
@@ -138,7 +138,7 @@ describe("the printed sheet's lines for sales NB has no card for", () => {
     for (const row of rows) {
       const cells = [...row.querySelectorAll("td")].map((td) => td.textContent);
       expect(cells[2]).toBe("");
-      expect(cells[3]).not.toContain("Not in NB");
+      expect(cells[3]).not.toContain("Not in Neon Binder");
       expect(cells[4]).toBe(PROBLEM);
     }
   });
@@ -149,7 +149,7 @@ describe("the printed sheet's lines for sales NB has no card for", () => {
     const { table } = sheet([stray({ title }, { listingTitle: title, order: EBAY })]);
     const headers = within(table).getAllByRole("rowheader").map((h) => h.textContent);
     expect(headers).toHaveLength(1);
-    expect(headers[0]).toContain("Sales NB didn't list");
+    expect(headers[0]).toContain("Sales Neon Binder didn't list");
     const row = rowOf(table, title);
     const cells = [...row.querySelectorAll("td")].map((td) => td.textContent);
     expect(cells[2]).toBe("");
@@ -170,11 +170,11 @@ describe("the printed sheet's lines for sales NB has no card for", () => {
     expect(headers).toHaveLength(2);
     expect(headers[0]).toContain("Football");
     expect(headers[1]).toContain("Other");
-    for (const h of headers) expect(h).toContain("Sales NB didn't list");
+    for (const h of headers) expect(h).toContain("Sales Neon Binder didn't list");
     for (const row of table.querySelectorAll("tbody tr.nb-pick-sheet-lost")) {
       const cells = [...row.querySelectorAll("td")].map((td) => td.textContent);
       expect(cells[2]).toBe("");
-      expect(cells[3]).not.toContain("Not in NB");
+      expect(cells[3]).not.toContain("Not in Neon Binder");
       expect(cells[4]).toBe(PROBLEM);
     }
   });
