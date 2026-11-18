@@ -18,9 +18,11 @@ import {
   eraLabel,
   eraOverlapReason,
   erasOverlap,
+  isWellFormedEra,
   pickCardTeam,
   pickTeamForYear,
   stintOverlapsEra,
+  teamEraProblem,
   teamOptionLabel,
   teamsActiveInYear,
 } from "./team-era";
@@ -549,6 +551,94 @@ describe("eraOverlapReason", () => {
   test("that team undated", () => {
     expect(eraOverlapReason(dated, undefined)).toBe(
       "that team has no years on file, so they may overlap",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-602 (S2) — a malformed era is undated: overlapping, never excluded.
+// ---------------------------------------------------------------------------
+
+const MALFORMED: Array<[string, { from: number; to?: number }]> = [
+  ["NaN start", { from: Number.NaN }],
+  ["Infinity start", { from: Number.POSITIVE_INFINITY }],
+  ["NaN end", { from: 1990, to: Number.NaN }],
+  ["Infinity end", { from: 1990, to: Number.POSITIVE_INFINITY }],
+  ["fractional start", { from: 1990.5 }],
+  ["fractional end", { from: 1990, to: 2001.5 }],
+  ["inverted span", { from: 2001, to: 1990 }],
+];
+
+describe("isWellFormedEra", () => {
+  test("whole years, open or closed, ending no earlier than they start", () => {
+    expect(isWellFormedEra({ from: 1972 })).toBe(true);
+    expect(isWellFormedEra({ from: 1972, to: 1972 })).toBe(true);
+    expect(isWellFormedEra({ from: 1972, to: 1996 })).toBe(true);
+  });
+
+  test("undefined, NaN, Infinity, fractions and inverted spans are not", () => {
+    expect(isWellFormedEra(undefined)).toBe(false);
+    for (const [, era] of MALFORMED) expect(isWellFormedEra(era)).toBe(false);
+  });
+});
+
+describe("a malformed era fails safe (reads as undated)", () => {
+  const DISJOINT = { from: 2025 };
+
+  test.each(MALFORMED)("erasOverlap: %s overlaps everything, in both orders", (_label, era) => {
+    expect(erasOverlap(era, DISJOINT)).toBe(true);
+    expect(erasOverlap(DISJOINT, era)).toBe(true);
+    expect(erasOverlap({ from: 1911, to: 1957 }, era)).toBe(true);
+  });
+
+  test("…while a real disjoint pair still does not overlap", () => {
+    expect(erasOverlap({ from: 1911, to: 1957 }, DISJOINT)).toBe(false);
+  });
+
+  test.each(MALFORMED)("eraCoversYear: %s covers any year", (_label, era) => {
+    expect(eraCoversYear(era, 1800)).toBe(true);
+    expect(eraCoversYear(era, 2100)).toBe(true);
+  });
+
+  test.each(MALFORMED)("stintOverlapsEra: a stint overlaps %s", (_label, era) => {
+    expect(stintOverlapsEra({ teamId: "a", fromYear: 1979, toYear: 1984 }, era)).toBe(true);
+  });
+
+  test("pickCardTeam does not drop a malformed row as 'starts after the set year'", () => {
+    const bad = { _id: "bad", yearsActive: { from: Number.POSITIVE_INFINITY } };
+    const good = { _id: "good", yearsActive: { from: 1990 } };
+    const pick = pickCardTeam([bad, good], {
+      setYear: 2000,
+      aliasOnlyIds: new Set<string>(),
+      cards: [[[{ teamId: "bad", fromYear: 1995, toYear: 1999 }]]],
+    });
+    expect(pick?.row._id).toBe("bad");
+  });
+});
+
+describe("teamEraProblem", () => {
+  const NOW = new Date("2026-11-18T12:00:00Z");
+
+  test("null for a whole-year era in range, open or closed", () => {
+    expect(teamEraProblem({ from: 1911, to: 1957 }, NOW)).toBeNull();
+    expect(teamEraProblem({ from: 2025 }, NOW)).toBeNull();
+    expect(teamEraProblem({ from: 1869 }, NOW)).toBeNull();
+    expect(teamEraProblem({ from: 2027 }, NOW)).toBeNull();
+  });
+
+  test.each(MALFORMED)("refuses %s", (_label, era) => {
+    expect(teamEraProblem(era, NOW)).not.toBeNull();
+  });
+
+  test("names the bound, in the operator's words", () => {
+    expect(teamEraProblem({ from: 1800 }, NOW)).toBe(
+      "A team start year must be a whole year between 1869 and 2027.",
+    );
+    expect(teamEraProblem({ from: 1990, to: 2100 }, NOW)).toBe(
+      "A team end year must be a whole year between 1869 and 2027.",
+    );
+    expect(teamEraProblem({ from: 2001, to: 1990 }, NOW)).toBe(
+      "A team cannot stop playing before it starts.",
     );
   });
 });

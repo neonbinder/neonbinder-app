@@ -17898,7 +17898,7 @@ function boundedAliasInput(raw: ReadonlyArray<string>): string[] {
  *             capped at `PLAYER_AMBIGUITY_SCAN_LIMIT`), so **2 on the ordinary
  *             path**; an ambiguous name adds the card-year tie-break, itself
  *             capped at `CARD_YEAR_TEAM_READS_PER_NAME` (8)
- *   teams   — 1 `resolveTeamForSetYear` → `findTeamsByFullName`, **1–2 on the
+ *   teams   — 1 `resolveCardTeamName` → `findTeamsByFullName`, **1–2 on the
  *             ordinary path**, up to 18 when one alias key is held by many
  *             rows (the preloaded college programs: "Miami", "Wisconsin")
  *   either  — 1 extra `db.get` for a `link` decision, once per linked row
@@ -17980,6 +17980,24 @@ export const commitCardChecklistPrelude = internalMutation({
           // raw spelling would file one person under two keys.
           playerNameNormalized: v.string(),
           teams: v.array(v.string()),
+        }),
+      ),
+    ),
+    /**
+     * NEO-602 — the players printed on each card naming a team, per
+     * NORMALIZED team name (`addCardPlayerNames`, same bounds as the gate: a
+     * name on more than 16 cards or a card with more than 4 players is left
+     * out). The commit's team resolution is the gate's rule
+     * (`resolveCardTeamName`), and for a name that reaches several team rows
+     * its players' stints decide the era. The prelude is handed names, not
+     * cards, so the per-card association travels here. Optional: absent, the
+     * set year decides alone, with the rule's alias-vs-own-name guard.
+     */
+    teamPlayerNames: v.optional(
+      v.array(
+        v.object({
+          teamNameNormalized: v.string(),
+          cards: v.array(v.array(v.string())),
         }),
       ),
     ),
@@ -18450,7 +18468,7 @@ export const commitCardChecklistPrelude = internalMutation({
      * or not.
      *
      * Such a row CONTROLS its name in both prelude passes below. The year-only
-     * shortcut (`resolveTeamForSetYear`) answers for a name the gate settled
+     * shortcut (`resolveCardTeamName`) answers for a name the gate settled
      * itself and raised no row for; it must not answer over a row, because the
      * gate raised that row exactly when the year alone was not enough (a
      * players' answer the year would not have made, a tie, an alias-only year
@@ -18461,6 +18479,73 @@ export const commitCardChecklistPrelude = internalMutation({
     for (const row of reviewRows) {
       if (row.kind === "team" && !row.source) gateTeamRowKeys.add(norm(row.name));
     }
+    /**
+     * NEO-602 (S1) — the team a printed name means when NOTHING needs an
+     * operator: the gate's card rule (`resolveCardTeamName`), with the cards'
+     * players when the name reaches several rows.
+     *
+     * A name the gate settled silently as a single row can reach two rows by
+     * commit time (an operator saved the alias on another team in between), and
+     * a commit with no review batch never saw the gate at all. The year alone
+     * must not decide that: "Oakland Athletics" in a 2025 set is the Athletics
+     * by year and the Oakland franchise by its players. So this links only
+     * when the year settled it (`via === "year"`) or the players' answer is the
+     * year's own pick (`agreesWithYear`); anything else, and a null (a tie,
+     * disagreeing cards, an alias-only year pick), is left unresolved for the
+     * operator, never the year's pick.
+     *
+     * The players are the gate's evidence, found the cheap way and only for a
+     * name with two or more rows: a review row's link, else the one same-name
+     * player. Any player that does not resolve to exactly one leaves the name
+     * to the year (the gate does the same: the operator answers the player
+     * first). A "not a person" skip is left off the card.
+     */
+    const playersByTeamKey = new Map<string, string[][]>(
+      (args.teamPlayerNames ?? []).map(
+        (entry) => [entry.teamNameNormalized, entry.cards] as const,
+      ),
+    );
+    const cardPlayerIdCache = new Map<string, Id<"players"> | null>();
+    const cardPlayerIdFor = async (playerName: string): Promise<Id<"players"> | null> => {
+      const key = normalizePlayerName(playerName);
+      if (!key) return null;
+      if (cardPlayerIdCache.has(key)) return cardPlayerIdCache.get(key)!;
+      let found: Id<"players"> | null = null;
+      const decision = reviewByKey.get(`player:${key}`)?.decision;
+      if (decision?.action === "link" && decision.linkedPlayerId) {
+        found = decision.linkedPlayerId;
+      } else {
+        const matches = await sameNamePlayers(ctx, key, args.sportId);
+        found = matches.length === 1 ? matches[0]._id : null;
+      }
+      cardPlayerIdCache.set(key, found);
+      return found;
+    };
+    const resolveTeamSilently = async (name: string): Promise<Id<"teams"> | null> => {
+      const pick = await resolveCardTeamName(ctx, args.sportId, name, setYear, {
+        loadCardPlayerIds: async () => {
+          const cards = playersByTeamKey.get(normalizeTeamName(name.trim()));
+          if (!cards || cards.length === 0) return undefined;
+          const ids: Array<Array<Id<"players">>> = [];
+          for (const players of cards) {
+            const onCard: Array<Id<"players">> = [];
+            for (const player of players) {
+              const key = normalizePlayerName(player);
+              if (!key || reviewByKey.get(`player:${key}`)?.decision?.action === "skip") {
+                continue;
+              }
+              const id = await cardPlayerIdFor(player);
+              if (!id) return undefined;
+              if (!onCard.includes(id)) onCard.push(id);
+            }
+            ids.push(onCard);
+          }
+          return ids;
+        },
+      });
+      if (!pick.teamId) return null;
+      return pick.via === "year" || pick.agreesWithYear ? pick.teamId : null;
+    };
     /**
      * NEO-424 (D5) — did the operator answer `create` for this player name
      * while LOOKING AT `playerId`?
@@ -19625,14 +19710,9 @@ export const commitCardChecklistPrelude = internalMutation({
          * pair, so this cannot mint a rival row beside one the operator meant.
          */
         if (!gateTeamRowKeys.has(norm(name))) {
-          const { teamId: alreadyThere } = await resolveTeamForSetYear(
-            ctx,
-            args.sportId,
-            name,
-            setYear,
-            // NEO-307: a SET year — must agree with the resolve phase below.
-            { allowPastEra: true },
-          );
+          // NEO-602 (S1): the same card rule the resolve phase below uses, so
+          // the two cannot disagree about whether the name already resolves.
+          const alreadyThere = await resolveTeamSilently(name);
           // Already resolves on its own — the resolve phase will link it, and
           // minting a rival row is exactly what the guard in the combined loop
           // below prevented.
@@ -19671,14 +19751,9 @@ export const commitCardChecklistPrelude = internalMutation({
       // row is reported unreviewed, never linked to the year's pick.
       const { teamId: existingTeamId } = gateTeamRowKeys.has(normalized)
         ? { teamId: null }
-        : await resolveTeamForSetYear(
-            ctx,
-            args.sportId,
-            name,
-            setYear,
-            // NEO-307: a SET year — a card can show a team's past.
-            { allowPastEra: true },
-          );
+        : // NEO-602 (S1): the card rule, not the year alone; a null leaves the
+          // name to the review row below, or unreviewed. Never the year's pick.
+          { teamId: await resolveTeamSilently(name) };
       if (existingTeamId) {
         const existing = (await ctx.db.get(existingTeamId))!;
         teamIdByName.set(name, existing._id);
@@ -24185,6 +24260,8 @@ export const commitCardChecklist = action({
     // handed names rather than cards, so this association has to be built here
     // or it is gone; see `commitCardChecklistPrelude.playerTeamNames`.
     const playerTeamNamesByPlayer = new Map<string, string[]>();
+    // NEO-602 — and the reverse, for the card rule's players (`addCardPlayerNames`).
+    const playersByTeamNorm: CardPlayersByTeam = new Map();
     for (const c of args.cards) {
       const teamsOnCard = cardTeamNames(c);
       for (const p of c.players ?? []) {
@@ -24192,7 +24269,10 @@ export const commitCardChecklist = action({
         playerNames.push(p.trim());
         addCardTeamNames(playerTeamNamesByPlayer, p, teamsOnCard);
       }
-      for (const t of teamsOnCard) teamNames.push(t);
+      for (const t of teamsOnCard) {
+        teamNames.push(t);
+        addCardPlayerNames(playersByTeamNorm, t, c.players ?? []);
+      }
     }
 
     /*
@@ -24242,6 +24322,11 @@ export const commitCardChecklist = action({
         playerTeamNamesByPlayer,
         ([playerNameNormalized, teams]) => ({ playerNameNormalized, teams }),
       ),
+      // NEO-602 — the players on each card naming a team, for the era rule.
+      teamPlayerNames: Array.from(
+        playersByTeamNorm,
+        ([teamNameNormalized, entry]) => ({ teamNameNormalized, cards: entry.cards }),
+      ).filter((entry) => entry.cards.length > 0),
       batchId: args.batchId,
       // NEO-335 — written by the page that opens the commit, read by all.
       ...(listingShortName ? { listingShortName } : {}),

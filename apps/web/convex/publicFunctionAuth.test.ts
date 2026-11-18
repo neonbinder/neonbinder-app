@@ -32,7 +32,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 import type { Id } from "./_generated/dataModel";
@@ -190,15 +190,26 @@ describe("NEO-154: taxonomy reads and writes require a signed-in caller", () => 
     expect("list" in teamsModule).toBe(false);
   });
 
-  test("players.findByNameAndSport and teams.findByNameAndSport reject anonymously", async () => {
+  test("players.findByNameAndSport rejects anonymously", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     await expect(
       t.query(api.players.findByNameAndSport, { name: "Mike Trout", sportId }),
     ).rejects.toThrow(/Not authenticated/);
+  });
+
+  test("teams.findByNameAndSport is internal-only (NEO-602): no public caller is left", async () => {
+    // The review gate and the commit prelude moved to `resolveCardTeamName`, so
+    // the signed-in query had no client caller. It is an `internalQuery` now
+    // and no longer part of the public surface.
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
     await expect(
-      t.query(api.teams.findByNameAndSport, { name: "Yankees", sportId }),
-    ).rejects.toThrow(/Not authenticated/);
+      t.query(internal.teams.findByNameAndSport, { name: "Yankees", sportId }),
+    ).resolves.toBeNull();
+    const src = readFileSync(join(__dirname, "teams.ts"), "utf8");
+    expect(src).toMatch(/export const findByNameAndSport = internalQuery\(/);
+    expect(src).not.toMatch(/export const findByNameAndSport = query\(/);
   });
 });
 

@@ -48,12 +48,15 @@ import {
 } from "./lib/teamRow";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
+// NEO-602 (S2): the one era check every team writer applies.
+import { requireTeamEra } from "./lib/teamEra";
 // NEO-535 — a rename reaches the descriptions of the team's cards.
 import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
 import {
   eraLabel,
   eraOverlapReason,
   erasOverlap,
+  isWellFormedEra,
   teamOptionLabel,
   type TeamEra,
 } from "../lib/teams/team-era";
@@ -145,7 +148,13 @@ const teamDocValidator = v.object({
   lastUpdated: v.number(),
 });
 
-export const findByNameAndSport = query({
+/**
+ * NEO-602 — internal since the review gate and the commit prelude stopped
+ * calling it (both go through `resolveCardTeamName`, which also reads the
+ * cards' players). Kept as the year-only reading of the card rule, for the
+ * tests that pin the lookup's folding and era behaviour.
+ */
+export const findByNameAndSport = internalQuery({
   args: {
     name: v.string(),
     sportId: v.id("selectorOptions"),
@@ -163,7 +172,6 @@ export const findByNameAndSport = query({
   },
   returns: v.union(teamDocValidator, v.null()),
   handler: async (ctx, args) => {
-    await requireSignedIn(ctx);
     // NEO-236: `name` here is a FULL name — a marketplace payload, a Wikidata
     // label, or an operator's typed string. It resolves to a split row because
     // the dedup key is derived from the composed full name; see
@@ -539,9 +547,16 @@ export type AliasSelfYears = { from?: number; to?: number };
 
 function selfEra(selfYears: AliasSelfYears | undefined): TeamEra | undefined {
   if (!selfYears || selfYears.from === undefined) return undefined;
-  return selfYears.to !== undefined
-    ? { from: selfYears.from, to: selfYears.to }
-    : { from: selfYears.from };
+  const era: TeamEra =
+    selfYears.to !== undefined
+      ? { from: selfYears.from, to: selfYears.to }
+      : { from: selfYears.from };
+  // NEO-602 (S2, second layer): a NaN, Infinity, fractional or inverted era
+  // compares false against everything, which would read as "overlaps nothing"
+  // and let a clashing alias through. The writers refuse such an era
+  // (`requireTeamEra`); a caller that slipped one past them is read as
+  // undated, the strict side.
+  return isWellFormedEra(era) ? era : undefined;
 }
 
 /**
@@ -850,6 +865,9 @@ export const nameHeldAsAliasBy = query({
   ),
   handler: async (ctx, args) => {
     await requireAdmin(ctx);
+    // NEO-602 (S2): the draft's years are checked like any writer's. The review
+    // wizard sends them only once they are a valid era (`teamEraProblem`).
+    if (args.yearsActive) requireTeamEra(args.yearsActive);
     const name = args.name.trim();
     if (!name || name.length > MAX_TEAM_ALIAS_LENGTH) return [];
     const holders = await findAliasHoldersOfName(ctx, {
@@ -981,6 +999,10 @@ export const findOrCreate = mutation({
     if (!sportRow || sportRow.level !== "sport") {
       throw new ConvexError("A team must be created under a sport.");
     }
+
+    // NEO-602 (S2): whole years, in range, ending no earlier than they start —
+    // before the era is compared with, or stored on, anything.
+    if (args.yearsActive) requireTeamEra(args.yearsActive);
 
     /**
      * NEO-254 — find the ERA, or create a new one.
@@ -1667,6 +1689,10 @@ export const saveTeamFields = mutation({
     await requireAdmin(ctx);
     const existing = await ctx.db.get(args.id);
     if (!existing) throw new Error("Team not found");
+    // NEO-602 (S2): a years edit is refused unless it is a real era. Only the
+    // years the caller sent are checked; a row's older stored era is not this
+    // save's to judge.
+    if (args.yearsActive) requireTeamEra(args.yearsActive);
 
     const patch: Record<string, unknown> = { lastUpdated: Date.now() };
 

@@ -258,7 +258,9 @@ export const backfillTeamToOnCardIds = internalMutation({
       // Athletics" is the 1968–2024 franchise's whatever year the set is. A
       // card with no players, or a name with one row, resolves by the year
       // alone exactly as before. The set year keeps its NEO-307 past-era
-      // allowance — a card can show a team's past.
+      // allowance — a card can show a team's past. Unattended and with no
+      // review row to show, so the players' answer links even where the card
+      // year disagrees (`CardTeamResolution.agreesWithYear`); a null stays put.
       const { teamId: resolvedTeamId } = await resolveCardTeamName(
         ctx,
         sportId,
@@ -916,6 +918,10 @@ export const applyBscTeamResolution = internalMutation({
     // NEO-602: each name is resolved against THIS card's players too
     // (`resolveCardTeamName`) — "Oakland Athletics" on a Rickey Henderson card
     // is the 1968–2024 franchise, not the 2025– Athletics whose alias it is.
+    //
+    // Unattended: the players' answer links even where the card year
+    // disagrees with it (`CardTeamResolution.agreesWithYear`); only a null
+    // (a tie, disagreeing evidence, an alias-only year pick) stays unmatched.
     //
     // NEO-333: all or nothing. Every part must resolve to exactly one team
     // (`resolveCardTeamName` returns null for "unknown" and for "several

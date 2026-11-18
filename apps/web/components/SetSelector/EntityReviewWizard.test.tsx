@@ -8369,6 +8369,87 @@ describe("EntityReviewWizard — NEO-307 a New Team name another team holds as a
     expect("yearsActive" in (asked[asked.length - 1].args as object)).toBe(false);
   });
 
+  it("NEO-602: when a year edit clears the clash, the always-mounted status line says so, once", () => {
+    currentAliasHolders = [LA];
+    currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];
+    renderWizard();
+    expect(screen.getAllByText(CLASH)).toHaveLength(2);
+    expect(screen.queryByText("No clash with that name now.")).toBeNull();
+
+    // The operator dates the team clear of the holder; the server's answer is
+    // now "nobody holds it".
+    currentAliasHolders = [];
+    fireEvent.change(screen.getByLabelText("New team active from (optional)"), {
+      target: { value: "1911" },
+    });
+    fireEvent.change(screen.getByLabelText("New team active to"), {
+      target: { value: "1957" },
+    });
+
+    expect(screen.queryByText(CLASH)).toBeNull();
+    const line = screen.getByText("No clash with that name now.");
+    // The existing live region, not a new one: it is the footer's status line.
+    expect(line.getAttribute("role")).toBe("status");
+    expect(line.getAttribute("aria-live")).toBe("polite");
+    expect(screen.getAllByText("No clash with that name now.")).toHaveLength(1);
+    expect(
+      screen.getByRole("button", { name: "Add as New Team" }).getAttribute("aria-disabled"),
+    ).toBeNull();
+  });
+
+  it("NEO-602: the footer's blocked reason wraps (two lines are fine) and is never clipped", () => {
+    currentAliasHolders = [LA];
+    currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];
+    renderWizard();
+
+    const primary = screen.getByRole("button", { name: "Add as New Team" });
+    const reason = document.getElementById(primary.getAttribute("aria-describedby")!)!;
+    expect(reason.textContent).toBe(CLASH);
+    expect(reason.className).not.toMatch(/\btruncate\b/);
+    expect(reason.className).toMatch(/\bwrap-anywhere\b/);
+    expect(reason.className).toMatch(/\btext-pretty\b/);
+    const row = reason.parentElement!;
+    expect(row.className).not.toMatch(/\bitems-center\b/);
+    expect(row.className).toMatch(/\bitems-start\b/);
+    expect(row.className).toMatch(/\bmin-h-8\b/);
+  });
+
+  it("NEO-602: no clear-notice when the blocked reason changes to another one, or when there was never a clash", () => {
+    currentAliasHolders = [LA];
+    currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];
+    renderWizard();
+
+    // The clash goes because the name was emptied: the blank-name reason takes
+    // over, and "no clash" would be the wrong thing to say.
+    fireEvent.change(teamLocationField(), { target: { value: "" } });
+    fireEvent.change(teamNameField(), { target: { value: "  " } });
+    expect(screen.getByText("Enter a team name before adding it.")).toBeTruthy();
+    expect(screen.queryByText("No clash with that name now.")).toBeNull();
+
+    // A name that never clashed says nothing either.
+    currentAliasHolders = [];
+    fireEvent.change(teamNameField(), { target: { value: "Brooklyn Robins" } });
+    expect(screen.queryByText("No clash with that name now.")).toBeNull();
+  });
+
+  it("NEO-602: a half-typed year is not an era, so it is not sent (the server would refuse it)", () => {
+    currentAliasHolders = [LA];
+    currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];
+    renderWizard();
+
+    fireEvent.change(screen.getByLabelText("New team active from (optional)"), {
+      target: { value: "20" },
+    });
+
+    const asked = queryCalls.filter(
+      (call) => call.ref === "teams.nameHeldAsAliasBy" && call.args !== "skip",
+    );
+    expect(asked.length).toBeGreaterThan(0);
+    for (const call of asked) {
+      expect("yearsActive" in (call.args as object)).toBe(false);
+    }
+  });
+
   it("shows nothing and blocks nothing when no team holds the name", () => {
     currentAliasHolders = [];
     currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];

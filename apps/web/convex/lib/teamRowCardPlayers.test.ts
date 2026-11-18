@@ -20,6 +20,7 @@ import {
   CARD_PLAYER_TEAM_MAX_CARDS,
   CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD,
   narrowTeamRowsByCardPlayers,
+  resolveCardTeamName,
 } from "./teamRow";
 
 const modules = (import.meta as unknown as {
@@ -373,5 +374,85 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     await resolve(t, { sportId: w.sportId, cardPlayerIds: [[paige]] });
 
     expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(before.length);
+  });
+});
+
+describe("NEO-602 (S1): resolveCardTeamName's lazy player loader", () => {
+  test("is called once for a name that reaches several rows, and its players decide", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const late = await insertPlayer(t, w.sportId, "Other Player", [w.late]);
+    let calls = 0;
+
+    const pick = await t.run((ctx) =>
+      resolveCardTeamName(ctx, w.sportId, "St. Louis Browns", 1990, {
+        loadCardPlayerIds: async () => {
+          calls++;
+          return [[late]];
+        },
+      }),
+    );
+
+    expect(calls).toBe(1);
+    expect(pick.teamId).toBe(w.late);
+    expect(pick.via).toBe("players");
+    expect(pick.agreesWithYear).toBe(false);
+  });
+
+  test("is never called for a one-row name or an unknown one", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    let calls = 0;
+    const loader = async () => {
+      calls++;
+      return undefined;
+    };
+    await t.run(async (ctx) => {
+      await ctx.db.insert("teams", {
+        name: "Padres",
+        location: "San Diego",
+        nameNormalized: normalizeTeamName("San Diego Padres"),
+        sportId: w.sportId,
+        lastUpdated: Date.now(),
+      });
+    });
+
+    const one = await t.run((ctx) =>
+      resolveCardTeamName(ctx, w.sportId, "San Diego Padres", 2000, { loadCardPlayerIds: loader }),
+    );
+    const none = await t.run((ctx) =>
+      resolveCardTeamName(ctx, w.sportId, "Nowhere Nobodies", 2000, { loadCardPlayerIds: loader }),
+    );
+
+    expect(one.teamId).not.toBeNull();
+    expect(none.teamId).toBeNull();
+    expect(calls).toBe(0);
+  });
+
+  test("a loader that finds no evidence leaves the year to decide, and an explicit cardPlayerIds wins over the loader", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const late = await insertPlayer(t, w.sportId, "Other Player", [w.late]);
+    let calls = 0;
+
+    const noEvidence = await t.run((ctx) =>
+      resolveCardTeamName(ctx, w.sportId, "St. Louis Browns", 1930, {
+        loadCardPlayerIds: async () => undefined,
+      }),
+    );
+    expect(noEvidence.teamId).toBe(w.early);
+    expect(noEvidence.via).toBe("year");
+
+    const explicit = await t.run((ctx) =>
+      resolveCardTeamName(ctx, w.sportId, "St. Louis Browns", 1990, {
+        cardPlayerIds: [[late]],
+        loadCardPlayerIds: async () => {
+          calls++;
+          return [[]];
+        },
+      }),
+    );
+    expect(explicit.teamId).toBe(w.late);
+    expect(calls).toBe(0);
   });
 });

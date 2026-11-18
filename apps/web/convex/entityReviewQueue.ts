@@ -35,6 +35,7 @@ import { findSportForSelectorOption } from "./cardChecklist";
 // into the same `players.teamYears` column) and with the wizard's own year
 // fields. The three used to be separate literals and two of them disagreed.
 import { MIN_CAREER_YEAR } from "../lib/players/career-years";
+import { requireTeamEra } from "./lib/teamEra";
 // NEO-284 — the team-alias bounds live beside the table's one writer. The New
 // Team step's "Also known as" list is validated HERE, at decision time, so the
 // queue never holds an over-bound or self-referential list for the commit to
@@ -565,36 +566,6 @@ function toTeamCreate(input: TeamCreateInput): TeamCreate | null {
      */
     ...(input.yearsActive ? { yearsActive: requireTeamEra(input.yearsActive) } : {}),
   };
-}
-
-/**
- * NEO-254 — whole years, in range, ending no earlier than they start.
- *
- * The same shape and the same bounds `leagues.validateLeagueYears` applies to
- * a league's era; a team's era answers the same question about the same kind
- * of thing, and two rules for one idea is one more thing to look up.
- */
-function requireTeamEra(era: { from: number; to?: number }): {
-  from: number;
-  to?: number;
-} {
-  const maxYear = new Date().getFullYear() + 1;
-  if (!Number.isInteger(era.from) || era.from < MIN_CAREER_YEAR || era.from > maxYear) {
-    throw new ConvexError(
-      `A team start year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`,
-    );
-  }
-  if (era.to !== undefined) {
-    if (!Number.isInteger(era.to) || era.to < MIN_CAREER_YEAR || era.to > maxYear) {
-      throw new ConvexError(
-        `A team end year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`,
-      );
-    }
-    if (era.to < era.from) {
-      throw new ConvexError("A team cannot stop playing before it starts.");
-    }
-  }
-  return { from: era.from, ...(era.to !== undefined ? { to: era.to } : {}) };
 }
 
 /**

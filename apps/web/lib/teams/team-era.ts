@@ -58,8 +58,56 @@
  * or a disagreement is a question for the operator, never the first row.
  */
 
+import { MIN_CAREER_YEAR, maxCareerYear } from "../players/career-years";
+
 /** A team's lifespan. `to` absent means "still going". */
 export type TeamEra = { from: number; to?: number };
+
+/**
+ * NEO-602 (second layer) — is this an era the arithmetic below can trust?
+ *
+ * Whole years, and `to` no earlier than `from`. The writers refuse anything
+ * else (`teamEraProblem`), but a row written before they did, by the loader,
+ * or by a path nobody audited could still hold NaN, Infinity, a fraction or an
+ * inverted span, and every comparison against NaN is false: a malformed era
+ * would read as "overlaps nothing" and let an alias through that the strict
+ * reading refuses. So a malformed era is treated as UNDATED, which every
+ * helper here reads as overlapping and never excludes (the module note: unknown
+ * is not absent). Fails safe.
+ *
+ * Range is not checked here (that is the writers' bound, `teamEraProblem`);
+ * an integer far outside it is still an era, just a strange one.
+ */
+export function isWellFormedEra(years: TeamEra | undefined): years is TeamEra {
+  if (!years || !Number.isInteger(years.from)) return false;
+  if (years.to === undefined) return true;
+  return Number.isInteger(years.to) && years.to >= years.from;
+}
+
+/**
+ * NEO-254 / NEO-602 — why a team era cannot be saved, in the operator's words,
+ * or `null` when it can: whole years between `MIN_CAREER_YEAR` and next year,
+ * ending no earlier than they start. The ONE rule behind every writer
+ * (`requireTeamEra` in `convex/lib/teamEra.ts`) and the review wizard's
+ * pre-check, the same bounds `leagues.validateLeagueYears` applies to a
+ * league's era.
+ */
+export function teamEraProblem(
+  era: { from: number; to?: number },
+  now: Date = new Date(),
+): string | null {
+  const maxYear = maxCareerYear(now);
+  if (!Number.isInteger(era.from) || era.from < MIN_CAREER_YEAR || era.from > maxYear) {
+    return `A team start year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`;
+  }
+  if (era.to !== undefined) {
+    if (!Number.isInteger(era.to) || era.to < MIN_CAREER_YEAR || era.to > maxYear) {
+      return `A team end year must be a whole year between ${MIN_CAREER_YEAR} and ${maxYear}.`;
+    }
+    if (era.to < era.from) return "A team cannot stop playing before it starts.";
+  }
+  return null;
+}
 
 /** The minimum a row must expose for the era helpers. */
 export type TeamEraRow = { yearsActive?: TeamEra };
@@ -93,7 +141,7 @@ export function eraCoversYear(
   years: TeamEra | undefined,
   year: number,
 ): boolean {
-  if (!years) return true;
+  if (!isWellFormedEra(years)) return true;
   if (year < years.from) return false;
   return years.to === undefined || year <= years.to;
 }
@@ -116,7 +164,7 @@ export function erasOverlap(
   a: TeamEra | undefined,
   b: TeamEra | undefined,
 ): boolean {
-  if (!a || !b) return true;
+  if (!isWellFormedEra(a) || !isWellFormedEra(b)) return true;
   return a.from <= (b.to ?? Infinity) && b.from <= (a.to ?? Infinity);
 }
 
@@ -233,7 +281,7 @@ export type Stint = { teamId: string; fromYear?: number; toYear?: number };
  * absent — the module note's rule, applied to the player side.
  */
 export function stintOverlapsEra(stint: Stint, era: TeamEra | undefined): boolean {
-  if (!era) return true;
+  if (!isWellFormedEra(era)) return true;
   const from = stint.fromYear ?? -Infinity;
   const to = stint.toYear ?? Infinity;
   return from <= (era.to ?? Infinity) && era.from <= to;
@@ -326,8 +374,8 @@ export function pickCardTeam<T extends TeamEraRow & { _id: string }>(
     setYear !== undefined && Number.isInteger(setYear) ? setYear : undefined;
   // 1. Never a team that did not exist yet.
   const eligible = rows.filter((row) => {
-    const from = row.yearsActive?.from;
-    return year === undefined || from === undefined || from <= year;
+    const era = row.yearsActive;
+    return year === undefined || !isWellFormedEra(era) || era.from <= year;
   });
   if (eligible.length === 0) return null;
 

@@ -10,10 +10,12 @@
 
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import {
+  findAliasHoldersOfName,
+  findAliasPrimaryNameOwners,
   TEAM_NAME_LOOKUP_MAX_OPS,
   TEAM_NAME_LOOKUP_READ_BUDGET,
   normalizeTeamAliasList,
@@ -744,7 +746,7 @@ describe("NEO-602: a disjoint alias saves, in both directions", () => {
     // A bare 2025 card with no player to ask is a question, not a silent link:
     // the year would land on the alias-only Athletics while Oakland owns the name.
     expect(
-      await asAdmin.query(api.teams.findByNameAndSport, {
+      await asAdmin.query(internal.teams.findByNameAndSport, {
         name: "Oakland Athletics",
         sportId,
         setYear: 2025,
@@ -754,7 +756,7 @@ describe("NEO-602: a disjoint alias saves, in both directions", () => {
     // candidates, but the year lands on the own-name row.
     expect(
       (
-        await asAdmin.query(api.teams.findByNameAndSport, {
+        await asAdmin.query(internal.teams.findByNameAndSport, {
           name: "Oakland Athletics",
           sportId,
           setYear: 1990,
@@ -771,7 +773,7 @@ describe("NEO-602: a disjoint alias saves, in both directions", () => {
     await asAdmin.mutation(api.teams.saveTeamFields, { id: la, aliases: ["Brooklyn Dodgers"] });
 
     expect(
-      await asAdmin.query(api.teams.findByNameAndSport, {
+      await asAdmin.query(internal.teams.findByNameAndSport, {
         name: "Brooklyn Dodgers",
         sportId,
         setYear: 2026,
@@ -779,7 +781,7 @@ describe("NEO-602: a disjoint alias saves, in both directions", () => {
     ).toBeNull();
     expect(
       (
-        await asAdmin.query(api.teams.findByNameAndSport, {
+        await asAdmin.query(internal.teams.findByNameAndSport, {
           name: "Brooklyn Dodgers",
           sportId,
           setYear: 1950,
@@ -1187,5 +1189,173 @@ describe("NEO-602: the reverse order — a team may not take a name an overlappi
       yearsActive: { from: 1911, to: 1957 },
     });
     expect((await t.run((ctx) => ctx.db.get(brooklyn)))!.name).toBe("Dodgers");
+  });
+});
+
+// ===========================================================================
+// NEO-602 (S2) — a malformed era never reaches a writer, and never reads as
+// "overlaps nothing" if one slips past.
+// ===========================================================================
+
+describe("NEO-602 S2: every team writer refuses a malformed era", () => {
+  const BAD_ERAS: Array<[string, { from: number; to?: number }]> = [
+    ["NaN start", { from: Number.NaN }],
+    ["Infinity start", { from: Number.POSITIVE_INFINITY }],
+    ["NaN end", { from: 1990, to: Number.NaN }],
+    ["Infinity end", { from: 1990, to: Number.POSITIVE_INFINITY }],
+    ["a fractional start", { from: 1990.5 }],
+    ["a fractional end", { from: 1990, to: 2001.25 }],
+    ["an inverted span", { from: 2001, to: 1990 }],
+    ["a start before the game had teams", { from: 12 }],
+  ];
+
+  test.each(BAD_ERAS)("teams.findOrCreate refuses %s and writes nothing", async (_label, era) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const err = await asAdmin
+      .mutation(api.teams.findOrCreate, {
+        name: "Dodgers",
+        location: "Brooklyn",
+        sportId,
+        yearsActive: era,
+      })
+      .catch((e: unknown) => e);
+
+    expect(String((err as { data?: unknown }).data)).toMatch(/team (start|end) year|stop playing/);
+    expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(0);
+  });
+
+  test.each(BAD_ERAS)("teams.saveTeamFields refuses %s and leaves the row alone", async (_label, era) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const id = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Dodgers",
+      location: "Brooklyn",
+      sportId,
+      yearsActive: { from: 1911, to: 1957 },
+    });
+
+    const err = await asAdmin
+      .mutation(api.teams.saveTeamFields, { id, yearsActive: era })
+      .catch((e: unknown) => e);
+
+    expect(String((err as { data?: unknown }).data)).toMatch(/team (start|end) year|stop playing/);
+    expect((await t.run((ctx) => ctx.db.get(id)))!.yearsActive).toEqual({ from: 1911, to: 1957 });
+  });
+
+  test.each(BAD_ERAS)("teams.nameHeldAsAliasBy refuses %s", async (_label, era) => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+
+    const err = await asAdmin
+      .query(api.teams.nameHeldAsAliasBy, {
+        sportId,
+        name: "Brooklyn Dodgers",
+        yearsActive: era,
+      })
+      .catch((e: unknown) => e);
+
+    expect(String((err as { data?: unknown }).data)).toMatch(/team (start|end) year|stop playing/);
+  });
+
+  test("a real era still saves, an unrelated save with no years is untouched, and clearing (null) is allowed", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const id = await asAdmin.mutation(api.teams.findOrCreate, {
+      name: "Dodgers",
+      location: "Brooklyn",
+      sportId,
+      yearsActive: { from: 1911, to: 1957 },
+    });
+
+    await asAdmin.mutation(api.teams.saveTeamFields, { id, yearsActive: { from: 1911, to: 1958 } });
+    expect((await t.run((ctx) => ctx.db.get(id)))!.yearsActive).toEqual({ from: 1911, to: 1958 });
+    await asAdmin.mutation(api.teams.saveTeamFields, { id, yearsActive: null });
+    expect((await t.run((ctx) => ctx.db.get(id)))!.yearsActive).toBeUndefined();
+    await expect(
+      asAdmin.query(api.teams.nameHeldAsAliasBy, {
+        sportId,
+        name: "Brooklyn Dodgers",
+        yearsActive: { from: 1911, to: 1957 },
+      }),
+    ).resolves.toEqual([]);
+  });
+});
+
+describe("NEO-602 S2 second layer: a malformed era that slipped in reads as undated, never as 'overlaps nothing'", () => {
+  test("a malformed SELF era still clashes with the team that owns the alias (the strict side)", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    // A dated, DISJOINT owner: with a good self era the alias would be allowed.
+    await insertTeam(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      yearsActive: { from: 1911, to: 1957 },
+    });
+
+    const clashesFor = (selfYears: { from?: number; to?: number }) =>
+      t.run((ctx) =>
+        findAliasPrimaryNameOwners(ctx, {
+          sportId,
+          aliases: ["Brooklyn Dodgers"],
+          selfYears,
+        }),
+      );
+
+    expect(await clashesFor({ from: 1958 })).toHaveLength(0);
+    expect(await clashesFor({ from: Number.NaN })).toHaveLength(1);
+    expect(await clashesFor({ from: Number.POSITIVE_INFINITY })).toHaveLength(1);
+    expect(await clashesFor({ from: 1958.5 })).toHaveLength(1);
+    expect(await clashesFor({ from: 2001, to: 1990 })).toHaveLength(1);
+  });
+
+  test("a malformed STORED era on the other team counts as overlapping, in both directions", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const owner = await insertTeam(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      yearsActive: { from: 1957, to: 1911 },
+    });
+    await insertTeam(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      yearsActive: { from: 1958 },
+      aliases: ["Brooklyn Dodgers"],
+    });
+    await t.run(async (ctx) => {
+      const la = (await ctx.db.query("teams").collect()).find((row) => row._id !== owner)!;
+      await syncTeamAliases(ctx, { teamId: la._id, sportId, aliases: ["Brooklyn Dodgers"] });
+    });
+
+    // forward: the alias is a primary name whose (inverted) era cannot be trusted
+    const forward = await t.run((ctx) =>
+      findAliasPrimaryNameOwners(ctx, {
+        sportId,
+        aliases: ["Brooklyn Dodgers"],
+        selfYears: { from: 1958 },
+      }),
+    );
+    expect(forward.map((hit) => hit.owner._id)).toEqual([owner]);
+
+    // reverse: a new Brooklyn Dodgers in 1911-1957 against the LA alias holder,
+    // whose own era is fine, still passes; against a malformed holder it clashes.
+    await t.run(async (ctx) => {
+      const la = (await ctx.db.query("teams").collect()).find((row) => row._id !== owner)!;
+      await ctx.db.patch(la._id, { yearsActive: { from: Number.NaN } });
+    });
+    const reverse = await t.run((ctx) =>
+      findAliasHoldersOfName(ctx, {
+        sportId,
+        fullName: "Brooklyn Dodgers",
+        selfYears: { from: 1911, to: 1957 },
+      }),
+    );
+    expect(reverse).toHaveLength(1);
   });
 });

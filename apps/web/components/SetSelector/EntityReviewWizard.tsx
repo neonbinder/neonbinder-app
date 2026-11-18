@@ -31,7 +31,7 @@ import { CopyButton } from "../primitives/CopyButton";
 // `hasExact` was written for.
 import { NearMatchPanel, type NearMatch } from "../entities/NearMatchPanel";
 import { TeamMatchSearch } from "../entities/TeamMatchSearch";
-import { eraOverlapReason, teamOptionLabel } from "../../lib/teams/team-era";
+import { eraOverlapReason, teamEraProblem, teamOptionLabel } from "../../lib/teams/team-era";
 import { useStaleWhileLoading } from "@/src/hooks/useStaleWhileLoading";
 import EntityLinkSearch from "./EntityLinkSearch";
 import SportSwitch from "./SportSwitch";
@@ -269,6 +269,9 @@ const PLAYER_ADD_SET_SPORT_FIELD_ID = "entity-review-player-add-set-sport";
 // on the label copy.
 const LEAGUE_NAME_FIELD_ID = "entity-review-league-name";
 const LEAGUE_LEVEL_FIELD_ID = "entity-review-league-level";
+
+/** NEO-602 — the footer status line once the alias clash on a New Team step is gone. */
+const ALIAS_CLASH_CLEARED_LINE = "No clash with that name now.";
 
 /**
  * NEO-602 — why a name the New Team step would create is refused, in the words
@@ -1445,7 +1448,14 @@ export default function EntityReviewWizard({
       ? (teamCreateByRow[current._id] ?? teamCreatePrefill(current))
       : undefined;
   const aliasCheckName = aliasCheckDraft ? draftFullName(aliasCheckDraft).trim() : "";
-  const aliasCheckYears = aliasCheckDraft?.yearsActive;
+  // The server refuses a malformed era (`requireTeamEra`), and this query is
+  // asked on every keystroke: "2", "20", "202" on the way to "2025" are not
+  // eras yet. Only a valid one is sent; until then the draft reads as undated,
+  // the strict side.
+  const aliasCheckYears =
+    aliasCheckDraft?.yearsActive && teamEraProblem(aliasCheckDraft.yearsActive) === null
+      ? aliasCheckDraft.yearsActive
+      : undefined;
   const nameAliasHoldersLive = useQuery(
     api.teams.nameHeldAsAliasBy,
     current && aliasCheckName
@@ -1469,6 +1479,49 @@ export default function EntityReviewWizard({
     aliasCheckName ? nameAliasHoldersLive : NO_ALIAS_HOLDERS,
     current?._id ?? "",
   );
+  /**
+   * NEO-602 — the alias clash that blocked "Add as New Team" has just cleared.
+   *
+   * The clash sentence sits in the footer's blocked line; when a year edit (or
+   * a rename) makes it disappear, the only change a screen-reader user would
+   * hear is silence, and a sighted one sees the primary come back to life
+   * unannounced. So the footer's always-mounted status line says so, once, for
+   * the row it happened on. Cleared by leaving the row or by the clash
+   * returning. `clashShowing` mirrors the condition under which
+   * `createBlocked` reaches the clash sentence (a usable name first).
+   */
+  const clashShowing =
+    current?.kind === "team" &&
+    !!aliasCheckDraft?.name.trim() &&
+    aliasCheckName.length <= MAX_TEAM_FULL_NAME_LENGTH &&
+    nameAliasHolders?.[0] !== undefined;
+  const nameUsable =
+    !!aliasCheckDraft?.name.trim() && aliasCheckName.length <= MAX_TEAM_FULL_NAME_LENGTH;
+  const clashRowId = current?._id ?? null;
+  const [clashSeen, setClashSeen] = useState<{
+    /** The row whose clash is showing now, if any. */
+    showingRowId: string | null;
+    /** The row whose clash has just gone. */
+    clearedRowId: string | null;
+  }>({ showingRowId: null, clearedRowId: null });
+  // Adjusted during render (React's own pattern for state derived from a
+  // transition), so the notice is in the same commit the clash leaves in.
+  const clashRowNow = clashShowing ? clashRowId : null;
+  if (clashRowNow !== clashSeen.showingRowId) {
+    setClashSeen(
+      clashRowNow !== null
+        ? { showingRowId: clashRowNow, clearedRowId: null }
+        : {
+            showingRowId: null,
+            clearedRowId:
+              clashSeen.showingRowId === clashRowId && nameUsable
+                ? clashSeen.showingRowId
+                : null,
+          },
+    );
+  }
+  const clashClearedRowId = clashSeen.clearedRowId;
+
   // Widened to a single array type on the way out. The two queries return
   // differently-branded ids, and a `Id<"players">[] | Id<"teams">[]`-shaped
   // union is not callable through `.find` — nor is it what NearMatchPanel
@@ -4203,7 +4256,11 @@ export default function EntityReviewWizard({
     // NEO-424 — and the suggestion step "Back to the suggestion" returns to.
     (pickStep || preselectShown)
       ? pickNotice.text
-      : footerStatus;
+      : // NEO-602 — news outranks the standing status, like the pick notice:
+        // the clash that blocked this step is gone.
+        !expired && current && clashClearedRowId === current._id && createBlocked === null
+        ? ALIAS_CLASH_CLEARED_LINE
+        : footerStatus;
 
   /**
    * NEO-482 — with no row on screen (the checklist step, a post-review step,
@@ -6532,16 +6589,17 @@ export default function EntityReviewWizard({
                      it this inherits Radix's 16px body size, which is not the
                      `text-xs` line `min-h-6` reserves the footer's height
                      for. */
-                  className="flex min-w-0 flex-1 items-center gap-2 text-xs text-neon-pink-text max-sm:basis-full"
+                  className="flex min-h-8 min-w-0 flex-1 items-start gap-2 text-xs text-neon-pink-text max-sm:basis-full"
                 >
                   {/*
                     The id sits on the TEXT, not on this flex wrapper: the
                     create controls point at it with `aria-describedby`, and a
                     description should be the reason alone — not the reason
                     plus the label of the button beside it. The message
-                    truncates; the way out of it does not.
+                    wraps (it can run to two lines, a holder's name and years
+                    among them) and the way out of it keeps its size.
                   */}
-                  <span id={createBlockedId} className="min-w-0 truncate">
+                  <span id={createBlockedId} className="min-w-0 text-pretty wrap-anywhere">
                     {createBlocked}
                   </span>
                   {/* NEO-236 — the same route as the blocked chip's, for the

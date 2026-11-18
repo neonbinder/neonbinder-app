@@ -403,9 +403,19 @@ export type CardTeamResolution = TeamNameResolution & {
   via: CardTeamPick<Doc<"teams">>["via"] | null;
   /**
    * Whether the set year alone lands on the row the players chose. `false`
-   * when `teamId` is null. A caller that links silently needs `via: "year"` or
-   * `agreesWithYear`; a players' answer that contradicts the year is the one an
-   * operator must see.
+   * when `teamId` is null.
+   *
+   * What a caller does with `via: "players"` and `agreesWithYear: false`
+   * depends on whether an operator is looking:
+   * - The review gate and the commit prelude link silently only when
+   *   `via === "year"` or `agreesWithYear`. A players' answer that contradicts
+   *   the year is shown as a decided row the operator can Change (the gate), or
+   *   left unreviewed (the prelude); never linked quietly.
+   * - Unattended per-card fills (`applyBscTeamResolution`,
+   *   `backfillTeamToOnCardIds`) have no review row to show, and link the
+   *   players' answer. The player's years decide (Jason, 2026-11-18); a card
+   *   whose year disagrees with them is not ambiguous, it is a retro or a
+   *   reprint of the player's own team.
    */
   agreesWithYear: boolean;
 };
@@ -437,7 +447,19 @@ export async function resolveCardTeamName(
   sportId: Id<"selectorOptions">,
   fullName: string,
   setYear: number | undefined,
-  options: { cardPlayerIds?: ReadonlyArray<ReadonlyArray<Id<"players">>> } = {},
+  options: {
+    cardPlayerIds?: ReadonlyArray<ReadonlyArray<Id<"players">>>;
+    /**
+     * The same evidence, loaded only when it can matter: called once, and only
+     * when the name reaches two or more rows (one row is nobody's to choose
+     * between). For a caller whose player ids cost reads to find. Undefined
+     * means the caller has no player evidence; `cardPlayerIds` wins when both
+     * are given.
+     */
+    loadCardPlayerIds?: () => Promise<
+      ReadonlyArray<ReadonlyArray<Id<"players">>> | undefined
+    >;
+  } = {},
 ): Promise<CardTeamResolution> {
   const candidates = await findTeamsByFullName(ctx, sportId, fullName);
   if (candidates.length === 0) {
@@ -451,7 +473,9 @@ export async function resolveCardTeamName(
   );
 
   let cards: Stint[][][] | undefined;
-  const cardPlayerIds = options.cardPlayerIds;
+  const cardPlayerIds =
+    options.cardPlayerIds ??
+    (candidates.length >= 2 ? await options.loadCardPlayerIds?.() : undefined);
   if (
     candidates.length >= 2 &&
     cardPlayerIds &&

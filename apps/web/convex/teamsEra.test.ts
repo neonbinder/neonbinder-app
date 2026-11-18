@@ -498,10 +498,11 @@ describe("saveTeamFields collides only on an overlapping era", () => {
 
     await t.withIdentity(ADMIN).mutation(api.teams.saveTeamFields, {
       id: revived,
-      yearsActive: { from: 2011, to: 2030 },
+      // NEO-602 (S2): a real year — the writers refuse one past next year.
+      yearsActive: { from: 2011, to: 2025 },
     });
     const row = await t.run(async (ctx) => ctx.db.get(revived));
-    expect(row?.yearsActive).toEqual({ from: 2011, to: 2030 });
+    expect(row?.yearsActive).toEqual({ from: 2011, to: 2025 });
   });
 });
 

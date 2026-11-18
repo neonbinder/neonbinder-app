@@ -4482,11 +4482,132 @@ describe("NEO-602: a gate review row controls the commit prelude for its name", 
       ...(batchId ? { batchId } : {}),
     });
 
-  test("with NO gate row the year shortcut still answers (the gate settled it itself): the 2025 Athletics", async () => {
+  test("with NO gate row and no player, the year's alias-only pick is NOT linked either (S1)", async () => {
+    // Two rows answer to the name: Oakland by its own name, the 2025 Athletics
+    // only by an alias. The year alone would pick the Athletics, and the card
+    // rule refuses a year pick reached through an alias while another row holds
+    // the name as its own (`pickCardTeam` rule 4). The commit prelude asks the
+    // same rule as the gate, so the card stays unlinked and unreviewed.
     const t = convexTest(schema, modules);
     const w = await seedAthletics(t);
 
     const result = await commit(t, w);
+
+    expect(result.unreviewedNameCount).toBe(1);
+    const [card] = await readCards(t, w.variantTypeId);
+    expect(card.teamOnCardIds ?? []).toEqual([]);
+    expect(card.pendingTeamNames).toEqual([NAME]);
+  });
+
+  test("the stale gate (S1): a single-row name the gate linked silently, then an alias added on a disjoint-era team, is NOT linked to the year's pick", async () => {
+    // At gate time only the 1968-2024 Oakland row answered to the name, so the
+    // card was settled silently (a card may show a team's past). Before the
+    // commit an operator saved "Oakland Athletics" as an alias of the 2025
+    // Athletics. The commit must not now follow the year onto them.
+    const t = convexTest(schema, modules);
+    const seeded = await seedVariantTypeUnderChromeSet(t);
+    await t.run(async (ctx) => {
+      for (const id of [seeded.setNameId, seeded.variantTypeId]) {
+        await ctx.db.patch(id, { features: { manufacturer: "Topps", season: "2025" } });
+      }
+    });
+    const oakland = await insertDatedTeam(t, seeded.sportId, {
+      location: "Oakland",
+      name: "Athletics",
+      from: 1968,
+      to: 2024,
+    });
+    const first = await commit(t, seeded);
+    expect(first.unreviewedNameCount).toBe(0);
+    expect((await readCards(t, seeded.variantTypeId))[0].teamOnCardIds).toEqual([oakland]);
+
+    // The alias lands on a disjoint-era team (written the way the app does).
+    const athletics = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("teams", {
+        name: "Athletics",
+        nameNormalized: normalizeTeamName("Athletics"),
+        sportId: seeded.sportId,
+        yearsActive: { from: 2025 },
+        aliases: [NAME],
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.insert("teamAliases", {
+        teamId: id,
+        sportId: seeded.sportId,
+        aliasNormalized: normalizeTeamName(NAME),
+      });
+      return id;
+    });
+    // A fresh checklist for another set under the same sport, committed now.
+    const second = await seedVariantTypeUnderChromeSet(t);
+    await t.run(async (ctx) => {
+      for (const id of [second.setNameId, second.variantTypeId]) {
+        await ctx.db.patch(id, { features: { manufacturer: "Topps", season: "2025" } });
+      }
+    });
+    const stale = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: second.variantTypeId,
+        sportId: seeded.sportId,
+        cards: [makeCard({ cardNumber: "1", teams: [NAME] })],
+      });
+    expect(stale.unreviewedNameCount).toBe(1);
+    const [card] = await readCards(t, second.variantTypeId);
+    expect(card.teamOnCardIds ?? []).not.toContain(athletics);
+    expect(card.teamOnCardIds ?? []).toEqual([]);
+  });
+
+  test("a player with a stint on Oakland decides it, but the year would not: not linked silently (via players, disagrees with the year)", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seedAthletics(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("players", {
+        name: "Rickey Henderson",
+        nameNormalized: normalizePlayerName("Rickey Henderson"),
+        sportId: w.sportId,
+        lastUpdated: Date.now(),
+        teamYears: [{ teamId: w.oakland, fromYear: 1979, toYear: 1984 }],
+      });
+    });
+
+    const result = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: w.variantTypeId,
+        sportId: w.sportId,
+        cards: [
+          makeCard({ cardNumber: "1", players: ["Rickey Henderson"], teams: [NAME] }),
+        ],
+      });
+
+    // The player resolved; the TEAM did not, and it is left for the operator.
+    expect(result.unreviewedNameCount).toBe(1);
+    const [card] = await readCards(t, w.variantTypeId);
+    expect(card.teamOnCardIds ?? []).toEqual([]);
+    expect(card.pendingTeamNames).toEqual([NAME]);
+  });
+
+  test("a player with a stint on the Athletics agrees with the year: linked silently (via players)", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seedAthletics(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("players", {
+        name: "Jacob Wilson",
+        nameNormalized: normalizePlayerName("Jacob Wilson"),
+        sportId: w.sportId,
+        lastUpdated: Date.now(),
+        teamYears: [{ teamId: w.athletics, fromYear: 2025 }],
+      });
+    });
+
+    const result = await t
+      .withIdentity(ADMIN_IDENTITY)
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: w.variantTypeId,
+        sportId: w.sportId,
+        cards: [makeCard({ cardNumber: "1", players: ["Jacob Wilson"], teams: [NAME] })],
+      });
 
     expect(result.unreviewedNameCount).toBe(0);
     const [card] = await readCards(t, w.variantTypeId);
