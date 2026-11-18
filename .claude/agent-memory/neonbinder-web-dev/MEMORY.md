@@ -257,3 +257,5 @@
 - [New listing problem reason: hand lists](reference_new_listing_problem_reason_has_hand_lists.md) — SYNC_HELD_REASONS, REPORTABLE_SYNC_REASONS judgement, test Reason union, spec copy literals
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
 - [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
+- [PDF runs ride along only with evidence](reference_pdf_runs_ride_along_only_when_they_add_evidence.md) — new reader record fields move the Topps golden snapshot; gate them; tsx probes need .mts
+- [convex data caps at 8192 rows](reference_convex_data_caps_at_8192_rows.md) — page a big table read-only with --order asc/desc and dedupe by _id

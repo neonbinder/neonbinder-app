@@ -1284,7 +1284,14 @@ export const listingSyncProgressValidator = v.object({
 /**
  * NEO-496 — one stored row of a publisher checklist (`publishedChecklistChunks`).
  * The server re-check (`convex/lib/publishedChecklistCheck.ts`) is the only
- * thing that builds one: `noNumber` / `noTeam` are only ever stored as `true`.
+ * thing that builds one: `noNumber` / `noTeam` / `prospect` are only ever
+ * stored as `true`.
+ *
+ * NEO-591 — `prospect`: the team cell said "Prospect" / "Prospect (X)", so the
+ * card is born with the Prospect Card attribute. `prospectTeams` holds each X
+ * of a "Prospect (X)" cell, OUT of `teams`: X must be a minor-league or
+ * college team, which the fetch settles (`convex/lib/prospectTeam.ts`) and
+ * which is never written as a team string until it has been.
  */
 export const publishedChecklistStoredRowValidator = v.object({
   number: v.string(),
@@ -1292,6 +1299,8 @@ export const publishedChecklistStoredRowValidator = v.object({
   teams: v.array(v.string()),
   noNumber: v.optional(v.boolean()),
   noTeam: v.optional(v.boolean()),
+  prospect: v.optional(v.boolean()),
+  prospectTeams: v.optional(v.array(v.string())),
 });
 /** NEO-496 — a publisher checklist's life: uploading → ready → retired, or uploading → retired. */
 export const publishedChecklistStatusValidator = v.union(
@@ -1320,9 +1329,20 @@ export const checklistConflictSidesValidator = v.object({
   marketplace: v.array(v.string()),
   checklist: v.array(v.string()),
 });
+/**
+ * NEO-591 — the teams side of a conflict, plus `prospectClaim`: the checklist
+ * side is a "Prospect (X)" claim. `checklist` holds the settled X teams (full
+ * names) and is EMPTY when X is held for the operator, whose X the card
+ * carries as `prospectTeam`. Never a team string written for a held X.
+ */
+export const checklistTeamConflictSidesValidator = v.object({
+  marketplace: v.array(v.string()),
+  checklist: v.array(v.string()),
+  prospectClaim: v.optional(v.literal(true)),
+});
 export const checklistConflictValidator = v.object({
   players: v.optional(checklistConflictSidesValidator),
-  teams: v.optional(checklistConflictSidesValidator),
+  teams: v.optional(checklistTeamConflictSidesValidator),
 });
 
 /**
@@ -1330,6 +1350,11 @@ export const checklistConflictValidator = v.object({
  * server, in the shape Match Cards lists a row (`ChecklistLinkRow`) plus the
  * name the row has as a card of its own (`checklistOnlyCard`). `teams` are
  * resolved like a checklist-only card's; `noTeam` is the row's "No Team".
+ *
+ * NEO-591 — `prospect` is the row's Prospect claim; `prospectTeams` holds only
+ * the X teams HELD for the operator (a settled X is already in `teams` as its
+ * full name). Together with `teams` they rebuild the row exactly, so an
+ * unlinked row that is linked again still carries its claim.
  */
 export const checklistPairedRowValidator = v.object({
   number: v.string(),
@@ -1337,6 +1362,8 @@ export const checklistPairedRowValidator = v.object({
   teams: v.array(v.string()),
   noNumber: v.optional(v.literal(true)),
   noTeam: v.optional(v.literal(true)),
+  prospect: v.optional(v.literal(true)),
+  prospectTeams: v.optional(v.array(v.string())),
   cardName: v.string(),
 });
 
@@ -3841,6 +3868,15 @@ export default defineSchema({
     attributes: v.optional(v.array(v.string())),
     isRookie: v.optional(v.boolean()),
     isRelic: v.optional(v.boolean()),
+    // NEO-591 — the publisher checklist's team cell said "Prospect" /
+    // "Prospect (X)": the card is born with the Prospect Card attribute
+    // (`features.isProspect`). Follows `isRookie`'s route to NEW cards only.
+    isProspect: v.optional(v.boolean()),
+    // NEO-591 — X of a "Prospect (X)" cell the fetch could not settle to
+    // exactly one minor-league or college team. HELD for the operator: never
+    // written as a team string (`teams` is empty), shown as the card's
+    // listed-name hint (`rawTeamName`). Several held X are joined with " / ".
+    prospectTeam: v.optional(v.string()),
     printRun: v.optional(v.number()),
     autographType: v.optional(v.string()),
     cardVariation: v.optional(v.string()),

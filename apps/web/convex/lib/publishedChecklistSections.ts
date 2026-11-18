@@ -12,6 +12,10 @@
  * with `getConvexSize` (the size Convex itself counts; it runs in the browser
  * too, so the client's batcher can use `storedRowBytes`).
  *
+ * (NEO-591: `prospectTeams` shares the 8-team cap with `teams`, so a row's
+ * team strings never exceed it, and `getConvexSize` counts the two new fields
+ * as it counts any other: `storedRowBytes` needs no per-field arithmetic.)
+ *
  * ## Client-safe
  *
  * Imports only `convex/values` at runtime (the server helpers take their

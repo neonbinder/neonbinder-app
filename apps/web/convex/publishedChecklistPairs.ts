@@ -37,6 +37,7 @@ import {
   checkPublishedChecklist,
   publishedChecklistRowValidator,
   resolveChecklistCommaTexts,
+  resolveChecklistProspectTexts,
 } from "./selectorOptions";
 
 /**
@@ -45,7 +46,13 @@ import {
  *  - `teams` + `teamLookup: "checklist"` — only when the row answers the
  *    team (it names one, it resolves, and the card names no different one);
  *  - `checklistConflict` — only when the card and the row disagree, the
- *    checklist side resolved as the card would carry it.
+ *    checklist side resolved as the card would carry it;
+ *  - NEO-591: `isProspect` — the row says Prospect; `prospectTeam` — the X
+ *    of "Prospect (X)" the server could not settle to one minor-league or
+ *    college team (never in `teams`, which is empty then), with
+ *    `rawTeamName` the same text when the row ANSWERED the card (the commit's
+ *    "Listed as:" hint). `prospectTeam` also rides a team conflict, where the
+ *    card keeps the marketplace's teams until the operator picks.
  * An empty object means the row changes nothing on that card (a row naming
  * no team, a refused team text, players and teams that agree).
  */
@@ -54,6 +61,9 @@ const pairAnswerValidator = v.object({
   teams: v.optional(v.array(v.string())),
   teamLookup: v.optional(v.literal("checklist")),
   checklistConflict: v.optional(checklistConflictValidator),
+  isProspect: v.optional(v.literal(true)),
+  prospectTeam: v.optional(v.string()),
+  rawTeamName: v.optional(v.string()),
 });
 
 /** A card's names as the operator sees them, checked to a card's caps. */
@@ -144,10 +154,15 @@ export const applyPublishedChecklistPairs = action({
       args.selectorOptionId,
       rows.flatMap((r) => r.teams),
     );
+    const resolveProspect = await resolveChecklistProspectTexts(
+      ctx,
+      args.selectorOptionId,
+      rows.flatMap((r) => r.prospectTeams ?? []),
+    );
     let answered = 0;
     let conflicts = 0;
     const answers = cards.map((card, i) => {
-      const applied = applyChecklistRow(card, rows[i], resolveText);
+      const applied = applyChecklistRow(card, rows[i], resolveText, resolveProspect);
       if (applied.answered) answered++;
       if (applied.conflict) conflicts++;
       return {
@@ -156,6 +171,11 @@ export const applyPublishedChecklistPairs = action({
           ? { teams: applied.teams, teamLookup: "checklist" as const }
           : {}),
         ...(applied.conflict ? { checklistConflict: applied.conflict } : {}),
+        ...(applied.isProspect ? { isProspect: true as const } : {}),
+        ...(applied.prospectTeam ? { prospectTeam: applied.prospectTeam } : {}),
+        ...(applied.prospectTeam && applied.answered && applied.teams
+          ? { rawTeamName: applied.prospectTeam }
+          : {}),
       };
     });
     // Counts and timing only — never a name.

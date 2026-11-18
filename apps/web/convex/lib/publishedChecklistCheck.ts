@@ -14,6 +14,8 @@ import { ConvexError, v, type Infer } from "convex/values";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { rowHasNoNumber } from "../../lib/checklists/match-published-checklist";
 import { isNoClaimTeamText, isNoTeamText } from "../../lib/checklists/no-team";
+import { readProspectCell } from "../../lib/checklists/prospect";
+import { normalizeEntityName } from "../../lib/entities/normalize-name";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 import type { publishedChecklistStoredRowValidator } from "../schema";
 
@@ -42,6 +44,13 @@ export const publishedChecklistRowValidator = v.object({
   // string that is exactly "No Team", so a row sent either way reads the
   // same, and refuses a row that says No Team and names a team.
   noTeam: v.optional(v.boolean()),
+  // NEO-591 — the team cell said "Prospect" / "Prospect (X)": the card is a
+  // prospect, and each X is a team to settle at fetch (minor league or
+  // college only), kept out of `teams`. The re-check below also reads a
+  // prospect cell from a lone team string, so a row sent either way reads the
+  // same.
+  prospect: v.optional(v.boolean()),
+  prospectTeams: v.optional(v.array(v.string())),
   // The parser's subset label (a file's "set" / "insert" column). The
   // client chooses rows by it; the fetch never reads it and drops it in
   // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
@@ -86,6 +95,13 @@ const PUBLISHED_CHECKLIST_NUMBER_CHARS = /^[#A-Za-z0-9. -]*$/;
  * the parser's own list) as the row's only team is dropped, the same as a
  * blank cell, so a caller cannot plant a team named "None". Beside another
  * team it is kept as sent, exactly as the parser keeps it.
+ *
+ * NEO-591: a row is a Prospect row (`prospect: true`) when the client flagged
+ * it, sent `prospectTeams`, or its lone team string is a whole prospect cell
+ * (`readProspectCell`). Each X is kept in `prospectTeams`, never in `teams`,
+ * deduped, within a card's team cap together with `teams`. A bare Prospect
+ * (no X, no other team) is a No Team row (`noTeam: true`); a No Team row that
+ * names an X contradicts itself and refuses the whole checklist.
  */
 export function checkPublishedChecklist(
   published: PublishedChecklist | undefined,
@@ -140,10 +156,35 @@ export function checkPublishedChecklist(
     // A no-claim word is dropped only as the whole cell (one string), as the
     // parser reads it; beside a team it is left as it is, like the client.
     const cleaned = clean(row.teams, MAX_CARD_TEAMS, "team");
-    const named = cleaned.length === 1 && isNoClaimTeamText(cleaned[0]) ? [] : cleaned;
+    // NEO-591 — a prospect cell is read only as the whole cell, the lone team
+    // string, exactly as the parser reads it (`readProspectCell`). The
+    // parser's own row carries the claim as flags and leaves no such string.
+    const prospectCell = cleaned.length === 1 ? readProspectCell(cleaned[0]) : null;
+    const cellTeams = prospectCell ? [] : cleaned;
+    const claimedX = [
+      ...clean(row.prospectTeams ?? [], MAX_CARD_TEAMS, "prospect team"),
+      ...(prospectCell?.team ? [prospectCell.team] : []),
+    ].filter((x) => !isNoClaimTeamText(x) && !isNoTeamText(x));
+    // Deduped as a card's teams are (the same folded key), in sent order.
+    const seenX = new Set<string>();
+    const prospectTeams = claimedX.filter((x) => {
+      const key = normalizeEntityName(x);
+      if (seenX.has(key)) return false;
+      seenX.add(key);
+      return true;
+    });
+    const prospect = row.prospect === true || prospectCell !== null || prospectTeams.length > 0;
+    const named = cellTeams.length === 1 && isNoClaimTeamText(cellTeams[0]) ? [] : cellTeams;
     const teams = named.filter((t) => !isNoTeamText(t));
-    const noTeam = row.noTeam === true || teams.length < named.length;
-    if (noTeam && teams.length > 0) {
+    if (teams.length + prospectTeams.length > MAX_CARD_TEAMS) {
+      throw new ConvexError(
+        `${where} names ${teams.length + prospectTeams.length} teams; the limit is ${MAX_CARD_TEAMS}.`,
+      );
+    }
+    // A bare "Prospect" is the No Team claim, unless the row names a team.
+    const bareProspect = prospect && teams.length === 0 && prospectTeams.length === 0;
+    const noTeam = row.noTeam === true || teams.length < named.length || bareProspect;
+    if (noTeam && (teams.length > 0 || prospectTeams.length > 0)) {
       throw new ConvexError(`${where} says No Team and names a team.`);
     }
     return {
@@ -152,6 +193,8 @@ export function checkPublishedChecklist(
       teams,
       ...(rowHasNoNumber({ number, noNumber: row.noNumber }) ? { noNumber: true } : {}),
       ...(noTeam ? { noTeam: true } : {}),
+      ...(prospect ? { prospect: true } : {}),
+      ...(prospectTeams.length > 0 ? { prospectTeams } : {}),
     };
   });
   return { rows };

@@ -58,7 +58,7 @@ export type ChecklistBatch = {
 };
 
 /**
- * A row's size with both flags present: an upper bound on what the server
+ * A row's size with every flag present (the prospect claim as the row has it): an upper bound on what the server
  * stores for it (its re-check only trims strings and may add a flag), so a
  * call planned within the limit is never over it on the server.
  */
@@ -69,6 +69,9 @@ function rowBytes(row: ChecklistSectionRow): number {
     teams: row.teams,
     noNumber: true,
     noTeam: true,
+    // NEO-591: the server stores a prospect claim and its X beside the rest.
+    ...(row.prospect ? { prospect: true as const } : {}),
+    ...(row.prospectTeams ? { prospectTeams: row.prospectTeams } : {}),
   });
 }
 

@@ -78,3 +78,4 @@
 - [Fake code deploys only from main](fake-service-code-deploys-only-from-main.md) — fake capability merges before the PR whose E2E calls it; browser-facing steps go on a /testing SPA route
 - [Set team default: copy-down vs lookup](set-team-default-copy-down-vs-lookup.md) — teamIds copied down + cascaded; NEO-528 defaults looked up; never mix for one attribute
 - [PDF checklist geometry is in pdf.js items](pdf-checklist-geometry-lives-in-pdfjs-items.md) — cell-gap merge hides column splits; one straddling item = overflowed cell; Title Case headings via fontName
+- [Qualified team claims settle before they become strings](qualified-team-claims-settle-before-they-become-strings.md) — commit resolves team strings unrestricted; settle a league-limited claim at fetch with a same-row check, or hold it off `teams`

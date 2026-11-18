@@ -125,6 +125,8 @@ function withoutSubset(row: PublishedChecklistRow): ChecklistSectionRow {
   const out: ChecklistSectionRow = { number: row.number, players: row.players, teams: row.teams };
   if (row.noNumber) out.noNumber = true;
   if (row.noTeam) out.noTeam = true;
+  if (row.prospect) out.prospect = true;
+  if (row.prospectTeams?.length) out.prospectTeams = row.prospectTeams;
   return out;
 }
 

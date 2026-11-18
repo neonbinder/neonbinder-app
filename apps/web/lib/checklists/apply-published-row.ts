@@ -30,8 +30,27 @@
  *     - a text cannot be resolved, or the resolved list passes
  *       `MAX_CARD_TEAMS` (`teams: null`): the checklist says nothing usable
  *       about the team, the card keeps its lookup, and nothing is offered.
+ *
+ * ## Prospect (NEO-591, `prospect.ts`)
+ *
+ *  - A row that says Prospect (`prospect`, or any `prospectTeams`) marks the
+ *    card `isProspect`. That is a claim about the card and rides with every
+ *    outcome below, including a team conflict. A bare "Prospect" is also a
+ *    "No Team" row (`noTeam`) and follows the No Team rules above.
+ *  - Each X of `prospectTeams` is asked of `resolveProspect` (the server's
+ *    `resolveProspectTeams`): a settled X is the full name of the one
+ *    minor-league or college team and joins `teams` like any resolved text;
+ *    anything else, a missing resolver included, is HELD (rule 8: the fetch
+ *    neither fails nor guesses).
+ *  - A held X is never written as a team string. The card is answered by the
+ *    checklist with `teams: []` and `prospectTeam` set to the held X (several
+ *    are joined with " / "): it is not a No Team claim, and the operator
+ *    picks. Against a card that already has a team it is a team conflict with
+ *    an empty checklist side. A settled X against a different team is the
+ *    ordinary conflict. Either conflict carries `prospectClaim`.
  */
 import { MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
+import type { ProspectResolution } from "./prospect";
 import {
   checklistNameKey,
   compareChecklistRow,
@@ -57,6 +76,15 @@ export type AppliedChecklistRow = {
   conflict?: ChecklistConflict;
   /** The card takes `teams` with `teamLookup: "checklist"` and needs no lookup. */
   answered: boolean;
+  /** NEO-591 — the row says Prospect: the card is born with the Prospect Card attribute. */
+  isProspect?: true;
+  /**
+   * NEO-591 — the X of "Prospect (X)" that could not be settled to exactly one
+   * minor-league or college team. Never a team string: `teams` is empty. The
+   * card's "Listed as:" hint; the operator picks the team. Several are joined
+   * with " / ".
+   */
+  prospectTeam?: string;
 };
 
 function sameNames(a: readonly string[], b: readonly string[]): boolean {
@@ -73,10 +101,32 @@ function sameNames(a: readonly string[], b: readonly string[]): boolean {
  */
 export function applyChecklistRow(
   card: Pick<ChecklistCardInput, "players" | "teams" | "team">,
-  row: Pick<ChecklistRowInput, "players" | "teams" | "noTeam">,
+  row: Pick<ChecklistRowInput, "players" | "teams" | "noTeam" | "prospect" | "prospectTeams">,
   resolveText: (text: string) => readonly string[] | null,
+  /** Asked once per X of `row.prospectTeams`; absent or null answers held. */
+  resolveProspect?: (text: string) => ProspectResolution | null,
 ): AppliedChecklistRow {
-  const compared = compareChecklistRow(card, row);
+  // NEO-591 — settle each X first: a settled one is a team name like any
+  // other, a held one is never a team string.
+  const settledX: string[] = [];
+  const heldX: string[] = [];
+  for (const raw of row.prospectTeams ?? []) {
+    const x = raw.trim();
+    if (!x) continue;
+    const answer = resolveProspect?.(x) ?? null;
+    if (answer?.kind === "team") settledX.push(answer.name);
+    else if (!heldX.includes(x)) heldX.push(x);
+  }
+  const isProspect = row.prospect === true || (row.prospectTeams ?? []).some((x) => x.trim());
+  const held = heldX.length > 0;
+  const prospectClaim = settledX.length > 0 || held;
+
+  const compared = compareChecklistRow(card, {
+    players: row.players,
+    // A held X is not a team: nothing of it is compared as one.
+    teams: held ? [] : [...row.teams, ...settledX],
+    noTeam: row.noTeam,
+  });
 
   let teams: string[] | null = [];
   for (const raw of row.teams) {
@@ -89,10 +139,14 @@ export function applyChecklistRow(
     }
     teams.push(...names);
   }
+  if (teams && !held) teams.push(...settledX);
   if (teams) {
     teams = [...new Set(teams)];
     if (teams.length > MAX_CARD_TEAMS) teams = null;
   }
+  // A held X: the checklist names a team nothing may write. Nothing else it
+  // names is written either, so the operator sees one honest question.
+  if (held) teams = [];
 
   // The disagreement as the operator will settle it: the checklist side is the
   // RESOLVED names. Resolved, they may turn out to be the card's own teams (no
@@ -105,10 +159,25 @@ export function applyChecklistRow(
     : undefined;
   if (conflict?.teams) {
     const marketplace = conflict.teams.marketplace;
-    if (!teams || sameNames(teams, marketplace)) {
+    if (!teams || (!held && sameNames(teams, marketplace))) {
       delete conflict.teams;
     } else {
-      conflict.teams = { marketplace, checklist: teams };
+      conflict.teams = {
+        marketplace,
+        checklist: teams,
+        ...(prospectClaim ? { prospectClaim: true as const } : {}),
+      };
+    }
+  }
+  if (held && !conflict?.teams) {
+    // The held claim disagrees with any team the card already has.
+    const listed = (card.teams ?? []).map((t) => t.trim()).filter(Boolean);
+    const cardTeams = listed.length > 0 ? listed : card.team?.trim() ? [card.team.trim()] : [];
+    if (cardTeams.length > 0) {
+      conflict = {
+        ...(conflict ?? {}),
+        teams: { marketplace: cardTeams, checklist: [], prospectClaim: true },
+      };
     }
   }
   if (conflict && !conflict.players && !conflict.teams) conflict = undefined;
@@ -117,12 +186,14 @@ export function applyChecklistRow(
   // makes no claim unless it says "No Team" (NEO-489: answered with `[]`); a
   // refused list says nothing usable.
   const answered =
-    teams !== null && (teams.length > 0 || row.noTeam === true) && !conflict?.teams;
+    teams !== null && (teams.length > 0 || row.noTeam === true || held) && !conflict?.teams;
 
   return {
     ...(compared.fillPlayers ? { fillPlayers: compared.fillPlayers } : {}),
     teams,
     ...(conflict ? { conflict } : {}),
     answered,
+    ...(isProspect ? { isProspect: true as const } : {}),
+    ...(held ? { prospectTeam: heldX.join(" / ") } : {}),
   };
 }

@@ -91,6 +91,20 @@
 
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
 import { isNoClaimTeamText, isNoTeamText, NO_TEAM_AND_A_TEAM } from "./no-team";
+import { readProspectCell } from "./prospect";
+import {
+  columnGroups,
+  fontHeading,
+  modeFont,
+  NamePairs,
+  PDF_MAX_LINE_ITEMS,
+  runsByGroup,
+  slotGroupRuns,
+  soleFont,
+  type ColumnGroup,
+  type HeaderCell,
+} from "./pdf-column-groups";
+import { lineSize, runCells, runsFromCells, joinRuns, type PdfTextRun } from "./pdf-text-runs";
 
 export type PublishedChecklistRow = {
   number: string;
@@ -106,6 +120,18 @@ export type PublishedChecklistRow = {
    * cell). `teams` is then empty. A claim, never a team name (NEO-489).
    */
   noTeam?: true;
+  /**
+   * The team cell said "Prospect" or "Prospect (X)" (NEO-591,
+   * `prospect.ts`): the card is a prospect. A claim about the card, never a
+   * team name. A bare "Prospect" with no other team also sets `noTeam`.
+   */
+  prospect?: true;
+  /**
+   * The X of each "Prospect (X)" cell, kept OUT of `teams`: X must be a
+   * minor-league or college team, which only the server can check, so it
+   * settles X at fetch and holds what it cannot settle for the operator.
+   */
+  prospectTeams?: string[];
   /**
    * The subset the row belongs to: its "card set", "set", "subset" or
    * "insert" cell when the file has such a column and the cell is not
@@ -176,7 +202,7 @@ export const PUBLISHED_CHECKLIST_MAX_LINE = 2000;
  */
 export const PUBLISHED_CHECKLIST_MAX_TEXT = 2 * 1024 * 1024;
 
-type Column = "number" | "players" | "teams" | "subset";
+type Column = "number" | "players" | "teams" | "subset" | "lastName" | "firstName";
 
 /** The words a header cell may use for each column, compared folded. */
 const HEADER_SPELLINGS: Record<Column, readonly string[]> = {
@@ -222,6 +248,9 @@ const HEADER_SPELLINGS: Record<Column, readonly string[]> = {
     "club",
     "franchise",
   ],
+  // NEO-591: a publisher that prints the surname and the given name apart.
+  lastName: ["last name", "last", "surname", "lastname", "last_name", "family name"],
+  firstName: ["first name", "first", "given name", "firstname", "first_name", "forename"],
   subset: [
     "card set",
     "set",
@@ -245,10 +274,23 @@ function foldHeader(cell: string): string {
 
 function columnOf(header: string): Column | null {
   const folded = foldHeader(header);
-  for (const key of ["number", "players", "teams", "subset"] as const) {
+  for (const key of ["number", "players", "teams", "subset", "lastName", "firstName"] as const) {
     if (HEADER_SPELLINGS[key].includes(folded)) return key;
   }
   return null;
+}
+
+/**
+ * Whether a row of header columns is a header row. A number column with a
+ * player, a team or a Last/First pair; or, with no number column, only the
+ * pair (NEO-591): the cards are then unnumbered ("NNO") and the matcher pairs
+ * them by player.
+ */
+function qualifiesAsHeader(columns: ReadonlyArray<Column | null>): boolean {
+  const has = (column: Column) => columns.includes(column);
+  const pair = has("lastName") && has("firstName");
+  if (has("number")) return has("players") || has("teams") || pair;
+  return pair;
 }
 
 /** One whitespace character, as `String.prototype.trim` counts it. */
@@ -367,9 +409,13 @@ function dropTrademarks(text: string): string {
   return text.replace(/[®™]/g, "");
 }
 
-/** A cell or line part as a name list reads it: notes, markers and ®/™ gone. */
-function cleanNamePart(text: string): string {
-  return dropTrademarks(dropMarkers(dropBracketed(text)));
+/**
+ * A cell or line part as a name list reads it: notes, markers and ®/™ gone.
+ * With `keepBrackets` the bracketed text stays: a team printed "New York (A)"
+ * or "Los Angeles (N)" says which club it is by its brackets (NEO-591).
+ */
+function cleanNamePart(text: string, keepBrackets = false): string {
+  return dropTrademarks(dropMarkers(keepBrackets ? text : dropBracketed(text)));
 }
 
 /** Player names that are the card's subject, not a person. */
@@ -405,14 +451,28 @@ function playersFrom(cell: string): string[] {
  * `MAX_CARD_TEAMS` (enough for `overLimit` to skip the row) and never holds
  * "No Team": that is reported as `noTeam` instead.
  */
-type TeamsRead = { teams: string[]; noTeam: boolean };
+type TeamsRead = {
+  teams: string[];
+  noTeam: boolean;
+  /** The cell was a "Prospect" / "Prospect (X)" claim (`prospect.ts`). */
+  prospect: boolean;
+  /** The X of "Prospect (X)", at most one per cell; never in `teams`. */
+  prospectTeams: string[];
+};
 
-function teamsFrom(cell: string): TeamsRead {
+function teamsFrom(cell: string, keepBrackets = false, readProspect = true): TeamsRead {
+  if (readProspect) {
+    const prospect = readProspectCell(cell);
+    if (prospect !== null) {
+      const x = prospect.team === null ? "" : cleanNamePart(prospect.team, true).replace(/\s+/g, " ").trim();
+      return { teams: [], noTeam: false, prospect: true, prospectTeams: x === "" ? [] : [x] };
+    }
+  }
   // "None", "N/A", "No team listed", "-": no claim, the same as blank (D2).
-  if (isNoClaimTeamText(cell)) return { teams: [], noTeam: false };
+  if (isNoClaimTeamText(cell)) return { teams: [], noTeam: false, prospect: false, prospectTeams: [] };
   let noTeam = false;
   const teams = splitNames(
-    cleanNamePart(cell),
+    cleanNamePart(cell, keepBrackets),
     false,
     (name) => {
       if (!isNoTeamText(name)) return true;
@@ -421,7 +481,41 @@ function teamsFrom(cell: string): TeamsRead {
     },
     MAX_CARD_TEAMS,
   );
-  return { teams, noTeam };
+  return { teams, noTeam, prospect: false, prospectTeams: [] };
+}
+
+/**
+ * The team fields a row carries, from what its team cells said. A bare
+ * "Prospect" is the card showing no team, so it also makes the No Team claim
+ * unless the row names another team (NEO-591). `conflict` is "No Team" beside
+ * a team the card shows, which contradicts itself.
+ */
+function teamClaims(
+  teams: readonly string[],
+  noTeam: boolean,
+  prospect: boolean,
+  prospectTeams: readonly string[],
+): { noTeam: boolean; conflict: boolean; fields: Pick<PublishedChecklistRow, "prospect" | "prospectTeams"> } {
+  const conflict = noTeam && (teams.length > 0 || prospectTeams.length > 0);
+  return {
+    noTeam: noTeam || (prospect && teams.length === 0 && prospectTeams.length === 0),
+    conflict,
+    fields: {
+      ...(prospect ? { prospect: true as const } : {}),
+      ...(prospectTeams.length > 0 ? { prospectTeams: [...prospectTeams] } : {}),
+    },
+  };
+}
+
+/**
+ * A person from a Last Name cell and a First Name cell: "Luis" + "De La
+ * Torre" → "Luis De La Torre". Each part is cleaned but never split on "/",
+ * "&" or "and": a surname is one thing.
+ */
+function personName(first: string, last: string): string {
+  const part = (text: string) =>
+    trimEndSpacesAndCommas(cleanNamePart(text).replace(/\s+/g, " ").replace(/^[\s,]+/, ""));
+  return `${part(first)} ${part(last)}`.trim();
 }
 
 /** The subject of a player cell or part, for the "not a person" test. */
@@ -511,11 +605,16 @@ function fourDigitYear(year: string | number | null | undefined): string | null 
 function overLimit(row: PublishedChecklistRow): string | null {
   if (row.number.length > PUBLISHED_CHECKLIST_MAX_NAME) return "Card number is too long";
   if (row.players.length > MAX_CARD_PLAYERS) return `More than ${MAX_CARD_PLAYERS} players on one card`;
-  if (row.teams.length > MAX_CARD_TEAMS) return `More than ${MAX_CARD_TEAMS} teams on one card`;
+  if (row.teams.length + (row.prospectTeams?.length ?? 0) > MAX_CARD_TEAMS) {
+    return `More than ${MAX_CARD_TEAMS} teams on one card`;
+  }
   if (row.players.some((p) => p.length > PUBLISHED_CHECKLIST_MAX_NAME)) {
     return "A player name is too long";
   }
-  if (row.teams.some((t) => t.length > PUBLISHED_CHECKLIST_MAX_NAME)) {
+  if (
+    row.teams.some((t) => t.length > PUBLISHED_CHECKLIST_MAX_NAME) ||
+    (row.prospectTeams ?? []).some((t) => t.length > PUBLISHED_CHECKLIST_MAX_NAME)
+  ) {
     return "A team name is too long";
   }
   if (row.subset !== undefined && row.subset.length > PUBLISHED_CHECKLIST_MAX_NAME) {
@@ -574,6 +673,20 @@ function splitPlayerAndTeam(rest: string): { playerPart: string; teamPart: strin
 }
 
 /**
+ * The raw team segment of a line when it is a prospect claim: the text after
+ * the last separator `splitPlayerAndTeam` uses (a spaced dash, a run of
+ * dots, ", ") that starts with "Prospect", brackets intact. Null when there
+ * is none; `readProspectCell` still decides whether the whole segment is a
+ * claim ("Prospect (Oklahoma) (Future Stars)" is not).
+ */
+function rawProspectSegment(rest: string): string | null {
+  const text = rest.replace(/\s+/g, " ").trim();
+  const match = /(?:^|[ ][-–—][ ]|,[ ]| ?(?:\.{3,}|…+) ?)(prospect\b[\s\S]*)$/i.exec(text);
+  const segment = match?.[1] ?? null;
+  return segment !== null && readProspectCell(segment) !== null ? segment : null;
+}
+
+/**
  * The published line format, one line:
  * `<number> <players>[ - <teams>][ (note)]`.
  */
@@ -598,12 +711,20 @@ function parseLine(
     playerPart = "";
   }
   const players = playersFrom(playerPart);
-  const { teams, noTeam } = teamsFrom(teamPart);
-  if (noTeam && teams.length > 0) return { reason: NO_TEAM_AND_A_TEAM };
+  // A line's brackets are notes ("(Future Stars)") and are dropped before the
+  // team is split off, so "Prospect (X)" reaches `teamPart` as a bare
+  // "Prospect". The claim is read from the raw team segment instead, and only
+  // when that whole segment is "Prospect" or "Prospect (X)".
+  const prospectSegment = teamPart.trim().toLowerCase() === "prospect" ? rawProspectSegment(match[2]) : null;
+  const read =
+    prospectSegment !== null ? teamsFrom(prospectSegment) : teamsFrom(teamPart, false, false);
+  const { teams } = read;
+  const claims = teamClaims(teams, read.noTeam, read.prospect, read.prospectTeams);
+  if (claims.conflict) return { reason: NO_TEAM_AND_A_TEAM };
   if (
     players.length === 0 &&
     teams.length === 0 &&
-    !noTeam &&
+    !claims.noTeam &&
     !isNotAPerson(subjectOf(playerPart))
   ) {
     return { reason: "No player or team after the number" };
@@ -613,7 +734,8 @@ function parseLine(
     players,
     teams,
     ...(noNumber ? { noNumber: true as const } : {}),
-    ...(noTeam ? { noTeam: true as const } : {}),
+    ...(claims.noTeam ? { noTeam: true as const } : {}),
+    ...claims.fields,
   };
 }
 
@@ -623,7 +745,7 @@ function detectDelimited(firstLine: string): Delimited | null {
   for (const delimiter of ["\t", ","] as const) {
     if (!firstLine.includes(delimiter)) continue;
     const columns = splitDelimited(firstLine, delimiter).map(columnOf);
-    if (columns.includes("number") && (columns.includes("players") || columns.includes("teams"))) {
+    if (qualifiesAsHeader(columns)) {
       return { delimiter, columns, header: true };
     }
   }
@@ -819,6 +941,18 @@ class SectionTracker {
     else this.heading = clean;
   }
 
+  /**
+   * A new side-by-side block of a page begins (NEO-591): nothing above it
+   * carries over, but the names already used stay used, so two blocks that
+   * share a heading are still told apart.
+   */
+  startBlock(): void {
+    this.heading = null;
+    this.assigned = null;
+    this.headingRows = 0;
+    this.group = null;
+  }
+
   /** The subset of a row about to be kept; `cell` is its subset cell ("" when none). */
   subsetFor(cell: string): string | undefined {
     this.headingRows++;
@@ -865,13 +999,27 @@ function rowFromColumns(
   cells: readonly string[],
   setYear: string | null,
   numberCells: "column" | "free" = "column",
+  options: { keepBrackets?: boolean } = {},
 ): CellsRead {
   let number: string | null = null;
   let noNumber = false;
+  const lastNames: string[] = [];
+  const firstNames: string[] = [];
+  // NEO-591: Last/First columns with no number column: unnumbered cards.
+  if (
+    !columns.includes("number") &&
+    columns.includes("lastName") &&
+    columns.includes("firstName")
+  ) {
+    number = NO_NUMBER;
+    noNumber = true;
+  }
   let numberCell = "";
   let subset = "";
   let notAPerson = false;
   let noTeam = false;
+  let prospect = false;
+  const prospectTeams: string[] = [];
   const players: string[] = [];
   const teams: string[] = [];
   columns.forEach((column, c) => {
@@ -893,21 +1041,34 @@ function rowFromColumns(
       if (named.length === 0 && cell.trim() !== "" && isNotAPerson(subjectOf(cell))) {
         notAPerson = true;
       }
+    } else if (column === "lastName") {
+      lastNames.push(cell);
+    } else if (column === "firstName") {
+      firstNames.push(cell);
     } else if (column === "teams") {
-      const read = teamsFrom(cell);
+      const read = teamsFrom(cell, options.keepBrackets);
       teams.push(...read.teams);
       if (read.noTeam) noTeam = true;
+      if (read.prospect) prospect = true;
+      prospectTeams.push(...read.prospectTeams);
     } else if (column === "subset" && subset === "") {
       subset = cell.replace(/\s+/g, " ").trim();
     }
   });
+  for (let i = 0; i < Math.max(lastNames.length, firstNames.length); i++) {
+    const name = personName(firstNames[i] ?? "", lastNames[i] ?? "");
+    if (name === "") continue;
+    if (isNotAPerson(name)) notAPerson = true;
+    else players.push(name);
+  }
   if (numberCell !== "" && readsAsTitle(numberCell, setYear)) return { reason: LOOKS_LIKE_A_TITLE };
   if (!number) {
     return { reason: numberCell ? "Card number isn't one we can read" : "No card number" };
   }
   // "No Team" beside a team, in one cell or across two team columns.
-  if (noTeam && teams.length > 0) return { reason: NO_TEAM_AND_A_TEAM };
-  if (players.length === 0 && teams.length === 0 && !notAPerson && !noTeam) {
+  const claims = teamClaims(teams, noTeam, prospect, prospectTeams);
+  if (claims.conflict) return { reason: NO_TEAM_AND_A_TEAM };
+  if (players.length === 0 && teams.length === 0 && !notAPerson && !claims.noTeam) {
     return { reason: "No player or team on this line" };
   }
   return {
@@ -916,7 +1077,8 @@ function rowFromColumns(
       players,
       teams,
       ...(noNumber ? { noNumber: true as const } : {}),
-      ...(noTeam ? { noTeam: true as const } : {}),
+      ...(claims.noTeam ? { noTeam: true as const } : {}),
+      ...claims.fields,
     },
     subsetCell: subset,
   };
@@ -1115,6 +1277,12 @@ export type ChecklistCellRecord = {
   cells: readonly string[];
   /** For a PDF, the x (pt) each cell starts at; lines cells up with the columns. */
   xs?: readonly number[];
+  /**
+   * For a PDF, the text runs the cells were merged from. Present only when
+   * they say more than the cells do (`hidesAColumnGap`); a header of Last
+   * Name / First Name columns is then read from them.
+   */
+  items?: readonly PdfTextRun[];
   /** For a PDF, the page. */
   page?: number;
   /** For a workbook of several sheets, the sheet's name. */
@@ -1134,9 +1302,18 @@ export type ChecklistCellsInput = {
 /** The header columns of a row of cells, or null when the row is not a header. */
 function headerColumns(cells: readonly string[]): Array<Column | null> | null {
   const columns = cells.map((cell) => (cell.trim() === "" ? null : columnOf(cell)));
-  return columns.includes("number") && (columns.includes("players") || columns.includes("teams"))
-    ? columns
-    : null;
+  return qualifiesAsHeader(columns) ? columns : null;
+}
+
+/**
+ * Whether a line is a header row naming Last Name and First Name columns.
+ * `read-checklist-file.ts` hands a PDF's text runs to the parser only for a
+ * document with such a header (or a merged gap, `hidesAColumnGap`), since only
+ * that layout is read from them.
+ */
+export function isLastFirstHeader(cells: readonly string[]): boolean {
+  const columns = headerColumns(cells);
+  return columns !== null && columns.includes("lastName") && columns.includes("firstName");
 }
 
 function median(values: number[]): number | null {
@@ -1266,6 +1443,19 @@ function readCellsRun(
   }
   if (sheet !== undefined) out.sections.startSheet(sheet, columns?.includes("subset") ?? false);
   const headerXs = headerAt >= 0 ? records[headerAt].xs : undefined;
+  // NEO-591: a PDF whose header names Last Name and First Name is read from
+  // its text runs, group by group, not from the merged cells.
+  if (
+    format === "pdf" &&
+    columns &&
+    columns.includes("lastName") &&
+    columns.includes("firstName") &&
+    headerXs &&
+    headerXs.length === records[headerAt].cells.length
+  ) {
+    readNamedColumns(records, headerAt, columns, setYear, out);
+    return columns;
+  }
   const anchorsFor = format === "pdf" && !columns ? pdfColumnAnchors(records) : null;
 
   records.forEach((record, i) => {
@@ -1308,6 +1498,233 @@ function readCellsRun(
     else out.keep(record.line, text, read.row, read.subsetCell, atOf(record));
   });
   return columns;
+}
+
+/** Said for a line that repeats the column headings. */
+export const COLUMN_HEADINGS_AGAIN = "Column headings again";
+/** Said for a section line that names no player. */
+const NO_PLAYER_ON_LINE = "No player on this line";
+
+/** A heading's name as stored: trademarks gone, spacing collapsed. */
+function cleanHeadingName(text: string): string {
+  return dropTrademarks(text).replace(/\s+/g, " ").trim();
+}
+
+/**
+ * A heading set apart by its type (not by capitals): it must be a name, never
+ * a card number, a count, the set's year or a season.
+ */
+function fontHeadingName(text: string, setYear: string | null): string | null {
+  const name = cleanHeadingName(text);
+  if (name.length === 0 || name.length > PUBLISHED_CHECKLIST_MAX_NAME) return null;
+  const first = /^\s*(\S+)/.exec(name)?.[1] ?? "";
+  if (readsAsTitle(first, setYear)) return null;
+  if (isNno(name) || cleanNumber(name) !== null || COUNT_LINE.test(name)) return null;
+  if (cleanNamePart(name).trim() === "") return null;
+  return name;
+}
+
+/**
+ * Read a PDF whose header row names Last Name and First Name columns
+ * (NEO-591). The text runs, not the reader's cells, say which column a word
+ * is in: a long surname can sit within the cell gap of the first name beside
+ * it and be merged into one cell, yet the run still starts at its column.
+ *
+ *  - A header that repeats whole (Last, First, Last, First) is side-by-side
+ *    groups; each is read from top to bottom across the pages, one after the
+ *    other, as its own block of sections.
+ *  - A run past the group's last header cell is the team column.
+ *  - The line right above the header holds each group's heading, by capitals
+ *    or by type (the header's font, not the data's). A heading by type
+ *    further down, alone in its group's columns, starts a section with no
+ *    column headings: each cell is one player ("Dual Autographs").
+ *  - A name one run printed across two columns is split by the pair the file
+ *    prints split elsewhere, when exactly one does (`NamePairs`).
+ *  - The player is first name then last name; the cards carry no number
+ *    ("NNO"); a team keeps its brackets ("New York (A)").
+ */
+function readNamedColumns(
+  records: readonly ChecklistCellRecord[],
+  headerAt: number,
+  columns: ReadonlyArray<Column | null>,
+  setYear: string | null,
+  out: ParseCollector,
+): void {
+  const atOf = (record: ChecklistCellRecord): LineAt => ({
+    ...(record.page !== undefined ? { page: record.page } : {}),
+    ...(record.sheet !== undefined ? { sheet: record.sheet } : {}),
+  });
+  const textOf = (record: ChecklistCellRecord) =>
+    clip(record.cells.filter((c) => c.trim() !== "").join(" | "));
+  const PSEUDO_SIZE = 10;
+
+  const runsCache = new Map<number, PdfTextRun[]>();
+  const runsOf = (i: number): PdfTextRun[] => {
+    let runs = runsCache.get(i);
+    if (!runs) {
+      const record = records[i];
+      runs =
+        record.items && record.items.length > 0 && record.items.length <= PDF_MAX_LINE_ITEMS
+          ? [...record.items]
+          : runsFromCells(record.cells, record.xs ?? [], PSEUDO_SIZE);
+      runsCache.set(i, runs);
+    }
+    return runs;
+  };
+
+  const header = records[headerAt];
+  const headerRuns = runsOf(headerAt);
+  const headerSize = lineSize(headerRuns) || PSEUDO_SIZE;
+  const headerCells: HeaderCell[] = header.cells.map((_, k) => {
+    const x = header.xs![k];
+    const next = header.xs![k + 1] ?? Infinity;
+    let end = x;
+    for (const run of headerRuns) if (run.x >= x - 0.15 && run.x < next - 0.15) end = Math.max(end, run.end);
+    return { x, end };
+  });
+  const groups: ColumnGroup[] = columnGroups(columns, headerCells, {
+    pair: ["lastName", "firstName"],
+    team: "teams",
+    slack: headerSize * 1.5,
+  });
+  const headerFont = soleFont(headerRuns);
+
+  // Lines after the header that repeat it.
+  const again = new Set<number>();
+  for (let i = headerAt + 1; i < records.length; i++) {
+    if (headerColumns(records[i].cells) !== null) again.add(i);
+  }
+  const dataFont = modeFont(
+    (function* () {
+      for (let i = headerAt + 1; i < records.length; i++) if (!again.has(i)) yield runsOf(i);
+    })(),
+  );
+  const fonts = { headerFont, dataFont, headerSize };
+
+  const byGroupCache = new Map<number, PdfTextRun[][]>();
+  const groupRuns = (i: number): PdfTextRun[][] => {
+    let by = byGroupCache.get(i);
+    if (!by) {
+      by = runsByGroup(runsOf(i), groups);
+      byGroupCache.set(i, by);
+    }
+    return by;
+  };
+
+  /** A group's heading on a line: by type, or (above the header, or with no fonts to go by) by capitals. */
+  const headingIn = (runs: readonly PdfTextRun[], aboveHeader: boolean): string | null => {
+    if (runs.length === 0) return null;
+    const byType = fontHeading(runs, fonts);
+    if (byType !== null) return fontHeadingName(byType, setYear);
+    if (!aboveHeader && (headerFont !== undefined || dataFont !== undefined)) return null;
+    const text = joinRuns(runs, lineSize(runs));
+    const caps = headingText([text]);
+    if (caps === null) return null;
+    const first = /^\s*(\S+)/.exec(caps)?.[1] ?? "";
+    return readsAsTitle(first, setYear) ? null : caps;
+  };
+
+  // The line right above the header holds the groups' headings.
+  const headingLine = headerAt - 1;
+  const lineHeadings: Array<string | null> =
+    headingLine >= 0
+      ? groupRuns(headingLine).map((runs) => headingIn(runs, true))
+      : groups.map(() => null);
+  const headingLineUsed = lineHeadings.some((h) => h !== null);
+
+  type Event =
+    | { kind: "heading"; name: string }
+    | { kind: "headed"; i: number; slots: string[] }
+    | { kind: "bare"; i: number; runs: PdfTextRun[] };
+  const walk = (g: number, visit: (event: Event) => void): void => {
+    const heading = lineHeadings[g];
+    if (heading) visit({ kind: "heading", name: heading });
+    let bare = false;
+    for (let i = headerAt + 1; i < records.length; i++) {
+      if (again.has(i)) {
+        bare = false;
+        continue;
+      }
+      const runs = groupRuns(i)[g];
+      if (runs.length === 0) continue;
+      const name = headingIn(runs, false);
+      if (name !== null) {
+        visit({ kind: "heading", name });
+        bare = true;
+      } else if (bare) {
+        visit({ kind: "bare", i, runs });
+      } else {
+        visit({ kind: "headed", i, slots: slotGroupRuns(runs, groups[g], headerCells) });
+      }
+    }
+  };
+
+  const slotOf = (g: number, kind: Column) => groups[g].columns.findIndex((c) => columns[c] === kind);
+
+  // Pass one: the pairs the file prints split across their own columns.
+  const pairs = new NamePairs();
+  groups.forEach((_, g) => {
+    const last = slotOf(g, "lastName");
+    const first = slotOf(g, "firstName");
+    if (last < 0 || first < 0) return;
+    walk(g, (event) => {
+      if (event.kind === "headed") pairs.add(event.slots[last], event.slots[first]);
+    });
+  });
+
+  // Lines above the header: the heading line was read as headings, the rest are skipped.
+  for (let i = 0; i < headerAt; i++) {
+    if (i === headingLine && headingLineUsed) continue;
+    out.skip(records[i].line, textOf(records[i]), ABOVE_THE_HEADER, atOf(records[i]));
+  }
+  for (const i of again) out.skip(records[i].line, textOf(records[i]), COLUMN_HEADINGS_AGAIN, atOf(records[i]));
+
+  // Pass two: each group in turn.
+  groups.forEach((group, g) => {
+    out.sections.startBlock();
+    const last = slotOf(g, "lastName");
+    const first = slotOf(g, "firstName");
+    const groupColumns: Array<Column | null> = group.columns.map((c) => columns[c]);
+    if (group.teamSlot) groupColumns.push("teams");
+    walk(g, (event) => {
+      if (event.kind === "heading") {
+        out.sections.onHeading(event.name);
+        return;
+      }
+      const record = records[event.i];
+      if (event.kind === "bare") {
+        const players: string[] = [];
+        for (const cell of runCells(event.runs)) {
+          const name = personName("", cell);
+          if (name !== "" && !isNotAPerson(name)) players.push(name);
+        }
+        const text = clip(runCells(event.runs).join(" | "));
+        if (players.length === 0) out.skip(record.line, text, NO_PLAYER_ON_LINE, atOf(record));
+        else {
+          out.keep(
+            record.line,
+            text,
+            { number: NO_NUMBER, players, teams: [], noNumber: true },
+            "",
+            atOf(record),
+          );
+        }
+        return;
+      }
+      const slots = [...event.slots];
+      if (last >= 0 && first >= 0 && slots[last] !== "" && slots[first] === "") {
+        const split = pairs.split(slots[last]);
+        if (split) {
+          slots[last] = split.last;
+          slots[first] = split.first;
+        }
+      }
+      const read = rowFromColumns(groupColumns, slots, setYear, "column", { keepBrackets: true });
+      const text = clip(slots.filter((c) => c !== "").join(" | "));
+      if ("reason" in read) out.skip(record.line, text, read.reason, atOf(record));
+      else out.keep(record.line, text, read.row, read.subsetCell, atOf(record));
+    });
+  });
 }
 
 /** Why a lone cell that is not a heading gives no row. */

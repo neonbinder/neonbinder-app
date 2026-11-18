@@ -375,7 +375,9 @@ import {
 // fetch's line and the save's line (Match Cards recounts with it).
 import { tallyFetchChecklistTeams } from "../lib/checklists/checklist-teams-tally";
 import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
-import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
+import { MAX_CHECKLIST_TEAM_TEXTS, MAX_PROSPECT_TEAMS_PER_QUERY } from "./checklistCandidates";
+// NEO-591 — "Prospect (X)": the Prospect Card attribute, and X settled at fetch.
+import type { ProspectResolution } from "../lib/checklists/prospect";
 import {
   checkPublishedChecklist,
   publishedChecklistValidator,
@@ -4198,6 +4200,8 @@ type CardNameBearing = {
   teamIds?: ReadonlyArray<unknown>;
   // NEO-335 — BSC's unsplit team value, the commit's hint source.
   rawTeamName?: string;
+  // NEO-591 — the X of a "Prospect (X)" the fetch held for the operator.
+  prospectTeam?: string;
 };
 
 /**
@@ -4288,6 +4292,15 @@ function assertCardBatchWithinLimits(
     ) {
       throw new Error(
         `${fnName}: ${where} carries a listed team value of ${card.rawTeamName.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+      );
+    }
+    // NEO-591 — a held X comes back from the client like the raw value does.
+    if (
+      card.prospectTeam !== undefined &&
+      card.prospectTeam.length > MAX_PLAYER_NAME_LENGTH
+    ) {
+      throw new Error(
+        `${fnName}: ${where} carries a held prospect team of ${card.prospectTeam.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
       );
     }
     // NEO-251 — the conflict field is two more rosters, on the same terms.
@@ -15277,10 +15290,16 @@ interface ReconciledCard {
   /** PR 451 (NEO-478) — the publisher checklist disagrees on this card. */
   checklistConflict?: {
     players?: { marketplace: string[]; checklist: string[] };
-    teams?: { marketplace: string[]; checklist: string[] };
+    teams?: { marketplace: string[]; checklist: string[]; prospectClaim?: true };
   };
   /** PR 451 (NEO-478) — the card's team answer came from the checklist. */
   teamLookup?: "checklist";
+  /** NEO-591 — the checklist's Prospect claim (born as the Prospect Card attribute). */
+  isProspect?: boolean;
+  /** NEO-591 — a "Prospect (X)" team the fetch held; never in `teams`. */
+  prospectTeam?: string;
+  /** NEO-335 / NEO-591 — the "Listed as:" hint; a held X is its own. */
+  rawTeamName?: string;
 }
 
 
@@ -15351,15 +15370,26 @@ type ChecklistLink = {
 export function checklistPairedRow(
   row: PublishedChecklistStoredRow,
   resolveText: (text: string) => readonly string[] | null,
+  resolveProspect?: (text: string) => ProspectResolution | null,
 ): Infer<typeof checklistPairedRowValidator> {
-  const own = checklistOnlyCard(row, resolveText);
+  const own = checklistOnlyCard(row, resolveText, resolveProspect);
   const teams = own.teams ?? [];
+  // NEO-591 — the Xs still held, so the row rebuilds exactly when it is
+  // linked again (a settled X is already in `teams` as its full name).
+  const heldX = (row.prospectTeams ?? []).filter(
+    (x) => resolveProspect?.(x.trim())?.kind !== "team",
+  );
   return {
     number: own.cardNumber,
     players: own.players ?? [],
     teams,
     ...(row.noNumber || isNoNumber(own.cardNumber) ? { noNumber: true as const } : {}),
-    ...(own.teamLookup === "checklist" && teams.length === 0 ? { noTeam: true as const } : {}),
+    // A held prospect team is not a No Team claim (its `teams` is empty too).
+    ...(own.teamLookup === "checklist" && teams.length === 0 && own.prospectTeam === undefined
+      ? { noTeam: true as const }
+      : {}),
+    ...(own.isProspect ? { prospect: true as const } : {}),
+    ...(heldX.length > 0 ? { prospectTeams: heldX } : {}),
     cardName: own.cardName,
   };
 }
@@ -15376,8 +15406,9 @@ export function checklistPairedRow(
 export function checklistOnlyCard(
   row: PublishedChecklistStoredRow,
   resolveText: (text: string) => readonly string[] | null,
+  resolveProspect?: (text: string) => ProspectResolution | null,
 ): ReconciledCard {
-  const applied = applyChecklistRow({}, row, resolveText);
+  const applied = applyChecklistRow({}, row, resolveText, resolveProspect);
   const players = [...(applied.fillPlayers ?? row.players)];
   const number = row.number.trim();
   return {
@@ -15386,6 +15417,11 @@ export function checklistOnlyCard(
     ...(players.length > 0 ? { players } : {}),
     ...(applied.answered && applied.teams
       ? { teams: applied.teams, teamLookup: "checklist" as const }
+      : {}),
+    ...(applied.isProspect ? { isProspect: true } : {}),
+    // NEO-591 — a held X is the card's "Listed as:" hint, never a team.
+    ...(applied.prospectTeam
+      ? { prospectTeam: applied.prospectTeam, rawTeamName: applied.prospectTeam }
       : {}),
     platformData: {},
   };
@@ -15464,6 +15500,58 @@ export async function resolveChecklistCommaTexts(
   };
 }
 
+/**
+ * NEO-591 — settle the X of every "Prospect (X)" cell the rows carry, once
+ * each, through `checklistCandidates.resolveProspectTeams`, and hand back the
+ * `resolveProspect` that `applyChecklistRow` asks. Shared by
+ * `fetchCardChecklist` step 3c and `publishedChecklistPairs`, like
+ * `resolveChecklistCommaTexts`, so an operator's own link settles X exactly
+ * as the matcher's pair does.
+ *
+ * Distinct by the folded team key, asked in batches of
+ * `MAX_PROSPECT_TEAMS_PER_QUERY`, at most `MAX_PROSPECT_TEAM_TEXTS` distinct
+ * texts per call; an X past that, or in a batch that fails, answers null,
+ * which `applyChecklistRow` reads as held: the operator picks, nothing is
+ * guessed and the fetch does not fail (rule 8).
+ */
+export const MAX_PROSPECT_TEAM_TEXTS = 200;
+export async function resolveChecklistProspectTexts(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  texts: Iterable<string>,
+): Promise<(text: string) => ProspectResolution | null> {
+  const keyOf = (text: string) => normalizeEntityName(text);
+  const at = new Map<string, number>();
+  const toResolve: string[] = [];
+  for (const raw of texts) {
+    const t = raw.trim();
+    if (!t) continue;
+    const key = keyOf(t);
+    if (at.has(key) || toResolve.length >= MAX_PROSPECT_TEAM_TEXTS) continue;
+    at.set(key, toResolve.length);
+    toResolve.push(t);
+  }
+  const answers: Array<ProspectResolution | null> = [];
+  for (let i = 0; i < toResolve.length; i += MAX_PROSPECT_TEAMS_PER_QUERY) {
+    const batch = toResolve.slice(i, i + MAX_PROSPECT_TEAMS_PER_QUERY);
+    try {
+      answers.push(
+        ...(await ctx.runQuery(internal.checklistCandidates.resolveProspectTeams, {
+          selectorOptionId,
+          texts: batch,
+        })),
+      );
+    } catch {
+      // A batch that could not be read leaves its Xs held.
+      answers.push(...batch.map(() => null));
+    }
+  }
+  return (text) => {
+    const i = at.get(keyOf(text.trim()));
+    return i === undefined ? null : (answers[i] ?? null);
+  };
+}
+
 const previewCardFields = {
   cardNumber: v.string(),
   cardName: v.string(),
@@ -15473,6 +15561,18 @@ const previewCardFields = {
   attributes: v.optional(v.array(v.string())),
   isRookie: v.optional(v.boolean()),
   isRelic: v.optional(v.boolean()),
+  // NEO-591 — the publisher checklist's team cell said "Prospect" /
+  // "Prospect (X)": the NEW card is born with the Prospect Card attribute
+  // (`features.isProspect`), by `isRookie`'s route. A re-synced row ignores it
+  // (it is not an `NB_CONTENT_FIELDS` field, so the diff never offers it).
+  isProspect: v.optional(v.boolean()),
+  // NEO-591 — the X of "Prospect (X)" the fetch could not settle to exactly
+  // one minor-league or college team (`checklistCandidates.prospectTeam`).
+  // Never a team string: `teams` is empty and the operator picks. The commit
+  // keeps it as the "Listed as:" hint (`rawTeamName` carries the same text)
+  // and does not read the card as a "No Team" claim (`checklistClaimsNoTeam`).
+  // Bounded by `assertCardBatchWithinLimits`.
+  prospectTeam: v.optional(v.string()),
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
@@ -16867,6 +16967,16 @@ export const fetchCardChecklist = action({
             ...match.unusedRowIndices.flatMap((i) => published.rows[i].teams),
           ],
         );
+        // NEO-591 — the X of each "Prospect (X)" cell, settled once each (a
+        // minor-league or college team the commit will find again, else held).
+        const resolveProspect = await resolveChecklistProspectTexts(
+          ctx,
+          args.selectorOptionId,
+          [
+            ...match.matches.flatMap((m) => published.rows[m.rowIndex].prospectTeams ?? []),
+            ...match.unusedRowIndices.flatMap((i) => published.rows[i].prospectTeams ?? []),
+          ],
+        );
         let conflicts = 0;
         let refused = 0;
         let noTeamFromChecklist = 0;
@@ -16884,10 +16994,20 @@ export const fetchCardChecklist = action({
             via: m.via,
             ...(m.confidence !== undefined ? { confidence: m.confidence } : {}),
             ...(m.checklistNumber !== undefined ? { checklistNumber: m.checklistNumber } : {}),
-            row: checklistPairedRow(published.rows[m.rowIndex], resolveText),
+            row: checklistPairedRow(published.rows[m.rowIndex], resolveText, resolveProspect),
           };
           checklistLinkByCard.set(card, link);
-          const applied = applyChecklistRow(card, published.rows[m.rowIndex], resolveText);
+          const applied = applyChecklistRow(
+            card,
+            published.rows[m.rowIndex],
+            resolveText,
+            resolveProspect,
+          );
+          // NEO-591 — the Prospect Card attribute is a claim about the card,
+          // whatever became of the team (even a conflict). A held X rides
+          // beside it; it is the card's team only if the checklist answers.
+          if (applied.isProspect) card.isProspect = true;
+          if (applied.prospectTeam) card.prospectTeam = applied.prospectTeam;
           const teamsFromRow = applied.answered && applied.teams !== null;
           link.revert = {
             ...(ownPlayers ? { players: ownPlayers } : {}),
@@ -16916,9 +17036,12 @@ export const fetchCardChecklist = action({
           // no-team at commit (`checklistClaimsNoTeam`). The same holds for a
           // pair the NEO-490 player-name fallback made.
           if (!applied.answered || !applied.teams) continue;
-          if (applied.teams.length === 0) noTeamFromChecklist++;
+          if (applied.teams.length === 0 && !applied.prospectTeam) noTeamFromChecklist++;
           card.teams = applied.teams;
           card.teamLookup = "checklist";
+          // The held X is the card's "Listed as:" hint at commit; BSC's own
+          // raw value cannot be here (a checklist-answered card is not looked up).
+          if (applied.prospectTeam) card.rawTeamName = applied.prospectTeam;
           checklistAnswered.add(card);
         }
         // NEO-496 (D10) — a row no card paired is a card of its own: number,
@@ -16926,10 +17049,10 @@ export const fetchCardChecklist = action({
         // the checklist's answer (never looked up: it has no BSC ref); a row
         // naming no team leaves the team to the operator.
         for (const rowIndex of match.unusedRowIndices) {
-          const card = checklistOnlyCard(published.rows[rowIndex], resolveText);
+          const card = checklistOnlyCard(published.rows[rowIndex], resolveText, resolveProspect);
           if (card.teamLookup === "checklist") {
             checklistAnswered.add(card);
-            if (card.teams?.length === 0) noTeamFromChecklist++;
+            if (card.teams?.length === 0 && !card.prospectTeam) noTeamFromChecklist++;
           }
           checklistOnlyCards.push(card);
         }
@@ -17046,6 +17169,10 @@ export const fetchCardChecklist = action({
         attributes: card.attributes,
         isRookie: card.isRookie,
         isRelic: card.isRelic,
+        // NEO-591 — the streamed path is the only path.
+        ...(card.isProspect ? { isProspect: true } : {}),
+        ...(card.prospectTeam ? { prospectTeam: card.prospectTeam } : {}),
+        ...(card.rawTeamName ? { rawTeamName: card.rawTeamName } : {}),
         printRun: card.printRun,
         autographType: card.autographType,
         cardVariation: card.cardVariation,
@@ -20604,8 +20731,13 @@ function settleCardTeamAnswer(a: {
     // reads `bscTeamName`) holds back and the operator is asked. A lookup is
     // by ref, so the real client never sends this pairing; a malformed one
     // must not be stamped over the name it carried.
+    // NEO-591 — a "Prospect (X)" the checklist named and the fetch held is
+    // a listing claim too: kept as the hint, so the leaf's "No Team" holds
+    // back and the operator is asked. Only a card that carries one gets a
+    // hint from a `"checklist"` answer (`bscTeamHint` is set by the prelude
+    // for exactly that card).
     const hint =
-      a.teamLookup === "answered" && !a.hasPendingTeam
+      (a.teamLookup === "answered" || a.teamLookup === "checklist") && !a.hasPendingTeam
         ? (a.bscTeamHint ?? "").trim()
         : "";
     return {
@@ -20624,8 +20756,16 @@ function settleCardTeamAnswer(a: {
   // its outcome is the checklist's, and no "Listed as:" hint is kept (no
   // marketplace said anything).
   if (a.teamLookup === "checklist") {
+    // NEO-591 — a held "Prospect (X)" keeps its X as the "Listed as:" hint
+    // (`bscTeamHint`, set by the prelude only for such a card). Still never
+    // asked of BSC (`enqueue: false`) and never a No Team stamp.
+    const hint = a.hasPendingTeam ? "" : (a.bscTeamHint ?? "").trim();
     return {
-      fields: { teamCheckDoneAt: a.now, teamCheckOutcome: "checklist" },
+      fields: {
+        teamCheckDoneAt: a.now,
+        teamCheckOutcome: "checklist",
+        ...(hint ? { bscTeamName: hint.slice(0, MAX_BSC_TEAM_NAME_LENGTH) } : {}),
+      },
       enqueue: false,
     };
   }
@@ -20666,6 +20806,9 @@ const commitChunkCardValidator = v.object({
   attributes: v.optional(v.array(v.string())),
   isRookie: v.optional(v.boolean()),
   isRelic: v.optional(v.boolean()),
+  // NEO-591 — born as the Prospect Card attribute on an INSERT; never read on
+  // a re-synced row (see `previewCardFields.isProspect`).
+  isProspect: v.optional(v.boolean()),
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
@@ -21467,6 +21610,8 @@ export const commitCardChecklistChunk = internalMutation({
             attributes: card.attributes,
             isRookie: card.isRookie,
             isRelic: card.isRelic,
+            // NEO-591 — new cards only (a re-synced row never reads it).
+            isProspect: card.isProspect,
             printRun: card.printRun,
             cardVariation: card.cardVariation,
             autographType: card.autographType,
@@ -24408,12 +24553,22 @@ export const commitCardChecklist = action({
       //
       // NEO-330 — minus every name the operator ruled "not a team"
       // (`commitTeamHint`), exactly as `applyBscTeamResolution` drops them.
+      //
+      // NEO-591 — and a "Prospect (X)" the checklist named but the fetch could
+      // not settle (`prospectTeam`, teamLookup "checklist"): X is that card's
+      // hint, minus a name the operator ruled "not a team". It was never a
+      // team string, so nothing resolved it; the operator picks the team.
       const bscTeamHint =
         c.teamLookup === "answered" &&
         teamOnCardIds.length === 0 &&
         pendingTeamNames.length === 0
           ? commitTeamHint(c.rawTeamName, teamSources, skippedTeamKeys)
-          : undefined;
+          : c.teamLookup === "checklist" &&
+              c.prospectTeam?.trim() &&
+              teamOnCardIds.length === 0 &&
+              pendingTeamNames.length === 0
+            ? commitTeamHint(c.rawTeamName?.trim() || c.prospectTeam, teamSources, skippedTeamKeys)
+            : undefined;
       // "No team on this card" — teams win. A card carrying any team id or a
       // pending team name drops the answer here; the chunk drops it again if
       // the leaf's set-level team fills the card on insert.
@@ -24457,6 +24612,7 @@ export const commitCardChecklist = action({
             : c.attributes,
           isRookie: c.isRookie,
           isRelic: c.isRelic,
+          ...(c.isProspect === true ? { isProspect: true } : {}),
           printRun: c.printRun,
           autographType: c.autographType,
           // NEO-335 — an operator-trimmed variation ("Card titles") is stored

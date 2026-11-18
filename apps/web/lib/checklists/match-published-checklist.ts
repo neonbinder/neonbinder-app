@@ -125,6 +125,14 @@ export type ChecklistRowInput = {
    * empty. Against a card that has a team it is a conflict (NEO-489).
    */
   noTeam?: boolean;
+  /**
+   * NEO-591 — the team cell said "Prospect" / "Prospect (X)": the card is a
+   * prospect, and each X in `prospectTeams` is a minor-league or college team
+   * the server settles at fetch (kept out of `teams`). Read by
+   * `applyChecklistRow`; the matcher never keys on them.
+   */
+  prospect?: boolean;
+  prospectTeams?: readonly string[];
 };
 
 export type ChecklistCardInput = {
@@ -136,9 +144,16 @@ export type ChecklistCardInput = {
 };
 
 export type ChecklistConflictSides = { marketplace: string[]; checklist: string[] };
+/**
+ * `prospectClaim` (NEO-591): the checklist side is a "Prospect (X)" claim. Its
+ * `checklist` list holds the X teams the server settled (full names), and is
+ * EMPTY when X is held for the operator (the card's `prospectTeam` says it).
+ * Never set by the matcher; `applyChecklistRow` adds it.
+ */
+export type ChecklistTeamConflictSides = ChecklistConflictSides & { prospectClaim?: true };
 export type ChecklistConflict = {
   players?: ChecklistConflictSides;
-  teams?: ChecklistConflictSides;
+  teams?: ChecklistTeamConflictSides;
 };
 
 export type ChecklistCardMatch = {
