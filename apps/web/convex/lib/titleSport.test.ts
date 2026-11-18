@@ -10,6 +10,8 @@ import {
   boundedTitle,
   decideTitleSport,
   nameInTitle,
+  namedPlayers,
+  namedTeams,
   teamInTitle,
   titleNameText,
   titleSearchTerm,
@@ -165,5 +167,71 @@ describe("titleNameText (the words searched for players and teams)", () => {
     expect(titleNameText("Zorbo Quillfeather Rookie Card #")).toBe("Zorbo Quillfeather Rookie Card #");
     expect(titleNameText("Zorbo Quillfeather Rookie Card #12")).toBe("Zorbo Quillfeather Rookie Card #12");
     expect(titleNameText("Zorbo Quillfeather #12 /99")).toBe("Zorbo Quillfeather #12 /99");
+  });
+});
+
+describe("namedPlayers (the most specific player wins)", () => {
+  const names = (list: Array<{ name: string }>) => list.map((p) => p.name);
+
+  test("a name that is a contiguous part of another verified name is dropped: Acuña inside Acuña Jr.", () => {
+    const title = "2018 Topps Update #US250 Ronald Acuña Jr. Braves";
+    const out = namedPlayers([{ name: "Ronald Acuña" }, { name: "Ronald Acuña Jr." }], titleWords(title));
+    expect(names(out)).toEqual(["Ronald Acuña Jr."]);
+  });
+
+  test("accent and period fold on both sides: 'Jr.' in the row matches 'Jr' in a plain-ASCII title", () => {
+    const out = namedPlayers([{ name: "Ronald Acuña" }, { name: "Ronald Acuña Jr." }], titleWords("RONALD ACUNA JR Braves"));
+    expect(names(out)).toEqual(["Ronald Acuña Jr."]);
+  });
+
+  test("when only the shorter name is in the title, it stands", () => {
+    const out = namedPlayers([{ name: "Ronald Acuña" }, { name: "Ronald Acuña Jr." }], titleWords("Ronald Acuña soccer card"));
+    expect(names(out)).toEqual(["Ronald Acuña"]);
+  });
+
+  test("two players with the very same name are both kept (not a strict sub-phrase)", () => {
+    const out = namedPlayers([{ name: "Mike Trout" }, { name: "Mike Trout" }], titleWords("Mike Trout"));
+    expect(out).toHaveLength(2);
+  });
+
+  test("two different players side by side are both kept", () => {
+    const out = namedPlayers([{ name: "Mike Trout" }, { name: "Shohei Ohtani" }], titleWords("Mike Trout Shohei Ohtani"));
+    expect(names(out)).toEqual(["Mike Trout", "Shohei Ohtani"]);
+  });
+
+  test("a candidate whose name is not in the title is not named", () => {
+    expect(namedPlayers([{ name: "Mike Trout" }], titleWords("Rainbow Trout Lure"))).toEqual([]);
+  });
+});
+
+describe("namedTeams (the most specific team wins)", () => {
+  const braves = { name: "Braves", location: "Atlanta" };
+  const fcl = { name: "Braves", location: "FCL" };
+  const boston = { name: "Braves", location: "Boston" };
+  const bareBraves = { name: "Braves" };
+  const label = (list: Array<{ name: string; location?: string }>) => list.map((t) => `${t.location ?? ""} ${t.name}`.trim());
+
+  test("a full 'Location Name' in the title beats nickname-only matches", () => {
+    const out = namedTeams([fcl, braves, boston, bareBraves], titleWords("#1 Atlanta Braves"));
+    expect(label(out)).toEqual(["Atlanta Braves"]);
+  });
+
+  test("with no full name in the title, every nickname match stands", () => {
+    const out = namedTeams([fcl, braves, boston], titleWords("#1 Braves"));
+    expect(label(out)).toEqual(["FCL Braves", "Atlanta Braves", "Boston Braves"]);
+  });
+
+  test("a locationless team never counts as a full-name match", () => {
+    expect(label(namedTeams([bareBraves, fcl], titleWords("Braves lot")))).toEqual(["Braves", "FCL Braves"]);
+    expect(label(namedTeams([{ name: "Athletics" }], titleWords("Oakland Athletics pin")))).toEqual(["Athletics"]);
+  });
+
+  test("two franchises said by full name are both kept", () => {
+    const out = namedTeams([braves, { name: "Yankees", location: "New York" }, fcl], titleWords("Atlanta Braves New York Yankees"));
+    expect(label(out)).toEqual(["Atlanta Braves", "New York Yankees"]);
+  });
+
+  test("a team not in the title is not named", () => {
+    expect(namedTeams([braves], titleWords("Chicago Cubs"))).toEqual([]);
   });
 });

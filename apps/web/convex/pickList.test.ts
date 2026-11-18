@@ -348,6 +348,52 @@ describe("NEO-590: titleSports", () => {
     expect(out).toEqual([hit, null, hit, null, null]);
   });
 
+  test("the most specific player wins: Acuña and Acuña Jr. in two sports file under the Jr.'s sport", async () => {
+    const w = await world();
+    await w.player("Ronald Acuña", w.hockey);
+    await w.player("Ronald Acuña Jr.", w.baseball);
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["2018 Topps Update #US250 Ronald Acuña Jr. Braves"] });
+    expect(out).toEqual([{ id: w.baseball, name: "Pitching Baseball", code: "PB" }]);
+    // The shorter name alone still names its own sport.
+    const short = await w.me.query(api.pickList.titleSports, { titles: ["2018 Topps Update #US250 Ronald Acuña soccer"] });
+    expect(short).toEqual([{ id: w.hockey, name: "Ice Hockey", code: "IH" }]);
+  });
+
+  test("a full 'Location Name' team beats the same nickname in other sports; the bare nickname stays null", async () => {
+    const w = await world();
+    await w.team("Braves", w.baseball, "Atlanta");
+    await w.team("Braves", w.baseball, "FCL");
+    await w.team("Braves", w.football, "Boston");
+    await w.team("Yankees", w.baseball, "New York");
+    await w.team("Yankees", w.football, "New York Brooklyn");
+    const out = await w.me.query(api.pickList.titleSports, {
+      titles: ["#1 Atlanta Braves", "#1 Braves", "#1 New York Yankees", "#1 Yankees"],
+    });
+    const bb = { id: w.baseball, name: "Pitching Baseball", code: "PB" };
+    expect(out).toEqual([bb, null, bb, null]);
+  });
+
+  test("a full-name team in two sports is still null, and a player of one sport still outranks the team", async () => {
+    const w = await world();
+    await w.team("Krakens", w.baseball, "Harbor");
+    await w.team("Krakens", w.football, "Harbor");
+    await w.player("Zorbo Quillfeather", w.hockey);
+    const out = await w.me.query(api.pickList.titleSports, {
+      titles: ["#1 Harbor Krakens", "#1 Zorbo Quillfeather Harbor Krakens"],
+    });
+    expect(out).toEqual([null, { id: w.hockey, name: "Ice Hockey", code: "IH" }]);
+  });
+
+  test("crowding: many same-nickname rows ahead of the franchise do not cut it off the team read", async () => {
+    // convex-test returns search hits in insertion order, so the franchise sits behind 20 look-alikes:
+    // past the old take(8), inside the team window.
+    const w = await world();
+    for (let i = 0; i < 20; i += 1) await w.team("Braves", w.football, `Minor${i}`);
+    await w.team("Braves", w.baseball, "Atlanta");
+    const out = await w.me.query(api.pickList.titleSports, { titles: ["#1 Atlanta Braves"] });
+    expect(out).toEqual([{ id: w.baseball, name: "Pitching Baseball", code: "PB" }]);
+  });
+
   test("take-8 boundary: with a card number, eight look-alikes of the set's words no longer cut the named player off", async () => {
     // Only the words after the `#<token>` are searched, so the set's generic words ("Rookie Card")
     // cannot fill the page with other players.

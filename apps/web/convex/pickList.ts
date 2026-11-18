@@ -44,10 +44,11 @@ import { CatalogReader, catalogCardWithPathValidator } from "./lib/catalogView";
 import { parseListingSku } from "./lib/listingSku";
 import {
   TITLE_SEARCH_TAKE,
+  TITLE_TEAM_SEARCH_TAKE,
   decideTitleSport,
-  nameInTitle,
+  namedPlayers,
+  namedTeams,
   titleNameText,
-  teamInTitle,
   titleSearchTerm,
   titleTeamSearchTerm,
   titleWords,
@@ -375,9 +376,11 @@ export const sports = query({
  * sport of the NB player (else team) the title says by its whole name, when
  * exactly one sport is named; null otherwise (the row files under Other).
  * Catalog data only, so any signed-in caller may read it. Per distinct title:
- * one `players` and one `teams` name search (`take(TITLE_SEARCH_TAKE)` each),
- * one `playerSports` read per player the title names, and a point read per
- * distinct sport, at most `MAX_TITLE_SPORTS` titles.
+ * one `players` name search (`take(TITLE_SEARCH_TAKE)`) and one `teams` name
+ * search (`take(TITLE_TEAM_SEARCH_TAKE)`), one `playerSports` read per player
+ * the title names (the most specific ones: `namedPlayers`), and a point read
+ * per distinct sport, at most `MAX_TITLE_SPORTS` titles. The most specific
+ * match wins: a full "Location Name" team beats nickname-only teams.
  * Display order only: nothing here matches a card or writes NB data.
  */
 export const titleSports = query({
@@ -424,17 +427,17 @@ export const titleSports = query({
         ? await ctx.db
             .query("teams")
             .withSearchIndex("search_name", (q) => q.search("nameNormalized", teamTerm))
-            .take(TITLE_SEARCH_TAKE)
+            .take(TITLE_TEAM_SEARCH_TAKE)
         : [];
       // `playerSports` is the authority for a player's extra sports (the player row's
       // "also" list is only a display copy): one indexed read per player the title really names.
-      const named = players.filter((p) => nameInTitle(p.name, words));
+      const named = namedPlayers(players, words);
       const playerSportLists: string[][] = await Promise.all(
         named.map(async (p) => [p.sportId as string, ...(await additionalSportIds(ctx, p._id)).map((id) => id as string)]),
       );
       const sportId = decideTitleSport(
         playerSportLists,
-        teams.filter((t) => teamInTitle(t, words)).map((t) => [t.sportId as string]),
+        namedTeams(teams, words).map((t) => [t.sportId as string]),
       );
       answers.set(title, sportId ? await sportOf(sportId) : null);
     }

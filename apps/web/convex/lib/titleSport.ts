@@ -13,6 +13,13 @@
  * tables and no guessing: a nickname shared across sports ("Giants", "Cardinals")
  * names two sports and so decides nothing.
  *
+ * The most specific match wins. Among the players a title names, one whose
+ * name is a contiguous part of another's ("Ronald Acuña" inside "Ronald Acuña
+ * Jr.") is dropped. Among the teams, once any team is said by its full
+ * "Location Name" ("Atlanta Braves"), teams said only by their nickname
+ * ("FCL Braves" in a title that says "Braves") are ignored. A bare nickname with
+ * no full name in the title still stands on its own.
+ *
  * Pure by contract: no Convex imports, so a unit test needs no deployment.
  */
 
@@ -23,8 +30,16 @@ import { nameTokens } from "./entityNearMatch";
 /** Words of a title handed to a search index; Convex honours a handful of terms. */
 export const TITLE_SEARCH_MAX_TERMS = 16;
 
-/** Hits read per index per title. */
+/** Hits read from the `players` index per title. */
 export const TITLE_SEARCH_TAKE = 8;
+
+/**
+ * Hits read from the `teams` index per title. Wider than the players' window:
+ * one nickname ("Braves", "Yankees") is shared by many rows (minor-league
+ * affiliates, defunct leagues), and the franchise the title names by its full
+ * "Location Name" must not be cut off by them before it is verified.
+ */
+export const TITLE_TEAM_SEARCH_TAKE = 24;
 
 /** A title, cut to the bound every other typed search honours. */
 export function boundedTitle(title: string): string {
@@ -114,6 +129,46 @@ export function nameInTitle(name: string, words: readonly string[]): boolean {
 /** Whether a team is said by the title: its full "Location Name" or its nickname. */
 export function teamInTitle(team: { name: string; location?: string }, words: readonly string[]): boolean {
   return nameInTitle(teamFullName(team), words) || nameInTitle(team.name, words);
+}
+
+/** Whether `inner` is a strictly shorter, contiguous run inside `outer`. */
+function isStrictSubPhrase(inner: readonly string[], outer: readonly string[]): boolean {
+  if (!inner.length || inner.length >= outer.length) return false;
+  for (let at = 0; at + inner.length <= outer.length; at += 1) {
+    if (inner.every((token, i) => outer[at + i] === token)) return true;
+  }
+  return false;
+}
+
+/**
+ * The players among `candidates` the title names by their whole name, the most
+ * specific only: a verified player whose name tokens are a strict contiguous
+ * sub-phrase of another verified player's name is dropped ("Ronald Acuña" when
+ * the title also names "Ronald Acuña Jr."). Equal names are both kept, so two
+ * players with one name in different sports still decide nothing.
+ */
+export function namedPlayers<T extends { name: string }>(candidates: readonly T[], words: readonly string[]): T[] {
+  const verified = candidates
+    .filter((p) => nameInTitle(p.name, words))
+    .map((p) => ({ player: p, tokens: nameTokens(p.name) }));
+  return verified
+    .filter((a) => !verified.some((b) => isStrictSubPhrase(a.tokens, b.tokens)))
+    .map((a) => a.player);
+}
+
+/**
+ * The teams among `candidates` the title names, the most specific only: when
+ * any team is said by its full "Location Name" ("Atlanta Braves"), teams said
+ * only by their nickname are ignored. A team with no location has no full name
+ * beyond its nickname, so it never counts as a full-name match; with no full
+ * name in the title, nickname matches all stand.
+ */
+export function namedTeams<T extends { name: string; location?: string }>(candidates: readonly T[], words: readonly string[]): T[] {
+  const said = candidates.filter((t) => teamInTitle(t, words));
+  const full = said.filter(
+    (t) => nameTokens(teamFullName(t)).length > nameTokens(t.name).length && nameInTitle(teamFullName(t), words),
+  );
+  return full.length ? full : said;
 }
 
 /** The one sport every list names between them; null when none does or they differ. */
