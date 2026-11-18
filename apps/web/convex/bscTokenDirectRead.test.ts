@@ -225,6 +225,15 @@ describe("getBscToken stays a wrapper over the same helper", () => {
     expectNoTokenInLogs();
   });
 
+  test("control: getSiteToken run as a Convex function is counted by its spy", async () => {
+    const t = convexTest(schema, modules);
+    const r = await t.withIdentity(ADMIN).action(internal.credentials.getSiteToken, { site: "buysportscards" });
+    expect(r).toEqual({ token: TOKEN });
+    expect(siteTokenAction).toHaveBeenCalledTimes(1);
+    // The credentials action is not the direct read: that stays untouched.
+    expect(st.direct).toEqual([]);
+  });
+
   test("success without a requestId mints one", async () => {
     const t = convexTest(schema, modules);
     await call(t);

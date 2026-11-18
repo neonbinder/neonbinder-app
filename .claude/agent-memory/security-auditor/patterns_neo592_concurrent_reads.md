@@ -30,6 +30,17 @@ concurrency (`convex/lib/boundedConcurrency.ts`: `mapBounded` 16 wide,
   above their cap (never truncate) and be internal; the public single-name
   query keeps its own gate and registry entry.
 
+**Hop removal (runAction(child) -> exported plain helper).** NEO-605 replaced
+`ctx.runAction(internal.credentials.getSiteToken)` with a plain exported
+helper. Checklist: a plain `export async function` in a `"use node"` module is
+never registered (absent from `_generated/api.d.ts`; `browserFetch` and
+`actingUserId` are precedent), so it adds no RPC surface; `runAction` already
+propagated the parent's `ctx.auth`, so identity is unchanged, and scheduled
+callers stay identity-less (null token) both ways; confirm the helper's only
+throw is the "Not authenticated" guard (the body must catch everything else),
+because the caller now turns the raw `error.message` into a client-visible
+string with no child-function boundary in between.
+
 **Why:** concurrency PRs are pitched as latency-only; the regressions hide in
 caps and in checks that silently changed implementation.
 **How to apply:** for any "N sequential reads -> concurrent" diff, list every
