@@ -892,7 +892,7 @@ describe("NEO-284 S1: an alias equal to another team's PRIMARY name locks that t
 
     await expect(
       asAdmin.mutation(api.teams.saveTeamFields, { id: b, aliases: ["LSU Tigers"] }),
-    ).rejects.toThrow(/LSU Tigers is already a team in this sport/);
+    ).rejects.toThrow(/The alias "LSU Tigers" is another team's name/);
 
     // A is still free to edit itself.
     await asAdmin.mutation(api.teams.saveTeamFields, { id: a, yearsActive: { from: 1893 } });

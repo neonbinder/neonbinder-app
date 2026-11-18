@@ -441,7 +441,7 @@ describe("NEO-284 S1: the writers refuse an alias that is another team's own nam
         id: rival,
         aliases: ["War Eagle", "LSU Tigers"],
       }),
-    ).rejects.toThrow(/LSU Tigers is already a team in this sport/);
+    ).rejects.toThrow(/The alias "LSU Tigers" is another team's name/);
 
     const row = await t.run((ctx) => ctx.db.get(rival));
     expect(row!.aliases).toBeUndefined();
@@ -488,7 +488,7 @@ describe("NEO-284 S1: the writers refuse an alias that is another team's own nam
         sportId,
         aliases: ["LSU Tigers"],
       }),
-    ).rejects.toThrow(/LSU Tigers is already a team in this sport/);
+    ).rejects.toThrow(/The alias "LSU Tigers" is another team's name/);
     expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
   });
 
@@ -517,7 +517,7 @@ describe("NEO-284 S1: the writers refuse an alias that is another team's own nam
         id: revived,
         aliases: ["Winnipeg Jets"],
       }),
-    ).rejects.toThrow(/Winnipeg Jets is already a team in this sport/);
+    ).rejects.toThrow(/The alias "Winnipeg Jets" is another team's name/);
     expect((await t.run((ctx) => ctx.db.get(revived)))!.aliases).toBeUndefined();
     expect(await aliasRows(t)).toEqual([]);
   });
@@ -546,7 +546,7 @@ describe("NEO-284 S1: the writers refuse an alias that is another team's own nam
         yearsActive: { from: 1990 },
         aliases: ["Winnipeg Jets"],
       }),
-    ).rejects.toThrow(/Winnipeg Jets is already a team/);
+    ).rejects.toThrow(/The alias "Winnipeg Jets" is another team's name/);
   });
 
   test("alias-vs-alias stays advisory: two teams may share an alias, and aliasesInUse only reports it", async () => {

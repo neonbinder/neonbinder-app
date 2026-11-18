@@ -8220,7 +8220,7 @@ describe("EntityReviewWizard — modal isolation", () => {
 
 describe("EntityReviewWizard — NEO-307 a New Team name another team holds as an alias", () => {
   const CLASH =
-    "Los Angeles Dodgers already answers to this name as an alias — remove it there before a team can take the name.";
+    "Los Angeles Dodgers · 1958–present already answers to this name as an alias, and this team has no years on file, so they may overlap. Remove it there, or give this team years that don't overlap.";
   const LA = {
     id: "team-la" as unknown as Id<"teams">,
     name: "Los Angeles Dodgers",

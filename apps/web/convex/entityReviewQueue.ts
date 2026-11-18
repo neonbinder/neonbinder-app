@@ -3417,24 +3417,29 @@ export const recordDecision = mutation({
        * step. Without it "Add as New Team" could record a create the commit
        * then silently drops: the commit will not create a team under a name
        * another team in the sport holds as an alias, and will not store an
-       * alias that is another team's own name (both whatever the eras). Same
-       * refusals, same wording, as Team Management and the New Team dialog.
+       * alias that is another team's own name, when the two teams' years
+       * overlap (NEO-602: a team with no years overlaps everything; disjoint
+       * eras are allowed, so the draft's `yearsActive` is passed through).
+       * Same refusals, same wording, as Team Management and the New Team
+       * dialog.
        *
        * Stricter than the commit in one place, deliberately: the commit ADOPTS
        * an alias holder whose era overlaps the answer, but the step refuses
-       * any alias holder, because "Add as New Team" that quietly becomes a
-       * link is not what the button says. The step shows the holder with a
-       * Link action instead (`teams.nameHeldAsAliasBy`).
+       * any overlapping alias holder, because "Add as New Team" that quietly
+       * becomes a link is not what the button says. The step shows the holder
+       * with a Link action instead (`teams.nameHeldAsAliasBy`).
        */
       if (create) {
         await assertNameNotAnotherTeamsAlias(ctx, {
           sportId: row.sportId,
           fullName: teamFullName(create),
+          ...(create.yearsActive ? { selfYears: create.yearsActive } : {}),
         });
         if (create.aliases?.length) {
           await assertAliasesNotPrimaryNames(ctx, {
             sportId: row.sportId,
             aliases: create.aliases,
+            ...(create.yearsActive ? { selfYears: create.yearsActive } : {}),
           });
         }
       }

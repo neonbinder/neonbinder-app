@@ -31,7 +31,7 @@ import { CopyButton } from "../primitives/CopyButton";
 // `hasExact` was written for.
 import { NearMatchPanel, type NearMatch } from "../entities/NearMatchPanel";
 import { TeamMatchSearch } from "../entities/TeamMatchSearch";
-import { teamOptionLabel } from "../../lib/teams/team-era";
+import { eraOverlapReason, teamOptionLabel } from "../../lib/teams/team-era";
 import { useStaleWhileLoading } from "@/src/hooks/useStaleWhileLoading";
 import EntityLinkSearch from "./EntityLinkSearch";
 import SportSwitch from "./SportSwitch";
@@ -269,6 +269,21 @@ const PLAYER_ADD_SET_SPORT_FIELD_ID = "entity-review-player-add-set-sport";
 // on the label copy.
 const LEAGUE_NAME_FIELD_ID = "entity-review-league-name";
 const LEAGUE_LEVEL_FIELD_ID = "entity-review-league-level";
+
+/**
+ * NEO-602 — why a name the New Team step would create is refused, in the words
+ * `teams.assertNameNotAnotherTeamsAlias` throws: the holder's name and era,
+ * then whether the two teams' years overlap or one has none on file, then both
+ * ways out. Same `eraOverlapReason` as the server, so the pre-check and the
+ * refusal cannot drift. `draftYears` is the new team's era as typed.
+ */
+function aliasHolderSentence(
+  holder: { name: string; yearsActive?: { from: number; to?: number } },
+  draftYears: { from: number; to?: number } | undefined,
+): string {
+  const label = teamOptionLabel(holder.name, holder.yearsActive);
+  return `${label} already answers to this name as an alias, and ${eraOverlapReason(draftYears, holder.yearsActive)}. Remove it there, or give this team years that don't overlap.`;
+}
 
 /**
  * NEO-236 — what the Location + Name pair shows for a team row before the
@@ -1413,23 +1428,32 @@ export default function EntityReviewWizard({
   );
   /**
    * NEO-307 — the teams that already answer to the New Team step's name as an
-   * ALIAS.
+   * ALIAS, and whose years overlap the team this step would create (NEO-602).
    *
-   * A team may never take a name another team in the sport holds as an alias,
-   * whatever the eras, so `recordDecision` refuses that create. Asked ahead of
-   * the click so the step can say so, disable "Add as New Team", and offer the
-   * holder as the link. Keyed on the COMPOSED name the step would create — the
-   * operator's edit when there is one — not the checklist string, because the
-   * Name field is what the operator changes to get into (or out of) the clash.
+   * A team may not take a name another team in the sport holds as an alias
+   * while their years overlap (a team with no years overlaps everything), so
+   * `recordDecision` refuses that create. Asked ahead of the click so the step
+   * can say so, disable "Add as New Team", and offer the holder as the link.
+   * Keyed on the COMPOSED name the step would create — the operator's edit when
+   * there is one — not the checklist string, because the Name field is what the
+   * operator changes to get into (or out of) the clash. The draft's years go
+   * with it: dating the new team clear of the holder is the other way out, and
+   * the warning has to drop the moment they do.
    */
-  const aliasCheckName =
+  const aliasCheckDraft =
     current && !reviewingDecided && current.kind === "team"
-      ? draftFullName(teamCreateByRow[current._id] ?? teamCreatePrefill(current)).trim()
-      : "";
+      ? (teamCreateByRow[current._id] ?? teamCreatePrefill(current))
+      : undefined;
+  const aliasCheckName = aliasCheckDraft ? draftFullName(aliasCheckDraft).trim() : "";
+  const aliasCheckYears = aliasCheckDraft?.yearsActive;
   const nameAliasHoldersLive = useQuery(
     api.teams.nameHeldAsAliasBy,
     current && aliasCheckName
-      ? { sportId: current.sportId, name: aliasCheckName }
+      ? {
+          sportId: current.sportId,
+          name: aliasCheckName,
+          ...(aliasCheckYears ? { yearsActive: aliasCheckYears } : {}),
+        }
       : "skip",
   );
   /*
@@ -3698,10 +3722,10 @@ export default function EntityReviewWizard({
       }
       // NEO-307 — the server refuses this create (`recordDecision`); saying
       // so here keeps "Add as New Team" from being the thing that finds out.
-      // The approved Team Management wording, verbatim.
+      // The server's wording (NEO-602), built by the same helper.
       const holder = nameAliasHolders?.[0];
       if (holder) {
-        return `${holder.name} already answers to this name as an alias — remove it there before a team can take the name.`;
+        return aliasHolderSentence(holder, aliasCheckYears);
       }
       return null;
     }
@@ -5519,7 +5543,7 @@ export default function EntityReviewWizard({
                           {/* One text node, so a direct-text matcher (the
                               E2E driver's) reads the whole sentence. */}
                           <p className="text-sm text-neon-pink-text">
-                            {`${nameAliasHolders[0].name} already answers to this name as an alias — remove it there before a team can take the name.`}
+                            {aliasHolderSentence(nameAliasHolders[0], aliasCheckYears)}
                           </p>
                           <div className="flex flex-wrap gap-2">
                             {nameAliasHolders
