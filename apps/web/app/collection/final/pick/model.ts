@@ -27,7 +27,7 @@
  */
 
 import type { Infer } from "convex/values";
-import { cardNumberToken } from "@/convex/lib/titleSport";
+import { cardNumberToken, skipGraderPrefix } from "@/convex/lib/titleSport";
 import type { saleItemListedValidator } from "@/convex/schema";
 import { variantTypeKindFromTitle } from "@/convex/variantRole";
 import { setLabel } from "../data/labels";
@@ -388,11 +388,15 @@ export interface ParsedTitle {
  * A listing's title read for the Pick List's order: "2021 Panini Prizm #12
  * Justin Herbert" is 2021, "Panini Prizm", "12". A title that opens with no
  * year keeps its whole text as the set words (the row then files by sport
- * alone). Never a match: this only orders a row NB has no card for.
+ * alone). A graded slab's title leads with its grader and grade ("PSA 10
+ * 2018 Prizm Luka Doncic #280"): that one pair is skipped before the year is
+ * read, so the slab parses like the raw card; with no year after it the title
+ * still does not parse and keeps its whole text, grader included. Never a
+ * match: this only orders a row NB has no card for.
  */
 export function parseListingTitle(title: string): ParsedTitle {
   const text = title.replace(/\s+/g, " ").trim();
-  const lead = /^(\S+)(?:\s+(.*))?$/.exec(text);
+  const lead = /^(\S+)(?:\s+(.*))?$/.exec(skipGraderPrefix(text));
   const year = lead ? (listedYear(lead[1]) ?? null) : null;
   const rest = year !== null && lead ? (lead[2] ?? "") : text;
   const at = rest.indexOf("#");
@@ -402,7 +406,8 @@ export function parseListingTitle(title: string): ParsedTitle {
 }
 
 /**
- * Whether a listing's title parses (NEO-590): it opens with a year. Only such
+ * Whether a listing's title parses (NEO-590): it opens with a year (after a
+ * slab's grader and grade, if any). Only such
  * a title may be filed under a sport, so only such a title is worth asking the
  * server about (`pickList.titleSports`); anything else files under Other.
  */

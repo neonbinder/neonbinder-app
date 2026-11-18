@@ -30,6 +30,7 @@ import {
   setsOnList,
   SORT_KEYS,
   sortRows,
+  titleParses,
   variantBreaks,
   variantRole,
   variantTag,
@@ -932,7 +933,41 @@ describe("NEO-590: parseListingTitle", () => {
 
   it("a title that opens with no year has no year and keeps its whole text", () => {
     expect(parseListingTitle("Topps Chrome #205 Some Player")).toEqual({ year: null, cardNumber: "205", setText: "Topps Chrome" });
-    expect(parseListingTitle("PSA 10 2023 Topps Chrome")).toEqual({ year: null, cardNumber: "", setText: "PSA 10 2023 Topps Chrome" });
+  });
+
+  it("skips one leading grader and grade, so a graded slab parses like the raw card", () => {
+    const slab = { year: 2018, cardNumber: "280", setText: "Prizm Luka Doncic" };
+    expect(parseListingTitle("PSA 10 2018 Prizm Luka Doncic #280")).toEqual(slab);
+    expect(parseListingTitle("BGS 9.5 2018 Prizm Luka Doncic #280")).toEqual(slab);
+    expect(parseListingTitle("SGC 10 2018 Prizm Luka Doncic #280")).toEqual(slab);
+    expect(parseListingTitle("CGC 9 2018 Prizm Luka Doncic #280")).toEqual(slab);
+    expect(parseListingTitle("BVG 8 2018 Prizm Luka Doncic #280")).toEqual(slab);
+    expect(parseListingTitle("psa 10 2018 Prizm Luka Doncic #280")).toEqual(slab);
+    expect(parseListingTitle("PSA10 2018 Prizm Luka Doncic #280")).toEqual(slab);
+    expect(parseListingTitle("PSA 10 2023-24 Hoops #5")).toMatchObject({ year: 2023, setText: "Hoops", cardNumber: "5" });
+    expect(titleParses("PSA 10 2018 Prizm Luka Doncic #280")).toBe(true);
+  });
+
+  it("a slab with no year after its grade does not parse and keeps its whole text, grader included", () => {
+    expect(parseListingTitle("PSA 10 Topps Chrome #205 Some Player")).toEqual({
+      year: null,
+      cardNumber: "205",
+      setText: "PSA 10 Topps Chrome",
+    });
+    expect(parseListingTitle("PSA 10 Kansas City Chiefs Hoodie XL")).toEqual({
+      year: null,
+      cardNumber: "",
+      setText: "PSA 10 Kansas City Chiefs Hoodie XL",
+    });
+    expect(titleParses("PSA 10 Kansas City Chiefs Hoodie XL")).toBe(false);
+    expect(titleParses("PSA 10")).toBe(false);
+  });
+
+  it("only one grader+grade pair is skipped, and a year is never taken for a grade", () => {
+    expect(parseListingTitle("PSA 10 BGS 9.5 2018 Prizm")).toMatchObject({ year: null });
+    expect(parseListingTitle("PSA 2018 Prizm Luka Doncic #280")).toMatchObject({ year: null });
+    expect(parseListingTitle("PSA 100 2018 Prizm")).toMatchObject({ year: null });
+    expect(parseListingTitle("Graded PSA 10 2018 Prizm")).toMatchObject({ year: null });
   });
 
   it("a year that is no year (out of range, glued to letters) is not one", () => {
@@ -992,10 +1027,15 @@ describe("NEO-590: filing a card-less sale by its title", () => {
 
   it("NEO-590: a title with no leading year files under Other even when the server named an NB team or sport", () => {
     // The store never asks for such a title; a stray answer must not file it under a sport either.
-    for (const t of ["Kansas City Chiefs Hoodie XL", "Topps Chrome #205 Patrick Mahomes", "PSA 10 2023 Prizm Justin Herbert", "Lot of 50 football cards"]) {
+    for (const t of ["Kansas City Chiefs Hoodie XL", "Topps Chrome #205 Patrick Mahomes", "PSA 10 Prizm Justin Herbert", "Lot of 50 football cards"]) {
       const facts = rowFacts(mergeLines([title(t, FOOTBALL)])[0]);
       expect(facts).toMatchObject({ sportName: "Other", sportKey: "title:other", sportCode: null, fromTitle: true });
     }
+  });
+
+  it("NEO-590: a graded slab's title (grader and grade, then the year) files under the named sport", () => {
+    const facts = rowFacts(mergeLines([title("PSA 10 2023 Panini Prizm #12 Justin Herbert", FOOTBALL)])[0]);
+    expect(facts).toMatchObject({ sportName: "Football", sportKey: "sp-fb", sportCode: "FB", year: 2023, setName: "Panini Prizm", cardNumber: "12", fromTitle: true });
   });
 
   it("NEO-590: a year-led title with a named player files under that sport", () => {

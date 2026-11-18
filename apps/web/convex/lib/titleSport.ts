@@ -41,9 +41,31 @@ export const TITLE_SEARCH_TAKE = 8;
  */
 export const TITLE_TEAM_SEARCH_TAKE = 24;
 
-/** A title, cut to the bound every other typed search honours. */
+/**
+ * One leading grader and grade, as graded-slab eBay titles open: "PSA 10 ",
+ * "BGS 9.5 ", "SGC 10 ", "CGC 9 ", "BVG 8 " (case-insensitive; a space between
+ * the two is optional). The grade is one or two digits, optionally a ".5"-style
+ * tenth, and must end the token, so "PSA 2023 Topps" (a year) is not a grade.
+ */
+const GRADER_PREFIX = /^\s*(?:PSA|BGS|SGC|CGC|BVG)\s*\d{1,2}(?:\.\d)?(?=\s|$)\s*/i;
+
+/**
+ * `text` without one leading grader+grade pair (NEO-590), so a slab's title
+ * reads like the raw card's: "PSA 10 2018 Prizm Luka Doncic #280" is
+ * "2018 Prizm Luka Doncic #280". Text that does not open with one comes back
+ * unchanged. Shared by `parseListingTitle` (the year) and the title searches
+ * (the words), so the two cannot disagree about where a title starts.
+ */
+export function skipGraderPrefix(text: string): string {
+  return text.replace(GRADER_PREFIX, "");
+}
+
+/**
+ * A title, cut to the bound every other typed search honours, minus a leading
+ * grader and grade: "PSA" is a slab's company, never a player or team word.
+ */
 export function boundedTitle(title: string): string {
-  return clampSearchQuery(title);
+  return skipGraderPrefix(clampSearchQuery(title));
 }
 
 /**
@@ -68,7 +90,8 @@ export function cardNumberToken(fromHash: string): RegExpExecArray | null {
  * `parseListingTitle`. With no `#` token, or nothing with a letter after it,
  * the whole (clamped) title.
  *
- * Clamps the RAW title first (the house rule of searchQueryClamp.ts), so a
+ * Clamps the RAW title first (the house rule of searchQueryClamp.ts; a leading
+ * grader+grade is dropped after the clamp, `boundedTitle`), so a
  * `#` past the clamp point is never seen and the regexes run on bounded text.
  */
 export function titleNameText(title: string): string {

@@ -377,8 +377,11 @@ export const sports = query({
  * NEO-590 — the NB sport a listing's title names, aligned with `titles`: the
  * sport of the NB player (else team) the title says by its whole name, when
  * exactly one sport is named; null otherwise (the row files under Other).
- * The page asks only about titles that open with a year; a title that does
- * not parse (clothing, a lot) is never sent and files under Other.
+ * The page asks only about titles that parse (they open with a year, after a
+ * slab's grader and grade); a title that does not (clothing, a lot) is never
+ * sent and files under Other. That is a page rule, not a bound: this query
+ * answers any title, up to `MAX_TITLE_SPORTS` of them, so the client gate is
+ * not what limits its cost.
  * Catalog data only, so any signed-in caller may read it. Per distinct title:
  * one `players` name search (`take(TITLE_SEARCH_TAKE)`) and one `teams` name
  * search (`take(TITLE_TEAM_SEARCH_TAKE)`), one `playerSports` read per player

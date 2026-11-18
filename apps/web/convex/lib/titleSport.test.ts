@@ -13,6 +13,7 @@ import {
   namedPlayers,
   namedTeams,
   teamInTitle,
+  skipGraderPrefix,
   titleNameText,
   titleSearchTerm,
   titleTeamSearchTerm,
@@ -233,5 +234,35 @@ describe("namedTeams (the most specific team wins)", () => {
 
   test("a team not in the title is not named", () => {
     expect(namedTeams([braves], titleWords("Chicago Cubs"))).toEqual([]);
+  });
+});
+
+describe("a graded slab's leading grader and grade (NEO-590)", () => {
+  test("skipGraderPrefix drops one grader+grade pair and nothing else", () => {
+    expect(skipGraderPrefix("PSA 10 2018 Prizm Luka Doncic #280")).toBe("2018 Prizm Luka Doncic #280");
+    expect(skipGraderPrefix("bgs 9.5 2018 Prizm")).toBe("2018 Prizm");
+    expect(skipGraderPrefix("SGC 10 2018 Prizm")).toBe("2018 Prizm");
+    expect(skipGraderPrefix("CGC 9 2018 Prizm")).toBe("2018 Prizm");
+    expect(skipGraderPrefix("BVG 8 2018 Prizm")).toBe("2018 Prizm");
+    expect(skipGraderPrefix("PSA 10 BGS 9.5 Prizm")).toBe("BGS 9.5 Prizm");
+    // A year is not a grade; a grader word without a grade, or mid-title, stays.
+    expect(skipGraderPrefix("PSA 2018 Prizm")).toBe("PSA 2018 Prizm");
+    expect(skipGraderPrefix("PSA Prizm Luka Doncic")).toBe("PSA Prizm Luka Doncic");
+    expect(skipGraderPrefix("2018 Prizm PSA 10")).toBe("2018 Prizm PSA 10");
+  });
+
+  test("the grader is no word of the name text, the search terms or the verified words", () => {
+    expect(titleNameText("PSA 10 2018 Prizm #280 Luka Doncic")).toBe("Luka Doncic");
+    // No name after the # token, or no # token: the whole title, minus the grader and grade.
+    expect(titleNameText("PSA 10 2018 Prizm Luka Doncic #280")).toBe("2018 Prizm Luka Doncic #280");
+    expect(titleNameText("PSA 10 2018 Prizm Luka Doncic")).toBe("2018 Prizm Luka Doncic");
+    expect(titleSearchTerm(titleNameText("BGS 9.5 2018 Prizm Luka Doncic"))).toBe("Prizm Luka Doncic");
+    expect(titleTeamSearchTerm("PSA 10 2018 Prizm Luka Doncic")).toBe("prizm luka doncic");
+    expect(titleWords("PSA 10 2018 Prizm Luka Doncic #280")).toEqual(titleWords("2018 Prizm Luka Doncic #280"));
+  });
+
+  test("a slab's title names the same player as the raw card's", () => {
+    expect(said("Luka Doncic", "PSA 10 2018 Prizm Luka Doncic #280")).toBe(true);
+    expect(said("Luka Doncic", "2018 Prizm Luka Doncic #280")).toBe(true);
   });
 });

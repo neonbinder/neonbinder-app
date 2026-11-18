@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link, useLocation } from "react-router";
 import { ArchiveBoxIcon, CheckCircleIcon, ChevronDownIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline";
-import { EBAY_UNTITLED_SALE } from "@/app/collection/final/inventory/listing/copy";
+import { EBAY_UNTITLED_ITEM, EBAY_UNTITLED_SALE } from "@/app/collection/final/inventory/listing/copy";
 import type { DashboardData, SaleLine, SaleProblem, SalesData, UnshippedSale } from "../fake-data";
 import { daysAgoLabel, isLate, MARKETPLACES } from "../dash-labels";
 import { CardTitle, count, MarketBadge, orderAnchor, Thumb } from "./bits";
@@ -21,9 +21,10 @@ import { PanelLink } from "./panelLink";
  *
  * NEO-590: all that matters here is that there was a sale. A line NB holds no
  * card for is named by the sale's own words (`SaleLine.title`), or "A sale
- * with no title", as plain text; the screen never says the card is not in NB,
- * and such a line is not a problem. Only an oversold line is. The counts say
- * "items" when an order has such a line, as the Sales tab does.
+ * with no title" (inside an opened order, "An item with no title"), as plain
+ * text; the screen never says the card is not in NB, and such a line is not a
+ * problem. Only an oversold line is. The counts say "items" when an eBay order
+ * has such a line, as the Sales tab does (BuySportsCards lines are always cards).
  *
  * With orders to ship, Out the Door also links to Inventory's Pick List, where
  * they are pulled. An account that sells has that tab (NEO-500: signed in, it
@@ -35,11 +36,12 @@ const CARD_LINK =
   "block rounded-sm underline decoration-ink-3/60 underline-offset-2 hover:text-neon-blue-text hover:decoration-current focus-outline";
 
 /**
- * "item" when the order has a line NB holds no card for (it may not be a card
- * at all), else "card": the same word the Sales tab picks.
+ * "item" when an eBay order has a line NB holds no card for (it may not be a
+ * card at all), else "card": the same word the Sales tab picks.
+ * BuySportsCards lines are always cards.
  */
-function unitOf(order: UnshippedSale): "card" | "item" {
-  return order.lines.some((l) => !l.card) ? "item" : "card";
+export function unitOf(order: Pick<UnshippedSale, "marketplace" | "lines">): "card" | "item" {
+  return order.marketplace === "ebay" && order.lines.some((l) => !l.card) ? "item" : "card";
 }
 
 /** Whether Needs a Look has anything in it. */
@@ -128,7 +130,11 @@ function OrderRow({ order }: { order: UnshippedSale }) {
   const late = isLate(order);
   const market = MARKETPLACES[order.marketplace].name;
   const problems = order.lines.filter((l): l is SaleLine & { problem: SaleProblem } => Boolean(l.problem));
-  const more = order.cardCount - 1;
+  // One line of several copies has nothing to open, so its count rides on the lead as "×N"
+  // (as an opened line shows it); "and N more" is for an order of several lines.
+  const single = order.lines.length === 1;
+  const more = single ? 0 : order.cardCount - 1;
+  const leadQuantity = single ? order.lines[0].quantity : 1;
   const unit = unitOf(order);
   const anchor = orderAnchor(order.id);
   // ↑ ↓ in a card's panel walk the order's cards.
@@ -157,7 +163,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
             <Thumb card={order.firstCard} className="w-11 sm:w-14" />
           </PanelLink>
         ) : (
-          <NoCardThumb className="w-11 sm:w-14" />
+          <NoCardThumb className="w-11 self-start sm:w-14" />
         )}
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
@@ -178,6 +184,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
             ) : (
               <span className="block [overflow-wrap:anywhere]">{order.lines[0]?.title ?? EBAY_UNTITLED_SALE}</span>
             )}
+            {leadQuantity > 1 && <span className="block font-normal tabular-nums text-ink-3">×{leadQuantity}</span>}
             {more > 0 && <span className="block font-normal text-ink-2">and {count(more, `more ${unit}`)}</span>}
           </div>
           <p className="text-xs text-ink-3">
@@ -214,7 +221,7 @@ function OrderRow({ order }: { order: UnshippedSale }) {
                   className={`size-4 transition-transform motion-reduce:transition-none ${open ? "rotate-180" : ""}`}
                 />
                 {/* Visible words first, then a stable "which order" for a reader; aria-expanded says the state. */}
-                {open ? "Hide the cards" : `Show all ${count(order.cardCount, unit)}`}
+                {open ? `Hide the ${unit}s` : `Show all ${count(order.cardCount, unit)}`}
                 <span className="sr-only">
                   {" "}
                   in {market} order {order.orderNumber}
@@ -251,7 +258,7 @@ function LineRow({ line, list }: { line: SaleLine; list: readonly string[] }) {
       <>
         <NoCardThumb className="w-8" />
         <span className="min-w-0 text-sm text-ink [overflow-wrap:anywhere]">
-          {line.title ?? EBAY_UNTITLED_SALE}
+          {line.title ?? EBAY_UNTITLED_ITEM}
           {line.quantity > 1 && <span className="tabular-nums text-ink-3"> ×{line.quantity}</span>}
         </span>
       </>

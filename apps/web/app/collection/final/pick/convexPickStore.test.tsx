@@ -428,6 +428,14 @@ describe("NEO-509: the sports a sale names", () => {
     expect(lines.map((l) => l.listed?.titleSport)).toEqual([undefined, undefined, undefined, { id: "sp-fb", name: "Football", code: "FB" }]);
   });
 
+  it("NEO-590: a graded slab's title (grader and grade, then a year) is asked about; a slab with no year is not", async () => {
+    query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
+      Promise.resolve(args.titles ? args.titles.map(() => null) : []),
+    );
+    await mountWith([ebayTitled(1, "PSA 10 2018 Prizm #280 Luka Doncic"), ebayTitled(2, "PSA 10 Kansas City Chiefs Hoodie XL")]);
+    expect(titleCalls()).toEqual([["PSA 10 2018 Prizm #280 Luka Doncic"]]);
+  });
+
   it("NEO-590: a list of only unparseable titles asks nothing and loads at once", async () => {
     await mountWith([ebayTitled(1, "Kansas City Chiefs Hoodie XL"), ebayTitled(2, "Lot of 50 mixed cards")]);
     expect(titleCalls()).toEqual([]);
