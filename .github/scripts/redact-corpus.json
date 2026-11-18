@@ -125,5 +125,11 @@
     "input": "{\"apiKey\":-1} {\"m\":\"{\\\"password\\\":\\\"ab\\\\\\\"cd\\\"}\"}",
     "absent": ["-1", "ab", "cd"],
     "present": ["[removed]"]
+  },
+  {
+    "name": "nested escaped backslash inside a double-escaped secret value",
+    "input": "{\"m\":\"{\\\"password\\\":\\\"ab\\\\\\\\cd\\\"}\"}",
+    "absent": ["ab", "cd"],
+    "present": ["[removed]"]
   }
 ]
