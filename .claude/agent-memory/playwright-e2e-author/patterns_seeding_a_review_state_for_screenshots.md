@@ -16,6 +16,9 @@ For a "prepare it for Jason's look" task (seed data, then screenshots), no spec 
 - Light/dark: emulate `colorScheme` per context; it only works while the user's Profile theme is System
   (check the two shots actually differ). Phone: `devices["iPhone 13"]` with a 390 viewport (3x DPR, so
   full-page PNGs are tall; crop with `sips -c H W --cropOffset Y 0` to inspect).
+- To replace an earlier review seed, sign in with `redirect=/testing/reset` (wipes only that worker's own
+  rows; lands on /dashboard) and seed again. `devices["iPhone 13"]` carries `defaultBrowserType: "webkit"`;
+  drop it from the spread to shoot in Chromium like the e2e-mobile project.
 - Gate the shot on a perceivable handle of the state you seeded (a band's `rowheader`), not on text that a
   hidden `<option>` also carries (`getByText("Other")` resolved to the Sport filter's option).
 - Screenshots go to `<worktree>/screenshots/` (git-excluded via info/exclude), never `apps/web`.
