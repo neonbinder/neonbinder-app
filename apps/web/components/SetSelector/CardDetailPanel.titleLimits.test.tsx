@@ -241,9 +241,12 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
 
     const field = titleInput();
     expect(field.getAttribute("aria-invalid")).toBe("true");
-    // The `aria-invalid:` utilities are the box highlight (happy-dom runs no CSS).
-    expect(field.className).toContain("aria-invalid:border-neon-pink-text");
-    expect(field.className).toContain("aria-invalid:ring-neon-pink-text");
+    // The box highlight follows LENGTH (`data-over`), not aria-invalid; happy-dom runs no CSS.
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    expect(field.className).toContain("data-[over=true]:ring-neon-pink-text");
+    // Held (autosave in flight: readOnly + aria-disabled) shows grey, edge kept.
+    expect(field.className).toContain("aria-disabled:data-[over=true]:bg-button-neutral");
     const alert = screen.getByRole("alert");
     expect(alert.className).toContain("text-neon-pink-text");
     expect(alert.className).not.toContain("notice-danger");
@@ -253,6 +256,7 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
 
     fireEvent.change(field, { target: { value: titleOfLength(80) } });
     expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.getAttribute("data-over")).toBeNull();
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
@@ -663,8 +667,10 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
       "Card variation",
     ) as HTMLInputElement;
     // NEO-606: the same pink box and note as the title while past 65.
-    expect(variation.getAttribute("aria-invalid")).toBe("true");
-    expect(variation.className).toContain("aria-invalid:border-neon-pink-text");
+    // Advisory (it still saves): the pink box, but never aria-invalid.
+    expect(variation.getAttribute("data-over")).toBe("true");
+    expect(variation.getAttribute("aria-invalid")).toBeNull();
+    expect(variation.className).toContain("data-[over=true]:border-neon-pink-text");
     expect(notice.className).toContain("text-neon-pink-text");
     await editAndCommit(variation, "z".repeat(70));
 
@@ -688,6 +694,9 @@ describe("CardDetailPanel — a cleared title is refused (NEO-358)", () => {
     ).toBeTruthy();
     // The counter follows the restored title, not the cleared field.
     expect(screen.getByText("39/80")).toBeTruthy();
+    // NEO-606: a refused save is an error, not an over-cap title — no pink box.
+    expect(titleInput().getAttribute("aria-invalid")).toBe("true");
+    expect(titleInput().getAttribute("data-over")).toBeNull();
   });
 
   it("the next real title saves and the refusal goes", async () => {

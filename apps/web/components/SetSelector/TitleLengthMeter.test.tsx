@@ -18,6 +18,7 @@ import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
   OVER_FIELD_CLASS,
+  overFieldProps,
   TitleFieldNote,
   TitleLengthAlert,
   TitleLengthMeter,
@@ -236,12 +237,29 @@ describe("NEO-606 — the over-cap look is neon pink, on the text and on the fie
     expect(screen.getByRole("alert").className).not.toContain("notice-danger");
   });
 
-  it("OVER_FIELD_CLASS is keyed on aria-invalid: edge, ring and tint in the pink roles", () => {
-    expect(OVER_FIELD_CLASS.split(" ")).toEqual([
-      "aria-invalid:border-neon-pink-text",
-      "aria-invalid:ring-1",
-      "aria-invalid:ring-neon-pink-text",
-      "aria-invalid:bg-neon-pink/10",
-    ]);
+  it("OVER_FIELD_CLASS is keyed on data-over, never aria-invalid: edge, ring and tint in the pink roles", () => {
+    const classes = OVER_FIELD_CLASS.split(" ");
+    expect(classes).toEqual(expect.arrayContaining([
+      "data-[over=true]:border-neon-pink-text",
+      "data-[over=true]:ring-1",
+      "data-[over=true]:ring-neon-pink-text",
+      "data-[over=true]:bg-neon-pink/10",
+    ]));
+    // A refused save sets aria-invalid; that error keeps its own look.
+    expect(OVER_FIELD_CLASS).not.toContain("aria-invalid");
+  });
+
+  it("OVER_FIELD_CLASS lets the grey held fill win over the tint, edge and ring staying", () => {
+    const classes = OVER_FIELD_CLASS.split(" ");
+    // Three attributes of specificity (held + over) against the tint's two.
+    expect(classes).toContain("aria-disabled:data-[over=true]:bg-button-neutral");
+    expect(classes).toContain("disabled:data-[over=true]:bg-button-neutral");
+    // Nothing held ever drops the edge or the ring.
+    expect(classes.filter((c) => /^(aria-disabled|disabled):.*(border|ring)/.test(c))).toEqual([]);
+  });
+
+  it("overFieldProps sets the length-only hook when over and nothing when not", () => {
+    expect(overFieldProps(true)).toEqual({ "data-over": "true" });
+    expect(overFieldProps(false)).toEqual({});
   });
 });

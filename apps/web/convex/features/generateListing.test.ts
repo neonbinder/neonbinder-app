@@ -1799,6 +1799,34 @@ describe("NEO-606 a team gives up its location before it goes", () => {
     expect(a.title.length).toBe(80);
   });
 
+  test("at 81 the '#' alone goes and the team keeps its city; at 82 the city goes", () => {
+    const at81 = assessListingTitle(card(64, { teamNames: ["New York Yankees"], teamSplits: [NY] }));
+    expect(at81.title.length).toBe(80);
+    expect(at81.title.endsWith("Ohtani 17 New York Yankees")).toBe(true);
+    expect(at81.dropped).toEqual([]);
+    const at82 = assessListingTitle(card(65, { teamNames: ["New York Yankees"], teamSplits: [NY] }));
+    expect(at82.title.endsWith("#17 Yankees")).toBe(true);
+    expect(at82.title.length).toBe(73);
+  });
+
+  test("a split for a team the card does not have (a No Team set) adds nothing", () => {
+    const a = assessListingTitle(card(70, { teamNames: [], teamSplits: [NY] }));
+    expect(a.title.endsWith("#17")).toBe(true);
+    expect(a.title).not.toContain("Yankees");
+    expect(a.dropped).toEqual([]);
+  });
+
+  test("a location repeated inside the nickname is cut once and the nickname stays whole", () => {
+    // Row: location "Texas", name "Texas Rangers" → full name "Texas Texas Rangers".
+    const a = assessListingTitle(
+      card(62, {
+        teamNames: ["Texas Texas Rangers"],
+        teamSplits: [{ location: "Texas", name: "Texas Rangers" }],
+      }),
+    );
+    expect(teamOnly(a.title)).toBe("Texas Rangers");
+  });
+
   test("a split that names another team gives this one nothing to cut", () => {
     const a = assessListingTitle(card(66, { teamNames: ["New York Yankees"], teamSplits: [BOS] }));
     expect(a.title.endsWith("#17")).toBe(true);
@@ -1930,6 +1958,56 @@ describe("NEO-606 a team gives up its location before it goes", () => {
       // Without the split it is simply gone.
       const plain = withVariation(70, []);
       expect(plain.title.endsWith("#17")).toBe(true);
+    });
+  });
+
+  describe("a nickname the title already says is not said twice", () => {
+    const NYG = { location: "New York", name: "Giants" };
+    const SFG = { location: "San Francisco", name: "Giants" };
+    const twoGiants = (length: number, splits = [NYG, SFG]) =>
+      assessListingTitle(
+        card(length, { teamNames: ["New York Giants", "San Francisco Giants"], teamSplits: splits }),
+      );
+
+    test("two teams that share a nickname say it once", () => {
+      // The last team's city goes first; its "Giants" is already in "New York Giants".
+      const a = twoGiants(48);
+      expect(teamOnly(a.title)).toBe("New York Giants");
+      expect(a.title).not.toMatch(/Giants.*Giants/);
+      // Both cities gone: one "Giants".
+      const both = twoGiants(68);
+      expect(teamOnly(both.title)).toBe("Giants");
+      // Nothing is listed as left out while a word of the title names the team.
+      expect(a.dropped).toEqual([]);
+      expect(both.dropped).toEqual([]);
+    });
+
+    test("whole names still print as before when they fit", () => {
+      expect(teamOnly(twoGiants(36).title)).toBe("New York Giants San Francisco Giants");
+    });
+
+    test("without splits the teams are cut whole, as before", () => {
+      const a = twoGiants(48, []);
+      expect(teamOnly(a.title)).toBe("New York Giants");
+    });
+
+    test("a variation that says the nickname covers the shrunk team", () => {
+      const withVariation = (length: number, splits: typeof NY[]) =>
+        assessListingTitle(
+          card(length, {
+            cardVariation: "Yankees",
+            teamNames: ["New York Yankees"],
+            teamSplits: splits,
+          }),
+        );
+      const a = withVariation(58, [NY]);
+      expect(a.title.endsWith("#17 Yankees")).toBe(true);
+      expect(a.title).not.toMatch(/Yankees.*Yankees/);
+      expect(a.dropped).toEqual([]);
+      // It is the title a card with no split would get.
+      expect(withVariation(58, []).title).toBe(a.title);
+      // With room, the whole team is still said (the variation is not the team).
+      expect(withVariation(50, [NY]).title.endsWith("#17 Yankees New York Yankees")).toBe(true);
     });
   });
 

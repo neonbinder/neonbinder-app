@@ -25,6 +25,7 @@ import {
   LISTING_TITLE_MAX,
   TitleFieldNote,
   OVER_FIELD_CLASS,
+  overFieldProps,
   TitleLengthAlert,
   TitleLengthMeter,
   titleLengthState,
@@ -1377,6 +1378,7 @@ export default function CardDetailPanel({
               placeholder="Listing title reused across marketplaces"
               aria-label="Card title"
               aria-invalid={titleState.over || Boolean(titleField.error) || undefined}
+              {...overFieldProps(titleState.over)}
               aria-describedby={
                 [
                   titleState.over ? titleAlertId : null,
@@ -1700,7 +1702,9 @@ export default function CardDetailPanel({
               className={`${fieldClass("cardVariation")} w-full p-1.5 text-sm ${OVER_FIELD_CLASS}`}
               placeholder="e.g. Gold Refractor"
               aria-label="Card variation"
-              aria-invalid={variationField.error || variationLength > ASPECT_VALUE_MAX ? true : undefined}
+              aria-invalid={variationField.error ? true : undefined}
+              // Advisory past 65 (it still saves): pink box, no `aria-invalid`.
+              {...overFieldProps(variationLength > ASPECT_VALUE_MAX)}
               aria-describedby={
                 [
                   variationLength > ASPECT_VALUE_MAX ? variationAlertId : null,

@@ -88,16 +88,27 @@ const TONE_CLASS: Record<TitleLengthTone, string> = {
 /**
  * NEO-606 — the whole field, not just the note under it, says "too long".
  *
- * Keyed on `aria-invalid` (which every too-long field already sets), so the
- * highlight goes the moment the text fits, and the `aria-invalid:` variant
- * outranks the primitive's own edge and well without an `!important`. The
- * edge is the pink text role (3:1 against the field in both modes); the ring
- * thickens it to 2px and the tint carries it for anyone who misses a line.
- * The note is tied to the field by `aria-describedby`, so a screen reader
- * hears the same thing a sighted operator sees.
+ * Keyed on `data-over`, which {@link overFieldProps} sets from LENGTH alone,
+ * never on `aria-invalid`: a refused save also sets `aria-invalid`, and that
+ * error keeps its own look (its message stays the danger ink), so the pink box
+ * means one thing — past the cap. It goes the moment the text fits. The edge
+ * is the pink text role; the ring thickens it to 2px and the tint carries it
+ * for anyone who misses a line.
+ *
+ * Held (`aria-disabled`, or native `disabled`): the grey `button-neutral` fill
+ * wins over the tint (`FIELD_OFF`), while the pink edge and ring stay, so a
+ * held over-cap field still reads as both. The stacked
+ * `aria-disabled:data-[over=true]:` variant carries three attributes' worth of
+ * specificity against the tint's two, so the win does not hang on stylesheet
+ * order.
  */
 export const OVER_FIELD_CLASS =
-  "aria-invalid:border-neon-pink-text aria-invalid:ring-1 aria-invalid:ring-neon-pink-text aria-invalid:bg-neon-pink/10";
+  "data-[over=true]:border-neon-pink-text data-[over=true]:ring-1 data-[over=true]:ring-neon-pink-text data-[over=true]:bg-neon-pink/10 aria-disabled:data-[over=true]:bg-button-neutral disabled:data-[over=true]:bg-button-neutral";
+
+/** Spread onto a field that wears {@link OVER_FIELD_CLASS}: the length-only hook. */
+export function overFieldProps(over: boolean): { "data-over"?: "true" } {
+  return over ? { "data-over": "true" } : {};
+}
 
 /**
  * Classify a length against a cap.

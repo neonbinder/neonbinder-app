@@ -12,6 +12,7 @@ import {
   LISTING_TITLE_MAX,
   TitleFieldNote,
   OVER_FIELD_CLASS,
+  overFieldProps,
   TitleLengthAlert,
   TitleLengthMeter,
   titleLengthState,
@@ -269,6 +270,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           // takes a regex, so `Card title for #.*` still targets it.
           aria-label={`Card title for #${row.cardNumber}`}
           aria-invalid={titleState.over || undefined}
+          {...overFieldProps(titleState.over)}
           // The save hint says Enter saves: a wrapping field reads as one
           // where Enter makes a new line.
           aria-describedby={[titleState.over ? titleAlertId : null, saveHintId]
@@ -375,7 +377,8 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
             }}
             className={`w-full p-1.5 text-sm ${OVER_FIELD_CLASS}`}
             aria-label={`Card variation for #${row.cardNumber}`}
-            aria-invalid={variation.length > ASPECT_VALUE_MAX || undefined}
+            // Advisory: it still saves, so no `aria-invalid`; the status below is its description.
+            {...overFieldProps(variation.length > ASPECT_VALUE_MAX)}
             aria-describedby={[
               variation.length > ASPECT_VALUE_MAX ? variationAlertId : null,
               saveHintId,

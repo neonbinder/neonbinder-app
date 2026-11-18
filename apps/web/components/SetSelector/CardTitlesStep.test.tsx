@@ -414,8 +414,11 @@ describe("CardTitlesStep — the meter is neutral until past the cap", () => {
     // happy-dom does not run the stylesheet: the invalid look is the
     // `aria-invalid:` utilities, which apply exactly while the attribute is set.
     expect(field.getAttribute("aria-invalid")).toBe("true");
-    expect(field.className).toContain("aria-invalid:border-neon-pink-text");
-    expect(field.className).toContain("aria-invalid:ring-neon-pink-text");
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    expect(field.className).toContain("data-[over=true]:ring-neon-pink-text");
+    // Held (the step saving) keeps the pink edge and shows the grey fill.
+    expect(field.className).toContain("aria-disabled:data-[over=true]:bg-button-neutral");
     // The note is pink text and tied to the box.
     const note = screen.getByRole("status");
     expect(note.textContent).toBe("Too long to list as-is.");
@@ -425,7 +428,21 @@ describe("CardTitlesStep — the meter is neutral until past the cap", () => {
     // Back under the cap: the box and the note both let go.
     fireEvent.change(field, { target: { value: "t".repeat(80) } });
     expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.getAttribute("data-over")).toBeNull();
     expect(screen.getByRole("status").textContent).toBe("");
     expect(field.getAttribute("aria-describedby")).not.toContain(note.id);
+  });
+
+  test("NEO-606: a variation past 65 gets the pink box but is advisory, so never aria-invalid", () => {
+    setup({
+      cards: [card("1", { cardVariation: LONG_VARIATION })],
+      titleContext: SHORT,
+    });
+    const field = screen.getByRole("textbox", { name: "Variation for #1 Card 1" });
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    fireEvent.change(field, { target: { value: "Throwback uniform" } });
+    expect(field.getAttribute("data-over")).toBeNull();
   });
 });

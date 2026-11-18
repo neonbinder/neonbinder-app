@@ -10,6 +10,7 @@ import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
   OVER_FIELD_CLASS,
+  overFieldProps,
   TitleLengthMeter,
 } from "./TitleLengthMeter";
 import {
@@ -632,7 +633,9 @@ function VariationLine({
         // to be trimmed. The meter says where the cap is.
         aria-label={`Variation for ${owner}`}
         aria-describedby={`${leadId} ${meterId} ${hintId}`}
-        aria-invalid={length > ASPECT_VALUE_MAX || undefined}
+        // Advisory (the card saves with the variation as it is): the pink box
+        // follows the length, but the field is not `aria-invalid`.
+        {...overFieldProps(length > ASPECT_VALUE_MAX)}
         aria-disabled={disabled || undefined}
         readOnly={disabled}
         className={`${FIELD_CLASS} ${OVER_FIELD_CLASS}`}
@@ -821,6 +824,7 @@ function TitleRow({
             .filter(Boolean)
             .join(" ")}
           aria-invalid={over || undefined}
+          {...overFieldProps(over)}
           aria-disabled={disabled || undefined}
           readOnly={disabled}
           className={`${FIELD_CLASS} ${OVER_FIELD_CLASS}`}

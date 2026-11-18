@@ -599,7 +599,17 @@ function renderTitle(state: TitleState): string {
     out.push(state.number.mode === "hash" ? `#${state.number.text}` : state.number.text);
   }
   for (const token of state.tail) {
-    if (token.in) out.push(token.shrunk && token.short ? token.short : token.text);
+    if (!token.in) continue;
+    if (token.shrunk && token.short) {
+      // NEO-606 — a nickname the title has already said is a repeat, like a
+      // second AUTO: "Giants" after "New York Giants" (or after a variation
+      // that says "Yankees") is not said twice. The team has given up its
+      // location and has nothing left to add, so it adds nothing.
+      if (alreadySaid(out.filter(Boolean).join(" "), token.short)) continue;
+      out.push(token.short);
+    } else {
+      out.push(token.text);
+    }
   }
   // NEO-363 — `listingTitle` is required and never blank. A card with nothing
   // else to say still gets "#", as the pre-NEO-535 builder always gave it.
