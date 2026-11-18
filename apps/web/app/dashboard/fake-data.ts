@@ -215,6 +215,8 @@ const THURMAN = pick(SET.score89, null, 211);
 const GRIFFEY = pick(SET.finest, null, 2);
 /** In the Show box with no price yet, so the sync holds it back. */
 const RIPKEN = pick(SET.finest, null, 5);
+/** In the Show box, priced, and held back by no sync: free for an eBay order to sell. */
+const SCORE_270 = pick(SET.score89, null, 270);
 
 /**
  * Built in any order; sorted oldest first below. Every line sells a card the
@@ -236,6 +238,13 @@ const UNSHIPPED_AS_BUILT: UnshippedSale[] = [
   ]),
   // Sold today, and the only line is a listing NB holds no card for: the row is its title.
   sale("sale-ebay-2", "ebay", "12-34567-89099", 0, [{ card: null, quantity: 1, title: "2023 Topps Chrome #121 Gunnar Henderson RC Orioles" }]),
+  // An eBay order whose FIRST line is a listing NB holds no card for and that carried no title, then
+  // a card: the row still leads with the card, the count says items, and the opened list names the
+  // untitled line "An item with no title".
+  sale("sale-ebay-3", "ebay", "12-34567-89123", 1, [
+    { card: null, quantity: 1 },
+    { card: SCORE_270, quantity: 1 },
+  ]),
 ];
 
 /** Oldest first: the order every sales list shows. */

@@ -161,6 +161,22 @@ test(
     // The button's words flip with the state, so the open one is found by its new name.
     await expect(mixed.getByRole("button", { name: /^Hide the cards/, expanded: true })).toBeVisible();
     await expect(mixed.getByText("2024 Score #333 Rome Odunze RC", { exact: true })).toBeVisible();
+
+    // NEO-590: an eBay order whose FIRST line is a listing NB holds no card for, sold with no title, beside a
+    // card. The row leads with the card (the order's first card, not its first line), so "A sale with no
+    // title" (the lead of an order with no card at all) never shows here; eBay counts items, and the opened
+    // list names the untitled line "An item with no title". The card link is the positive beside each
+    // absence (R2).
+    const untitled = orders.getByRole("article", { name: "eBay order #12-34567-89123", exact: true });
+    await expect(untitled.getByRole("link", { name: /^1989 Score Troy Aikman #270 / })).toBeVisible();
+    await expect(untitled.getByText("2 items. Sold yesterday.", { exact: true })).toBeVisible();
+    await expect(untitled.getByText("A sale with no title", { exact: true })).toHaveCount(0);
+    await untitled.getByRole("button", { name: "Show all 2 items in eBay order 12-34567-89123", exact: true }).click();
+    await expect(
+      untitled.getByRole("button", { name: "Hide the items in eBay order 12-34567-89123", exact: true, expanded: true }),
+    ).toBeVisible();
+    await expect(untitled.getByText("An item with no title", { exact: true })).toBeVisible();
+    await expect(untitled.getByText("A sale with no title", { exact: true })).toHaveCount(0);
     await expectAccessible(page, { within: orders, label: "Dashboard demo, an order opened" });
 
     // With none open, the first binder on the shelf stands shut beside it; its cover

@@ -15,8 +15,10 @@
 //     a band walks its titles newest year first (a 2019 Mike Trout title, also
 //     a reference-seed Baseball player, sits under the 2024 one), a title that
 //     does not open with a year files under Other even when it names an NB
-//     player (a Mike Trout hoodie is not a Baseball card), and the Sport
-//     filter offers "Other" while an Other line is on the list;
+//     player (a Mike Trout hoodie is not a Baseball card), a graded slab's
+//     title ("PSA 10 2021 Topps Chrome ...") files under its sport like the
+//     raw card's (the one grader and grade before the year are read past),
+//     and the Sport filter offers "Other" while an Other line is on the list;
 //   - never ties it to a card by its title: the title here names a REAL card
 //     that sits in the seller's own box; that card is not on the list, its
 //     set gets no row, and the box keeps its copy;
@@ -36,9 +38,10 @@
 //
 // R7/R7a: reads the seed's 2024 Topps Chrome Base and writes ONLY the signed-in
 // user's own rows: one box `Ebay<token>`, one copy of #215 Nolan Arenado in it
-// (reserved for this spec, SET-REGISTRY.md) and five `marketplaceSales` orders
-// (`<token>e` and `<token>h` titled, `<token>k` titled with no year, `<token>g` with a
-// 150-character unspaced title, `<token>f` untitled), all shipped by the end.
+// (reserved for this spec, SET-REGISTRY.md) and six `marketplaceSales` orders
+// (`<token>e` and `<token>h` titled, `<token>k` titled with no year, `<token>m` a
+// graded slab's title, `<token>g` with a 150-character unspaced title, `<token>f`
+// untitled), all shipped by the end.
 // Self-cleaning: #215's copy is typed back to 0 and the box deleted; on a
 // failure the finally block ships whatever order is still open, on a second
 // page so the failing one stays as the screenshot saw it (the bootstrap's
@@ -90,6 +93,7 @@ test(
     const long = `${env.ATTEMPT_TOKEN}g`;
     const older = `${env.ATTEMPT_TOKEN}h`;
     const yearless = `${env.ATTEMPT_TOKEN}k`;
+    const slab = `${env.ATTEMPT_TOKEN}m`;
     // One unspaced token of 150 characters: nothing to break on, so the page must wrap it itself.
     const longTitle = `Long${env.ATTEMPT_TOKEN}`.padEnd(150, "w");
     // The title names a real card in the seller's box on purpose: NB must never read a title to find a card.
@@ -100,6 +104,9 @@ test(
     // NEO-590: names the same Baseball player but opens with no year, so it is not read as a card:
     // it must file under Other, never Baseball (the server alone would answer Baseball for it).
     const yearlessTitle = `Mike Trout Hoodie XL Thing${env.ATTEMPT_TOKEN}`;
+    // NEO-590: a graded slab's title opens with its grader and grade, then the year: it reads like the raw
+    // card's and files under Baseball. Were the grade not read past, it would open with no year: Other.
+    const slabTitle = `PSA 10 2021 Topps Chrome #27 Mike Trout Thing${env.ATTEMPT_TOKEN}`;
     const advance = isMobile ? "Enter" : "Tab";
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
     const pick = pickList(page);
@@ -171,6 +178,18 @@ test(
       await expect(pulledToggle(titleBand("Other"), yearlessTitle)).toBeVisible();
       await expect(pulledToggle(baseball, yearlessTitle)).toHaveCount(0);
       await expect(pulledToggle(pickGroup(table, "Can't find it"), yearlessTitle)).toHaveCount(0);
+      // --- NEO-590: a graded slab's title files under its sport, Baseball, like the raw card's ------------
+      await seedEbayOrder(page, { orderNo: slab, lines: [{ quantity: 1, title: slabTitle }] });
+      open.add(slab);
+      await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
+      await expect(pulledToggle(baseball, slabTitle)).toBeVisible();
+      await expect(inBaseball).toHaveCount(3);
+      await expect(pulledToggle(titleBand("Other"), slabTitle)).toHaveCount(0);
+      await expect(pulledToggle(pickGroup(table, "Can't find it"), slabTitle)).toHaveCount(0);
+      await shipEbayOrder(page, slab);
+      await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
+      open.delete(slab);
+      await expect(pulledToggle(table, slabTitle)).toHaveCount(0);
       await shipEbayOrder(page, yearless);
       await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
       open.delete(yearless);
