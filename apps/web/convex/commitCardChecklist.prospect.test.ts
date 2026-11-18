@@ -541,6 +541,44 @@ describe("commitCardChecklist — Remember a held X as a name for the team picke
     await settle(t);
   });
 
+  test("security re-check: a card that holds no X cannot save BSC's raw team value as a name", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const teamId = await seedSooners(t, sportId);
+    await commit(t, sportId, leafId, [
+      card({
+        cardNumber: "1",
+        bscRef: "B1",
+        rawTeamName: "Some BSC Value",
+        teamIds: [teamId],
+        rememberTeamAs: "Some BSC Value",
+      }),
+    ]);
+    expect(await aliasesOf(t, teamId)).toEqual([]);
+    await settle(t);
+  });
+
+  test("security re-check: a card with several held Xs cannot save their joined text, a cut '+N more' text, or either X alone", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const teamId = await seedSooners(t, sportId);
+    const multi = (alias: string) =>
+      heldCard({
+        prospectTeam: "Oklahoma / Arizona",
+        prospectTeams: ["Oklahoma", "Arizona"],
+        rawTeamName: "Oklahoma / Arizona",
+        teamIds: [teamId],
+        rememberTeamAs: alias,
+      });
+    await commit(t, sportId, leafId, [multi("Oklahoma / Arizona")]);
+    expect(await aliasesOf(t, teamId)).toEqual([]);
+    await commit(t, sportId, leafId, [{ ...multi("Oklahoma +1 more"), prospectTeam: "Oklahoma +1 more" }]);
+    expect(await aliasesOf(t, teamId)).toEqual([]);
+    await commit(t, sportId, leafId, [multi("Oklahoma")]);
+    expect(await aliasesOf(t, teamId)).toEqual([]);
+    await settle(t);
+  });
+
   test("only with exactly one picked team: two picks save nothing", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);

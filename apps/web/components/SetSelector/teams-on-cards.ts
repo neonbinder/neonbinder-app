@@ -343,7 +343,12 @@ export const TEAMS_SECTION_MAX_REQUESTS = 8;
  */
 export const TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST = 8;
 
-/** How many name calls the section makes at most (×32 names). */
+/**
+ * The name BUDGET, not a call count: at most 4 × `TEAMS_SECTION_NAMES_PER_REQUEST`
+ * (128) names are asked about. Calls are sliced further to keep each call's
+ * location leg within `TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST`, so up to 16
+ * calls happen for 128 names (`nameRequestSlices`).
+ */
 export const TEAMS_SECTION_MAX_NAME_REQUESTS = 4;
 
 /**

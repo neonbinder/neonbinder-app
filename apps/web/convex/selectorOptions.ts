@@ -15779,9 +15779,10 @@ const previewCardFields = {
   // on a HELD "Prospect (X)" line the operator settled (off unless ticked):
   // the held X, to be saved as an alias of the ONE team picked in `teamIds`.
   // A client claim, so the commit applies it only when it is exactly one
-  // validated pick and the text IS one of this card's own held Xs
-  // (`prospectTeams` / `prospectTeam` / `rawTeamName`); anything else is
-  // dropped, never written. Bounded by `assertCardBatchWithinLimits`.
+  // validated pick and the card's `prospectTeams` holds exactly one X whose
+  // text IS this one. Never `prospectTeam` (the joined, possibly cut text) nor
+  // `rawTeamName` (BSC's value, present on cards that are not held); anything
+  // else is dropped, never written. Bounded by `assertCardBatchWithinLimits`.
   rememberTeamAs: v.optional(v.string()),
   // `teamsAnswered` — this card's `teams` STRINGS are the operator's answer
   // in the wizard (a team staged in this review, or a sibling card's printed
@@ -24547,7 +24548,7 @@ export const commitCardChecklist = action({
     // Collector review — "Remember … as a name for this team" on a held line
     // the operator settled. After the creates, before anything resolves, like
     // the entity-review box. Exactly one validated pick per card, and the text
-    // must be one of that card's own held Xs (a client claim otherwise); the
+    // must be the ONE held X the card carries (a client claim otherwise); the
     // rest is dropped, never written. A failure here never fails the commit.
     {
       const norm = (t: string) => normalizeTeamName(t.trim());
@@ -24556,16 +24557,12 @@ export const commitCardChecklist = action({
         const alias = card.rememberTeamAs?.trim();
         const picked = card.teamIds ?? [];
         if (!alias || picked.length !== 1 || !operatorTeamNameById.has(picked[0])) continue;
-        const ownHeld = new Set(
-          [
-            ...(card.prospectTeams ?? []),
-            ...(card.prospectTeam ? [card.prospectTeam] : []),
-            ...(card.rawTeamName ? [card.rawTeamName] : []),
-          ]
-            .map(norm)
-            .filter(Boolean),
-        );
-        if (!ownHeld.has(norm(alias))) continue;
+        // Only a card holding exactly ONE X can remember it: that X is the
+        // exact text the checklist printed. `prospectTeam` (joined, maybe cut
+        // to "+N more") and `rawTeamName` (BSC's value, on any card) are not
+        // one X, so neither is accepted.
+        const heldXs = (card.prospectTeams ?? []).map(norm).filter(Boolean);
+        if (heldXs.length !== 1 || heldXs[0] !== norm(alias)) continue;
         pairs.set(`${picked[0]}|${norm(alias)}`, { teamId: picked[0], alias });
         if (pairs.size >= MAX_REMEMBERED_CARD_ALIASES) break;
       }
