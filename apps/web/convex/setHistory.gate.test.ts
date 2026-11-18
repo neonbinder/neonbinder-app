@@ -686,13 +686,14 @@ describe("the gate: autoLinkedCount tells the client a batch holds decided rows 
     const baseball = await sport(t, "Baseball");
     const football = await sport(t, "Football");
     const p = await product(t, baseball, { year: "2010" });
-    // Two closed eras the 2010 set year cannot separate: the in-sport lookup
-    // answers null, and only set history can name the row.
-    const browns1883 = await team(t, baseball, "St. Louis", "Browns");
+    // A LONE row that begins after the 2010 set year: nothing shows a team's
+    // future, so the in-sport lookup answers null - and, with only one row
+    // answering to the name, it is not a tie (NEO-602), so set history may
+    // still name the row. (Two rows the year cannot separate would now go to
+    // the operator instead; see resolveUnknowns.careerTeam.test.ts.)
     const browns1902 = await team(t, baseball, "St. Louis", "Browns");
     await t.run(async (ctx) => {
-      await ctx.db.patch(browns1883, { yearsActive: { from: 1883, to: 1898 } });
-      await ctx.db.patch(browns1902, { yearsActive: { from: 1902, to: 1953 } });
+      await ctx.db.patch(browns1902, { yearsActive: { from: 2020 } });
     });
     // A player of another sport the set already linked: history outranks the
     // in-sport lookup, which finds nobody.

@@ -8332,6 +8332,43 @@ describe("EntityReviewWizard — NEO-307 a New Team name another team holds as a
     expect(screen.getByText("Enter a team name before adding it.")).toBeTruthy();
   });
 
+  it("NEO-602: a dated draft sends its years with the question and the sentence says the years overlap", () => {
+    currentAliasHolders = [LA];
+    currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];
+    renderWizard();
+
+    fireEvent.change(screen.getByLabelText("New team active from (optional)"), {
+      target: { value: "1950" },
+    });
+    fireEvent.change(screen.getByLabelText("New team active to"), {
+      target: { value: "1960" },
+    });
+
+    const asked = queryCalls.filter(
+      (call) => call.ref === "teams.nameHeldAsAliasBy" && call.args !== "skip",
+    );
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked[asked.length - 1].args).toMatchObject({
+      name: "Brooklyn Dodgers",
+      yearsActive: { from: 1950, to: 1960 },
+    });
+    const dated =
+      "Los Angeles Dodgers · 1958–present already answers to this name as an alias, and the two teams' years overlap. Remove it there, or give this team years that don't overlap.";
+    expect(screen.getAllByText(dated)).toHaveLength(2);
+  });
+
+  it("NEO-602: a draft with no years sends no years (the server reads it as undated)", () => {
+    currentAliasHolders = [LA];
+    currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];
+    renderWizard();
+
+    const asked = queryCalls.filter(
+      (call) => call.ref === "teams.nameHeldAsAliasBy" && call.args !== "skip",
+    );
+    expect(asked.length).toBeGreaterThan(0);
+    expect("yearsActive" in (asked[asked.length - 1].args as object)).toBe(false);
+  });
+
   it("shows nothing and blocks nothing when no team holds the name", () => {
     currentAliasHolders = [];
     currentRows = [makeRow({ kind: "team", name: "Brooklyn Dodgers", status: "ready" })];

@@ -895,4 +895,84 @@ describe("the card-linking paths narrow by the set's year", () => {
     // only record of what the marketplace claimed.
     expect(card?.team).toBe(JETS);
   });
+  describe("NEO-602: the backfill reads the card's own players when a name fits several eras", () => {
+    const NAME = "Oakland Athletics";
+
+    async function seedAthletics(t: T) {
+      const { sportId, setId } = await seedSportWithSet(t, "2025");
+      const { oakland, athletics } = await t.run(async (ctx) => {
+        const oaklandId = await ctx.db.insert("teams", {
+          location: "Oakland",
+          name: "Athletics",
+          nameNormalized: normalizeTeamName(NAME),
+          sportId,
+          yearsActive: { from: 1968, to: 2024 },
+          lastUpdated: 1,
+        });
+        const athleticsId = await ctx.db.insert("teams", {
+          name: "Athletics",
+          nameNormalized: normalizeTeamName("Athletics"),
+          sportId,
+          yearsActive: { from: 2025 },
+          aliases: [NAME],
+          lastUpdated: 1,
+        });
+        await ctx.db.insert("teamAliases", {
+          teamId: athleticsId,
+          sportId,
+          aliasNormalized: normalizeTeamName(NAME),
+        });
+        return { oakland: oaklandId, athletics: athleticsId };
+      });
+      return { sportId, setId, oakland, athletics };
+    }
+
+    const cardFor = (t: T, setId: Id<"selectorOptions">, playerIds: Array<Id<"players">>) =>
+      t.run(async (ctx) =>
+        insertTestCard(ctx, {
+          selectorOptionId: setId,
+          cardNumber: "1",
+          cardName: "Card",
+          team: NAME,
+          platformData: {},
+          sortOrder: 1,
+          lastUpdated: 1,
+          ...(playerIds.length > 0 ? { playerIds } : {}),
+        } as never),
+      );
+
+    test("a Rickey Henderson card links Oakland", async () => {
+      const t = convexTest(schema, modules);
+      const w = await seedAthletics(t);
+      const rickey = await t.run((ctx) =>
+        ctx.db.insert("players", {
+          name: "Rickey Henderson",
+          nameNormalized: "henderson rickey",
+          sportId: w.sportId,
+          teamYears: [{ teamId: w.oakland, fromYear: 1979, toYear: 1984 }],
+          lastUpdated: 1,
+        }),
+      );
+      const cardId = await cardFor(t, w.setId, [rickey]);
+
+      await t.mutation(internal.cardChecklist.backfillTeamToOnCardIds, { batchSize: 10 });
+
+      expect((await t.run((ctx) => ctx.db.get(cardId)))?.teamOnCardIds).toEqual([w.oakland]);
+    });
+
+    test("a card with no players is left unmigrated, string kept: the alias-only year pick is not trusted", async () => {
+      const t = convexTest(schema, modules);
+      const w = await seedAthletics(t);
+      const cardId = await cardFor(t, w.setId, []);
+
+      const result = await t.mutation(internal.cardChecklist.backfillTeamToOnCardIds, {
+        batchSize: 10,
+      });
+
+      expect(result.unmatched).toBe(1);
+      const card = await t.run((ctx) => ctx.db.get(cardId));
+      expect(card?.teamOnCardIds ?? null).toBeNull();
+      expect((card as { team?: string } | null)?.team).toBe(NAME);
+    });
+  });
 });

@@ -1057,15 +1057,17 @@ describe("NEO-284 S1 at commit: the two commit-time alias writers drop another t
     expect(indexRows.map((r) => r.aliasNormalized)).toEqual([normalizeTeamName("War Eagle")]);
     // LSU is untouched and still answers only to itself.
     expect((await t.run((ctx) => ctx.db.get(lsu)))!.aliases).toBeUndefined();
-    // Neither card lost its team. "War Eagle" took the operator's link;
-    // "LSU Tigers" is exactly one team's own name, so the prelude's
-    // exactly-one fast path linked it to LSU before the decision was ever
-    // consulted — which is the same fact the alias pass just protected.
+    // Neither card lost its team. NEO-602 (D5): a review row for the name
+    // controls the commit prelude, so BOTH strings take the operator's link to
+    // Auburn - "LSU Tigers" included, although exactly one team (LSU) holds
+    // that name, which used to win before the decision was consulted. Only the
+    // alias WRITE is dropped (asserted above): the link is the operator's, the
+    // remembered alias would have been LSU's own name.
     const cards = await t.run((ctx) =>
       ctx.db.query("cardChecklist").withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId)).collect(),
     );
     const byNumber = new Map(cards.map((c) => [c.cardNumber, c.teamOnCardIds]));
-    expect(byNumber.get("1")).toEqual([lsu]);
+    expect(byNumber.get("1")).toEqual([auburn]);
     expect(byNumber.get("2")).toEqual([auburn]);
   });
 
@@ -1130,10 +1132,10 @@ describe("NEO-284 S1 at commit: the two commit-time alias writers drop another t
 });
 
 // ===========================================================================
-// NEO-307 — the alias rule is era-blind at commit too, in both orders
+// NEO-602 — the alias rule is era-aware at commit too, in both orders
 // ===========================================================================
 
-describe("NEO-307: commit-time alias writers ignore eras when a string is another team's name", () => {
+describe("NEO-602: commit-time alias writers follow the years when a string is another team's name", () => {
   /** The Chrome fixture, re-dated. */
   async function seedSetIn(t: ReturnType<typeof convexTest>, season: string) {
     const seeded = await seedVariantTypeUnderChromeSet(t);
@@ -1145,11 +1147,39 @@ describe("NEO-307: commit-time alias writers ignore eras when a string is anothe
     return seeded;
   }
 
-  test("remember-as-a-name drops Brooklyn Dodgers on LA (1958–) silently, and the 2026 retro card links Brooklyn", async () => {
-    const t = convexTest(schema, modules);
+  async function commitOne(
+    t: ReturnType<typeof convexTest>,
+    args: { variantTypeId: Id<"selectorOptions">; sportId: Id<"selectorOptions">; team: string; batchId: string },
+  ) {
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: args.variantTypeId,
+        sportId: args.sportId,
+        cards: [makeCard({ cardNumber: "1", teams: [args.team] })],
+        batchId: args.batchId,
+      });
+      return { result, lines: warn.mock.calls.map((c) => String(c[0])) };
+    } finally {
+      warn.mockRestore();
+    }
+  }
+
+  const cardTeams = async (t: ReturnType<typeof convexTest>, variantTypeId: Id<"selectorOptions">) =>
+    (
+      await t.run((ctx) =>
+        ctx.db
+          .query("cardChecklist")
+          .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
+          .first(),
+      )
+    )!.teamOnCardIds ?? [];
+
+  test("remember-as-a-name writes Brooklyn Dodgers on LA (1958–): the years are disjoint, so the alias is kept and the link lands", async () => {
+    const t = convexTest(schema, modules);
     const { variantTypeId, sportId } = await seedSetIn(t, "2026");
-    const brooklyn = await insertTeamWithAliases(t, sportId, {
+    await insertTeamWithAliases(t, sportId, {
       location: "Brooklyn",
       name: "Dodgers",
       yearsActive: { from: 1911, to: 1957 },
@@ -1159,11 +1189,10 @@ describe("NEO-307: commit-time alias writers ignore eras when a string is anothe
       name: "Dodgers",
       yearsActive: { from: 1958 },
     });
-    // The franchise-lineage link an operator might make, box left on.
     await t.run((ctx) =>
       ctx.db.insert("entityReviewQueue", {
         selectorOptionId: variantTypeId,
-        batchId: "batch-307-remember",
+        batchId: "batch-602-remember",
         createdByUserId: ADMIN_IDENTITY.subject,
         kind: "team",
         name: "Brooklyn Dodgers",
@@ -1174,55 +1203,66 @@ describe("NEO-307: commit-time alias writers ignore eras when a string is anothe
       }),
     );
 
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    let result: { success: boolean };
-    try {
-      result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-        selectorOptionId: variantTypeId,
-        sportId,
-        cards: [makeCard({ cardNumber: "1", teams: ["Brooklyn Dodgers"] })],
-        batchId: "batch-307-remember",
-      });
-      const lines = warn.mock.calls.map((c) => String(c[0]));
-      expect(
-        lines.some(
-          (l) => l.includes("Brooklyn Dodgers's own name") && l.includes("Linked, not remembered"),
-        ),
-      ).toBe(true);
-    } finally {
-      warn.mockRestore();
-    }
-    // Silent to the commit: it lands.
-    expect(result.success).toBe(true);
-    expect((await t.run((ctx) => ctx.db.get(la)))!.aliases).toBeUndefined();
-    expect(await t.run((ctx) => ctx.db.query("teamAliases").collect())).toEqual([]);
+    const { result, lines } = await commitOne(t, {
+      variantTypeId,
+      sportId,
+      team: "Brooklyn Dodgers",
+      batchId: "batch-602-remember",
+    });
 
-    const card = await t.run((ctx) =>
-      ctx.db
-        .query("cardChecklist")
-        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
-        .first(),
-    );
-    expect(card!.teamOnCardIds).toEqual([brooklyn]);
-    // …and it would again next time: nothing now answers to the name but Brooklyn.
-    expect(
-      (
-        await asAdmin.query(api.teams.findByNameAndSport, {
-          name: "Brooklyn Dodgers",
-          sportId,
-          setYear: 2026,
-        })
-      )?._id,
-    ).toBe(brooklyn);
+    expect(result.success).toBe(true);
+    expect(lines.some((l) => l.includes("Linked, not remembered"))).toBe(false);
+    expect((await t.run((ctx) => ctx.db.get(la)))!.aliases).toEqual(["Brooklyn Dodgers"]);
+    // The operator's link (a review row controls the prelude, D5) - not the
+    // exactly-... year pick, which on a 2026 set would be the alias-only LA
+    // anyway, but must not be a silent guess either way.
+    expect(await cardTeams(t, variantTypeId)).toEqual([la]);
   });
 
-  test("the reverse order at commit: a New Team create onto another team's alias writes nothing and leaves the name unresolved", async () => {
-    // A pair from before the rule: LA (1958–) holds "Brooklyn Dodgers" as an
-    // alias and no Brooklyn row exists. On a 1955 set LA cannot answer (its era
-    // starts later), so the name reaches its create decision — which would
-    // leave two teams answering to one string.
+  test("remember-as-a-name still drops an alias whose owner's years overlap the linked team's", async () => {
     const t = convexTest(schema, modules);
-    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedSetIn(t, "2026");
+    await insertTeamWithAliases(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      yearsActive: { from: 1911, to: 1957 },
+    });
+    const robins = await insertTeamWithAliases(t, sportId, {
+      location: "Brooklyn",
+      name: "Robins",
+      yearsActive: { from: 1950, to: 1960 },
+    });
+    await t.run((ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: variantTypeId,
+        batchId: "batch-602-remember-overlap",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "team",
+        name: "Brooklyn Dodgers",
+        nameNormalized: normalizeTeamName("Brooklyn Dodgers"),
+        sportId,
+        status: "ready",
+        decision: { action: "link", linkedTeamId: robins, saveAsAlias: true },
+      }),
+    );
+
+    const { result, lines } = await commitOne(t, {
+      variantTypeId,
+      sportId,
+      team: "Brooklyn Dodgers",
+      batchId: "batch-602-remember-overlap",
+    });
+
+    expect(result.success).toBe(true);
+    expect(lines.some((l) => l.includes("Brooklyn Dodgers's own name") && l.includes("Linked, not remembered"))).toBe(true);
+    expect((await t.run((ctx) => ctx.db.get(robins)))!.aliases).toBeUndefined();
+    expect(await t.run((ctx) => ctx.db.query("teamAliases").collect())).toEqual([]);
+  });
+
+  test("the reverse order at commit: a New Team create onto a DISJOINT team's alias is created", async () => {
+    // LA (1958–) holds "Brooklyn Dodgers" as an alias; Brooklyn is created
+    // 1911-1957, which no season shares with LA.
+    const t = convexTest(schema, modules);
     const { variantTypeId, sportId } = await seedSetIn(t, "1955");
     const la = await insertTeamWithAliases(t, sportId, {
       location: "Los Angeles",
@@ -1233,7 +1273,7 @@ describe("NEO-307: commit-time alias writers ignore eras when a string is anothe
     await t.run((ctx) =>
       ctx.db.insert("entityReviewQueue", {
         selectorOptionId: variantTypeId,
-        batchId: "batch-307-reverse",
+        batchId: "batch-602-reverse",
         createdByUserId: ADMIN_IDENTITY.subject,
         kind: "team",
         name: "Brooklyn Dodgers",
@@ -1242,54 +1282,73 @@ describe("NEO-307: commit-time alias writers ignore eras when a string is anothe
         status: "ready",
         decision: {
           action: "create",
-          create: {
-            location: "Brooklyn",
-            name: "Dodgers",
-            yearsActive: { from: 1911, to: 1957 },
-          },
+          create: { location: "Brooklyn", name: "Dodgers", yearsActive: { from: 1911, to: 1957 } },
         },
       }),
     );
 
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    let result: { success: boolean };
-    try {
-      result = await asAdmin.action(api.selectorOptions.commitCardChecklist, {
-        selectorOptionId: variantTypeId,
-        sportId,
-        cards: [makeCard({ cardNumber: "1", teams: ["Brooklyn Dodgers"] })],
-        batchId: "batch-307-reverse",
-      });
-      const lines = warn.mock.calls.map((c) => String(c[0]));
-      expect(
-        lines.some(
-          (l) =>
-            l.includes("Los Angeles Dodgers already answers to a New Team's name as an alias") &&
-            l.includes("Not created"),
-        ),
-      ).toBe(true);
-    } finally {
-      warn.mockRestore();
-    }
+    const { result, lines } = await commitOne(t, {
+      variantTypeId,
+      sportId,
+      team: "Brooklyn Dodgers",
+      batchId: "batch-602-reverse",
+    });
+
     expect(result.success).toBe(true);
+    expect(lines.some((l) => l.includes("Not created"))).toBe(false);
     const teams = await t.run((ctx) => ctx.db.query("teams").collect());
-    expect(teams.map((row) => row._id)).toEqual([la]);
-    const card = await t.run((ctx) =>
-      ctx.db
-        .query("cardChecklist")
-        .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", variantTypeId))
-        .first(),
+    expect(teams).toHaveLength(2);
+    const brooklyn = teams.find((row) => row._id !== la)!;
+    expect(brooklyn.location).toBe("Brooklyn");
+    expect(await cardTeams(t, variantTypeId)).toEqual([brooklyn._id]);
+  });
+
+  test("the reverse order at commit: a create whose years OVERLAP the alias holder's finds the holder and creates nothing", async () => {
+    // Typing an alias is how a team is found: the overlapping holder IS the
+    // collision, so the create resolves to it (the same outcome a same-name
+    // overlapping row gets) rather than minting a second team over the same
+    // seasons.
+    const t = convexTest(schema, modules);
+    const { variantTypeId, sportId } = await seedSetIn(t, "1955");
+    const la = await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+      yearsActive: { from: 1958 },
+    });
+    await t.run((ctx) =>
+      ctx.db.insert("entityReviewQueue", {
+        selectorOptionId: variantTypeId,
+        batchId: "batch-602-reverse-overlap",
+        createdByUserId: ADMIN_IDENTITY.subject,
+        kind: "team",
+        name: "Brooklyn Dodgers",
+        nameNormalized: normalizeTeamName("Brooklyn Dodgers"),
+        sportId,
+        status: "ready",
+        decision: {
+          action: "create",
+          create: { location: "Brooklyn", name: "Dodgers", yearsActive: { from: 1950, to: 1960 } },
+        },
+      }),
     );
-    expect(card!.teamOnCardIds ?? []).toEqual([]);
-    // Nothing created, so nothing for finalize's creation-only work either.
-    // The name goes to the prelude's unresolved list, the same outcome the
-    // "two overlapping rows" refusal beside it has.
+
+    const { result } = await commitOne(t, {
+      variantTypeId,
+      sportId,
+      team: "Brooklyn Dodgers",
+      batchId: "batch-602-reverse-overlap",
+    });
+
+    expect(result.success).toBe(true);
+    expect((await t.run((ctx) => ctx.db.query("teams").collect())).map((row) => row._id)).toEqual([la]);
     expect((result as { createdTeamIds?: unknown[] }).createdTeamIds).toEqual([]);
+    expect(await cardTeams(t, variantTypeId)).toEqual([la]);
   });
 });
 
 // ===========================================================================
-// NEO-307 — the wizard's New Team step: recordDecision refuses a create the
+// NEO-307 / NEO-602 — the wizard's New Team step: recordDecision refuses a create the
 // commit would silently drop, and the step can ask ahead of the click
 // ===========================================================================
 
@@ -1314,7 +1373,7 @@ describe("NEO-307: recordDecision refuses a create that breaks the alias rule", 
     );
   }
 
-  test("reverse: a New Team name another team holds as an alias is refused with the Team Management wording, and nothing is recorded", async () => {
+  test("reverse: a New Team name an OVERLAPPING team holds as an alias is refused, naming the holder and its era, and nothing is recorded", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const sportId = await seedSport(t);
@@ -1330,12 +1389,74 @@ describe("NEO-307: recordDecision refuses a create that breaks the alias rule", 
       asAdmin.mutation(api.entityReviewQueue.recordDecision, {
         reviewRowId: rowId,
         action: "create",
-        create: { location: "Brooklyn", name: "Dodgers", yearsActive: { from: 1911, to: 1957 } },
+        create: { location: "Brooklyn", name: "Dodgers", yearsActive: { from: 1950, to: 1960 } },
       }),
     ).rejects.toThrow(
-      "Los Angeles Dodgers already answers to this name as an alias — remove it there before a team can take the name.",
+      "Los Angeles Dodgers · 1958–present already answers to this name as an alias, and the two teams' years overlap. Remove it there, or give this team years that don't overlap.",
     );
     expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toBeUndefined();
+  });
+
+  test("reverse: a New Team with NO years is undated, so it is refused against a dated holder", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+      yearsActive: { from: 1958 },
+    });
+    const rowId = await teamRow(t, sportId, "BKN Dodgers");
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        create: { location: "Brooklyn", name: "Dodgers" },
+      }),
+    ).rejects.toThrow(/this team has no years on file, so they may overlap\. Remove it there/);
+    expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toBeUndefined();
+  });
+
+  test("reverse: an UNDATED holder refuses even a dated New Team", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+    });
+    const rowId = await teamRow(t, sportId, "BKN Dodgers");
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        create: { location: "Brooklyn", name: "Dodgers", yearsActive: { from: 1911, to: 1957 } },
+      }),
+    ).rejects.toThrow(/that team has no years on file, so they may overlap\. Remove it there/);
+  });
+
+  test("reverse: a DISJOINT holder is no obstacle - the create is recorded", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+      yearsActive: { from: 1958 },
+    });
+    const rowId = await teamRow(t, sportId, "BKN Dodgers");
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      create: { location: "Brooklyn", name: "Dodgers", yearsActive: { from: 1911, to: 1957 } },
+    });
+    expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toMatchObject({ action: "create" });
   });
 
   test("reverse, same sport only: an NFL team's alias does not block a baseball New Team", async () => {
@@ -1369,7 +1490,7 @@ describe("NEO-307: recordDecision refuses a create that breaks the alias rule", 
     });
   });
 
-  test("forward: an alias on the create that is another team's own name is refused — the commit would have dropped it", async () => {
+  test("forward: an alias on the create that is an OVERLAPPING team's own name is refused, naming the alias, the owner and its era", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
     const sportId = await seedSport(t);
@@ -1387,12 +1508,61 @@ describe("NEO-307: recordDecision refuses a create that breaks the alias rule", 
         create: {
           location: "Los Angeles",
           name: "Dodgers",
-          yearsActive: { from: 1958 },
+          yearsActive: { from: 1950 },
           aliases: ["Dodger Blue", "Brooklyn Dodgers"],
         },
       }),
-    ).rejects.toThrow(/Brooklyn Dodgers is already a team in this sport/);
+    ).rejects.toThrow(
+      'The alias "Brooklyn Dodgers" is another team\'s name (Brooklyn Dodgers · 1911–1957), and the two teams\' years overlap. Remove the alias, or give both teams years that don\'t overlap.',
+    );
     expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toBeUndefined();
+  });
+
+  test("forward: the same alias on a create with NO years is refused (undated), copy included", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertTeamWithAliases(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      yearsActive: { from: 1911, to: 1957 },
+    });
+    const rowId = await teamRow(t, sportId, "LA Dodgers");
+
+    await expect(
+      asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+        reviewRowId: rowId,
+        action: "create",
+        create: { location: "Los Angeles", name: "Dodgers", aliases: ["Brooklyn Dodgers"] },
+      }),
+    ).rejects.toThrow(/this team has no years on file, so they may overlap\. Remove the alias/);
+  });
+
+  test("forward: a DISJOINT owner is no obstacle - the create with the alias is recorded", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    await insertTeamWithAliases(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      yearsActive: { from: 1911, to: 1957 },
+    });
+    const rowId = await teamRow(t, sportId, "LA Dodgers");
+
+    await asAdmin.mutation(api.entityReviewQueue.recordDecision, {
+      reviewRowId: rowId,
+      action: "create",
+      create: {
+        location: "Los Angeles",
+        name: "Dodgers",
+        yearsActive: { from: 1958 },
+        aliases: ["Dodger Blue", "Brooklyn Dodgers"],
+      },
+    });
+    expect((await t.run((ctx) => ctx.db.get(rowId)))!.decision).toMatchObject({
+      action: "create",
+      create: { aliases: ["Dodger Blue", "Brooklyn Dodgers"] },
+    });
   });
 
   test("the legacy per-career-team creates on a PLAYER row: one alias holder becomes a LINK, not a refusal", async () => {
@@ -1440,6 +1610,60 @@ describe("NEO-307: teams.nameHeldAsAliasBy — the step's look-ahead", () => {
     ).toEqual([{ id: la, name: "Los Angeles Dodgers", yearsActive: { from: 1958 } }]);
   });
 
+  test("NEO-602: the draft's years narrow it: a disjoint draft sees no holder, an overlapping one does, none given counts as undated", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const la = await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+      yearsActive: { from: 1958 },
+    });
+    const name = "Brooklyn Dodgers";
+
+    expect(
+      await asAdmin.query(api.teams.nameHeldAsAliasBy, {
+        sportId,
+        name,
+        yearsActive: { from: 1911, to: 1957 },
+      }),
+    ).toEqual([]);
+    expect(
+      (
+        await asAdmin.query(api.teams.nameHeldAsAliasBy, {
+          sportId,
+          name,
+          yearsActive: { from: 1950, to: 1960 },
+        })
+      ).map((row) => row.id),
+    ).toEqual([la]);
+    expect((await asAdmin.query(api.teams.nameHeldAsAliasBy, { sportId, name })).map((row) => row.id)).toEqual([
+      la,
+    ]);
+  });
+
+  test("NEO-602: an undated holder is reported whatever years the draft has", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const sportId = await seedSport(t);
+    const la = await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+    });
+
+    expect(
+      (
+        await asAdmin.query(api.teams.nameHeldAsAliasBy, {
+          sportId,
+          name: "Brooklyn Dodgers",
+          yearsActive: { from: 1911, to: 1957 },
+        })
+      ).map((row) => row.id),
+    ).toEqual([la]);
+  });
+
   test("a team that merely HAS the name is not reported; nor is another sport's holder; blank and over-long names answer empty", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -1466,7 +1690,7 @@ describe("NEO-307: teams.nameHeldAsAliasBy — the step's look-ahead", () => {
   });
 });
 
-describe("NEO-307: teams.reportAliasNameConflicts — the read-only report for pairs written before the rule", () => {
+describe("NEO-307 / NEO-602: teams.reportAliasNameConflicts — the read-only report for pairs written before the rule", () => {
   async function seedLegacyState(t: ReturnType<typeof convexTest>) {
     const sportId = await seedSport(t);
     const football = await t.run((ctx) =>
@@ -1478,13 +1702,22 @@ describe("NEO-307: teams.reportAliasNameConflicts — the read-only report for p
         lastUpdated: Date.now(),
       }),
     );
-    // The conflict: LA holds Brooklyn's own name.
-    const brooklyn = await insertTeamWithAliases(t, sportId, {
+    // The conflict: Auburn holds LSU's own name, and neither team has years
+    // (NEO-602: an undated pair overlaps, so it is still a conflict).
+    const lsu = await insertTeamWithAliases(t, sportId, { location: "LSU", name: "Tigers" });
+    const auburn = await insertTeamWithAliases(t, sportId, {
+      location: "Auburn",
+      name: "Tigers",
+      aliases: ["War Eagle", "LSU Tigers"],
+    });
+    // Not conflicts since NEO-602: LA holds Brooklyn's own name, but the two
+    // teams' years are disjoint.
+    await insertTeamWithAliases(t, sportId, {
       location: "Brooklyn",
       name: "Dodgers",
       yearsActive: { from: 1911, to: 1957 },
     });
-    const la = await insertTeamWithAliases(t, sportId, {
+    await insertTeamWithAliases(t, sportId, {
       location: "Los Angeles",
       name: "Dodgers",
       aliases: ["Dodger Blue", "Brooklyn Dodgers"],
@@ -1494,30 +1727,64 @@ describe("NEO-307: teams.reportAliasNameConflicts — the read-only report for p
     await insertTeamWithAliases(t, sportId, { location: "Miami", name: "RedHawks", aliases: ["Miami"] });
     await insertTeamWithAliases(t, sportId, { location: "Miami", name: "Hurricanes", aliases: ["Miami"] });
     await insertTeamWithAliases(t, football, { location: "Boston", name: "Yanks", aliases: ["Brooklyn Dodgers"] });
-    return { sportId, brooklyn, la };
+    return { sportId, lsu, auburn };
   }
 
-  test("reports the pair with sport, the stored alias, and both teams' ids, names and years", async () => {
+  test("reports the overlapping pair with sport, the stored alias, and both teams' ids, names and years - and not the disjoint one", async () => {
     const t = convexTest(schema, modules);
-    const { sportId, brooklyn, la } = await seedLegacyState(t);
+    const { sportId, lsu, auburn } = await seedLegacyState(t);
 
     const report = await t.query(internal.teams.reportAliasNameConflicts, {});
     expect(report.conflicts).toEqual([
       {
         sport: "Baseball",
         sportId,
-        alias: "Brooklyn Dodgers",
-        holder: { id: la, name: "Los Angeles Dodgers", yearsActive: { from: 1958 } },
-        owner: { id: brooklyn, name: "Brooklyn Dodgers", yearsActive: { from: 1911, to: 1957 } },
+        alias: "LSU Tigers",
+        holder: { id: auburn, name: "Auburn Tigers" },
+        owner: { id: lsu, name: "LSU Tigers" },
       },
     ]);
-    expect(report.scanned).toBe(5);
+    expect(report.scanned).toBe(7);
     expect(report.nextCursor).toBeUndefined();
+  });
+
+  test("a dated overlapping pair is reported with its years; an undated side is reported", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const robins = await insertTeamWithAliases(t, sportId, {
+      location: "Brooklyn",
+      name: "Robins",
+      aliases: ["Brooklyn Dodgers"],
+      yearsActive: { from: 1950, to: 1960 },
+    });
+    const brooklyn = await insertTeamWithAliases(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      yearsActive: { from: 1911, to: 1957 },
+    });
+    const undatedHolder = await insertTeamWithAliases(t, sportId, {
+      location: "Los Angeles",
+      name: "Dodgers",
+      aliases: ["Brooklyn Dodgers"],
+    });
+
+    const report = await t.query(internal.teams.reportAliasNameConflicts, {});
+    expect(
+      report.conflicts.map((c) => [c.holder.id, c.owner.id]).sort(),
+    ).toEqual(
+      [
+        [robins, brooklyn],
+        [undatedHolder, brooklyn],
+      ].sort(),
+    );
+    const dated = report.conflicts.find((c) => c.holder.id === robins)!;
+    expect(dated.holder.yearsActive).toEqual({ from: 1950, to: 1960 });
+    expect(dated.owner.yearsActive).toEqual({ from: 1911, to: 1957 });
   });
 
   test("pages with nextCursor until the table is walked, and writes nothing", async () => {
     const t = convexTest(schema, modules);
-    const { la } = await seedLegacyState(t);
+    const { auburn } = await seedLegacyState(t);
     const before = await t.run(async (ctx) => ({
       teams: await ctx.db.query("teams").collect(),
       aliases: await ctx.db.query("teamAliases").collect(),
@@ -1540,7 +1807,7 @@ describe("NEO-307: teams.reportAliasNameConflicts — the read-only report for p
     } while (cursor && pages < 20);
 
     expect(pages).toBeGreaterThanOrEqual(5);
-    expect(found.map((c) => c.holder.id)).toEqual([la]);
+    expect(found.map((c) => c.holder.id)).toEqual([auburn]);
     const after = await t.run(async (ctx) => ({
       teams: await ctx.db.query("teams").collect(),
       aliases: await ctx.db.query("teamAliases").collect(),

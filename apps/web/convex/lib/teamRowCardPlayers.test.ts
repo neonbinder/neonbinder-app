@@ -59,17 +59,25 @@ async function insertPlayer(
   name: string,
   teams: Id<"teams">[],
 ): Promise<Id<"players">> {
-  return t.run((ctx) =>
-    ctx.db.insert("players", {
+  // NEO-602: a stint only supports a row whose era it overlaps, so each stint
+  // is dated INSIDE its team's era (its first two seasons). A team with no era
+  // gets an undated stint.
+  return t.run(async (ctx) => {
+    const teamYears = [];
+    for (const teamId of teams) {
+      const from = (await ctx.db.get(teamId))?.yearsActive?.from;
+      teamYears.push(
+        from === undefined ? { teamId } : { teamId, fromYear: from, toYear: from + 1 },
+      );
+    }
+    return ctx.db.insert("players", {
       name,
       nameNormalized: name.toLowerCase().split(" ").reverse().join(" "),
       sportId,
-      ...(teams.length > 0
-        ? { teamYears: teams.map((teamId, i) => ({ teamId, fromYear: 1930 + i, toYear: 1931 + i })) }
-        : {}),
+      ...(teamYears.length > 0 ? { teamYears } : {}),
       lastUpdated: Date.now(),
-    }),
-  );
+    });
+  });
 }
 
 function narrow(
@@ -178,6 +186,38 @@ describe("NEO-490: narrowTeamRowsByCardPlayers", () => {
     expect(await narrow(t, [w.early, w.modern], [[onlyModern]], 1950)).toBeNull();
   });
 
+  test("a stint dated outside the row's era does not support it (NEO-602)", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const outside = await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Satchel Paige",
+        nameNormalized: "paige satchel",
+        sportId: w.sportId,
+        teamYears: [{ teamId: w.early, fromYear: 1970, toYear: 1975 }],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    expect(await narrow(t, [w.early, w.late], [[outside]], undefined)).toBeNull();
+  });
+
+  test("an undated stint supports the row it names (NEO-602)", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const undated = await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Satchel Paige",
+        nameNormalized: "paige satchel",
+        sportId: w.sportId,
+        teamYears: [{ teamId: w.late }],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    expect(await narrow(t, [w.early, w.late], [[undated]], undefined)).toBe(w.late);
+  });
+
   test("fewer than two candidates is resolveTeamForSetYear's to answer", async () => {
     const t = convexTest(schema, modules);
     const w = await seed(t);
@@ -251,18 +291,58 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     expect(await resolve(t, { sportId: w.sportId, cardPlayerIds: [[paige]] })).toBe(w.early);
   });
 
-  test("returns null when the set year already settles the name", async () => {
-    // 1930 sits only inside the 1902-1953 era, so resolveTeamForSetYear
-    // decides. The player points at that SAME era, so without the early return
-    // this rule would hand it back too, labelled as a career-team link the
-    // players never made.
+  test("returns the row the players chose even when the set year lands on the same row", async () => {
+    // 1930 sits only inside the 1902-1953 era, so the year alone would pick it
+    // too. The player points at that SAME era: the players' row comes back (the
+    // caller decides, via resolveCardTeamName's agreesWithYear, to link it
+    // silently).
     const t = convexTest(schema, modules);
     const w = await seed(t);
     const paige = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
 
     expect(
       await resolve(t, { sportId: w.sportId, setYear: 1930, cardPlayerIds: [[paige]] }),
+    ).toBe(w.early);
+  });
+
+  test("returns null when the set year settles the name and no player has a stint on a row", async () => {
+    // The year's answer is not a career-team link the players made, so the
+    // internal query stays silent rather than label it as one.
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const blank = await insertPlayer(t, w.sportId, "Satchel Paige", []);
+
+    expect(
+      await resolve(t, { sportId: w.sportId, setYear: 1930, cardPlayerIds: [[blank]] }),
     ).toBeNull();
+  });
+
+  test("returns the players' row when it differs from the year's (the visible-row case)", async () => {
+    // A 1990 card: the year covers neither era; only the late (1961-65) player
+    // evidence names a row. Players decide, so the query returns it.
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const late = await insertPlayer(t, w.sportId, "Other Player", [w.late]);
+
+    expect(
+      await resolve(t, { sportId: w.sportId, setYear: 1990, cardPlayerIds: [[late]] }),
+    ).toBe(w.late);
+  });
+
+  test("a stint dated outside every row's era is no evidence", async () => {
+    const t = convexTest(schema, modules);
+    const w = await seed(t);
+    const outside = await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Satchel Paige",
+        nameNormalized: "paige satchel",
+        sportId: w.sportId,
+        teamYears: [{ teamId: w.early, fromYear: 1970, toYear: 1975 }],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    expect(await resolve(t, { sportId: w.sportId, cardPlayerIds: [[outside]] })).toBeNull();
   });
 
   test("returns null when the players disagree", async () => {

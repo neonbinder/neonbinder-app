@@ -15,7 +15,7 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
@@ -97,15 +97,24 @@ async function setup(t: T) {
 }
 
 function player(t: T, sportId: Sel, name: string, teams: Id<"teams">[]): Promise<Id<"players">> {
-  return t.run((ctx) =>
-    ctx.db.insert("players", {
+  // NEO-602: a stint only supports a row whose era it overlaps, so each stint
+  // is dated INSIDE its team's era (its first two seasons).
+  return t.run(async (ctx) => {
+    const teamYears = [];
+    for (const teamId of teams) {
+      const from = (await ctx.db.get(teamId))?.yearsActive?.from;
+      teamYears.push(
+        from === undefined ? { teamId } : { teamId, fromYear: from, toYear: from + 1 },
+      );
+    }
+    return ctx.db.insert("players", {
       name,
       nameNormalized: normalizePlayerName(name),
       sportId,
-      teamYears: teams.map((teamId, i) => ({ teamId, fromYear: 1930 + i, toYear: 1931 + i })),
+      teamYears,
       lastUpdated: Date.now(),
-    }),
-  );
+    });
+  });
 }
 
 function card(players: string[], n: number) {
@@ -183,12 +192,14 @@ describe("the gate: a team name with several eras, settled by the card's players
     expect(rows.some((r) => r.decision?.autoLinked === "careerTeam")).toBe(false);
   });
 
-  test("an era the set's history already settles stays a setHistory row, not careerTeam", async () => {
+  test("an era the set's history would settle is NOT asked: several rows and no answer go to the operator (NEO-602, invariant 8)", async () => {
     const t = newT();
     const s = await setup(t);
-    // The player's stint points at the OTHER era: if the career rule ran it
-    // would pick `late`, so `early` proves history answered first.
-    await player(t, s.sportId, "Satchel Paige", [s.late]);
+    // The player has no career on either era, and an earlier committed card
+    // of this set names `early`. Before NEO-602 history picked `early` here.
+    // Two rows answer to the name and nothing separates them, so a tie is the
+    // operator's - never auto-picked, never history's.
+    await player(t, s.sportId, "Satchel Paige", []);
     await t.run((ctx) =>
       insertTestCard(ctx, {
         selectorOptionId: s.base,
@@ -203,13 +214,64 @@ describe("the gate: a team name with several eras, settled by the card's players
 
     const result = await gate(t, s, [card(["Satchel Paige"], 1)]);
 
+    expect(result.unknownTeams).toEqual([TEAM_NAME]);
+    const rows = await teamRows(t, result.batchId);
+    expect(rows.every((r) => r.decision === undefined)).toBe(true);
+    expect(rows.some((r) => r.decision?.autoLinked === "setHistory")).toBe(false);
+  });
+
+  test("the players outrank the set's history: a player on `late` beats a history card on `early`", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await player(t, s.sportId, "Ken Boyer", [s.late]);
+    await t.run((ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "1",
+        cardName: "Card",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+        teamOnCardIds: [s.early],
+      }),
+    );
+
+    const result = await gate(t, s, [card(["Ken Boyer"], 1)]);
+
     expect(result.unknownTeams).toEqual([]);
     const rows = await teamRows(t, result.batchId);
     expect(rows).toHaveLength(1);
-    expect(rows[0].decision).toMatchObject({
-      linkedTeamId: s.early,
-      autoLinked: "setHistory",
-    });
+    expect(rows[0].decision).toMatchObject({ linkedTeamId: s.late, autoLinked: "careerTeam" });
+  });
+
+  test("a player with stints on BOTH eras is a tie: the operator is asked", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await player(t, s.sportId, "Satchel Paige", [s.early, s.late]);
+
+    const result = await gate(t, s, [card(["Satchel Paige"], 1)]);
+
+    expect(result.unknownTeams).toEqual([TEAM_NAME]);
+    const rows = await teamRows(t, result.batchId);
+    expect(rows.some((r) => r.decision?.autoLinked === "careerTeam")).toBe(false);
+  });
+
+  test("a stint dated outside the era is no evidence: the operator is asked", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Satchel Paige",
+        nameNormalized: normalizePlayerName("Satchel Paige"),
+        sportId: s.sportId,
+        teamYears: [{ teamId: s.early, fromYear: 1990, toYear: 1995 }],
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    const result = await gate(t, s, [card(["Satchel Paige"], 1)]);
+
+    expect(result.unknownTeams).toEqual([TEAM_NAME]);
   });
 
   test("a team name printed on exactly the card bound is still settled by players", async () => {
@@ -243,5 +305,202 @@ describe("the gate: a team name with several eras, settled by the card's players
     expect(result.unknownTeams).toEqual([TEAM_NAME]);
     const rows = await teamRows(t, result.batchId);
     expect(rows.some((r) => r.decision?.autoLinked === "careerTeam")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-602 - "Oakland Athletics": the 1968-2024 row's own name and the 2025-
+// Athletics row's alias, on a 2025 set.
+// ---------------------------------------------------------------------------
+
+describe("the gate: a name that is one row's own name and another's alias (NEO-602)", () => {
+  const NAME = "Oakland Athletics";
+
+  async function athleticsSetup(t: T) {
+    const sportId = await node(t, { level: "sport", value: "Baseball" });
+    const year = await node(t, { level: "year", value: "2025", parentId: sportId });
+    const brand = await node(t, { level: "manufacturer", value: "Topps", parentId: year });
+    const set = await node(t, { level: "setName", value: "Series 1", parentId: brand });
+    const base = await node(t, { level: "variantType", value: "Base", parentId: set });
+    const insert = await node(t, { level: "variantType", value: "Insert", parentId: set });
+    const oakland = await t.run((ctx) =>
+      ctx.db.insert("teams", {
+        location: "Oakland",
+        name: "Athletics",
+        nameNormalized: normalizeTeamName(NAME),
+        sportId,
+        yearsActive: { from: 1968, to: 2024 },
+        lastUpdated: Date.now(),
+      }),
+    );
+    const athletics = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("teams", {
+        name: "Athletics",
+        nameNormalized: normalizeTeamName("Athletics"),
+        sportId,
+        yearsActive: { from: 2025 },
+        aliases: [NAME],
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.insert("teamAliases", {
+        teamId: id,
+        sportId,
+        aliasNormalized: normalizeTeamName(NAME),
+      });
+      return id;
+    });
+    return { sportId, base, insert, oakland, athletics };
+  }
+
+  const athleticsCard = (players: string[], n: number) => ({
+    cardNumber: `A-${n}`,
+    cardName: "Card",
+    players,
+    teams: [NAME],
+    platformData: {},
+  });
+
+  /** A player with explicit stints (the helper above dates them from the era). */
+  const withStints = (
+    t: T,
+    sportId: Sel,
+    name: string,
+    teamYears: Array<{ teamId: Id<"teams">; fromYear: number; toYear: number }>,
+  ) =>
+    t.run((ctx) =>
+      ctx.db.insert("players", {
+        name,
+        nameNormalized: normalizePlayerName(name),
+        sportId,
+        teamYears,
+        lastUpdated: Date.now(),
+      }),
+    );
+
+  test("Rickey Henderson (Oakland 1979-84, 1989-93) on a 2025 card: a visible careerTeam row to Oakland, against the year", async () => {
+    const t = newT();
+    const s = await athleticsSetup(t);
+    await withStints(t, s.sportId, "Rickey Henderson", [
+      { teamId: s.oakland, fromYear: 1979, toYear: 1984 },
+      { teamId: s.oakland, fromYear: 1989, toYear: 1993 },
+    ]);
+
+    const result = await gate(t, s, [athleticsCard(["Rickey Henderson"], 1)]);
+
+    expect(result.unknownTeams).toEqual([]);
+    const rows = await teamRows(t, result.batchId);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].decision).toMatchObject({
+      action: "link",
+      linkedTeamId: s.oakland,
+      autoLinked: "careerTeam",
+    });
+  });
+
+  test("a player of the 2025- Athletics agrees with the year: linked silently, no team row", async () => {
+    const t = newT();
+    const s = await athleticsSetup(t);
+    await withStints(t, s.sportId, "Jacob Wilson", [
+      { teamId: s.athletics, fromYear: 2025, toYear: 2025 },
+    ]);
+
+    const result = await gate(t, s, [athleticsCard(["Jacob Wilson"], 1)]);
+
+    expect(result.unknownTeams).toEqual([]);
+    expect(await teamRows(t, result.batchId)).toEqual([]);
+  });
+
+  test("a card with no player evidence is NOT silently linked to the alias-only Athletics: the operator is asked", async () => {
+    const t = newT();
+    const s = await athleticsSetup(t);
+
+    const result = await gate(t, s, [athleticsCard([], 1)]);
+
+    expect(result.unknownTeams).toEqual([NAME]);
+    expect((await teamRows(t, result.batchId)).every((r) => r.decision === undefined)).toBe(true);
+  });
+
+  test("an ambiguous name skips set history even when a committed card names one row", async () => {
+    const t = newT();
+    const s = await athleticsSetup(t);
+    await t.run((ctx) =>
+      insertTestCard(ctx, {
+        selectorOptionId: s.base,
+        cardNumber: "1",
+        cardName: "Card",
+        platformData: {},
+        sortOrder: 0,
+        lastUpdated: Date.now(),
+        teamOnCardIds: [s.oakland],
+      }),
+    );
+
+    const result = await gate(t, s, [athleticsCard([], 1)]);
+
+    expect(result.unknownTeams).toEqual([NAME]);
+    expect((await teamRows(t, result.batchId)).some((r) => r.decision?.autoLinked === "setHistory")).toBe(false);
+  });
+
+  test("a player on both rows is a tie: the operator is asked", async () => {
+    const t = newT();
+    const s = await athleticsSetup(t);
+    await withStints(t, s.sportId, "Tied Player", [
+      { teamId: s.oakland, fromYear: 2020, toYear: 2024 },
+      { teamId: s.athletics, fromYear: 2025, toYear: 2025 },
+    ]);
+
+    const result = await gate(t, s, [athleticsCard(["Tied Player"], 1)]);
+
+    expect(result.unknownTeams).toEqual([NAME]);
+  });
+
+  test("resolveGateTeamName: the shape of each answer", async () => {
+    const t = newT();
+    const s = await athleticsSetup(t);
+    const rickey = await withStints(t, s.sportId, "Rickey Henderson", [
+      { teamId: s.oakland, fromYear: 1979, toYear: 1984 },
+    ]);
+    const ask = (cardPlayerIds?: Id<"players">[][], setYear: number | undefined = 2025) =>
+      t.query(internal.selectorOptions.resolveGateTeamName, {
+        sportId: s.sportId,
+        name: NAME,
+        ...(setYear !== undefined ? { setYear } : {}),
+        ...(cardPlayerIds ? { cardPlayerIds } : {}),
+      });
+
+    const byPlayers = await ask([[rickey]]);
+    expect(byPlayers.ambiguous).toBe(false);
+    expect(byPlayers.answer).toMatchObject({
+      teamId: s.oakland,
+      via: "players",
+      agreesWithYear: false,
+      fullName: "Oakland Athletics",
+    });
+    // No players: the alias-only year pick is refused, and flagged ambiguous.
+    expect(await ask(undefined)).toEqual({ answer: null, ambiguous: true });
+    // A 2000 set: the year lands on Oakland, which owns the name.
+    const byYear = await ask(undefined, 2000);
+    expect(byYear.answer).toMatchObject({ teamId: s.oakland, via: "year", agreesWithYear: true });
+    // A name no row holds: no answer, and nothing ambiguous about it.
+    expect(
+      await t.query(internal.selectorOptions.resolveGateTeamName, {
+        sportId: s.sportId,
+        name: "Nowhere Nobodies",
+        setYear: 2025,
+      }),
+    ).toEqual({ answer: null, ambiguous: false });
+  });
+
+  test("resolveGateTeamName: a LONE row that begins after the set year is no answer, but not ambiguous (set history may still help)", async () => {
+    const t = newT();
+    const s = await athleticsSetup(t);
+    // "Athletics" is the 2025- row's own name and nobody else's; a 1990 set
+    // is before it began, and nothing shows a team's future.
+    const answer = await t.query(internal.selectorOptions.resolveGateTeamName, {
+      sportId: s.sportId,
+      name: "Athletics",
+      setYear: 1990,
+    });
+    expect(answer).toEqual({ answer: null, ambiguous: false });
   });
 });
