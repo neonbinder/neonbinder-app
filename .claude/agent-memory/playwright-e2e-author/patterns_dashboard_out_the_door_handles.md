@@ -30,4 +30,11 @@ Out the Door handles (NEO-464/NEO-590), same on the demo and signed in:
   is a full load of the previous URL too (the seed hop navigates without replace, so
   the entry before is the redirect target), gate it with LAUNCH_GATE as well.
 
+- The lead is the order's first CARD, not its first line: an order whose line 0 has no card but a later
+  line does leads with that card, so "A sale with no title" shows only when no line has a card. The demo's
+  eBay `12-34567-89123` (untitled line, then 1989 Score #270 Troy Aikman) proves it; its opened list names
+  the untitled line "An item with no title". An absence check for the lead words on that article also
+  catches the HIDDEN line list (toHaveCount counts hidden nodes), which is how a planted
+  ITEM->SALE swap went red before the order was opened.
+
 Related: [[reference_dashboard_shelf_boxes_and_demo_limits]].

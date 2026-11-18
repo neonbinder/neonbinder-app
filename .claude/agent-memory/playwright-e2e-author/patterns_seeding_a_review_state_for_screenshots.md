@@ -23,4 +23,11 @@ For a "prepare it for Jason's look" task (seed data, then screenshots), no spec 
   hidden `<option>` also carries (`getByText("Other")` resolved to the Sport filter's option).
 - Screenshots go to `<worktree>/screenshots/` (git-excluded via info/exclude), never `apps/web`.
 
+- **A review seed sits on the account your specs would use.** Workers 3-11 locally all fall back to the
+  one `TEST_EMAIL` user, so a review seed made on worker 8 shows up in a later spec run on any of them: a
+  Pick List band count read `Received: 5` against `2` (the seed's own titled orders filled the band).
+  Do not reset it (it may be what Jason is looking at): bootstrap a worker with its own
+  `TEST_EMAIL_<n>` (check `gh run list --status in_progress` is empty first, CI signs in as those) and
+  run the specs there. Read the band's rowheaders in error-context before suspecting the product.
+
 Related: [[patterns_local_run_backend_and_vite]].
