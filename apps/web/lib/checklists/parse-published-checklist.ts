@@ -134,6 +134,18 @@ export type PublishedChecklistRow = {
    */
   prospectTeams?: string[];
   /**
+   * The publisher's note that marks this card as a variation (NEO-591): a
+   * bracketed note such as "(Photo Variation)" or "[VAR Throwback]", or a
+   * bare "VAR" token. Kept as the variation's name for display, bracket
+   * and "VAR" keyword removed, the publisher's wording otherwise ("Photo
+   * Variation", "Throwback"); a note that was only "VAR" is "Variation".
+   * At most `MAX_VARIATION_NAME` characters, no control characters. Read from
+   * the text the name and team cleaners already drop; it changes none of it.
+   * A bare "SP" or "SSP" token is a print marker, not a note, and sets
+   * nothing (`variationNameOf`).
+   */
+  variationName?: string;
+  /**
    * The subset the row belongs to: its "card set", "set", "subset" or
    * "insert" cell when the file has such a column and the cell is not
    * blank, else the latest section heading above it (NEO-496: a single
@@ -408,6 +420,87 @@ function dropMarkers(text: string): string {
 /** "®" and "™" are never part of a name. */
 function dropTrademarks(text: string): string {
   return text.replace(/[®™]/g, "");
+}
+
+/** The longest `variationName` kept, in characters. */
+export const MAX_VARIATION_NAME = 80;
+
+/**
+ * Words that make a note a variation note: "variation(s)", "var", "image",
+ * "photo", "SP", "SSP", "short print(s)". Whole words, any case, so "Spencer"
+ * and "Imagery" never match; a team bracket ("(A)", "(NL)") or "(RC)" has none.
+ */
+const VARIATION_WORDS = /(?<![\p{L}\p{N}])(?:variations?|vars?|image|photo|ssp|sp|short[\s-]?prints?)(?![\p{L}\p{N}])/iu;
+/** The words that name a variation by what it shows, as against a print marker. */
+const VARIATION_DESCRIPTIVE = /(?<![\p{L}\p{N}])(?:variations?|vars?|image|photo|short[\s-]?prints?)(?![\p{L}\p{N}])/iu;
+/** The VAR keyword on its own (not "Variation"), with the dot or colon it may carry. */
+const VAR_KEYWORD = /(?<![\p{L}\p{N}])var(?![\p{L}\p{N}])\.?:?/giu;
+/** Cheap gate: text with none of these cannot hold a variation note. */
+const MAY_HOLD_VARIATION = /var|image|photo|sp|short/i;
+/** C0 and C1 control characters, which a name never carries. */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+/** The most bracket groups looked at in one text. */
+const MAX_NOTE_GROUPS = 8;
+
+/** A note as a name: VAR keyword and control characters gone, bounded. "" when nothing is left. */
+function variationNameFromNote(note: string): string {
+  let name = note
+    .replace(CONTROL_CHARS, " ")
+    .replace(VAR_KEYWORD, " ")
+    .replace(/\s+/g, " ")
+    .replace(/^[\s,;:\-–—]+|[\s,;:\-–—]+$/g, "");
+  if (name.length > MAX_VARIATION_NAME) {
+    name = name.slice(0, MAX_VARIATION_NAME);
+    // Never end on half of a surrogate pair.
+    if (/[\ud800-\udbff]$/.test(name)) name = name.slice(0, -1);
+    name = name.replace(/[\s,;:\-–—]+$/g, "");
+  }
+  return name;
+}
+
+/**
+ * The variation name a cell, line or line part carries, or undefined. Looks
+ * at exactly what `dropBracketed` and `dropMarkers` take out and removes
+ * nothing: the outermost brackets whose text holds a variation word
+ * (`VARIATION_WORDS`), a note naming what it shows ("Photo Variation",
+ * "Image") ahead of a bare "SP"/"SSP" note, the first such note winning; else
+ * a bare "VAR" token (capitals, as `dropMarkers` reads it), named
+ * "Variation". An "RC" or team bracket is no variation note.
+ */
+export function variationNameOf(text: string): string | undefined {
+  if (!MAY_HOLD_VARIATION.test(text)) return undefined;
+  const matched = matchBrackets(text);
+  let marker: string | undefined;
+  let groups = 0;
+  for (let i = 0; i < text.length && groups < MAX_NOTE_GROUPS; i++) {
+    const end = "([{".includes(text[i]) ? matched[i] : -1;
+    if (end < 0) continue;
+    groups++;
+    const inner = text.slice(i + 1, end);
+    i = end;
+    if (!VARIATION_WORDS.test(inner)) continue;
+    const name = variationNameFromNote(inner) || "Variation";
+    if (VARIATION_DESCRIPTIVE.test(inner)) return name;
+    marker ??= name;
+  }
+  if (marker !== undefined) return marker;
+  const outside = stripBrackets(text, matched);
+  return /(^|[\s,/;])VAR(?=$|[\s,/;])/.test(outside) ? "Variation" : undefined;
+}
+
+/** `text` with its bracketed groups blanked, so a "VAR" inside one is not read twice. */
+function stripBrackets(text: string, matched: Int32Array): string {
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const end = "([{".includes(text[i]) ? matched[i] : -1;
+    if (end < 0) {
+      out += text[i];
+      continue;
+    }
+    out += " ";
+    i = end;
+  }
+  return out;
 }
 
 /** Two-letter bracket contents that are hobby markers, never a league tag. */
@@ -866,6 +959,8 @@ function parseLine(
   // So each whole prospect claim is set aside first, as a marker the split
   // cannot touch, and read back from the team part afterwards.
   const protectedRest = protectProspectClaims(match[2]);
+  // Read from the raw line, ahead of everything below that drops a note.
+  const variationName = variationNameOf(match[2]);
   const split = splitPlayerAndTeam(protectedRest.text);
   let playerPart = restoreProspectClaims(split.playerPart, protectedRest.claims);
   let teamPart = split.teamPart;
@@ -912,6 +1007,7 @@ function parseLine(
     ...(noNumber ? { noNumber: true as const } : {}),
     ...(claims.noTeam ? { noTeam: true as const } : {}),
     ...claims.fields,
+    ...(variationName !== undefined ? { variationName } : {}),
   };
 }
 
@@ -1198,8 +1294,14 @@ function rowFromColumns(
   const prospectTeams: string[] = [];
   const players: string[] = [];
   const teams: string[] = [];
+  let variationName: string | undefined;
   columns.forEach((column, c) => {
     const cell = cells[c] ?? "";
+    // The first variation note among the name and team cells; the number and
+    // subset cells never hold one.
+    if (variationName === undefined && column !== "number" && column !== "subset") {
+      variationName = variationNameOf(cell);
+    }
     if (column === "number" && numberCell === "") {
       numberCell = cell;
       noNumber = isNno(cell);
@@ -1255,6 +1357,7 @@ function rowFromColumns(
       ...(noNumber ? { noNumber: true as const } : {}),
       ...(claims.noTeam ? { noTeam: true as const } : {}),
       ...claims.fields,
+      ...(variationName !== undefined ? { variationName } : {}),
     },
     subsetCell: subset,
   };
@@ -1876,9 +1979,13 @@ function readNamedColumns(
       const record = records[event.i];
       if (event.kind === "bare") {
         const players: string[] = [];
+        let variationName: string | undefined;
         for (const cell of runCells(event.runs)) {
           const name = personName("", cell);
-          if (name !== "" && !isNotAPerson(name)) players.push(name);
+          if (name !== "" && !isNotAPerson(name)) {
+            players.push(name);
+            variationName ??= variationNameOf(cell);
+          }
         }
         const text = clip(runCells(event.runs).join(" | "));
         if (players.length === 0) out.skip(record.line, text, NO_PLAYER_ON_LINE, atOf(record));
@@ -1886,7 +1993,13 @@ function readNamedColumns(
           out.keep(
             record.line,
             text,
-            { number: NO_NUMBER, players, teams: [], noNumber: true },
+            {
+              number: NO_NUMBER,
+              players,
+              teams: [],
+              noNumber: true,
+              ...(variationName !== undefined ? { variationName } : {}),
+            },
             "",
             atOf(record),
           );

@@ -12,6 +12,7 @@ import {
   pairedRowOf,
   revertServerChecklistPair,
   unlinkableServerPair,
+  withoutChecklistNumber,
   type ChecklistLinkRow,
   type ChecklistPairAnswer,
   type ServerPairedRow,
@@ -492,5 +493,115 @@ describe("NEO-496 — undoing the server's checklist pair", () => {
     expect(silent).not.toHaveProperty("teamLookup");
     expect(silent).not.toHaveProperty("players");
     expect(silent.cardName).toBe("Card #FS-1");
+  });
+});
+
+describe("NEO-591 — names first, numbers confirm", () => {
+  test("committable takes sourceNumbers off, and a card carrying only that is no longer returned by reference", () => {
+    const withNumbers = {
+      cardNumber: "OV-ANFI",
+      cardName: "A",
+      platformData: {},
+      sourceNumbers: { bsc: "OV-ANFI", checklist: "NNO" },
+    } as PairingCard;
+    const out = committable(withNumbers);
+    expect(out).not.toHaveProperty("sourceNumbers");
+    expect(out.cardNumber).toBe("OV-ANFI");
+    // The input is not mutated.
+    expect(withNumbers.sourceNumbers).toEqual({ bsc: "OV-ANFI", checklist: "NNO" });
+  });
+
+  describe("applyChecklistAnswers with the linked rows' numbers", () => {
+    const bscCard = (key: string, cardNumber: string): Card => ({
+      key,
+      cardNumber,
+      platformData: { bsc: { ref: `bsc-${key}` } },
+    });
+    const apply = (cards: Card[], rowNumber: string) =>
+      applyChecklistAnswers(cards, [{ cardKey: cards[0].key }], keyOf, new Map([[cards[0].key, rowNumber]]));
+
+    test("a row with letters outranks the card's digits; both numbers are kept", () => {
+      const [out] = apply([bscCard("a", "38")], "38a");
+      expect(out.cardNumber).toBe("38a");
+      expect(out).toHaveProperty("sourceNumbers", { bsc: "38", checklist: "38a" });
+    });
+
+    test("a card with letters keeps them against a no-number row, and still says the numbers differ", () => {
+      const [out] = apply([bscCard("a", "OV-ANFI")], "NNO");
+      expect(out.cardNumber).toBe("OV-ANFI");
+      expect(out).toHaveProperty("sourceNumbers", { bsc: "OV-ANFI", checklist: "NNO" });
+    });
+
+    test("numbers that agree change nothing and record nothing", () => {
+      const [out] = apply([bscCard("a", "12")], "12");
+      expect(out.cardNumber).toBe("12");
+      expect(out).not.toHaveProperty("sourceNumbers");
+    });
+
+    test("numbers the server already recorded keep their marketplace entries", () => {
+      const card: Card = { ...bscCard("a", "38"), sourceNumbers: { bsc: "38", sportlots: "39" } } as Card;
+      const [out] = apply([card], "38a");
+      expect(out).toHaveProperty("sourceNumbers", { bsc: "38", sportlots: "39", checklist: "38a" });
+    });
+
+    test("without rowNumbers the card's number is untouched, as before", () => {
+      const cards = [bscCard("a", "38")];
+      const [out] = applyChecklistAnswers(cards, [{ cardKey: "a" }], keyOf);
+      expect(out.cardNumber).toBe("38");
+    });
+  });
+
+  describe("revertServerChecklistPair puts the number back", () => {
+    const paired = (
+      revert: ServerPairRevert,
+      extra: Partial<PairingCard> = {},
+    ): PairingCard => ({
+      cardNumber: "38a",
+      cardName: "Ted Williams",
+      platformData: { bsc: { ref: "bsc-38", setId: "s" } },
+      unmatched: "sl",
+      checklistLink: {
+        via: "playerName",
+        checklistNumber: "38a",
+        row: { number: "38a", players: ["Ted Williams"], teams: [], cardName: "Ted Williams" },
+        revert,
+      },
+      ...extra,
+    });
+
+    test("restores revert.cardNumber and drops the checklist's number", () => {
+      const out = revertServerChecklistPair(
+        paired(
+          { teamsFromRow: false, cardNumber: "38" },
+          { sourceNumbers: { bsc: "38", checklist: "38a" } },
+        ),
+      );
+      expect(out?.cardNumber).toBe("38");
+      expect(out).not.toHaveProperty("sourceNumbers");
+    });
+
+    test("a BSC + SportLots pair whose numbers still differ keeps its note", () => {
+      const out = revertServerChecklistPair(
+        paired(
+          { teamsFromRow: false, cardNumber: "38" },
+          { sourceNumbers: { bsc: "38", sportlots: "39", checklist: "38a" } },
+        ),
+      );
+      expect(out?.sourceNumbers).toEqual({ bsc: "38", sportlots: "39" });
+    });
+
+    test("a row that did not change the number leaves it alone", () => {
+      const out = revertServerChecklistPair(paired({ teamsFromRow: false }, { cardNumber: "12" }));
+      expect(out?.cardNumber).toBe("12");
+    });
+  });
+
+  test("withoutChecklistNumber is undefined once nothing differs", () => {
+    expect(withoutChecklistNumber({ bsc: "1", checklist: "2" })).toBeUndefined();
+    expect(withoutChecklistNumber({ bsc: "1", sportlots: "2", checklist: "3" })).toEqual({
+      bsc: "1",
+      sportlots: "2",
+    });
+    expect(withoutChecklistNumber(undefined)).toBeUndefined();
   });
 });

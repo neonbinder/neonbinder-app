@@ -27,7 +27,7 @@ import { ConfirmDialog } from "../modules/confirm-dialog";
 import { Input } from "../primitives/Input";
 import { countPairingEdits } from "./pairing-session-edits";
 import { useFieldTestClass } from "@/src/hooks/useFieldTestClass";
-import { compareCardNumbers } from "@/lib/cards/card-number";
+import { compareCardNumbers, preferCardNumber } from "@/lib/cards/card-number";
 import { keyboardAwareCollision } from "@/lib/dnd/keyboard-aware-collision";
 // NEO-199: the wrong-player check is SHARED with the server. `fetchCardChecklist`
 // runs this exact function over an auto-matched pair before it discards the
@@ -63,6 +63,8 @@ import {
   pairedRowCard,
   pairedRowOf,
   revertServerChecklistPair,
+  numbersDiffer,
+  withoutChecklistNumber,
   unlinkableServerPair,
   UNLINKED_ROW_ID_PREFIX,
   type ChecklistLinkRow,
@@ -70,6 +72,7 @@ import {
   type ChecklistPairRequest,
   type ServerPairedRow,
   type ServerPairRevert,
+  type SourceNumbers,
 } from "./checklist-match-apply";
 import { checklistRowLine } from "./PublishedChecklistDialog";
 
@@ -243,11 +246,30 @@ export type PairingCard = {
    * `checklistNumber` (a name pair whose numbers differ) is the row's number,
    * shown beside the card's own. Never a conflict. Stripped at Confirm
    * (`committable`): the commit's validators are strict.
+   *
+   * NEO-591: the chip reads "Checklist: NNO" for a no-number row and
+   * "Checklist: #FS-3" for a numbered one whose number the card did not carry.
+   * The card itself holds the more specific of the numbers
+   * (`preferCardNumber`); `revert.cardNumber` is the one it replaced.
    */
   checklistLink?: {
-    via: "number" | "caseFolded" | "prefixStripped" | "player" | "playerName" | "playerFuzzy";
+    via:
+      | "number"
+      | "caseFolded"
+      | "prefixStripped"
+      | "player"
+      | "playerName"
+      | "playerFuzzy"
+      | "stem";
     confidence?: number;
     checklistNumber?: string;
+    /**
+     * NEO-591 (variations) — the row's index in its section, on a `"stem"`
+     * pair. Several cards can hold one row (a checklist's "38" for the cards
+     * 38, 38b and 38c); Unlink undoes one card, and the row is listed again
+     * only when the last card holding its `rowKey` lets go.
+     */
+    rowKey?: number;
     /**
      * The row the server paired (`checklistPairedRowValidator`) and the card
      * as it was before the row touched it (`checklistPairRevertValidator`).
@@ -264,6 +286,21 @@ export type PairingCard = {
    * new one. Stripped at Confirm.
    */
   checklistRowId?: string;
+  /**
+   * NEO-591 — WIRE-ONLY: the number each source printed for a card they paired
+   * by NAME while their numbers differ (names first, numbers confirm). The
+   * card's own `cardNumber` is the chosen one. Present only when the numbers
+   * differ; a key only when that source is in the pair. Drives the "Numbers
+   * differ" note. Stripped at Confirm (`committable`).
+   */
+  sourceNumbers?: SourceNumbers;
+  /**
+   * NEO-591 (variations) — WIRE-ONLY: NB created this card (a variation from
+   * a checklist row, or a variation the other marketplace left over), so the
+   * dialog opens with it already in Keeping. The operator can take it out.
+   * Stripped at Confirm (`committable`).
+   */
+  preKept?: true;
 };
 
 /**
@@ -500,6 +537,14 @@ type State = {
    * be one more thing to keep in sync with `ABSORB`.
    */
   seedMatchedKeys: Set<string>;
+  /**
+   * NEO-591 (variations) — `candidateKey` of every marketplace card that
+   * ARRIVED pre-kept (`preKept`), and `checklistPreKept` the same for
+   * checklist rows (row indices). Like `seedMatchedKeys`, never pruned: the
+   * server's own Keeping is not the operator's work, but taking one out is.
+   */
+  preKeptKeys: Set<string>;
+  checklistPreKept: number[];
   /**
    * NEO-341 — has an `ABSORB` carried the parent's word that this fetch's
    * whole batch, with every team lookup landed, has reached the client?
@@ -1139,6 +1184,10 @@ function seedState({
     ...slSplit.matched,
   ];
   const checklistCards = initialData.checklistOnly ?? [];
+  // NEO-591 (variations): cards NB created arrive already in Keeping.
+  const bscPre = splitPreKept(bscSplit.unmatched);
+  const slPre = splitPreKept(slSplit.unmatched);
+  const checklistPreKept = preKeptRows(checklistCards, 0);
   const checklistInPlay =
     checklistSource ||
     checklistCards.length > 0 ||
@@ -1148,20 +1197,41 @@ function seedState({
   // order, not card order.
   return ordered({
     matched,
-    unmatchedBsc: bscSplit.unmatched,
-    unmatchedSl: slSplit.unmatched,
-    keptBsc: [],
-    keptSl: [],
+    unmatchedBsc: bscPre.rest,
+    unmatchedSl: slPre.rest,
+    keptBsc: bscPre.kept,
+    keptSl: slPre.kept,
     seedMatchedKeys: new Set(matched.map((m) => candidateKey(m.card))),
+    preKeptKeys: new Set([...bscPre.kept, ...slPre.kept].map(candidateKey)),
+    checklistPreKept,
     // NEO-341: only an ABSORB may say so — see `State.streamSettled`.
     streamSettled: false,
     checklistRows: checklistInPlay ? checklistCards.map(checklistRowOf) : null,
     checklistCards,
     checklistUnused: checklistCards.map((_, i) => i),
-    checklistKept: [],
+    checklistKept: [...checklistPreKept],
     checklistLinks: new Map(),
     checklistServerUnlinks: 0,
   });
+}
+
+/**
+ * NEO-591 (variations) — the cards NB created, split from the rest: they open
+ * in Keeping, not waiting on a Keep.
+ */
+function splitPreKept(cards: readonly PairingCard[]): {
+  kept: PairingCard[];
+  rest: PairingCard[];
+} {
+  const kept: PairingCard[] = [];
+  const rest: PairingCard[] = [];
+  for (const c of cards) (c.preKept ? kept : rest).push(c);
+  return { kept, rest };
+}
+
+/** The row indices (from `offset`) of the checklist rows NB created. */
+function preKeptRows(cards: readonly PairingCard[], offset: number): number[] {
+  return cards.flatMap((c, i) => (c.preKept ? [offset + i] : []));
 }
 
 /**
@@ -1319,15 +1389,47 @@ function linkChecklist(state: State, rowIndex: number, cardKey: string): State {
  * away: every link and every kept row is the operator's own.
  */
 function checklistEdits(state: State): number {
+  // NEO-591 (variations): rows NB kept for the operator are not their work;
+  // taking one out is.
+  const kept = new Set(state.checklistKept);
+  const pre = new Set(state.checklistPreKept);
+  const keptByOperator = state.checklistKept.filter((i) => !pre.has(i)).length;
+  const preTakenOut = state.checklistPreKept.filter((i) => !kept.has(i)).length;
   return (
-    state.checklistLinks.size + state.checklistKept.length + state.checklistServerUnlinks
+    state.checklistLinks.size + keptByOperator + preTakenOut + state.checklistServerUnlinks
   );
+}
+
+/**
+ * NEO-591 (variations) — does another card still hold the checklist row this
+ * card is paired with? Several cards can share one row (`checklistLink.rowKey`:
+ * a checklist's "38" for the cards 38, 38b and 38c). False for a pair that
+ * names no `rowKey`.
+ */
+export function rowHeldByOthers(
+  state: Pick<State, "matched" | "keptBsc" | "keptSl" | "unmatchedBsc" | "unmatchedSl">,
+  card: PairingCard,
+): boolean {
+  const rowKey = card.checklistLink?.rowKey;
+  if (rowKey === undefined) return false;
+  const self = candidateKey(card);
+  const holders = [
+    ...state.matched.map((m) => m.card),
+    ...state.keptBsc,
+    ...state.keptSl,
+    ...state.unmatchedBsc,
+    ...state.unmatchedSl,
+  ];
+  return holders.some((c) => c.checklistLink?.rowKey === rowKey && candidateKey(c) !== self);
 }
 
 /**
  * NEO-496 — undo the server's pairing of one card with a checklist row.
  * Returns `state` when there is nothing to undo (unknown card, no pairing,
  * or a pairing stored before it carried its row and revert).
+ *
+ * NEO-591 (variations): a row several cards share is listed again only when
+ * the last of them lets go; before that, Unlink reverts this card alone.
  *
  * The card gets back what it had before the row (`revertServerChecklistPair`)
  * and the row joins the checklist column as the card it would have been on
@@ -1348,6 +1450,9 @@ function unlinkServerChecklist(state: State, cardKey: string): State {
   const rowIndex = state.checklistCards.length;
   const listRow = (card: PairingCard) => {
     if (!unlinkableServerPair(card)) return null;
+    // NEO-591 (variations): other cards still hold this row, so it is not
+    // free to list again; only this card lets go.
+    if (rowHeldByOthers(state, card)) return {};
     const row = card.checklistLink.row;
     return {
       checklistCards: [
@@ -1405,15 +1510,45 @@ function unlinkServerChecklist(state: State, cardKey: string): State {
   return state;
 }
 
+/**
+ * NEO-591 — a checklist pairing's revert with the number to put back on
+ * Unlink: `before` when the row changed the card's number to `after`, none when
+ * it did not (so there is nothing to restore).
+ */
+function revertNumberOf(revert: ServerPairRevert, before: string, after: string): ServerPairRevert {
+  const next: ServerPairRevert = { ...revert };
+  if (before === after) delete next.cardNumber;
+  else next.cardNumber = before;
+  return next;
+}
+
 /** Merge a BSC-side and SL-side candidate into the single NB card they describe. */
 function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
   const attributes = Array.from(
     new Set([...(bsc.attributes ?? []), ...(sl.attributes ?? [])]),
   );
+  // NEO-591 (names first, numbers confirm): each half's OWN number (a half
+  // that came out of an Unlink carries what it printed on `sourceNumbers`).
+  const bscOwn = bsc.sourceNumbers?.bsc ?? bsc.cardNumber;
+  const slOwn = sl.sourceNumbers?.sportlots ?? sl.cardNumber;
+  const checklistNumber = bsc.sourceNumbers?.checklist ?? sl.sourceNumbers?.checklist;
+  // The NB card number is the more specific of the two (letters over digits
+  // over none); on a tie it follows BSC, the side that splits series and so
+  // the side whose numbering the operator is reconciling against.
+  const marketplaceNumber = preferCardNumber(bscOwn, slOwn);
+  const cardNumber =
+    checklistNumber === undefined
+      ? marketplaceNumber
+      : preferCardNumber(marketplaceNumber, checklistNumber);
+  const printed: SourceNumbers = {
+    bsc: bscOwn,
+    sportlots: slOwn,
+    ...(checklistNumber !== undefined ? { checklist: checklistNumber } : {}),
+  };
+  const link = bsc.checklistLink ?? sl.checklistLink;
   return {
-    // The NB card number follows BSC, which is the side that splits series and
-    // therefore the side whose numbering the operator is reconciling against.
-    cardNumber: bsc.cardNumber,
+    cardNumber,
+    ...(numbersDiffer(printed) ? { sourceNumbers: printed } : {}),
     cardName: bsc.cardName || sl.cardName,
     team: bsc.team ?? sl.team,
     teams: bsc.teams ?? sl.teams,
@@ -1460,8 +1595,14 @@ function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
       : {}),
     // NEO-496: the server's checklist pairing is about the card too, and
     // rides on the half that carried it (the BSC half, after an Unlink).
-    ...((bsc.checklistLink ?? sl.checklistLink)
-      ? { checklistLink: bsc.checklistLink ?? sl.checklistLink }
+    // NEO-591: its revert number is the card's number before the ROW, which
+    // is now the pair's marketplace number, not the half's.
+    ...(link
+      ? {
+          checklistLink: link.revert
+            ? { ...link, revert: revertNumberOf(link.revert, marketplaceNumber, cardNumber) }
+            : link,
+        }
       : {}),
     platformData: {
       ...(bsc.platformData.bsc ? { bsc: bsc.platformData.bsc } : {}),
@@ -1564,12 +1705,17 @@ function baseReducer(state: State, action: Action): State {
       ];
       const newBsc = bscSplit.unmatched;
       const newSl = slSplit.unmatched;
+      // NEO-591 (variations): new cards NB created join Keeping.
+      const bscPre = splitPreKept(newBsc);
+      const slPre = splitPreKept(newSl);
+
       // NEO-496: checklist rows have no ref; a re-delivered one is known by
       // its candidate id.
       const seenRows = new Set(state.checklistCards.map(checklistRowKey));
       const newRows = action.checklistOnly.filter(
         (c) => !seenRows.has(checklistRowKey(c)),
       );
+      const newPreKeptRows = preKeptRows(newRows, state.checklistCards.length);
 
       // Every incoming row, reachable by either of its refs — a pair the
       // operator linked by hand carries both, and the enrichment that resolved
@@ -1686,10 +1832,24 @@ function baseReducer(state: State, action: Action): State {
         ...state,
         streamSettled,
         matched: [...matched, ...newMatched],
-        unmatchedBsc: [...unmatchedBsc, ...newBsc],
-        unmatchedSl: [...unmatchedSl, ...newSl],
-        keptBsc,
-        keptSl,
+        unmatchedBsc: [...unmatchedBsc, ...bscPre.rest],
+        unmatchedSl: [...unmatchedSl, ...slPre.rest],
+        keptBsc: bscPre.kept.length ? [...keptBsc, ...bscPre.kept] : keptBsc,
+        keptSl: slPre.kept.length ? [...keptSl, ...slPre.kept] : keptSl,
+        preKeptKeys:
+          bscPre.kept.length || slPre.kept.length
+            ? new Set([
+                ...state.preKeptKeys,
+                ...bscPre.kept.map(candidateKey),
+                ...slPre.kept.map(candidateKey),
+              ])
+            : state.preKeptKeys,
+        checklistPreKept: newPreKeptRows.length
+          ? [...state.checklistPreKept, ...newPreKeptRows]
+          : state.checklistPreKept,
+        checklistKept: newPreKeptRows.length
+          ? [...state.checklistKept, ...newPreKeptRows]
+          : state.checklistKept,
         checklistCards,
         checklistRows: checklistInPlay
           ? [...(state.checklistRows ?? []), ...newRows.map(checklistRowOf)]
@@ -1744,6 +1904,8 @@ function baseReducer(state: State, action: Action): State {
     case "UNLINK": {
       const pair = state.matched[action.index];
       if (!pair) return state;
+      const printed = pair.card.sourceNumbers;
+      const bscOwn = printed?.bsc ?? pair.card.cardNumber;
       // NEO-496: a card on one marketplace and the checklist has no second
       // marketplace half to split off (the dialog offers no marketplace
       // Unlink); its checklist chip's own Unlink undoes the row instead
@@ -1764,6 +1926,9 @@ function baseReducer(state: State, action: Action): State {
         // card, not to either marketplace's row, and stamping it onto both
         // halves would destroy the disagreement the operator was correcting.
         cardName: pair.nameConflict?.bsc ?? pair.card.cardName,
+        // NEO-591: and its own NUMBER back. The merged card carries the more
+        // specific of the sources' numbers; this half printed `sourceNumbers.bsc`.
+        cardNumber: bscOwn,
         // NEO-251: and its own ROSTER back, for exactly the same reason. The
         // merged row carries one side's players, so spreading it onto both
         // halves would stamp BSC's single subject over SportLots' pair — an
@@ -1788,6 +1953,9 @@ function baseReducer(state: State, action: Action): State {
         pair.playersConflict?.sportlots ?? (slBase ? slBase.players : pair.card.players);
       const slSide: PairingCard = {
         ...(slBase || pair.card),
+        // NEO-591: the number SportLots printed (`slBase` already has the
+        // number the pair had before the checklist row).
+        cardNumber: printed?.sportlots ?? (slBase || pair.card).cardNumber,
         cardName: pair.nameConflict?.sportlots ?? pair.card.cardName,
         players: slPlayers,
         platformData: pair.card.platformData.sportlots
@@ -1796,6 +1964,8 @@ function baseReducer(state: State, action: Action): State {
         unmatched: "bsc",
       };
       if (slBase && slSide.players === undefined) delete slSide.players;
+      // A single half has no second source to differ from.
+      delete slSide.sourceNumbers;
       // NEO-490: a checklist link on the pair stays on the half it is keyed
       // by — the pair's `candidateKey`, which is its BSC ref — and that half
       // is KEPT, because a linked card is always saved. The SportLots half
@@ -1810,6 +1980,25 @@ function baseReducer(state: State, action: Action): State {
         ((state.checklistLinks.has(pairKey) && candidateKey(bscSide) === pairKey) ||
           pair.card.checklistLink !== undefined);
       if (pair.card.checklistLink) delete slSide.checklistLink;
+      // NEO-591: the BSC half that keeps the server's pairing keeps the row's
+      // number beside its own, and takes the more specific of the two (the
+      // pair's number was chosen over all of them); one without a pairing
+      // printed `bscOwn` alone.
+      const checklistPrinted = printed?.checklist;
+      if (pair.card.checklistLink && hasBsc && checklistPrinted !== undefined) {
+        const own: SourceNumbers = { bsc: bscOwn, checklist: checklistPrinted };
+        bscSide.cardNumber = preferCardNumber(bscOwn, checklistPrinted);
+        if (numbersDiffer(own)) bscSide.sourceNumbers = own;
+        else delete bscSide.sourceNumbers;
+        if (bscSide.checklistLink?.revert) {
+          bscSide.checklistLink = {
+            ...bscSide.checklistLink,
+            revert: revertNumberOf(bscSide.checklistLink.revert, bscOwn, bscSide.cardNumber),
+          };
+        }
+      } else {
+        delete bscSide.sourceNumbers;
+      }
       return {
         ...state,
         matched: state.matched.filter((_, i) => i !== action.index),
@@ -2512,18 +2701,25 @@ export const CHECKLIST_ALL_FOUND = "Every checklist row found its card.";
 /**
  * NEO-496 — the server's checklist pairing, as a card's chip: "On checklist"
  * for a number match, "Checklist: #FS-3" when the card paired by name and the
- * row prints another number (the card keeps its own; this is not a
- * conflict), and the % for a near-name pair, like a fuzzy BSC/SportLots link.
+ * row prints another number, "Checklist: NNO" when the row prints none (the
+ * hand link's chip reads the same; not a conflict), and the % for a near-name
+ * pair, like a fuzzy BSC/SportLots link.
  */
 export function serverChecklistChipText(link: NonNullable<PairingCard["checklistLink"]>): {
   label: string;
+  /** The row's number as the chip prints it, for the tooltip. */
+  printed: string | undefined;
   percent: string | null;
 } {
-  const number = link.checklistNumber?.trim();
+  // NEO-591 (variations): a stem pair is the row's number beside the card's
+  // variation ("Checklist: #38" on 38, 38b and 38c), and no %: the row is
+  // shared by design, not a near match.
+  const number = (link.checklistNumber ?? (link.via === "stem" ? link.row?.number : undefined))?.trim();
   return {
-    label: number ? `Checklist: #${number}` : "On checklist",
+    label: number ? `Checklist: ${isNoNumber(number) ? "NNO" : `#${number}`}` : "On checklist",
+    printed: number || undefined,
     percent:
-      link.confidence !== undefined && link.confidence < 1
+      link.via !== "stem" && link.confidence !== undefined && link.confidence < 1
         ? `${Math.round(link.confidence * 100)}%`
         : null,
   };
@@ -2534,9 +2730,43 @@ export function serverChecklistChipText(link: NonNullable<PairingCard["checklist
  * card, or (no number) that the card is on the checklist.
  */
 export function checklistNumberTitle(printed: string | undefined): string {
+  if (printed && isNoNumber(printed)) return "Your checklist prints this card with no number";
   return printed
     ? `Your checklist prints this card as #${printed}`
     : "This card is on your checklist";
+}
+
+/**
+ * NEO-591 — what each source printed, for the "Numbers differ" note's tooltip
+ * and screen-reader text: "BSC #OV-ANFI · Checklist NNO". Always BSC, then
+ * SportLots, then the checklist; a source that is not in the pair is left out.
+ */
+export function sourceNumbersText(numbers: SourceNumbers): string {
+  const printed = (n: string) => (isNoNumber(n) ? "NNO" : `#${n.trim()}`);
+  return [
+    numbers.bsc !== undefined ? `BSC ${printed(numbers.bsc)}` : null,
+    numbers.sportlots !== undefined ? `SportLots ${printed(numbers.sportlots)}` : null,
+    numbers.checklist !== undefined ? `Checklist ${printed(numbers.checklist)}` : null,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
+}
+
+/**
+ * NEO-591 — the % a Matched row shows. A pair made by name while the numbers
+ * differ is as sure as its least sure link, so the checklist link's own
+ * confidence lowers the pair's (a hand link, 0, stays unscored). Without
+ * `sourceNumbers` it is the pair's, as it always was.
+ */
+export function shownConfidence(pair: {
+  confidence: number;
+  card: Pick<PairingCard, "sourceNumbers" | "checklistLink">;
+}): number {
+  const link = pair.card.checklistLink?.confidence;
+  if (pair.confidence === 0 || !pair.card.sourceNumbers || link === undefined) {
+    return pair.confidence;
+  }
+  return Math.min(pair.confidence, link);
 }
 
 /**
@@ -2578,12 +2808,12 @@ function serverChecklistChip(
   link: NonNullable<PairingCard["checklistLink"]>,
   unlinkButton?: React.ReactNode,
 ) {
-  const { label: text, percent } = serverChecklistChipText(link);
+  const { label: text, printed, percent } = serverChecklistChipText(link);
   return (
     <span className="inline-flex shrink-0 items-stretch rounded border border-pick-teal-rule bg-pick-teal text-xs text-pick-teal-ink">
       <span
         className="flex items-center px-1.5 py-0.5"
-        title={checklistNumberTitle(link.checklistNumber?.trim() || undefined)}
+        title={checklistNumberTitle(printed)}
       >
         {text}
       </span>
@@ -2624,6 +2854,13 @@ export function checklistLinkedAnnouncement(
   return `Linked checklist row ${rowNumber} to ${cardLabel}. ${left}`;
 }
 export const CHECKLIST_UNLINKED = "Unlinked.";
+/**
+ * NEO-591 (variations) — said when Unlink leaves a checklist row other cards
+ * still share: only this card let go, so the row is not back on the list.
+ */
+export function checklistUnlinkedSharedAnnouncement(cardLabel: string): string {
+  return `Unlinked from ${cardLabel}. Checklist row stays linked to the other cards.`;
+}
 /**
  * A-N1 — said when the operator's own Unlink drops a checklist link: which
  * card it left, and that the row can be picked again.
@@ -3452,7 +3689,14 @@ export default function CardPairingModal({
           } finally {
             setResolvingChecklist(false);
           }
-          cards = applyChecklistAnswers(cards, answers, candidateKey);
+          cards = applyChecklistAnswers(
+            cards,
+            answers,
+            candidateKey,
+            // NEO-591: the card takes the more specific of its number and the
+            // linked row's, so the row's number has to reach the fold.
+            new Map(pairs.map((p) => [p.cardKey, p.row.number])),
+          );
         }
       }
       // NEO-496: the checklist rows the operator kept, as cards of their own,
@@ -3685,8 +3929,10 @@ export default function CardPairingModal({
     if (!link) return null;
     if (!unlinkableServerPair(card)) return serverChecklistChip(link);
     const cardKey = candidateKey(card);
-    // The row joins the end of the list (see `unlinkServerChecklist`).
+    // The row joins the end of the list (see `unlinkServerChecklist`), unless
+    // other cards still share it (NEO-591 variations).
     const rowIndex = state.checklistCards.length;
+    const shared = rowHeldByOthers(state, card);
     return serverChecklistChip(
       link,
       <button
@@ -3694,6 +3940,13 @@ export default function CardPairingModal({
         className={CHIP_UNLINK}
         onClick={() => {
           dispatch({ type: "UNLINK_SERVER_CHECKLIST", cardKey });
+          if (shared) {
+            announceChecklist(checklistUnlinkedSharedAnnouncement(label(card)));
+            // The chip this button sat in is gone and there is no row to go
+            // to: park focus on the Matched toggle.
+            refocus(matchedToggleRef.current);
+            return;
+          }
           announceChecklist(checklistUnlinkedAnnouncement(label(card)));
           revealChecklistRow(checklistRowLine(pairedRowOf(card.checklistLink.row)));
           focusChecklistRow(rowIndex);
@@ -4235,9 +4488,23 @@ export default function CardPairingModal({
                               {label(m.card)}
                             </button>
                           )}
-                          {m.confidence > 0 && m.confidence < 1 && (
+                          {shownConfidence(m) > 0 && shownConfidence(m) < 1 && (
                             <span className="text-xs text-notice-warn-ink shrink-0">
-                              {Math.round(m.confidence * 100)}%
+                              {Math.round(shownConfidence(m) * 100)}%
+                            </span>
+                          )}
+                          {m.card.sourceNumbers && (
+                            // NEO-591: names paired the card, numbers did not
+                            // confirm it. State only; the tooltip and the
+                            // hidden words say which source printed what.
+                            <span
+                              className="text-xs text-ink-2 shrink-0"
+                              title={sourceNumbersText(m.card.sourceNumbers)}
+                            >
+                              Numbers differ
+                              <span className="sr-only">
+                                : {sourceNumbersText(m.card.sourceNumbers)}
+                              </span>
                             </span>
                           )}
                           {checklistChip(m.card)}

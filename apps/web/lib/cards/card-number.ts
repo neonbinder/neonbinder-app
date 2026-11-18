@@ -129,3 +129,133 @@ export function compareCardNumbers(a: string, b: string): number {
   // strings.
   return a < b ? -1 : 1;
 }
+
+// ---------------------------------------------------------------------------
+// NEO-591 — what a card number SAYS about two cards (product rule 7, names
+// first). These were born in `lib/checklists/match-published-checklist.ts`,
+// which re-exports them so its importers stay put.
+// ---------------------------------------------------------------------------
+
+/**
+ * A card number as printed, as the exact pass compares it: trimmed, a
+ * leading "#" or "No." dropped, inner whitespace removed, case KEPT.
+ * "#12" = "No. 12" = "12"; "1a" and "1A" stay two numbers.
+ */
+export function exactChecklistNumber(raw: string): string {
+  let n = raw.normalize("NFKC").trim();
+  n = n.replace(/^(?:#|no\.?(?=\s|\d|#))\s*/i, "");
+  n = n.replace(/^#\s*/, "");
+  return n.replace(/\s+/g, "");
+}
+
+/**
+ * The case-folded number: `exactChecklistNumber` upper-cased. "bcp-12" =
+ * "BCP-12".
+ */
+export function normalizeChecklistNumber(raw: string): string {
+  return exactChecklistNumber(raw).toUpperCase();
+}
+
+/**
+ * The number without a leading letter prefix ("BCP-12" → "12", "US12" →
+ * "12"), or null when there is none to strip. Only letters followed by an
+ * optional "-" and then a digit count as a prefix.
+ */
+export function stripLetterPrefix(normalized: string): string | null {
+  const m = /^[A-Z]+-?(?=\d)/.exec(normalized);
+  if (!m) return null;
+  const rest = normalized.slice(m[0].length);
+  return rest.length > 0 ? rest : null;
+}
+
+/**
+ * A card number that is no number: blank, or "NNO" ("#NNO", "nno.") as
+ * checklists and marketplaces print an unnumbered card.
+ */
+export function isNoNumber(raw: string): boolean {
+  const n = normalizeChecklistNumber(raw).replace(/[.:]$/, "");
+  return n === "" || n === "NNO";
+}
+
+/**
+ * What kind of number a card carries, for choosing which one NB keeps.
+ * "none" is blank or NNO; "letters" is any letter once the number is read as
+ * printed ("38a", "OV-ANFI", "BCP-12"); everything else is "digits".
+ */
+export type CardNumberClass = "none" | "digits" | "letters";
+
+export function cardNumberClass(n: string): CardNumberClass {
+  if (isNoNumber(n)) return "none";
+  return /\p{L}/u.test(exactChecklistNumber(n)) ? "letters" : "digits";
+}
+
+const CLASS_RANK: Record<CardNumberClass, number> = { none: 0, digits: 1, letters: 2 };
+
+/**
+ * The number `bare` holds once the set's own prefix ("DK-") is taken off the
+ * folded form, or null when it does not start with it (or nothing is left).
+ */
+function stripSetPrefix(folded: string, prefix: string | undefined): string | null {
+  if (!prefix) return null;
+  const p = normalizeChecklistNumber(prefix);
+  if (!p || !folded.startsWith(p)) return null;
+  const rest = folded.slice(p.length).replace(/^-/, "");
+  return rest.length > 0 ? rest : null;
+}
+
+/**
+ * The case-folded number with the set's own `cardNumberPrefix` taken off, or,
+ * when `letters` is true (the default), a leading letter prefix ("BCP-12" →
+ * "12"); the folded number itself when neither applies. The key the
+ * prefix-stripped passes compare. `letters: false` is for number-only pairing,
+ * where an arbitrary letter prefix may mark a different subset ("T-10" is not
+ * "10").
+ */
+export function strippedCardNumber(raw: string, prefix?: string, letters = true): string {
+  const folded = normalizeChecklistNumber(raw);
+  return stripSetPrefix(folded, prefix) ?? (letters ? stripLetterPrefix(folded) : null) ?? folded;
+}
+
+/**
+ * Do two card numbers name the same printed number? Yes when they are:
+ * - the same as printed, or the same case-folded ("1a" = "1A");
+ * - the same once a leading letter prefix ("BCP-12" → "12") or the set's own
+ *   `cardNumberPrefix` is stripped from either;
+ * - both no-number (blank / NNO).
+ * A no-number against a numbered card never agrees. "38a" and "38" do not.
+ */
+export function cardNumbersAgree(
+  a: string,
+  b: string,
+  options?: { prefix?: string },
+): boolean {
+  const aNone = isNoNumber(a);
+  const bNone = isNoNumber(b);
+  if (aNone || bNone) return aNone && bNone;
+  const fa = normalizeChecklistNumber(a);
+  const fb = normalizeChecklistNumber(b);
+  if (fa === fb) return true;
+  const reads = (folded: string) => {
+    const out = new Set<string>();
+    const letters = stripLetterPrefix(folded);
+    if (letters) out.add(letters);
+    const set = stripSetPrefix(folded, options?.prefix);
+    if (set) out.add(set);
+    out.add(folded);
+    return out;
+  };
+  const ra = reads(fa);
+  for (const r of reads(fb)) if (ra.has(r)) return true;
+  return false;
+}
+
+/**
+ * Which of two numbers NB keeps when two sources name the same card: letters
+ * over digits over none (a number with a letter is the more specific print:
+ * "38a" over "38", "OV-ANFI" over "NNO"). The same class keeps `own`, so the
+ * caller passes the owner first (BSC over SportLots, a marketplace over the
+ * operator's checklist).
+ */
+export function preferCardNumber(own: string, other: string): string {
+  return CLASS_RANK[cardNumberClass(other)] > CLASS_RANK[cardNumberClass(own)] ? other : own;
+}

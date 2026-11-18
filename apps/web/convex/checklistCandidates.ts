@@ -10,6 +10,7 @@ import {
   cardTeamLookupValidator,
   checklistConflictValidator,
   checklistPairRevertValidator,
+  sourceNumbersValidator,
   checklistPairedRowValidator,
 } from "./schema";
 import { cardNumberStem } from "../lib/cards/variations";
@@ -27,6 +28,13 @@ import {
 } from "./lib/teamRow";
 import { nameTokens } from "./lib/entityNearMatch";
 import { isProspectTeamLevel, pickProspectTeam, teamLocationIs } from "./lib/prospectTeam";
+
+/**
+ * NEO-591 — the longest number a candidate's `sourceNumbers` may carry per
+ * source. A printed card number is a few characters ("OV-ANFI", "232C"); the
+ * fetch clips to this and `startCandidateBatch` refuses a longer one.
+ */
+export const MAX_SOURCE_NUMBER_LENGTH = 64;
 import { teamFullName } from "../lib/teams/team-name";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { findSportForSelectorOption } from "./cardChecklist";
@@ -91,9 +99,10 @@ const bucketValidator = v.union(
 
 /**
  * NEO-496 — how a card paired with a publisher-checklist row (Match Cards'
- * badge). `confidence` is set for a near-name pair only; `checklistNumber`
- * for a name pair with a numbered row (shown beside the card's own number,
- * never a conflict). Mirrors the schema field.
+ * badge). `confidence` is set when the pair is not certain (a near name, or
+ * numbers that differ, NEO-591); `checklistNumber` when the row's number is
+ * not the one the card was fetched with ("NNO" for a no-number row; shown
+ * beside the card's own number, never a conflict). Mirrors the schema field.
  */
 export const checklistLinkValidator = v.object({
   via: v.union(
@@ -103,7 +112,12 @@ export const checklistLinkValidator = v.object({
     v.literal("player"),
     v.literal("playerName"),
     v.literal("playerFuzzy"),
+    // NEO-591 — one row standing for several cards sharing its number's stem.
+    v.literal("stem"),
   ),
+  // NEO-591 — the row's index in the rows sent, set when several cards hold
+  // the same row (see the schema field).
+  rowKey: v.optional(v.number()),
   confidence: v.optional(v.number()),
   checklistNumber: v.optional(v.string()),
   /** The paired row and the card before it, for Match Cards' Unlink. */
@@ -176,6 +190,12 @@ const candidateInputValidator = v.object({
   bucket: bucketValidator,
   // NEO-496 — see `checklistLinkValidator`.
   checklistLink: v.optional(checklistLinkValidator),
+  // NEO-591 — the numbers each source printed, for a pair made by name whose
+  // numbers differ. Held to `MAX_SOURCE_NUMBER_LENGTH` by `startCandidateBatch`.
+  sourceNumbers: v.optional(sourceNumbersValidator),
+  // NEO-591 (variations) — a variation card created from a checklist row;
+  // the client seeds it as Keeping (see the schema field).
+  preKept: v.optional(v.literal(true)),
   confidence: v.optional(v.number()),
   /**
    * NEO-330 / NEO-341 — this card is waiting on a BSC team lookup the action
@@ -487,6 +507,15 @@ export const startCandidateBatch = internalMutation({
             MAX_CARD_TEAMS,
             `${side} teams in its checklist conflict`,
             "team",
+          );
+        }
+      }
+      // NEO-591 — the numbers each source printed, held to a card number's
+      // length like every other string that comes from a marketplace page.
+      for (const printed of Object.values(c.sourceNumbers ?? {})) {
+        if (printed !== undefined && printed.length > MAX_SOURCE_NUMBER_LENGTH) {
+          throw new Error(
+            `startCandidateBatch: card #${c.cardNumber.slice(0, MAX_SOURCE_NUMBER_LENGTH)} carries a source number of ${printed.length} characters; the limit is ${MAX_SOURCE_NUMBER_LENGTH}.`,
           );
         }
       }
@@ -1267,6 +1296,10 @@ export const getReadyCandidates = query({
         bucket: bucketValidator,
         // NEO-496 — how the card paired with the publisher checklist.
         checklistLink: v.optional(checklistLinkValidator),
+        // NEO-591 — see `sourceNumbersValidator`.
+        sourceNumbers: v.optional(sourceNumbersValidator),
+        // NEO-591 (variations) — see the schema field.
+        preKept: v.optional(v.literal(true)),
         confidence: v.optional(v.number()),
         stem: v.string(),
         teamResolved: v.boolean(),
@@ -1329,6 +1362,8 @@ export const getReadyCandidates = query({
         checklistConflict: r.checklistConflict,
         bucket: r.bucket,
         checklistLink: r.checklistLink,
+        sourceNumbers: r.sourceNumbers,
+        preKept: r.preKept,
         confidence: r.confidence,
         stem: r.stem,
         // Lets the row show "resolving team…" rather than an empty cell that

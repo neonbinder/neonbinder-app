@@ -15,6 +15,7 @@ import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { rowHasNoNumber } from "../../lib/checklists/match-published-checklist";
 import { isNoClaimTeamText, isNoTeamText } from "../../lib/checklists/no-team";
 import { readProspectCell } from "../../lib/checklists/prospect";
+import { MAX_VARIATION_NAME } from "../../lib/checklists/parse-published-checklist";
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
 import type { publishedChecklistStoredRowValidator } from "../schema";
@@ -51,6 +52,10 @@ export const publishedChecklistRowValidator = v.object({
   // same.
   prospect: v.optional(v.boolean()),
   prospectTeams: v.optional(v.array(v.string())),
+  // NEO-591 (variations) — the checklist's note for a variation row ("photo
+  // variation"). Control characters are stripped and a name over
+  // `MAX_VARIATION_NAME` is refused by the re-check below.
+  variationName: v.optional(v.string()),
   // The parser's subset label (a file's "set" / "insert" column). The
   // client chooses rows by it; the fetch never reads it and drops it in
   // `checkPublishedChecklist`. Accepted so a row is sent as parsed.
@@ -135,6 +140,17 @@ export function checkPublishedChecklist(
     if (row.subset !== undefined && row.subset.trim().length > MAX_PLAYER_NAME_LENGTH) {
       throw new ConvexError(`${where} has a set name over ${MAX_PLAYER_NAME_LENGTH} characters.`);
     }
+    // NEO-591 — the variation note: control characters out (a name never
+    // carries one), whitespace folded, its own bound (not a player's).
+    const variationName = (row.variationName ?? "")
+      .replace(/[\u0000-\u001f\u007f-\u009f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (variationName.length > MAX_VARIATION_NAME) {
+      throw new ConvexError(
+        `${where} has a variation name over ${MAX_VARIATION_NAME} characters.`,
+      );
+    }
     const clean = (names: string[], max: number, unit: string) => {
       if (names.length > MAX_PUBLISHED_ROW_NAMES) {
         throw new ConvexError(
@@ -199,6 +215,7 @@ export function checkPublishedChecklist(
       ...(noTeam ? { noTeam: true } : {}),
       ...(prospect ? { prospect: true } : {}),
       ...(prospectTeams.length > 0 ? { prospectTeams } : {}),
+      ...(variationName ? { variationName } : {}),
     };
   });
   return { rows };

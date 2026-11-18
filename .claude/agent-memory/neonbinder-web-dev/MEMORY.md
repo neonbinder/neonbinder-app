@@ -260,3 +260,6 @@
 - [PDF runs ride along only with evidence](reference_pdf_runs_ride_along_only_when_they_add_evidence.md) — new reader record fields move the Topps golden snapshot; gate them; tsx probes need .mts
 - [convex data caps at 8192 rows](reference_convex_data_caps_at_8192_rows.md) — page a big table read-only with --order asc/desc and dedupe by _id
 - [New candidate field needs three client hand copies](reference_new_candidate_field_needs_three_client_hand_copies.md) — pairing-cards.ts, CardChecklist resolveChecklistPairs, PairingCard type pick fields by name; grep before done
+- [macOS has no timeout](reference_macos_has_no_timeout_command.md) — `timeout N tsc | grep` is command-not-found and looks clean; run root tsc in background to a log, check count > 0
+- [New checklist row field: three copy sites](reference_new_checklist_row_field_has_three_copy_sites.md) — parser sets it; checklist-sections withoutSubset + convex validators copy it field by field
+- [Numbers-differ fixtures need non-prefix pairs](reference_numbers_differ_fixtures_need_non_prefix_pairs.md) — "12" vs "OV-12" AGREE; ABSORB re-folds initialData so seed-only mutations stay green

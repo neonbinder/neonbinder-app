@@ -79,3 +79,4 @@
 - [Set team default: copy-down vs lookup](set-team-default-copy-down-vs-lookup.md) — teamIds copied down + cascaded; NEO-528 defaults looked up; never mix for one attribute
 - [PDF checklist geometry is in pdf.js items](pdf-checklist-geometry-lives-in-pdfjs-items.md) — cell-gap merge hides column splits; one straddling item = overflowed cell; Title Case headings via fontName
 - [Qualified team claims settle before they become strings](qualified-team-claims-settle-before-they-become-strings.md) — commit resolves team strings unrestricted; settle a league-limited claim at fetch with a same-row check, or hold it off `teams`
+- [Card pairing is names-first, two matchers](card-pairing-is-names-first-two-matchers.md) — BSC/SL step 1a-1c + matchPublishedChecklist; number kinds never partition name passes (Onyx 0 of 56)

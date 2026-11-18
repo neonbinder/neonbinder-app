@@ -87,7 +87,11 @@ import {
   resolveVariationParents,
   suggestVariationPairings,
 } from "../lib/cards/variations";
-import { compareCardNumbers } from "../lib/cards/card-number";
+import {
+  cardNumbersAgree,
+  compareCardNumbers,
+  preferCardNumber,
+} from "../lib/cards/card-number";
 // NEO-212: the SINGLE career-timeline ordering, shared with `enrichPlayer` in
 // convex/adapters/wikidata.ts. Both write `players.teamYears`, and a player
 // can be created by either, so they must not disagree about the order.
@@ -325,12 +329,9 @@ import {
 // NEO-253: the shared normalisation core, imported rather than transcribed —
 // this file used to carry two separate hand copies of it.
 import { normalizeEntityName } from "../lib/entities/normalize-name";
-// NEO-496: the player-name score and pairing rule, shared with the publisher
+// NEO-591: the one names-first pairing core, shared with the publisher
 // checklist matcher (lib/checklists/match-published-checklist.ts).
-import {
-  PLAYER_NAME_AUTO_LINK,
-  pairNamesBySimilarity,
-} from "../lib/cards/name-similarity";
+import { pairNamesFirst } from "../lib/cards/pair-names-first";
 // NEO-236: the team name split. `teamFullName` composes location + nickname
 // for every name that leaves this file; `teamRowFields`/`findTeamByFullName`
 // are the ONE place a team row's identity fields are derived and looked up.
@@ -375,7 +376,11 @@ import {
 // fetch's line and the save's line (Match Cards recounts with it).
 import { tallyFetchChecklistTeams } from "../lib/checklists/checklist-teams-tally";
 import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
-import { MAX_CHECKLIST_TEAM_TEXTS, MAX_PROSPECT_TEAMS_PER_QUERY } from "./checklistCandidates";
+import {
+  MAX_CHECKLIST_TEAM_TEXTS,
+  MAX_PROSPECT_TEAMS_PER_QUERY,
+  MAX_SOURCE_NUMBER_LENGTH,
+} from "./checklistCandidates";
 import { checklistClaimText } from "../lib/checklists/prospect-team-text";
 // NEO-591 — "Prospect (X)": the Prospect Card attribute, and X settled at fetch.
 import type { ProspectResolution } from "../lib/checklists/prospect";
@@ -400,6 +405,7 @@ import {
   checklistPairedRowValidator,
   selectorOptionFields,
   selectorOptionLevelValidator,
+  sourceNumbersValidator,
 } from "./schema";
 // NEO-334 — a variant type's title IS its kind (Base, Insert, Parallel). The
 // insert/parallel reading of a row beneath one is derived from that kind at
@@ -15128,23 +15134,6 @@ export const syncSetsAcrossManufacturers = action({
 });
 
 /**
- * Fold + lowercase + strip punctuation + token-sort. Used both for fuzzy
- * matching during reconciliation and for matching against the existing
- * players/teams tables.
- *
- * NEO-253: was an inline transcription of `normalizePlayerName` /
- * `normalizeTeamName`, kept local to avoid pulling those modules into the
- * action runtime (Convex bundles per-file). It now aliases the shared core in
- * `lib/entities/normalize-name.ts`, which has no Convex imports at all, so the
- * bundling argument for the copy no longer applies — while the divergence the
- * copy invited (this one silently kept the old, unfolded behaviour for a name
- * the tables would have folded) does.
- */
-function normalizeName(raw: string): string {
-  return normalizeEntityName(raw);
-}
-
-/**
  * NEO-189 — merge the SportLots fan-out's per-set results.
  *
  * Two jobs, deliberately separated, because conflating them is the defect this
@@ -15257,6 +15246,28 @@ export function summarizeCollisions(
   return ` — all rows kept; ${parts.join("; ")}`;
 }
 
+/** NEO-591 — see `sourceNumbersValidator`. */
+type SourceNumbers = Infer<typeof sourceNumbersValidator>;
+
+/**
+ * NEO-591 (variations) — the note a checklist row carries for its variation
+ * ("photo variation", a VAR label), when the parser kept one. Read through a
+ * structural check so a row without the field (an older client) reads as none.
+ */
+function rowVariationName(row: object): string | undefined {
+  const name = (row as { variationName?: unknown }).variationName;
+  if (typeof name !== "string") return undefined;
+  const trimmed = name.trim();
+  return trimmed ? trimmed.slice(0, MAX_LABEL_LENGTH) : undefined;
+}
+
+/** NEO-591 — a printed number held to `MAX_SOURCE_NUMBER_LENGTH` for the wire. */
+function clipSourceNumber(printed: string): string {
+  return printed.length > MAX_SOURCE_NUMBER_LENGTH
+    ? printed.slice(0, MAX_SOURCE_NUMBER_LENGTH)
+    : printed;
+}
+
 interface ReconciledCard {
   cardNumber: string;
   cardName: string;
@@ -15314,6 +15325,17 @@ interface ReconciledCard {
    * sides) carry no such tag.
    */
   unmatched?: "bsc" | "sl";
+  /**
+   * NEO-591 — the numbers each source printed, set only on a pair the sources
+   * made by NAME whose numbers differ. `cardNumber` above is the one the card
+   * carries (`preferCardNumber`); this keeps the others for Match Cards.
+   */
+  sourceNumbers?: SourceNumbers;
+  /**
+   * NEO-591 (variations) — a checklist-only variation the fetch created from a
+   * row (`siblingRows`); the client seeds it as Keeping.
+   */
+  preKept?: true;
   /** PR 451 (NEO-478) — the publisher checklist disagrees on this card. */
   checklistConflict?: {
     players?: { marketplace: string[]; checklist: string[] };
@@ -15384,7 +15406,16 @@ export type FetchChecklistInfo = Infer<typeof fetchChecklistInfoValidator>;
 
 /** NEO-496 — a candidate's `checklistLink` (see checklistCandidates.ts). */
 type ChecklistLink = {
-  via: "number" | "caseFolded" | "prefixStripped" | "player" | "playerName" | "playerFuzzy";
+  via:
+    | "number"
+    | "caseFolded"
+    | "prefixStripped"
+    | "player"
+    | "playerName"
+    | "playerFuzzy"
+    | "stem";
+  /** NEO-591 — the row's index, set when several cards hold the same row. */
+  rowKey?: number;
   confidence?: number;
   checklistNumber?: string;
   row?: Infer<typeof checklistPairedRowValidator>;
@@ -15733,6 +15764,14 @@ const previewCardFields = {
       preferred: v.optional(v.union(v.literal("bsc"), v.literal("sportlots"))),
     }),
   ),
+  // NEO-591 — the numbers each source printed for a pair made by name whose
+  // numbers differ. ACCEPTED and ignored by the commit, like `playersConflict`:
+  // the card carries one number, and the client strips this off a confirmed
+  // card. Held to `MAX_SOURCE_NUMBER_LENGTH` when a candidate is written.
+  sourceNumbers: v.optional(sourceNumbersValidator),
+  // NEO-591 (variations) — accepted and ignored, like `sourceNumbers`: the
+  // client seeds Keeping from it and strips it off a confirmed card.
+  preKept: v.optional(v.literal(true)),
   unmatched: v.optional(v.union(v.literal("bsc"), v.literal("sl"))),
   // ── NEO-335: the card's team, answered before save ────────────────────────
   //
@@ -16567,26 +16606,16 @@ export const fetchCardChecklist = action({
         sourceBscSetSlug?: string;
       }>;
 
-      // Index SL by both cardNumber and (after prefix-strip) for prefix-aware
-      // BSC matching, AND by sportlotsRef so BSC's built-in cross-reference
-      // can short-circuit fuzzy matching.
-      const slByNumber = new Map<string, typeof slCards[0]>();
+      // Index SL by its own ref, so BSC's built-in cross-reference
+      // (`sportlotsRef`) can short-circuit the pairing below.
+      //
+      // NEO-591 (names first, numbers confirm): there is no longer an index
+      // by card NUMBER. It answered `get("1")` with one SportLots card and no
+      // exactly-one guard, so two BSC "#1"s could each claim the one
+      // SportLots "#1" (rule 7: a number is not unique). Numbers pair only
+      // through `pairNamesFirst`, which counts them on both sides.
       const slByRef = new Map<string, typeof slCards[0]>();
       for (const c of slCards) {
-        // NEO-189: prefer the NON-variation row for a given number.
-        //
-        // SportLots files a card and its variations under ONE number — "#11
-        // Alec Bohm", "#11 Alec Bohm [ VAR Action Image ]", "#11 … [ VAR
-        // Throwback Alternate ]". A plain last-write-wins index therefore
-        // answered `get("11")` with whichever variation happened to be scraped
-        // last, and BSC's base #11 paired with a variation. Wrong, and silent.
-        //
-        // A bare BSC number means the base card, so that is what this index
-        // must return. Variations are paired to variations separately below.
-        const prev = slByNumber.get(c.cardNumber);
-        if (!prev || (prev.isVariation && !c.isVariation)) {
-          slByNumber.set(c.cardNumber, c);
-        }
         if (c.sportlotsRef) slByRef.set(c.sportlotsRef, c);
       }
 
@@ -16594,7 +16623,7 @@ export const fetchCardChecklist = action({
       //
       // Neither side's number can do this on its own: BSC suffixes a variation
       // (`1b`), SportLots reuses the parent's number and tags the description.
-      // So `slByNumber.get("1b")` finds nothing, the fuzzy name fallback cannot
+      // So a number lookup for "1b" finds nothing, the names-first pass cannot
       // help (the base already claimed that SL row, and a "Legend" variation may
       // be a different player entirely), and every variation lands in the
       // BSC-only column. A real 2025 Topps sync put 393 of them there.
@@ -16767,12 +16796,9 @@ export const fetchCardChecklist = action({
 
       // 1a. Every BSC card's IDENTITY answer first: the operator's stored
       //     pairing, BSC's own SportLots cross-reference, a variation's
-      //     counterpart, the number, the prefix-stripped number.
+      //     counterpart matched by its label. These are LINKS, not guesses,
+      //     so they stay ahead of names (NEO-591).
       const identitySlOf = bscCards.map((bsc) => {
-        const stripped = cardNumberPrefix && bsc.cardNumber.startsWith(cardNumberPrefix)
-          ? bsc.cardNumber.slice(cardNumberPrefix.length)
-          : bsc.cardNumber;
-
         // Operator's stored answer first — it outranks every heuristic.
         const storedSlRef = bsc.platformRef
           ? storedSlRefByBscRef.get(bsc.platformRef)
@@ -16781,39 +16807,66 @@ export const fetchCardChecklist = action({
           (storedSlRef && slByPlatformRef.get(storedSlRef))
           || (bsc.sportlotsRef && slByRef.get(bsc.sportlotsRef))
           // NEO-189: a variation's counterpart, matched by label above. Ranks
-          // below the operator's stored answer and BSC's own cross-reference,
-          // and above the number lookups — which cannot resolve a suffixed
-          // number against SportLots at all.
+          // below the operator's stored answer and BSC's own cross-reference.
           || (bsc.platformRef ? slVariationPairByBscRef.get(bsc.platformRef) : undefined)
-          || slByNumber.get(bsc.cardNumber)
-          || slByNumber.get(stripped)
           || undefined;
         const fromStoredPairing =
           storedSlRef !== undefined && slByPlatformRef.has(storedSlRef);
         return { sl, fromStoredPairing };
       });
 
-      // 1b. NEO-496 — the name fallback, over what no identity answer took:
-      //     BSC's first player against the SportLots card name, Jaro-Winkler
-      //     at or above `PLAYER_NAME_AUTO_LINK` (0.92). Each pair is BOTH
-      //     sides' one best (`pairNamesBySimilarity`); a tie on either side
-      //     leaves the cards unmatched for the operator (product rule 8).
-      //     Until NEO-496 this ran inside the walk below, so the first BSC
-      //     card in list order took a contested SportLots card, and could take
-      //     one a later BSC card was about to claim by number.
+      // 1b. NEO-591 — what no identity answer took, paired NAMES FIRST with the
+      //     numbers confirming (`pairNamesFirst`, product rule 7): the same
+      //     roster pairs whatever the numbers say ("OV-ANFI" on BSC against
+      //     "12" on SportLots), a number pairs only where it is exactly one
+      //     card on each side of the whole leftover set, then a near first
+      //     name (Jaro-Winkler at `PLAYER_NAME_AUTO_LINK`). A variation pairs
+      //     only with a variation. A tie on either side leaves the cards
+      //     unmatched for the operator (rule 8), and each pair carries the
+      //     core's confidence (0.9 when the numbers differ).
+      //
+      //     SportLots' own roster is read when it has one, else the card's
+      //     name (which is the player on a SportLots listing).
       const identityClaimed = new Set<string>();
       for (const { sl } of identitySlOf) if (sl) identityClaimed.add(slClaimKey(sl));
-      const nameSeekers = bscCards.map((bsc, i) =>
-        !identitySlOf[i].sl && bsc.players?.[0] ? normalizeName(bsc.players[0]) : undefined,
-      );
-      const nameOffers = slCards.map((card) =>
-        !identityClaimed.has(slClaimKey(card)) && card.cardName
-          ? normalizeName(card.cardName)
-          : undefined,
-      );
-      const namePairByBscIndex = new Map<number, { sl: typeof slCards[0]; score: number }>();
-      for (const p of pairNamesBySimilarity(nameSeekers, nameOffers, PLAYER_NAME_AUTO_LINK)) {
-        namePairByBscIndex.set(p.leftIndex, { sl: slCards[p.rightIndex], score: p.score });
+      const bscLeft: number[] = [];
+      for (let i = 0; i < bscCards.length; i++) if (!identitySlOf[i].sl) bscLeft.push(i);
+      const slLeft: number[] = [];
+      for (let i = 0; i < slCards.length; i++) {
+        if (!identityClaimed.has(slClaimKey(slCards[i]))) slLeft.push(i);
+      }
+      // NEO-591 (variations): the core's `stemLinks` are not read here. A
+      // variation left over on either side is handled after the walk (step
+      // 3a), by its own stem against a PAIRED parent.
+      const namePairByBscIndex = new Map<
+        number,
+        { sl: typeof slCards[0]; confidence: number; numbersAgree: boolean }
+      >();
+      if (bscLeft.length > 0 && slLeft.length > 0) {
+        const pairing = pairNamesFirst(
+          bscLeft.map((i) => ({
+            names: bscCards[i].players ?? [],
+            number: bscCards[i].cardNumber,
+            isVariation: bscCards[i].isVariation === true,
+          })),
+          slLeft.map((i) => ({
+            names: slCards[i].players?.length
+              ? slCards[i].players!
+              : slCards[i].cardName
+                ? [slCards[i].cardName]
+                : [],
+            number: slCards[i].cardNumber,
+            isVariation: slCards[i].isVariation === true,
+          })),
+          { prefix: cardNumberPrefix, kind: (item) => item.isVariation },
+        );
+        for (const p of pairing.pairs) {
+          namePairByBscIndex.set(bscLeft[p.leftIndex], {
+            sl: slCards[slLeft[p.rightIndex]],
+            confidence: p.confidence,
+            numbersAgree: p.numbersAgree,
+          });
+        }
       }
 
       // 1c. Walk BSC, attach matching SL data
@@ -16821,21 +16874,40 @@ export const fetchCardChecklist = action({
         const { fromStoredPairing } = identitySlOf[bscIndex];
         let sl = identitySlOf[bscIndex].sl;
 
-        // 2. The name pair from 1b, if this card has one.
-        let fuzzyScore: number | undefined;
+        // 2. The names-first pair from 1b, if this card has one.
+        let corePairConfidence: number | undefined;
+        let numbersAgree = true;
         const namePair = sl ? undefined : namePairByBscIndex.get(bscIndex);
         if (namePair) {
           sl = namePair.sl;
-          fuzzyScore = namePair.score;
+          corePairConfidence = namePair.confidence;
+          numbersAgree = namePair.numbersAgree;
         }
 
-        // Confidence: an exact number / sportlotsRef hit is certain; a
-        // Jaro-Winkler name match is not. Surfaced so the operator can see
-        // which pairings deserve a second look.
-        // A previously-confirmed pairing is certain by definition — it is the
-        // operator's own answer being replayed, not a guess.
-        const pairConfidence = sl ? (fromStoredPairing ? 1 : (fuzzyScore ?? 1)) : 0;
+        // Confidence: an identity hit (the operator's stored pairing, BSC's
+        // own SportLots cross-reference, a variation's label) is certain; a
+        // names-first pair carries the core's confidence (1 for the same
+        // roster or a unique number with the numbers agreeing, 0.9 when they
+        // differ, the name score for a near name). Surfaced so the operator
+        // can see which pairings deserve a second look.
+        const pairConfidence = sl ? (corePairConfidence ?? 1) : 0;
         if (sl) claimedSlRefs.add(slClaimKey(sl));
+
+        // NEO-591 — the number the card carries. An identity pair keeps BSC's
+        // (as before). A names-first pair carries the more specific of the two
+        // (letters over digits over none, BSC's on a tie: `preferCardNumber`),
+        // and when the two disagree both are kept in `sourceNumbers`, which is
+        // how Match Cards says "Numbers differ" without calling it a conflict.
+        const cardNumber = sl && namePair
+          ? preferCardNumber(bsc.cardNumber, sl.cardNumber)
+          : bsc.cardNumber;
+        const sourceNumbers: SourceNumbers | undefined =
+          sl && namePair && !numbersAgree
+            ? {
+                bsc: clipSourceNumber(bsc.cardNumber),
+                sportlots: clipSourceNumber(sl.cardNumber),
+              }
+            : undefined;
 
         const attributes = Array.from(new Set([
           ...(bsc.attributes ?? []),
@@ -16880,7 +16952,7 @@ export const fetchCardChecklist = action({
           : undefined;
 
         const candidate: ReconciledCard = {
-          cardNumber: bsc.cardNumber,
+          cardNumber,
           cardName: bsc.cardName || sl?.cardName || `Card #${bsc.cardNumber}`,
           team: bsc.team ?? sl?.team,
           teams: teamsArr,
@@ -16924,6 +16996,7 @@ export const fetchCardChecklist = action({
           // is strict, and an explicit `undefined` is not the same as an absent
           // optional on the wire.
           ...(nameConflict ? { nameConflict } : {}),
+          ...(sourceNumbers ? { sourceNumbers } : {}),
           // Spread for the same reason `nameConflict` is: `previewCardValidator`
           // is strict, and an explicit `undefined` is not an absent optional.
           ...(playersConflict ? { playersConflict } : {}),
@@ -16964,6 +17037,54 @@ export const fetchCardChecklist = action({
         };
         out.push(slOnly);
         unmatchedSlCards.push(slOnly);
+      }
+
+      // 3a. NEO-591 (variations, Jason 2026-11-18) — a variation one marketplace
+      //     lists and the other does not. When its stem's parent was PAIRED
+      //     (exactly one non-variation card of the stem, matched on both
+      //     sides), the leftover is presumed wanted: it arrives pre-kept as a
+      //     single-source variation card, and the commit links it to its
+      //     parent by stem (`resolveVariationParents`). Its own marketplace
+      //     ref only: the parent's ref is never copied onto it (rule 5).
+      //
+      //     SportLots keeps a variation under its parent's bare number ("38"
+      //     for the base and for each "[ VAR ... ]"). NB numbers a variation
+      //     with a letter ("38b", "38c": industry standard), so a bare-stem
+      //     SportLots-only variation is minted the next letter after the
+      //     base's, starting at b, skipping any letter a card of that stem
+      //     already uses, in SportLots' order. The base keeps its own number.
+      {
+        const matchedCards = new Set(autoMatchedCards.map((m) => m.card));
+        const byStem = new Map<string, ReconciledCard[]>();
+        for (const card of out) {
+          const stem = cardNumberStem(card.cardNumber);
+          const group = byStem.get(stem);
+          if (group) group.push(card);
+          else byStem.set(stem, [card]);
+        }
+        const leftoverVariations = new Set<ReconciledCard>(
+          [...unmatchedBscCards, ...unmatchedSlCards].filter((c) => c.isVariation),
+        );
+        for (const [stem, group] of byStem) {
+          const parents = group.filter((c) => !c.isVariation);
+          if (parents.length !== 1 || !matchedCards.has(parents[0])) continue;
+          const used = new Set(
+            group.map((c) => c.cardNumber.trim().toLowerCase()),
+          );
+          for (const card of group) {
+            if (!leftoverVariations.has(card)) continue;
+            card.preKept = true;
+            // Only a SportLots-only card is renumbered; BSC already suffixes.
+            if (card.unmatched !== "bsc" || card.cardNumber.trim() !== stem) continue;
+            for (const letter of "bcdefghijklmnopqrstuvwxyz") {
+              const minted = `${stem}${letter}`;
+              if (used.has(minted)) continue;
+              used.add(minted);
+              card.cardNumber = minted;
+              break;
+            }
+          }
+        }
       }
 
       // 3b. NEO-251 — did an operator already settle this same roster
@@ -17025,14 +17146,17 @@ export const fetchCardChecklist = action({
         }
       }
 
-      // 3c. PR 451 (NEO-478) — the operator's publisher checklist.
+      // 3c. PR 451 (NEO-478), names first since NEO-591 — the operator's
+      //     publisher checklist.
       //
-      //     Each card it matches by number (exactly one card and exactly one
-      //     row, rule 7; one letter-prefix-strip fallback), or, for a card
-      //     with no number, by player against an NNO row (again exactly one
-      //     each side, D-B), whose row names a
-      //     team takes its team answer from the row: the row's teams, through
-      //     the same whole-name-first resolution BSC's raw value takes. Those
+      //     Each card it matches pairs NAMES FIRST with the number confirming
+      //     (`pairNamesFirst`, product rule 7): the same players pair whatever
+      //     the numbers say, a number pairs only where it is exactly one card
+      //     and one row, then a near name. There is no "numbered" versus "no
+      //     number" split, so a marketplace's "OV-ANFI" pairs the checklist's
+      //     "NNO" row for the same player. A row that names a team takes its
+      //     team answer from the row: the row's teams, through the same
+      //     whole-name-first resolution BSC's raw value takes. Those
       //     cards are written `ready` with `teamLookup: "checklist"` and BSC
       //     is never asked about them. A row whose team cell is blank is no
       //     claim, so its card keeps the BSC lookup (players still fill). A
@@ -17047,6 +17171,16 @@ export const fetchCardChecklist = action({
       //     marketplace's values. Players fill in where the marketplace has
       //     none. Unmatched cards (Jason, D2) still get the per-card BSC
       //     lookup below, bounded and cooldown-aware.
+      //
+      //     The card's number (new cards only): the pair carries the more
+      //     specific of the two, letters over digits over none, the
+      //     marketplace's on a tie (`preferCardNumber`). When the numbers
+      //     differ the checklist's is kept in `sourceNumbers.checklist` and,
+      //     when the row's number won, the marketplace's goes into
+      //     `link.revert.cardNumber` so Unlink puts it back. A card that
+      //     already exists in NB is never renumbered: its number is not an
+      //     `NB_CONTENT_FIELDS` field, so a re-sync's commit leaves it alone
+      //     (rule 3).
       //
       //     The rows themselves are never written anywhere.
       const checklistAnswered = new Set<ReconciledCard>();
@@ -17066,12 +17200,13 @@ export const fetchCardChecklist = action({
             team: c.team,
           })),
           published.rows,
+          { prefix: cardNumberPrefix },
         );
-        // NEO-490 — counts differ (`fallback: "operator"`): no name pair is in
-        // `match.matches`, so every numbered card keeps its BSC lookup below
-        // and the operator pairs them in Match Cards. Equal counts: the unique
-        // name pairs are in `matches` (`via: "playerName"`) and are applied
-        // exactly like number pairs (`applyChecklistRow`).
+        // NEO-591 — names first: `match.matches` holds every pair the
+        // checklist and the cards settle between them, whatever the counts and
+        // whatever the numbers say, and each is applied the same way
+        // (`applyChecklistRow`). What a tie leaves is in `unmatchedCardIndices`
+        // and `unusedRowIndices`, for the operator to pair in Match Cards.
         // Matched rows' teams first, so the resolver's bound is spent on the
         // cards a marketplace also lists before the checklist-only ones.
         const resolveText = await resolveChecklistCommaTexts(
@@ -17080,6 +17215,7 @@ export const fetchCardChecklist = action({
           [
             ...match.matches.flatMap((m) => published.rows[m.rowIndex].teams),
             ...match.unusedRowIndices.flatMap((i) => published.rows[i].teams),
+            ...match.siblingRows.flatMap((s) => published.rows[s.rowIndex].teams),
           ],
         );
         // NEO-591 — the X of each "Prospect (X)" cell, settled once each (a
@@ -17090,6 +17226,7 @@ export const fetchCardChecklist = action({
           [
             ...match.matches.flatMap((m) => published.rows[m.rowIndex].prospectTeams ?? []),
             ...match.unusedRowIndices.flatMap((i) => published.rows[i].prospectTeams ?? []),
+            ...match.siblingRows.flatMap((s) => published.rows[s.rowIndex].prospectTeams ?? []),
           ],
         );
         // Collector review — a team printed as a place ("Seattle"), settled to
@@ -17101,8 +17238,17 @@ export const fetchCardChecklist = action({
           [
             ...match.matches.flatMap((m) => published.rows[m.rowIndex].teams),
             ...match.unusedRowIndices.flatMap((i) => published.rows[i].teams),
+            ...match.siblingRows.flatMap((s) => published.rows[s.rowIndex].teams),
           ],
         );
+        // NEO-591 (variations) — how many cards hold each row. A stem link
+        // gives one row to several cards; each keeps its own link, revert and
+        // team conflict (rule 8: a card's own differing team is never
+        // overwritten), and `rowKey` tells Match Cards which links share a row.
+        const cardsPerRow = new Map<number, number>();
+        for (const m of match.matches) {
+          cardsPerRow.set(m.rowIndex, (cardsPerRow.get(m.rowIndex) ?? 0) + 1);
+        }
         let conflicts = 0;
         let refused = 0;
         let noTeamFromChecklist = 0;
@@ -17115,11 +17261,29 @@ export const fetchCardChecklist = action({
           // nothing guesses, rule 8).
           const ownPlayers = card.players ? [...card.players] : undefined;
           const ownTeams = card.teams?.length ? [...card.teams] : undefined;
+          // NEO-591 — the number the row is read under. A no-number row
+          // (blank, "NNO", or flagged) is the none class and never wins.
+          const row = published.rows[m.rowIndex];
+          const rowPrinted = rowHasNoNumber(row) ? "NNO" : row.number.trim();
+          const ownNumber = card.cardNumber;
+          const carriedNumber = preferCardNumber(ownNumber, rowPrinted);
+          const numbersAgree = cardNumbersAgree(ownNumber, rowPrinted, {
+            prefix: cardNumberPrefix,
+          });
           const wouldLookUp = !card.teams?.length && !card.team && !!card.platformData.bsc?.ref;
+          // A stem link's numbers are a stem and its suffixes ("38" for "38b"),
+          // which is no disagreement: the row's number is shown as a chip, with
+          // no "Numbers differ" note and no `sourceNumbers`.
+          const isStem = m.via === "stem";
           const link: ChecklistLink = {
             via: m.via,
+            ...((cardsPerRow.get(m.rowIndex) ?? 0) > 1 ? { rowKey: m.rowIndex } : {}),
             ...(m.confidence !== undefined ? { confidence: m.confidence } : {}),
-            ...(m.checklistNumber !== undefined ? { checklistNumber: m.checklistNumber } : {}),
+            ...(m.checklistNumber !== undefined
+              ? { checklistNumber: clipSourceNumber(m.checklistNumber) }
+              : isStem || !numbersAgree || carriedNumber !== ownNumber
+                ? { checklistNumber: clipSourceNumber(rowPrinted) }
+                : {}),
             row: checklistPairedRow(
               published.rows[m.rowIndex],
               resolveText,
@@ -17147,7 +17311,19 @@ export const fetchCardChecklist = action({
             teamsFromRow,
             ...(teamsFromRow && ownTeams ? { teams: ownTeams } : {}),
             ...(teamsFromRow && wouldLookUp ? { teamLookup: "failed" as const } : {}),
+            // NEO-591 — only when the row's number replaced the card's.
+            ...(carriedNumber !== ownNumber ? { cardNumber: ownNumber } : {}),
           };
+          if (carriedNumber !== ownNumber) card.cardNumber = carriedNumber;
+          // The numbers disagree: say so, with the checklist's own. The
+          // marketplace sources' numbers (`bsc` / `sportlots`) were set when
+          // those two paired, if they disagreed.
+          if (!numbersAgree && !isStem) {
+            card.sourceNumbers = {
+              ...(card.sourceNumbers ?? {}),
+              checklist: clipSourceNumber(rowPrinted),
+            };
+          }
           if (applied.fillPlayers) card.players = [...applied.fillPlayers];
           if (applied.conflict) {
             card.checklistConflict = applied.conflict;
@@ -17188,6 +17364,32 @@ export const fetchCardChecklist = action({
             resolveProspect,
             resolvePlace,
           );
+          if (card.teamLookup === "checklist") {
+            checklistAnswered.add(card);
+            if (card.teams?.length === 0 && !card.prospectTeam) noTeamFromChecklist++;
+          }
+          checklistOnlyCards.push(card);
+        }
+        // NEO-591 (variations) — a row that is a variation of a paired card
+        // ("38b" when the card "38" took row "38a") has no card of its own and
+        // the matcher leaves it out of `unusedRowIndices`, so it MUST be made
+        // here or it is silently dropped. Each is a checklist-only candidate
+        // carrying the row's number and data, a variation, and pre-kept: the
+        // operator is presumed to want it and can drop it in Match Cards. The
+        // commit links it to its parent by stem (`resolveVariationParents`).
+        for (const sibling of match.siblingRows) {
+          const card = checklistOnlyCard(
+            published.rows[sibling.rowIndex],
+            resolveText,
+            resolveProspect,
+            resolvePlace,
+          );
+          card.isVariation = true;
+          card.preKept = true;
+          // The checklist's own note for the variation (a parser that keeps it
+          // puts it on the row as `variationName`), as the card's name.
+          const variationName = rowVariationName(published.rows[sibling.rowIndex]);
+          if (variationName) card.cardVariation = variationName;
           if (card.teamLookup === "checklist") {
             checklistAnswered.add(card);
             if (card.teams?.length === 0 && !card.prospectTeam) noTeamFromChecklist++;
@@ -17323,6 +17525,9 @@ export const fetchCardChecklist = action({
         // NEO-251: same rule — the streamed path is the only path, so a roster
         // conflict missing here is one the operator never sees.
         playersConflict: card.playersConflict,
+        // NEO-591 — same rule: the numbers a name pair differs on.
+        ...(card.sourceNumbers ? { sourceNumbers: card.sourceNumbers } : {}),
+        ...(card.preKept ? { preKept: card.preKept } : {}),
         // PR 451 (NEO-478) — same rule: the streamed path is the only path.
         ...(card.checklistConflict ? { checklistConflict: card.checklistConflict } : {}),
         ...(card.teamLookup ? { teamLookup: card.teamLookup } : {}),
@@ -25068,7 +25273,7 @@ export const commitCardChecklist = action({
       parentByIndex: Map<number, number>;
       unresolvedStems: string[];
     } = { parentByIndex: new Map(), unresolvedStems: [] };
-    for (const indices of variationPartitions.values()) {
+    for (const [sourceKey, indices] of variationPartitions) {
       const resolved = resolveVariationParents(
         indices.map((i) => ({
           cardNumber: args.cards[i].cardNumber,
@@ -25079,10 +25284,42 @@ export const commitCardChecklist = action({
       for (const [child, parent] of resolved.parentByIndex) {
         variationLinks.parentByIndex.set(indices[child], indices[parent]);
       }
+      // NEO-591 (variations) — a variation made from a checklist row (card 38
+      // took row "38a", row "38b" became its own card) carries no marketplace
+      // set, so it sits in the "unattributed" partition and its parent sits in
+      // the marketplace's. When the unattributed partition holds no parent of
+      // that stem itself, the variation joins the one non-variation card with
+      // that stem anywhere in the commit — only when it is exactly one (rule
+      // 7: a number is not unique, and two series can both have a #38).
+      let unresolved = resolved.unresolvedStems;
+      if (sourceKey === "unattributed" && unresolved.length > 0) {
+        const stillUnresolved: string[] = [];
+        for (const stem of unresolved) {
+          const inStem = indices.filter((i) => cardNumberStem(args.cards[i].cardNumber) === stem);
+          const hasOwnParent = inStem.some((i) => !args.cards[i].isVariation);
+          const parents = hasOwnParent
+            ? []
+            : args.cards
+                .map((c, i) => i)
+                .filter(
+                  (i) =>
+                    !args.cards[i].isVariation &&
+                    cardNumberStem(args.cards[i].cardNumber) === stem,
+                );
+          if (parents.length === 1) {
+            for (const i of inStem) {
+              if (args.cards[i].isVariation) variationLinks.parentByIndex.set(i, parents[0]);
+            }
+          } else {
+            stillUnresolved.push(stem);
+          }
+        }
+        unresolved = stillUnresolved;
+      }
       // Not deduped across partitions: the same stem unresolved in two source
       // sets is two separate groups needing review, and collapsing them would
       // understate the work.
-      variationLinks.unresolvedStems.push(...resolved.unresolvedStems);
+      variationLinks.unresolvedStems.push(...unresolved);
     }
     const links: Array<{
       childId: Id<"cardChecklist">;

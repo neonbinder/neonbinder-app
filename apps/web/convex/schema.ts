@@ -1301,6 +1301,11 @@ export const publishedChecklistStoredRowValidator = v.object({
   noTeam: v.optional(v.boolean()),
   prospect: v.optional(v.boolean()),
   prospectTeams: v.optional(v.array(v.string())),
+  // NEO-591 (variations) — the checklist's own note for a variation row
+  // ("photo variation"), at most `MAX_VARIATION_NAME` characters with no
+  // control characters (`checkPublishedChecklist`). Becomes the variation
+  // name of a card created from the row.
+  variationName: v.optional(v.string()),
 });
 /** NEO-496 — a publisher checklist's life: uploading → ready → retired, or uploading → retired. */
 export const publishedChecklistStatusValidator = v.union(
@@ -1392,6 +1397,26 @@ export const checklistPairRevertValidator = v.object({
   teamsFromRow: v.boolean(),
   teams: v.optional(v.array(v.string())),
   teamLookup: v.optional(v.literal("failed")),
+  // NEO-591 (names first, numbers confirm) — the card's own number before the
+  // row was applied. Present only when the pair changed it (the row's number
+  // outranks the marketplace's, `preferCardNumber`), so Unlink puts it back.
+  cardNumber: v.optional(v.string()),
+});
+
+/**
+ * NEO-591 — the numbers each source printed for a card the sources paired by
+ * NAME while their numbers differ ("OV-ANFI" on BuySportsCards, "NNO" on the
+ * publisher checklist). Names pair a card; a number only confirms, so a pair
+ * whose numbers differ is kept and shown with all of them. The card itself
+ * carries one number (`preferCardNumber`: letters over digits over none).
+ * Absent on every pair whose numbers agree. A key is present only when that
+ * source is in the pair. Each value is held to `MAX_SOURCE_NUMBER_LENGTH`
+ * (checklistCandidates.ts) when written.
+ */
+export const sourceNumbersValidator = v.object({
+  bsc: v.optional(v.string()),
+  sportlots: v.optional(v.string()),
+  checklist: v.optional(v.string()),
 });
 
 /**
@@ -3935,6 +3960,13 @@ export default defineSchema({
       // (`platformData: {}`). Widening only: no existing row changes.
       v.literal("checklistOnly"),
     ),
+    // NEO-591 — see `sourceNumbersValidator`.
+    sourceNumbers: v.optional(sourceNumbersValidator),
+    // NEO-591 (variations) — a checklist-only candidate the server created for
+    // a row that is a variation of a paired card (card "38" took row "38a";
+    // row "38b" becomes its own card). The operator is presumed to want it, so
+    // the client seeds it as Keeping. Optional; absent on every other row.
+    preKept: v.optional(v.literal(true)),
     // NEO-496 — how a card paired with a publisher-checklist row, for Match
     // Cards' badge. Optional; absent on every existing row.
     checklistLink: v.optional(
@@ -3946,10 +3978,20 @@ export default defineSchema({
           v.literal("player"),
           v.literal("playerName"),
           v.literal("playerFuzzy"),
+          // NEO-591 — one row standing for several cards that share its
+          // number's stem (row "38" for cards 38, 38b, 38c).
+          v.literal("stem"),
         ),
+        // NEO-591 — the row's index in the rows the fetch was given, set when
+        // more than one card holds the same row, so Match Cards can tell which
+        // links share it (an Unlink re-lists the row only on the last holder).
+        rowKey: v.optional(v.number()),
         // playerFuzzy only, 0.92..1.
         confidence: v.optional(v.number()),
-        // A name pair with a numbered row: the row's number as printed.
+        // NEO-591 — the row's number as printed ("NNO" for a no-number row),
+        // set when it is not the number the card was fetched with. The card
+        // itself carries the more specific of the two (`preferCardNumber`;
+        // `revert.cardNumber` holds the one it replaced).
         checklistNumber: v.optional(v.string()),
         // NEO-496 — the row the server paired, and the card as it was before
         // the row was applied, so Match Cards can undo a wrong pair. Shapes:

@@ -59,6 +59,24 @@ describe("planChecklistBatches", () => {
     expect(planChecklistBatches([])).toEqual([]);
   });
 
+  test("a variation name is counted in the call's bytes and travels to the server with its row", () => {
+    const plain = row(1);
+    const named: ChecklistSectionRow = { ...row(2), variationName: "Photo variation" };
+    const [batch] = planChecklistBatches([section("A", [plain, named])]);
+    const withName = storedRowBytes({
+      number: named.number,
+      players: named.players,
+      teams: named.teams,
+      noNumber: true,
+      noTeam: true,
+      variationName: "Photo variation",
+    });
+    expect(withName).toBeGreaterThan(sizeOf(named));
+    expect(batch.byteSize).toBe(sizeOf(plain) + withName);
+    // The row goes out as parsed, not rebuilt without the name.
+    expect(batch.sections[0].rows[1].variationName).toBe("Photo variation");
+  });
+
   test("small sections share one call, ordinals start at 0", () => {
     const a = section("A", rowsOf(2));
     const b = section("B", rowsOf(3), "AUTOGRAPH");

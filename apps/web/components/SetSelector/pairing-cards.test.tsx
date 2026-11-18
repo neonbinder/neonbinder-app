@@ -194,3 +194,24 @@ describe("NEO-335 — BSC's raw team value rides to the commit", () => {
     expect(card.rawTeamName).toBe(RAW);
   });
 });
+
+describe("NEO-591 — the numbers each source printed ride to the dialog, not to the commit", () => {
+  const PRINTED = { bsc: "OV-ANFI", checklist: "NNO" };
+
+  test("carried onto the card when the server sent them", () => {
+    expect(candidateToPairingCard({ ...FULL, sourceNumbers: PRINTED }).sourceNumbers).toEqual(
+      PRINTED,
+    );
+  });
+
+  test("absent leaves no key at all, so the card is byte-identical to before", () => {
+    expect("sourceNumbers" in candidateToPairingCard(FULL)).toBe(false);
+  });
+
+  test("the committable form (the no-dialog auto-keep path) drops them", () => {
+    const [card] = candidatesToPairingCards([
+      { ...FULL, bucket: "bscOnly", sourceNumbers: PRINTED },
+    ]);
+    expect("sourceNumbers" in card).toBe(false);
+  });
+});

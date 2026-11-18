@@ -16,7 +16,7 @@
  */
 
 import type { PairingCard } from "./CardPairingModal";
-import { committable } from "./checklist-match-apply";
+import { committable, type SourceNumbers } from "./checklist-match-apply";
 import type { ChecklistConflict } from "./checklist-conflict";
 
 /**
@@ -68,6 +68,16 @@ export type ReadyCandidate = {
     preferred?: "bsc" | "sportlots";
   };
   bucket: "matched" | "bscOnly" | "slOnly" | "checklistOnly";
+  /**
+   * NEO-591 — the numbers each source printed, present only when they differ;
+   * see `PairingCard.sourceNumbers`. `cardNumber` is already the chosen one.
+   */
+  sourceNumbers?: SourceNumbers;
+  /**
+   * NEO-591 (variations) — NB created this card (a variation); it opens in
+   * Keeping. See `PairingCard.preKept`.
+   */
+  preKept?: true;
   /** NEO-496 — the server paired this card with a publisher checklist row. */
   checklistLink?: PairingCard["checklistLink"];
   teamLookup?: TeamLookup;
@@ -132,6 +142,9 @@ export function candidateToPairingCard(
     // dialog tells re-deliveries apart by. Both wire-only: `committable`
     // takes them off before anything is saved.
     ...(c.checklistLink ? { checklistLink: c.checklistLink } : {}),
+    // NEO-591: wire-only like the link; `committable` takes it off.
+    ...(c.sourceNumbers ? { sourceNumbers: c.sourceNumbers } : {}),
+    ...(c.preKept ? { preKept: true as const } : {}),
     ...(c.bucket === "checklistOnly" && c._id ? { checklistRowId: c._id } : {}),
   };
 }

@@ -13,9 +13,15 @@
  * Kept out of `CardPairingModal.tsx` so the dialog stays Convex-free and the
  * merge can be tested without rendering it.
  *
- * What a link never does: change the card's number (the card keeps the number
- * it was fetched with), touch `platformData`, or write a row anywhere. An
+ * What a link never does: touch `platformData`, or write a row anywhere. An
  * unlinked row is dropped at Confirm unless the operator kept it (NEO-496).
+ *
+ * NEO-591 (names first, numbers confirm): a link may change the card's NUMBER.
+ * The card takes the more specific of its own and the row's
+ * (`preferCardNumber`: letters over digits over none, its own on a tie), and
+ * when the two disagree both are kept on `sourceNumbers` for the dialog's
+ * "Numbers differ" note. Nothing here renumbers an NB card that already
+ * exists: these are fetched cards, not saved ones.
  *
  * NEO-496: the rows now reach the dialog as `checklistOnly` candidates, so a
  * stored checklist (whose rows the client never holds) and a pasted one are
@@ -23,6 +29,7 @@
  * `ChecklistLinkRow` for the question.
  */
 
+import { cardNumbersAgree, preferCardNumber } from "../../lib/cards/card-number";
 import { joinProspectTeams } from "../../lib/checklists/prospect-team-text";
 import type { ChecklistConflict, TeamLookupOutcome } from "./checklist-conflict";
 import type { PairingCard } from "./CardPairingModal";
@@ -36,13 +43,52 @@ import type { PairingCard } from "./CardPairingModal";
  * Confirm and by the one-source auto-keep path, so both hand on the same card.
  */
 export function committable<C extends PairingCard>(card: C): C {
-  if (card.checklistLink === undefined && card.checklistRowId === undefined) {
+  if (
+    card.checklistLink === undefined &&
+    card.checklistRowId === undefined &&
+    card.sourceNumbers === undefined &&
+    card.preKept === undefined
+  ) {
     return card;
   }
   const out: C = { ...card };
   delete out.checklistLink;
   delete out.checklistRowId;
+  // NEO-591: the numbers each source printed are for the dialog's note only;
+  // the commit's validators refuse a field they do not know and save the one
+  // number the card carries.
+  delete out.sourceNumbers;
+  // NEO-591 (variations): where the card started (already in Keeping) is the
+  // dialog's own business.
+  delete out.preKept;
   return out;
+}
+
+/**
+ * NEO-591 — the number each source printed for a card the sources paired by
+ * name while their numbers differ. A key is present only when that source is
+ * in the pair. Wire shape: `sourceNumbersValidator` in `convex/schema.ts`.
+ */
+export type SourceNumbers = { bsc?: string; sportlots?: string; checklist?: string };
+
+/**
+ * NEO-591 — `sourceNumbers` with the checklist's number taken off (an Unlink
+ * drops the row). `undefined` once fewer than two numbers remain or the ones
+ * left agree: with nothing left to differ there is no note to show.
+ */
+export function withoutChecklistNumber(
+  numbers: SourceNumbers | undefined,
+): SourceNumbers | undefined {
+  if (!numbers) return undefined;
+  const rest: SourceNumbers = { ...numbers };
+  delete rest.checklist;
+  return numbersDiffer(rest) ? rest : undefined;
+}
+
+/** Do any two of the numbers disagree (`cardNumbersAgree`)? */
+export function numbersDiffer(numbers: SourceNumbers): boolean {
+  const printed = Object.values(numbers).filter((n): n is string => n !== undefined);
+  return printed.some((n, i) => printed.slice(i + 1).some((m) => !cardNumbersAgree(n, m)));
 }
 
 /** One row of the uploaded checklist, as the dialog lists it. */
@@ -131,6 +177,9 @@ export type ChecklistPairAnswer = {
 
 /** The fields of a card a checklist answer may change. */
 type AnswerableCard = ChecklistLinkCard & {
+  /** NEO-591: which marketplaces the card is on, to label its own number. */
+  platformData?: { bsc?: unknown; sportlots?: unknown };
+  sourceNumbers?: SourceNumbers;
   teamLookup?: TeamLookupOutcome;
   checklistConflict?: ChecklistConflict;
   rawTeamName?: string;
@@ -208,13 +257,19 @@ export function buildChecklistPairRequests<C extends ChecklistLinkCard>(
  *    X is also the "Listed as:" hint (`rawTeamName`), after BSC's raw value is
  *    dropped as above.
  *
- * Returns a new array; a card with no answer is returned by reference. The
- * number and `platformData` are never touched.
+ *  - NEO-591: when `rowNumbers` gives the linked row's number (by card key),
+ *    the card takes `preferCardNumber(card, row)` and, if the two disagree,
+ *    keeps every source's number on `sourceNumbers` (its own under the
+ *    marketplace it came from, the row's under `checklist`).
+ *
+ * Returns a new array; a card with no answer is returned by reference.
+ * `platformData` is never touched.
  */
 export function applyChecklistAnswers<C extends AnswerableCard>(
   cards: readonly C[],
   answers: readonly ChecklistPairAnswer[],
   keyOf: (card: C) => string,
+  rowNumbers?: ReadonlyMap<string, string>,
 ): C[] {
   const byKey = new Map<string, ChecklistPairAnswer>();
   for (const a of answers) byKey.set(a.cardKey, a);
@@ -231,6 +286,20 @@ export function applyChecklistAnswers<C extends AnswerableCard>(
     }
     if (answer.checklistConflict) {
       out.checklistConflict = answer.checklistConflict;
+    }
+    const rowNumber = rowNumbers?.get(keyOf(card));
+    if (rowNumber !== undefined) {
+      const own = card.cardNumber;
+      if (!cardNumbersAgree(own, rowNumber)) {
+        out.sourceNumbers = {
+          ...(card.sourceNumbers ?? {
+            ...(card.platformData?.bsc ? { bsc: own } : {}),
+            ...(card.platformData?.sportlots ? { sportlots: own } : {}),
+          }),
+          checklist: rowNumber,
+        };
+      }
+      out.cardNumber = preferCardNumber(own, rowNumber);
     }
     if (answer.isProspect) out.isProspect = true;
     if (answer.prospectTeam) out.prospectTeam = answer.prospectTeam;
@@ -284,6 +353,8 @@ export type ServerPairRevert = {
   teamsFromRow: boolean;
   teams?: string[];
   teamLookup?: "failed";
+  /** NEO-591: the card's number before the row (present only if the pair changed it). */
+  cardNumber?: string;
 };
 
 type ServerLinkedCard = PairingCard & {
@@ -370,11 +441,13 @@ export function pairedRowCard(row: ServerPairedRow, rowId: string): PairingCard 
  *    `"failed"` when BSC was never asked because the row answered, which is
  *    the operator-picks state (rule 8: missing data is never guessed).
  *    Otherwise the teams were the card's own, or its lookup's, and stay.
+ *  - NEO-591: the number goes back to `revert.cardNumber` (absent: the row did
+ *    not change it), and the checklist's number leaves `sourceNumbers`.
  *  - NEO-591: the row's Prospect claim goes with it: no `isProspect`, no held
  *    `prospectTeam` / `prospectTeams`, and the `rawTeamName` hint when it was that X (BSC's own
  *    raw value, a different text, stays).
  *
- * Returns `null` for a card with no undoable pairing. The number, name and
+ * Returns `null` for a card with no undoable pairing. The name and
  * `platformData` are never touched.
  */
 export function revertServerChecklistPair<C extends PairingCard>(card: C): C | null {
@@ -391,6 +464,10 @@ export function revertServerChecklistPair<C extends PairingCard>(card: C): C | n
   }
   delete out.prospectTeam;
   delete out.prospectTeams;
+  if (revert.cardNumber !== undefined) out.cardNumber = revert.cardNumber;
+  const remaining = withoutChecklistNumber(out.sourceNumbers);
+  if (remaining) out.sourceNumbers = remaining;
+  else delete out.sourceNumbers;
   if (revert.players && revert.players.length > 0) out.players = [...revert.players];
   else delete out.players;
   if (revert.teamsFromRow) {

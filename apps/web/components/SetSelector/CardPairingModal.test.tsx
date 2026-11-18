@@ -172,8 +172,9 @@ describe("CardPairingModal", () => {
     await waitFor(() => expect(onConfirm).toHaveBeenCalled());
     const cards = onConfirm.mock.calls[0][0].cards;
     expect(cards).toHaveLength(1);
-    // NB card number follows BSC, the side that splits the series.
-    expect(cards[0].cardNumber).toBe("1");
+    // NEO-591: the NB card number is the more specific of the two (letters
+    // over digits), not BSC's by default: "A1" names the same print as "1".
+    expect(cards[0].cardNumber).toBe("A1");
     expect(cards[0].platformData.bsc?.ref).toBe("bsc-1");
     expect(cards[0].platformData.sportlots?.ref).toBe("#A1 Ken Griffey Jr.");
   });
@@ -958,7 +959,9 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
     ).toBeTruthy();
     expect(
       screen.getByLabelText(
-        /^Link selected BSC card to #227c Mike Yastrzemski\|Carl Yastrzemski ·/,
+        // NEO-591: SportLots' half gets the number it printed (227) back,
+        // not the merged card's (227c).
+        /^Link selected BSC card to #227 Mike Yastrzemski\|Carl Yastrzemski ·/,
       ),
     ).toBeTruthy();
   });
@@ -973,7 +976,7 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
 
     linkByLabel(
       "#227c Mike Yastrzemski · SSSP",
-      "#227c Mike Yastrzemski|Carl Yastrzemski · SSSP",
+      "#227 Mike Yastrzemski|Carl Yastrzemski · SSSP",
     );
 
     expect(screen.getByRole("group", { name: "Name conflict on #227c" })).toBeTruthy();

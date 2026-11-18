@@ -215,3 +215,13 @@ export function normalizeEntityName(raw: string): string {
 export function normalizeOrderedEntityName(raw: string): string {
   return entityNameTokens(raw).join(" ");
 }
+
+/**
+ * NEO-591 — a roster as one key: every name run through `normalizeEntityName`,
+ * the empties dropped, duplicates collapsed, sorted, joined with "|". Two
+ * cards share a roster key exactly when they name the same players (or
+ * teams), in any order and any spelling the fold absorbs.
+ */
+export function rosterKey(names: readonly string[]): string {
+  return [...new Set(names.map(normalizeEntityName).filter(Boolean))].sort().join("|");
+}

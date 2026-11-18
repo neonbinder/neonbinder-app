@@ -2,20 +2,28 @@
  * NEO-490 — the operator's own checklist links, answered the way the fetch
  * answers its own.
  *
- * When a publisher checklist pairs no card by number and the counts differ
- * (or an equal-count name pass leaves cards and rows over), `fetchCardChecklist`
- * applies nothing it cannot prove and hands the leftovers to the Match Cards
- * dialog (`checklistMatch.needsOperator`). The operator links a checklist row
- * to a card there; on Confirm the dialog sends those links here and merges
- * the answers into the cards it confirms.
+ * When a publisher checklist leaves a card or a row unpaired (a tie that
+ * names and numbers could not settle, rule 8: `checklistMatch.needsOperator`),
+ * `fetchCardChecklist` applies nothing it cannot prove and hands the leftovers
+ * to the Match Cards dialog. The operator links a checklist row to a card
+ * there; on Confirm the dialog sends those links here and merges the answers
+ * into the cards it confirms.
  *
  * Each answer is exactly what step 3c would have given the same card and row:
  * the same pure `applyChecklistRow`, the same comma-text resolution
  * (`resolveChecklistCommaTexts`, through
  * `checklistCandidates.resolveChecklistTeamTexts`). So a row the operator
  * linked fills players, answers the team (`teamLookup: "checklist"`), or
- * surfaces a disagreement (`checklistConflict`) by the same rules, and the
- * card's number is never touched.
+ * surfaces a disagreement (`checklistConflict`) by the same rules.
+ *
+ * NEO-591 — the card's NUMBER. This action returns no number: it never reads
+ * one off the card and never writes one. Names pair a card and a number only
+ * confirms (product rule 7), so a linked card and row whose numbers differ
+ * are still a pair; the dialog, which holds both numbers, sets the card's
+ * with `preferCardNumber(card, row.number)` (letters over digits over none,
+ * the card's own on a tie) and remembers the one it replaced for Unlink, the
+ * same choice step 3c makes for the pairs the fetch made. The link is a
+ * new card's number only: an NB card that already exists is never renumbered.
  *
  * Writes nothing: the rows are never stored, and the cards live in the
  * client until the commit. Admin-only, like every entry point onto the set
