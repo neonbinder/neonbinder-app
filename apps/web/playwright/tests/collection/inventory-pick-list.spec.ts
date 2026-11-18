@@ -262,7 +262,7 @@ test(
       await expect(
         seen(
           pickRow(cantFind, unmatchedLine(first)).getByText(
-            "Neon Binder couldn't match this line. Check the order's photo.",
+            "Neon Binder couldn't match this line. Check the sales platform.",
             { exact: true },
           ),
         ),
@@ -299,7 +299,7 @@ test(
       await expect(seen(rowListed.getByText(listedPlayers, { exact: true }))).toBeVisible();
       await expect(seen(rowListed.getByText(`#${LISTED_NO}`, { exact: true }))).toBeVisible();
       // NEO-522: no "couldn't match" note on a line filed with its set; the chip's title says where to look.
-      await expect(rowListed.getByText("Neon Binder couldn't match this line. Check the order's photo.")).toHaveCount(0);
+      await expect(rowListed.getByText("Neon Binder couldn't match this line. Check the sales platform.")).toHaveCount(0);
       // A matched row wears no such chip.
       await expect(seen(rowB.getByText("Not in Neon Binder", { exact: true }))).toHaveCount(0);
       await expectAccessible(page, { label: "Pick List, one order to pull, a described line filed in its set, a no-number line in Can't find it" });
@@ -373,7 +373,7 @@ test(
         await expect(seen(pickRow(table, CARD_I.short).getByText("Future Stars", { exact: true }))).toBeVisible();
         await expect(seen(rowA.getByText("Base", { exact: true }))).toBeVisible();
         await expect(
-          seen(pickRow(table, listedTitle).getByText("Neon Binder couldn't match this line. Check the order's photo.", { exact: true })),
+          seen(pickRow(table, listedTitle).getByText("Neon Binder couldn't match this line. Check the sales platform.", { exact: true })),
         ).toBeVisible();
         // No heavier rule where the run turns from Base to the insert.
         await expect(ruleUnder(rowB)).toHaveCSS("border-bottom-width", "1px");
@@ -391,7 +391,7 @@ test(
       await expect(rowSize.spacious).toHaveAttribute("aria-checked", "true");
       await expect(variantTag(rowI, "Future Stars", "Insert")).toHaveText("Insert: Future Stars");
       await expect(ruleUnder(rowB)).toHaveCSS("border-bottom-width", "3px");
-      await expect(pickRow(table, listedTitle).getByText("Neon Binder couldn't match this line. Check the order's photo.")).toHaveCount(0);
+      await expect(pickRow(table, listedTitle).getByText("Neon Binder couldn't match this line. Check the sales platform.")).toHaveCount(0);
       if (!isMobile) await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toBeVisible();
 
       // A's bigger picture is the photo of the copy that sold, and it really loads.

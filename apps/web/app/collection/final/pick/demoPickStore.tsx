@@ -355,7 +355,7 @@ export const DEMO_PICK_LINES: readonly SaleLine[] = [
   line(null, null, O5, {
     listingTitle: listedTitle(NABERS_LISTED),
     listed: NABERS_LISTED,
-    problem: "Neon Binder couldn't match this line. Check the order's photo.",
+    problem: "Neon Binder couldn't match this line. Check the sales platform.",
   }),
 
   // Can't find it: NB could not tie these to one card.

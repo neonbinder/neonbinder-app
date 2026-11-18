@@ -89,7 +89,7 @@ describe("the Pick List demo", () => {
     expect(within(row).getAllByText("#302").length).toBeGreaterThan(0);
     // The listing said Base, so the Base tag. NEO-522: no note under it; the chip already says where to look.
     expect(within(row).getAllByText("Base", { exact: true }).length).toBeGreaterThan(0);
-    expect(within(row).queryByText("Neon Binder couldn't match this line. Check the order's photo.")).toBeNull();
+    expect(within(row).queryByText("Neon Binder couldn't match this line. Check the sales platform.")).toBeNull();
     // Under the 2024 Score divider, before that set's insert, not in Can't find it.
     const group = row.closest("tbody")!;
     expect(within(group).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
@@ -276,7 +276,7 @@ describe("the Pick List demo", () => {
     const nabers = lines.find((r) => r.textContent?.includes("Malik Nabers"))!;
     expect(nabers.textContent).toContain("#302");
     expect(nabers.textContent).toContain("Not in Neon Binder");
-    expect(nabers.textContent).toContain("Base Neon Binder couldn't match this line. Check the order's photo.");
+    expect(nabers.textContent).toContain("Base Neon Binder couldn't match this line. Check the sales platform.");
     expect(nabers.className).toContain("nb-pick-sheet-lost");
     act(() => {
       window.dispatchEvent(new Event("afterprint"));
@@ -476,7 +476,7 @@ describe("NEO-522: a row read from across the room", () => {
   it("drops the couldn't-match note from a sale filed with its set, and keeps Can't find it's reason", async () => {
     renderPick();
     await screen.findByRole("table", { name: "Cards to pull" });
-    expect(screen.queryByText("Neon Binder couldn't match this line. Check the order's photo.")).toBeNull();
+    expect(screen.queryByText("Neon Binder couldn't match this line. Check the sales platform.")).toBeNull();
     const witt = await rowOf(/^Pulled 2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./);
     expect(within(witt).getAllByText("Neon Binder has no 2026 Topps Heritage checklist yet.").length).toBeGreaterThan(0);
   });
@@ -523,7 +523,7 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect(within(schlittler).getAllByText("Parallel", { exact: true }).length).toBeGreaterThan(0);
     // A sale filed with its set keeps the old note under its variant.
     const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
-    expect(within(nabers).getAllByText("Neon Binder couldn't match this line. Check the order's photo.").length).toBeGreaterThan(0);
+    expect(within(nabers).getAllByText("Neon Binder couldn't match this line. Check the sales platform.").length).toBeGreaterThan(0);
     // The old 40px checkbox: the bordered button is the box.
     const tick = within(trout).getByRole("button", { name: /^Pulled #27 Mike Trout/ });
     expect(tick.className).toContain("size-11");
@@ -808,7 +808,7 @@ describe("the signed-in Pick List's ways out", () => {
   it("a listed row keeps every variant word, its sport on Can't find it, and a twin divider reads apart", async () => {
     const { DEMO_PICK_DATA } = await import("./demoPickStore");
     const order = { id: "ox", venue: "BSC", number: "99001" };
-    const base = { quantity: 1, condition: "NM", order, card: null, sportCode: null, problem: "Neon Binder couldn't match this line. Check the order's photo." };
+    const base = { quantity: 1, condition: "NM", order, card: null, sportCode: null, problem: "Neon Binder couldn't match this line. Check the sales platform." };
     const extra = [
       {
         ...base,
@@ -860,7 +860,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: title,
       listed: { title },
-      problem: "Neon Binder didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
     const toggle = within(region).getByRole("button", { name: `Pulled ${title}, not in Neon Binder, eBay 27-11111-22222` });
@@ -874,7 +874,7 @@ describe("the signed-in Pick List's ways out", () => {
       fireEvent.click(within(region).getByRole("radio", { name: size }));
       const line = within(region).getByRole("button", { name: `Pulled ${title}, not in Neon Binder, eBay 27-11111-22222` }).closest("tr")!;
       expect(within(line).getAllByText(title).length).toBeGreaterThan(0);
-      expect(within(line).getAllByText("Neon Binder didn't list this one. Check the order's photo.").length).toBeGreaterThan(0);
+      expect(within(line).getAllByText("Neon Binder didn't list this one. Check the sales platform.").length).toBeGreaterThan(0);
       expect(within(line).queryByText("Not in Neon Binder", { exact: true })).toBeNull();
     }
   });
@@ -882,7 +882,7 @@ describe("the signed-in Pick List's ways out", () => {
   it("NEO-590: a title row shows no card number, no Not in NB chip, keeps its problem line, and its sport and year file it", async () => {
     const { DEMO_PICK_DATA } = await import("./demoPickStore");
     const title = "2019 Zork Chrome #RC-77 Some Player";
-    const problem = "Neon Binder didn't list this one. Check the order's photo.";
+    const problem = "Neon Binder didn't list this one. Check the sales platform.";
     const extra = {
       id: "x-590",
       quantity: 1,
@@ -919,7 +919,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: title,
       listed: { title },
-      problem: "Neon Binder didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
     });
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, noYear("y1", "Binder lot A")] }, true);
     const year = within(region).getByRole("combobox", { name: "Year" });
@@ -939,7 +939,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: title,
       listed: { title },
-      problem: "Neon Binder didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
     for (const size of ["Spacious", "Condensed"] as const) {
@@ -962,7 +962,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: `Lot ${id}`,
       listed: { title: `Lot ${id}` },
-      problem: "Neon Binder didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
     });
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, lost("a"), lost("b")] }, true, "/inventory?tab=pick&pgroup=order");
     const countOf = (name: string) => within(region).getByRole("heading", { level: 3, name }).parentElement!.textContent!.slice(name.length);
@@ -988,7 +988,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: `2021 Lot ${id}`,
       listed: { title: `2021 Lot ${id}`, titleSport: sport },
-      problem: "Neon Binder didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
     });
     const zz = { id: "sp-zz", name: "Zorbball", code: "ZB" };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, titled("a", zz), titled("b", zz), titled("c", null)] }, true);
@@ -1021,7 +1021,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: `2021 Lot ${id}`,
       listed: { title: `2021 Lot ${id}`, titleSport: sport },
-      problem: "Neon Binder didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
     });
     const zz = { id: "sp-zz", name: "Zorbball", code: "ZB" };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, titled("a", zz), titled("c", null)] }, true);
@@ -1059,7 +1059,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: "Lot t1",
       listed: { title: "Lot t1", titleSport: null },
-      problem: "Neon Binder didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, nbTwin, titled] }, true);
     for (const size of ["Spacious", "Condensed"] as const) {
@@ -1081,7 +1081,7 @@ describe("the signed-in Pick List's ways out", () => {
       sportCode: null,
       listingTitle: "2021 Lot order-chip",
       listed: { title: "2021 Lot order-chip", titleSport: { id: "sp-zz", name: "Zorbball", code: "ZB" } },
-      problem: "Neon Binder didn't list this one. Check the order's photo.",
+      problem: "Neon Binder didn't list this one. Check the sales platform.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true, "/inventory?tab=pick&pgroup=order");
     for (const size of ["Spacious", "Condensed"] as const) {

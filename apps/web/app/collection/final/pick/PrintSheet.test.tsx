@@ -14,7 +14,7 @@ import PrintSheet from "./PrintSheet";
 import type { ListedCard, PickOrder, SaleLine } from "./types";
 
 const ORDER: PickOrder = { id: "o1", venue: "BSC", number: "88240" };
-const PROBLEM = "Neon Binder couldn't match this line. Check the order's photo.";
+const PROBLEM = "Neon Binder couldn't match this line. Check the sales platform.";
 
 const CARD: Card = {
   id: "c1",

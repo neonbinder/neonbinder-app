@@ -27,7 +27,7 @@ const SCHLITTLER = "#111 Cam Schlittler, 2026 Topps Series 1 Gold Foil";
 const OHTANI_INSERT = "#8B-7 Shohei Ohtani, 2026 Topps Series 1 8 Bit Ballers";
 // No NB card, but the listing says set, number and player, so it files with its set (NEO-509).
 const NABERS = "2024 Score #302 · Malik Nabers";
-const NOTE = "Neon Binder couldn't match this line. Check the order's photo.";
+const NOTE = "Neon Binder couldn't match this line. Check the sales platform.";
 
 test(
   "Pick List demo: Condensed rows bring back the pre-NEO-522 screen, and this device remembers the choice",

@@ -246,7 +246,7 @@ test(
     await expect(seen(pickRow(score, NABERS).getByText("#302", { exact: true }))).toBeVisible();
     // NEO-522: no "couldn't match" note on screen; the chip says where to look. The printed
     // sheet still carries it: the print block below asserts the note on Nabers' paper line.
-    await expect(pickRow(score, NABERS).getByText("Neon Binder couldn't match this line. Check the order's photo.")).toHaveCount(0);
+    await expect(pickRow(score, NABERS).getByText("Neon Binder couldn't match this line. Check the sales platform.")).toHaveCount(0);
     await expect(pulledToggle(pickGroup(table, "Can't find it"), NABERS)).toHaveCount(0);
     await expect(seen(pickRow(score, LATHAM).getByText("Not in Neon Binder", { exact: true }))).toHaveCount(0);
     // Can't find it keeps no chip: its heading already says as much.
@@ -419,7 +419,7 @@ test(
     await expect(nabers.getByRole("cell", { name: "#302", exact: true })).toBeVisible();
     await expect(nabers.filter({ hasText: "Not in Neon Binder" })).toHaveCount(1);
     // Its next step rides along on paper too (clipped on a phone's narrow sheet, so counted there).
-    await expect(nabers.getByText("Neon Binder couldn't match this line. Check the order's photo.")).toHaveCount(1);
+    await expect(nabers.getByText("Neon Binder couldn't match this line. Check the sales platform.")).toHaveCount(1);
     // A line NB could not match prints its title and why, under Can't find it.
     const witt = sheetRow("Bobby Witt Jr.");
     await expect(witt.getByRole("cell", { name: /^2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr\./ })).toBeVisible();

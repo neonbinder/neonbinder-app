@@ -144,13 +144,13 @@ export function toSaleLines(
     const unmatchedProblem =
       raw.platform === "ebay"
         ? "Neon Binder didn't list this one. Check the sales platform."
-        : "Neon Binder couldn't match this line. Check the order's photo.";
+        : "Neon Binder couldn't match this line. Check the sales platform.";
     const problem =
       raw.cantFind === "linkMismatch"
-        ? "This listing's card doesn't match Neon Binder's card. Check the order's photo."
+        ? "This listing's card doesn't match Neon Binder's card. Check the sales platform."
         : raw.cantFind === "unmatched" || !raw.cardId
           ? unmatchedProblem
-          : "This card isn't in Neon Binder's catalog any more. Check the order's photo.";
+          : "This card isn't in Neon Binder's catalog any more. Check the sales platform.";
     const listed = options.listed && listedTitle(options.listed) ? options.listed : undefined;
     return [
       {

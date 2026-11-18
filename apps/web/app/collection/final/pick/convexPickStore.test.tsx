@@ -480,7 +480,7 @@ describe("NEO-509: the sports a sale names", () => {
     const [only] = store!.data!.lines;
     expect(only.order.venue).toBe("BSC");
     expect(only.listingTitle).toBe("Unmatched sale");
-    expect(only.problem).toBe("Neon Binder couldn't match this line. Check the order's photo.");
+    expect(only.problem).toBe("Neon Binder couldn't match this line. Check the sales platform.");
   });
 
   it("NEO-520: lines of one order with the same title are numbered like any other twins", async () => {
