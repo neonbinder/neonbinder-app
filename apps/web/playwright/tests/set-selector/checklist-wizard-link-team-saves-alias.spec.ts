@@ -180,13 +180,17 @@ test(
       await expectAccessible(page, { within: wizard, label: "Entity review wizard, team step with the link section" });
 
       // NEO-307: a New Team name that is another team's alias is refused.
+      // NEO-602: refused while the two teams' years may overlap, in the server's
+      // words. Neither the fixture team nor this step's draft has years on file
+      // (the recording answers the club's lookup with no match), so the clause is
+      // the undated one and the holder is named without an era.
       const teamName = wizard.getByRole("textbox", { name: "New team name" });
       await expect(teamName).toHaveValue(ROW);
       await teamName.fill(`Pca${T}`);
       await expect(
         wizard
           .getByText(
-            `${FIXTURE_TEAM} already answers to this name as an alias — remove it there before a team can take the name.`,
+            `${FIXTURE_TEAM} already answers to this name as an alias, and neither team has years on file, so they may overlap. Remove it there, or give this team years that don't overlap.`,
           )
           .first(),
       ).toBeVisible();
