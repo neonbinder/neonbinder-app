@@ -1626,7 +1626,7 @@ describe("CardPairingModal — Unlink on the server's checklist pairs (NEO-496)"
     expect(screen.getByRole("heading", { name: "Checklist only (1)" })).toBeTruthy();
     expect(screen.getByLabelText(`Select ${ROW_LINE}`)).toBeTruthy();
     expect(announcer().textContent).toBe(
-      "Unlinked from #FS-1 Jackson Holliday. Checklist row's back on the list.",
+      "Unlinked from #FS-1 Jackson Holliday. Checklist row's back on the list. Moved to Keeping.",
     );
     await waitFor(() =>
       expect(document.activeElement?.getAttribute("aria-label")).toBe(`Select ${ROW_LINE}`),

@@ -96,3 +96,4 @@
 - [Stdio EPIPE is a late 'error' event](reference_stdio_epipe_error_is_a_late_event.md) — closed pipe/tty kills Node via nextTick 'error'; release scoped listeners on setImmediate; spy emit
 - [Cloud Run socket destroy restarts the instance](reference_cloud_run_socket_destroy_restarts_instance.md) — fake faults end in 503, never socket.destroy(); hangCapMs injectable
 - [Names-first core reshapes fetch fixtures](reference_names_first_pair_core_shapes_the_fetch_tests.md) — "T-10" now pairs "10" by number; sibling-card fixtures must be the same player; sourceNumbers on stored rows
+- [Derived numbers skip the number tiers](reference_derived_numbers_skip_the_number_tiers.md) — flag minted/swapped numbers on the wire; resolveExistingIds skips slot+number and no-ref tiers

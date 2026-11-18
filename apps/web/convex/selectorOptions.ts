@@ -328,7 +328,7 @@ import {
 } from "./teams";
 // NEO-253: the shared normalisation core, imported rather than transcribed —
 // this file used to carry two separate hand copies of it.
-import { normalizeEntityName } from "../lib/entities/normalize-name";
+import { normalizeEntityName, rosterKey } from "../lib/entities/normalize-name";
 // NEO-591: the one names-first pairing core, shared with the publisher
 // checklist matcher (lib/checklists/match-published-checklist.ts).
 import { pairNamesFirst } from "../lib/cards/pair-names-first";
@@ -15261,11 +15261,28 @@ function rowVariationName(row: object): string | undefined {
   return trimmed ? trimmed.slice(0, MAX_LABEL_LENGTH) : undefined;
 }
 
+/** NEO-591 (variations) — the letters a minted variation number may take, in order. */
+const MINT_LETTERS = "bcdefghijklmnopqrstuvwxyz";
+
 /** NEO-591 — a printed number held to `MAX_SOURCE_NUMBER_LENGTH` for the wire. */
 function clipSourceNumber(printed: string): string {
   return printed.length > MAX_SOURCE_NUMBER_LENGTH
     ? printed.slice(0, MAX_SOURCE_NUMBER_LENGTH)
     : printed;
+}
+
+/**
+ * NEO-591 — do two sources PRINT a number differently? Trimmed and case-folded
+ * text, nothing smarter: "38" against "38a", "BCP-12" against "12" and "1b"
+ * against "1" all differ here even where `cardNumbersAgree` calls them the
+ * same card. Every number the sync decides on its own must be editable in
+ * Match Cards, so `sourceNumbers` is set whenever the printed text differs
+ * and the client decides, through `cardNumbersAgree`, whether to say
+ * "Numbers differ". Two no-number values (blank, "NNO") print alike.
+ */
+function printedNumbersDiffer(a: string, b: string): boolean {
+  if (isNoNumber(a) && isNoNumber(b)) return false;
+  return a.trim().toLowerCase() !== b.trim().toLowerCase();
 }
 
 interface ReconciledCard {
@@ -15336,6 +15353,10 @@ interface ReconciledCard {
    * row (`siblingRows`); the client seeds it as Keeping.
    */
   preKept?: true;
+  /** NEO-591 — the number was minted or swapped in by the sync; see `previewCardFields`. */
+  numberMinted?: true;
+  /** NEO-591 (variations) — NB-side token tying a row-paired card to its sibling-row variations. */
+  variationGroup?: string;
   /** PR 451 (NEO-478) — the publisher checklist disagrees on this card. */
   checklistConflict?: {
     players?: { marketplace: string[]; checklist: string[] };
@@ -15449,6 +15470,7 @@ export function checklistPairedRow(
   // the full name; a team text resolved to a team's name), so the row line in
   // Match Cards is the same words before and after the link.
   const claim = checklistClaimText(row);
+  const variationName = rowVariationName(row);
   const shown = checklistClaimText({
     teams: pairedTeams,
     prospect: own.isProspect === true,
@@ -15466,6 +15488,7 @@ export function checklistPairedRow(
       : {}),
     ...(own.isProspect ? { prospect: true as const } : {}),
     ...(held ? { prospectTeams: allX } : {}),
+    ...(variationName ? { variationName } : {}),
     cardName: own.cardName,
   };
 }
@@ -15772,6 +15795,18 @@ const previewCardFields = {
   // NEO-591 (variations) — accepted and ignored, like `sourceNumbers`: the
   // client seeds Keeping from it and strips it off a confirmed card.
   preKept: v.optional(v.literal(true)),
+  // NEO-591 — the number was DERIVED by the sync (minted for a SportLots-only
+    // variation, or swapped in by `preferCardNumber`), so it is not a number a
+    // marketplace printed for this card. The commit never matches a stored
+    // row by slot+number or by number alone for such a card (it matches by its
+    // own ref or inserts), so a derived "38b" cannot land on a stored "38b".
+    // A forged flag only narrows matching.
+  numberMinted: v.optional(v.literal(true)),
+  // NEO-591 (variations) — an opaque NB-side token shared by a card that took a
+    // checklist row and the variation cards made from that row's siblings, so
+    // the commit links them without searching by number. Never a marketplace
+    // value; held to 32 characters by the commit.
+  variationGroup: v.optional(v.string()),
   unmatched: v.optional(v.union(v.literal("bsc"), v.literal("sl"))),
   // ── NEO-335: the card's team, answered before save ────────────────────────
   //
@@ -16769,6 +16804,8 @@ export const fetchCardChecklist = action({
       }> = [];
       const unmatchedBscCards: ReconciledCard[] = [];
       const unmatchedSlCards: ReconciledCard[] = [];
+      // NEO-591 — see `tiedBscIndices`.
+      const tiedCards = new Set<ReconciledCard>();
       // `out` stays as the union of everything, purely so the team-lookup and
       // entity-bucketing passes below can walk every candidate once.
       const out: ReconciledCard[] = [];
@@ -16842,6 +16879,11 @@ export const fetchCardChecklist = action({
         number,
         { sl: typeof slCards[0]; confidence: number; numbersAgree: boolean }
       >();
+      // NEO-591 — the cards the core left in a TIE (a number or a player that
+      // fits more than one card on the other side). Step 3a never pre-keeps or
+      // mints for one: a tie is the operator's to pair (rule 8).
+      const tiedBscIndices = new Set<number>();
+      const tiedSlClaimKeys = new Set<string>();
       if (bscLeft.length > 0 && slLeft.length > 0) {
         const pairing = pairNamesFirst(
           bscLeft.map((i) => ({
@@ -16860,6 +16902,8 @@ export const fetchCardChecklist = action({
           })),
           { prefix: cardNumberPrefix, kind: (item) => item.isVariation },
         );
+        for (const i of pairing.tiedLeft) tiedBscIndices.add(bscLeft[i]);
+        for (const i of pairing.tiedRight) tiedSlClaimKeys.add(slClaimKey(slCards[slLeft[i]]));
         for (const p of pairing.pairs) {
           namePairByBscIndex.set(bscLeft[p.leftIndex], {
             sl: slCards[slLeft[p.rightIndex]],
@@ -16902,7 +16946,7 @@ export const fetchCardChecklist = action({
           ? preferCardNumber(bsc.cardNumber, sl.cardNumber)
           : bsc.cardNumber;
         const sourceNumbers: SourceNumbers | undefined =
-          sl && namePair && !numbersAgree
+          sl && printedNumbersDiffer(bsc.cardNumber, sl.cardNumber)
             ? {
                 bsc: clipSourceNumber(bsc.cardNumber),
                 sportlots: clipSourceNumber(sl.cardNumber),
@@ -16997,12 +17041,16 @@ export const fetchCardChecklist = action({
           // optional on the wire.
           ...(nameConflict ? { nameConflict } : {}),
           ...(sourceNumbers ? { sourceNumbers } : {}),
+          // A number `preferCardNumber` swapped in is ours, not one BSC printed
+          // for this card: the commit never matches a stored row on it.
+          ...(cardNumber !== bsc.cardNumber ? { numberMinted: true as const } : {}),
           // Spread for the same reason `nameConflict` is: `previewCardValidator`
           // is strict, and an explicit `undefined` is not an absent optional.
           ...(playersConflict ? { playersConflict } : {}),
           ...(sl ? {} : { unmatched: "sl" as const }),
         };
         out.push(candidate);
+        if (tiedBscIndices.has(bscIndex)) tiedCards.add(candidate);
         if (sl) autoMatchedCards.push({ card: candidate, confidence: pairConfidence });
         else unmatchedBscCards.push(candidate);
       }
@@ -17036,23 +17084,38 @@ export const fetchCardChecklist = action({
           unmatched: "bsc",
         };
         out.push(slOnly);
+        if (tiedSlClaimKeys.has(slClaimKey(sl))) tiedCards.add(slOnly);
         unmatchedSlCards.push(slOnly);
       }
 
       // 3a. NEO-591 (variations, Jason 2026-11-18) — a variation one marketplace
       //     lists and the other does not. When its stem's parent was PAIRED
       //     (exactly one non-variation card of the stem, matched on both
-      //     sides), the leftover is presumed wanted: it arrives pre-kept as a
-      //     single-source variation card, and the commit links it to its
-      //     parent by stem (`resolveVariationParents`). Its own marketplace
-      //     ref only: the parent's ref is never copied onto it (rule 5).
+      //     sides) and the variation is a TRUE one-sided leftover, it is
+      //     presumed wanted: it arrives pre-kept as a single-source variation
+      //     card, and the commit links it to its parent by stem
+      //     (`resolveVariationParents`). Its own marketplace ref only: the
+      //     parent's ref is never copied onto it (rule 5).
+      //
+      //     A true one-sided leftover is NOT:
+      //       - a card the core left in a TIE (rule 8: the operator pairs it);
+      //       - a card whose other side still holds an unmatched variation of
+      //         the same player and stem (SportLots "38 [VAR Action]" and
+      //         "38 [VAR Throwback]" against BSC 38b / 38c with labels that
+      //         match nothing: four cards, two real pairs the operator makes,
+      //         and a pre-keep or a minted letter would settle them wrongly).
       //
       //     SportLots keeps a variation under its parent's bare number ("38"
       //     for the base and for each "[ VAR ... ]"). NB numbers a variation
       //     with a letter ("38b", "38c": industry standard), so a bare-stem
       //     SportLots-only variation is minted the next letter after the
       //     base's, starting at b, skipping any letter a card of that stem
-      //     already uses, in SportLots' order. The base keeps its own number.
+      //     already uses, in this fetch OR already stored in this leaf, in
+      //     SportLots' order. The base keeps its own number. The minted number
+      //     is flagged (`numberMinted`) so the commit never matches a stored
+      //     row on it. With b through z all taken nothing is minted: the card
+      //     keeps the bare number, is not pre-kept, and is left for the
+      //     operator rather than duplicating a number.
       {
         const matchedCards = new Set(autoMatchedCards.map((m) => m.card));
         const byStem = new Map<string, ReconciledCard[]>();
@@ -17062,27 +17125,69 @@ export const fetchCardChecklist = action({
           if (group) group.push(card);
           else byStem.set(stem, [card]);
         }
-        const leftoverVariations = new Set<ReconciledCard>(
-          [...unmatchedBscCards, ...unmatchedSlCards].filter((c) => c.isVariation),
-        );
+        const storedByStem = new Map<string, Set<string>>();
+        for (const row of committed) {
+          const stem = cardNumberStem(row.cardNumber);
+          const set = storedByStem.get(stem) ?? new Set<string>();
+          set.add(row.cardNumber.trim().toLowerCase());
+          storedByStem.set(stem, set);
+        }
+        const rosterOf = (c: ReconciledCard): string =>
+          rosterKey(c.players?.length ? c.players : c.cardName ? [c.cardName] : []);
+        // Unmatched variations by side, then stem, for the other-side check.
+        // `unmatchedBscCards` are BSC-only (`unmatched: "sl"`);
+        // `unmatchedSlCards` are SportLots-only (`unmatched: "bsc"`).
+        const leftoverVariations = new Set<ReconciledCard>();
+        const bscOnlyVariations = new Map<string, ReconciledCard[]>();
+        const slOnlyVariations = new Map<string, ReconciledCard[]>();
+        const collect = (
+          cards: readonly ReconciledCard[],
+          into: Map<string, ReconciledCard[]>,
+        ) => {
+          for (const c of cards) {
+            if (!c.isVariation) continue;
+            leftoverVariations.add(c);
+            const k = cardNumberStem(c.cardNumber);
+            const list = into.get(k);
+            if (list) list.push(c);
+            else into.set(k, [c]);
+          }
+        };
+        collect(unmatchedBscCards, bscOnlyVariations);
+        collect(unmatchedSlCards, slOnlyVariations);
+        // Does the OTHER side still hold an unmatched variation of this stem
+        // and player? A SportLots-only card looks at the BSC-only ones.
+        const contended = (card: ReconciledCard, stem: string): boolean => {
+          const others = (card.unmatched === "bsc" ? bscOnlyVariations : slOnlyVariations).get(stem);
+          if (!others) return false;
+          const mine = rosterOf(card);
+          // An unreadable roster cannot be told apart from the same player's.
+          return others.some((o) => mine === "" || rosterOf(o) === "" || rosterOf(o) === mine);
+        };
         for (const [stem, group] of byStem) {
           const parents = group.filter((c) => !c.isVariation);
           if (parents.length !== 1 || !matchedCards.has(parents[0])) continue;
-          const used = new Set(
-            group.map((c) => c.cardNumber.trim().toLowerCase()),
-          );
+          const used = new Set(group.map((c) => c.cardNumber.trim().toLowerCase()));
+          for (const stored of storedByStem.get(stem) ?? []) used.add(stored);
           for (const card of group) {
             if (!leftoverVariations.has(card)) continue;
-            card.preKept = true;
+            if (tiedCards.has(card) || contended(card, stem)) continue;
             // Only a SportLots-only card is renumbered; BSC already suffixes.
-            if (card.unmatched !== "bsc" || card.cardNumber.trim() !== stem) continue;
-            for (const letter of "bcdefghijklmnopqrstuvwxyz") {
-              const minted = `${stem}${letter}`;
-              if (used.has(minted)) continue;
-              used.add(minted);
-              card.cardNumber = minted;
-              break;
+            if (card.unmatched === "bsc" && card.cardNumber.trim() === stem) {
+              const letter = [...MINT_LETTERS].find((l) => !used.has(`${stem}${l}`));
+              // b through z all taken: no number to mint, so no pre-keep.
+              if (letter === undefined) continue;
+              used.add(`${stem}${letter}`);
+              // The printed number rides along so Match Cards can offer it
+              // against the minted one (the minted letter is preselected).
+              card.sourceNumbers = {
+                ...(card.sourceNumbers ?? {}),
+                sportlots: clipSourceNumber(card.cardNumber.trim()),
+              };
+              card.cardNumber = `${stem}${letter}`;
+              card.numberMinted = true;
             }
+            card.preKept = true;
           }
         }
       }
@@ -17314,13 +17419,30 @@ export const fetchCardChecklist = action({
             // NEO-591 — only when the row's number replaced the card's.
             ...(carriedNumber !== ownNumber ? { cardNumber: ownNumber } : {}),
           };
-          if (carriedNumber !== ownNumber) card.cardNumber = carriedNumber;
+          if (carriedNumber !== ownNumber) {
+            card.cardNumber = carriedNumber;
+            // The row's print replaced the card's: ours now, not a marketplace's.
+            card.numberMinted = true;
+          }
           // The numbers disagree: say so, with the checklist's own. The
           // marketplace sources' numbers (`bsc` / `sportlots`) were set when
           // those two paired, if they disagreed.
-          if (!numbersAgree && !isStem) {
+          //
+          // NEO-591 (Jason 2026-11-18): every automatic number decision is
+          // editable, so this is set whenever the PRINTED text differs, also
+          // where `cardNumbersAgree` says "same card" (38 against 38a). A card
+          // with no marketplace pair yet still names the number it came with,
+          // under the marketplace that holds it, so the client can offer both.
+          if (!isStem && printedNumbersDiffer(ownNumber, rowPrinted)) {
+            const own = clipSourceNumber(ownNumber);
             card.sourceNumbers = {
               ...(card.sourceNumbers ?? {}),
+              ...(!card.sourceNumbers?.bsc && !card.sourceNumbers?.sportlots
+                ? {
+                    ...(card.platformData.bsc?.ref ? { bsc: own } : {}),
+                    ...(card.platformData.sportlots?.ref ? { sportlots: own } : {}),
+                  }
+                : {}),
               checklist: clipSourceNumber(rowPrinted),
             };
           }
@@ -17386,6 +17508,15 @@ export const fetchCardChecklist = action({
           );
           card.isVariation = true;
           card.preKept = true;
+          // NB-side parent key: the card that took the sibling's base row and
+          // the sibling share a token (the parent's position in this fetch), so
+          // the commit links them without searching by number.
+          const parentCard = out[sibling.parentCardIndex];
+          if (parentCard) {
+            const group = `g${sibling.parentCardIndex}`;
+            parentCard.variationGroup = group;
+            card.variationGroup = group;
+          }
           // The checklist's own note for the variation (a parser that keeps it
           // puts it on the row as `variationName`), as the card's name.
           const variationName = rowVariationName(published.rows[sibling.rowIndex]);
@@ -17528,6 +17659,8 @@ export const fetchCardChecklist = action({
         // NEO-591 — same rule: the numbers a name pair differs on.
         ...(card.sourceNumbers ? { sourceNumbers: card.sourceNumbers } : {}),
         ...(card.preKept ? { preKept: card.preKept } : {}),
+        ...(card.numberMinted ? { numberMinted: card.numberMinted } : {}),
+        ...(card.variationGroup ? { variationGroup: card.variationGroup } : {}),
         // PR 451 (NEO-478) — same rule: the streamed path is the only path.
         ...(card.checklistConflict ? { checklistConflict: card.checklistConflict } : {}),
         ...(card.teamLookup ? { teamLookup: card.teamLookup } : {}),
@@ -22861,6 +22994,14 @@ type IncomingMatchCard = {
   /** NEO-496 — the no-number key's second half; see `noRefMatchKey`. */
   cardName?: string;
   platformData?: WirePlatformData;
+  /**
+   * NEO-591 — the number was derived by the sync (minted, or swapped in by
+   * `preferCardNumber`). Such a card matches a stored row by its own ref or
+   * not at all: the slot+number and no-ref number tiers never see it, and it
+   * claims no number key, so a derived "38b" cannot land on a stored "38b"
+   * nor make a real "38b" look ambiguous.
+   */
+  numberMinted?: true;
 };
 
 /**
@@ -22975,6 +23116,7 @@ function resolveExistingIds(
   const incomingSlotKeyCount = new Map<string, number>();
   const incomingNumberCount = new Map<string, number>();
   for (const card of cards) {
+    if (card.numberMinted === true) continue;
     for (const side of MATCH_SIDES) {
       const key = incomingSlotKey(card, side);
       if (key) {
@@ -23011,6 +23153,8 @@ function resolveExistingIds(
     if (bscRef && withheld.bscRef.has(bscRef)) return true;
     const slRef = card.platformData?.sportlots?.ref;
     if (slRef && withheld.slRef.has(slRef)) return true;
+    // A derived number never reached the number tiers, so they cost it nothing.
+    if (card.numberMinted === true) return false;
     for (const side of MATCH_SIDES) {
       const key = incomingSlotKey(card, side);
       if (!key) continue;
@@ -23050,7 +23194,7 @@ function resolveExistingIds(
     } else if (slRowId) {
       matched = slRowId;
       tier = "slRef";
-    } else {
+    } else if (card.numberMinted !== true) {
       for (const side of MATCH_SIDES) {
         const key = incomingSlotKey(card, side);
         if (!key) continue;
@@ -24503,6 +24647,23 @@ export const commitCardChecklist = action({
         } still carries an unsettled checklist disagreement. Settle it in the "Checklist says otherwise" step before committing.`,
       );
     }
+    // NEO-591 — `sourceNumbers` is accepted and ignored by the commit, but it
+    // is a client-supplied string map all the same: held to the 64-character
+    // cap `startCandidateBatch` enforces, so an unbounded value never rides in
+    // a commit argument. The card number is NB's own; no value is echoed.
+    for (const [index, card] of args.cards.entries()) {
+      const printed = card.sourceNumbers;
+      if (!printed) continue;
+      for (const value of [printed.bsc, printed.sportlots, printed.checklist]) {
+        if (value !== undefined && value.length > MAX_SOURCE_NUMBER_LENGTH) {
+          throw new ConvexError(
+            `commitCardChecklist: ${
+              card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
+            } carries a source number over ${MAX_SOURCE_NUMBER_LENGTH} characters.`,
+          );
+        }
+      }
+    }
     // Security audit N2 — a held "Prospect (X)" is never a team string. The
     // fetch hands the card `teams: []` and X in `prospectTeams`; a card that
     // arrives with a team string equal to one of its own held Xs is a client
@@ -25273,6 +25434,42 @@ export const commitCardChecklist = action({
       parentByIndex: Map<number, number>;
       unresolvedStems: string[];
     } = { parentByIndex: new Map(), unresolvedStems: [] };
+    // NEO-591 (variations) — the NB-side parent key. A card that took a
+    // checklist row and the variation cards the fetch made from that row's
+    // siblings share a `variationGroup` token; when exactly one non-variation
+    // card holds a token, its variations link to it directly, ahead of any
+    // search by number. A token is only a grouping (held to 32 characters, a
+    // forged one links nothing it should not: it needs exactly one parent and
+    // only ever points a variation at a card that also carries it).
+    const groupMembers = new Map<string, number[]>();
+    args.cards.forEach((c, i) => {
+      const token = c.variationGroup;
+      if (!token || token.length > 32) return;
+      const list = groupMembers.get(token);
+      if (list) list.push(i);
+      else groupMembers.set(token, [i]);
+    });
+    const groupLinked = new Set<number>();
+    for (const members of groupMembers.values()) {
+      const parents = members.filter((i) => !args.cards[i].isVariation);
+      if (parents.length !== 1) continue;
+      for (const i of members) {
+        if (!args.cards[i].isVariation) continue;
+        variationLinks.parentByIndex.set(i, parents[0]);
+        groupLinked.add(i);
+      }
+    }
+    // Indexed ONCE for the unattributed cross-partition rule below: every
+    // non-variation card by stem across the whole commit. A per-stem scan of
+    // `args.cards` would be stems x cards on a 14,000-card set.
+    const parentsByStem = new Map<string, number[]>();
+    args.cards.forEach((c, i) => {
+      if (c.isVariation) return;
+      const stem = cardNumberStem(c.cardNumber);
+      const list = parentsByStem.get(stem);
+      if (list) list.push(i);
+      else parentsByStem.set(stem, [i]);
+    });
     for (const [sourceKey, indices] of variationPartitions) {
       const resolved = resolveVariationParents(
         indices.map((i) => ({
@@ -25282,7 +25479,10 @@ export const commitCardChecklist = action({
         })),
       );
       for (const [child, parent] of resolved.parentByIndex) {
-        variationLinks.parentByIndex.set(indices[child], indices[parent]);
+        // A group link made above wins over a stem guess.
+        if (!groupLinked.has(indices[child])) {
+          variationLinks.parentByIndex.set(indices[child], indices[parent]);
+        }
       }
       // NEO-591 (variations) — a variation made from a checklist row (card 38
       // took row "38a", row "38b" became its own card) carries no marketplace
@@ -25293,23 +25493,26 @@ export const commitCardChecklist = action({
       // 7: a number is not unique, and two series can both have a #38).
       let unresolved = resolved.unresolvedStems;
       if (sourceKey === "unattributed" && unresolved.length > 0) {
+        // This partition's cards by stem, once: no scan per unresolved stem.
+        const inPartitionByStem = new Map<string, number[]>();
+        for (const i of indices) {
+          const stem = cardNumberStem(args.cards[i].cardNumber);
+          const list = inPartitionByStem.get(stem);
+          if (list) list.push(i);
+          else inPartitionByStem.set(stem, [i]);
+        }
         const stillUnresolved: string[] = [];
         for (const stem of unresolved) {
-          const inStem = indices.filter((i) => cardNumberStem(args.cards[i].cardNumber) === stem);
+          const inStem = inPartitionByStem.get(stem) ?? [];
+          const children = inStem.filter(
+            (i) => args.cards[i].isVariation && !groupLinked.has(i),
+          );
+          // Every variation of the stem already has its group parent.
+          if (children.length === 0) continue;
           const hasOwnParent = inStem.some((i) => !args.cards[i].isVariation);
-          const parents = hasOwnParent
-            ? []
-            : args.cards
-                .map((c, i) => i)
-                .filter(
-                  (i) =>
-                    !args.cards[i].isVariation &&
-                    cardNumberStem(args.cards[i].cardNumber) === stem,
-                );
+          const parents = hasOwnParent ? [] : (parentsByStem.get(stem) ?? []);
           if (parents.length === 1) {
-            for (const i of inStem) {
-              if (args.cards[i].isVariation) variationLinks.parentByIndex.set(i, parents[0]);
-            }
+            for (const i of children) variationLinks.parentByIndex.set(i, parents[0]);
           } else {
             stillUnresolved.push(stem);
           }

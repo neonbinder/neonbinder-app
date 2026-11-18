@@ -773,7 +773,13 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
       screen
         .getAllByRole("radio")
         .map((r) => r.textContent?.replace(/^✓ /, "")),
-    ).toEqual(["Mike Yastrzemski", "Mike Yastrzemski|Carl Yastrzemski"]);
+    ).toEqual([
+      "Mike Yastrzemski",
+      "Mike Yastrzemski|Carl Yastrzemski",
+      // NEO-591: and the two numbers the marketplaces printed.
+      "#227c",
+      "#227",
+    ]);
   });
 
   test("neither name is pre-resolved as correct — BSC is marked as the current default, SportLots is one click away", () => {

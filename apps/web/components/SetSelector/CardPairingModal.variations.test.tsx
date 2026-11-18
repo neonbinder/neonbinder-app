@@ -106,11 +106,11 @@ const announcer = () => screen.getAllByRole("status").find((el) => !el.id) as HT
 describe("one checklist row shared by several cards", () => {
   const family = () => ["38", "38b", "38c"].map(stemCard);
 
-  test("each card shows the row's chip, with no %", () => {
+  test("each card shows the row's chip, reading all versions, with no %", () => {
     mount({ sources: ["bsc", "checklist"], unmatchedBsc: family() });
     expect(screen.getByText(/Matched \(3\)/)).toBeTruthy();
     expandMatched();
-    expect(screen.getAllByText("Checklist: #38")).toHaveLength(3);
+    expect(screen.getAllByText("Checklist: #38 · all versions")).toHaveLength(3);
     expect(screen.queryByText(/%/)).toBeNull();
     expect(screen.queryByText(/Name match/)).toBeNull();
   });
@@ -121,11 +121,57 @@ describe("one checklist row shared by several cards", () => {
 
     fireEvent.click(screen.getByLabelText(unlinkName("38b")));
 
-    expect(screen.getAllByText("Checklist: #38")).toHaveLength(2);
+    expect(screen.getAllByText("Checklist: #38 · all versions")).toHaveLength(2);
     expect(screen.getByRole("heading", { name: "Checklist only (0)" })).toBeTruthy();
     expect(screen.queryByLabelText(/^Select #38 /)).toBeNull();
+    // Names the others; the one-marketplace card moved to Keeping.
     expect(announcer().textContent).toBe(
-      "Unlinked from #38b Ted Williams 38b. Checklist row stays linked to the other cards.",
+      "Unlinked from #38b. Row #38 still covers #38 and #38c. Moved to Keeping.",
+    );
+  });
+
+  test("with more than two others it counts them", () => {
+    mount({
+      sources: ["bsc", "checklist"],
+      unmatchedBsc: ["38", "38b", "38c", "38d"].map(stemCard),
+    });
+    expandMatched();
+    fireEvent.click(screen.getByLabelText(unlinkName("38b")));
+    expect(announcer().textContent).toBe(
+      "Unlinked from #38b. Row #38 still covers 3 other cards. Moved to Keeping.",
+    );
+  });
+
+  test("focus lands on the card's own Remove on the shelf it moved to", async () => {
+    mount({ sources: ["bsc", "checklist"], unmatchedBsc: family() });
+    expandMatched();
+    fireEvent.click(screen.getByLabelText(unlinkName("38b")));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByLabelText("Remove #38b Ted Williams 38b from save list"),
+      ),
+    );
+  });
+
+  test("a BSC and SportLots pair stays matched: focus lands on its title and nothing moves to Keeping", async () => {
+    const pair = (n: string): PairingCard => ({
+      ...stemCard(n),
+      platformData: {
+        bsc: { ref: `bsc-${n}`, setId: "set-1" },
+        sportlots: { ref: `#${n} Ted`, setId: "884412" },
+      },
+    });
+    mount({
+      sources: ["bsc", "sportlots", "checklist"],
+      autoMatched: ["38", "38b"].map((n) => ({ card: pair(n), confidence: 1 })),
+    });
+    expandMatched();
+    fireEvent.click(screen.getByLabelText(unlinkName("38b")));
+    expect(announcer().textContent).toBe("Unlinked from #38b. Row #38 still covers #38.");
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("aria-label")).toBe(
+        "Edit name for #38b Ted Williams 38b",
+      ),
     );
   });
 
@@ -141,7 +187,7 @@ describe("one checklist row shared by several cards", () => {
     expect(screen.getByRole("heading", { name: "Checklist only (1)" })).toBeTruthy();
     expect(screen.getByLabelText("Select #38 Ted Williams")).toBeTruthy();
     expect(announcer().textContent).toBe(
-      "Unlinked from #38 Ted Williams 38. Checklist row's back on the list.",
+      "Unlinked from #38 Ted Williams 38. Checklist row's back on the list. Moved to Keeping.",
     );
   });
 

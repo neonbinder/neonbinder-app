@@ -106,9 +106,10 @@ describe("matchPublishedChecklist: the letter-prefix fallback", () => {
 });
 
 describe("matchPublishedChecklist: disagreements and fills", () => {
-  test("the same player under a different number pairs by player name, carrying the row's number (NEO-490, NEO-496)", () => {
+  test("the same player under a different kind of number pairs by player name, carrying the row's number (NEO-490, NEO-496)", () => {
+    // NEO-591: a letters number against a digits number is a different type, so it pairs.
     const r = matchPublishedChecklist(
-      [card("10", ["Rhett Lowder"])],
+      [card("SIG-10", ["Rhett Lowder"])],
       [row("60", ["Rhett Lowder"])],
     );
     expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([[0, 0, "playerName"]]);
@@ -116,6 +117,34 @@ describe("matchPublishedChecklist: disagreements and fills", () => {
     expect(r.matches[0].conflict).toBeUndefined();
     expect(r.unmatchedCardIndices).toEqual([]);
     expect(r.misreads).toEqual([]);
+  });
+
+  // NEO-591 (Jason, 2026-11-18): "if they are both numeric then leave
+  // unmatched. only match with different numbers if the type is different."
+  test("two plain numbers that disagree never pair on a name: both stay unmatched and are reported tied", () => {
+    const r = matchPublishedChecklist(
+      [card("38", ["Rhett Lowder"]), card("SIG-A", ["A One"])],
+      [row("250", ["Rhett Lowder"]), row("7", ["B Two"])],
+    );
+    expect(r.matches).toEqual([]);
+    expect(r.unmatchedCardIndices).toEqual([0, 1]);
+    expect(r.tiedCardIndices).toEqual([0]);
+    expect(r.tiedRowIndices).toEqual([0]);
+    expect(r.unusedRowIndices).toEqual([0, 1]);
+    expect(r.needsOperator).toBe(true);
+  });
+
+  test("a digits number against NNO, and letters against NNO, still pair at 0.9; they are not tied", () => {
+    const r = matchPublishedChecklist(
+      [card("12", ["A One"]), card("OV-B", ["B Two"])],
+      [row("NNO", ["A One"]), row("NNO", ["B Two"])],
+    );
+    expect(r.matches.map((m) => [m.via, m.confidence])).toEqual([
+      ["playerName", 0.9],
+      ["playerName", 0.9],
+    ]);
+    expect(r.tiedCardIndices).toEqual([]);
+    expect(r.tiedRowIndices).toEqual([]);
   });
 
   test("a matched pair whose players differ carries both sides and keeps the pairing", () => {
@@ -256,7 +285,7 @@ describe("matchPublishedChecklist: the misreads list is capped", () => {
     // NEO-496: "B Two" is one card and one row, so it pairs by name and is no
     // misread; "A One" is on two rows, so it stays a misread on both.
     const r = matchPublishedChecklist(
-      [card("1", ["A One"]), card("2", ["B Two"])],
+      [card("1", ["A One"]), card("SIG-2", ["B Two"])],
       [row("10", ["A One"]), row("11", ["A One"]), row("20", ["B Two"])],
     );
     expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([[1, 2, "playerName"]]);
@@ -513,9 +542,14 @@ describe("matchPublishedChecklist: NEO-591 names first (the Onyx shape)", () => 
     });
   });
 
-  test("38a beats nothing here: 38a against 38 for one player is a name pair with the numbers differing", () => {
-    const r = matchPublishedChecklist([card("38a", ["Mike Trout"])], [row("38", ["Mike Trout"])]);
-    expect(r.matches[0]).toMatchObject({ via: "playerName", confidence: 0.9, checklistNumber: "38" });
+  // NEO-591 (Jason, 2026-11-18): a bare stem and stem + "a" are one number.
+  test("38a against 38 for one player agrees: no note, no confidence; 38b against 38 still differs", () => {
+    const agree = matchPublishedChecklist([card("38a", ["Mike Trout"])], [row("38", ["Mike Trout"])]);
+    expect(agree.matches[0].via).toBe("prefixStripped");
+    expect(agree.matches[0].confidence).toBeUndefined();
+    expect(agree.matches[0].checklistNumber).toBeUndefined();
+    const differ = matchPublishedChecklist([card("38b", ["Mike Trout"])], [row("38", ["Mike Trout"])]);
+    expect(differ.matches[0]).toMatchObject({ via: "playerName", confidence: 0.9, checklistNumber: "38" });
   });
 
   test("the set's prefix is read as agreeing", () => {
@@ -575,8 +609,9 @@ describe("matchPublishedChecklist: variations (the stem)", () => {
 
   test("checklist 38a / 38b against BSC 38: the card takes 38a, row 38b comes back to create", () => {
     const r = matchPublishedChecklist([card("38", w)], [row("38b", w), row("38a", w)]);
+    // 38 and 38a are one number (Jason, 2026-11-18): no note, no confidence.
     expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via, m.checklistNumber, m.confidence])).toEqual([
-      [0, 1, "playerName", "38a", 0.9],
+      [0, 1, "prefixStripped", undefined, undefined],
     ]);
     expect(r.siblingRows).toEqual([{ rowIndex: 0, parentCardIndex: 0 }]);
     expect(r.unusedRowIndices).toEqual([]);
@@ -1028,11 +1063,11 @@ describe("matchPublishedChecklist: rule 8 a number the marketplace lists twice b
   test("repeated cards pair by name with a row at another number", () => {
     const r = matchPublishedChecklist(
       [card("5", ["A One"]), card("5", ["B Two"])],
-      [row("50", ["A One"]), row("51", ["B Two"])],
+      [row("S50", ["A One"]), row("S51", ["B Two"])],
     );
     expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via, m.checklistNumber])).toEqual([
-      [0, 0, "playerName", "50"],
-      [1, 1, "playerName", "51"],
+      [0, 0, "playerName", "S50"],
+      [1, 1, "playerName", "S51"],
     ]);
     expect(r.unmatchedCardIndices).toEqual([]);
   });
@@ -1080,5 +1115,29 @@ describe("matchPublishedChecklist: rule 8 a number the marketplace lists twice b
       [0, 0, "player"],
       [1, 1, "player"],
     ]);
+  });
+});
+
+describe("matchPublishedChecklist: tiedCardIndices tells a tie from a card with no row", () => {
+  test("a player with two cards and two rows the numbers cannot settle is tied; a card with no row is not", () => {
+    const r = matchPublishedChecklist(
+      [card("NNO", ["Will Smith"]), card("NNO", ["Will Smith"]), card("9", ["Lone Wolf"])],
+      [row("A1", ["Will Smith"]), row("A2", ["Will Smith"])],
+    );
+    expect(r.unmatchedCardIndices).toEqual([0, 1, 2]);
+    expect(r.tiedCardIndices).toEqual([0, 1]);
+    expect(r.tiedRowIndices).toEqual([0, 1]);
+  });
+
+  test("a combo card left over takes the row of its number when the player's group has no row left", () => {
+    const r = matchPublishedChecklist(
+      [card("25", ["Barry Bonds"]), card("400", ["Barry Bonds", "Ken Griffey Jr"])],
+      [row("25", ["Barry Bonds"]), row("400", ["Barry Bonds"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 0, "number"],
+      [1, 1, "number"],
+    ]);
+    expect(r.matches[1].conflict?.players).toBeDefined();
   });
 });

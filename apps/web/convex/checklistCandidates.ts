@@ -196,6 +196,9 @@ const candidateInputValidator = v.object({
   // NEO-591 (variations) — a variation card created from a checklist row;
   // the client seeds it as Keeping (see the schema field).
   preKept: v.optional(v.literal(true)),
+  // NEO-591 — see the schema fields.
+  numberMinted: v.optional(v.literal(true)),
+  variationGroup: v.optional(v.string()),
   confidence: v.optional(v.number()),
   /**
    * NEO-330 / NEO-341 — this card is waiting on a BSC team lookup the action
@@ -1300,6 +1303,8 @@ export const getReadyCandidates = query({
         sourceNumbers: v.optional(sourceNumbersValidator),
         // NEO-591 (variations) — see the schema field.
         preKept: v.optional(v.literal(true)),
+        numberMinted: v.optional(v.literal(true)),
+        variationGroup: v.optional(v.string()),
         confidence: v.optional(v.number()),
         stem: v.string(),
         teamResolved: v.boolean(),
@@ -1364,6 +1369,8 @@ export const getReadyCandidates = query({
         checklistLink: r.checklistLink,
         sourceNumbers: r.sourceNumbers,
         preKept: r.preKept,
+        numberMinted: r.numberMinted,
+        variationGroup: r.variationGroup,
         confidence: r.confidence,
         stem: r.stem,
         // Lets the row show "resolving team…" rather than an empty cell that

@@ -511,6 +511,64 @@ describe("NEO-591 — names first, numbers confirm", () => {
     expect(withNumbers.sourceNumbers).toEqual({ bsc: "OV-ANFI", checklist: "NNO" });
   });
 
+  test("committable takes preKept off (the dialog's own business), and keeps the rest", () => {
+    const made = {
+      cardNumber: "38b",
+      cardName: "Ted Williams",
+      platformData: {},
+      isVariation: true,
+      preKept: true,
+    } as PairingCard;
+    const out = committable(made);
+    expect(out).not.toHaveProperty("preKept");
+    expect(out.isVariation).toBe(true);
+    expect(made.preKept).toBe(true);
+  });
+
+  test("committable keeps numberMinted and variationGroup: the commit uses both", () => {
+    const made = {
+      cardNumber: "38b",
+      cardName: "Ted Williams",
+      platformData: {},
+      preKept: true,
+      numberMinted: true,
+      variationGroup: "grp-38",
+    } as PairingCard;
+    const out = committable(made);
+    expect(out.numberMinted).toBe(true);
+    expect(out.variationGroup).toBe("grp-38");
+    expect(out).not.toHaveProperty("preKept");
+  });
+
+  test("a row's variationName survives an Unlink and a relink", () => {
+    const row: ServerPairedRow = {
+      number: "38",
+      players: ["Ted Williams"],
+      teams: [],
+      variationName: "Photo variation",
+      cardName: "Ted Williams",
+    };
+    // Unlink lists the row again as the dialog's row ...
+    const listed = pairedRowOf(row);
+    expect(listed.variationName).toBe("Photo variation");
+    // ... and a relink asks the server about it with the note intact.
+    const [request] = buildChecklistPairRequests(
+      [{ key: "a", cardNumber: "38b" }],
+      new Map([["a", 0]]),
+      [listed],
+      (c) => c.key,
+    );
+    expect(request.row.variationName).toBe("Photo variation");
+  });
+
+  test("withoutChecklistNumber keeps a picker while the numbers left differ in text", () => {
+    // BCP-12 and 12 agree, but the operator may still want either.
+    expect(withoutChecklistNumber({ bsc: "BCP-12", sportlots: "12", checklist: "x" })).toEqual({
+      bsc: "BCP-12",
+      sportlots: "12",
+    });
+  });
+
   describe("applyChecklistAnswers with the linked rows' numbers", () => {
     const bscCard = (key: string, cardNumber: string): Card => ({
       key,
@@ -542,6 +600,28 @@ describe("NEO-591 — names first, numbers confirm", () => {
       const card: Card = { ...bscCard("a", "38"), sourceNumbers: { bsc: "38", sportlots: "39" } } as Card;
       const [out] = apply([card], "38a");
       expect(out).toHaveProperty("sourceNumbers", { bsc: "38", sportlots: "39", checklist: "38a" });
+    });
+
+    test("38 and 38a are still two numbers to choose between", () => {
+      const [out] = apply([bscCard("a", "38")], "38a");
+      expect(out).toHaveProperty("sourceNumbers", { bsc: "38", checklist: "38a" });
+    });
+
+    test("the operator's pick wins over the rule when it is one of the numbers", () => {
+      const cards = [bscCard("a", "38")];
+      const rows = new Map([["a", "38a"]]);
+      const [picked] = applyChecklistAnswers(cards, [{ cardKey: "a" }], keyOf, rows, new Map([["a", "38"]]));
+      expect(picked.cardNumber).toBe("38");
+      // A pick that is neither printed number is ignored.
+      const [stray] = applyChecklistAnswers(cards, [{ cardKey: "a" }], keyOf, rows, new Map([["a", "99"]]));
+      expect(stray.cardNumber).toBe("38a");
+    });
+
+    test("a number swapped in from the row is flagged minted; one the card keeps is not", () => {
+      const [swapped] = apply([bscCard("a", "38")], "38a");
+      expect(swapped).toHaveProperty("numberMinted", true);
+      const [kept] = apply([bscCard("a", "38a")], "38");
+      expect(kept).not.toHaveProperty("numberMinted");
     });
 
     test("without rowNumbers the card's number is untouched, as before", () => {

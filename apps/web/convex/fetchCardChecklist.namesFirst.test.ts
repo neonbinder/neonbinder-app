@@ -167,6 +167,7 @@ type ChecklistRow = {
   players: string[];
   teams: string[];
   noNumber?: boolean;
+  variationName?: string;
 };
 
 async function fetchSet(
@@ -260,11 +261,13 @@ describe("BSC against SportLots: names first, numbers confirm", () => {
 
     expect(matched).toHaveLength(1);
     expect(matched[0].cardNumber).toBe("38a");
-    expect(matched[0].confidence).toBeCloseTo(0.9, 10);
+    // "38" and "38a" agree (same card), so no discount; both prints still
+    // ride along so Match Cards can offer either (Jason 2026-11-18).
+    expect(matched[0].confidence).toBe(1);
     expect(matched[0].sourceNumbers).toEqual({ bsc: "38", sportlots: "38a" });
   });
 
-  test("numbers that agree carry no sourceNumbers and a confidence of 1", async () => {
+  test("numbers printed alike carry no sourceNumbers and a confidence of 1", async () => {
     const t = convexTest(schema, modules);
     const { leafId } = await seedTree(t);
     mockState.bscCards = [bsc("12", "Mike Trout")];
@@ -276,6 +279,48 @@ describe("BSC against SportLots: names first, numbers confirm", () => {
     expect(matched).toHaveLength(1);
     expect(matched[0].confidence).toBe(1);
     expect(matched[0].cardNumber).toBe("12");
+    expect(matched[0].sourceNumbers).toBeUndefined();
+  });
+
+  test("a printed number over 64 characters is clipped to 64 on the wire", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    const long = `OV-${"X".repeat(80)}`;
+    mockState.bscCards = [bsc(long, "Mike Trout")];
+    mockState.slCards = [sl("7", "Mike Trout")];
+
+    await fetchSet(t, leafId);
+    const { matched } = await buckets(t, leafId);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].sourceNumbers?.bsc).toHaveLength(64);
+    expect(matched[0].sourceNumbers?.bsc).toBe(long.slice(0, 64));
+    expect(matched[0].sourceNumbers?.sportlots).toBe("7");
+  });
+
+  test("sourceNumbers is set whenever the printed text differs, also on an identity-linked pair (BSC 1b against SportLots 1)", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    mockState.bscCards = [{ ...bsc("1b", "Mike Trout"), sportlotsRef: "sl-1" }];
+    mockState.slCards = [sl("1", "Mike Trout", { platformRef: "sl-1" })];
+
+    await fetchSet(t, leafId);
+    const { matched } = await buckets(t, leafId);
+
+    expect(matched).toHaveLength(1);
+    expect(matched[0].sourceNumbers).toEqual({ bsc: "1b", sportlots: "1" });
+  });
+
+  test("numbers that differ only in case or padding print alike: no sourceNumbers", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    mockState.bscCards = [bsc("ov-anfi", "Mike Trout")];
+    mockState.slCards = [sl(" OV-ANFI ", "Mike Trout")];
+
+    await fetchSet(t, leafId);
+    const { matched } = await buckets(t, leafId);
+
+    expect(matched).toHaveLength(1);
     expect(matched[0].sourceNumbers).toBeUndefined();
   });
 
@@ -337,7 +382,9 @@ describe("BSC against SportLots: names first, numbers confirm", () => {
     // An identity link is certain, and keeps BSC's number as before.
     expect(matched[0].confidence).toBe(1);
     expect(matched[0].cardNumber).toBe("5");
-    expect(matched[0].sourceNumbers).toBeUndefined();
+    // The pair's two prints differ ("5" against "90"), so both ride along
+    // even though no number decided the pair.
+    expect(matched[0].sourceNumbers).toEqual({ bsc: "5", sportlots: "90" });
     expect(slOnly.map((c) => c.platformData.sportlots?.ref)).toEqual([
       "2021 Topps #5 Mike Trout",
     ]);
@@ -369,10 +416,11 @@ describe("BSC against SportLots: names first, numbers confirm", () => {
     expect(matched).toHaveLength(1);
     expect(bscOnly).toHaveLength(0);
     expect(slOnly).toHaveLength(0);
-    // Paired by number alone: certain, and the numbers agree.
-    expect(matched[0].confidence).toBe(1);
+    // Paired by number alone, the names disagreeing: the core discounts it.
+    // The numbers agree, but they print differently, so both are offered.
+    expect(matched[0].confidence).toBeCloseTo(0.9, 10);
     expect(matched[0].cardNumber).toBe("BCP-12");
-    expect(matched[0].sourceNumbers).toBeUndefined();
+    expect(matched[0].sourceNumbers).toEqual({ bsc: "BCP-12", sportlots: "12" });
     // The two sides name different players: the existing name conflict
     // carries it (`namesDisagree` needs no wire field of its own).
     expect(matched[0].nameConflict).toEqual({ bsc: "Mike Trout", sportlots: "Mike Stanton" });
@@ -417,6 +465,11 @@ describe("BSC against SportLots: variations one side lacks (stem)", () => {
     for (const c of slOnly) {
       expect(c.isVariation).toBe(true);
       expect(c.preKept).toBe(true);
+      // The minted number is ours, so the commit never matches a stored row on it.
+      expect(c.numberMinted).toBe(true);
+      // The number SportLots printed rides along, so Match Cards can offer it
+      // against the minted letter.
+      expect(c.sourceNumbers).toEqual({ sportlots: "38" });
       // Single-source: its own SportLots ref only, never the parent's, and no BSC ref.
       expect(c.platformData.bsc).toBeUndefined();
       expect(c.platformData.sportlots?.ref).toMatch(/^sl-var-/);
@@ -445,6 +498,81 @@ describe("BSC against SportLots: variations one side lacks (stem)", () => {
     // BSC's own leftover variation is presumed wanted too, and keeps its number.
     expect(bscOnly.map((c) => c.cardNumber)).toEqual(["38b"]);
     expect(bscOnly[0].preKept).toBe(true);
+    // Pre-kept without renumbering: BSC's own number is no minted one.
+    expect(bscOnly[0].numberMinted).toBeUndefined();
+    expect(slOnly[0].numberMinted).toBe(true);
+  });
+
+  test("two SportLots variations against two BSC variations that pair with none: no pre-keep, no minting, all four left for the operator", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    mockState.bscCards = [
+      bsc("38", "Alec Bohm"),
+      { ...bsc("38b", "Alec Bohm"), isVariation: true, cardVariation: "Gold Wave" },
+      { ...bsc("38c", "Alec Bohm"), isVariation: true, cardVariation: "Silver Wave" },
+    ];
+    mockState.slCards = [
+      sl("38", "Alec Bohm"),
+      slVar("Alec Bohm", "Action Image", "sl-var-action"),
+      slVar("Alec Bohm", "Throwback", "sl-var-throwback"),
+    ];
+
+    await fetchSet(t, leafId);
+    const { matched, slOnly, bscOnly } = await buckets(t, leafId);
+
+    expect(matched.map((c) => c.cardNumber)).toEqual(["38"]);
+    expect(bscOnly.map((c) => c.cardNumber).sort()).toEqual(["38b", "38c"]);
+    // SportLots' two keep the bare number it printed: nothing was renumbered.
+    expect(slOnly.map((c) => c.cardNumber)).toEqual(["38", "38"]);
+    for (const c of [...bscOnly, ...slOnly]) {
+      expect(c.preKept).toBeUndefined();
+      expect(c.numberMinted).toBeUndefined();
+    }
+  });
+
+  test("b through z all taken: nothing is minted, the card keeps its number, is not pre-kept and is left for the operator", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    const letters = "bcdefghijklmnopqrstuvwxyz".split("");
+    mockState.bscCards = [
+      bsc("38", "Mike Trout"),
+      ...letters.map((l, i) => ({
+        ...bsc(`38${l}`, `Bsc Legend ${String.fromCharCode(97 + i)}${String.fromCharCode(97 + i)}`),
+        isVariation: true,
+        cardVariation: `Wave ${l}`,
+      })),
+    ];
+    mockState.slCards = [sl("38", "Mike Trout"), slVar("Zed Legend", "Action", "sl-var-action")];
+
+    await fetchSet(t, leafId);
+    const { slOnly, bscOnly } = await buckets(t, leafId);
+
+    expect(slOnly).toHaveLength(1);
+    // Not a duplicate of any letter, and not silently renumbered or kept.
+    expect(slOnly[0].cardNumber).toBe("38");
+    expect(slOnly[0].preKept).toBeUndefined();
+    expect(slOnly[0].numberMinted).toBeUndefined();
+    expect(new Set(bscOnly.map((c) => c.cardNumber)).size).toBe(25);
+  });
+
+  test("a letter a STORED row of the leaf already holds is skipped when minting", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId, sportId } = await seedTree(t);
+    await t.withIdentity(ADMIN).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        { cardNumber: "38b", cardName: "Hand Added", teams: [], players: [], attributes: [], platformData: {} },
+      ],
+    });
+    await drainScheduled(t);
+    mockState.bscCards = [bsc("38", "Mike Trout")];
+    mockState.slCards = [sl("38", "Mike Trout"), slVar("Aaa Legend", "Action", "sl-var-action")];
+
+    await fetchSet(t, leafId);
+    const { slOnly } = await buckets(t, leafId);
+
+    expect(slOnly.map((c) => c.cardNumber)).toEqual(["38c"]);
   });
 
   test("with no paired parent nothing is pre-kept or renumbered", async () => {
@@ -505,7 +633,7 @@ describe("a publisher checklist: names first (Onyx)", () => {
       expect(r.checklistLink?.confidence).toBeCloseTo(0.9, 10);
       // The number did not change, so there is nothing for Unlink to restore.
       expect(r.checklistLink?.revert?.cardNumber).toBeUndefined();
-      expect(r.sourceNumbers).toEqual({ checklist: "NNO" });
+      expect(r.sourceNumbers).toEqual({ bsc: r.cardNumber, checklist: "NNO" });
     }
   });
 
@@ -524,7 +652,9 @@ describe("a publisher checklist: names first (Onyx)", () => {
     expect(row.cardNumber).toBe("BCP-12");
     expect(row.checklistLink?.revert?.cardNumber).toBe("12");
     expect(row.checklistLink?.checklistNumber).toBe("BCP-12");
-    expect(row.sourceNumbers).toBeUndefined();
+    // Agreeing, but printed differently: both prints are on the wire so the
+    // operator can change the pick.
+    expect(row.sourceNumbers).toEqual({ bsc: "12", checklist: "BCP-12" });
   });
 
   test("a marketplace's lettered number is kept against the row's digits", async () => {
@@ -538,7 +668,7 @@ describe("a publisher checklist: names first (Onyx)", () => {
     expect(row.cardNumber).toBe("OV-ANFI");
     expect(row.checklistLink?.checklistNumber).toBe("44");
     expect(row.checklistLink?.revert?.cardNumber).toBeUndefined();
-    expect(row.sourceNumbers).toEqual({ checklist: "44" });
+    expect(row.sourceNumbers).toEqual({ bsc: "OV-ANFI", checklist: "44" });
   });
 
   test("an existing NB card keeps its number when a checklist carries a more specific one (rule 3)", async () => {
@@ -681,6 +811,11 @@ describe("a publisher checklist: variations (stem)", () => {
       players: ["Mike Trout"],
     });
     expect(sibling?.platformData).toEqual({});
+    // The pair and its sibling share an NB-side token (never a marketplace
+    // value), and the row's number that replaced the card's is flagged ours.
+    expect(sibling?.variationGroup).toBeDefined();
+    expect(paired?.variationGroup).toBe(sibling?.variationGroup);
+    expect(paired?.numberMinted).toBe(true);
     // The sibling is used: it is not an unused row.
     expect(result.checklistMatch?.unusedRowIndices).toEqual([]);
   });
@@ -723,6 +858,25 @@ describe("a publisher checklist: variations (stem)", () => {
     const rows = new Map((await stored(t)).map((r) => [r.cardNumber, r]));
     expect(rows.get("38b")?.cardVariation).toBe("Photo variation");
 
+    // Bidirectional and line-separator format characters go too (the parser's
+    // own set): each becomes a space, then the whitespace folds.
+    await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
+      selectorOptionId: leafId,
+      publishedChecklist: {
+        rows: [
+          { number: "38a", players: trout, teams: [] },
+          {
+            number: "38b",
+            players: trout,
+            teams: [],
+            variationName: "Photo\u202e\u2066variation\u200f\u2028\u2029 two\u200e",
+          },
+        ],
+      },
+    });
+    const bidi = new Map((await stored(t)).map((r) => [r.cardNumber, r]));
+    expect(bidi.get("38b")?.cardVariation).toBe("Photo variation two");
+
     await expect(
       asAdmin.action(api.selectorOptions.fetchCardChecklist, {
         selectorOptionId: leafId,
@@ -731,6 +885,19 @@ describe("a publisher checklist: variations (stem)", () => {
         },
       }),
     ).rejects.toThrow(/variation name over 80/);
+  });
+
+  test("a paired row keeps its variationName, so Unlink or a relink puts back the same variation card", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    mockState.bscCards = [bsc("38", "Mike Trout", "bsc-38")];
+
+    await fetchSet(t, leafId, [
+      { number: "38", players: trout, teams: [], variationName: "Photo variation" } as ChecklistRow,
+    ]);
+
+    const [row] = await stored(t);
+    expect(row.checklistLink?.row?.variationName).toBe("Photo variation");
   });
 
   test("every sibling row becomes a candidate: none is silently dropped", async () => {
@@ -804,5 +971,148 @@ describe("a publisher checklist: variations (stem)", () => {
     const rows = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
     expect(rows).toHaveLength(3);
     expect(rows.find((r) => r.cardNumber === "38b")?.variationOfCardId).toBeUndefined();
+  });
+
+  test("a shared variationGroup links the created variation to ITS parent even where two series share the stem", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId, sportId } = await seedTree(t);
+
+    await t.withIdentity(ADMIN).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        { cardNumber: "38", cardName: "Series One", teams: [], players: [], attributes: [], platformData: { bsc: { ref: "s1-38", setId: "series-1" } } },
+        { cardNumber: "38a", cardName: "Series Two", teams: [], players: [], attributes: [], variationGroup: "g4", platformData: { bsc: { ref: "s2-38", setId: "series-2" } } },
+        { cardNumber: "38b", cardName: "Made From A Row", teams: [], players: [], attributes: [], isVariation: true, variationGroup: "g4", platformData: {} },
+      ],
+    });
+    await drainScheduled(t);
+
+    const rows = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
+    const child = rows.find((r) => r.cardNumber === "38b");
+    expect(child?.variationOfCardId).toBe(rows.find((r) => r.cardNumber === "38a")?._id);
+  });
+
+  test("a token with two parents, or one the variation does not share, links nothing by itself", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId, sportId } = await seedTree(t);
+
+    await t.withIdentity(ADMIN).action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        { cardNumber: "38", cardName: "Series One", teams: [], players: [], attributes: [], variationGroup: "g1", platformData: { bsc: { ref: "s1-38", setId: "series-1" } } },
+        { cardNumber: "38", cardName: "Series Two", teams: [], players: [], attributes: [], variationGroup: "g1", platformData: { bsc: { ref: "s2-38", setId: "series-2" } } },
+        { cardNumber: "38b", cardName: "Made From A Row", teams: [], players: [], attributes: [], isVariation: true, variationGroup: "g1", platformData: {} },
+        { cardNumber: "38c", cardName: "Elsewhere", teams: [], players: [], attributes: [], isVariation: true, variationGroup: "g9", platformData: {} },
+      ],
+    });
+    await drainScheduled(t);
+
+    const rows = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
+    expect(rows.find((r) => r.cardNumber === "38b")?.variationOfCardId).toBeUndefined();
+    expect(rows.find((r) => r.cardNumber === "38c")?.variationOfCardId).toBeUndefined();
+  });
+
+  test("a minted number never matches a stored ref-less row: the stored row is untouched and the variation inserts", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId, sportId } = await seedTree(t);
+    const asAdmin = t.withIdentity(ADMIN);
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        { cardNumber: "38b", cardName: "Hand Added", teams: [], players: [], attributes: [], platformData: {} },
+      ],
+    });
+    await drainScheduled(t);
+    const before = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
+    expect(before).toHaveLength(1);
+    const slVarCard = {
+      cardNumber: "38b",
+      cardName: "Aaa Legend",
+      teams: [],
+      players: [],
+      attributes: [],
+      isVariation: true,
+      platformData: { sportlots: { ref: "sl-var-action", setId: "189991" } },
+    };
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [{ ...slVarCard, numberMinted: true as const }],
+    });
+    await drainScheduled(t);
+
+    const after = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
+    expect(after).toHaveLength(2);
+    const handAdded = after.find((r) => r._id === before[0]._id);
+    expect(handAdded?.platformData).toEqual(before[0].platformData);
+    expect(after.find((r) => r._id !== before[0]._id)?.platformData?.sportlots).toBeDefined();
+  });
+
+  test("the same card WITHOUT the flag still matches the stored row by number (the tiers are untouched)", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId, sportId } = await seedTree(t);
+    const asAdmin = t.withIdentity(ADMIN);
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        { cardNumber: "38b", cardName: "Hand Added", teams: [], players: [], attributes: [], platformData: {} },
+      ],
+    });
+    await drainScheduled(t);
+
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [
+        {
+          cardNumber: "38b",
+          cardName: "Hand Added",
+          teams: [],
+          players: [],
+          attributes: [],
+          platformData: { sportlots: { ref: "sl-38b", setId: "189991" } },
+        },
+      ],
+    });
+    await drainScheduled(t);
+
+    const after = await t.run((ctx) => ctx.db.query("cardChecklist").collect());
+    expect(after).toHaveLength(1);
+    expect(after[0].platformData?.sportlots).toBeDefined();
+  });
+
+  test("a commit card whose sourceNumbers value is over 64 characters is refused; 64 passes", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId, sportId } = await seedTree(t);
+    const asAdmin = t.withIdentity(ADMIN);
+    const card = (n: string) => ({
+      cardNumber: "7",
+      cardName: "Mike Trout",
+      teams: [],
+      players: [],
+      attributes: [],
+      platformData: {},
+      sourceNumbers: { bsc: n },
+    });
+
+    await expect(
+      asAdmin.action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [card("x".repeat(65))],
+      }),
+    ).rejects.toThrow(/source number over 64 characters/);
+    await asAdmin.action(api.selectorOptions.commitCardChecklist, {
+      selectorOptionId: leafId,
+      sportId,
+      cards: [card("x".repeat(64))],
+    });
+    await drainScheduled(t);
+    expect(await t.run((ctx) => ctx.db.query("cardChecklist").collect())).toHaveLength(1);
   });
 });

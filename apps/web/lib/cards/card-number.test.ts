@@ -148,8 +148,12 @@ describe("cardNumbersAgree", () => {
     expect(cardNumbersAgree("NNO", "12")).toBe(false);
     expect(cardNumbersAgree("12", "nno")).toBe(false);
   });
-  it("a suffix is not a prefix: 38a is not 38", () => {
-    expect(cardNumbersAgree("38a", "38")).toBe(false);
+  it("a bare number and that number with an 'a' are one card (Jason, 2026-11-18); 38b is not 38", () => {
+    expect(cardNumbersAgree("38a", "38")).toBe(true);
+    expect(cardNumbersAgree("38", "38A")).toBe(true);
+    expect(cardNumbersAgree("38b", "38")).toBe(false);
+    expect(cardNumbersAgree("38aa", "38")).toBe(false);
+    expect(cardNumbersAgree("BCP-38a", "38")).toBe(false);
   });
   it("different numbers and different codes do not agree", () => {
     expect(cardNumbersAgree("12", "13")).toBe(false);
@@ -166,6 +170,13 @@ describe("preferCardNumber", () => {
     expect(preferCardNumber("12", "NNO")).toBe("12");
     expect(preferCardNumber("NNO", "OV-ANFI")).toBe("OV-ANFI");
     expect(preferCardNumber("", "NNO")).toBe("");
+  });
+  it("lettered on both sides and disagreeing: the owner's lettering wins, no ERR / COR special case", () => {
+    // Jason: follow the marketplace's lettering, a lot of it is industry accepted.
+    expect(preferCardNumber("38ERR", "38COR")).toBe("38ERR");
+    expect(preferCardNumber("38COR", "38ERR")).toBe("38COR");
+    expect(preferCardNumber("38ERR", "38")).toBe("38ERR");
+    expect(preferCardNumber("38", "38COR")).toBe("38COR");
   });
   it("the same class keeps the owner's number", () => {
     expect(preferCardNumber("12", "13")).toBe("12");

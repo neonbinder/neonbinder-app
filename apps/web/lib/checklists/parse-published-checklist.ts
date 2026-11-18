@@ -437,8 +437,14 @@ const VARIATION_DESCRIPTIVE = /(?<![\p{L}\p{N}])(?:variations?|vars?|image|photo
 const VAR_KEYWORD = /(?<![\p{L}\p{N}])var(?![\p{L}\p{N}])\.?:?/giu;
 /** Cheap gate: text with none of these cannot hold a variation note. */
 const MAY_HOLD_VARIATION = /var|image|photo|sp|short/i;
-/** C0 and C1 control characters, which a name never carries. */
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g;
+/**
+ * Characters a name never carries: C0 and C1 controls, the bidirectional
+ * format characters (U+200E/200F, U+202A-202E, U+2066-2069) that can reorder
+ * what an operator reads, and the line and paragraph separators U+2028/2029.
+ */
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+/** A note that is only a print-run marker ("SP", "SSP", "SP, SSP"): no variation name. */
+const PRINT_RUN_ONLY = /^(?:(?:ssp|sp)[\s,;/&-]*)+$/i;
 /** The most bracket groups looked at in one text. */
 const MAX_NOTE_GROUPS = 8;
 
@@ -480,6 +486,8 @@ export function variationNameOf(text: string): string | undefined {
     i = end;
     if (!VARIATION_WORDS.test(inner)) continue;
     const name = variationNameFromNote(inner) || "Variation";
+    // "(SP)" / "[SSP]" count a print run; they name no variation.
+    if (PRINT_RUN_ONLY.test(name)) continue;
     if (VARIATION_DESCRIPTIVE.test(inner)) return name;
     marker ??= name;
   }

@@ -20,3 +20,4 @@
 - [None-answer copy traps](none-answer-copy-traps.md) — "listed" = for sale; new-card overclaim; inherited state in quick-add; one-way toggles; visible control names
 - [Exploratory pass driving recipe](exploratory_pass_driving_recipe.md) — headless persistent-profile driver, reaching Card titles step, Back/blank-history trap
 - [Unlicensed city teams and Prospect cells](unlicensed-checklist-city-teams-and-prospect-cells.md) — city/(A)(N) teams, place-name alias poisoning, Prospect (X) by maker, HS/intl edges
+- [Names-first pairing hobby traps](names-first-pairing-hobby-traps.md) — ties pre-kept = duplicates; digit-vs-digit differ; 38 vs 38a noise; ERR/COR; Jr./Sr.

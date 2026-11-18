@@ -219,10 +219,11 @@ export function strippedCardNumber(raw: string, prefix?: string, letters = true)
 /**
  * Do two card numbers name the same printed number? Yes when they are:
  * - the same as printed, or the same case-folded ("1a" = "1A");
+ * - a bare number and that number with an "a" ("38" = "38a"; "38b" is not);
  * - the same once a leading letter prefix ("BCP-12" → "12") or the set's own
  *   `cardNumberPrefix` is stripped from either;
  * - both no-number (blank / NNO).
- * A no-number against a numbered card never agrees. "38a" and "38" do not.
+ * A no-number against a numbered card never agrees. "38" and "38b" do not.
  */
 export function cardNumbersAgree(
   a: string,
@@ -235,6 +236,11 @@ export function cardNumbersAgree(
   const fa = normalizeChecklistNumber(a);
   const fb = normalizeChecklistNumber(b);
   if (fa === fb) return true;
+  // A bare number and the same number with an "a" are one card ("38" and
+  // "38a": a lettered base prints 38a where the other source prints 38).
+  // "38b" is a different card.
+  if (/^\d+$/.test(fa) && fb === fa + "A") return true;
+  if (/^\d+$/.test(fb) && fa === fb + "A") return true;
   const reads = (folded: string) => {
     const out = new Set<string>();
     const letters = stripLetterPrefix(folded);

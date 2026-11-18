@@ -82,6 +82,10 @@ whether they do or don't."
    - The NB card's number, when the sources differ, prefers letters, then
      digits, then NNO (a number with letters is the more specific print).
      An NB card that already exists is never renumbered by a sync.
+   - Two different plain-digit numbers never pair automatically; numbers of
+     different kinds (letters, digits, NNO) pair at lower confidence. A bare
+     number and the same number with "a" agree. The operator can pick
+     either source's number.
    - Never key logic on a card number without an exactly-one-match guard;
      within a set a number is almost always unique, not always.
 

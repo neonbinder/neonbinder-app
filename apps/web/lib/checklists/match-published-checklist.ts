@@ -83,6 +83,15 @@
  * Two cards or two rows sharing the stem on the ONE side is a tie, and a
  * stem never crosses players.
  *
+ * ## Ties
+ *
+ * A player with several cards the numbers cannot settle, and a same-name pair
+ * whose numbers are both plain digits and disagree (38 against 250: two cards,
+ * not one card misnumbered), pair nothing. They are listed in
+ * `tiedCardIndices` / `tiedRowIndices` so the caller can tell a tie from a
+ * card that simply had no row. Different kinds of number still pair at 0.9
+ * ("OV-ANFI" against NNO, "US12" against "12", 12 against NNO).
+ *
  * A name pair never touches the card's number (the card keeps the number it
  * was fetched with) and is never a number conflict. Players and teams are
  * compared as for any pair.
@@ -206,6 +215,16 @@ export type ChecklistMatchResult = {
   needsOperator: boolean;
   /** NEO-490 — rows no match used, ascending. */
   unusedRowIndices: number[];
+  /**
+   * Cards left unmatched because they were one side of a TIE, not because
+   * nothing fit: a player with several cards the numbers could not settle, or
+   * a same-name pair whose numbers are both plain and disagree (38 against
+   * 250). Ascending; a subset of `unmatchedCardIndices`. A card unmatched and
+   * not here simply had no row.
+   */
+  tiedCardIndices: number[];
+  /** The rows of the same ties, ascending; a subset of `unusedRowIndices`. */
+  tiedRowIndices: number[];
   /**
    * Variations: rows that are variations of a card with no card of their own
    * ("38b" when the card is "38" and the row "38a" took it). The caller
@@ -529,6 +548,8 @@ export function matchPublishedChecklist(
     misreadCount,
     needsOperator,
     unusedRowIndices,
+    tiedCardIndices: core.tiedLeft.filter((i) => !paired.has(i)),
+    tiedRowIndices: core.tiedRight.filter((i) => !usedRows.has(i)),
     siblingRows,
   };
 }

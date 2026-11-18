@@ -78,6 +78,13 @@ export type ReadyCandidate = {
    * Keeping. See `PairingCard.preKept`.
    */
   preKept?: true;
+  /**
+   * NEO-591 — the number was derived by the sync, not printed by a marketplace
+   * for this card. The commit uses it; see `PairingCard.numberMinted`.
+   */
+  numberMinted?: true;
+  /** NEO-591 (variations) — see `PairingCard.variationGroup`. */
+  variationGroup?: string;
   /** NEO-496 — the server paired this card with a publisher checklist row. */
   checklistLink?: PairingCard["checklistLink"];
   teamLookup?: TeamLookup;
@@ -145,6 +152,11 @@ export function candidateToPairingCard(
     // NEO-591: wire-only like the link; `committable` takes it off.
     ...(c.sourceNumbers ? { sourceNumbers: c.sourceNumbers } : {}),
     ...(c.preKept ? { preKept: true as const } : {}),
+    // NEO-591: both ride to the commit, which uses them (it never matches a
+    // stored card by a minted number, and links a variation group by its
+    // token). `committable` keeps them.
+    ...(c.numberMinted ? { numberMinted: true as const } : {}),
+    ...(c.variationGroup ? { variationGroup: c.variationGroup } : {}),
     ...(c.bucket === "checklistOnly" && c._id ? { checklistRowId: c._id } : {}),
   };
 }

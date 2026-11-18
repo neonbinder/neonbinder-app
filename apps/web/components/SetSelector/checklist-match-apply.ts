@@ -73,8 +73,8 @@ export type SourceNumbers = { bsc?: string; sportlots?: string; checklist?: stri
 
 /**
  * NEO-591 — `sourceNumbers` with the checklist's number taken off (an Unlink
- * drops the row). `undefined` once fewer than two numbers remain or the ones
- * left agree: with nothing left to differ there is no note to show.
+ * drops the row). `undefined` once the numbers left no longer differ in text:
+ * with nothing to choose between there is no picker to show.
  */
 export function withoutChecklistNumber(
   numbers: SourceNumbers | undefined,
@@ -82,7 +82,51 @@ export function withoutChecklistNumber(
   if (!numbers) return undefined;
   const rest: SourceNumbers = { ...numbers };
   delete rest.checklist;
-  return numbersDiffer(rest) ? rest : undefined;
+  return numbersDifferInText(rest) ? rest : undefined;
+}
+
+/**
+ * NEO-591 — the distinct numbers the sources printed, trimmed, in the order
+ * BSC, SportLots, checklist: one choice each in the number picker.
+ */
+export function distinctNumbers(numbers: SourceNumbers): string[] {
+  const out: string[] = [];
+  for (const n of [numbers.bsc, numbers.sportlots, numbers.checklist]) {
+    const t = n?.trim();
+    if (t !== undefined && !out.includes(t)) out.push(t);
+  }
+  return out;
+}
+
+/**
+ * NEO-591 — do the sources print the number differently in text? True for
+ * "38" against "38a" or "BCP-12" against "12" (which `numbersDiffer` calls
+ * agreeing): the operator may still want the other one, so the picker shows.
+ */
+export function numbersDifferInText(numbers: SourceNumbers): boolean {
+  return distinctNumbers(numbers).length > 1;
+}
+
+/**
+ * NEO-591 — the number the rule picks from what the sources printed: letters
+ * over digits over none, the earlier source (BSC, SportLots, checklist) on a
+ * tie. The picker's preselected choice.
+ */
+export function pickedNumber(numbers: SourceNumbers): string {
+  const [first, ...rest] = distinctNumbers(numbers);
+  return rest.reduce((pick, n) => preferCardNumber(pick, n), first ?? "");
+}
+
+/** A card's own number under the marketplace(s) it came from. */
+export function ownSourceNumbers(card: {
+  cardNumber: string;
+  platformData?: { bsc?: unknown; sportlots?: unknown };
+}): SourceNumbers {
+  const own: SourceNumbers = {
+    ...(card.platformData?.bsc ? { bsc: card.cardNumber } : {}),
+    ...(card.platformData?.sportlots ? { sportlots: card.cardNumber } : {}),
+  };
+  return Object.keys(own).length > 0 ? own : { bsc: card.cardNumber };
 }
 
 /** Do any two of the numbers disagree (`cardNumbersAgree`)? */
@@ -113,6 +157,12 @@ export type ChecklistLinkRow = {
    * settled X is in `teams` as its full name). `checklistRowLine` prints it.
    */
   claim?: string;
+  /**
+   * NEO-591 (variations) — the checklist's own note for a variation row
+   * ("Photo variation"). Rides the row through an Unlink and a relink so the
+   * variation card made from it keeps its name.
+   */
+  variationName?: string;
 };
 
 /** What a linked card needs to carry into the question. */
@@ -138,6 +188,7 @@ export type ChecklistPairRequest = {
     noTeam?: true;
     prospect?: true;
     prospectTeams?: string[];
+    variationName?: string;
   };
 };
 
@@ -183,6 +234,8 @@ type AnswerableCard = ChecklistLinkCard & {
   teamLookup?: TeamLookupOutcome;
   checklistConflict?: ChecklistConflict;
   rawTeamName?: string;
+  /** NEO-591: the number was swapped in, not printed by a marketplace. */
+  numberMinted?: true;
   isProspect?: boolean;
   prospectTeam?: string;
   prospectTeams?: string[];
@@ -232,6 +285,8 @@ export function buildChecklistPairRequests<C extends ChecklistLinkCard>(
         // a held X would be dropped: the relink would lose the claim.
         ...(row.prospect ? { prospect: true as const } : {}),
         ...(row.prospectTeams?.length ? { prospectTeams: [...row.prospectTeams] } : {}),
+        // NEO-591 (variations): the row's note survives a relink.
+        ...(row.variationName ? { variationName: row.variationName } : {}),
       },
     });
   }
@@ -262,6 +317,9 @@ export function buildChecklistPairRequests<C extends ChecklistLinkCard>(
  *    keeps every source's number on `sourceNumbers` (its own under the
  *    marketplace it came from, the row's under `checklist`).
  *
+ *    `numberPicks` (cardKey to the number the operator picked in the dialog)
+ *    wins over the rule when it is one of the numbers printed.
+ *
  * Returns a new array; a card with no answer is returned by reference.
  * `platformData` is never touched.
  */
@@ -270,6 +328,7 @@ export function applyChecklistAnswers<C extends AnswerableCard>(
   answers: readonly ChecklistPairAnswer[],
   keyOf: (card: C) => string,
   rowNumbers?: ReadonlyMap<string, string>,
+  numberPicks?: ReadonlyMap<string, string>,
 ): C[] {
   const byKey = new Map<string, ChecklistPairAnswer>();
   for (const a of answers) byKey.set(a.cardKey, a);
@@ -290,16 +349,19 @@ export function applyChecklistAnswers<C extends AnswerableCard>(
     const rowNumber = rowNumbers?.get(keyOf(card));
     if (rowNumber !== undefined) {
       const own = card.cardNumber;
-      if (!cardNumbersAgree(own, rowNumber)) {
-        out.sourceNumbers = {
-          ...(card.sourceNumbers ?? {
-            ...(card.platformData?.bsc ? { bsc: own } : {}),
-            ...(card.platformData?.sportlots ? { sportlots: own } : {}),
-          }),
-          checklist: rowNumber,
-        };
-      }
-      out.cardNumber = preferCardNumber(own, rowNumber);
+      const printed: SourceNumbers = {
+        ...(card.sourceNumbers ?? ownSourceNumbers(card)),
+        checklist: rowNumber,
+      };
+      if (numbersDifferInText(printed)) out.sourceNumbers = printed;
+      const pick = numberPicks?.get(keyOf(card))?.trim();
+      out.cardNumber =
+        pick !== undefined && distinctNumbers(printed).includes(pick)
+          ? pick
+          : preferCardNumber(own, rowNumber);
+      // A number swapped in from the row is not one a marketplace printed for
+      // this card; the commit must not match a stored card by it.
+      if (out.cardNumber !== own) out.numberMinted = true;
     }
     if (answer.isProspect) out.isProspect = true;
     if (answer.prospectTeam) out.prospectTeam = answer.prospectTeam;
@@ -341,6 +403,8 @@ export type ServerPairedRow = {
   prospectTeams?: string[];
   /** See `ChecklistLinkRow.claim`. */
   claim?: string;
+  /** See `ChecklistLinkRow.variationName`. */
+  variationName?: string;
   cardName: string;
 };
 
@@ -386,6 +450,7 @@ export function pairedRowOf(row: ServerPairedRow): ChecklistLinkRow {
     ...(row.prospect ? { prospect: true as const } : {}),
     ...(row.prospectTeams?.length ? { prospectTeams: [...row.prospectTeams] } : {}),
     ...(row.claim ? { claim: row.claim } : {}),
+    ...(row.variationName ? { variationName: row.variationName } : {}),
   };
 }
 

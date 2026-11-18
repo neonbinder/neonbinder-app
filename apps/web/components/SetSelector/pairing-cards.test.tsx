@@ -215,3 +215,27 @@ describe("NEO-591 — the numbers each source printed ride to the dialog, not to
     expect("sourceNumbers" in card).toBe(false);
   });
 });
+
+describe("NEO-591 — the minted number and variation group ride to the commit", () => {
+  test("carried onto the card, and kept by the committable form (the commit uses both)", () => {
+    const candidate = {
+      ...FULL,
+      bucket: "slOnly" as const,
+      numberMinted: true as const,
+      variationGroup: "grp-38",
+    };
+    expect(candidateToPairingCard(candidate)).toMatchObject({
+      numberMinted: true,
+      variationGroup: "grp-38",
+    });
+    const [card] = candidatesToPairingCards([candidate]);
+    expect(card.numberMinted).toBe(true);
+    expect(card.variationGroup).toBe("grp-38");
+  });
+
+  test("absent leaves no key at all", () => {
+    const card = candidateToPairingCard(FULL);
+    expect("numberMinted" in card).toBe(false);
+    expect("variationGroup" in card).toBe(false);
+  });
+});

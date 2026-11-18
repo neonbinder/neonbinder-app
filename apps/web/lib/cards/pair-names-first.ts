@@ -53,6 +53,7 @@
  */
 
 import {
+  cardNumberClass,
   cardNumbersAgree,
   exactChecklistNumber,
   isNoNumber,
@@ -260,8 +261,36 @@ function pairKind<T extends NamesFirstItem>(
   const add = (l: Info, r: Info, by: NamesFirstPair["by"], score?: number) => {
     taken.add(l);
     taken.add(r);
-    const numbersAgree = cardNumbersAgree(left[l.index].number, right[r.index].number, { prefix });
-    const base = by === "nearName" ? (score ?? 0) : by === "number" ? 1 : numbersAgree ? 1 : NUMBERS_DIFFER_FACTOR;
+    const ln = left[l.index].number;
+    const rn = right[r.index].number;
+    const numbersAgree = cardNumbersAgree(ln, rn, { prefix });
+    // Jason, 2026-11-18: "if they are both numeric then leave unmatched. only
+    // match with different numbers if the type is different." Two plain
+    // numbers that disagree (38 and 250) are two cards, whatever the names:
+    // treated as a tie, both left for the operator.
+    if (
+      by !== "number" &&
+      !numbersAgree &&
+      cardNumberClass(ln) === "digits" &&
+      cardNumberClass(rn) === "digits"
+    ) {
+      out.tiedLeft.push(l.index);
+      out.tiedRight.push(r.index);
+      return;
+    }
+    const namesDisagree = by === "number" && l.key !== "" && r.key !== "" && l.key !== r.key;
+    // A number-only pair is certain of the number, not of the card: when the
+    // names disagree it is no better than a pair whose numbers differ.
+    const base =
+      by === "nearName"
+        ? (score ?? 0)
+        : by === "number"
+          ? namesDisagree
+            ? NUMBERS_DIFFER_FACTOR
+            : 1
+          : numbersAgree
+            ? 1
+            : NUMBERS_DIFFER_FACTOR;
     const confidence = by === "nearName" && !numbersAgree ? base * NUMBERS_DIFFER_FACTOR : base;
     out.pairs.push({
       leftIndex: l.index,
@@ -269,7 +298,7 @@ function pairKind<T extends NamesFirstItem>(
       by,
       numbersAgree,
       ...(by === "nearName" ? { nameScore: score } : {}),
-      ...(by === "number" && l.key && r.key && l.key !== r.key ? { namesDisagree: true as const } : {}),
+      ...(namesDisagree ? { namesDisagree: true as const } : {}),
       confidence,
     });
   };
@@ -280,6 +309,10 @@ function pairKind<T extends NamesFirstItem>(
   // Items whose roster is on the other side: the number may not send them
   // elsewhere, so they sit out T2 and T3 whether or not they paired.
   const hasCounterpart = new Set<Info>();
+  // A leftover whose roster group has nothing left on the other side (a combo
+  // card the other source lists as one of its players) may still pair by
+  // number: the group's tie, if any, is not its problem.
+  const releasedToNumbers = new Set<Info>();
   for (const [key, ls] of leftByKey) {
     const rs = rightByKey.get(key);
     if (!rs) continue;
@@ -341,13 +374,17 @@ function pairKind<T extends NamesFirstItem>(
     } else if (lLeft.length > 0 && rLeft.length > 0) {
       for (const i of lLeft) out.tiedLeft.push(i.index);
       for (const i of rLeft) out.tiedRight.push(i.index);
+    } else {
+      for (const i of lLeft) releasedToNumbers.add(i);
+      for (const i of rLeft) releasedToNumbers.add(i);
     }
   }
 
   // ---- T2: numbers, on what has no roster counterpart ----------------------
   const eligible = (i: Info) => free(i) && !hasCounterpart.has(i);
+  const byNumber = (i: Info) => free(i) && (!hasCounterpart.has(i) || releasedToNumbers.has(i));
   for (const reading of NUMBER_READINGS) {
-    for (const [l, r] of pairByKey(L, R, eligible, reading)) add(l, r, "number");
+    for (const [l, r] of pairByKey(L, R, byNumber, reading)) add(l, r, "number");
   }
 
   // ---- T3: near names ------------------------------------------------------

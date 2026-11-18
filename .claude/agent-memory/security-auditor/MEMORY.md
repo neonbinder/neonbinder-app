@@ -237,3 +237,4 @@
 - [Merge guard survival; bscTeamPool enqueue](patterns_merge_resolution_guard_survival_and_bsc_lane_enqueue.md) — comm -23 line-survival check for merges; one-slot lane enqueue is bounded if admin/internal + row re-read
 - [Cross-workflow preview wait](patterns_cross_workflow_preview_wait.md) — waiter gate ⊆ builder's merge_group scope; tag-exists wait = stale revision
 - [Neo591 prospect claims + PDF runs](patterns_neo591_prospect_claims_and_pdf_runs.md) — joined text breaks per-name cap; saturated take() is no "exactly one"; runs past parser cap
+- [Neo591 names-first pairing](patterns_neo591_names_first_pairing.md) — minted/swapped numbers reach commit number tiers; stem parent re-guessed at commit

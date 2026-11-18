@@ -39,7 +39,8 @@ describe("variationNameOf: the note shapes", () => {
 
   it("a note that says what it shows wins over a bare SP/SSP note, and the first such note wins", () => {
     expect(variationNameOf("Judge (SP) (Photo Variation)")).toBe("Photo Variation");
-    expect(variationNameOf("Judge (SP) [SSP]")).toBe("SP");
+    // NEO-591 (collector 10): a note of only SP / SSP counts a print run and names nothing.
+    expect(variationNameOf("Judge (SP) [SSP]")).toBeUndefined();
     expect(variationNameOf("Judge (Photo Variation) [VAR Throwback]")).toBe("Photo Variation");
   });
 
@@ -97,6 +98,22 @@ describe("variationNameOf: bounds", () => {
     // eslint-disable-next-line no-control-regex
     expect(/[\u0000-\u001f\u007f-\u009f]/.test(name)).toBe(false);
     expect(name).toBe("Photo Varia tion two");
+  });
+
+  it("a note that is only SP / SSP sets no variation name, alone or beside a real one", () => {
+    for (const text of ["Judge (SP)", "Judge [SSP]", "Judge {SP, SSP}", "Judge (sp)"]) {
+      expect(variationNameOf(text), text).toBeUndefined();
+    }
+    expect(variationNameOf("Judge (SP) [Photo Variation]")).toBe("Photo Variation");
+    expect(variationNameOf("Judge (SP - Image Variation)")).toBe("SP - Image Variation");
+  });
+
+  it("strips bidi and format characters and line / paragraph separators", () => {
+    const name = variationNameOf(
+      "Judge (Photo\u202e Varia\u200ftion\u2066 x\u2069\u2028two\u2029 \u200e\u202a\u202b\u202c\u202d)",
+    )!;
+    expect(/[\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/.test(name)).toBe(false);
+    expect(name).toBe("Photo Varia tion x two");
   });
 
   it("looks at only the first few bracket groups", () => {

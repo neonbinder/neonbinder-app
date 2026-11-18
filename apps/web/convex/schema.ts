@@ -1374,6 +1374,11 @@ export const checklistPairedRowValidator = v.object({
   // Unlink label. Present only when it differs from `teams` joined (a settled
   // Prospect (X) or a team printed as a place); nothing reads it back as data.
   claim: v.optional(v.string()),
+  // NEO-591 (variations) — the checklist's own note for a variation row
+  // ("Photo variation"), so an Unlink or a relink puts back the same
+  // checklist-only variation card, name included. Bounded when the row is
+  // stored (`MAX_VARIATION_NAME`).
+  variationName: v.optional(v.string()),
   cardName: v.string(),
 });
 
@@ -3967,6 +3972,18 @@ export default defineSchema({
     // row "38b" becomes its own card). The operator is presumed to want it, so
     // the client seeds it as Keeping. Optional; absent on every other row.
     preKept: v.optional(v.literal(true)),
+    // NEO-591 — the number was DERIVED by the sync (minted for a SportLots-only
+    // variation, or swapped in by `preferCardNumber`), so it is not a number a
+    // marketplace printed for this card. The commit never matches a stored
+    // row by slot+number or by number alone for such a card (it matches by its
+    // own ref or inserts), so a derived "38b" cannot land on a stored "38b".
+    // A forged flag only narrows matching.
+    numberMinted: v.optional(v.literal(true)),
+    // NEO-591 (variations) — an opaque NB-side token shared by a card that took a
+    // checklist row and the variation cards made from that row's siblings, so
+    // the commit links them without searching by number. Never a marketplace
+    // value; held to 32 characters by the commit.
+    variationGroup: v.optional(v.string()),
     // NEO-496 — how a card paired with a publisher-checklist row, for Match
     // Cards' badge. Optional; absent on every existing row.
     checklistLink: v.optional(

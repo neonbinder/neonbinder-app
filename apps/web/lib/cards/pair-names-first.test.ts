@@ -54,7 +54,7 @@ describe("pairNamesFirst: same roster, one each", () => {
   });
 
   test("the answer does not depend on list order", () => {
-    const left = [item("1", "A One"), item("2", "B Two"), item("3", "C Three")];
+    const left = [item("SIG-1", "A One"), item("SIG-2", "B Two"), item("SIG-3", "C Three")];
     const right = [item("30", "C Three"), item("10", "A One"), item("20", "B Two")];
     expect(brief(pairNamesFirst(left, right))).toEqual([
       [0, 1, "name", false],
@@ -185,8 +185,9 @@ describe("pairNamesFirst: a roster is not a cameo", () => {
 describe("pairNamesFirst: T2, numbers on what has no name counterpart", () => {
   test("a misspelling falls through to the number, at confidence 1", () => {
     const r = pairNamesFirst([item("7", "Jon Smyth")], [item("7", "John Smith")]);
+    // Collector 9: a number-only pair whose names disagree is not certain.
     expect(r.pairs).toEqual([
-      { leftIndex: 0, rightIndex: 0, by: "number", numbersAgree: true, namesDisagree: true, confidence: 1 },
+      { leftIndex: 0, rightIndex: 0, by: "number", numbersAgree: true, namesDisagree: true, confidence: 0.9 },
     ]);
   });
 
@@ -204,7 +205,7 @@ describe("pairNamesFirst: T2, numbers on what has no name counterpart", () => {
     // "7" is two cards (one already paired by name): the lone row does not take either.
     const r = pairNamesFirst(
       [item("7", "Jon Smyth"), item("7", "Mike Trout")],
-      [item("7", "John Smith"), item("70", "Mike Trout")],
+      [item("7", "John Smith"), item("MT-70", "Mike Trout")],
     );
     expect(brief(r)).toEqual([[1, 1, "name", false]]);
   });
@@ -316,9 +317,12 @@ describe("pairNamesFirst: letter prefixes count as agreeing", () => {
     expect(bare.pairs[0]).toMatchObject({ numbersAgree: true });
   });
 
-  test("a lettered suffix is not a prefix: 38a does not agree with 38", () => {
+  test("a bare number and the same with an 'a' agree (38 / 38a): 100%, no note; 38b still differs", () => {
     const r = pairNamesFirst([item("38a", "Mike Trout")], [item("38", "Mike Trout")]);
-    expect(r.pairs[0]).toMatchObject({ by: "name", numbersAgree: false, confidence: 0.9 });
+    expect(r.pairs[0]).toMatchObject({ by: "name", numbersAgree: true, confidence: 1 });
+    // 38b against 38 is two plain-looking numbers that disagree... one is lettered, so it pairs at 0.9.
+    const b = pairNamesFirst([item("38b", "Mike Trout")], [item("38", "Mike Trout")]);
+    expect(b.pairs[0]).toMatchObject({ by: "name", numbersAgree: false, confidence: 0.9 });
   });
 });
 
@@ -333,7 +337,7 @@ describe("pairNamesFirst: kind", () => {
 
   test("a variation never pairs with a base card, by name, number or near name", () => {
     const left = [card("5", "Mike Trout", true), card("6", "Shohei Ohtani", true), card("7", "Jon Smyth", true)];
-    const right = [card("5", "Mike Trout"), card("60", "Shohei Otani"), card("7", "John Smith")];
+    const right = [card("5", "Mike Trout"), card("SIG-60", "Shohei Otani"), card("7", "John Smith")];
     expect(pairNamesFirst(left, right, { kind }).pairs).toEqual([]);
     // Without the restriction they all pair.
     expect(pairNamesFirst(left, right).pairs).toHaveLength(3);
@@ -425,8 +429,9 @@ describe("pairNamesFirst: the stem step", () => {
 
     test("card 38 against rows 38a / 38b: pairs the single 'a' row, 38b is a sibling to create", () => {
       const r = pairNamesFirst([smith("38")], [smith("38b"), smith("38a")], opts);
-      expect(brief(r)).toEqual([[0, 1, "name", false]]);
-      expect(r.pairs[0].confidence).toBe(0.9);
+      // 38 and 38a are one number: it agrees, so 100% and no note.
+      expect(brief(r)).toEqual([[0, 1, "name", true]]);
+      expect(r.pairs[0].confidence).toBe(1);
       expect(r.stemSiblings).toEqual([{ index: 0, side: "right", parentIndex: 0 }]);
       expect(r.stemLinks).toEqual([]);
       expect(r.tiedLeft).toEqual([]);
@@ -501,5 +506,83 @@ describe("pairNamesFirst: the stem step", () => {
       [item("OV-C", "Will Smith")],
     );
     expect(r.stemLinks).toEqual([]);
+  });
+});
+
+// Jason, 2026-11-18: "if they are both numeric then leave unmatched. only
+// match with different numbers if the type is different."
+describe("pairNamesFirst: two plain numbers that disagree are not a pair", () => {
+  test("a one-each name pair of 38 against 250 stays unmatched and is tied", () => {
+    const r = pairNamesFirst([item("38", "Mike Trout")], [item("250", "Mike Trout")]);
+    expect(r.pairs).toEqual([]);
+    expect(r.tiedLeft).toEqual([0]);
+    expect(r.tiedRight).toEqual([0]);
+  });
+
+  test("the group remainder is vetoed the same way", () => {
+    const r = pairNamesFirst(
+      [item("5", "Will Smith"), item("38", "Will Smith")],
+      [item("5", "Will Smith"), item("250", "Will Smith")],
+    );
+    expect(brief(r)).toEqual([[0, 0, "name", true]]);
+    expect(r.tiedLeft).toEqual([1]);
+    expect(r.tiedRight).toEqual([1]);
+  });
+
+  test("a near name is vetoed the same way, and does not go on to pair elsewhere", () => {
+    const r = pairNamesFirst([item("38", "Shohei Ohtani")], [item("250", "Shohei Otani")]);
+    expect(r.pairs).toEqual([]);
+    expect(r.tiedLeft).toEqual([0]);
+    expect(r.tiedRight).toEqual([0]);
+  });
+
+  test("a different type of number still pairs at 0.9: letters, NNO, or a digits/letters mix", () => {
+    const r = pairNamesFirst(
+      [item("12", "A One"), item("OV-B", "B Two"), item("T-10", "C Three"), item("NNO", "D Four")],
+      [item("NNO", "A One"), item("NNO", "B Two"), item("11", "C Three"), item("OV-D", "D Four")],
+    );
+    expect(r.pairs.map((p) => [p.leftIndex, p.rightIndex, p.numbersAgree, p.confidence])).toEqual([
+      [0, 0, false, 0.9],
+      [1, 1, false, 0.9],
+      [2, 2, false, 0.9],
+      [3, 3, false, 0.9],
+    ]);
+    expect(r.tiedLeft).toEqual([]);
+  });
+
+  test("US12 against 12 agrees (a prefix), so it is no disagreement to veto", () => {
+    const r = pairNamesFirst([item("US12", "A One")], [item("12", "A One")]);
+    expect(r.pairs[0]).toMatchObject({ numbersAgree: true, confidence: 1 });
+  });
+});
+
+describe("pairNamesFirst: a combo card left over in a roster group", () => {
+  test("it may still pair by number when the other side has nothing left in that group", () => {
+    // SportLots lists the Bonds / Griffey combo as "Barry Bonds" #400; BSC lists both players.
+    const left = [item("25", "Barry Bonds"), item("400", "Barry Bonds", "Ken Griffey Jr")];
+    const right = [item("25", "Barry Bonds"), item("400", "Barry Bonds")];
+    const r = pairNamesFirst(left, right);
+    expect(r.pairs.map((p) => [p.leftIndex, p.rightIndex, p.by, p.numbersAgree])).toEqual([
+      [0, 0, "name", true],
+      [1, 1, "number", true],
+    ]);
+    // The names disagree, so it is not a certain pair.
+    expect(r.pairs[1]).toMatchObject({ namesDisagree: true, confidence: 0.9 });
+  });
+
+  test("the whole-set exactly-one guard still holds: a repeated #400 pins nothing down", () => {
+    const left = [item("25", "Barry Bonds"), item("400", "Barry Bonds", "Ken Griffey Jr"), item("400", "Other Person")];
+    const right = [item("25", "Barry Bonds"), item("400", "Barry Bonds")];
+    const r = pairNamesFirst(left, right);
+    expect(brief(r)).toEqual([[0, 0, "name", true]]);
+  });
+
+  test("a tied group does not release its members: both sides still have cards left", () => {
+    const r = pairNamesFirst(
+      [item("NNO", "Will Smith"), item("NNO", "Will Smith")],
+      [item("7", "Will Smith"), item("8", "Will Smith")],
+    );
+    expect(r.pairs).toEqual([]);
+    expect(r.tiedLeft).toEqual([0, 1]);
   });
 });

@@ -263,3 +263,4 @@
 - [macOS has no timeout](reference_macos_has_no_timeout_command.md) — `timeout N tsc | grep` is command-not-found and looks clean; run root tsc in background to a log, check count > 0
 - [New checklist row field: three copy sites](reference_new_checklist_row_field_has_three_copy_sites.md) — parser sets it; checklist-sections withoutSubset + convex validators copy it field by field
 - [Numbers-differ fixtures need non-prefix pairs](reference_numbers_differ_fixtures_need_non_prefix_pairs.md) — "12" vs "OV-12" AGREE; ABSORB re-folds initialData so seed-only mutations stay green
+- [Number picker reuses ConflictRadioGroup](reference_number_picker_reuses_conflict_radio_group.md) — stable group name across a pick; hand-link picks wait in numberPicks; minted card needs shelf picker
