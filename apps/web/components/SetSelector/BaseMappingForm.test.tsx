@@ -43,6 +43,7 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 
 // ---------------------------------------------------------------------------
 // Module mocks — declared before the component import
@@ -707,15 +708,20 @@ describe("BaseMappingForm — waiting on BuySportsCards (PR 451)", () => {
   });
 
   it("the open picker carries one wait line while the fetch is pending, keyed by the key the fetch was given", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     let release!: (v: unknown) => void;
     mockFetchRawOptions.mockImplementation(() => new Promise((r) => (release = r)));
     renderForm();
 
-    await waitFor(() => expect(mockFetchRawOptions).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(mockFetchRawOptions).toHaveBeenCalledTimes(1);
     const sent = mockFetchRawOptions.mock.calls[0][0].waitKey as string;
     expect(sent).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
 
-    const line = await screen.findByText("Waiting on BuySportsCards…", {}, { timeout: 3000 });
+    await act(async () => {
+      vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
+    });
+    const line = screen.getByText("Waiting on BuySportsCards…");
     expect(line.closest('[role="dialog"]')).not.toBeNull();
     expect(line.closest('[role="status"]')).not.toBeNull();
     expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
@@ -728,6 +734,10 @@ describe("BaseMappingForm — waiting on BuySportsCards (PR 451)", () => {
         slOptions: [{ value: "2024 Topps Chrome", platformValue: "tc2024" }],
       });
     });
-    await waitFor(() => expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull());
+    expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull();
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

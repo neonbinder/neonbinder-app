@@ -43,7 +43,8 @@
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 import type { Id } from "../../convex/_generated/dataModel";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
 import {
@@ -6174,6 +6175,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
   }
 
   it("NEO-487: a single build's wait line stays while another insert's run goes elsewhere — one line, never two (NEO-496)", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     state.marketplaceWait = { waitingSince: 1, accumulatedMs: 0 };
     // An empty parallel: its button builds at once, no rebuild confirm.
     state.cards = [];
@@ -6196,9 +6198,10 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
       const { rerender } = render(<CardChecklist {...props} parallelRun={idle} />);
       // This row's own build, held up on the marketplace: its line shows.
       fireEvent.click(screen.getByRole("button", { name: "Build from Anime" }));
-      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
-        timeout: 3000,
+      await act(async () => {
+        vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
       });
+      expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
       // A run of another insert's parallels starts while that build is still
       // in flight (the operator saved the insert, then came back here).
       // NEO-496: that run's ledger belongs to its insert, not this row, so it
@@ -6218,9 +6221,7 @@ describe("CardChecklist — NEO-312 held controls (a11y 1)", () => {
         waitKey: "run-key",
       });
       rerender(<CardChecklist {...props} parallelRun={{ ...running, buildOne: idle.buildOne }} />);
-      await waitFor(() => expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1), {
-        timeout: 3000,
-      });
+      expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
       // And it is the build's line: no ledger for the other insert's run.
       const line = screen.getByText("Waiting on BuySportsCards…");
       expect(line.closest("section")?.textContent ?? "").not.toContain("Other Insert");
@@ -7162,4 +7163,8 @@ describe("CardChecklist — NEO-556 quick-add No Team", () => {
     });
     expect(mockAddCustomCard.mock.calls[0][0]).not.toHaveProperty("teamNone");
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

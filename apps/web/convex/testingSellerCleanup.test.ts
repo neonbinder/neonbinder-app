@@ -22,6 +22,7 @@ import {
   sellerIdClock,
 } from "./testingSellerCleanup";
 import type { BscSellerFailure, BscSellerResult } from "./adapters/bscSeller";
+import { EBAY_PUBLISH_RETRY_PAUSE_MS } from "./adapters/ebaySeller";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
 
 const modules = (import.meta as unknown as {
@@ -85,6 +86,7 @@ let sheetAnswer: Response | null;
 let sheetScript: Array<number | "network" | "timeout" | null>;
 /** Each retry pause: its length, and how many sheet reads had reached BSC when it started. */
 let retryPauses: Array<[number, number]>;
+const realSetTimeout = globalThis.setTimeout; // captured once, before any spy
 /** NEO-483: the seller id the BSC sign-in's answer carries (undefined: the profile read stalled inside it). */
 let loginSellerId: string | undefined;
 /** NEO-483: one entry per `marketplace/user/profile` read, used up in order; the last repeats. */
@@ -124,8 +126,9 @@ beforeEach(() => {
   retryPauses = [];
   // The retry pauses, and only those: 10-60 real seconds per test would outlast
   // the test's own timeout. Faking the clock instead would stall convex-test.
-  const realSetTimeout = globalThis.setTimeout;
   vi.spyOn(globalThis, "setTimeout").mockImplementation(((handler: (...args: unknown[]) => void, ms?: number, ...rest: unknown[]) => {
+    // eBay's one-more-try pause is a real second otherwise; run it at once.
+    if (ms === EBAY_PUBLISH_RETRY_PAUSE_MS) return realSetTimeout(handler, 0, ...rest);
     if (ms === undefined || !BSC_CLEANUP_SHEET_RETRY_PAUSES_MS.includes(ms)) return realSetTimeout(handler, ms, ...rest);
     retryPauses.push([ms, sheetReads.length]);
     return realSetTimeout(handler, 0, ...rest);

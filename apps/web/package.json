@@ -19,7 +19,7 @@
     "lint": "eslint .",
     "check:entry-order": "node scripts/check-entry-order.mjs",
     "typecheck": "tsc -p convex/tsconfig.json --noEmit",
-    "test:unit": "vitest run --reporter=default --reporter=json --outputFile=.vitest-results.json && node scripts/verify-test-completeness.mjs",
+    "test:unit": "vitest run --reporter=default --reporter=json --outputFile=.vitest-results.json && node scripts/verify-test-completeness.mjs && node scripts/verify-test-duration.mjs",
     "test:unit:watch": "vitest",
     "link-deps": "./link-deps.sh",
     "reference-seed:build": "node scripts/reference-seed/cli.mjs build",

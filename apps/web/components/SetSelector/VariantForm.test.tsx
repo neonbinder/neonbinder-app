@@ -21,7 +21,8 @@
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, afterEach } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 import { NO_MARKETPLACE_IDS_MESSAGE } from "../../convex/marketplaceResolvability";
 
 vi.mock("../../convex/_generated/api", () => ({
@@ -1627,16 +1628,21 @@ describe("VariantForm — the Base match check is for the parallel variant type 
 
 describe("VariantForm — waiting on BuySportsCards (PR 451)", () => {
   it("the panel shows one wait line while the fetch is pending, keyed by the key the fetch was given", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     waitState.answer = { waitingSince: 1, accumulatedMs: 0 };
     let release!: (v: unknown) => void;
     mockFetchRawOptions.mockReturnValue(new Promise((r) => (release = r)));
     await renderForm();
 
-    await waitFor(() => expect(mockFetchRawOptions).toHaveBeenCalledTimes(1));
+    await act(async () => {});
+    expect(mockFetchRawOptions).toHaveBeenCalledTimes(1);
     const sent = mockFetchRawOptions.mock.calls[0][0].waitKey as string;
     expect(sent).toMatch(/^[A-Za-z0-9_-]{1,64}$/);
 
-    const line = await screen.findByText("Waiting on BuySportsCards…", {}, { timeout: 3000 });
+    await act(async () => {
+      vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
+    });
+    const line = screen.getByText("Waiting on BuySportsCards…");
     expect(line.closest('[role="status"]')).not.toBeNull();
     expect(screen.getAllByText("Waiting on BuySportsCards…")).toHaveLength(1);
     expect(new Set(waitState.asked)).toEqual(new Set([sent]));
@@ -1644,6 +1650,10 @@ describe("VariantForm — waiting on BuySportsCards (PR 451)", () => {
     await act(async () => {
       release(bscOnly());
     });
-    await waitFor(() => expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull());
+    expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull();
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

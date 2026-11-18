@@ -36,10 +36,11 @@
  */
 
 import { getFunctionName, type FunctionReference } from "convex/server";
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import {
+  __setEmptySearchReaskBackoffForTests,
   runEntityReviewLookupImpl,
   WIKIDATA_FETCH_TIMEOUT_MS,
   type EntityReviewLookupCtx,
@@ -48,6 +49,10 @@ import { OCC_RETRY_ATTEMPTS } from "../../lib/errors/occ-retry";
 import { isNonRetryableError } from "@convex-dev/workpool";
 import { WikidataUnavailableError } from "../../lib/errors/wikidata-unavailable";
 import { __resetEspnTeamListCache } from "./espn";
+
+// The retry pause is a real timer; zero it so no test waits on the clock.
+beforeAll(() => __setEmptySearchReaskBackoffForTests(0));
+afterAll(() => __setEmptySearchReaskBackoffForTests(undefined));
 
 // ---------------------------------------------------------------------------
 // Fixtures

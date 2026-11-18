@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 import { Theme } from "@radix-ui/themes";
 import { getDashboard, type DashboardData } from "../fake-data";
 import DashboardScreen from "./DashboardScreen";
-import { checklistsQuery, suggestionTarget } from "./CardPanelHost";
+import CardPanelHost, { checklistsQuery, suggestionTarget } from "./CardPanelHost";
 import { cardPanelSearch, heldForCard, heldOf, panelHeld, panelSide } from "./panelLink";
 
 /**
@@ -269,26 +269,37 @@ describe("↑ ↓ step through the run of cards the panel was opened from", () =
   });
 
   it("the ends of the batch: stepping ↓ stops at the last card (no Next), stepping ↑ stops at the first (no Previous)", async () => {
-    const data = renderDashboard("/demo");
-    const batch = data.additions[0];
+    // Only the panel host, on the entry a Fresh Pull's click pushes ({ drawer, list }); no dashboard around it.
+    const batch = getDashboard().additions[0];
     expect(batch.cards.length).toBeGreaterThan(2);
-    const pulls = screen.getByRole("region", { name: "Fresh Pulls" });
-    fireEvent.click(within(pulls).getAllByRole("link", { name: new RegExp(`^${escape(batch.cards[1].title)}`) })[0]);
-    await screen.findByRole("dialog");
-    await settle();
-    const button = (name: string) => within(screen.getByRole("dialog")).getByRole("button", { name });
     const total = batch.cards.length;
-    for (let at = 2; at < total; at++) {
-      expect(button("Next card").getAttribute("aria-disabled"), `Next at ${at}`).toBeNull();
+    const ids = batch.cards.map((c) => c.id);
+    render(
+      <Theme>
+        <MemoryRouter
+          initialEntries={[{ pathname: "/demo", search: `?detail=${encodeURIComponent(ids[1])}`, state: { drawer: true, list: ids } }]}
+        >
+          <Routes>
+            <Route path="/demo" element={<CardPanelHost />} />
+          </Routes>
+        </MemoryRouter>
+      </Theme>,
+    );
+    await screen.findByRole("dialog");
+    await screen.findByText(new RegExp(`^Card 2 of ${total}`));
+    const button = (name: string) => within(screen.getByRole("dialog")).getByRole("button", { name });
+    const at = (n: number) => screen.findByText(new RegExp(`^Card ${n} of ${total}`));
+    for (let n = 2; n < total; n++) {
+      expect(button("Next card").getAttribute("aria-disabled"), `Next at ${n}`).toBeNull();
       fireEvent.click(button("Next card"));
-      await waitFor(() => expect(within(screen.getByRole("dialog")).getByText(new RegExp(`^Card ${at + 1} of ${total}`))).toBeTruthy());
+      await at(n + 1);
     }
     expect(button("Next card").getAttribute("aria-disabled")).toBe("true");
     expect(button("Previous card").getAttribute("aria-disabled")).toBeNull();
-    for (let at = total; at > 1; at--) {
-      expect(button("Previous card").getAttribute("aria-disabled"), `Previous at ${at}`).toBeNull();
+    for (let n = total; n > 1; n--) {
+      expect(button("Previous card").getAttribute("aria-disabled"), `Previous at ${n}`).toBeNull();
       fireEvent.click(button("Previous card"));
-      await waitFor(() => expect(within(screen.getByRole("dialog")).getByText(new RegExp(`^Card ${at - 1} of ${total}`))).toBeTruthy());
+      await at(n - 1);
     }
     expect(button("Previous card").getAttribute("aria-disabled")).toBe("true");
     expect(button("Next card").getAttribute("aria-disabled")).toBeNull();

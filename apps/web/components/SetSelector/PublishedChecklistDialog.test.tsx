@@ -7,9 +7,10 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import React from "react";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { NO_TEAM_AND_A_TEAM } from "../../lib/checklists/no-team";
 import PublishedChecklistDialog, {
+  COUNT_ANNOUNCE_DEBOUNCE_MS,
   NO_TEAM_CELL,
   NOTHING_READS,
   NOTHING_TO_USE,
@@ -155,6 +156,7 @@ describe("PublishedChecklistDialog", () => {
   });
 
   it("announces the count in ONE always-mounted sr-only status, once the paste holds still", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     open();
     const region = countStatus();
     expect(region.getAttribute("role")).toBe("status");
@@ -162,11 +164,12 @@ describe("PublishedChecklistDialog", () => {
     expect(region.textContent).toBe("0 rows.");
     await paste(PASTE);
     // On screen at once; not said yet.
-    await waitFor(() => expect(countLine().textContent).toBe("2 rows. 1 line skipped."));
+    expect(countLine().textContent).toBe("2 rows. 1 line skipped.");
     expect(countStatus().textContent).toBe("0 rows.");
-    await waitFor(() => expect(countStatus().textContent).toBe("2 rows. 1 line skipped."), {
-      timeout: 3000,
+    await act(async () => {
+      vi.advanceTimersByTime(COUNT_ANNOUNCE_DEBOUNCE_MS);
     });
+    expect(countStatus().textContent).toBe("2 rows. 1 line skipped.");
     // The same node, never remounted: a live region must exist before it speaks.
     expect(countStatus()).toBe(region);
   });
@@ -692,26 +695,30 @@ describe("PublishedChecklistDialog — spreadsheets and PDFs (NEO-496)", () => {
   });
 
   it("holds one leaf to 2,000 of the ticked rows and says how many were left off", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     const lines = ["Subset,#,Player"];
     for (const subset of ["Alpha", "Beta"]) {
       for (let i = 1; i <= 1500; i++) lines.push(`${subset},${i},Player ${subset} ${i}`);
     }
     const { onUse } = open();
     await paste(lines.join("\n"));
-    const group = await waitFor(() => screen.getByRole("group", { name: SUBSET_QUESTION }));
+    const group = screen.getByRole("group", { name: SUBSET_QUESTION });
     fireEvent.click(within(group).getByRole("checkbox", { name: "Alpha" }));
     fireEvent.click(within(group).getByRole("checkbox", { name: "Beta" }));
-    await waitFor(() => expect(screen.getByText(droppedRowsText(1000))).toBeTruthy());
+    expect(screen.getByText(droppedRowsText(1000))).toBeTruthy();
     expect(droppedRowsText(1000)).toBe("Using the first 2,000 rows; 1,000 more left off.");
     // The status says it too, with the count (A-N5).
-    await waitFor(
-      () =>
-        expect(
-          document.querySelector<HTMLElement>("[data-checklist-count-status]")!.textContent,
-        ).toBe("2,000 rows. Using the first 2,000 rows; 1,000 more left off."),
-      { timeout: 3000 },
+    await act(async () => {
+      vi.advanceTimersByTime(COUNT_ANNOUNCE_DEBOUNCE_MS);
+    });
+    expect(document.querySelector<HTMLElement>("[data-checklist-count-status]")!.textContent).toBe(
+      "2,000 rows. Using the first 2,000 rows; 1,000 more left off.",
     );
     fireEvent.click(screen.getByRole("button", { name: "Use this checklist" }));
     expect(onUse.mock.calls[0][0].rows).toHaveLength(2000);
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

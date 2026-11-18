@@ -8,7 +8,7 @@
  */
 
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { beforeAll, describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import {
@@ -793,27 +793,37 @@ describe("everything I own, paged", () => {
     expect(page.isDone).toBe(false);
   });
 
-  test("pages past the old 5,000-line read to the very last line: every card listed once, the tally exact", async () => {
-    const { t, fx, me } = await setup();
-    // 26 cards x 200 lines = 5,200 lines, past the 5,000 the old summary read.
-    // Each card's lines run across several pages; it is listed once, on the
-    // page holding its newest line, with all 200 lines counted.
+  // 26 cards x 200 lines = 5,200 lines, past the 5,000 the old summary read.
+  // Seeded once for the two tests below (seeding is the cost, not the checks),
+  // so no single test carries it (NEO-591).
+  describe("past the old 5,000-line read", () => {
     const cardsHeld = 26;
     const lines = MAX_LINES_PER_CARD;
-    expect(cardsHeld * lines).toBeGreaterThan(MAX_TALLY_RECOUNT_LINES);
-    const ids = await insertManyOwned(t, fx, ME.subject, { cards: cardsHeld, linesPerCard: lines, keepTally: true });
-    const { cards, pages } = await walkOwned(me, MAX_OWNED_PAGE_LINES);
-    expect(pages).toBeGreaterThan(MAX_TALLY_RECOUNT_LINES / MAX_OWNED_PAGE_LINES);
-    // Newest first: the last card inserted was touched last.
-    expect(cards.map((c) => c.cardId)).toEqual([...ids].reverse());
-    for (const card of cards) expect(card).toMatchObject({ quantity: lines, lines });
-    expect(await me.query(api.collection.summary, {})).toMatchObject({
-      distinctCards: cardsHeld,
-      lines: cardsHeld * lines,
-      copies: cardsHeld * lines,
-      exact: true,
+    let held: Awaited<ReturnType<typeof setup>>;
+    let ids: Array<Id<"cardChecklist">>;
+    beforeAll(async () => {
+      expect(cardsHeld * lines).toBeGreaterThan(MAX_TALLY_RECOUNT_LINES);
+      held = await setup();
+      ids = await insertManyOwned(held.t, held.fx, ME.subject, { cards: cardsHeld, linesPerCard: lines, keepTally: true });
+    }, 60_000);
+
+    test("pages to the very last line: every card listed once, on the page holding its newest line, with all its lines counted", async () => {
+      const { cards, pages } = await walkOwned(held.me, MAX_OWNED_PAGE_LINES);
+      expect(pages).toBeGreaterThan(MAX_TALLY_RECOUNT_LINES / MAX_OWNED_PAGE_LINES);
+      // Newest first: the last card inserted was touched last.
+      expect(cards.map((c) => c.cardId)).toEqual([...ids].reverse());
+      for (const card of cards) expect(card).toMatchObject({ quantity: lines, lines });
     });
-  }, 60_000);
+
+    test("the tally is exact", async () => {
+      expect(await held.me.query(api.collection.summary, {})).toMatchObject({
+        distinctCards: cardsHeld,
+        lines: cardsHeld * lines,
+        copies: cardsHeld * lines,
+        exact: true,
+      });
+    });
+  });
 
   test("an uncounted collection past the hand-count read says it is a floor, never the answer", async () => {
     const { t, fx, me } = await setup();

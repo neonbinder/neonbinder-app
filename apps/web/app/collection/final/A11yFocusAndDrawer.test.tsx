@@ -1,7 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
+import CardPanelHost from "@/app/dashboard/screen/CardPanelHost";
 import PublicCollectionDemo from "./PublicCollectionDemo";
 
 /**
@@ -55,6 +56,29 @@ function renderDemo(entries: string[]) {
   );
 }
 
+/** The demo's first Base card (already in hand), what clicking its Details opens. */
+const FIRST_CARD = encodeURIComponent(`${CHROME}:base:1`);
+
+/**
+ * Only the card drawer, on the demo store, opened by its URL: the drawer-internal
+ * behaviour under test needs no checklist screen around it.
+ */
+function renderDrawer(detail = FIRST_CARD) {
+  render(
+    <Theme>
+      <MemoryRouter initialEntries={[`/panel?detail=${detail}`]}>
+        <Routes>
+          <Route path="/panel" element={<CardPanelHost />} />
+        </Routes>
+      </MemoryRouter>
+    </Theme>,
+  );
+  return screen.findByRole("dialog");
+}
+
+/** Focus lands on the next animation frame; look every few ms rather than at waitFor's 50ms default. */
+const POLL = { interval: 5 };
+
 const pageUrl = () => screen.getByRole("status", { name: "Page URL" }).textContent ?? "";
 const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
 const checklist = () => screen.getByRole("region", { name: "2024 Topps Chrome Base" });
@@ -62,6 +86,15 @@ const detailsButtons = () => within(checklist()).getAllByRole("button", { name: 
 /** Lets the requestAnimationFrame focus moves run. */
 const frames = () => act(() => new Promise<void>((r) => setTimeout(r, 40)));
 
+// The panel loads the demo store and drawer code lazily; open it once here so the
+// first test to need the drawer is not charged for loading it.
+beforeAll(async () => {
+  await import("./data/demoStore");
+  await renderDrawer();
+  cleanup();
+  renderDemo([BASE_CHECKLIST]);
+  cleanup();
+});
 beforeEach(() => {
   window.sessionStorage.clear();
 });
@@ -117,12 +150,7 @@ describe("the card drawer on the URL", () => {
   });
 
   it("a shared link reopens the drawer, its arrows quiet; Close takes it off the URL in place", () => {
-    renderDemo([BASE_CHECKLIST]);
-    fireEvent.click(detailsButtons()[1]);
-    const shared = pageUrl();
-    cleanup();
-
-    renderDemo([shared]);
+    renderDemo([`${BASE_CHECKLIST}&detail=${FIRST_CARD}`]);
     const drawer = screen.getByRole("dialog");
     // No list came with the link: just this card, both arrows unavailable.
     expect(within(drawer).getByRole("button", { name: "Previous card" }).getAttribute("aria-disabled")).toBe("true");
@@ -135,28 +163,24 @@ describe("the card drawer on the URL", () => {
 
 describe("the keyboard is parked, never dropped", () => {
   it("Edit puts it in the copy's form; Cancel and Save copy bring it back to that copy's Edit", async () => {
-    renderDemo([BASE_CHECKLIST]);
-    fireEvent.click(detailsButtons()[0]);
-    const drawer = screen.getByRole("dialog");
+    const drawer = await renderDrawer();
     // The demo's first card is already in hand.
     const edit = within(drawer).getAllByRole("button", { name: /^Edit / })[0];
     const editName = edit.getAttribute("aria-label")!;
 
     fireEvent.click(edit);
     const form = within(drawer).getByRole("form", { name: /^Edit / });
-    await waitFor(() => expect(form.contains(document.activeElement)).toBe(true));
+    await waitFor(() => expect(form.contains(document.activeElement)).toBe(true), POLL);
     fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
-    await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe(editName));
+    await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe(editName), POLL);
 
     fireEvent.click(within(drawer).getByRole("button", { name: editName }));
     fireEvent.click(within(drawer).getByRole("button", { name: "Save copy" }));
-    await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe(editName));
+    await waitFor(() => expect(document.activeElement?.getAttribute("aria-label")).toBe(editName), POLL);
   });
 
   it("the add form waits behind Add once there is a copy: Add opens it, Cancel and an add fold it, the keyboard back on Add", async () => {
-    renderDemo([BASE_CHECKLIST]);
-    fireEvent.click(detailsButtons()[0]);
-    const drawer = screen.getByRole("dialog");
+    const drawer = await renderDrawer();
     // The demo's first card is already in hand: the list, then Add, no form.
     expect(within(drawer).queryByRole("form", { name: /^Add (a|another) copy$/ })).toBeNull();
     const add = within(drawer).getByRole("button", { name: /^Add another copy of / });
@@ -181,9 +205,7 @@ describe("the keyboard is parked, never dropped", () => {
   });
 
   it("Remove moves it to the next copy's Edit, and to the 'Your copies' heading after the last", async () => {
-    renderDemo([BASE_CHECKLIST]);
-    fireEvent.click(detailsButtons()[0]);
-    const drawer = screen.getByRole("dialog");
+    const drawer = await renderDrawer();
     const removes = () => within(drawer).queryAllByRole("button", { name: /^Remove / });
     // Make sure there are two line items (a note keeps the new one from stacking).
     fireEvent.click(within(drawer).getByRole("button", { name: /^Add another copy of / }));

@@ -58,7 +58,8 @@ function renderDemo(onExit = vi.fn(), entries: string[] = [DEMO_URL]) {
   return { onExit };
 }
 
-const pageUrl = () => screen.getByRole("status", { name: "Page URL" }).textContent;
+// By label, not role: a role query walks the whole page and this is read after every step.
+const pageUrl = () => screen.getByLabelText("Page URL").textContent;
 const openTab = (name: string, section = "Collection sections") =>
   fireEvent.click(within(screen.getByRole("navigation", { name: section })).getByRole("link", { name }));
 const sideSwitch = () => screen.getByRole("group", { name: "Collection or Inventory" });
@@ -118,10 +119,9 @@ describe("the public collection demo", () => {
     expect(onExit).toHaveBeenCalledTimes(1);
   });
 
-  it("puts each view on the URL beside demo=on, and Back steps back through them, scope and all", () => {
+  it("puts each view on the URL beside demo=on, scope and all", () => {
     renderDemo();
-    const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
-    const scope = () => screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
+    const scope = () => screen.getByLabelText("Binder") as HTMLSelectElement;
 
     // My Cards, scoped to the slab case: the scope rides on the URL, but a
     // pick replaces the entry rather than adding a Back step.
@@ -145,15 +145,32 @@ describe("the public collection demo", () => {
     fireEvent.click(screen.getByRole("button", { name: /^All Reggie White,/ }));
     expect(pageUrl()).toBe("/binder-tracking?demo=on&tab=binders&b=smart-reggie-white");
     expect(screen.getByRole("heading", { level: 2, name: "All Reggie White" })).toBeTruthy();
+  });
+
+  it("Back steps back through the views the URL names, scope and all", () => {
+    // The history the forward walk above leaves (the scope pick replaced its entry), opened at its end.
+    const trade = "binder-slab-case";
+    const wall = `${DEMO_URL}&tab=cards&set=1996-97-upper-deck-hockey&scope=${trade}`;
+    const entries = [
+      DEMO_URL,
+      `${DEMO_URL}&tab=cards&scope=${trade}`,
+      wall,
+      `${DEMO_URL}&tab=binders&scope=${trade}`,
+      `${DEMO_URL}&tab=binders&b=smart-reggie-white`,
+    ];
+    renderDemo(vi.fn(), entries);
+    const back = () => fireEvent.click(screen.getByRole("button", { name: "Browser Back" }));
+    const scope = () => screen.getByLabelText("Binder") as HTMLSelectElement;
+    expect(screen.getByRole("heading", { level: 2, name: "All Reggie White" })).toBeTruthy();
 
     back();
-    expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=binders&scope=${trade}`);
+    expect(pageUrl()).toBe(entries[3]);
     expect(screen.getByText("Slab case", { selector: "strong" })).toBeTruthy();
     back();
-    expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&set=1996-97-upper-deck-hockey&scope=${trade}`);
+    expect(pageUrl()).toBe(wall);
     expect(screen.getByRole("group", { name: "1996-97 Upper Deck checklist wall" })).toBeTruthy();
     back();
-    expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&scope=${trade}`);
+    expect(pageUrl()).toBe(entries[1]);
     expect(scope().value).toBe(trade);
     expect((within(scope()).getByRole("option", { selected: true }) as HTMLOptionElement).text).toBe("Slab case");
     back();
@@ -166,7 +183,7 @@ describe("the public collection demo", () => {
     openTab("My Cards");
     openTab("Checklists");
     openTab("My Cards");
-    const scope = () => screen.getByRole("combobox", { name: "Binder" }) as HTMLSelectElement;
+    const scope = () => screen.getByLabelText("Binder") as HTMLSelectElement;
     const main = (within(scope()).getByRole("option", { name: "Main" }) as HTMLOptionElement).value;
     fireEvent.change(scope(), { target: { value: main } });
     expect(pageUrl()).toBe(`/binder-tracking?demo=on&tab=cards&scope=${main}`);

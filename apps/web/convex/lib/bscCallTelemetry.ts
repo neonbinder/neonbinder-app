@@ -541,6 +541,13 @@ export type BscRecorderOptions = {
 /** PR 451 — the debounce between the last call settling and the wait closing. */
 export const BSC_WAIT_IDLE_GRACE_MS = 500;
 
+let waitIdleGraceOverrideMs: number | undefined;
+
+/** Test seam only: a shorter default grace, so a test need not wait out 500 ms. `undefined` restores it. */
+export function __setWaitIdleGraceForTests(ms: number | undefined): void {
+  waitIdleGraceOverrideMs = ms;
+}
+
 /**
  * PR 451 — one wait edge. `at` is epoch ms: the first call's start on an open
  * edge, the last call's settle (not the end of the grace) on a close edge.
@@ -735,7 +742,7 @@ export function createBscRecorder(op: string, opts: BscRecorderOptions = {}): Bs
   let flushed = false;
 
   // PR 451 — the wait edges (see `onWaitEdge`).
-  const graceMs = Math.max(0, opts.waitIdleGraceMs ?? BSC_WAIT_IDLE_GRACE_MS);
+  const graceMs = Math.max(0, opts.waitIdleGraceMs ?? waitIdleGraceOverrideMs ?? BSC_WAIT_IDLE_GRACE_MS);
   let openCalls = 0;
   let waiting = false;
   let waitOpenedAt = 0;

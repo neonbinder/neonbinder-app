@@ -46,7 +46,8 @@
  */
 
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { beforeEach, describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi, afterEach } from "vitest";
+import { ANNOUNCE_AFTER_MS } from "../modules/WaitingOnMarketplace";
 import {
   BSC_NO_LINKED_SET_MESSAGE,
   NO_MARKETPLACE_IDS_MESSAGE,
@@ -1301,6 +1302,7 @@ describe("AttachSetsDialog — two candidates with one name (NEO-325)", () => {
 
 describe("AttachSetsDialog — waiting on BuySportsCards", () => {
   test("while the BSC fetch is held up the BSC pane says so, keyed by the run key the fetch was given", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     waitState.answer = { waitingSince: 1, accumulatedMs: 0 };
     let release!: () => void;
     mockFetchBsc.mockImplementation(
@@ -1311,7 +1313,10 @@ describe("AttachSetsDialog — waiting on BuySportsCards", () => {
     );
     renderDialog();
 
-    const line = await within(bscPane()).findByText("Waiting on BuySportsCards…", {}, { timeout: 3000 });
+    await act(async () => {
+      vi.advanceTimersByTime(ANNOUNCE_AFTER_MS);
+    });
+    const line = within(bscPane()).getByText("Waiting on BuySportsCards…");
     expect(line.closest('[role="status"]')).not.toBeNull();
     // Only the BSC pane carries one.
     expect(within(slPane()).queryByText("Waiting on BuySportsCards…")).toBeNull();
@@ -1322,7 +1327,7 @@ describe("AttachSetsDialog — waiting on BuySportsCards", () => {
     expect(waitState.asked).toContain(sentKey);
 
     await act(async () => release());
-    await waitFor(() => expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull());
+    expect(screen.queryByText("Waiting on BuySportsCards…")).toBeNull();
   });
 
   test("each rung change is a fresh key", async () => {
@@ -1343,4 +1348,8 @@ describe("AttachSetsDialog — waiting on BuySportsCards", () => {
 
     expect(mockFetchSl.mock.calls[0][0]).not.toHaveProperty("waitKey");
   });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });

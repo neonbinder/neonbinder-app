@@ -1,4 +1,5 @@
 import { defineConfig, defineProject } from "vitest/config";
+import os from "node:os";
 import path from "path";
 import {
   COMPONENTS_INCLUDE,
@@ -22,6 +23,11 @@ const ENV_ISOLATION = path.resolve(__dirname, "./vitest.setup.env-isolation.ts")
 // behavior is unaffected.
 export default defineConfig({
   test: {
+    // NEO-591: vitest's default is every core but one, which on a 12-core
+    // laptop (often shared with other sessions) starves each worker enough to
+    // turn a 1s test into a 5s one. Cap it; a runner with fewer cores keeps
+    // cores - 1 (never below 2).
+    maxWorkers: Math.min(8, Math.max(2, os.availableParallelism() - 1)),
     projects: [
       // Project 1: existing node/edge convex + lib tests — UNCHANGED behavior
       defineProject({
@@ -59,12 +65,6 @@ export default defineConfig({
           globals: true,
           include: COMPONENTS_INCLUDE,
           setupFiles: [ENV_ISOLATION, NETWORK_GUARD],
-          // NEO-591: vitest's 5s default budget is for an idle machine. The
-          // full run spawns ~900 happy-dom workers at once, which slows a
-          // multi-step component walk (panelLink's batch walk, 1.0s alone)
-          // to 5.1s and fails it on the clock, not on behaviour. A test that
-          // truly hangs still fails, at 20s.
-          testTimeout: 20_000,
         },
         resolve: {
           alias: {
