@@ -797,6 +797,16 @@ commits a deliberately mis-paired card (#442), so nothing else may read this
 set's cards. FRESH-ONLY: a second run on the same seed finds the checklist
 committed and fails at its empty-checklist assert; re-seed first.
 
+**SportLots paused (NEO-489, NEO-591).** The paused branch uploads the set's own
+captured file with two team cells changed (`usePublishersChecklist`'s
+`teamCells`): `#6a` says `No Team` and `#38a` (the Chiefs' team-leader card) says
+`Prospect (Dallas Baptist)`, a claim the catalogue holds no minor-league or college
+football team for, so it is held. Match Cards' `#38a` row is unlinked and linked back,
+the wizard's two disagreements are answered (#6a the checklist's, #38a the
+marketplace's), and both cards are read back (#38a keeps the Chiefs and is a Prospect
+Card). Relies on no Football team answering to "Dallas Baptist". Still zero per-card
+BSC calls.
+
 ### The one sanctioned read-only visitor
 
 `checklist-pairing-dialog-cancel` (NEO-137, extended by NEO-189) syncs
@@ -2640,7 +2650,7 @@ would put the wrong question on screen.
 | `cnw-` | `tests/set-selector/checklist-attention-walker-missing-team.spec.ts` (also `-${ATTEMPT_ID}`) |
 | `tuplongset` | `tests/set-selector/tidy-up-title-names-the-insert-and-parallel.spec.ts` (NEO-497) — ONE set per attempt, `tuplongset` + `x` padding + `ATTEMPT_TOKEN`, ONE unbroken 60-character token (the worst case for the tidy-up title's wrap; 200 is the set-name cap), under `E2E Test Sport <w>` › 2026 › `Topps` (drillToCustomSet). Hand-made, so no marketplace side is resolvable beneath it. Inside it, under `Insert`, `tuphost<token>` holds the parallel `tupgold<token>` (moved with Group Parallels), and each of the two checklists gets one team-less card (`901`, `902`) so the attention walker opens. Nothing is deleted; the set stands. |
 | `onx` | `tests/set-selector/set-checklist-pdf-onyx-2026.spec.ts` (NEO-591, per-attempt, single token `onx<token>`) — ONE set per attempt under `E2E Test Sport <w>` › 2026 › `Topps` (drillToCustom up to the set), hand-made with no marketplace id. The SET's official checklist is the committed Onyx PDF (`fixtures/checklists/2026-onyx-vintage-baseball.pdf`: Base Cards 56, Player Autographs 38, Dual Autographs 2, every card NNO), uploaded and saved; the Inserts column's Reconcile makes `Player Autographs` its own set (`Insert` › `Player Autographs`, linked to that section), whose checklist-only fetch is walked to one player's step in the tidy-up wizard and then CANCELLED and DISCARDED (no card, player or team is saved: the custom sport makes every name a new player with no lookup). The checklist is REMOVED at the end; the set and its `Player Autographs` row stand (per attempt, read by no other spec). A red run leaves its own set's checklist behind, which no other spec reads. |
-| `psp` | `tests/set-selector/checklist-prospect-team-cells-set-prospect-card.spec.ts` (NEO-591, per-attempt, single token `psp<token>`) — under the REAL `Baseball` › 2024 › `Topps` (the fetch settles a `Prospect (X)` team and the names against the set's sport, where the reference catalogue's Baseball teams and players live, so not a custom sport), `Insert` › `Base`, hand-made with no marketplace id. The leaf's official checklist is `fixtures/checklists/prospect-team-cells.csv` (3 rows: `1` Gunnar Henderson `Prospect`, `2` Colt Keith `Prospect (Oklahoma)`, `3` Bobby Witt Jr. `Prospect (Dallas Baptist)`); the checklist-only fetch COMMITS the three cards (No Team, the catalogue's **Oklahoma Sooners** (NCAA), and held with no team), which are read back and DELETED at the end. Relies on the reference catalogue holding exactly one minor or college team located in Oklahoma, none answering to Dallas Baptist, and each of the three players once. The players and the team are only READ. The set and its rows stand (per attempt, read by no other spec). |
+| `psp` | `tests/set-selector/checklist-prospect-team-cells-set-prospect-card.spec.ts` (NEO-591, per-attempt, single token `psp<token>`) — under the REAL `Baseball` › 2024 › `Topps` (the fetch settles a `Prospect (X)` team, a team printed as a place and the names against the set's sport and league (Major League Baseball, given to the set at creation), where the reference catalogue's Baseball teams and players live, so not a custom sport), `Insert` › `Base`, hand-made with no marketplace id. The leaf's official checklist is `fixtures/checklists/prospect-team-cells.csv` (5 rows: `1` Gunnar Henderson `Prospect`, `2` Colt Keith `Prospect (Oklahoma)`, `3` Bobby Witt Jr. `Prospect (Dallas Baptist)`, `4` J.P. Crawford `Seattle`, `5` Seiya Suzuki `Chicago`); `Chicago` is skipped as not a team; the held card's team is MINTED from the Teams step's own field (`Dbp<token>`, per attempt; it stays) with "Remember “Dallas Baptist”" ticked. The checklist-only fetch COMMITS the five cards (No Team, the catalogue's **Oklahoma Sooners** (NCAA), `Dbp<token>`, the catalogue's **Seattle Mariners**, and teamless), which are read back and DELETED at the end; the remembered alias is read on Team Management and REMOVED. Relies on the reference catalogue holding exactly one minor or college team located in Oklahoma, none answering to Dallas Baptist, exactly one MLB team located in Seattle and more than one in Chicago, and each of the five players once. The catalogue's players and teams are only READ. The set and its rows stand (per attempt, read by no other spec). |
 | `clt-` | `tests/set-selector/custom-card-row-opens-panel-with-autotitle.spec.ts` |
 | `cpx-` | `tests/set-selector/set-attributes-card-prefix.spec.ts` — an Insert row `CPXROW` under it carries the Card prefix under test; the flow clears the prefix before it ends. |
 | `cvar-` | `tests/set-selector/variation-link-group-and-unlink.spec.ts` |
@@ -3507,8 +3517,9 @@ is in them and nothing is asked of BSC): `2026-onyx-vintage-baseball.pdf`, Onyx'
 own published 2026 Vintage Baseball checklist (two Last Name / First Name groups
 side by side, no card numbers: Base Cards 56, Player Autographs 38, Dual
 Autographs 2), uploaded on the `onx` set by `set-checklist-pdf-onyx-2026`; and
-`prospect-team-cells.csv`, three hand-written rows (`Prospect`, `Prospect
-(Oklahoma)`, `Prospect (Dallas Baptist)`) naming catalogue players, uploaded on
+`prospect-team-cells.csv`, five hand-written rows (`Prospect`, `Prospect
+(Oklahoma)`, `Prospect (Dallas Baptist)`, `Seattle`, `Chicago`) naming catalogue
+players, uploaded on
 the `psp` set's `Base` by `checklist-prospect-team-cells-set-prospect-card`. Both
 sets are in the per-worker prefix table.
 

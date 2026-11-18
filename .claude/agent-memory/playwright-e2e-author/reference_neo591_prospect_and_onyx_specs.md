@@ -1,6 +1,6 @@
 ---
 name: reference_neo591_prospect_and_onyx_specs
-description: NEO-591 handles — Prospect Card in the drawer, the held "Prospect (X)" teams line, set-checklist preview rows, and reaching one named player step in a big checklist-only wizard
+description: NEO-591 handles — Prospect Card, held "Prospect (X)" line and its Remember box, place team cells, preview rows, Match Cards unlink/relink, the only set with a team conflict, a named player step
 metadata:
   type: reference
 ---
@@ -25,6 +25,21 @@ metadata:
   steps), then a loop bounded by the section's row count: break on
   `heading level 3 name exact`, else `personSkip` + `expectStepLeft`. Players come in batch
   order, not file order. Then `cancelAndDiscard` (the skips are decisions).
-- Leaf official-checklist preview reads a `Prospect (X)` cell as "We'll look it up" (reported
-  NEO-591 as misleading copy; do not pin it until the product decides).
+- **Leaf preview cells** print the claim as written ("Prospect (Oklahoma)", "Seattle"); mixed
+  parts join with " / ". Rows are named "<n> <player> <cell>": `getByRole("row", { name, exact })`.
+- **Place team cells** (set needs a league; a hand-made Baseball set gets MLB): a place with
+  exactly one league team settles before the wizard (no step, no Teams line); an ambiguous one
+  is a NAME step "New Team: <place>" whose Remember box settles enabled+unticked. Skipping it
+  drops it from "Listed as" on the Teams step (skipped = the operator's ruling).
+- **Held line's Remember box** enables only once one existing team is picked: "Other team… —
+  <player>" → combobox "Team name to find" → option `+ New team “<minted>”…` → dialog
+  `New team: <minted>` → "Create team <minted>". Mint the team (an alias on a catalogue team
+  would settle the next attempt's X), read it on /admin/teams, then clear "Also known as" + Save.
+- **A team conflict needs a marketplace team in the BULK answer**: with a checklist no card is
+  looked up, so only Football 2014 Topps team-leader cards (BSC "<Team> TL") carry one. Held X
+  there shows X on the checklist side of "Disagreement on #N". `usePublishersChecklist`'s
+  `teamCells` rewrites cells of a captured file.
+- **Match Cards with a checklist**: Unlink names read `Unlink card #N <card> from checklist row
+  #N <player> · <team cell>`; relink = radio `Select #N … · <cell>` then `Link selected
+  checklist row to #N <card>` (the BSC half may sit in Keeping, not BSC only).
 Related: [[reference_hand_made_rows_cannot_reach_the_commit_path]], [[reference_neo335_teams_on_cards_section]]

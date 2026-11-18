@@ -345,25 +345,30 @@ function csvCell(cell: string): string {
 }
 
 /**
- * A captured file with ONE card's team cell replaced by `No Team`: the publisher
- * saying the card shows no team (NEO-489). Throws when the file has no such number,
- * so a spec built on it fails by name rather than uploading an unchanged file.
+ * A captured file with some cards' team cells replaced: `cells` maps a card number to
+ * the cell it now says, e.g. `No Team` (the publisher saying the card shows no team,
+ * NEO-489) or `Prospect (X)` (NEO-591). Throws when a number is on no row or on more
+ * than one, so a spec built on it fails by name rather than uploading an unchanged file.
  */
-function csvWithNoTeamOn(name: ChecklistName, number: string): string {
+function csvWithTeamCells(name: ChecklistName, cellsOn: Readonly<Record<string, string>>): string {
   const lines = readFileSync(`${DIRECTORY}${name}.csv`, "utf8").split("\n").filter((l) => l.trim() !== "");
   const header = cells(lines[0]);
   const numberAt = header.indexOf("number");
   const teamAt = header.indexOf("team");
-  let changed = 0;
+  const changed = new Map<string, number>();
   const out = lines.map((line, i) => {
     if (i === 0) return line;
     const row = cells(line);
-    if (row[numberAt] !== number) return line;
-    row[teamAt] = "No Team";
-    changed++;
+    const cell = cellsOn[row[numberAt]];
+    if (cell === undefined) return line;
+    row[teamAt] = cell;
+    changed.set(row[numberAt], (changed.get(row[numberAt]) ?? 0) + 1);
     return row.map(csvCell).join(",");
   });
-  if (changed !== 1) throw new Error(`${name}.csv has ${changed} rows numbered "${number}": expected exactly one to say No Team on.`);
+  for (const number of Object.keys(cellsOn)) {
+    const n = changed.get(number) ?? 0;
+    if (n !== 1) throw new Error(`${name}.csv has ${n} rows numbered "${number}": expected exactly one to change.`);
+  }
   return `${out.join("\n")}\n`;
 }
 
@@ -374,16 +379,17 @@ function csvWithNoTeamOn(name: ChecklistName, number: string): string {
  * is showing, N read off the file; nothing is fetched. Returns the file's facts
  * for the result line (`expectTeamsFromChecklist`).
  *
- * `noTeamOn` uploads the file with that one card's team cell changed to `No Team`
- * (the publisher's claim that the card shows no team). The facts are the unchanged
- * file's: the row is answered either way, but a card the marketplace already gives a
- * team is a disagreement the operator settles, which the fetch does not count as
- * answered by the checklist (the caller subtracts it from `matched`).
+ * `teamCells` uploads the file with those cards' team cells changed (`csvWithTeamCells`):
+ * `No Team` is the publisher's claim that the card shows no team, `Prospect (X)` a
+ * prospect claim (NEO-591). The facts are the unchanged file's: the row is answered
+ * either way, but a card the marketplace already gives a team is a disagreement the
+ * operator settles, which the fetch does not count as answered by the checklist (the
+ * caller subtracts each from `matched`).
  */
 export async function usePublishersChecklist(
   page: Page,
   name: ChecklistName,
-  options: { noTeamOn?: string } = {},
+  options: { teamCells?: Readonly<Record<string, string>> } = {},
 ): Promise<ChecklistFacts> {
   const facts = checklistFacts(name);
   // A second visit to the same open checklist (a discarded review fetched again)
@@ -395,8 +401,8 @@ export async function usePublishersChecklist(
   const dialog = publishersChecklistDialog(page);
   await expect(dialog).toBeVisible();
   const file = dialog.getByLabel("Choose a file");
-  if (options.noTeamOn === undefined) await file.setInputFiles(facts.path);
-  else await file.setInputFiles({ name: `${name}.csv`, mimeType: "text/csv", buffer: Buffer.from(csvWithNoTeamOn(name, options.noTeamOn)) });
+  if (options.teamCells === undefined) await file.setInputFiles(facts.path);
+  else await file.setInputFiles({ name: `${name}.csv`, mimeType: "text/csv", buffer: Buffer.from(csvWithTeamCells(name, options.teamCells)) });
   await expect(previewRowCount(dialog, facts.rows)).toBeVisible();
   await dialog.getByRole("button", { name: "Use this checklist" }).click();
   await expect(dialog).toBeHidden();

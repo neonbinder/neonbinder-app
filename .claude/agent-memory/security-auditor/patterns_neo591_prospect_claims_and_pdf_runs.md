@@ -34,3 +34,14 @@ Three recurring shapes found auditing NEO-591 (Onyx PDF + "Prospect (X)").
 string, and any resolver that settles on a single surviving candidate from a
 bounded read. Related: [[patterns_neo300_held_elsewhere]],
 [[patterns_neo496_client_file_readers]].
+
+**Delta round (alias door).** A server check that a client-sent text "is one
+of this card's own held Xs" compares against OTHER client-sent fields on the
+same card (`prospectTeams`, `prospectTeam`, `rawTeamName`): it is a
+consistency check, not provenance. Judge such a door by what the admin can
+already do elsewhere (`teams.update` writes any alias), and hold the server
+set of accepted sources to exactly what the UI offers: here `rawTeamName` on
+a non-held card is BSC's raw value, so accepting it widens the door to
+marketplace text. Also: a client "exempt" flag (`teamsAnswered`) on a
+refusal is fine when the exempt path only resolves strings through NB
+name/alias lookups and never creates from them.

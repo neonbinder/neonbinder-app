@@ -6,8 +6,8 @@
 //
 // The walk:
 //   1. Upload on the SET: the preview shows Base Cards 56, Player Autographs 38 and Dual
-//      Autographs 2 (96 cards), each "NNO only", and "Above the column headings (1)" (the
-//      title line). Save: "Checklist saved: 3 sections, 96 cards."
+//      Autographs 2 (96 cards), each "NNO only", and "Skipped lines (1)", that one
+//      "Above the column headings" (the title line). Save: "Checklist saved: 3 sections, 96 cards."
 //   2. Name proof: the Inserts column's first visit opens Reconcile Inserts with the
 //      checklist's sections; Player Autographs is made its own set, and its sync (the stored
 //      section, no marketplace: a checklist-only fetch) opens the tidy-up wizard. The Player
@@ -89,8 +89,12 @@ test(
       await expect(row.getByRole("cell")).toHaveText([String(cards), "NNO only"]);
     }
     await expect(sections.getByRole("rowheader")).toHaveCount(3);
-    // The title line above the first header row is read and set aside, said by reason.
+    // The title line above the first header row is read and set aside, said by reason, and it is
+    // the ONLY line skipped: no card row (Dual Autographs' two included) is lost, and the file
+    // repeats no header row ("Column headings again" would list it).
+    await expect(preview.getByRole("heading", { level: 3, name: "Skipped lines (1)", exact: true })).toBeVisible();
     await expect(preview.getByText(/^Above the column headings \(1\)$/)).toBeVisible();
+    await expect(preview.getByText(/^Column headings again/)).toHaveCount(0);
     await expectAccessible(page, { within: preview, label: "Checklist preview of an Onyx PDF" });
 
     await preview.getByRole("button", { name: "Save checklist" }).click();

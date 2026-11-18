@@ -55,9 +55,16 @@
 // #6a, a team-leader card whose BSC bulk answer already names its team, raises the
 // wizard's "Checklist says otherwise" step with the checklist's side "No team on the
 // card"; taking the checklist's side saves #6a with no team and no "no team on this
-// card yet" badge. This is the only registered set whose marketplace bulk answer
-// carries a team, which is why the claim is exercised here. Zero BSC calls: all 554
-// rows are answered by the file, and #6a carries its team from the bulk answer.
+// card yet" badge. NEO-591: the same file says "Prospect (Dallas Baptist)" on #38a (the
+// Chiefs' card); Dallas Baptist is no minor-league or college football team on file, so
+// the claim is HELD. Match Cards reads that row "· Prospect (Dallas Baptist)" and
+// names it in its Unlink control; unlinked and linked back, the claim is unchanged; the
+// wizard's disagreement on #38a shows Dallas Baptist on the checklist's side (not "No
+// team on the card"); keeping the marketplace's side saves #38a with its own team AND
+// as a Prospect Card (the claim rides with every outcome). This is the only registered
+// set whose marketplace bulk answer carries a team, which is why both claims are
+// exercised here. Zero BSC calls: all 554 rows are answered by the file, and #6a and
+// #38a carry their teams from the bulk answer.
 // Exactly one of the two branches commits the set in a given seed.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { escapeRe } from "../../support/cards";
@@ -67,7 +74,14 @@ import {
   setBuilderReady,
   syncChecklistButton,
 } from "../../support/set-builder";
-import { CHECKLISTS, confirmChecklistMatchCards, expectTeamsFromChecklist, usePublishersChecklist } from "../../support/published-checklist";
+import { expectAfterMarketplace } from "../../support/marketplace-wait";
+import {
+  CHECKLISTS,
+  confirmChecklistMatchCards,
+  expectTeamsFromChecklist,
+  matchCardsDialog,
+  usePublishersChecklist,
+} from "../../support/published-checklist";
 import {
   advanceToSave,
   confirmSaveButton,
@@ -84,6 +98,18 @@ const CHECKLIST_FETCH = 120_000;
 const WIZARD_OPENS = 60_000;
 /** The bulk skip while the batch can still grow (checklist-one-marketplace-match-cards-keeps-every-card's ceiling). */
 const BATCH_GROWS = 60_000;
+
+/**
+ * NEO-591: the Chiefs' team-leader card, its file cell changed to a prospect claim nobody on
+ * file answers to (Dallas Baptist is no minor-league or college football team), so it is held.
+ */
+const HELD_PROSPECT = {
+  number: "38a",
+  card: "Kansas City Chiefs",
+  team: "Kansas City Chiefs",
+  cell: "Prospect (Dallas Baptist)",
+  listed: "Dallas Baptist",
+} as const;
 
 /** A row's name with its `#<number> ` prefix and any ` · <variation>` tail dropped. */
 function nameFromLabel(label: string): string {
@@ -118,17 +144,48 @@ test(
       // #6a, the Patriots' card, now says No Team (`noTeamOn`). BSC calls added: 0. All 554 rows
       // are answered, so no card is asked of BSC per card, and the card that disagrees already
       // carries its team from the bulk answer, so nothing is looked up for it either.
+      // NEO-591: #38a, the Chiefs' card, says "Prospect (Dallas Baptist)" (`HELD_PROSPECT`).
       // Fresh-only like the rest of this spec (the flow commits the set; the unpaused path
       // below never runs in the same seed), every name skipped.
       await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
-      const claimed = await usePublishersChecklist(page, CHECKLISTS.topps2014FootballBase, { noTeamOn: "6a" });
+      const claimed = await usePublishersChecklist(page, CHECKLISTS.topps2014FootballBase, {
+        teamCells: { "6a": "No Team", [HELD_PROSPECT.number]: HELD_PROSPECT.cell },
+      });
       await syncChecklistButton(page).click();
       // NEO-496 (D10, NQ1): BSC plus the uploaded checklist are two sources, so Match Cards opens
-      // here too. The helper waits on it (7 s of ours plus BSC's), proves the teams line while it is
-      // open (one less than the file answers: #6a's disagreement is the operator's to settle, so the
-      // checklist has not answered it yet), keeps any BSC-only card and confirms.
+      // here too. Its wait is the helper's own (7 s of ours plus BSC's, `expectAfterMarketplace`).
+      const pairing = matchCardsDialog(page);
+      await expectAfterMarketplace(page, pairing.getByRole("button", { name: "Confirm card matches", disabled: false }), {
+        platform: "BuySportsCards",
+        what: "Match Cards after the paused 2014 Topps Football fetch",
+      });
+      // NEO-591: the held claim is on the row's line and in its Unlink control. Matched opens
+      // collapsed whenever a column holds a card, expanded otherwise (STEP 5 below).
+      const pausedExpand = pairing.getByRole("button", { name: /^Expand matched cards/ });
+      const pausedCollapse = pairing.getByRole("button", { name: /^Collapse matched cards/ });
+      await expect(pausedExpand.or(pausedCollapse)).toBeVisible();
+      if (await pausedExpand.isVisible()) await pausedExpand.click();
+      const heldRow = `#${HELD_PROSPECT.number} ${HELD_PROSPECT.card} · ${HELD_PROSPECT.cell}`;
+      const unlinkHeld = pairing.getByRole("button", {
+        name: `Unlink card #${HELD_PROSPECT.number} ${HELD_PROSPECT.card} from checklist row ${heldRow}`,
+        exact: true,
+      });
+      await expect(unlinkHeld).toBeVisible();
+      await expectAccessible(page, { within: pairing, label: "Match Cards, a held Prospect (X) row on 2014 Topps Football" });
+      // Unlink: the checklist row is back on its list, still carrying its claim; link it back.
+      await unlinkHeld.click();
+      await expect(unlinkHeld).toHaveCount(0);
+      await pairing.getByRole("textbox", { name: "Filter checklist rows" }).fill(`#${HELD_PROSPECT.number}`);
+      await pairing.getByRole("radio", { name: `Select ${heldRow}`, exact: true }).click();
+      await pairing
+        .getByRole("button", { name: `Link selected checklist row to #${HELD_PROSPECT.number} ${HELD_PROSPECT.card}`, exact: true })
+        .click();
+      await expect(unlinkHeld).toBeVisible();
+      await expect(pairing.getByRole("radio", { name: `Select ${heldRow}`, exact: true })).toHaveCount(0);
+      // The helper proves the teams line (two less than the file answers: #6a's and #38a's
+      // disagreements are the operator's to settle), keeps any BSC-only card and confirms.
       await confirmChecklistMatchCards(page, {
-        facts: { ...claimed, matched: claimed.matched - 1 },
+        facts: { ...claimed, matched: claimed.matched - 2 },
         what: "the paused 2014 Topps Football fetch",
       });
       const pausedWizard = reviewWizard(page);
@@ -140,10 +197,16 @@ test(
       await expectChecklistDisagreementFirst(page);
       const onSix = disagreementOn(page, "6a");
       await expect(onSix).toBeVisible();
-      await expect(pausedWizard.getByRole("radiogroup", { name: /^Disagreement on #/ })).toHaveCount(1);
+      await expect(pausedWizard.getByRole("radiogroup", { name: /^Disagreement on #/ })).toHaveCount(2);
       await expect(onSix.getByRole("definition")).toHaveText(["New England Patriots", "No team on the card"]);
-      await expectAccessible(page, { within: pausedWizard, label: "Entity review wizard, a No Team claim against a team-leader card" });
+      // NEO-591: the held claim shows X on the checklist's side, never "No team on the card".
+      await expect(disagreementOn(page, HELD_PROSPECT.number).getByRole("definition")).toHaveText([
+        HELD_PROSPECT.team,
+        HELD_PROSPECT.listed,
+      ]);
+      await expectAccessible(page, { within: pausedWizard, label: "Entity review wizard, a No Team claim and a held Prospect (X) against team-leader cards" });
       await pickDisagreementSide(page, "6a", "Use the checklist's");
+      await pickDisagreementSide(page, HELD_PROSPECT.number, "Keep the marketplace's");
 
       // The names are not this part's claim: skip them all (repeating while a Wikidata career
       // history can still stage a row), then save.
@@ -183,6 +246,18 @@ test(
       await expect(sixDrawer.getByRole("button", { name: /^Remove team / })).toHaveCount(0);
       await sixDrawer.getByRole("button", { name: "Done editing card" }).click();
       await expect(sixDrawer).toBeHidden();
+
+      // NEO-591: #38a kept the marketplace's team and is a Prospect Card all the same.
+      await pausedSearch.fill(HELD_PROSPECT.number);
+      await expect(page.getByText(/^1 of [0-9]+ cards$/)).toBeVisible();
+      const heldEdit = page.getByRole("button", { name: `Edit card ${HELD_PROSPECT.number}, ${HELD_PROSPECT.card}`, exact: true });
+      await heldEdit.click();
+      const heldDrawer = page.getByRole("dialog", { name: `Card #${HELD_PROSPECT.number}` });
+      await expect(heldDrawer.getByRole("button", { name: /^Remove team / })).toHaveAccessibleName(`Remove team ${HELD_PROSPECT.team}`);
+      await heldDrawer.getByRole("button", { name: "Show features editor" }).click();
+      await expect(heldDrawer.getByRole("button", { name: "Value for Prospect Card" })).toHaveAttribute("aria-pressed", "true");
+      await heldDrawer.getByRole("button", { name: "Done editing card" }).click();
+      await expect(heldDrawer).toBeHidden();
       return;
     }
 

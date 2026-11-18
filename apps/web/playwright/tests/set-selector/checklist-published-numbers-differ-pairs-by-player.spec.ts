@@ -683,6 +683,11 @@ test(
 async function answerClubStep(page: Page): Promise<void> {
   const wizard = reviewWizard(page);
   const remember = wizard.getByRole("checkbox", { name: `Remember “${CLUB}” as a name for this team` });
+  // NEO-591: the box is held (disabled, unticked) while the step's place lookup runs, then settles:
+  // ticked, since "Oakland A's" is no place. Untick the SETTLED box: `uncheck()` on the held one
+  // would return at once (already unticked) and the default would tick it again afterwards.
+  await expect(remember).toBeEnabled();
+  await expect(remember).toBeChecked();
   await remember.uncheck();
   await expect(remember).not.toBeChecked();
   await wizard.getByRole("combobox", { name: "Search all teams" }).click();
