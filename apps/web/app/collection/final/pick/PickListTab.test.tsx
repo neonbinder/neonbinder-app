@@ -83,8 +83,8 @@ describe("the Pick List demo", () => {
     expect(within(row).getAllByText("Not in Neon Binder", { exact: true }).length).toBeGreaterThan(0);
     // The chip says why, to a pointer and to a screen reader (the demo has no Sales tab to link to).
     const chip = within(row).getAllByText("Not in Neon Binder", { exact: true })[0].parentElement!;
-    expect(chip.getAttribute("title")).toBe("Neon Binder doesn't have this copy. Go by the listing.");
-    expect(chip.textContent).toBe("Not in Neon Binder. Neon Binder doesn't have this copy. Go by the listing.");
+    expect(chip.getAttribute("title")).toBe("No copy here. Go by the listing.");
+    expect(chip.textContent).toBe("Not in Neon Binder. No copy here. Go by the listing.");
     expect(within(row).queryByText("Unmatched")).toBeNull();
     expect(within(row).getAllByText("#302").length).toBeGreaterThan(0);
     // The listing said Base, so the Base tag. NEO-522: no note under it; the chip already says where to look.
@@ -838,7 +838,7 @@ describe("the signed-in Pick List's ways out", () => {
     expect(within(variation).queryByText("Base", { exact: true })).toBeNull();
     // With a Sales tab, the chip points at the order link.
     const chip = within(variation).getAllByText("Not in Neon Binder", { exact: true })[0].parentElement!;
-    expect(chip.getAttribute("title")).toBe("Neon Binder doesn't have this copy. Go by the listing; the order link has the photo.");
+    expect(chip.getAttribute("title")).toBe("No copy here. Go by the listing; the order link has the photo.");
     // NB's 2024 Score heading stays plain; the listing's own reads apart.
     expect(within(region).getByRole("heading", { level: 3, name: "2024 Score" })).toBeTruthy();
     expect(within(region).getByRole("heading", { level: 3, name: "2024 Score, not matched to a set" })).toBeTruthy();

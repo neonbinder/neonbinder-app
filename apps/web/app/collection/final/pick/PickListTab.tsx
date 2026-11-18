@@ -115,8 +115,8 @@ const COPY = {
   cantFindStopNote: "These sales don't say enough to file. The order's photo is your best clue.",
   notInBox: "Not in a box",
   notInBoxNote: "Neon Binder has no copy of these, so no box to check. Go by each listing, set by set.",
-  notInNbWhy: "Neon Binder doesn't have this copy. Go by the listing.",
-  notInNbWhyLinked: "Neon Binder doesn't have this copy. Go by the listing; the order link has the photo.",
+  notInNbWhy: "No copy here. Go by the listing.",
+  notInNbWhyLinked: "No copy here. Go by the listing; the order link has the photo.",
   /** Read after a listing's own divider titled just like an NB set's. */
   unmatchedTwin: ", not matched to a set",
   truncated: "Your Pick List is too long to show at once, so it starts with your oldest orders. Pull these and the rest will show up.",
@@ -1044,7 +1044,7 @@ function BoxView({
  * card can sit twice in one list (two conditions, two slabs, a fresh sale
  * beside an old one, two slots in one box), and each of those is named.
  */
-/** How a toggle's name says a row is not in NB: "…, not in NB, BSC 1234". */
+/** How a toggle's name says a row is not in Neon Binder: "…, not in Neon Binder, BSC 1234". */
 const NOT_IN_NB_NAME = "not in Neon Binder";
 
 function rowName(row: PickRow, options: { withOrder?: boolean; withSlot?: boolean; withTeam?: boolean } = {}): string {

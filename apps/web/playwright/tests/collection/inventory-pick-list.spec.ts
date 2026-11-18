@@ -123,7 +123,7 @@ test(
     /** The no-number line's toggle: its description names it (the set's words may lead). */
     const nonumToggle = (scope: Locator | Page) =>
       scope.getByRole("button", { name: new RegExp(`^Pulled .*${escapeRe(nonumPlayers)}`) });
-    const notInNbWhy = "Neon Binder doesn't have this copy. Go by the listing; the order link has the photo.";
+    const notInNbWhy = "No copy here. Go by the listing; the order link has the photo.";
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
     const pick = pickList(page);
     const { region, table } = pick;

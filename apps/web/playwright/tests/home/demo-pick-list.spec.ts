@@ -241,7 +241,7 @@ test(
     await expect(pulledToggle(score, LATHAM)).toBeVisible();
     await expect(seen(pickRow(score, NABERS).getByText("Not in Neon Binder", { exact: true }))).toBeVisible();
     // The chip says why on hover (the demo has no Sales tab, so no order link to name).
-    await expect(seen(pickRow(score, NABERS).getByTitle("Neon Binder doesn't have this copy. Go by the listing.", { exact: true }))).toBeVisible();
+    await expect(seen(pickRow(score, NABERS).getByTitle("No copy here. Go by the listing.", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(score, NABERS).getByText("Malik Nabers", { exact: true }))).toBeVisible();
     await expect(seen(pickRow(score, NABERS).getByText("#302", { exact: true }))).toBeVisible();
     // NEO-522: no "couldn't match" note on screen; the chip says where to look. The printed
