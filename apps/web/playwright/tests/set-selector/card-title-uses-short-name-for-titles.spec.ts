@@ -19,6 +19,12 @@
 //     used VERBATIM by Regenerate, with nothing prepended.
 //   * /collection's "Find a card" finds card B by its number, a word only its
 //     DESCRIPTION holds now that the title dropped it.
+//   * NEO-606, teams (cut row 9): card D's team has a Location and a Name, and
+//     dropping the location is the cut that makes the title fit, so its STORED
+//     title (written at creation, no Regenerate) names the team by its
+//     nickname and nothing is reported left out. Card E's team has the same
+//     length and no location: it can only go whole, and the note names it in
+//     full.
 //
 // R2 - what makes it fail if the feature breaks:
 //   * Every title is a full-string match computed from the cut rules (below),
@@ -29,6 +35,9 @@
 //     note that never loaded cannot pass for "nothing left out".
 //   * The search asserts the one hit by its accessible name, which ends in the
 //     card's number: a title-only search finds nothing for that word.
+//   * Card D's title holds the nickname and not the location, and card E's
+//     holds no team at all: a team dropped whole where its location would do
+//     (or a location dropped where the team has none) fails on the value.
 //
 // Desktop and mobile - CardDetailPanel and the Attributes panel render the
 // same controls with the same names at phone width; only widths change (the
@@ -49,7 +58,9 @@
 // insert (card C) beneath it, all hand-made, so no marketplace call fires.
 // The player is the catalogue's George Brett (one Baseball row, read only; the
 // same row `checklist-missing-team-fixer-hand-added-card` reads). Nothing is
-// deleted: the set is this attempt's alone, and its cards carry no team.
+// deleted: the set is this attempt's alone. Cards A, B and C carry no team;
+// D and E carry one each, made in the New team dialog for this attempt
+// (minted single tokens, GUIDE "Minted names"; a team is never looked up).
 //
 // Fixture arithmetic - exact on every runner. ATTEMPT_TOKEN's length varies
 // with the worker and the random tail, so the set name is that token padded to
@@ -66,6 +77,14 @@
 //   card C       "2024 Topps <set> <60-character insert> Brett" is 99 after
 //                every cut (the description, the surname): STOP, kept over
 //                the cap. With the box (48 characters) it is 74.
+//   card D       57 + " #D1" 4 + " <15-character location> <15-character
+//                nickname>" 32 + " Baseball" 9 = 102. Cuts: the label (95),
+//                the sport (86), the team's location (70): it fits. The
+//                refill puts the sport back (79), not the label (86), and
+//                the location cannot come back.
+//   card E       the same, with ONE 31-character team name and no location:
+//                the label, the sport, then the team whole (54); the refill
+//                puts the sport and the label back: 70.
 // Card B's number leads with `NB<token>`, a single token (GUIDE, minted names)
 // the search index splits off at the hyphen; no other card holds it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -73,6 +92,7 @@ import { drillToCustom, escapeRe, setBuilderReady } from "../../support/set-buil
 import { editCardButton } from "../../support/cards";
 import { goViaShell } from "../../support/collection";
 import { tidyUpName } from "../../support/wizard";
+import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";
 import type { Page } from "@playwright/test";
 
 const SET_LEN = 21;
@@ -80,9 +100,18 @@ const PLAYER = "George Brett";
 const LONG_INSERT = "Commemorative Anniversary Collectors Edition Hologram Series";
 const NUM_A = "91A-AA1234567"; // 13 characters
 const NUM_C = "C1";
+const NUM_D = "D1";
+const NUM_E = "E1";
 
-/** Quick-add one card under the open checklist, linked to the catalogue's George Brett. */
-async function addBrettCard(page: Page, number: string): Promise<void> {
+/** A team made in the New team dialog: `location` set only when the team has one. */
+type NewTeam = { name: string; location?: string };
+
+/**
+ * Quick-add one card under the open checklist, linked to the catalogue's
+ * George Brett and, when `team` is given, to a team made for it in the New
+ * team dialog.
+ */
+async function addBrettCard(page: Page, number: string, team?: NewTeam): Promise<void> {
   await page.getByRole("button", { name: "Open add card form" }).click();
   const cardName = page.getByRole("textbox", { name: "Card name", exact: true });
   await expect(cardName).toBeVisible();
@@ -96,6 +125,28 @@ async function addBrettCard(page: Page, number: string): Promise<void> {
   // Close the player popover (it covers Submit) by focusing another field.
   await cardName.click();
   await expect(findPlayer).toBeHidden();
+  if (team) {
+    const fullName = team.location ? `${team.location} ${team.name}` : team.name;
+    await page.getByRole("button", { name: "Add team" }).click();
+    const teamSearch = page.getByRole("textbox", { name: "Search teams" });
+    await teamSearch.fill(team.name);
+    // NEO-331: the create row shows while the rows of an earlier query are still
+    // held, and Enter is dropped then; "No matches." is this query's verdict.
+    await expect(page.getByText("No matches.", { exact: true })).toBeVisible();
+    await teamSearch.press("Enter");
+    const newTeam = page.getByRole("dialog", { name: `New team: ${team.name}` });
+    await expect(newTeam).toBeVisible();
+    await expect(newTeam.getByRole("textbox", { name: "New team name" })).toHaveValue(team.name);
+    if (team.location) {
+      await newTeam.getByRole("textbox", { name: "New team location (optional)" }).fill(team.location);
+    }
+    await newTeam.getByRole("button", { name: `Create team ${fullName}` }).click();
+    await expect(newTeam).toBeHidden();
+    await expect(page.getByRole("button", { name: `Remove team ${fullName}` })).toBeVisible();
+    // Focusing another field closes the team search.
+    await cardName.click();
+    await expect(teamSearch).toBeHidden();
+  }
   await page.getByRole("button", { name: "Submit new card" }).click();
   await expect(cardName).toBeHidden();
   await expect(editCardButton(page, number)).toBeVisible();
@@ -118,6 +169,18 @@ test(
     const titleCOver = `2024 Topps ${set} ${LONG_INSERT} Brett`;
     const titleCBox = `${box} ${PLAYER} #${NUM_C} Baseball`;
     expect([titleA.length, titleB.length, titleCOver.length, titleCBox.length]).toEqual([80, 66, 99, 74]);
+    // NEO-606: card D's team has a location to give up, card E's (the same
+    // length, one name) has none. Single tokens padded to a fixed length.
+    const teamD: NewTeam = {
+      location: `Lc${env.ATTEMPT_TOKEN}`.padEnd(15, "x"),
+      name: `Nk${env.ATTEMPT_TOKEN}`.padEnd(15, "x"),
+    };
+    const teamE: NewTeam = { name: `Wh${env.ATTEMPT_TOKEN}`.padEnd(31, "x") };
+    const teamDFull = `${teamD.location} ${teamD.name}`;
+    expect([teamDFull.length, teamE.name.length], "both teams are 31 characters on every runner").toEqual([31, 31]);
+    const titleD = `2024 Topps ${set} Base ${PLAYER} #${NUM_D} ${teamD.name} Baseball`;
+    const titleE = `${head} #${NUM_E} Baseball`;
+    expect([titleD.length, titleE.length]).toEqual([79, 70]);
 
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
     const cardTitle = drawer.getByRole("textbox", { name: "Card title", exact: true });
@@ -200,6 +263,30 @@ test(
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
 
+    // ── STEP 3b (NEO-606): a team gives up its location before it goes ──
+    // Card D: the location is the cut that makes it fit, so the title it was
+    // stored with at creation (no Regenerate here) names the team by its
+    // nickname, and nothing is reported left out: a location is not a team.
+    // The chips are drawn from the preview, so they prove the note has loaded.
+    await addBrettCard(page, NUM_D, teamD);
+    await editCardButton(page, NUM_D).click();
+    await expect(cardTitle).toBeVisible();
+    await expect(cardTitle).toHaveValue(titleD);
+    await expect(builtFrom.getByRole("listitem").filter({ hasText: `#${NUM_D}` })).toBeVisible();
+    await expect(leftOut).toHaveCount(0);
+    await expectAccessible(page, { within: drawer, label: "Card drawer, a team named by its nickname to fit" });
+    await doneEditing.click();
+    await expect(cardTitle).toBeHidden();
+    // Card E: a team with no location can only be dropped whole, and the note
+    // names it in full.
+    await addBrettCard(page, NUM_E, teamE);
+    await editCardButton(page, NUM_E).click();
+    await expect(cardTitle).toBeVisible();
+    await expect(cardTitle).toHaveValue(titleE);
+    await expect(leftOut).toHaveText(`Left out to fit: ${teamE.name}`);
+    await doneEditing.click();
+    await expect(cardTitle).toBeHidden();
+
     // ── STEP 4: card C, under an insert whose name never fits ──
     await drillToCustom(page, {
       sport: "Baseball",
@@ -254,14 +341,20 @@ test(
     await expect(fixerTitle).toHaveValue(titleCOver);
     await expect(tooLong).toBeVisible();
     await expect(trim).toBeVisible();
+    // NEO-606: the whole box says "too long": invalid to a screen reader, and
+    // the error pink on its edge and on the note.
+    await expect(fixerTitle).toHaveAttribute("aria-invalid", "true");
+    await expectOverCapLook(fixerTitle, tooLong);
     await expectAccessible(page, { within: fixer, label: "Attention walker, title over 80 with the Trim Set name door" });
 
-    // A title typed down under the cap says so, and the door goes (it shows
-    // only while the title is over).
-    await fixerTitle.fill(`${PLAYER} #${NUM_C} short enough`);
+    // A title trimmed down to the cap says so, the box lets go of the error,
+    // and the door goes (it shows only while the title is over).
+    await fixerTitle.fill(titleCOver.slice(0, 80));
     await expect(fitsNow).toBeVisible();
     await expect(tooLong).toHaveCount(0);
     await expect(trim).toHaveCount(0);
+    await expect(fixerTitle).not.toHaveAttribute("aria-invalid", "true");
+    await expectNoOverCapLook(fixerTitle);
 
     // Typed past the cap again: the door is back, and with typing to lose it
     // asks first. Cancel keeps the typing; the confirm is itself a state.

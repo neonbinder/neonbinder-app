@@ -36,6 +36,7 @@ import {
   stepCounter,
   tidyUpName,
 } from "../../support/wizard";
+import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";
 import type { Page } from "@playwright/test";
 
 const SERIES_1 = "Dugout Collection Artist's Proofs Series 1";
@@ -73,11 +74,18 @@ async function expectBulkWalkDone(page: Page): Promise<void> {
 //   #106 Derek Jeter     fits with full names (NOT listed; the box must leave it alone)
 //   #107 Michael Tucker  loses a first name   (listed; the box brings the name back)
 // and #76 Todd Hollandsworth runs over 80 after every cut (listed, flagged).
+// NEO-606: the catalogue's teams carry a Location and a Name, and a team gives up its
+// location before it goes. #107's Kansas City Royals does not fit even as "Royals"
+// under the long description (dropped whole, named in full in its note); under the
+// box it fits as "Royals" and not whole, so the step's title and the stored one both
+// read "<box> Michael Tucker #107 Royals Baseball" (79).
 const SERIES_1_CARDS = 110;
 const LONG_INSERT = "Dugout Collection Artists Proofs Hologram Foil Series II";
 const LONG_DESCRIPTION = `1996 Score ${LONG_INSERT}`;
 // The box text the operator types: the description without the filler words.
 const SHORT_BOX = "1996 Score Dugout Collection Artists Proofs";
+/** #107 under the box: the team by its nickname (NEO-606), the sport kept. */
+const TUCKER_BOXED = `${SHORT_BOX} Michael Tucker #107 Royals Baseball`;
 // What the operator types over #104's generated title.
 const OWN_TITLE = "1996 Score Artists Proofs LaTroy Hawkins #104 My Own Title";
 
@@ -168,8 +176,17 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   // The over-long titles: #107 lost "Michael", #76 runs over 80 after every cut and is flagged.
   await expect(title(107)).toHaveValue(`${LONG_DESCRIPTION} Tucker #107`);
   await expect(title(107)).toHaveAccessibleDescription(/Left out to fit: .*Michael/);
+  // NEO-606: a team dropped whole is named in full.
+  await expect(title(107)).toHaveAccessibleDescription(/Left out to fit: .*Kansas City Royals/);
   await expect(title(76)).toHaveValue(`${LONG_DESCRIPTION} Hollandsworth`);
   await expect(title(76)).toHaveAccessibleDescription(/Too long to list as-is\./);
+  // NEO-606: the whole box says it is over: invalid to a screen reader, and the error
+  // pink on its edge and on its note (the row's own status line).
+  const row76 = wizard.getByRole("listitem").filter({ has: page.getByRole("textbox", { name: /^Title for #76 / }) });
+  const note76 = row76.getByRole("status");
+  await expect(note76).toHaveText("Too long to list as-is.");
+  await expect(title(76)).toHaveAttribute("aria-invalid", "true");
+  await expectOverCapLook(title(76), note76);
   // #106 fits with its whole name, so it is not on this step at all.
   await expect(title(106)).toHaveCount(0);
   const listed = await wizard.getByRole("textbox", { name: /^Title for #/ }).count();
@@ -183,12 +200,18 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await box.press("Enter");
   await expect(wizard.getByText("Every title fits now.")).toBeVisible();
   await expect(box).toHaveAccessibleDescription(/\b43\/80\b/);
-  // #107 has its first name back, opening with the box text verbatim.
-  await expect(title(107)).toHaveValue(`${SHORT_BOX} Michael Tucker #107 Baseball`);
-  await expect(title(107)).not.toHaveAccessibleDescription(/Michael/);
+  // #107 has its first name back, opening with the box text verbatim, and its team fits as
+  // the nickname, where it would not fit whole (NEO-606): neither is reported left out.
+  await expect(title(107)).toHaveValue(TUCKER_BOXED);
+  await expect(title(107)).not.toHaveAccessibleDescription(/Michael|Kansas City|Royals/);
   // #76 now fits: the over-the-cap alert is gone, and the title opens with the box text.
   await expect(title(76)).toHaveValue(new RegExp(`^${escapeRe(SHORT_BOX)} Todd Hollandsworth `));
   await expect(title(76)).not.toHaveAccessibleDescription(/Too long to list as-is\./);
+  // NEO-606: trimmed to fit, the box lets go of the error: not invalid, no pink, no note.
+  await expect(title(76)).not.toHaveAttribute("aria-invalid", "true");
+  // The emptied status line hides itself, so it leaves the accessibility tree.
+  await expect(note76).toHaveCount(0);
+  await expectNoOverCapLook(title(76));
   // The list itself never moved under the edit, and #106 is still off it.
   await expect(wizard.getByRole("textbox", { name: /^Title for #/ })).toHaveCount(listed);
   await expect(title(106)).toHaveCount(0);
@@ -200,7 +223,7 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(wizard.getByRole("button", { name: /^Use generated title for #104 / })).toBeVisible();
   await expect(title(104)).toHaveValue(OWN_TITLE);
   // The box did not take #107's edit away: a hand edit is per card.
-  await expect(title(107)).toHaveValue(`${SHORT_BOX} Michael Tucker #107 Baseball`);
+  await expect(title(107)).toHaveValue(TUCKER_BOXED);
 
   // ── P7. Save: the Save step is a later step, and Enter on it commits ──
   const { x: titlesStep } = await readStep(page);
@@ -230,9 +253,10 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardTitle).toBeHidden();
   };
-  // #107: the box text opens it (the listed title the operator kept).
+  // #107: the box text opens it (the listed title the operator kept), and the stored title is
+  // exactly what the step showed, its team by the nickname (NEO-606).
   await openCard(107);
-  await expect(cardTitle).toHaveValue(`${SHORT_BOX} Michael Tucker #107 Baseball`);
+  await expect(cardTitle).toHaveValue(TUCKER_BOXED);
   await closeCard();
   // #104: the title the operator typed.
   await openCard(104);

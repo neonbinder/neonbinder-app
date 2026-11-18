@@ -2,6 +2,7 @@
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { tidyUpName } from "../../support/wizard";
+import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";
 
 test(
   "Listing length limits — an over-long card title is refused, and an over-long variation is walked to a fix",
@@ -57,12 +58,30 @@ test(
     await expect(cardName).toBeVisible();
 
     // ── An over-long listing title is refused ──
+    // NEO-606: the whole box says so, not only the note under it: the field is
+    // invalid to a screen reader and wears the error pink, and the note is the
+    // same pink. Trimmed to fit, all of it lets go.
+    const overTitle = "NEO101PAD-EXTREMELY-LONG-LISTING-TITLE-SUFFIX-THAT-BLOWS-PAST-THE-EIGHTY-CHARACTER-CAP";
+    // The length note ("Title is N characters — M over the 80-character limit"),
+    // not the refused save's own alert, which keeps the danger ink.
+    const overNote = drawer.getByRole("alert").filter({ hasText: /^Title is \d+ characters/ });
     await expect(cardTitle).toBeVisible();
-    await cardTitle.fill("NEO101PAD-EXTREMELY-LONG-LISTING-TITLE-SUFFIX-THAT-BLOWS-PAST-THE-EIGHTY-CHARACTER-CAP");
+    await cardTitle.fill(overTitle);
     await expect(page.getByText(/over the 80-character limit/)).toBeVisible();
     const shorten = page.getByText(/Shorten it before saving/);
     await expect(shorten).toBeVisible();
+    await expect(cardTitle).toHaveAttribute("aria-invalid", "true");
+    await expectOverCapLook(cardTitle, overNote);
     await expectAccessible(page, { within: drawer, label: "Card detail drawer, over-long title refused" });
+    // Trimmed to 80, it fits: no longer invalid, no pink, no note.
+    await cardTitle.fill(overTitle.slice(0, 80));
+    await expect(drawer.getByText("80/80", { exact: true })).toBeVisible();
+    await expect(cardTitle).not.toHaveAttribute("aria-invalid", "true");
+    await expect(overNote).toHaveCount(0);
+    await expectNoOverCapLook(cardTitle);
+    // Back over the cap, for the refusal below.
+    await cardTitle.fill(overTitle);
+    await expect(cardTitle).toHaveAttribute("aria-invalid", "true");
 
     await cardTitle.press("Enter");
     await expect(page.getByText(/Saved Card title/)).toBeHidden();
@@ -129,8 +148,13 @@ test(
     const variation = page.getByRole("textbox", { name: "Card variation", exact: true });
 
     // ── An over-long variation is saved, but flagged ──
+    // NEO-606: past 65 the box wears the error pink with its note; it is advice,
+    // not a refusal, so the field is never marked invalid.
+    const variationNote = drawer.getByText(/a marketplace that caps this field will reject the value/);
     await variation.fill(variationText);
-    await expect(page.getByText(/a marketplace that caps this field will reject the value/)).toBeVisible();
+    await expect(variationNote).toBeVisible();
+    await expectOverCapLook(variation, variationNote);
+    await expect(variation).not.toHaveAttribute("aria-invalid", "true");
     await expectAccessible(page, { within: drawer, label: "Card detail drawer, over-long variation warned" });
     await variation.press("Enter");
     await expect(page.getByText(/Saved Variation/)).toBeVisible();
@@ -175,6 +199,13 @@ test(
     await expect(fixer.getByText("Card titles", { exact: true })).toBeVisible();
     await expect(fixer.getByText("variation text is over the 65-character limit")).toBeVisible();
     await expect(fixer.getByRole("textbox", { name: `Card title for #${num}` })).toHaveValue(generated);
+    // NEO-606: the walker's variation box is pink while it is past 65 (advice,
+    // never invalid), and lets go the moment it is trimmed to 65 (below).
+    const fixerVariation = fixer.getByRole("textbox", { name: `Card variation for #${num}` });
+    const fixerVariationNote = fixer.getByText(/a marketplace that caps this field will reject the value/);
+    await expect(fixerVariation).toHaveValue(variationText);
+    await expectOverCapLook(fixerVariation, fixerVariationNote);
+    await expect(fixerVariation).not.toHaveAttribute("aria-invalid", "true");
     await expectAccessible(page, { within: fixer, label: "Attention walker, over-long variation" });
 
     // NEO-535: the fixer's "Left out to fit" note, read from the field's text.
@@ -202,8 +233,13 @@ test(
     await expect(fixerLeftOut).toHaveText(`Left out to fit: ${variationText}`);
 
     await expect(fixer.getByRole("button", { name: /Save \(Enter\)/ })).toBeVisible();
-    await fixer.getByRole("textbox", { name: `Card variation for #${num}` }).clear();
-    await expect(fixer.getByText(/a marketplace that caps this field will reject the value/)).toBeHidden();
+    // Trimmed to 65, the variation fits: the note and the pink go.
+    await fixerVariation.fill(variationText.slice(0, 65));
+    await expect(fixerVariationNote).toBeHidden();
+    await expect(fixer.getByRole("button", { name: /Save \(Enter\)/ })).toBeVisible();
+    await expectNoOverCapLook(fixerVariation);
+    await fixerVariation.clear();
+    await expect(fixerVariationNote).toBeHidden();
     await fixer.getByRole("button", { name: /Save \(Enter\)/ }).click();
 
     await expect(fixer.getByText(/All clear.*nothing on this checklist needs attention/)).toBeVisible();

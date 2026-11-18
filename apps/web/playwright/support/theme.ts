@@ -64,3 +64,24 @@ export async function paintsLook(page: Page, look: Look, timeout = 7_000): Promi
     return false;
   }
 }
+
+/**
+ * NEO-606: a field over its length cap is marked as a whole, in the app's
+ * error pink: the field's edge, and the note under it that says why. Both are
+ * the `neon-pink-text` role (app/theme.css), read in the dark mode the suite
+ * is pinned to. The pink IS the feature here, so it is read as painted; the
+ * note's words and the field's `aria-invalid` (a blocking title) are the spec's
+ * own asserts.
+ */
+const OVER_CAP_PINK = "rgb(255, 64, 163)";
+
+/** `field` wears the over-cap pink edge, and `note` (what it says about the length) the same pink ink. */
+export async function expectOverCapLook(field: Locator, note: Locator): Promise<void> {
+  await expect(field).toHaveCSS("border-top-color", OVER_CAP_PINK);
+  await expect(note).toHaveCSS("color", OVER_CAP_PINK);
+}
+
+/** `field` no longer wears the over-cap pink edge. Pair it with a positive assert (GUIDE R2). */
+export async function expectNoOverCapLook(field: Locator): Promise<void> {
+  await expect(field).not.toHaveCSS("border-top-color", OVER_CAP_PINK);
+}
