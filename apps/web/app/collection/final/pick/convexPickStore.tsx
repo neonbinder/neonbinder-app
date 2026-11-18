@@ -3,17 +3,16 @@ import { useConvex, useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@/convex/_generated/api";
 import type { Id } from "@/convex/_generated/dataModel";
-import { variantTypeKindFromTitle } from "@/convex/variantRole";
 import { toCardWithPath } from "../data/convexStore";
 import type { Card, Condition } from "../data/types";
 import { EBAY_UNTITLED_SALE } from "../inventory/listing/copy";
 import { PageApiContext } from "../pageApi";
-import { listedTitle, listedYear } from "./model";
+import { listedTitle, listedYear, toListedCard, words, type RawListed, type SportRow, type TitleSport } from "./model";
 import { PickListStoreContext } from "./store";
 import type { ListedCard, PickBox, PickListData, PickListStore, PickPhoto, SaleLine } from "./types";
 
 // The title rule lives with the model, so the demo writes its titles the same way.
-export { listedTitle, listedYear };
+export { listedTitle, listedYear, toListedCard };
 
 /**
  * NEO-500 — the signed-in seller's Pick List, on Convex. The same
@@ -47,7 +46,6 @@ export { listedTitle, listedYear };
 
 type OpenAnswer = FunctionReturnType<typeof api.pickList.open>;
 type RawLine = OpenAnswer["lines"][number];
-type RawListed = NonNullable<RawLine["listed"]>;
 
 /** Card ids `pickList.cards` takes at once (the server's `MAX_CARDS_BY_ID`). */
 const CARDS_PER_CALL = 200;
@@ -112,62 +110,6 @@ function chunks<T>(items: readonly T[], size: number): T[][] {
 interface Hydrated {
   card: Card | null;
   sportCode: string | null;
-}
-
-/** NB's sport row a sale names: its name and SKU code. */
-interface SportRow {
-  name: string;
-  code: string | null;
-}
-
-/** The NB sport a title's player or team names (NEO-590); null when none was found. */
-type TitleSport = (SportRow & { id: string }) | null;
-
-/** A listing's words, trimmed; blank is absent. */
-function words(text: string | undefined): string | undefined {
-  const t = text?.replace(/\s+/g, " ").trim();
-  return t ? t : undefined;
-}
-
-/**
- * A sale's words for its card, resolved: NB's sport when the sale named one
- * NB has (`sport` loaded), else the listing's sport word; the year as a
- * number; the variant's divider only when its word IS one (Base, Insert,
- * Parallel). A word NB does not file by ("Variation", "SP", "Promo") is kept
- * as written (`variantWord`), never read as a role, and the listing's
- * variant name is kept whatever the word. Undefined when the words say nothing.
- * `titleSport` is the server's answer for the listing's title (NEO-590): null
- * is "asked, no sport found", undefined "not asked".
- */
-export function toListedCard(
-  raw: RawListed,
-  sport: SportRow | null | undefined,
-  titleSport?: TitleSport,
-): ListedCard | undefined {
-  const season = words(raw.year);
-  const year = season ? listedYear(season) : undefined;
-  const variant = words(raw.variant);
-  const variantName = words(raw.variantName);
-  const kind = variantTypeKindFromTitle(variant);
-  const sportName = sport?.name ?? words(raw.sport);
-  const out: ListedCard = {
-    ...(sport && raw.sportId ? { sportId: raw.sportId } : {}),
-    ...(sportName ? { sportName } : {}),
-    ...(sport?.code ? { sportCode: sport.code } : {}),
-    ...(year !== undefined ? { year } : {}),
-    ...(season ? { season } : {}),
-    ...(words(raw.setName) ? { setName: words(raw.setName) } : {}),
-    ...(words(raw.players) ? { players: words(raw.players) } : {}),
-    ...(words(raw.cardNo) ? { cardNumber: words(raw.cardNo) } : {}),
-    ...(kind ? { role: kind } : {}),
-    // A word NB does not file by ("Variation") is how the seller tells the copy from the base: kept as written.
-    ...(variant && !kind ? { variantWord: variant } : {}),
-    ...(variantName ? { variantName } : {}),
-    // NEO-520: the listing's own title (eBay). NEO-590: parsed for Pick List order only, never matched to a card.
-    ...(words(raw.title) ? { title: words(raw.title) } : {}),
-    ...(words(raw.title) && titleSport !== undefined ? { titleSport } : {}),
-  };
-  return Object.keys(out).length ? out : undefined;
 }
 
 /**

@@ -76,6 +76,7 @@ import type {
   Want,
 } from "@/app/collection/final/data/types";
 import { problemSentence } from "@/app/collection/final/inventory/listing/copy";
+import { listedTitle, toListedCard } from "@/app/collection/final/pick/model";
 import { hasReportableCard, isReportableSyncReason } from "@/lib/collection/sync-report";
 import { dashSetLabel, setRefLabel, toDash, type DashCard } from "../dash-card";
 import type {
@@ -808,13 +809,28 @@ export function daysSinceSold(orderDate: number, now: number): number {
 type SaleRaw = SalesRaw["orders"][number];
 
 /**
+ * The words that name a sale line NB holds no card for: the Pick List's own
+ * rule (`listedTitle`) over what the sale carried (an eBay listing title, or
+ * the words a BuySportsCards line describes). Undefined when it carried none.
+ * Shown to say which line it is; never tied to a card or written to NB.
+ */
+function saleLineTitle(listed: SaleRaw["lines"][number]["listed"]): string | undefined {
+  const card = listed ? toListedCard(listed, undefined) : undefined;
+  return (card ? listedTitle(card) : "") || undefined;
+}
+
+/**
  * One order line. A line with no card, or a card that is not in the catalog
- * any more, is unmatched: never a guess at which card it was. An oversold
+ * any more, has no card and no problem (NEO-590): it is named by the sale's
+ * own words when it has them, never a guess at which card it was. An oversold
  * line names how many sold and how many the boxes held.
  */
 export function saleLineOf(line: SaleRaw["lines"][number], cards: CardsById): SaleLine {
   const card: Card | undefined = line.cardId ? cards.get(line.cardId) : undefined;
-  if (!card) return { card: null, quantity: line.quantity, problem: { kind: "unmatched" } };
+  if (!card) {
+    const title = saleLineTitle(line.listed);
+    return { card: null, quantity: line.quantity, ...(title ? { title } : {}) };
+  }
   if (line.problem === "oversold") {
     const short = line.shortBy ?? line.quantity;
     return {
@@ -838,7 +854,7 @@ export function unshippedSaleOf(order: SaleRaw, cards: CardsById, now: number): 
     lines,
     cardCount: order.cardCount,
     firstCard: lines.find((l) => l.card)?.card ?? null,
-    hasProblem: order.problemPastCut || lines.some((l) => l.problem),
+    hasProblem: order.oversoldPastCut || lines.some((l) => l.problem),
   };
 }
 

@@ -904,7 +904,7 @@ function saleRaw(over: Partial<SaleRaw> = {}): SaleRaw {
     status: "READY_TO_SHIP",
     lines: [{ cardId: cardA.id as never, quantity: 1 }],
     cardCount: 1,
-    problemPastCut: false,
+    oversoldPastCut: false,
     ...over,
   };
 }
@@ -954,7 +954,7 @@ describe("sales: shipped vs still to ship, and the lines", () => {
         status: "PAID",
         lines: [{ quantity: 1, problem: "unmatched" }, { cardId: cardB.id as never, quantity: 1 }],
         cardCount: 5,
-        problemPastCut: false,
+        oversoldPastCut: false,
         orderDate: new Date(2026, 10, 7, 12).getTime(),
       }),
       cardsAB(),
@@ -962,7 +962,7 @@ describe("sales: shipped vs still to ship, and the lines", () => {
     );
     expect(order).toMatchObject({ marketplace: "ebay", orderNumber: "14-1", statusText: "Paid", daysSinceSold: 2, cardCount: 5, hasProblem: true });
     expect(order.firstCard?.id).toBe(cardB.id);
-    expect(unshippedSaleOf(saleRaw({ problemPastCut: true }), cardsAB(), now).hasProblem).toBe(true);
+    expect(unshippedSaleOf(saleRaw({ oversoldPastCut: true }), cardsAB(), now).hasProblem).toBe(true);
     expect(unshippedSaleOf(saleRaw(), cardsAB(), now).hasProblem).toBe(false);
     // No line tied to a card: no first card, nothing guessed.
     expect(unshippedSaleOf(saleRaw({ lines: [{ quantity: 1, problem: "unmatched" }] }), cardsAB(), now).firstCard).toBeNull();

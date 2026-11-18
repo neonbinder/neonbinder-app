@@ -23,7 +23,9 @@
  * for Pick List order only, never matched to a card and never written to NB.
  */
 
+import type { Infer } from "convex/values";
 import { cardNumberToken } from "@/convex/lib/titleSport";
+import type { saleItemListedValidator } from "@/convex/schema";
 import { variantTypeKindFromTitle } from "@/convex/variantRole";
 import { setLabel } from "../data/labels";
 import type { Card, SetRef } from "../data/types";
@@ -275,6 +277,65 @@ export function listedTitle(listed: ListedCard): string {
     .join(" ");
   // NEO-520: a listing with no card words (an eBay line NB didn't list) is named by its own title, as sent.
   return [card, listed.players?.trim()].filter(Boolean).join(" · ") || (listed.title?.trim() ?? "");
+}
+
+/** A sale line's own words for its card, as the order poll stored them (`marketplaceSales.items[].listed`). */
+export type RawListed = Infer<typeof saleItemListedValidator>;
+
+/** NB's sport row a sale names: its name and SKU code. */
+export interface SportRow {
+  name: string;
+  code: string | null;
+}
+
+/** The NB sport a title's player or team names (NEO-590); null when none was found. */
+export type TitleSport = (SportRow & { id: string }) | null;
+
+/** A listing's words, trimmed; blank is absent. */
+export function words(text: string | undefined): string | undefined {
+  const t = text?.replace(/\s+/g, " ").trim();
+  return t ? t : undefined;
+}
+
+/**
+ * A sale's words for its card, resolved: NB's sport when the sale named one
+ * NB has (`sport` loaded), else the listing's sport word; the year as a
+ * number; the variant's divider only when its word IS one (Base, Insert,
+ * Parallel). A word NB does not file by ("Variation", "SP", "Promo") is kept
+ * as written (`variantWord`), never read as a role, and the listing's
+ * variant name is kept whatever the word. Undefined when the words say nothing.
+ * `titleSport` is the server's answer for the listing's title (NEO-590): null
+ * is "asked, no sport found", undefined "not asked".
+ */
+export function toListedCard(
+  raw: RawListed,
+  sport: SportRow | null | undefined,
+  titleSport?: TitleSport,
+): ListedCard | undefined {
+  const season = words(raw.year);
+  const year = season ? listedYear(season) : undefined;
+  const variant = words(raw.variant);
+  const variantName = words(raw.variantName);
+  const kind = variantTypeKindFromTitle(variant);
+  const sportName = sport?.name ?? words(raw.sport);
+  const out: ListedCard = {
+    ...(sport && raw.sportId ? { sportId: raw.sportId } : {}),
+    ...(sportName ? { sportName } : {}),
+    ...(sport?.code ? { sportCode: sport.code } : {}),
+    ...(year !== undefined ? { year } : {}),
+    ...(season ? { season } : {}),
+    ...(words(raw.setName) ? { setName: words(raw.setName) } : {}),
+    ...(words(raw.players) ? { players: words(raw.players) } : {}),
+    ...(words(raw.cardNo) ? { cardNumber: words(raw.cardNo) } : {}),
+    ...(kind ? { role: kind } : {}),
+    // A word NB does not file by ("Variation") is how the seller tells the copy from the base: kept as written.
+    ...(variant && !kind ? { variantWord: variant } : {}),
+    ...(variantName ? { variantName } : {}),
+    // NEO-520: the listing's own title (eBay). NEO-590: parsed for Pick List order only, never matched to a card.
+    ...(words(raw.title) ? { title: words(raw.title) } : {}),
+    ...(words(raw.title) && titleSport !== undefined ? { titleSport } : {}),
+  };
+  return Object.keys(out).length ? out : undefined;
 }
 
 /** One NB set on the list, with its sport's code (the divider colour). */
