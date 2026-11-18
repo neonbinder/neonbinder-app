@@ -8,6 +8,7 @@
 import { ConvexError } from "convex/values";
 import { describe, expect, test } from "vitest";
 import { MAX_CARD_TEAMS } from "../features/cardAttention";
+import { parsePublishedChecklist } from "../../lib/checklists/parse-published-checklist";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { MAX_PUBLISHED_ROW_NAMES, checkPublishedChecklist } from "./publishedChecklistCheck";
 
@@ -118,6 +119,34 @@ describe("checkPublishedChecklist — Prospect", () => {
     const bare = checked({ teams: ["Prospect", "Prospect"] });
     expect(bare.teams).toEqual([]);
     expect(bare).toMatchObject({ prospect: true, noTeam: true });
+  });
+
+  test("takes the first bracket as X and drops the notes after it, as the parser does", () => {
+    for (const cell of ["Prospect (Oklahoma) (RC)", "Prospect (Oklahoma) (Future Stars)", "Prospect (Oklahoma) [SP] (x)"]) {
+      expect(checked({ teams: [cell] })).toEqual(
+        checked({ prospect: true, prospectTeams: ["Oklahoma"] }),
+      );
+      expect(checked({ teams: ["Mets", cell] })).toEqual(
+        checked({ teams: ["Mets"], prospect: true, prospectTeams: ["Oklahoma"] }),
+      );
+    }
+  });
+
+  test.each([
+    "Prospect (Oklahoma) (RC) / Mets",
+    "Mets / Prospect (Oklahoma) (Future Stars)",
+    "Prospect (A) (B)",
+    "Prospect / Prospect (Texas)",
+  ])("keeps the parser's own row for the cell %j unchanged", (cell) => {
+    const parsed = parsePublishedChecklist(`Card #,Player,Team\n1,Cord Rager,"${cell}"\n`).rows[0];
+    const { subset: _subset, ...sent } = parsed;
+    const out = checked(sent);
+    expect(out.teams).toEqual(parsed.teams);
+    expect(out.prospect).toBe(parsed.prospect);
+    expect(out.prospectTeams).toEqual(parsed.prospectTeams);
+    // The raw cell, sent as one string per "/" segment, reads the same.
+    const raw = checked({ teams: cell.split(" / ") });
+    expect(raw).toEqual(out);
   });
 
   test("agrees with the parser's row for the same cell", () => {

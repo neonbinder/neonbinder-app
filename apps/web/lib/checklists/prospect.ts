@@ -20,9 +20,12 @@
  *
  * Only a WHOLE cell makes the claim, singular "Prospect" only, any case and
  * spacing. "Prospects", "Top Prospect", "Prospect Autos" and a cell that
- * carries anything after the closing bracket ("Prospect (Frisco) Rookie")
+ * carries plain text after the closing bracket ("Prospect (Frisco) Rookie")
  * are not claims and read as the team text they always did. Brackets may nest
- * inside X ("Prospect (Frisco RoughRiders (AA))").
+ * inside X ("Prospect (Frisco RoughRiders (AA))"). X is the FIRST bracket;
+ * brackets after it are notes and are dropped, as every other name or team
+ * cell drops its notes ("Prospect (Oklahoma) (RC)" is a prospect of
+ * Oklahoma).
  *
  * Pure: the client parser and the server's re-check
  * (`checkPublishedChecklist`) read the claim through this one function, so
@@ -56,6 +59,54 @@ function closingBracket(text: string, open: number): number {
   return -1;
 }
 
+const NOTE_CLOSERS: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
+const BRACKET_KINDS = "([{";
+const CLOSER_KIND: Record<string, number> = { ")": 0, "]": 1, "}": 2 };
+
+/**
+ * For every opening bracket in `text`, the index of the one that closes it
+ * (same kind, counting only that kind), else -1; every other index is -1. One
+ * pass, so a caller asking about many brackets of one long text never
+ * rescans it.
+ */
+export function matchBrackets(text: string): Int32Array {
+  const match = new Int32Array(text.length).fill(-1);
+  const open: number[][] = [[], [], []];
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    const kind = BRACKET_KINDS.indexOf(c);
+    if (kind >= 0) open[kind].push(i);
+    else if (c in CLOSER_KIND) {
+      const opener = open[CLOSER_KIND[c]].pop();
+      if (opener !== undefined) match[opener] = i;
+    }
+  }
+  return match;
+}
+
+/**
+ * The index just past a run of bracketed notes ("(RC) [SP]") starting at
+ * `from` (spaces between them allowed): `from` itself when none starts there.
+ * Pass `match` (`matchBrackets(text)`) when asking about the same text again.
+ */
+export function bracketedNotesEnd(text: string, from: number, match?: Int32Array): number {
+  const matched = match ?? matchBrackets(text);
+  let end = from;
+  let at = from;
+  for (;;) {
+    while (at < text.length && /\s/.test(text[at])) at++;
+    if (NOTE_CLOSERS[text[at]] === undefined) return end;
+    const found = matched[at];
+    if (found < 0) return end;
+    end = found + 1;
+    at = end;
+  }
+}
+
+function onlyBracketedNotes(tail: string): boolean {
+  return tail.trim() === "" || bracketedNotesEnd(tail, 0) >= tail.trimEnd().length;
+}
+
 /**
  * Read one WHOLE team cell. `null` when it is not a prospect cell; otherwise
  * `{ team }`, with X trimmed and `null` for the bare forms. X that says
@@ -68,10 +119,10 @@ export function readProspectCell(cell: string): ProspectCell | null {
   if (!head) return null;
   const rest = folded.slice(head[0].length).trim();
   if (rest === "") return { team: null };
-  // `rest` starts with "(" (the lookahead above). The bracket it opens must
-  // be the cell's last character: anything after it is not a prospect cell.
+  // `rest` starts with "(" (the lookahead above). X is the bracket it opens;
+  // only bracketed notes may follow it, anything else is not a prospect cell.
   const close = closingBracket(rest, 0);
-  if (close !== rest.length - 1) return null;
+  if (close < 0 || !onlyBracketedNotes(rest.slice(close + 1))) return null;
   const inner = rest.slice(1, close).trim();
   if (inner === "" || isNoClaimTeamText(inner) || isNoTeamText(inner)) return { team: null };
   return { team: inner };

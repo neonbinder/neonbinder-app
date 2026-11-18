@@ -4,8 +4,8 @@
  * and the claim as the line format reads it.
  */
 import { describe, expect, it } from "vitest";
-import { parsePublishedChecklist } from "./parse-published-checklist";
-import { isProspectText, readProspectCell } from "./prospect";
+import { parsePublishedChecklist, parsePublishedChecklistCells } from "./parse-published-checklist";
+import { bracketedNotesEnd, isProspectText, matchBrackets, readProspectCell } from "./prospect";
 
 describe("readProspectCell", () => {
   it.each([
@@ -46,7 +46,8 @@ describe("readProspectCell", () => {
     "Prospect Smith",
     "Prospect Autos",
     "Prospect - Oklahoma",
-    "Prospect (A) (B)",
+    "Prospect (A) Rookie",
+    "Prospect (A) (B",
     "Prospect (Frisco) Rookie",
     "Prospect (Oklahoma",
     "Prospect (Oklahoma))",
@@ -55,6 +56,19 @@ describe("readProspectCell", () => {
   ])("does not read %j as a prospect cell", (cell) => {
     expect(readProspectCell(cell)).toBeNull();
     expect(isProspectText(cell)).toBe(false);
+  });
+
+  it.each([
+    ["Prospect (A) (B)", "A"],
+    ["Prospect (Oklahoma) (RC)", "Oklahoma"],
+    ["Prospect (Oklahoma) [SP] (note)", "Oklahoma"],
+    ["Prospect (Frisco RoughRiders (AA)) (RC)", "Frisco RoughRiders (AA)"],
+  ] as const)("takes the first bracket of %j as X and drops the notes after it", (cell, team) => {
+    expect(readProspectCell(cell)).toEqual({ team });
+  });
+
+  it("reads Prospect () (RC) as a bare prospect", () => {
+    expect(readProspectCell("Prospect () (RC)")).toEqual({ team: null });
   });
 
   it("reads full-width and compatibility characters the way the rest of the checklist does (NFKC)", () => {
@@ -96,12 +110,14 @@ describe("Prospect in the line format (number player - team)", () => {
     expect(row.prospectTeams).toBeUndefined();
   });
 
-  it("does not read prospect (X) (note) as a claim, and never leaves the bare word as a team", () => {
+  it("reads prospect (X) (note) as a claim of X: the notes after the first bracket are dropped", () => {
     const [row] = parse("5 Mike Trout - prospect (Oklahoma) (Future Stars)").rows;
-    expect(row.teams).toEqual([]);
-    expect(row.prospect).toBeUndefined();
-    expect(row.prospectTeams).toBeUndefined();
-    expect(row.noTeam).toBeUndefined();
+    expect(row).toEqual({ number: "5", players: ["Mike Trout"], teams: [], prospect: true, prospectTeams: ["Oklahoma"] });
+  });
+
+  it("reads Mets, Prospect (Oklahoma) (RC) as the team and the claim", () => {
+    const [row] = parse("15 Mike Trout - Mets, Prospect (Oklahoma) (RC)").rows;
+    expect(row).toEqual({ number: "15", players: ["Mike Trout"], teams: ["Mets"], prospect: true, prospectTeams: ["Oklahoma"] });
   });
 
   it("reads a Prospect (X) beside another team in the team part: the claim and the team", () => {
@@ -193,14 +209,26 @@ describe("Prospect in a delimited file", () => {
     expect(out.rows[0]).toEqual({ number: "1", players: ["Mike Trout"], teams: [], prospect: true, prospectTeams: ["Texas"] });
   });
 
-  it.each(["Prospect (Oklahoma) (note)", "Prospect (Oklahoma) Rookie", "Prospect - Oklahoma"])(
-    "never lets the word Prospect travel as a team: %j is no claim and no team",
+  it.each(["Prospect (Oklahoma) Rookie", "Prospect - Oklahoma"])(
+    "never lets the word Prospect travel as a team: %j is no claim and no team named Prospect",
     (cell) => {
       const out = parsePublishedChecklist(`Card #,Player,Team\n1,Mike Trout,"${cell}"\n`, {});
       expect(out.rows[0].teams.some((t) => /^prospect$/i.test(t))).toBe(false);
       expect(out.rows[0].prospect).toBeUndefined();
     },
   );
+
+  it.each([
+    ["Prospect (Oklahoma) (note)", [], ["Oklahoma"]],
+    ["Prospect (Oklahoma) (RC)", [], ["Oklahoma"]],
+    ["Prospect (Oklahoma) (RC) / Mets", ["Mets"], ["Oklahoma"]],
+    ["Mets / Prospect (A) (B)", ["Mets"], ["A"]],
+  ] as const)("reads the first bracket of %j as X and drops the notes", (cell, teams, xs) => {
+    const out = parsePublishedChecklist(`Card #,Player,Team\n1,Mike Trout,"${cell}"\n`, {});
+    expect(out.rows[0].teams).toEqual(teams);
+    expect(out.rows[0].prospect).toBe(true);
+    expect(out.rows[0].prospectTeams).toEqual(xs);
+  });
 
   it("leaves Top Prospect as the team text it always was", () => {
     const out = parsePublishedChecklist('Card #,Player,Team\n1,Mike Trout,"Top Prospect"\n', {});
@@ -211,4 +239,83 @@ describe("Prospect in a delimited file", () => {
     const out = parsePublishedChecklist("Card #,Player,Team\n1,Mike Trout,Mets (RC)\n", {});
     expect(out.rows[0]).toEqual({ number: "1", players: ["Mike Trout"], teams: ["Mets"] });
   });
+});
+
+describe("Teams in a Last Name / First Name PDF keep only their first bracket (the league tag)", () => {
+  const run = (team: string) => {
+    const header = [
+      { text: "Last Name", x: 52.5, end: 92.4, size: 9.1 },
+      { text: "First Name", x: 110.7, end: 151.7, size: 9.1 },
+    ];
+    const row = [
+      { text: "Trout", x: 52.5, end: 80, size: 9.1 },
+      { text: "Mike", x: 110.7, end: 130, size: 9.1 },
+      { text: team, x: 165.6, end: 165.6 + team.length * 4.5, size: 9.1 },
+    ];
+    const record = (line: number, items: typeof row) => ({
+      line,
+      page: 1,
+      cells: items.map((i) => i.text),
+      xs: items.map((i) => i.x),
+      items,
+    });
+    return parsePublishedChecklistCells(
+      { format: "pdf", records: [record(1, header), record(2, row)] },
+      {},
+    ).rows[0];
+  };
+
+  it.each([
+    ["New York (A)", ["New York (A)"]],
+    ["New York (A) (RC)", ["New York (A)"]],
+    ["Seattle (RC)", ["Seattle"]],
+    ["Seattle (RC) (A)", ["Seattle"]],
+    ["Los Angeles (N)", ["Los Angeles (N)"]],
+    ["Seattle", ["Seattle"]],
+  ] as const)("reads the team cell %j as %j", (team, teams) => {
+    expect(run(team)).toMatchObject({ players: ["Mike Trout"], teams, noNumber: true });
+  });
+
+  it("reads Prospect (Oklahoma) (RC) as a claim of Oklahoma, not a team string", () => {
+    expect(run("Prospect (Oklahoma) (RC)")).toEqual({
+      number: "NNO",
+      players: ["Mike Trout"],
+      teams: [],
+      noNumber: true,
+      prospect: true,
+      prospectTeams: ["Oklahoma"],
+    });
+  });
+});
+
+describe("bracket scans are one pass (N3)", () => {
+  it("matches every opening bracket of a long unclosed run in one go", () => {
+    const text = "prospect (".repeat(50_000);
+    const match = matchBrackets(text);
+    expect(match.length).toBe(text.length);
+    expect(Array.from(match).every((m) => m === -1)).toBe(true);
+  });
+
+  it("matches nested and mixed brackets by kind", () => {
+    const text = "a (b (c) [d]) {e}";
+    const match = matchBrackets(text);
+    expect(match[2]).toBe(12);
+    expect(match[5]).toBe(7);
+    expect(match[9]).toBe(11);
+    expect(match[14]).toBe(16);
+    // "(b (c) [d])" then the note "{e}" after it.
+    expect(bracketedNotesEnd(text, 2, match)).toBe(17);
+    expect(bracketedNotesEnd(text, 2, match) === bracketedNotesEnd(text, 2)).toBe(true);
+  });
+
+  it("reads a cell of a repeated unclosed 'prospect (' as no claim, and finishes", () => {
+    const cell = "prospect (".repeat(20_000);
+    const out = parsePublishedChecklist(`Card #,Player,Team\n1,Mike Trout,"${cell}"\n`, {});
+    expect(out.rows.every((r) => r.prospect === undefined)).toBe(true);
+  }, 5_000);
+
+  it("reads a line of a repeated unclosed 'prospect (' as no claim, and finishes", () => {
+    const out = parsePublishedChecklist(`1 Mike Trout - ${"prospect (".repeat(190)}\n`, {});
+    expect(out.rows.every((r) => r.prospect === undefined)).toBe(true);
+  }, 5_000);
 });

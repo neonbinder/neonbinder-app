@@ -15,6 +15,7 @@ import {
 import {
   NamePairs,
   PDF_MAX_COLUMN_GROUPS,
+  PDF_MAX_HEADER_CELLS,
   columnGroups,
   fontHeading,
   groupIndexOf,
@@ -626,5 +627,53 @@ describe("parser: Last Name / First Name outside a PDF", () => {
   it("does not read a header of only Last Name (no First Name) as the pair", () => {
     const out = parsePublishedChecklist("Last Name,Team\nSmith,Mets\n", {});
     expect(out.rows).toEqual([]);
+  });
+});
+
+describe("the named-columns path is bounded by the header's width (S3)", () => {
+  /** A header of Last Name, First Name and `extra` Team cells, shown twice. */
+  const twoHeaders = (extra: number) => {
+    const header = (y: number) => [
+      { str: "Last Name", transform: [10, 0, 0, 10, 20, y], width: 45, height: 10 },
+      { str: "First Name", transform: [10, 0, 0, 10, 100, y], width: 50, height: 10 },
+      ...Array.from({ length: extra }, (_, i) => ({
+        str: "Team",
+        transform: [10, 0, 0, 10, 200 + i * 60, y],
+        width: 20,
+        height: 10,
+      })),
+    ];
+    const lines = [...groupPageItems(header(700)), ...groupPageItems(header(680))];
+    const records: ChecklistCellRecord[] = lines.map((l, i) => ({
+      line: i + 1,
+      page: 1,
+      cells: l.cells,
+      xs: l.xs,
+      items: l.items,
+    }));
+    return parsePublishedChecklistCells({ format: "pdf", records }, {});
+  };
+
+  it("reads a header within the cap from its runs: the repeated header is skipped as such", () => {
+    const out = twoHeaders(2);
+    expect(out.skipped.map((s) => s.reason)).toContain(COLUMN_HEADINGS_AGAIN);
+  });
+
+  it("reads a header past the cap as cells, not from its runs", () => {
+    const out = twoHeaders(PDF_MAX_HEADER_CELLS);
+    expect(out.skipped.map((s) => s.reason)).not.toContain(COLUMN_HEADINGS_AGAIN);
+  });
+
+  it("puts a run under the nearest column by binary search, ties to the earlier column", () => {
+    const cells = cellsAt(50, 130, 210, 290);
+    const group = columnGroups(["lastName", "firstName", "teams", "teams"], cells, opts)[0];
+    expect(slotGroupRuns([run("a", 49), run("b", 91), run("c", 292), run("d", 400)], group, cells)).toEqual([
+      "a",
+      "b",
+      "",
+      "c d",
+    ]);
+    // Halfway between 50 and 130 is a tie: the earlier column.
+    expect(slotGroupRuns([run("t", 90)], group, cells)).toEqual(["t", "", "", ""]);
   });
 });

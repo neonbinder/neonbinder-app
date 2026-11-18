@@ -91,12 +91,13 @@
 
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
 import { isNoClaimTeamText, isNoTeamText, NO_TEAM_AND_A_TEAM } from "./no-team";
-import { readProspectCell } from "./prospect";
+import { bracketedNotesEnd, matchBrackets, readProspectCell } from "./prospect";
 import {
   columnGroups,
   fontHeading,
   modeFont,
   NamePairs,
+  PDF_MAX_HEADER_CELLS,
   PDF_MAX_LINE_ITEMS,
   runsByGroup,
   slotGroupRuns,
@@ -409,13 +410,55 @@ function dropTrademarks(text: string): string {
   return text.replace(/[®™]/g, "");
 }
 
+/** Two-letter bracket contents that are hobby markers, never a league tag. */
+const MARKER_TAGS = new Set(["RC", "SP", "AU", "TC"]);
+
+/** A league tag: "(A)", "(N)", "(AA)", "(NL)". */
+function isLeagueTag(inner: string): boolean {
+  const tag = inner.trim();
+  return /^[A-Za-z]{1,2}$/.test(tag) && !MARKER_TAGS.has(tag.toUpperCase());
+}
+
+/**
+ * A team's brackets, on the path that reads them (NEO-591): only the FIRST
+ * bracket of a team survives, and only when it is a league tag, because that
+ * is what tells "New York (A)" from "New York (N)". Every later bracket, and
+ * a first one that is a note, goes: "New York (A) (RC)" → "New York (A)",
+ * "Seattle (RC)" → "Seattle". A team is the text between "/" or ";".
+ */
+function keepFirstBracket(text: string): string {
+  const onlyFirst = (segment: string): string => {
+    const matched = matchBrackets(segment);
+    let out = "";
+    let first = true;
+    for (let i = 0; i < segment.length; ) {
+      const open = segment[i];
+      const end = "([{".includes(open) ? matched[i] : -1;
+      if (end < 0) {
+        out += open;
+        i++;
+        continue;
+      }
+      out += first && open === "(" && isLeagueTag(segment.slice(i + 1, end)) ? segment.slice(i, end + 1) : " ";
+      first = false;
+      i = end + 1;
+    }
+    return out;
+  };
+  return text
+    .split(/([/;])/)
+    .map((part, i) => (i % 2 === 1 ? part : onlyFirst(part)))
+    .join("");
+}
+
 /**
  * A cell or line part as a name list reads it: notes, markers and ®/™ gone.
- * With `keepBrackets` the bracketed text stays: a team printed "New York (A)"
- * or "Los Angeles (N)" says which club it is by its brackets (NEO-591).
+ * With `keepBrackets` a team keeps its first bracket when that is a league
+ * tag: a team printed "New York (A)" or "Los Angeles (N)" says which club it
+ * is by it (NEO-591); see `keepFirstBracket`.
  */
 function cleanNamePart(text: string, keepBrackets = false): string {
-  return dropTrademarks(dropMarkers(keepBrackets ? text : dropBracketed(text)));
+  return dropTrademarks(dropMarkers(keepBrackets ? keepFirstBracket(text) : dropBracketed(text)));
 }
 
 /** Player names that are the card's subject, not a person. */
@@ -460,22 +503,13 @@ type TeamsRead = {
   prospectTeams: string[];
 };
 
-/** The index of the bracket that closes the "(" at `open`, or -1. */
-function closingBracketAt(text: string, open: number): number {
-  let depth = 0;
-  for (let i = open; i < text.length; i++) {
-    if (text[i] === "(") depth++;
-    else if (text[i] === ")" && --depth === 0) return i;
-  }
-  return -1;
-}
-
 /**
  * Where a prospect claim inside a team field starts and ends. A claim is a
  * WHOLE segment: "Prospect" or "Prospect (X)" with only the field's start or
  * end, or a separator, on each side ("/", ";" and ", " always; in a line also
  * a spaced dash and a run of dots). Text that merely holds the word ("Top
- * Prospect (Oklahoma)", "Prospect (X) (note)") is no claim and is not listed.
+ * Prospect (Oklahoma)", "Prospect (X) Rookie") is no claim and is not listed.
+ * Brackets after the first are notes and belong to the claim.
  * `readProspectCell` decides each candidate, so the client and the server
  * read a claim alike.
  */
@@ -484,6 +518,8 @@ function prospectClaimSpans(
   inLine: boolean,
 ): Array<{ start: number; end: number; team: string | null }> {
   const spans: Array<{ start: number; end: number; team: string | null }> = [];
+  // One pass over the text, however many "prospect (" it repeats.
+  const matched = matchBrackets(text);
   const word = /\bprospect\b/gi;
   const separator = (i: number): boolean => {
     const c = text[i];
@@ -498,8 +534,9 @@ function prospectClaimSpans(
     let at = end;
     while (text[at] === " ") at++;
     if (text[at] === "(") {
-      const close = closingBracketAt(text, at);
-      if (close >= 0) end = close + 1;
+      const close = matched[at];
+      // X is the first bracket; brackets after it are notes and go with it.
+      if (close >= 0) end = bracketedNotesEnd(text, close + 1, matched);
     }
     word.lastIndex = end;
     let before = start - 1;
@@ -534,8 +571,7 @@ function isBareProspectName(name: string): boolean {
  * What one team cell says. A WHOLE "Prospect" / "Prospect (X)" cell, or a
  * "/"-, ";"- or ","-separated segment of one, is the prospect claim (X into
  * `prospectTeams`); the other segments are teams as before. The word alone
- * never travels as a team name, even when something else left it bare ("Prospect
- * (X) (note)" has its brackets dropped, and is neither a claim nor a team).
+ * never travels as a team name, even when something else left it bare.
  */
 function teamsFrom(cell: string, keepBrackets = false, readProspect = true): TeamsRead {
   let prospect = false;
@@ -1591,7 +1627,9 @@ function readCellsRun(
     columns.includes("lastName") &&
     columns.includes("firstName") &&
     headerXs &&
-    headerXs.length === records[headerAt].cells.length
+    headerXs.length === records[headerAt].cells.length &&
+    headerXs.length <= PDF_MAX_HEADER_CELLS &&
+    headerXs.every((x, k) => k === 0 || x >= headerXs[k - 1])
   ) {
     readNamedColumns(records, headerAt, columns, setYear, out);
     return columns;
@@ -1715,13 +1753,17 @@ function readNamedColumns(
   const header = records[headerAt];
   const headerRuns = runsOf(headerAt);
   const headerSize = lineSize(headerRuns) || PSEUDO_SIZE;
-  const headerCells: HeaderCell[] = header.cells.map((_, k) => {
-    const x = header.xs![k];
-    const next = header.xs![k + 1] ?? Infinity;
-    let end = x;
-    for (const run of headerRuns) if (run.x >= x - 0.15 && run.x < next - 0.15) end = Math.max(end, run.end);
-    return { x, end };
-  });
+  // Each header cell ends where its last run does. Both lists run left to
+  // right, so one pass with two pointers finds them.
+  const headerXs = header.xs!;
+  const headerCells: HeaderCell[] = headerXs.map((x) => ({ x, end: x }));
+  {
+    let k = 0;
+    for (const run of [...headerRuns].sort((p, q) => p.x - q.x)) {
+      while (k + 1 < headerCells.length && run.x >= headerCells[k + 1].x - 0.15) k++;
+      if (run.x >= headerCells[k].x - 0.15) headerCells[k].end = Math.max(headerCells[k].end, run.end);
+    }
+  }
   const groups: ColumnGroup[] = columnGroups(columns, headerCells, {
     pair: ["lastName", "firstName"],
     team: "teams",

@@ -14,6 +14,13 @@
  * Pure and browser-safe: no pdf.js, no DOM.
  */
 
+/**
+ * The most text runs kept for one line. A real checklist line holds a dozen;
+ * a line over this keeps none (the reader's cells stand alone), so one crafted
+ * line cannot be held or walked many times.
+ */
+export const PDF_MAX_LINE_ITEMS = 400;
+
 /** One text run on a line: its raw text, where it starts and ends (pt), its height and font id. */
 export type PdfTextRun = {
   text: string;

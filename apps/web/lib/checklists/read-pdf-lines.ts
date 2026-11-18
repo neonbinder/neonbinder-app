@@ -30,6 +30,7 @@
 import type * as Pdfjs from "pdfjs-dist";
 import type { TextItem } from "pdfjs-dist/types/src/display/api";
 import {
+  PDF_MAX_LINE_ITEMS,
   cellGap,
   cleanPdfText,
   joinRuns,
@@ -158,8 +159,10 @@ export function groupPageItems(items: readonly PdfTextItem[]): PdfPageLine[] {
     }
     close();
     if (cells.length > 0) {
+      // A line of more runs than the parser will read keeps none: the cells
+      // stand alone, and the page's memory stays bounded.
       const items: PdfTextRun[] = [];
-      for (const p of line) {
+      for (const p of line.length > PDF_MAX_LINE_ITEMS ? [] : line) {
         if (cleanPdfText(p.text) === "") continue;
         items.push({
           text: p.text,

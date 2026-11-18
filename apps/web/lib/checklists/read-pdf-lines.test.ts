@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import { PDF_MAX_LINE_ITEMS } from "./pdf-text-runs";
 import {
   PDF_MAX_FILE_BYTES,
   PDF_MAX_PAGE_ITEMS,
@@ -253,4 +254,29 @@ describe("readPdfLines — the real pdf.js on the Topps-layout sample (probe P2)
     expect(teamCard?.xs[1]).toBeCloseTo(298, 0);
     expect(out.pages).toBe(2);
   }, 20_000);
+});
+
+describe("groupPageItems — the runs kept per line are bounded (S4)", () => {
+  /** `n` runs side by side on one baseline, each 6 pt wide and 6 pt apart (one cell). */
+  const crowded = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      str: "x",
+      transform: [10, 0, 0, 10, i * 12, 500],
+      width: 6,
+      height: 10,
+    }));
+
+  it("keeps a line's runs up to PDF_MAX_LINE_ITEMS", () => {
+    const [line] = groupPageItems(crowded(PDF_MAX_LINE_ITEMS));
+    expect(line.items).toHaveLength(PDF_MAX_LINE_ITEMS);
+  });
+
+  it("keeps none for a line over it, and the cells are unchanged", () => {
+    const over = groupPageItems(crowded(PDF_MAX_LINE_ITEMS + 1));
+    expect(over).toHaveLength(1);
+    expect(over[0].items).toEqual([]);
+    expect(over[0].cells.length).toBeGreaterThan(0);
+    const exact = groupPageItems(crowded(PDF_MAX_LINE_ITEMS));
+    expect(exact[0].cells.length).toBeGreaterThan(0);
+  });
 });

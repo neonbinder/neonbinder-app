@@ -15,16 +15,17 @@
  * parser hands in the header's column kinds as plain strings.
  */
 
-import { cellGap, joinRuns, lineSize, type PdfTextRun } from "./pdf-text-runs";
+import { PDF_MAX_LINE_ITEMS, cellGap, joinRuns, lineSize, type PdfTextRun } from "./pdf-text-runs";
 
 /** The most side-by-side groups read; a header repeating more often is one group. */
 export const PDF_MAX_COLUMN_GROUPS = 8;
+export { PDF_MAX_LINE_ITEMS };
 /**
- * The most text runs read from one line. A real checklist line holds a dozen;
- * a line past this is read from its cells instead (the reader already caps a
- * page at 50,000 runs, and this keeps one line from being walked many times).
+ * The most header cells a Last/First header may have to be read from its runs.
+ * A real header has a handful (two groups of three); a wider one is read as
+ * cells, so a crafted header cannot make every line cost its width.
  */
-export const PDF_MAX_LINE_ITEMS = 400;
+export const PDF_MAX_HEADER_CELLS = PDF_MAX_COLUMN_GROUPS * 8;
 
 /** Where a header cell sits: its start and end x (pt). */
 export type HeaderCell = { x: number; end: number };
@@ -91,6 +92,24 @@ export function runsByGroup(
 }
 
 /**
+ * The position in `columns` of the header cell starting nearest `x`; a tie goes
+ * to the earlier one. The header cells are left to right, so this is a binary
+ * search, not a scan of every column for every run.
+ */
+function nearestColumn(columns: readonly number[], cells: readonly HeaderCell[], x: number): number {
+  let lo = 0;
+  let hi = columns.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (cells[columns[mid]].x < x) lo = mid + 1;
+    else hi = mid;
+  }
+  if (lo === 0) return 0;
+  if (lo === columns.length) return columns.length - 1;
+  return Math.abs(cells[columns[lo]].x - x) < Math.abs(cells[columns[lo - 1]].x - x) ? lo : lo - 1;
+}
+
+/**
  * One group's runs for one line, put under the group's columns: a run past
  * the last header cell (when the header has no team column) is the team; any
  * other goes under the header cell it starts nearest. The result has one
@@ -108,16 +127,7 @@ export function slotGroupRuns(
       team.push(run);
       continue;
     }
-    let best = 0;
-    let distance = Infinity;
-    group.columns.forEach((c, k) => {
-      const d = Math.abs(cells[c].x - run.x);
-      if (d < distance) {
-        best = k;
-        distance = d;
-      }
-    });
-    slots[best].push(run);
+    slots[nearestColumn(group.columns, cells, run.x)].push(run);
   }
   const size = lineSize(runs);
   const out = slots.map((slot) => joinRuns(slot, size));
