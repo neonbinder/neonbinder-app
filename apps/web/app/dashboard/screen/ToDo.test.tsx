@@ -137,6 +137,8 @@ describe("Out the Door, a sale NB holds no card for", () => {
 
   it("the empty sleeve of an order's lead sits at the top of a tall row", () => {
     const { container } = drawOut([order("o1", "11-4g", [{ card: null, quantity: 1, title: "A lot" }])]);
+    // Smoke check of the utility class only: jsdom/happy-dom does no layout, so
+    // the real top alignment is a visual matter (see the dashboard screenshots).
     const sleeve = container.querySelector(".aspect-\\[5\\/7\\]");
     expect(sleeve?.className).toContain("self-start");
   });

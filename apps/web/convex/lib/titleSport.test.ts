@@ -257,8 +257,27 @@ describe("a graded slab's leading grader and grade (NEO-590)", () => {
     expect(titleNameText("PSA 10 2018 Prizm Luka Doncic #280")).toBe("2018 Prizm Luka Doncic #280");
     expect(titleNameText("PSA 10 2018 Prizm Luka Doncic")).toBe("2018 Prizm Luka Doncic");
     expect(titleSearchTerm(titleNameText("BGS 9.5 2018 Prizm Luka Doncic"))).toBe("Prizm Luka Doncic");
-    expect(titleTeamSearchTerm("PSA 10 2018 Prizm Luka Doncic")).toBe("prizm luka doncic");
+    expect(titleTeamSearchTerm(boundedTitle("PSA 10 2018 Prizm Luka Doncic"))).toBe("prizm luka doncic");
     expect(titleWords("PSA 10 2018 Prizm Luka Doncic #280")).toEqual(titleWords("2018 Prizm Luka Doncic #280"));
+  });
+
+  test("a stacked grader prefix is stripped exactly once on every path", () => {
+    const title = "PSA 10 BGS 9.5 2018 Prizm Luka Doncic";
+    // One pair goes; the second stays a word of the title on every path.
+    expect(boundedTitle(title)).toBe("BGS 9.5 2018 Prizm Luka Doncic");
+    expect(titleNameText(title)).toBe("BGS 9.5 2018 Prizm Luka Doncic");
+    const searchWords = titleSearchTerm(titleNameText(title)).split(" ");
+    expect(searchWords).toEqual(["BGS", "Prizm", "Luka", "Doncic"]);
+    const teamWords = titleTeamSearchTerm(titleNameText(title)).split(" ");
+    expect(teamWords).toEqual(["bgs", "prizm", "luka", "doncic"]);
+    // The verification words agree with what was searched: every letter-word
+    // searched is a verification word, and the verification words add only
+    // digit-only ones.
+    const verified = titleWords(title);
+    expect(verified).toEqual(["bgs", "95", "2018", "prizm", "luka", "doncic"]);
+    expect(teamWords).toEqual(verified.filter((word) => /\p{L}/u.test(word)));
+    // With a # token, the name text after it carries the same single strip.
+    expect(titleSearchTerm(titleNameText("PSA 10 BGS 9.5 2018 Prizm #280 Luka Doncic"))).toBe("Luka Doncic");
   });
 
   test("a slab's title names the same player as the raw card's", () => {

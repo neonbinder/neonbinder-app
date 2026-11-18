@@ -108,9 +108,14 @@ export function titleNameText(title: string): string {
  * The text a title is searched by: its words, digit-only ones dropped (a year,
  * a card number or a print run names no player or team), at most
  * `TITLE_SEARCH_MAX_TERMS`. Empty when nothing is left.
+ *
+ * Takes BOUNDED text (`titleNameText` or `boundedTitle` output), never a raw
+ * title: bounding strips the leading grader+grade, and stripping twice would
+ * eat a second "PSA 10 BGS 9.5 ..." pair that `titleWords` and the client's
+ * `parseListingTitle` keep (every path strips exactly once, NEO-590).
  */
-export function titleSearchTerm(title: string): string {
-  return boundedTitle(title)
+export function titleSearchTerm(boundedText: string): string {
+  return boundedText
     .split(/[^\p{L}\p{M}\p{N}]+/u)
     .filter((word) => word && !/^\p{N}+$/u.test(word))
     .slice(0, TITLE_SEARCH_MAX_TERMS)
@@ -121,22 +126,28 @@ export function titleSearchTerm(title: string): string {
  * The text the `teams` index is searched by: `nameNormalized` is lowercased,
  * accent-folded and stripped of punctuation ("Montréal" is stored "montreal",
  * "St. Louis" "st louis"), so the title is run through the same word chain
- * (`titleWords`), not searched raw. Words with no letter in them (a year, a
+ * (`wordsOfBounded`), not searched raw. Words with no letter in them (a year, a
  * season "2023-24", a number, a print run) are dropped, at most
- * `TITLE_SEARCH_MAX_TERMS`. Empty when nothing is left.
+ * `TITLE_SEARCH_MAX_TERMS`. Empty when nothing is left. Takes BOUNDED text,
+ * like `titleSearchTerm`.
  */
-export function titleTeamSearchTerm(title: string): string {
-  return titleWords(title)
+export function titleTeamSearchTerm(boundedText: string): string {
+  return wordsOfBounded(boundedText)
     .filter((word) => /\p{L}/u.test(word))
     .slice(0, TITLE_SEARCH_MAX_TERMS)
     .join(" ");
 }
 
-/** The title's normalised words, in order, for `nameInTitle`. */
-export function titleWords(title: string): string[] {
+/** Normalised words of text that is ALREADY bounded (no second grader strip). */
+function wordsOfBounded(boundedText: string): string[] {
   // A comma is deleted by the name chain, so "Topps,Mike Trout" would glue to
   // "toppsmike": a comma always ends a word here, spaced or not.
-  return nameTokens(boundedTitle(title).replace(/,/g, " "));
+  return nameTokens(boundedText.replace(/,/g, " "));
+}
+
+/** The title's normalised words, in order, for `nameInTitle`. */
+export function titleWords(title: string): string[] {
+  return wordsOfBounded(boundedTitle(title));
 }
 
 /** Whether `name`'s words appear in `words` as one consecutive run. */

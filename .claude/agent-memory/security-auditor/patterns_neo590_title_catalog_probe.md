@@ -34,5 +34,11 @@ What to check instead:
   walk the helper module's WHOLE import graph, not just the export; a module the client
   imports must reach no `_generated/server`. Grep hits in doc comments ("no _generated
   import here") are false positives; read the import lines.
+- A prefix-strip added inside the shared bound helper (`boundedTitle` = strip(clamp(raw))):
+  check it is `^`-anchored with no nested quantifier (linear; time it on 200k-char runs of
+  spaces and repeated prefixes) and runs AFTER the clamp. Strip-after-clamp only shortens, so
+  it cannot widen a term. Callers that nest the helper (search term built from a name text
+  already built from it) strip twice: two stacked prefixes fall out of the search words but
+  not the verification words. Correctness note, not exposure.
 
 Related: [[neo330-by-id-twin-and-search]], [[neo331-context-id-side-channel]], [[public-function-auth-registry]].
