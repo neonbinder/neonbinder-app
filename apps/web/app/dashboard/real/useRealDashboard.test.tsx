@@ -68,7 +68,6 @@ import {
   saleLineOf,
   salesDataOf,
   shelfBinderOf,
-  statusWordsOf,
   TRADE_PREVIEW,
   tradePileOf,
   unlistedBoxesOf,
@@ -901,7 +900,6 @@ function saleRaw(over: Partial<SaleRaw> = {}): SaleRaw {
     platform: "bsc",
     orderNo: "BSC-1",
     orderDate: new Date(2026, 10, 9, 9).getTime(),
-    status: "READY_TO_SHIP",
     lines: [{ cardId: cardA.id as never, quantity: 1 }],
     cardCount: 1,
     oversoldPastCut: false,
@@ -915,14 +913,7 @@ const cardsAB = () =>
     [cardB.id, cardB],
   ]);
 
-describe("statusWordsOf and daysSinceSold", () => {
-  it("reads the platform's word in plain case, never changing the word", () => {
-    expect(statusWordsOf("READY_TO_SHIP")).toBe("Ready to ship");
-    expect(statusWordsOf("PAID")).toBe("Paid");
-    expect(statusWordsOf("IN_PROGRESS")).toBe("In progress");
-    expect(statusWordsOf("")).toBe("");
-  });
-
+describe("daysSinceSold", () => {
   it("counts calendar days since the order date, never below 0", () => {
     const now = new Date(2026, 10, 9, 8).getTime();
     expect(daysSinceSold(new Date(2026, 10, 9, 1).getTime(), now)).toBe(0);
@@ -975,7 +966,6 @@ describe("sales: shipped vs still to ship, and the lines", () => {
       saleRaw({
         platform: "ebay",
         orderNo: "14-1",
-        status: "PAID",
         lines: [{ quantity: 1 }, { cardId: cardB.id as never, quantity: 1, problem: "oversold", shortBy: 1 }],
         cardCount: 5,
         oversoldPastCut: false,
@@ -984,7 +974,7 @@ describe("sales: shipped vs still to ship, and the lines", () => {
       cardsAB(),
       now,
     );
-    expect(order).toMatchObject({ marketplace: "ebay", orderNumber: "14-1", statusText: "Paid", daysSinceSold: 2, cardCount: 5, hasProblem: true });
+    expect(order).toMatchObject({ marketplace: "ebay", orderNumber: "14-1", daysSinceSold: 2, cardCount: 5, hasProblem: true });
     expect(order.firstCard?.id).toBe(cardB.id);
     expect(unshippedSaleOf(saleRaw({ oversoldPastCut: true }), cardsAB(), now).hasProblem).toBe(true);
     expect(unshippedSaleOf(saleRaw(), cardsAB(), now).hasProblem).toBe(false);

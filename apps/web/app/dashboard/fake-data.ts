@@ -26,7 +26,6 @@
  *   dates either: time is "days ago" (a whole number) or a relative label
  *   ("Today", "Tuesday").
  * - Sales are one row per order, oldest first. No buyer, no ship-by.
- *   `statusText` is the marketplace's own word, shown as it is.
  * - Sets on the board rank by FEWEST cards needed (base checklist).
  * - A smart binder carries a percent only when its rule names a checklist.
  * - One fake collector who has a bit of everything (sales, boxes, binders,
@@ -180,8 +179,6 @@ export interface UnshippedSale {
   orderNumber: string;
   /** Whole days since it sold: 0 = today. Warn from 2 (`isLate`). */
   daysSinceSold: number;
-  /** The marketplace's own status word, verbatim. */
-  statusText: string;
   /** In the order's own order. A line may have no card (it carries its `title` instead). */
   lines: SaleLine[];
   /** Sum of the lines' quantities (every line of the order, also any not listed in `lines`). */
@@ -197,13 +194,12 @@ export interface SalesData {
   unshipped: UnshippedSale[];
 }
 
-function sale(id: string, marketplace: Marketplace, orderNumber: string, daysSinceSold: number, statusText: string, lines: SaleLine[]): UnshippedSale {
+function sale(id: string, marketplace: Marketplace, orderNumber: string, daysSinceSold: number, lines: SaleLine[]): UnshippedSale {
   return {
     id,
     marketplace,
     orderNumber,
     daysSinceSold,
-    statusText,
     lines,
     cardCount: lines.reduce((n, l) => n + l.quantity, 0),
     firstCard: lines.find((l) => l.card)?.card ?? null,
@@ -226,20 +222,20 @@ const RIPKEN = pick(SET.finest, null, 5);
  * line counts what the boxes really hold.
  */
 const UNSHIPPED_AS_BUILT: UnshippedSale[] = [
-  sale("sale-bsc-1", "bsc", "DEMO-1001", 3, "Ready to ship", [
+  sale("sale-bsc-1", "bsc", "DEMO-1001", 3, [
     { card: YZERMAN, quantity: 4, problem: { kind: "oversold", sold: 4, inBoxes: inBoxes(YZERMAN.id) } },
   ]),
-  sale("sale-ebay-1", "ebay", "12-34567-89012", 2, "Paid", [{ card: SKENES_AUTO, quantity: 1 }]),
-  sale("sale-bsc-3", "bsc", "DEMO-1002", 1, "Ready to ship", [
+  sale("sale-ebay-1", "ebay", "12-34567-89012", 2, [{ card: SKENES_AUTO, quantity: 1 }]),
+  sale("sale-bsc-3", "bsc", "DEMO-1002", 1, [
     { card: THURMAN, quantity: 1 },
     { card: GRIFFEY, quantity: 1 },
   ]),
-  sale("sale-bsc-2", "bsc", "DEMO-1003", 0, "Ready to ship", [
+  sale("sale-bsc-2", "bsc", "DEMO-1003", 0, [
     { card: SCORE_PROOF, quantity: 1 },
     { card: null, quantity: 1, title: "2024 Score #333 Rome Odunze RC" },
   ]),
   // Sold today, and the only line is a listing NB holds no card for: the row is its title.
-  sale("sale-ebay-2", "ebay", "12-34567-89099", 0, "Paid", [{ card: null, quantity: 1, title: "2023 Topps Chrome #121 Gunnar Henderson RC Orioles" }]),
+  sale("sale-ebay-2", "ebay", "12-34567-89099", 0, [{ card: null, quantity: 1, title: "2023 Topps Chrome #121 Gunnar Henderson RC Orioles" }]),
 ];
 
 /** Oldest first: the order every sales list shows. */

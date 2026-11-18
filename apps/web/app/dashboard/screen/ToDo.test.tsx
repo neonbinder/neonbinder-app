@@ -25,7 +25,6 @@ function order(id: string, orderNumber: string, lines: SaleLine[]): UnshippedSal
     marketplace: "ebay",
     orderNumber,
     daysSinceSold: 0,
-    statusText: "Paid",
     lines,
     cardCount: lines.reduce((n, l) => n + l.quantity, 0),
     firstCard: lines.find((l) => l.card)?.card ?? null,

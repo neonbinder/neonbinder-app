@@ -1627,7 +1627,6 @@ describe("sales", () => {
     expect(out.orders[0]).toMatchObject({
       platform: "ebay",
       orderNo: "E-2",
-      status: "PAID",
       cardCount: 3,
       lines: [
         { cardId: s.fx.gooden1, quantity: 2, problem: "oversold", shortBy: 1 },
@@ -1635,6 +1634,7 @@ describe("sales", () => {
       ],
     });
     expect(out.orders[0].oversoldPastCut).toBe(false);
+    expect(out.orders[0]).not.toHaveProperty("status");
     expect(out.orders[0].lines[1]).not.toHaveProperty("problem");
   });
 

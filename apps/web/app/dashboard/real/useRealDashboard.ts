@@ -795,12 +795,6 @@ export function intakeOf(raw: IntakeRaw | undefined, cards: CardsById | undefine
   };
 }
 
-/** A platform's status word in plain case: "READY_TO_SHIP" reads "Ready to ship". The word itself is never changed. */
-export function statusWordsOf(status: string): string {
-  const words = status.trim().toLowerCase().replace(/[_\s]+/g, " ");
-  return words ? words[0].toUpperCase() + words.slice(1) : status;
-}
-
 /** Whole calendar days since the order date, on this device's calendar; never below 0. */
 export function daysSinceSold(orderDate: number, now: number): number {
   return Math.max(0, daysBetween(localDay(orderDate), localDay(now)));
@@ -850,7 +844,6 @@ export function unshippedSaleOf(order: SaleRaw, cards: CardsById, now: number): 
     marketplace: order.platform,
     orderNumber: order.orderNo,
     daysSinceSold: daysSinceSold(order.orderDate, now),
-    statusText: statusWordsOf(order.status),
     lines,
     cardCount: order.cardCount,
     firstCard: lines.find((l) => l.card)?.card ?? null,

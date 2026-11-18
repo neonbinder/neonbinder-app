@@ -171,10 +171,6 @@ function OrderRow({ order }: { order: UnshippedSale }) {
             <h3 id={`${anchor}-title`} tabIndex={-1} className="rounded-sm text-sm font-bold tabular-nums text-ink focus-outline">
               <span className="sr-only">{market} order </span>#{order.orderNumber}
             </h3>
-            <span className="rounded-md border border-control px-1.5 text-xs text-ink-2">
-              <span className="sr-only">Marketplace status: </span>
-              {order.statusText}
-            </span>
           </div>
           <div className="mt-1 text-sm font-semibold leading-snug text-ink">
             {order.firstCard ? (
