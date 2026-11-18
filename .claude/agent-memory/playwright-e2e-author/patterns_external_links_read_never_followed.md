@@ -15,3 +15,5 @@ Shape (one helper in `support/`, scoped to whatever container shows the links, a
 **Why:** the coverage auditor asked for one implementation reused by the panel and the dialog specs, and an axe call after it covers the links.
 
 **How to apply:** any spec that meets an external link. Put the helper call right after the container is visible and before its `expectAccessible`.
+
+**Planting the break:** when the helper sits in a fresh-only spec before its first write (e.g. the upload spec's dialog step), plant and run the break FIRST, then the clean run on the same seed: the planted red stops before any write, so no reseed is needed. Run the other way round, the planted run fails at the fresh-only precondition and proves nothing.
