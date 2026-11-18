@@ -5,7 +5,16 @@
  */
 
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { putObject, r2Config, signedGetUrl, signedPutUrl } from "./r2";
+import {
+  R2_CALL_ATTEMPTS,
+  R2_CALL_TIMEOUT_MS,
+  deleteObject,
+  headObject,
+  putObject,
+  r2Config,
+  signedGetUrl,
+  signedPutUrl,
+} from "./r2";
 
 const ENV = {
   R2_ENDPOINT: "https://acct.r2.cloudflarestorage.com/",
@@ -15,8 +24,12 @@ const ENV = {
 };
 
 afterEach(() => {
+  // Before the clock goes back: a timer a call left behind would show here.
+  const leaked = vi.isFakeTimers() ? vi.getTimerCount() : 0;
+  vi.useRealTimers();
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
+  expect(leaked).toBe(0);
 });
 
 describe("r2", () => {
@@ -119,3 +132,123 @@ describe("r2 virtual-hosted host (NEO-466)", () => {
   });
 });
 
+
+describe("a HEAD or DELETE has a time limit (NEO-592)", () => {
+  const KEY = "copy-photos/abc/image.jpg";
+  const configured = () => {
+    for (const [k, val] of Object.entries(ENV)) vi.stubEnv(k, val);
+    vi.useFakeTimers();
+    return r2Config()!;
+  };
+  /** A fetch that never answers; it only ends when its request is aborted (a real one rejects at once if it already was). */
+  const hang = (request: Request) =>
+    new Promise<Response>((_, reject) => {
+      const abort = () => reject(request.signal.reason ?? new Error("aborted"));
+      if (request.signal.aborted) abort();
+      else request.signal.addEventListener("abort", abort);
+    });
+  /** Stubs fetch with one behaviour per try, in order; the methods seen are returned. */
+  const tries = (...behaviours: Array<(request: Request) => Promise<Response>>) => {
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", (async (request: Request) => {
+      seen.push(request.method);
+      const behave = behaviours[seen.length - 1];
+      if (!behave) throw new Error("more tries than expected");
+      return await behave(request);
+    }) as unknown as typeof fetch);
+    return seen;
+  };
+  /** The running try's timer is armed (signing takes real time), then its limit passes. */
+  const limitPasses = async () => {
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
+    await vi.advanceTimersByTimeAsync(R2_CALL_TIMEOUT_MS);
+  };
+  const head = (bytes: number) => async () =>
+    new Response(null, { status: 200, headers: { "content-length": String(bytes), "content-type": "image/jpeg" } });
+
+  test("an answer inside the limit comes back as before, and its timer is gone", async () => {
+    const config = configured();
+    const seen = tries(head(1234));
+    await expect(headObject(config, KEY)).resolves.toEqual({ bytes: 1234, contentType: "image/jpeg" });
+    expect(seen).toEqual(["HEAD"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("a HEAD that hangs is cut off and tried again; the second try's answer is the answer", async () => {
+    const config = configured();
+    const seen = tries(hang, head(99));
+    const result = headObject(config, KEY);
+    await limitPasses();
+    await expect(result).resolves.toEqual({ bytes: 99, contentType: "image/jpeg" });
+    expect(seen).toEqual(["HEAD", "HEAD"]);
+  });
+
+  test("two hangs fail as the call's usual error inside tries x limit, and no timer is left", async () => {
+    const config = configured();
+    const seen = tries(hang, hang);
+    const result = headObject(config, KEY).then(
+      () => "answered",
+      (e: Error) => e.message,
+    );
+    await limitPasses();
+    await limitPasses();
+    await expect(result).resolves.toBe("R2 HEAD failed: timed out");
+    expect(seen).toEqual(["HEAD", "HEAD"]);
+    expect(R2_CALL_TIMEOUT_MS * R2_CALL_ATTEMPTS).toBeLessThanOrEqual(5_000);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("a DELETE has the same limit and the same single retry", async () => {
+    const config = configured();
+    const seen = tries(hang, async () => new Response(null, { status: 204 }));
+    const result = deleteObject(config, KEY);
+    await limitPasses();
+    await expect(result).resolves.toBeUndefined();
+    expect(seen).toEqual(["DELETE", "DELETE"]);
+
+    const hung = tries(hang, hang);
+    const failed = deleteObject(config, KEY).then(
+      () => "answered",
+      (e: Error) => e.message,
+    );
+    await limitPasses();
+    await limitPasses();
+    await expect(failed).resolves.toBe("R2 DELETE failed: timed out");
+    expect(hung).toEqual(["DELETE", "DELETE"]);
+  });
+
+  test("a refusal is final at once: no second try, the same message as before", async () => {
+    const config = configured();
+    const seen = tries(async () => new Response(null, { status: 403 }));
+    await expect(headObject(config, KEY)).rejects.toThrow(/^R2 HEAD failed: 403$/);
+    expect(seen).toEqual(["HEAD"]);
+  });
+
+  test("a missing object is null, not an error, and is not tried again", async () => {
+    const config = configured();
+    const seen = tries(async () => new Response(null, { status: 404 }));
+    await expect(headObject(config, KEY)).resolves.toBeNull();
+    expect(seen).toEqual(["HEAD"]);
+  });
+
+  test("a network error is final at once, as before", async () => {
+    const config = configured();
+    const seen = tries(async () => {
+      throw new TypeError("fetch failed");
+    });
+    await expect(headObject(config, KEY)).rejects.toThrow("fetch failed");
+    expect(seen).toEqual(["HEAD"]);
+  });
+
+  test("a server fault is tried once more; two in a row end in the usual status error", async () => {
+    const config = configured();
+    const seen = tries(async () => new Response(null, { status: 503 }), head(7));
+    await expect(headObject(config, KEY)).resolves.toEqual({ bytes: 7, contentType: "image/jpeg" });
+    expect(seen).toEqual(["HEAD", "HEAD"]);
+
+    const faults = tries(async () => new Response(null, { status: 503 }), async () => new Response(null, { status: 500 }));
+    await expect(headObject(config, KEY)).rejects.toThrow(/^R2 HEAD failed: 500$/);
+    expect(faults).toEqual(["HEAD", "HEAD"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});

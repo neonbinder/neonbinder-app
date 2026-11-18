@@ -57,7 +57,9 @@ function CollectionPrototype1Page() {
   }, []);
   useEffect(() => {
     if (!notice) return;
-    const t = setTimeout(() => setNotice(null), NOTICE_MS);
+    // Takes down its own notice only: a newer one it raced with stays.
+    const { id } = notice;
+    const t = setTimeout(() => setNotice((prev) => (prev?.id === id ? null : prev)), NOTICE_MS);
     return () => clearTimeout(t);
   }, [notice]);
   const undo = () => {

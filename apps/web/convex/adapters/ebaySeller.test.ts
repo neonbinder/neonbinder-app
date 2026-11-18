@@ -20,9 +20,11 @@ import {
   getShippingServices,
   openEbaySellerSession,
   optInToProgram,
+  EBAY_POLICY_READ_MS,
   EBAY_PUBLISH_RETRY_PAUSE_MS,
   publishOffer,
   redactEbayText,
+  startPolicyReadBudget,
   updateOffer,
   upsertInventoryLocation,
   uploadImage,
@@ -1094,5 +1096,104 @@ describe("the 401 refresh path", () => {
     const r = await getOptedInPrograms({ runAction } as never, s);
     expect(r).toMatchObject({ ok: false, failure: { kind: "signed_out" } });
     expect(runAction).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ── The policy-read path: 3 s a try, one retry, one shared clock (NEO-592) ───
+
+describe("policy-read path: bounded tries, one retry on a timeout", () => {
+  const timedOut = () => Object.assign(new Error("t"), { name: "TimeoutError" });
+  const programs = () => json({ programs: [{ programType: "SELLING_POLICY_MANAGEMENT" }] });
+  let waits: number[];
+  let log: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    waits = [];
+    const real = AbortSignal.timeout.bind(AbortSignal);
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms: number) => {
+      waits.push(ms);
+      return real(ms);
+    });
+    log = vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  test("a slow first try is tried again, and the second answer is the result", async () => {
+    answers.push(timedOut(), programs());
+    const r = await getOptedInPrograms(noCredentialCalls, session(), startPolicyReadBudget());
+    expect(r).toEqual({ ok: true, value: ["SELLING_POLICY_MANAGEMENT"] });
+    expect(seen).toHaveLength(2);
+    expect(waits[0]).toBe(EBAY_POLICY_READ_MS.attemptMs);
+    expect(waits[1]).toBeLessThanOrEqual(EBAY_POLICY_READ_MS.attemptMs);
+    // Each try logs its own line; the retry's carries attempt 2.
+    const lines = linesFor(log, "getOptedInPrograms");
+    expect(lines.map((l) => [l.outcome, l.attempt])).toEqual([
+      ["timeout", undefined],
+      ["ok", 2],
+    ]);
+  });
+
+  test("two slow tries are a timeout failure in NB's words, never a missing policy, and never a third try", async () => {
+    answers.push(timedOut(), timedOut(), programs());
+    const r = await getPolicies(noCredentialCalls, session(), "fulfillment_policy", startPolicyReadBudget());
+    expect(r).toMatchObject({ ok: false, failure: { kind: "timeout", message: "eBay took too long to answer. Try again in a bit." } });
+    expect(seen).toHaveLength(2);
+  });
+
+  test("a try never waits past what is left of the shared budget", async () => {
+    answers.push(timedOut(), timedOut());
+    const budget = { deadline: Date.now() + 1_500 };
+    await getPolicies(noCredentialCalls, session(), "payment_policy", budget);
+    expect(waits).toHaveLength(2);
+    for (const w of waits) expect(w).toBeLessThanOrEqual(1_500);
+  });
+
+  test("a budget with too little left starts no retry", async () => {
+    answers.push(timedOut(), programs());
+    const r = await getOptedInPrograms(noCredentialCalls, session(), { deadline: Date.now() + 100 });
+    expect(r).toMatchObject({ ok: false, failure: { kind: "timeout" } });
+    expect(seen).toHaveLength(1);
+    // Even a spent budget gives the first try a real wait.
+    expect(waits[0]).toBe(EBAY_POLICY_READ_MS.minRetryMs);
+  });
+
+  test("a call marked retry: false (the shipping names) gets one bounded try", async () => {
+    answers.push(timedOut(), json({ shippingServices: [] }));
+    const r = await getShippingServices(noCredentialCalls, session(), { ...startPolicyReadBudget(), retry: false });
+    expect(r).toMatchObject({ ok: false, failure: { kind: "timeout" } });
+    expect(seen).toHaveLength(1);
+  });
+
+  test.each([
+    ["a network failure", () => new TypeError("fetch failed"), "network"],
+    ["eBay busy (503)", () => json({}, 503), "http"],
+    ["eBay refusing (403)", () => json({}, 403), "http"],
+  ])("%s is not retried", async (_name, answer, kind) => {
+    answers.push(answer(), programs());
+    const r = await getOptedInPrograms(noCredentialCalls, session(), startPolicyReadBudget());
+    expect(r).toMatchObject({ ok: false, failure: { kind } });
+    expect(seen).toHaveLength(1);
+  });
+
+  test("an answer on the first try is one call; the account's programs read as before", async () => {
+    answers.push(programs());
+    expect(await getOptedInPrograms(noCredentialCalls, session(), startPolicyReadBudget())).toEqual({
+      ok: true,
+      value: ["SELLING_POLICY_MANAGEMENT"],
+    });
+    expect(seen).toHaveLength(1);
+  });
+
+  test("without a budget a read is the plain 30 s call, never retried (other callers are unchanged)", async () => {
+    answers.push(timedOut(), programs());
+    expect(await getOptedInPrograms(noCredentialCalls, session())).toMatchObject({ ok: false, failure: { kind: "timeout" } });
+    expect(seen).toHaveLength(1);
+    expect(waits).toEqual([30_000]);
+  });
+
+  test("the two stages fit the page's 7 s budget with room to spare", () => {
+    expect(EBAY_POLICY_READ_MS.budgetMs).toBeLessThan(7_000);
+    expect(EBAY_POLICY_READ_MS.attemptMs * 2).toBeGreaterThan(EBAY_POLICY_READ_MS.budgetMs - EBAY_POLICY_READ_MS.attemptMs);
   });
 });

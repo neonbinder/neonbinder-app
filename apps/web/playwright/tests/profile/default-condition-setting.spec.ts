@@ -19,7 +19,7 @@
 // Not covered here: a failed save (no way to make the mutation fail from the
 // UI); app/profile/settings/DefaultConditionSection.test.tsx pins it. A quick
 // count writing the default is pinned by convex/defaultCondition.test.ts.
-import { collectorCascade } from "../../support/collection";
+import { collectorCascade, confirmRemoved } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(
@@ -100,7 +100,7 @@ test(
 
       // Self-cleaning: the copy goes, and the card needs again.
       await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Near Mint`, exact: true }).click();
-      await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw, Near Mint` })).toBeVisible();
+      await confirmRemoved(drawer);
       await expect(drawer.getByText("Need it")).toBeVisible();
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();

@@ -106,14 +106,63 @@ export async function signedGetUrl(config: R2Config, key: string, expiresSeconds
   return signed.url;
 }
 
+/**
+ * NEO-592 — how long one HEAD or DELETE may take before it is given up on, and
+ * how many times it is tried. A collector waits on `finishUpload`'s HEADs
+ * inside a 7 s "Saving..." budget, and a request that hangs has no limit of
+ * its own: one hung for 30 s in CI. Two tries of 2.5 s keep the worst case at
+ * about 5 s, leaving room for the rest of the call.
+ */
+export const R2_CALL_TIMEOUT_MS = 2_500;
+export const R2_CALL_ATTEMPTS = 2;
+
+/**
+ * One signed HEAD or DELETE with a time limit, tried again once when an
+ * attempt times out or R2 answers with a server fault (5xx, 429).
+ *
+ * Signs and sends here instead of through `client.fetch`: aws4fetch's own
+ * retry (ten tries, sleeping up to 25 s between them, on a sleep a signal can't
+ * cut short) would break the bound. Anything else that goes wrong (a refusal,
+ * a network error) is the caller's to see at once, as before. The last answer
+ * is returned when the tries run out, so the caller's status handling and its
+ * `R2 <method> failed: <status>` message are unchanged; a try that never
+ * answered fails as `R2 <method> failed: timed out`.
+ *
+ * The timer of every try is cleared when the try ends, so none outlives the call.
+ */
+async function boundedFetch(config: R2Config, key: string, method: "HEAD" | "DELETE"): Promise<Response> {
+  const url = `${config.base}/${key.split("/").map(encodeURIComponent).join("/")}`;
+  let last: Response | null = null;
+  for (let attempt = 1; attempt <= R2_CALL_ATTEMPTS; attempt++) {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, R2_CALL_TIMEOUT_MS);
+    try {
+      const res = await fetch(await config.client.sign(url, { method, signal: controller.signal }));
+      if (res.status < 500 && res.status !== 429) return res;
+      // Tried again below: the answer we won't use gives its connection back.
+      if (attempt < R2_CALL_ATTEMPTS) void res.body?.cancel().catch(() => {});
+      last = res;
+    } catch (error) {
+      if (!timedOut) throw error;
+      last = null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  if (last) return last;
+  throw new Error(`R2 ${method} failed: timed out`);
+}
+
 /** An object's size and type, or null when it isn't there. */
 export async function headObject(
   config: R2Config,
   key: string,
 ): Promise<{ bytes: number; contentType: string | null } | null> {
-  const res = await config.client.fetch(`${config.base}/${key.split("/").map(encodeURIComponent).join("/")}`, {
-    method: "HEAD",
-  });
+  const res = await boundedFetch(config, key, "HEAD");
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`R2 HEAD failed: ${res.status}`);
   return { bytes: Number(res.headers.get("content-length") ?? "-1"), contentType: res.headers.get("content-type") };
@@ -144,8 +193,6 @@ export async function putObject(
 
 /** Delete one object. A missing one is fine (S3 answers 204 either way). */
 export async function deleteObject(config: R2Config, key: string): Promise<void> {
-  const res = await config.client.fetch(`${config.base}/${key.split("/").map(encodeURIComponent).join("/")}`, {
-    method: "DELETE",
-  });
+  const res = await boundedFetch(config, key, "DELETE");
   if (!res.ok && res.status !== 404) throw new Error(`R2 DELETE failed: ${res.status}`);
 }

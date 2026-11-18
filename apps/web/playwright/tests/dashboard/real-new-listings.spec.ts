@@ -11,7 +11,7 @@
 // Its own price on the copy, so it never reads a common price. Self-cleaning:
 // the copy is removed and the box deleted through the UI. The box's name is a
 // single token minted from `env.ATTEMPT_TOKEN`.
-import { createBox, deleteOpenBox, drillToCollectorBase, inventoryTabs, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { confirmRemoved, createBox, deleteOpenBox, drillToCollectorBase, inventoryTabs, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -81,6 +81,8 @@ test(
     await expect(drawer).toBeVisible();
     await yourCopies.getByRole("button", { name: `Remove ${card.short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    // The server's answer, not the optimistic list: a copy left behind would ride into the worker's next spec.
+    await confirmRemoved(drawer);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     await expect(tile).toHaveCount(0);

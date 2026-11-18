@@ -44,6 +44,11 @@ const GAVE_UP = "copy_photo_put_failed";
 const SAVE_TIMING = "copy_photo_save_timing";
 const COLLECTOR_COPY = "That photo didn't upload.";
 
+// NEO-592: a red run attaches the page's console (the upload's own log lines, the
+// retries, the give-up) as `console`, scrubbed of addresses and tokens
+// (support/redact.mjs), so the next red is readable from its artifacts.
+test.use({ captureConsole: true });
+
 test(
   "Collection: a copy's photo upload retries a storage hiccup, and says plainly when it gives up",
   { tag: ["@collection"] },

@@ -451,6 +451,33 @@ describe("the crew section under Sync status", () => {
     expect(busy.hasAttribute("aria-label")).toBe(false);
   });
 
+  it("an older withdraw's timer never clears a newer withdraw's line", async () => {
+    vi.useFakeTimers();
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    try {
+      const other = ask({ id: "r2", kind: "report", label: "2023 Bowman Draft Base", platform: "ebay" });
+      render(<WithdrawHarness asks={[REPORT_ASK, other]} data={getDashboard()} />);
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Withdraw report for 2024 Topps Chrome Base on eBay" }));
+      });
+      const firstTimer = spy.mock.calls.filter(([, ms]) => ms === WITHDREW_SHOWN_MS).at(-1)![0] as () => void;
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Withdraw report for 2023 Bowman Draft Base on eBay" }));
+      });
+      // The first line's timer fires in the gap before React cleaned it up.
+      act(() => firstTimer());
+      const line = screen.getByText("Withdrew the report on 2023 Bowman Draft Base (eBay).");
+      expect(line.textContent).not.toBe("");
+      act(() => {
+        vi.advanceTimersByTime(WITHDREW_SHOWN_MS);
+      });
+      expect(line.textContent).toBe("");
+    } finally {
+      spy.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it(`the withdraw line clears itself after ${WITHDREW_SHOWN_MS} ms, and the line stays mounted`, async () => {
     vi.useFakeTimers();
     try {

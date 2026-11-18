@@ -22,7 +22,7 @@
 // price on it, so it never waits on a common price) only until it is taken off
 // sale. Self-cleaning: the copies are removed and the binder deleted through
 // the UI. The binder's name is a single token minted from `env.ATTEMPT_TOKEN`.
-import { drillToCollectorBase, inventoryTabs, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { confirmRemoved, drillToCollectorBase, inventoryTabs, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -141,11 +141,14 @@ test(
     await again.getByRole("button", { name: `Details for ${card.short}`, exact: true }).click();
     await yourCopies.getByRole("button", { name: `Remove ${card.short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    // The server's answer, not the optimistic list: a copy left behind would ride into the worker's next spec.
+    await confirmRemoved(drawer);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     await again.getByRole("button", { name: `Details for ${added.short}`, exact: true }).click();
     await addedCopies.getByRole("button", { name: `Remove ${added.short}, Raw, Excellent`, exact: true }).click();
     await expect(addedCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    await confirmRemoved(addedDrawer);
     await addedDrawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(addedDrawer).toBeHidden();
 

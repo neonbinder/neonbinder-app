@@ -52,7 +52,9 @@ export default function CrewDesk() {
   }, [desk, withdrew]);
   useEffect(() => {
     if (!withdrew) return;
-    const timer = setTimeout(() => setWithdrew(null), WITHDREW_SHOWN_MS);
+    // Takes down its own line only: a newer withdraw's words it raced with stay.
+    const shown = withdrew;
+    const timer = setTimeout(() => setWithdrew((prev) => (prev === shown ? null : prev)), WITHDREW_SHOWN_MS);
     return () => clearTimeout(timer);
   }, [withdrew]);
   if (!crew) return null;

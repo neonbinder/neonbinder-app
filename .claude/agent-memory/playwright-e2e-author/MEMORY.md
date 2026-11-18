@@ -84,3 +84,4 @@
 - [Leaf Vivid: a real unlicensed set](patterns_leaf_vivid_real_unlicensed_set.md) — NEO-556: find a set via year-wide sync, Proof type, held cards, parallel copies
 - [Stale batch masks a lookup loss](patterns_dialog_seed_from_stale_batch_masks_a_lookup_loss.md) — Match Cards drops lookup outcomes of pending rows; local green, CI 35 on the lane
 - [Attributes panel header needs the open panel](patterns_attributes_panel_header_controls_need_the_open_panel.md) — NEO-569: shut = title+toggle only; open before Rename/Delete/breadcrumb/Set actions
+- [Admin group writes and the failure reset](patterns_admin_group_writes_and_the_failure_reset.md) — NEO-592: group-wide admin close needs own set; reset fixture order, about:blank, proof

@@ -39,7 +39,7 @@
 // runs at 7 s.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { collectorCascade } from "../../support/collection";
+import { collectorCascade, confirmRemoved } from "../../support/collection";
 import { addCardViaForm, escapeRe } from "../../support/cards";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { VARIANT_TYPES_SYNC, columnHeading, drillToCustom, selectOrCreate, setBuilderReady } from "../../support/set-builder";
@@ -267,6 +267,8 @@ test(
       for (let left = lines; left > 0; left--) {
         await remove.first().click();
         await expect(remove).toHaveCount(left - 1);
+        // The server's answer before the next Remove (every "Removed ..." notice of one card reads the same).
+        await confirmRemoved(drawer);
       }
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
       await drawer.getByRole("button", { name: "Close card detail" }).click();

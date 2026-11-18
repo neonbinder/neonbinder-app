@@ -95,3 +95,4 @@
 - [New listing problem reason touch list](reference_new_listing_problem_reason_touch_list.md) — ~8 lists; tsc catches only types.ts + copy.ts; REPORTABLE and seed SYNC_HELD_REASONS fail silently
 - [Stdio EPIPE is a late 'error' event](reference_stdio_epipe_error_is_a_late_event.md) — closed pipe/tty kills Node via nextTick 'error'; release scoped listeners on setImmediate; spy emit
 - [Cloud Run socket destroy restarts the instance](reference_cloud_run_socket_destroy_restarts_instance.md) — fake faults end in 503, never socket.destroy(); hangCapMs injectable
+- [eBay read path: one clock](ebay-read-path-bounded-by-one-clock.md) — 3 s a try, one retry on timeout; timeout is never a missing policy

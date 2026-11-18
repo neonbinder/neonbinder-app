@@ -11,7 +11,7 @@
 // dashboard specs on this account use the first four). Self-cleaning, and on a failure too: an
 // afterEach removes the copy and deletes the box through the UI. The box's name is a single token
 // minted from `env.ATTEMPT_TOKEN`.
-import { backToBoxes, createBox, deleteBoxNamed, drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+import { backToBoxes, confirmRemoved, createBox, deleteBoxNamed, drillToCollectorBase, ordinaryBaseRows, shortNameOf } from "../../support/collection";
 import { test, expect, LAUNCH_GATE } from "../../support/fixtures";
 import type { Page } from "@playwright/test";
 
@@ -44,6 +44,8 @@ async function tidy(page: Page, card: Card, box: string): Promise<void> {
   if (await remove.isVisible()) {
     await remove.click();
     await expect(none).toBeVisible();
+    // The server's answer, not the optimistic list: a copy left behind would ride into the worker's next spec.
+    await confirmRemoved(drawer);
   }
   await drawer.getByRole("button", { name: "Close card detail" }).click();
   await expect(drawer).toBeHidden();

@@ -25,4 +25,16 @@ on the lane got three entries, two of them identical-looking.
   `vi.useFakeTimers({ shouldAdvanceTime: true })` only for `runBscTeamLane`
   (the 1.7 s pacing pause), and `vi.useRealTimers()` in `afterEach`.
 
+**Second case (NEO-567).** A file-wide fix beats per-test drains: have `setup()`
+push every `convexTest` instance onto a module list and run
+`for (const t of list) await drainScheduled(t)` in a top-level `afterEach`
+(with `vi.useRealTimers()` first, so a test that threw between fake and real
+clock does not leave its clock behind). Census proof: log the
+`_scheduled_functions` rows still `pending`/`inProgress` at the end of each test
+before draining. In `copyPhotos.test.ts` ten tests ended with a live
+`deleteObjects` job; a later describe that switches R2 on (env stubs plus a
+recording `fetch`) then saw that stray DELETE among its recorded HEADs.
+Load alone does not reproduce it (24 parallel runs stayed green), so prove it
+by the census, not by waiting for a red.
+
 Related: [[convex-components-unregistered-in-convex-test]], [[teardown-leak-attribution]].

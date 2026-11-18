@@ -27,7 +27,7 @@
 // MINTED NAMES are single tokens: the set `crqa-<worker>-<attempt>`, the card
 // numbers `1<token>` (the seed card) and `9<token>` (the requested one), the
 // player `Asked<token>`.
-import { collectorCascade, photoFile } from "../../support/collection";
+import { collectorCascade, confirmRemoved, photoFile } from "../../support/collection";
 import { addCardViaForm, escapeRe } from "../../support/cards";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectHeldPhotoViewOnly } from "../../support/photo-viewer";
@@ -157,7 +157,7 @@ test(
     const drawer = page.getByRole("dialog", { name: new RegExp(`^2024 ${escapeRe(setName)}.*#${escapeRe(number)}`) });
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${short}` });
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
-    await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw, Excellent` })).toBeVisible();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    await confirmRemoved(drawer);
   },
 );
