@@ -34,3 +34,4 @@
 - [Filter after take caps read rows](filter-after-take-caps-read-rows.md) — capped read + in-memory filter hides shown rows; index the filter field; undefined sorts before numbers, so "unknown or >0" = two ranges
 - [Derived card field from an entity fact](derived-card-field-from-entity-fact.md) — settle at the link seam (id→doc param), compute pre-insert, follow-rule recompute off the live entity
 - [Retiring a features key](retiring-a-features-key.md) — every mint/copy point of a features key incl. backfillCardFeatures seed list; strip leaves sport rows
+- [Concurrent reads are batched](convex-concurrent-reads-are-batched.md) — Promise.all reads go to storage in batches (16 OSS); "system operations" error = 15 s syscall wall time

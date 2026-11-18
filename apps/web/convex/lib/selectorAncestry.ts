@@ -25,6 +25,7 @@
 import { ConvexError } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { mapBounded } from "./boundedConcurrency";
 import {
   SUB_VARIANT_INSERT_ONLY,
   SUB_VARIANT_INSERT_ONLY_MESSAGE,
@@ -212,22 +213,34 @@ export async function collectSubtreeNodes(
     { _id: root._id, level: root.level ?? "" },
   ];
   const seen = new Set<string>([rootId]);
-  const frontier: Array<{ _id: Id<"selectorOptions">; level: string }> = [nodes[0]];
-  while (frontier.length > 0) {
-    const parent = frontier.shift()!;
-    if (parent.level === "parallel") continue;
-    const children = await ctx.db
-      .query("selectorOptions")
-      .withIndex("by_parent", (q) => q.eq("parentId", parent._id))
-      .take(maxNodes + 1);
-    for (const child of children) {
-      if (seen.has(child._id)) continue;
-      seen.add(child._id);
-      if (nodes.length >= maxNodes) return { nodes, truncated: true };
-      const node = { _id: child._id, level: child.level ?? "" };
-      nodes.push(node);
-      frontier.push(node);
+  // NEO-592 — walked a LEVEL at a time: every expandable node of a level has
+  // its children read together (a set's inserts are dozens of independent
+  // ranges, and read one after another each paid a storage round trip), then
+  // the children are filed in the order the nodes were listed. That is the
+  // order the one-node-at-a-time walk produced (its queue was first in, first
+  // out), so the node list, the truncation point and which `maxNodes` rows are
+  // kept are unchanged; only the ranges of one level are read at once.
+  let level: Array<{ _id: Id<"selectorOptions">; level: string }> = [nodes[0]];
+  while (level.length > 0) {
+    const parents = level.filter((node) => node.level !== "parallel");
+    const childLists = await mapBounded(parents, (parent) =>
+      ctx.db
+        .query("selectorOptions")
+        .withIndex("by_parent", (q) => q.eq("parentId", parent._id))
+        .take(maxNodes + 1),
+    );
+    const next: Array<{ _id: Id<"selectorOptions">; level: string }> = [];
+    for (const children of childLists) {
+      for (const child of children) {
+        if (seen.has(child._id)) continue;
+        seen.add(child._id);
+        if (nodes.length >= maxNodes) return { nodes, truncated: true };
+        const node = { _id: child._id, level: child.level ?? "" };
+        nodes.push(node);
+        next.push(node);
+      }
     }
+    level = next;
   }
   return { nodes, truncated: false };
 }

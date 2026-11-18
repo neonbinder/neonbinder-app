@@ -111,6 +111,7 @@ import type * as leagueBackfill from "../leagueBackfill.js";
 import type * as leagues from "../leagues.js";
 import type * as lib_baseMatchProbe from "../lib/baseMatchProbe.js";
 import type * as lib_batchIdReads from "../lib/batchIdReads.js";
+import type * as lib_boundedConcurrency from "../lib/boundedConcurrency.js";
 import type * as lib_bscAttributeTokens from "../lib/bscAttributeTokens.js";
 import type * as lib_bscCallGatePolicy from "../lib/bscCallGatePolicy.js";
 import type * as lib_bscCallTelemetry from "../lib/bscCallTelemetry.js";
@@ -344,6 +345,7 @@ declare const fullApi: ApiFromModules<{
   leagues: typeof leagues;
   "lib/baseMatchProbe": typeof lib_baseMatchProbe;
   "lib/batchIdReads": typeof lib_batchIdReads;
+  "lib/boundedConcurrency": typeof lib_boundedConcurrency;
   "lib/bscAttributeTokens": typeof lib_bscAttributeTokens;
   "lib/bscCallGatePolicy": typeof lib_bscCallGatePolicy;
   "lib/bscCallTelemetry": typeof lib_bscCallTelemetry;

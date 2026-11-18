@@ -227,21 +227,23 @@ describe("NEO-490: narrowTeamRowsByCardPlayers", () => {
 });
 
 describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
-  const resolve = (
-    t: T,
-    args: {
-      sportId: Id<"selectorOptions">;
-      name?: string;
-      setYear?: number;
-      cardPlayerIds: Id<"players">[][];
-    },
-  ) =>
+  type ResolveArgs = {
+    sportId: Id<"selectorOptions">;
+    name?: string;
+    setYear?: number;
+    cardPlayerIds: Id<"players">[][];
+  };
+  // NEO-592 — the query answers with the team ROW (the gate no longer reads it
+  // back in a second hop); `resolve` reduces it to the id the cases below
+  // assert on, and `resolveRow` keeps the row for the case that pins its shape.
+  const resolveRow = (t: T, args: ResolveArgs) =>
     t.query(internal.teams.resolveTeamByCardPlayers, {
       sportId: args.sportId,
       name: args.name ?? "St. Louis Browns",
       ...(args.setYear !== undefined ? { setYear: args.setYear } : {}),
       cardPlayerIds: args.cardPlayerIds,
     });
+  const resolve = async (t: T, args: ResolveArgs) => (await resolveRow(t, args))?._id ?? null;
 
   test("returns the era the card's player played for when the name has several and no year", async () => {
     const t = convexTest(schema, modules);
@@ -249,6 +251,9 @@ describe("NEO-490: teams.resolveTeamByCardPlayers", () => {
     const paige = await insertPlayer(t, w.sportId, "Satchel Paige", [w.early]);
 
     expect(await resolve(t, { sportId: w.sportId, cardPlayerIds: [[paige]] })).toBe(w.early);
+    // NEO-592 — and what comes back is the row itself, not just its id.
+    const row = await resolveRow(t, { sportId: w.sportId, cardPlayerIds: [[paige]] });
+    expect(row).toMatchObject({ _id: w.early, name: "Browns", location: "St. Louis" });
   });
 
   test("returns null when the set year already settles the name", async () => {
