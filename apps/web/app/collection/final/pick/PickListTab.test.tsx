@@ -185,7 +185,7 @@ describe("the Pick List demo", () => {
     expect(screen.getByRole("button", { name: "All found" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Can't find it (2)" }));
     expect(screen.getByRole("heading", { level: 3, name: "Last stop · Can't find it · 2 to pull" })).toBeTruthy();
-    expect(screen.getByText("These sales don't say enough to file. The order's photo is your best clue.")).toBeTruthy();
+    expect(screen.getByText("These sales don't say enough to file. Check the sales platform.")).toBeTruthy();
     const lost = screen.getByRole("table", { name: "Sales Neon Binder couldn't place" });
     expect(within(lost).getAllByRole("button", { name: /^Pulled / })).toHaveLength(2);
     // The heading already says it: no Not in NB chip here.

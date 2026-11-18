@@ -518,7 +518,7 @@ test(
     // Named, not `stop`: while the walk steps over, the Not in a box set divider is a second level-3 heading.
     const lastStop = region.getByRole("heading", { level: 3, name: /^Last stop · / });
     await expect(lastStop).toHaveText("Last stop · Can't find it · 2 to pull");
-    await expect(region.getByText("These sales don't say enough to file. The order's photo is your best clue.", { exact: true })).toBeVisible();
+    await expect(region.getByText("These sales don't say enough to file. Check the sales platform.", { exact: true })).toBeVisible();
     await expect(pick.cantFindTable).toBeVisible();
     await expect(pulledToggle(pick.cantFindTable, WITT)).toBeVisible();
     await expect(pulledToggle(pick.cantFindTable, BCP)).toBeVisible();

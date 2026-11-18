@@ -448,7 +448,7 @@ test(
       await expect(page).toHaveURL(/[?&]pbox=cant-find(&|$)/);
       const lastHeading = region.getByRole("heading", { level: 3, name: "Last stop · Can't find it · 2 to pull", exact: true });
       await expect(lastHeading).toBeVisible();
-      await expect(region.getByText("These sales don't say enough to file. The order's photo is your best clue.", { exact: true })).toBeVisible();
+      await expect(region.getByText("These sales don't say enough to file. Check the sales platform.", { exact: true })).toBeVisible();
       await expect(pick.cantFindTable).toBeVisible();
       await expect(pulledToggle(pick.cantFindTable, unmatchedLine(first))).toBeVisible();
       await expect(nonumToggle(pick.cantFindTable)).toBeVisible();

@@ -19,7 +19,7 @@ import { cardFacts, isPulled, NOT_IN_NB, orderLabel, VARIANT_ROLE_LABEL, type Pi
  *
  * NEO-509: a sale filed with its set by the listing's words alone prints
  * like a card, with "Not in NB" among its marks, the listing's own variant
- * word, and its next step (check the order's photo) after the variant. Every
+ * word, and its next step (check the sales platform) after the variant. Every
  * line NB has no card for wraps rather than cut that step short
  * (`nb-pick-sheet-lost`).
  */

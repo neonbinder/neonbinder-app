@@ -112,7 +112,7 @@ const COPY = {
   matches: (n: number) => (n === 1 ? "1 match." : `${n} match.`),
   cantFind: "Can't find it",
   cantFindNote: "Neon Binder couldn't place these sales. Each listing's photo shows what sold.",
-  cantFindStopNote: "These sales don't say enough to file. The order's photo is your best clue.",
+  cantFindStopNote: "These sales don't say enough to file. Check the sales platform.",
   notInBox: "Not in a box",
   notInBoxNote: "Neon Binder has no copy of these, so no box to check. Go by each listing, set by set.",
   notInNbWhy: "No copy here. Go by the listing.",
@@ -1602,7 +1602,7 @@ function Row({
   );
 
   // Venue and number may wrap apart, never inside either. A stray's order
-  // opens that sale on the Sales tab: the order's photo is how to find it.
+  // opens that sale on the Sales tab: the sales platform is where to look.
   const orderText = (o: PickOrder) => (
     <>
       <span className="whitespace-nowrap">{o.venue}</span> <span className="whitespace-nowrap">{o.number}</span>
@@ -1939,7 +1939,7 @@ function CondensedRow({
     </span>
   ) : null;
 
-  // A sale NB has no card for keeps its next step (check the order's photo) under the variant.
+  // A sale NB has no card for keeps its next step (check the sales platform) under the variant.
   const problem = !c && row.problem ? <span className="text-xs text-notice-warn-ink">{row.problem}</span> : null;
   const setText = facts ? (
     <span className="flex min-w-0 flex-col gap-1">
@@ -1981,7 +1981,7 @@ function CondensedRow({
   );
 
   // Venue and number may wrap apart, never inside either. A stray's order
-  // opens that sale on the Sales tab: the order's photo is how to find it.
+  // opens that sale on the Sales tab: the sales platform is where to look.
   const orderText = (o: PickOrder) => (
     <>
       <span className="whitespace-nowrap">{o.venue}</span> <span className="whitespace-nowrap">{o.number}</span>
