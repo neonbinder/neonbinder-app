@@ -236,3 +236,4 @@
 - [Neo556 copied-down decision stamp](patterns_neo556_copied_down_decision_stamp.md) — server-minted {setAt,setByUserId} copied down + reused for background stamps; cursor {i,t,c,r}; one bool two caps
 - [Merge guard survival; bscTeamPool enqueue](patterns_merge_resolution_guard_survival_and_bsc_lane_enqueue.md) — comm -23 line-survival check for merges; one-slot lane enqueue is bounded if admin/internal + row re-read
 - [Cross-workflow preview wait](patterns_cross_workflow_preview_wait.md) — waiter gate ⊆ builder's merge_group scope; tag-exists wait = stale revision
+- [Neo591 prospect claims + PDF runs](patterns_neo591_prospect_claims_and_pdf_runs.md) — joined text breaks per-name cap; saturated take() is no "exactly one"; runs past parser cap

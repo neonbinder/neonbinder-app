@@ -39585,6 +39585,72 @@ exports[`golden — CSV fixtures > 2026-topps-insert-profiles.csv: leaf and set 
 }
 `;
 
+exports[`golden — CSV fixtures > prospect-team-cells.csv: leaf and set parses > leaf parse 1`] = `
+{
+  "format": "csv",
+  "rows": [
+    {
+      "noTeam": true,
+      "number": "1",
+      "players": [
+        "Gunnar Henderson",
+      ],
+      "prospect": true,
+      "teams": [],
+    },
+    {
+      "number": "2",
+      "players": [
+        "Colt Keith",
+      ],
+      "prospect": true,
+      "prospectTeams": [
+        "Oklahoma",
+      ],
+      "teams": [],
+    },
+    {
+      "number": "3",
+      "players": [
+        "Bobby Witt Jr.",
+      ],
+      "prospect": true,
+      "prospectTeams": [
+        "Dallas Baptist",
+      ],
+      "teams": [],
+    },
+  ],
+  "skipped": [],
+}
+`;
+
+exports[`golden — CSV fixtures > prospect-team-cells.csv: leaf and set parses > set parse 1`] = `
+{
+  "format": "csv",
+  "rowCount": 0,
+  "sections": [],
+  "skipped": [
+    {
+      "line": 2,
+      "reason": "Not under any section heading",
+      "text": "1,Gunnar Henderson,Prospect",
+    },
+    {
+      "line": 3,
+      "reason": "Not under any section heading",
+      "text": "2,Colt Keith,Prospect (Oklahoma)",
+    },
+    {
+      "line": 4,
+      "reason": "Not under any section heading",
+      "text": "3,Bobby Witt Jr.,Prospect (Dallas Baptist)",
+    },
+  ],
+  "skippedSections": [],
+}
+`;
+
 exports[`golden — PDF (Topps layout, real pdf.js) > pins the reader's cells/xs, the records mapping, and the leaf and set parses > leaf parse 1`] = `
 {
   "format": "pdf",
