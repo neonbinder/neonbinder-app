@@ -46,6 +46,22 @@ const calls: string[] = [];
 let armed = false;
 
 /**
+ * A planted failure: the `nth` armed call (1-based, in the order the calls
+ * START) of the function whose "module:export" ends with `fn` rejects with
+ * `error`, after `delayMs`. `settled` flips when the rejection is delivered.
+ */
+type Fault = { fn: string; nth: number; error: Error; delayMs?: number; seen: number; settled: boolean };
+const faults: Fault[] = [];
+// Captured at load: convex-test swaps `setTimeout` for a thrower while a query
+// or mutation handler runs, and a planted delay runs inside one.
+const realSetTimeout = globalThis.setTimeout;
+function plant(fn: string, nth: number, message: string, delayMs = 0): Fault {
+  const fault: Fault = { fn, nth, error: new Error(message), delayMs, seen: 0, settled: false };
+  faults.push(fault);
+  return fault;
+}
+
+/**
  * The registry with each registered query/mutation wrapped so the test can see
  * which functions the action called. The wrapper copies the registered
  * function's own properties (convex-test reads them), and counts nothing
@@ -61,7 +77,18 @@ function countingModules() {
         if (typeof fn !== "function" || !(fn.isQuery || fn.isMutation) || !fn._handler) continue;
         wrapped[name] = Object.assign(() => undefined, fn, {
           _handler: (ctx: unknown, args: unknown) => {
-            if (armed) calls.push(`${path.replace(/^\.\//, "").replace(/\.[jt]s$/, "")}:${name}`);
+            const id = `${path.replace(/^\.\//, "").replace(/\.[jt]s$/, "")}:${name}`;
+            if (armed) calls.push(id);
+            const fault = armed
+              ? faults.find((f) => id.endsWith(f.fn) && ++f.seen === f.nth)
+              : undefined;
+            if (fault) {
+              return (async () => {
+                if (fault.delayMs) await new Promise((r) => realSetTimeout(r, fault.delayMs));
+                fault.settled = true;
+                throw fault.error;
+              })();
+            }
             return fn._handler(ctx, args);
           },
         });
@@ -92,6 +119,7 @@ function newT(): T {
 afterEach(async () => {
   armed = false;
   calls.length = 0;
+  faults.length = 0;
   for (const t of live.splice(0)) await cancelScheduled(t);
   vi.restoreAllMocks();
 });
@@ -526,6 +554,222 @@ describe("a sportId that is not the set's sport ancestor", () => {
       /not the sport ancestor/,
     );
     expect(await t.run((ctx) => ctx.db.query("entityReviewQueue").collect())).toEqual([]);
+  });
+});
+
+// ─── Team names past one slice ──────────────────────────────────────────────
+
+/** "aa", "ab", ... — letters only, so every index normalises to its own name. */
+const alpha = (i: number) =>
+  String.fromCharCode(97 + (Math.floor(i / 26) % 26)) + String.fromCharCode(97 + (i % 26));
+const teamNameAt = (i: number) => `City${alpha(i)} Squad${alpha(i)}`;
+const playerNameAt = (i: number) => `Rookie Person${alpha(i)}`;
+
+/** Every table's rows, so "wrote nothing" is checked on the whole database. */
+async function snapshotAll(t: T) {
+  return t.run(async (ctx) => {
+    const out: Record<string, unknown[]> = {};
+    for (const table of Object.keys(schema.tables)) {
+      out[table] = await ctx.db.query(table as any).collect();
+    }
+    return out;
+  });
+}
+
+/** Collects every unhandled rejection the process sees until `stop()`. */
+function watchUnhandled() {
+  const seen: unknown[] = [];
+  const onReject = (reason: unknown) => seen.push(reason);
+  process.on("unhandledRejection", onReject);
+  return {
+    seen,
+    stop: () => process.off("unhandledRejection", onReject),
+  };
+}
+
+describe("the team batch past one slice of 50", () => {
+  /** `count` printed teams on `count` cards; those in `missing` have no team row. */
+  async function teamSet(t: T, count: number, missing: number[] = []) {
+    const sportId = await node(t, { level: "sport", value: "Baseball" });
+    const p = await product(t, sportId, { year: "2024" });
+    await t.run(async (ctx) => {
+      for (let i = 0; i < count; i++) {
+        if (missing.includes(i)) continue;
+        await ctx.db.insert("teams", {
+          location: `City${alpha(i)}`,
+          name: `Squad${alpha(i)}`,
+          nameNormalized: normalizeTeamName(teamNameAt(i)),
+          sportId,
+          lastUpdated: 1,
+        });
+      }
+    });
+    const cards = Array.from({ length: count }, (_, i) => card(i + 1, [], [teamNameAt(i)]));
+    return { sportId, p, cards };
+  }
+
+  /** The per-name answer: what `findByNameAndSport` says for each printed team. */
+  async function singleAnswers(t: T, sportId: Sel, count: number) {
+    const out: Array<string | null> = [];
+    for (let i = 0; i < count; i++) {
+      const row = await t
+        .withIdentity(ADMIN)
+        .query(api.teams.findByNameAndSport, { name: teamNameAt(i), sportId, setYear: 2024 });
+      out.push(row?._id ?? null);
+    }
+    return out;
+  }
+
+  test.each([
+    [50, 1],
+    [51, 2],
+    [100, 2],
+    [101, 3],
+  ])("%i teams that all exist: none unknown, in %i batch call(s)", async (count, slices) => {
+    const t = newT();
+    const { sportId, p, cards } = await teamSet(t, count);
+    const result = await gate(t, p.insert, sportId, cards);
+    expect(result.unknownTeams).toEqual([]);
+    expect(calls.filter((c) => c.endsWith(":findManyByNameAndSport"))).toHaveLength(
+      Math.ceil(count / 50),
+    );
+    expect(Math.ceil(count / 50)).toBe(slices);
+    // The single-name answer agrees for every team: all of them resolve.
+    expect((await singleAnswers(t, sportId, count)).every((id) => id !== null)).toBe(true);
+  });
+
+  test.each([
+    ["the second slice", 53],
+    ["the last name of the first slice", 49],
+    ["the first name of the second slice", 50],
+    ["the last name of the third slice", 100],
+    ["the very first name", 0],
+  ])("one team missing from %s is the only unknown, and the per-name answer agrees", async (_where, at) => {
+    const t = newT();
+    const { sportId, p, cards } = await teamSet(t, 101, [at]);
+    const result = await gate(t, p.insert, sportId, cards);
+    expect(result.unknownTeams).toEqual([teamNameAt(at)]);
+    expect(calls.filter((c) => c.endsWith(":findManyByNameAndSport"))).toHaveLength(3);
+    const single = await singleAnswers(t, sportId, 101);
+    const unknownBySingle = single.flatMap((id, i) => (id === null ? [teamNameAt(i)] : []));
+    expect(unknownBySingle).toEqual(result.unknownTeams);
+  });
+
+  test("several teams missing across all three slices are all reported, in card order", async () => {
+    const t = newT();
+    const missing = [7, 49, 50, 99, 100];
+    const { sportId, p, cards } = await teamSet(t, 101, missing);
+    const result = await gate(t, p.insert, sportId, cards);
+    expect(result.unknownTeams).toEqual(missing.map(teamNameAt));
+  });
+});
+
+// ─── Failures inside the gate's fan-out ─────────────────────────────────────
+
+describe("when a concurrent read in the gate fails", () => {
+  let watch: ReturnType<typeof watchUnhandled>;
+  afterEach(() => watch?.stop());
+
+  /** Let any rejection nobody handled surface before looking. */
+  const drainRejections = () => new Promise((resolve) => setTimeout(resolve, 60));
+
+  async function manyNames(t: T, players: number, teamCount: number) {
+    const sportId = await node(t, { level: "sport", value: "Baseball" });
+    const p = await product(t, sportId, { year: "2024" });
+    await playerRow(t, sportId, "Somebody Else");
+    const cards = Array.from({ length: Math.max(players, teamCount) }, (_, i) =>
+      card(
+        i + 1,
+        i < players ? [playerNameAt(i)] : [],
+        i < teamCount ? [teamNameAt(i)] : [],
+      ),
+    );
+    return { sportId, p, cards };
+  }
+
+  test("the 2nd of 3 team slices throwing rejects the gate with that error, writes nothing, leaves nothing unhandled", async () => {
+    const t = newT();
+    const { sportId, p, cards } = await manyNames(t, 0, 101);
+    const before = await snapshotAll(t);
+    watch = watchUnhandled();
+    plant(":findManyByNameAndSport", 2, "team slice 2 failed");
+    await expect(gate(t, p.insert, sportId, cards)).rejects.toThrow("team slice 2 failed");
+    await drainRejections();
+    expect(watch.seen).toEqual([]);
+    // All three slices were started (3 in flight at once) and have settled.
+    expect(calls.filter((c) => c.endsWith(":findManyByNameAndSport"))).toHaveLength(3);
+    expect(await snapshotAll(t)).toEqual(before);
+    expect(await t.run((ctx) => ctx.db.query("entityReviewQueue").collect())).toEqual([]);
+    expect(await t.run((ctx) => ctx.db.query("checklistNameResolutions").collect())).toEqual([]);
+  });
+
+  test("the 2nd of 3 player slices throwing rejects the gate with that error, writes nothing, leaves nothing unhandled", async () => {
+    const t = newT();
+    const { sportId, p, cards } = await manyNames(t, 60, 0);
+    const before = await snapshotAll(t);
+    watch = watchUnhandled();
+    plant(":resolveNamesForReview", 2, "player slice 2 failed");
+    await expect(gate(t, p.insert, sportId, cards)).rejects.toThrow("player slice 2 failed");
+    await drainRejections();
+    expect(watch.seen).toEqual([]);
+    expect(calls.filter((c) => c.endsWith(":resolveNamesForReview"))).toHaveLength(3);
+    expect(await snapshotAll(t)).toEqual(before);
+  });
+
+  test("a team failure beside a player failure: the gate waits for both to settle and throws the player's (argument order)", async () => {
+    const t = newT();
+    const { sportId, p, cards } = await manyNames(t, 60, 60);
+    const before = await snapshotAll(t);
+    watch = watchUnhandled();
+    const fast = plant(":findManyByNameAndSport", 1, "team batch failed fast", 3);
+    const slow = plant(":resolveNamesForReview", 1, "player batch failed slow", 40);
+    await expect(gate(t, p.insert, sportId, cards)).rejects.toThrow("player batch failed slow");
+    // `Promise.all` would have thrown the first rejection to arrive while the
+    // other read was still running. (convex-test runs handlers one at a time,
+    // so which arrives first is not the point: BOTH must be over by now.)
+    expect(fast.settled).toBe(true);
+    expect(slow.settled).toBe(true);
+    await drainRejections();
+    expect(watch.seen).toEqual([]);
+    expect(await snapshotAll(t)).toEqual(before);
+  });
+
+  test("a failing title-context read (set facts) rejects the gate and leaves nothing unhandled", async () => {
+    const t = newT();
+    const w = await seedGateWorld(t);
+    watch = watchUnhandled();
+    plant(":titleSetFacts", 1, "title facts failed");
+    await expect(gate(t, w.selectorOptionId, w.sportId, w.cards)).rejects.toThrow(
+      "title facts failed",
+    );
+    await drainRejections();
+    expect(watch.seen).toEqual([]);
+  });
+
+  test("a failing title-context player-name page rejects the gate and leaves nothing unhandled", async () => {
+    const t = newT();
+    const w = await seedGateWorld(t);
+    watch = watchUnhandled();
+    plant(":playerNamesByIds", 1, "title page failed");
+    await expect(gate(t, w.selectorOptionId, w.sportId, w.cards)).rejects.toThrow(
+      "title page failed",
+    );
+    await drainRejections();
+    expect(watch.seen).toEqual([]);
+  });
+
+  test("set facts and a name page both failing: the facts error wins (argument order) once the slow page has settled", async () => {
+    const t = newT();
+    const w = await seedGateWorld(t);
+    watch = watchUnhandled();
+    plant(":titleSetFacts", 1, "title facts failed", 30);
+    const page = plant(":playerNamesByIds", 1, "title page failed");
+    await expect(gate(t, w.selectorOptionId, w.sportId, w.cards)).rejects.toThrow(
+      "title facts failed",
+    );
+    expect(page.settled).toBe(true);
+    await drainRejections();
+    expect(watch.seen).toEqual([]);
   });
 });
 

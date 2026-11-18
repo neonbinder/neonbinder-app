@@ -211,6 +211,44 @@ describe("teams.findManyByNameAndSport answers exactly what findByNameAndSport a
     }
   });
 
+  // `resolveTeamDocForSetYear` returns the winning row out of the candidates
+  // `resolveTeamForSetYear` already holds, instead of reading it again. That row
+  // must be the stored document, field for field: a candidate that was a trimmed
+  // or re-shaped copy would leak straight into the public query and the gate.
+  test("the document answered is the stored row of the id it resolved, for every name and year", async () => {
+    const t = newT();
+    const w = await world(t);
+    const names = [
+      "Boston Red Sox",
+      "Bosox",
+      "Winnipeg Jets",
+      "St. Louis Browns",
+      "Seattle Pilots",
+      "Missing Team",
+      "",
+    ];
+    let resolvedCount = 0;
+    for (const setYear of [undefined, 1960, 1990, 2024]) {
+      for (const name of names) {
+        // Goes through convex-test's return validation: the public query's
+        // answer must satisfy its `returns` (`teamDocValidator`) or this throws.
+        const answered = await single(t, w.sportId, name, setYear);
+        if (answered === null) continue;
+        resolvedCount++;
+        const stored = await t.run((ctx) => ctx.db.get(answered._id));
+        expect(answered, `${name} @ ${setYear}`).toEqual(stored);
+      }
+    }
+    // The loop must actually have compared rows, or it proves nothing.
+    expect(resolvedCount).toBeGreaterThanOrEqual(8);
+    // The batch hands back the same stored rows.
+    const batch = await many(t, w.sportId, names, 2024);
+    for (const row of batch) {
+      if (row === null) continue;
+      expect(row).toEqual(await t.run((ctx) => ctx.db.get(row._id)));
+    }
+  });
+
   test("an empty list is an empty answer", async () => {
     const t = newT();
     const w = await world(t);
@@ -773,6 +811,109 @@ describe("playerNamesByIds, buildTitleContext, readManyByIds, collectSubtreeNode
     expect(out.sportValue).toBe("Baseball");
   });
 
+  describe("buildTitleContext when one of its reads fails", () => {
+    /** 450 resolved players = pages of 200, 200 and 50; no database needed. */
+    const ids = Array.from({ length: 450 }, (_, i) => `player-${i}` as unknown as Id<"players">);
+    const resolved = {
+      playerIdByNorm: new Map<string, Id<"players">>(
+        ids.map((id, i) => [normalizePlayerName(`Title Person ${i}`), id]),
+      ),
+      teamNameByNorm: new Map<string, string>(),
+    };
+    const cards = ids.map((_, i) => ({ players: [`Title Person ${i}`], teams: [] as string[] }));
+
+    /**
+     * A runQuery double that answers the two title reads and fails chosen ones.
+     * `pageFault` is the 1-based page that fails, `factsFault` the set facts.
+     * Each failing call rejects after its delay; `settled` lists who finished.
+     */
+    function fakeCtx(opts: {
+      pageFault?: { page: number; delayMs: number };
+      factsFault?: { delayMs: number };
+    }) {
+      const started: string[] = [];
+      const settled: string[] = [];
+      let pageCalls = 0;
+      const later = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+      const runQuery = async (ref: any, args: any) => {
+        const name = getFunctionName(ref);
+        if (name.endsWith("titleSetFacts")) {
+          started.push("facts");
+          if (opts.factsFault) {
+            await later(opts.factsFault.delayMs);
+            settled.push("facts");
+            throw new Error("facts failed");
+          }
+          settled.push("facts");
+          return { sportValue: "Baseball", setTeamNames: [] };
+        }
+        const page = ++pageCalls;
+        started.push(`page${page}`);
+        await later(page === opts.pageFault?.page ? opts.pageFault.delayMs : 5);
+        settled.push(`page${page}`);
+        if (page === opts.pageFault?.page) throw new Error(`page ${page} failed`);
+        return (args.ids as string[]).map((id) => ({ id, name: `named ${id}` }));
+      };
+      return { ctx: { runQuery } as any, started, settled };
+    }
+
+    const ask = (ctx: any) =>
+      buildTitleContext(ctx, {
+        selectorOptionId: "set" as unknown as Sel,
+        sportId: "sport" as unknown as Sel,
+        cards,
+        resolved,
+      });
+
+    function watchUnhandled() {
+      const seen: unknown[] = [];
+      const onReject = (reason: unknown) => seen.push(reason);
+      process.on("unhandledRejection", onReject);
+      return { seen, stop: () => process.off("unhandledRejection", onReject) };
+    }
+
+    test("a failing middle page rejects with that page's error after the other reads have settled", async () => {
+      const { ctx, started, settled } = fakeCtx({ pageFault: { page: 2, delayMs: 1 } });
+      const watch = watchUnhandled();
+      try {
+        await expect(ask(ctx)).rejects.toThrow("page 2 failed");
+        // The facts read and all three pages were in flight together; the
+        // slower siblings finished before the caller saw the error.
+        expect(started.sort()).toEqual(["facts", "page1", "page2", "page3"]);
+        expect(settled.sort()).toEqual(["facts", "page1", "page2", "page3"]);
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        expect(watch.seen).toEqual([]);
+      } finally {
+        watch.stop();
+      }
+    });
+
+    test("a failing set-facts read rejects with its error and a failing page is not left unhandled", async () => {
+      const { ctx, settled } = fakeCtx({
+        factsFault: { delayMs: 1 },
+        pageFault: { page: 3, delayMs: 25 },
+      });
+      const watch = watchUnhandled();
+      try {
+        // Facts is the first argument, so its error wins although the page's
+        // would have been thrown later in time; the slow page settled first.
+        await expect(ask(ctx)).rejects.toThrow("facts failed");
+        expect(settled).toContain("page3");
+        await new Promise((resolve) => setTimeout(resolve, 40));
+        expect(watch.seen).toEqual([]);
+      } finally {
+        watch.stop();
+      }
+    });
+
+    test("no read failing gives the context the fakes describe (control for the two above)", async () => {
+      const { ctx } = fakeCtx({});
+      const out = await ask(ctx);
+      expect(out.players).toHaveLength(450);
+      expect(out.players[449]).toEqual({ printed: "Title Person 449", name: "named player-449" });
+    });
+  });
+
   test("readManyByIds: distinct, input-ordered, dangling dropped, cut at 768 with a count-only warning", async () => {
     const t = newT();
     const { ids } = await manyPlayers(t, 800, "Bulk Row");
@@ -967,6 +1108,49 @@ describe("playerNamesByIds, buildTitleContext, readManyByIds, collectSubtreeNode
         const got = await t.run((ctx) => collectSubtreeNodes(ctx, set, cap));
         const expected = reference(all, set, cap);
         expect(got, `cap ${cap}`).toEqual(expected);
+        expect(got.truncated, `cap ${cap}`).toBe(cap < size);
+      }
+    });
+
+    // The wide fixture above is wide at its FIRST level only. Here the first level
+    // is narrow and the SECOND holds 42 expandable nodes (more than one chunk of
+    // 16, three chunks in all), each with two children, so the cap can land
+    // inside a later chunk of a level that is not the root's.
+    test("a wide SECOND level read in chunks truncates at the one-at-a-time walk's node at every cap", async () => {
+      const t = newT();
+      const sportId = await node(t, { level: "sport", value: "Baseball" });
+      const set = await node(t, { level: "setName", value: "Nested Wide", parentId: sportId });
+      await t.run(async (ctx) => {
+        const add = (level: string, value: string, parentId: Sel) =>
+          ctx.db.insert("selectorOptions", {
+            level,
+            value,
+            parentId,
+            platformData: {},
+            children: [],
+            lastUpdated: 1,
+          });
+        for (let v = 0; v < 3; v++) {
+          const vt = await add("variantType", `Type ${v}`, set);
+          for (let i = 0; i < 14; i++) {
+            const ins = await add("variantType", `Insert ${v}.${i}`, vt);
+            for (let p = 0; p < 2; p++) await add("parallel", `Parallel ${v}.${i}.${p}`, ins);
+          }
+        }
+      });
+      const all = await t.run(async (ctx) =>
+        (await ctx.db.query("selectorOptions").collect()).map((r) => ({
+          _id: r._id as string,
+          level: r.level ?? "",
+          parentId: r.parentId as string | undefined,
+        })),
+      );
+      const size = 1 + 3 + 42 + 84;
+      // Every cap from the root to the end, so each chunk edge (16, 32, 42
+      // expandable inserts in) and every mid-chunk position is hit.
+      for (let cap = 1; cap <= size + 1; cap++) {
+        const got = await t.run((ctx) => collectSubtreeNodes(ctx, set, cap));
+        expect(got, `cap ${cap}`).toEqual(reference(all, set, cap));
         expect(got.truncated, `cap ${cap}`).toBe(cap < size);
       }
     });
