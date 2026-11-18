@@ -524,9 +524,11 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     // A sale filed with its set keeps the old note under its variant.
     const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
     expect(within(nabers).getAllByText("NB couldn't match this line. Check the order's photo.").length).toBeGreaterThan(0);
-    // The old 40px checkbox: the bordered button is the box.
+    // The bordered button is the box, 24px on a wide screen (NEO-598), 32px on a phone.
     const tick = within(trout).getByRole("button", { name: /^Pulled #27 Mike Trout/ });
-    expect(tick.className).toContain("size-11");
+    expect(tick.className).toContain("md:size-6");
+    expect(tick.className).toContain("max-md:size-8");
+    expect(tick.className).not.toContain("size-11");
     expect(tick.className).toContain("border-2");
     // The old thin dividers: no heavier variant rule inside a set.
     expect(table.querySelector("td[class*='border-b-[3px]']")).toBeNull();
@@ -568,15 +570,50 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect([...pageUrl().keys()].some((k) => /dens|rows/i.test(k))).toBe(false);
   });
 
-  it("keeps the demo's page at the 6xl column when Condensed, and widens it on Spacious", async () => {
+  it("keeps the demo's page at the wide column in both row sizes (NEO-598)", async () => {
     renderPick();
     const table = await screen.findByRole("table", { name: "Cards to pull" });
     const frame = () => table.closest<HTMLElement>("[class*='max-w-[1600px]'], [class*='max-w-6xl']")!;
     expect(frame().className).toContain("max-w-[1600px]");
     fireEvent.click(option("Condensed"));
-    expect(frame().className).toContain("max-w-6xl");
+    expect(frame().className).toContain("max-w-[1600px]");
     fireEvent.click(option("Spacious"));
     expect(frame().className).toContain("max-w-[1600px]");
+  });
+
+  it("draws a wide Condensed row on one line: dense cells, no wrapping, the team after the name, the long words clipped with a title (NEO-598)", async () => {
+    renderPick();
+    fireEvent.click(option("Condensed"));
+    const table = await screen.findByRole("table", { name: "Cards to pull" });
+    expect(table.className).toContain("md:table-fixed");
+    const trout = await rowOf(/^Pulled #27 Mike Trout/);
+    const cells = [...trout.querySelectorAll("td")];
+    // Dense cells: the 24px controls set the row's height, and the cells add only py-0.5.
+    expect(cells[0].className).toContain("md:py-0.5");
+    expect(cells[2].className).toContain("md:py-0.5");
+    // The picture: one text line tall, 5:7.
+    const thumb = within(trout).getByRole("button", { name: /^Bigger picture of #27 Mike Trout/ });
+    expect(thumb.className).toContain("md:w-[1.07rem]");
+    // The team sits beside the name on the same line, with the full text in a title.
+    const team = within(trout).getAllByText("Angels").find((el) => el.getAttribute("title") === "Angels")!;
+    expect(team.className).toContain("truncate");
+    expect(team.previousElementSibling?.textContent).toBe("Mike Trout");
+    expect(team.parentElement?.className).not.toContain("flex-col");
+    // The wide cells hold their words on one line.
+    const wide = cells.filter((td) => td.className.includes("md:whitespace-nowrap"));
+    expect(wide.length).toBeGreaterThanOrEqual(5);
+  });
+
+  it("puts a slab's grade and cert, and several orders, inline on a wide Condensed row (NEO-598)", async () => {
+    renderPick();
+    fireEvent.click(option("Condensed"));
+    await screen.findByRole("table", { name: "Cards to pull" });
+    const slab = [...document.querySelectorAll("tr")].find((tr) => /Cert /.test(tr.textContent ?? ""))!;
+    const grade = [...slab.querySelectorAll("span")].find((el) => /^Cert /.test(el.textContent ?? ""))!;
+    // Inline beside the grade on a wide screen, stacked under it on a phone.
+    expect(grade.className).toContain("md:ml-1.5");
+    expect(grade.parentElement?.className).toContain("md:block");
+    expect(grade.parentElement?.className).toContain("max-md:flex-col");
   });
 
   it("is one Tab stop: the checked option; the arrow keys, Home and End move and pick", async () => {
@@ -879,7 +916,7 @@ describe("the signed-in Pick List's ways out", () => {
     }
   });
 
-  it("NEO-520: a 200-character title with no spaces wraps in the wide cell and the phone's cell (WCAG 1.4.10)", async () => {
+  it("NEO-520: a 200-character title with no spaces wraps (Spacious wide cell, phone's cell) or clips on one line (Condensed wide cell) (WCAG 1.4.10)", async () => {
     const { DEMO_PICK_DATA } = await import("./demoPickStore");
     const title = "X".repeat(200);
     const extra = {
@@ -894,12 +931,19 @@ describe("the signed-in Pick List's ways out", () => {
       problem: "NB didn't list this one. Check the order's photo.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
-    for (const size of ["Spacious", "Condensed"] as const) {
-      fireEvent.click(within(region).getByRole("radio", { name: size }));
-      const cells = within(region).getAllByText(title);
-      expect(cells).toHaveLength(2);
-      for (const cell of cells) expect(cell.className).toContain("wrap-anywhere");
-    }
+    fireEvent.click(within(region).getByRole("radio", { name: "Spacious" }));
+    const cells = within(region).getAllByText(title);
+    expect(cells).toHaveLength(2);
+    for (const cell of cells) expect(cell.className).toContain("wrap-anywhere");
+    // NEO-598: Condensed keeps a wide row to one line, so the wide cell clips the title with an
+    // ellipsis (the whole text stays in the page, and in a title); the phone's cell still wraps it.
+    fireEvent.click(within(region).getByRole("radio", { name: "Condensed" }));
+    const condensed = within(region).getAllByText(title);
+    expect(condensed).toHaveLength(2);
+    const [wide, phone] = condensed;
+    expect(wide.className).toContain("truncate");
+    expect(wide.getAttribute("title")).toBe(title);
+    expect(phone.className).toContain("wrap-anywhere");
   });
 
   it("NEO-520: grouped by order, an order holding a line NB didn't list counts items, and an all-card order counts cards", async () => {

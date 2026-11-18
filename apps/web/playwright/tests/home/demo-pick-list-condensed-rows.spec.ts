@@ -3,12 +3,15 @@
 // NEO-522, and this device remembers the choice. On the public demo's sheet:
 //   - Row size opens on Spacious, and the arrow keys move to Condensed and pick
 //     it (a radio group: one Tab stop, the choice in aria-checked);
-//   - Condensed is the old screen: the kind chip ("Insert", "Parallel") beside
-//     the variant's name in the Set column, the "couldn't match" note under a
-//     sale filed with its set (Nabers), thin dividers only (no heavier rule
-//     where the variant changes), the old 44px bordered checkbox, and on a
-//     wide screen no Variant column, the team line under the name and the
-//     old 6xl page, narrower than Spacious's at the same width;
+//   - Condensed is the old screen's content, on one line (NEO-598): the kind
+//     chip ("Insert", "Parallel") beside the variant's name in the Set column,
+//     the "couldn't match" note beside a sale filed with its set (Nabers), thin
+//     dividers only (no heavier rule where the variant changes), a 24px bordered
+//     checkbox (32px on a phone) and, on a wide screen, no Variant column, the
+//     team beside the name, and every row a single line, a long listing title
+//     in "Can't find it" and a slab's cert included;
+//   - it uses the same wide page as Spacious at the same width, so more text
+//     fits each line;
 //   - it passes axe in light and dark;
 //   - Back to default resets the list, never the row size;
 //   - a reload keeps Condensed; Spacious brings the readable rows back, and a
@@ -18,7 +21,7 @@
 // The demo is hard-coded data in the browser (demoPickStore.tsx), never
 // Convex, so nothing here writes anywhere (R7). Public: signed out (R4).
 import { test, expect, expectAccessible } from "../../support/fixtures";
-import { nameCell, pickList, pickRow, pulledToggle, seen, variantTag } from "../../support/pick-list";
+import { nameCell, pickList, pickRow, pictureButton, pulledToggle, seen, variantTag } from "../../support/pick-list";
 
 // The rows the spec reads, by how each row's name begins (demoPickStore.tsx).
 const TROUT = "#27 Mike Trout, 2026 Topps Series 1";
@@ -28,6 +31,11 @@ const OHTANI_INSERT = "#8B-7 Shohei Ohtani, 2026 Topps Series 1 8 Bit Ballers";
 // No NB card, but the listing says set, number and player, so it files with its set (NEO-509).
 const NABERS = "2024 Score #302 · Malik Nabers";
 const NOTE = "NB couldn't match this line. Check the order's photo.";
+// "Can't find it": no set to file by, so the whole listing title is the row's long cell.
+const WITT = "2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr. #CCR-BW";
+// Slabs: the grade and the cert share the line.
+const OHTANI_SLAB = "#US1 Shohei Ohtani, 2018 Topps Update";
+const SANDERS_SLAB = "#257 Barry Sanders, 1989 Score";
 
 test(
   "Pick List demo: Condensed rows bring back the pre-NEO-522 screen, and this device remembers the choice",
@@ -38,6 +46,11 @@ test(
     // The row's last cell on screen (Order on a desktop, the one cell on a phone) carries its rule.
     const ruleUnder = (row: string) => seen(pickRow(table, row).getByRole("cell")).last();
     const regionWidth = async () => (await region.boundingBox())!.width;
+    // How many text lines tall a row stands, by its own line-height; a row on one line is about 1.
+    const linesTall = async (row: string) => {
+      const tr = pickRow(table, row);
+      return (await tr.boundingBox())!.height / (await tr.evaluate((el) => parseFloat(getComputedStyle(el).lineHeight)));
+    };
     const viewport = page.viewportSize()!;
 
     await page.goto("/demo/inventory?tab=pick");
@@ -49,10 +62,11 @@ test(
 
     // The page's width in Spacious at 1920, to hold Condensed's against.
     let spaciousWide = 0;
+    let spaciousAtConfig = 0;
     if (!isMobile) {
-      const atConfigWidth = await regionWidth();
+      spaciousAtConfig = await regionWidth();
       await page.setViewportSize({ width: 1920, height: viewport.height });
-      await expect.poll(regionWidth).toBeGreaterThan(atConfigWidth);
+      await expect.poll(regionWidth).toBeGreaterThan(spaciousAtConfig);
       spaciousWide = await regionWidth();
       await page.setViewportSize(viewport);
     }
@@ -73,22 +87,38 @@ test(
       await expect(seen(pickRow(table, NABERS).getByText(NOTE, { exact: true }))).toBeVisible();
       // The old thin dividers: no heavier rule where the variant changes.
       await expect(ruleUnder(SKENES)).toHaveCSS("border-bottom-width", "1px");
-      // The old 44px bordered checkbox: the button is the box.
+      // The bordered checkbox: the button is the box. 24px (the WCAG 2.2 target floor) on a
+      // wide screen, 32px on a phone; never the old 44px.
       const toggle = pulledToggle(table, TROUT);
       await expect(toggle).toHaveCSS("border-top-width", "2px");
-      expect((await toggle.boundingBox())?.width ?? 0).toBeGreaterThanOrEqual(44);
+      const box = (await toggle.boundingBox())!;
+      expect(box.width).toBeGreaterThanOrEqual(24);
+      expect(box.width).toBeLessThan(isMobile ? 36 : 25);
       if (!isMobile) {
-        // No Variant column, and the team line under the name.
+        // No Variant column, and the team beside the name on the same line.
         await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toHaveCount(0);
         await expect(nameCell(pickRow(table, TROUT), "Mike Trout", "#27")).toContainText("Angels");
+        // The picture is one box tall, 5:7, never the old 40 x 56.
+        const pic = (await pictureButton(table, TROUT).boundingBox())!;
+        expect(pic.height).toBeLessThanOrEqual(25);
+        expect(pic.width / pic.height).toBeCloseTo(5 / 7, 1);
+        // One line per row: the team and chips beside the name, the note beside the set, the
+        // slab's grade and cert, a long listing title in Can't find it (clipped, never wrapped).
+        for (const row of [TROUT, SKENES, SCHLITTLER, OHTANI_INSERT, NABERS, WITT, OHTANI_SLAB, SANDERS_SLAB]) {
+          await expect.poll(() => linesTall(row), { message: row }).toBeLessThanOrEqual(1.5);
+        }
+        await expect(seen(pickRow(table, SANDERS_SLAB).getByText("Cert 4021337", { exact: true }))).toBeVisible();
       }
     };
     await expectCondensed();
 
     if (!isMobile) {
-      // The old 6xl page: at the same 1920, the list is narrower than Spacious's.
+      // Condensed takes the same wide page as Spacious: at 1024 and at 1920 the list is as wide
+      // as Spacious's, so more text fits each line.
+      await expect.poll(regionWidth).toBe(spaciousAtConfig);
       await page.setViewportSize({ width: 1920, height: viewport.height });
-      await expect.poll(regionWidth).toBeLessThan(spaciousWide);
+      await expect.poll(regionWidth).toBe(spaciousWide);
+      await expectCondensed();
       await page.setViewportSize(viewport);
     }
 

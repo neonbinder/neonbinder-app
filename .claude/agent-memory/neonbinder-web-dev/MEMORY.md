@@ -257,3 +257,4 @@
 - [New listing problem reason: hand lists](reference_new_listing_problem_reason_has_hand_lists.md) — SYNC_HELD_REASONS, REPORTABLE_SYNC_REASONS judgement, test Reason union, spec copy literals
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
 - [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
+- [Fixed table layout counts a hidden column in a colSpan](reference_fixed_table_layout_counts_a_hidden_column_in_a_colspan.md) — table-fixed + over-wide colSpan = phantom column; flex min-w-0 truncate spans keep chips
