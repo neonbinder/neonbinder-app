@@ -59,6 +59,12 @@ export default defineConfig({
           globals: true,
           include: COMPONENTS_INCLUDE,
           setupFiles: [ENV_ISOLATION, NETWORK_GUARD],
+          // NEO-591: vitest's 5s default budget is for an idle machine. The
+          // full run spawns ~900 happy-dom workers at once, which slows a
+          // multi-step component walk (panelLink's batch walk, 1.0s alone)
+          // to 5.1s and fails it on the clock, not on behaviour. A test that
+          // truly hangs still fails, at 20s.
+          testTimeout: 20_000,
         },
         resolve: {
           alias: {

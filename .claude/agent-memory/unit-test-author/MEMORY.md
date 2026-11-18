@@ -48,3 +48,4 @@
 - [NEO-555 probe/capture adversarial](reference_neo555_probe_capture_adversarial.md) — shallow-freeze trap, signal guard, body-read leak, break-check by revert
 - [NEO-556 No Team adversarial patterns](reference_neo556_no_team_adversarial_patterns.md) — oracle cartesian, ?raw source pins, client-vs-server commit agreement
 - [NEO-591 Onyx PDF + Prospect tests](reference_neo591_onyx_pdf_prospect_test_patterns.md) — hand-built PDF pages via groupPageItems, resolver world fixture, hint-branch split, mutation driver
+- [Full-suite load vs testTimeout](patterns_full_suite_load_and_test_timeout.md) — components tests run 3-4x slower under the full suite; components project timeout 20s
