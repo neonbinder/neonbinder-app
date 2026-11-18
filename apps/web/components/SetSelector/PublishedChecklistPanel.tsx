@@ -15,6 +15,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
+import PublisherChecklistLinks from "./PublisherChecklistLinks";
 import { ConfirmDialog } from "../modules/confirm-dialog";
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
@@ -401,6 +402,7 @@ export default function PublishedChecklistPanel({
       <p id={hintId} className="text-xs text-ink-3">
         {fileHint}
       </p>
+      <PublisherChecklistLinks />
 
       {reading && <p className="text-xs text-ink-2">Reading {reading}…</p>}
       {readError && (

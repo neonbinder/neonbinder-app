@@ -450,6 +450,18 @@ test(
     await openAttributesPanel(page);
     const panel = page.getByRole("region", { name: "Official checklist" });
     await expect(panel.getByText(/^Got the official checklist\?/)).toBeVisible();
+    // NEO-597: the panel links to both publishers' own checklist pages. They are only read, never
+    // followed: a spec must not visit an outside site.
+    for (const [name, href] of [
+      ["Topps Checklists (opens in new tab)", "https://www.topps.com/pages/checklists"],
+      ["Panini Checklists (opens in new tab)", "https://www.paniniamerica.net/checklist.html"],
+    ]) {
+      const publisherPage = panel.getByRole("link", { name });
+      await expect(publisherPage).toHaveAttribute("href", href);
+      await expect(publisherPage).toHaveAttribute("target", "_blank");
+      await expect(publisherPage).toHaveAttribute("rel", "noopener noreferrer");
+    }
+    await expectAccessible(page, { within: panel, label: "Official checklist, none on the set, with the publisher links" });
     await panel.getByLabel("Upload checklist").setInputFiles({
       name: "2026-donruss-baseball-checklist.xlsx",
       mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
