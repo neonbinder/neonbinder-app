@@ -17,8 +17,8 @@ export default function PublisherChecklistLinks() {
     <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
       {PUBLISHER_CHECKLIST_PAGES.map((page) => (
         <a key={page.url} href={page.url} target="_blank" rel="noopener noreferrer" className={LINK}>
-          {page.name} Checklists
-          <span className="sr-only"> (opens in new tab)</span>
+          {page.name} Checklists{" "}
+          <span className="sr-only">(opens in new tab)</span>
         </a>
       ))}
     </div>

@@ -51,3 +51,4 @@
 - [Nested Overlay portal Tab bubbling](nested-overlay-portal-tab-bubbling.md) — Overlay inside Overlay's React children: outer trap eats every Tab (NEO-481); translucent danger chip over photo 1.24:1
 - [Persisted error alert on mount](persisted-error-alert-on-mount.md) — role=alert on a stored error status fires per column on load; gate on this session's failed attempt (NEO-450)
 - [No Team toggle and ledger NEO-556](no-team-toggle-and-ledger-neo556.md) — toggle beside Add team, offer/ledger control: held-up parts and recurring gaps
+- [External link sr suffix NEO-597](external-link-sr-suffix-neo597.md) — new-tab link row shape that passes; what to check on the next one

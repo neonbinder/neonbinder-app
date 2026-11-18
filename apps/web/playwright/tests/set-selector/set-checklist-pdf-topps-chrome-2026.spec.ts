@@ -61,7 +61,11 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { confirmDeleteCardButton, deleteCardButton, editCardButton } from "../../support/cards";
-import { matchCardsDialog, removeSetChecklistUnderAllBrands } from "../../support/published-checklist";
+import {
+  expectPublisherChecklistLinks,
+  matchCardsDialog,
+  removeSetChecklistUnderAllBrands,
+} from "../../support/published-checklist";
 import { expectChecklistDisagreementFirst, reviewWizard } from "../../support/wizard";
 import { buildToppsPdf } from "../../fixtures/checklists/build-fixtures.mjs";
 
@@ -185,6 +189,8 @@ test(
       await expect(panel.getByText("2026-topps-chrome-checklist.pdf", { exact: true })).toBeVisible();
       await expect(panel.getByText(/^3 sections, 17 cards\. Saved .*\. Syncs in this set read its sections\.$/)).toBeVisible();
       await expect(panel.getByRole("button", { name: "Remove checklist" })).toBeVisible();
+      // NEO-597: the publisher links stay beside a saved checklist too, read and never followed.
+      await expectPublisherChecklistLinks(panel);
       await expectAccessible(page, { within: panel, label: "Official checklist saved on the set" });
 
       // ══ 2. MAP BASE: the checklist's base section is preselected ══
