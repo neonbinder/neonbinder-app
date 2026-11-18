@@ -22,6 +22,7 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { drainScheduled } from "../lib/testing/drain-scheduled";
+import { normalizeTeamName } from "./teams";
 
 type Card = {
   cardNumber: string;
@@ -723,6 +724,132 @@ describe("a publisher checklist: names first (Onyx)", () => {
     expect(after).toHaveLength(1);
     expect(after[0]._id).toBe(before[0]._id);
     expect(after[0].cardNumber).toBe("12");
+  });
+});
+
+describe("a publisher checklist: a BSC number shared by two different players (2026 Immaculate Memorabilia)", () => {
+  // Five BSC numbers each printed on two different players; the checklist
+  // numbers every one of the ten with its own plain digits. Each name is
+  // exactly one card and one row, so each pairs by name (letters against
+  // digits, 0.9). A number two cards share must never block that, and two
+  // cards sharing a number are not stem siblings: a stem needs the same player.
+  const SHARED: Array<[string, string, string]> = [
+    ["MEM-AA", "Aiva Arquette", "2"],
+    ["MEM-AA", "Aaron Judge", "34"],
+    ["MEM-BC", "Bubba Chandler", "6"],
+    ["MEM-BC", "Billy Carlson", "16"],
+    ["MEM-MM", "Mark Mulder", "30"],
+    ["MEM-MM", "Marcelo Mayer", "37"],
+    ["MEM-TB", "Travis Bazzana", "11"],
+    ["MEM-TB", "Tyler Bremner", "40"],
+    ["MEM-TH", "Todd Helton", "10"],
+    ["MEM-TH", "Travis Hafner", "17"],
+  ];
+
+  test("all ten pair by name at 0.9, none left over, none created as a sibling", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId } = await seedTree(t);
+    mockState.bscCards = SHARED.map(([n, p], i) => bsc(n, p, `bsc-imm-${i}`));
+
+    const result = await fetchSet(
+      t,
+      leafId,
+      SHARED.map(([, p, rowNumber]) => ({ number: rowNumber, players: [p], teams: [] })),
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.checklistMatch).toMatchObject({
+      needsOperator: false,
+      unusedRowIndices: [],
+      leftoverCardKeys: [],
+      checklistOnlyCount: 0,
+    });
+    const rows = (await stored(t)).filter((r) => r.bucket !== "checklistOnly");
+    expect(rows).toHaveLength(10);
+    for (const r of rows) {
+      // The lettered BSC number stays the card's; the row's digits are the note.
+      expect(r.cardNumber).toMatch(/^MEM-/);
+      expect(r.checklistLink).toBeDefined();
+      expect(r.checklistLink?.confidence).toBeCloseTo(0.9, 10);
+    }
+    expect(rows.map((r) => r.checklistLink?.checklistNumber).sort()).toEqual(
+      SHARED.map(([, , n]) => n).sort(),
+    );
+  });
+});
+
+describe("a publisher checklist: team names that are aliases of one NB team (NEO-591)", () => {
+  async function seedAthletics(t: ReturnType<typeof convexTest>, sportId: Id<"selectorOptions">) {
+    return t.run(async (ctx) => {
+      const aliases = ["Oakland Athletics", "Oakland A's"];
+      const id = await ctx.db.insert("teams", {
+        name: "Athletics",
+        location: "Oakland",
+        nameNormalized: normalizeTeamName("Oakland Athletics"),
+        sportId,
+        aliases,
+        lastUpdated: 1,
+      });
+      for (const alias of aliases) {
+        await ctx.db.insert("teamAliases", { teamId: id, sportId, aliasNormalized: normalizeTeamName(alias) });
+      }
+      return id;
+    });
+  }
+  const mulder = ["Mark Mulder"];
+
+  test("BSC's 'Oakland Athletics' against the checklist's 'Oakland A's' is no disagreement: no conflict, the card takes the team", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId, sportId } = await seedTree(t);
+    await seedAthletics(t, sportId);
+    mockState.bscCards = [{ ...bsc("MEM-MM", "Mark Mulder"), teams: ["Oakland Athletics"] }];
+
+    await fetchSet(t, leafId, [{ number: "30", players: mulder, teams: ["Oakland A's"] }]);
+
+    const [card] = (await stored(t)).filter((r) => r.bucket !== "checklistOnly");
+    expect(card.checklistConflict?.teams).toBeUndefined();
+    expect(card.teams).toEqual(["Oakland A's"]);
+    expect(card.teamLookup).toBe("checklist");
+  });
+
+  test("a real different team is still asked", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId, sportId } = await seedTree(t);
+    await seedAthletics(t, sportId);
+    await t.run((ctx) =>
+      ctx.db.insert("teams", {
+        name: "Red Sox",
+        location: "Boston",
+        nameNormalized: normalizeTeamName("Boston Red Sox"),
+        sportId,
+        lastUpdated: 1,
+      }),
+    );
+    mockState.bscCards = [{ ...bsc("MEM-MM", "Mark Mulder"), teams: ["Oakland Athletics"] }];
+
+    await fetchSet(t, leafId, [{ number: "30", players: mulder, teams: ["Boston Red Sox"] }]);
+
+    const [card] = (await stored(t)).filter((r) => r.bucket !== "checklistOnly");
+    expect(card.checklistConflict?.teams).toMatchObject({
+      marketplace: ["Oakland Athletics"],
+      checklist: ["Boston Red Sox"],
+    });
+    expect(card.teams).toEqual(["Oakland Athletics"]);
+  });
+
+  test("a name NB does not know is still asked", async () => {
+    const t = convexTest(schema, modules);
+    const { leafId, sportId } = await seedTree(t);
+    await seedAthletics(t, sportId);
+    mockState.bscCards = [{ ...bsc("MEM-MM", "Mark Mulder"), teams: ["Oakland Athletics"] }];
+
+    await fetchSet(t, leafId, [{ number: "30", players: mulder, teams: ["Oakland Elephants"] }]);
+
+    const [card] = (await stored(t)).filter((r) => r.bucket !== "checklistOnly");
+    expect(card.checklistConflict?.teams).toMatchObject({
+      marketplace: ["Oakland Athletics"],
+      checklist: ["Oakland Elephants"],
+    });
   });
 });
 

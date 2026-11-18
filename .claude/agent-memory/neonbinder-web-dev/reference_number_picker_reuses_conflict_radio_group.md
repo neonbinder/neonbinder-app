@@ -24,3 +24,9 @@ no aria-describedby); the open state lives in a component-level Set (in-view twe
 Group names differ between the two ("Number choice on X" vs "Number conflict on X") while the
 radiogroup keeps "Number for X". A per-shelf-side suffix in the scope keeps a Keeping-shelf group
 apart from a Matched row's on the same number.
+
+Match Cards layout (NEO-591): a hand-linked one-marketplace card moves into `state.matched` with
+`linkedFrom` ("column" or "kept") so Unlink can send it home; the Keeping shelf draws rows with the
+same `renderCardRow` closure as Matched (a `shelf` argument swaps Unlink for Remove and the rename
+action). Tests that link a row must `expandMatched()` before looking for the chip, because Matched
+starts collapsed whenever a column still holds cards.

@@ -1158,3 +1158,27 @@ describe("matchPublishedChecklist: a trailing SP the parser dropped is not a dif
     expect(playersAgree(["Old Teammates SP"], ["Old Teammates"])).toBe(true);
   });
 });
+
+describe("matchPublishedChecklist: a number two different players share does not block their names (2026 Immaculate Memorabilia)", () => {
+  const pairs: Array<[string, string, string]> = [
+    ["MEM-AA", "Aiva Arquette", "2"], ["MEM-AA", "Aaron Judge", "34"],
+    ["MEM-BC", "Bubba Chandler", "6"], ["MEM-BC", "Billy Carlson", "16"],
+    ["MEM-MM", "Mark Mulder", "30"], ["MEM-MM", "Marcelo Mayer", "37"],
+    ["MEM-TB", "Travis Bazzana", "11"], ["MEM-TB", "Tyler Bremner", "40"],
+    ["MEM-TH", "Todd Helton", "10"], ["MEM-TH", "Travis Hafner", "17"],
+  ];
+
+  test("all ten pair as playerName at 0.9 with the row's digits; no sibling row, nothing tied", () => {
+    const r = matchPublishedChecklist(
+      pairs.map(([n, p]) => card(n, [p])),
+      pairs.map(([, p, n]) => row(n, [p])),
+    );
+    expect(r.matches).toHaveLength(10);
+    expect(r.matches.every((m) => m.via === "playerName" && m.confidence === 0.9)).toBe(true);
+    expect(r.matches.map((m) => m.checklistNumber)).toEqual(pairs.map(([, , n]) => n));
+    expect(r.unmatchedCardIndices).toEqual([]);
+    expect(r.unusedRowIndices).toEqual([]);
+    expect(r.siblingRows).toEqual([]);
+    expect(r.tiedCardIndices).toEqual([]);
+  });
+});

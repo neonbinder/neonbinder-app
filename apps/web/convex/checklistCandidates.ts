@@ -1227,6 +1227,52 @@ export const resolveChecklistPlaceTeams = internalQuery({
 });
 
 /**
+ * NEO-591 — the most team names `resolveTeamIdentities` resolves in one call.
+ * Each is one indexed alias/name read; a name past the cap answers null (the
+ * operator picks, nothing is guessed).
+ */
+export const MAX_TEAM_IDENTITY_TEXTS = 200;
+
+/**
+ * NEO-591 — which NB team each name means, or null. For the checklist-versus-
+ * marketplace team comparison: "Oakland Athletics" (BSC) and "Oakland A's"
+ * (the checklist) are two aliases of one NB team, so they agree and the
+ * operator is never asked. Goes through `resolveTeamForSetYear`, the one
+ * resolution the card gate and the commit prelude use, with the same
+ * `allowPastEra` a card's team takes (a SET year: a card can show a team's
+ * past). A name that matches no team, or several the year cannot separate,
+ * answers null and the disagreement stays the operator's (rules 7 and 8).
+ *
+ * Internal: the actions that ask are admin-gated themselves.
+ */
+export const resolveTeamIdentities = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    names: v.array(v.string()),
+  },
+  returns: v.array(v.union(v.id("teams"), v.null())),
+  handler: async (ctx, args) => {
+    const none = args.names.map(() => null);
+    const sportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    if (!sportId) return none;
+    const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
+    const out: Array<Id<"teams"> | null> = [];
+    for (const [i, raw] of args.names.entries()) {
+      const name = raw.trim();
+      if (i >= MAX_TEAM_IDENTITY_TEXTS || !name || name.length > MAX_PLAYER_NAME_LENGTH) {
+        out.push(null);
+        continue;
+      }
+      const { teamId } = await resolveTeamForSetYear(ctx, sportId, name, setYear, {
+        allowPastEra: true,
+      });
+      out.push(teamId ?? null);
+    }
+    return out;
+  },
+});
+
+/**
  * The modal's live view, scoped to the signed-in operator.
  *
  * Scoping matters as much here as it does in `startCandidateBatch`: this query

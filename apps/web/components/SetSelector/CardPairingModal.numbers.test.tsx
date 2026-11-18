@@ -480,7 +480,7 @@ describe("Unlink on the server's checklist pair", () => {
 
     expect(screen.queryByRole("radiogroup", { name: /^Number for / })).toBeNull();
     expect(screen.queryByRole("button", { name: /^Change number/ })).toBeNull();
-    expect(screen.getByText("BSC: #38 Ted Williams")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Edit name for #38 Ted Williams" })).toBeTruthy();
     await confirm();
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
     const [card] = confirmedCards(onConfirm);

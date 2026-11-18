@@ -619,3 +619,42 @@ describe("pairNamesFirst: trailing print-run markers are not part of the name", 
     expect(near.pairs[0].by).toBe("nearName");
   });
 });
+
+// 2026 Immaculate Memorabilia (Jason's live run): five BSC numbers each shared
+// by two different players, each player unique by name, the checklist numbering
+// every one with its own plain digits. The shared number must never block a name
+// pair, and two cards sharing a number are not stem siblings (a stem needs the
+// same player).
+describe("pairNamesFirst: a number two different players share does not block their names", () => {
+  const cards = [
+    item("MEM-AA", "Aiva Arquette"), item("MEM-AA", "Aaron Judge"),
+    item("MEM-BC", "Bubba Chandler"), item("MEM-BC", "Billy Carlson"),
+    item("MEM-MM", "Mark Mulder"), item("MEM-MM", "Marcelo Mayer"),
+    item("MEM-TB", "Travis Bazzana"), item("MEM-TB", "Tyler Bremner"),
+    item("MEM-TH", "Todd Helton"), item("MEM-TH", "Travis Hafner"),
+  ];
+  const rows = [
+    item("2", "Aiva Arquette"), item("34", "Aaron Judge"),
+    item("6", "Bubba Chandler"), item("16", "Billy Carlson"),
+    item("30", "Mark Mulder"), item("37", "Marcelo Mayer"),
+    item("11", "Travis Bazzana"), item("40", "Tyler Bremner"),
+    item("10", "Todd Helton"), item("17", "Travis Hafner"),
+  ];
+
+  test.each([[undefined], ["right" as const]])("all ten pair by name at 0.9 (stemSiblingSide %s)", (side) => {
+    const r = pairNamesFirst(cards, rows, { stemSiblingSide: side });
+    expect(r.pairs).toHaveLength(10);
+    expect(r.pairs.every((p, i) => p.leftIndex === i && p.rightIndex === i)).toBe(true);
+    expect(r.pairs.every((p) => p.by === "name" && !p.numbersAgree && p.confidence === 0.9)).toBe(true);
+    expect(r.stemLinks).toEqual([]);
+    expect(r.stemSiblings).toEqual([]);
+    expect(r.tiedLeft).toEqual([]);
+    expect(r.tiedRight).toEqual([]);
+  });
+
+  test("the rows read the other way round pair the same", () => {
+    const r = pairNamesFirst(rows, cards, { stemSiblingSide: "left" });
+    expect(r.pairs).toHaveLength(10);
+    expect(r.stemSiblings).toEqual([]);
+  });
+});

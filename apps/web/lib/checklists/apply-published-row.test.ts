@@ -149,3 +149,82 @@ describe("applyChecklistRow: NEO-489 a No Team row", () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 });
+
+// NEO-591 — two team names that are aliases of one NB team are not a disagreement.
+describe("applyChecklistRow: team names compared as NB teams, not strings", () => {
+  // The product's resolver, as a table: aliases of one team share an id.
+  const ids: Record<string, string> = {
+    "Oakland Athletics": "team-athletics",
+    "Oakland A's": "team-athletics",
+    Athletics: "team-athletics",
+    "Boston Red Sox": "team-redsox",
+  };
+  const resolveTeamId = (name: string) => ids[name] ?? null;
+  const card = (...teams: string[]) => ({ players: ["Mark Mulder"], teams });
+  const row = (...teams: string[]) => ({ players: ["Mark Mulder"], teams });
+
+  test("Oakland Athletics against Oakland A's, both aliases of one team: no disagreement, the card takes the row's team", () => {
+    const r = applyChecklistRow(card("Oakland Athletics"), row("Oakland A's"), noResolve, undefined, undefined, resolveTeamId);
+    expect(r.conflict).toBeUndefined();
+    expect(r.answered).toBe(true);
+    expect(r.teams).toEqual(["Oakland A's"]);
+  });
+
+  test("without the resolver the same strings still disagree (today's behaviour)", () => {
+    const r = applyChecklistRow(card("Oakland Athletics"), row("Oakland A's"), noResolve);
+    expect(r.conflict?.teams).toEqual({
+      marketplace: ["Oakland Athletics"],
+      checklist: ["Oakland A's"],
+    });
+    expect(r.answered).toBe(false);
+  });
+
+  test("a real different team is still asked", () => {
+    const r = applyChecklistRow(card("Oakland Athletics"), row("Boston Red Sox"), noResolve, undefined, undefined, resolveTeamId);
+    expect(r.conflict?.teams).toEqual({
+      marketplace: ["Oakland Athletics"],
+      checklist: ["Boston Red Sox"],
+    });
+    expect(r.answered).toBe(false);
+  });
+
+  test("a name that does not resolve is still asked, on either side", () => {
+    const checklistSide = applyChecklistRow(card("Oakland Athletics"), row("Oakland Elephants"), noResolve, undefined, undefined, resolveTeamId);
+    expect(checklistSide.conflict?.teams).toBeDefined();
+    const marketplaceSide = applyChecklistRow(card("Oakland Elephants"), row("Oakland A's"), noResolve, undefined, undefined, resolveTeamId);
+    expect(marketplaceSide.conflict?.teams).toBeDefined();
+  });
+
+  test("a multi-team card agrees when the resolved sets agree, and not when one team differs", () => {
+    const agree = applyChecklistRow(
+      card("Oakland Athletics", "Boston Red Sox"),
+      row("Boston Red Sox", "Oakland A's"),
+      noResolve,
+      undefined,
+      undefined,
+      resolveTeamId,
+    );
+    expect(agree.conflict).toBeUndefined();
+    const differ = applyChecklistRow(
+      card("Oakland Athletics", "Boston Red Sox"),
+      row("Oakland A's"),
+      noResolve,
+      undefined,
+      undefined,
+      resolveTeamId,
+    );
+    expect(differ.conflict?.teams).toBeDefined();
+  });
+
+  test("the card's legacy single team is compared the same way", () => {
+    const r = applyChecklistRow(
+      { players: ["Mark Mulder"], team: "Oakland Athletics" },
+      row("Oakland A's"),
+      noResolve,
+      undefined,
+      undefined,
+      resolveTeamId,
+    );
+    expect(r.conflict).toBeUndefined();
+  });
+});

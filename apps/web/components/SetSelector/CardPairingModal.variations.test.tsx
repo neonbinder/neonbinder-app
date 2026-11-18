@@ -142,15 +142,17 @@ describe("one checklist row shared by several cards", () => {
     );
   });
 
-  test("focus lands on the card's own Remove on the shelf it moved to", async () => {
+  test("focus lands on the card's own title on the shelf it moved to", async () => {
     mount({ sources: ["bsc", "checklist"], unmatchedBsc: family() });
     expandMatched();
     fireEvent.click(screen.getByLabelText(unlinkName("38b")));
+    // Keeping draws the same row as Matched: its title is the card's handle.
     await waitFor(() =>
       expect(document.activeElement).toBe(
-        screen.getByLabelText("Remove #38b Ted Williams 38b from save list"),
+        screen.getByRole("button", { name: "Edit name for #38b Ted Williams 38b" }),
       ),
     );
+    expect(screen.getByLabelText("Remove #38b Ted Williams 38b from save list")).toBeTruthy();
   });
 
   test("a BSC and SportLots pair stays matched: focus lands on its title and nothing moves to Keeping", async () => {
@@ -272,8 +274,11 @@ describe("cards NB created open in Keeping", () => {
     };
     mount({ sources: ["bsc", "checklist"], checklistOnly: [row, plain] });
     // The same "· <variation>" the card label uses elsewhere.
-    expect(screen.getByText("Checklist: #95b Kyle Long · Photo Variation")).toBeTruthy();
-    expect(screen.queryByText(/Checklist: #7 Plain Row ·/)).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Edit name for checklist row #95b Kyle Long · Photo Variation" }),
+    ).toBeTruthy();
+    // The row nobody kept stays in Checklist only.
+    expect(screen.getByLabelText("Keep #7 Plain Row as checklist-only")).toBeTruthy();
   });
 
   test("a pre-kept checklist row starts kept too, and Remove lists it again", async () => {

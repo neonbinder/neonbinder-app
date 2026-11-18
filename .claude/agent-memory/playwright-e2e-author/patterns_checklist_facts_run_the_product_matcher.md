@@ -21,16 +21,20 @@ stale when pairing became names first; specs asserted counts the product no long
 - Edited uploads go through `usePublishersChecklist(page, name, ChecklistEdits)` (teamCells,
   renumber, split with a "(Note)" variation, drop); each key must be on exactly one row (throws).
 - A publisher file numbered differently from BSC: `cardsOf` the capture plus a `cardNumber` mapper.
-- Match Cards handles (names-first pairs): row `listitem` filtered by page-rooted
-  `group "Number conflict on #<rule's pick>"`; radiogroup `Number for #<pick>`; radios
-  `<#N|NNO> — use this number for #<pick>`; the scope keeps the rule's pick after an operator pick,
-  but the title becomes `Edit name for #<picked> <name>`. The % shows once: exact `"90%"` count 1
-  plus sr-only `"Name match 90%"` count 1 (only when the card has sourceNumbers; without them the
-  chip's own span reads "Name match NN%" and no bare "NN%" element exists).
+- Match Cards number picker (names-first pairs). DISAGREE: row `listitem` filtered by page-rooted
+  `group "Number conflict on #<rule's pick>"`, warning "Sources disagree on the number. We picked
+  one; check the card back.", radiogroup `Number for #<pick>`, radios `<#N|NNO> — use this number for
+  #<pick>`, and the checklist-only number reads `<#N|NNO> · your checklist — use …`. AGREE (95 vs
+  95a): quiet, `Number #95a` text + button `Change number for #95a` (aria-expanded); opened it is
+  `group "Number choice on #95a"`, no warning. Keeping-shelf scope is `#38b (Keeping, BSC|SL)`. The
+  scope keeps the rule's pick after an operator pick; the title becomes `Edit name for #<picked> …`.
+  The % shows once: exact `"90%"` count 1 plus sr-only `"Name match 90%"` count 1 (the sr-only
+  words carry the same shown % as the amber).
 - Stem link chip: `Checklist: #9 · all versions`, no %, no picker. Shared-row Unlink announces in a
   `status` without id; one-marketplace card focus lands on `Remove #9b <name> from save list`.
-- A sibling row (`95b (Photo Variation)`) is pre-kept on Keeping as `Checklist: #95b <player> · <team>`
-  (no variation name shown); read the name back after save from the list sub-line
+- A sibling row (`95b (Photo Variation)`) is pre-kept on Keeping as
+  `Checklist: #95b <player> · <team> · Photo Variation` (its Remove name has no variation); after
+  save the list sub-line reads
   `Variation of #95a · … · Photo Variation`. A drawer with a linked parent shows `#95a <name>` +
   `Clear variation parent`, not the number textbox.
 

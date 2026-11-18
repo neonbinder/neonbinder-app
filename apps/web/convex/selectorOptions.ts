@@ -380,6 +380,7 @@ import {
   MAX_CHECKLIST_TEAM_TEXTS,
   MAX_PROSPECT_TEAMS_PER_QUERY,
   MAX_SOURCE_NUMBER_LENGTH,
+  MAX_TEAM_IDENTITY_TEXTS,
 } from "./checklistCandidates";
 import { checklistClaimText } from "../lib/checklists/prospect-team-text";
 // NEO-591 — "Prospect (X)": the Prospect Card attribute, and X settled at fetch.
@@ -15708,6 +15709,71 @@ export async function resolveChecklistPlaceTexts(
   };
 }
 
+/**
+ * NEO-591 — the NB team each team name of the paired cards and rows means
+ * (aliases included), asked once, through `checklistCandidates.
+ * resolveTeamIdentities`, and handed back as the `resolveTeamId` that
+ * `applyChecklistRow` asks. "Oakland Athletics" on BSC and "Oakland A's" on
+ * the checklist are one NB team; compared as strings they looked like a
+ * disagreement and the operator was asked. Shared by `fetchCardChecklist`
+ * step 3c and `publishedChecklistPairs`, like the other resolvers.
+ *
+ * Asks about exactly the names `applyChecklistRow` will compare: each card's
+ * teams (or its legacy single team) and each row's teams as the row will
+ * carry them (comma text through `resolveText`, a plain text through
+ * `resolvePlace`, a settled Prospect X). At most `MAX_TEAM_IDENTITY_TEXTS`
+ * distinct names; a name past the cap, or whose lookup fails, answers null:
+ * the strings are compared as before and the operator picks. The fetch
+ * neither fails nor guesses (rule 8).
+ */
+export async function resolveChecklistTeamIdentities(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  pairs: ReadonlyArray<{
+    card: { teams?: readonly string[]; team?: string };
+    row: { teams: readonly string[]; prospectTeams?: readonly string[] };
+  }>,
+  resolveText: (text: string) => readonly string[] | null,
+  resolveProspect?: (text: string) => ProspectResolution | null,
+  resolvePlace?: (text: string) => string | null,
+): Promise<(name: string) => string | null> {
+  const names = new Set<string>();
+  const add = (raw: string | undefined) => {
+    const t = raw?.trim();
+    if (t && names.size < MAX_TEAM_IDENTITY_TEXTS) names.add(t);
+  };
+  for (const { card, row } of pairs) {
+    // A card with no marketplace team has nothing to compare.
+    const own = card.teams?.length ? card.teams : card.team ? [card.team] : [];
+    if (own.length === 0) continue;
+    for (const t of own) add(t);
+    for (const raw of row.teams) {
+      const t = raw.trim();
+      if (!t) continue;
+      if (checklistTeamTextNeedsResolving(t)) for (const n of resolveText(t) ?? []) add(n);
+      else add(resolvePlace?.(t) ?? t);
+    }
+    for (const x of row.prospectTeams ?? []) {
+      const answer = resolveProspect?.(x.trim()) ?? null;
+      if (answer?.kind === "team") add(answer.name);
+    }
+  }
+  const list = [...names];
+  let ids: Array<string | null> = list.map(() => null);
+  if (list.length > 0) {
+    try {
+      ids = await ctx.runQuery(internal.checklistCandidates.resolveTeamIdentities, {
+        selectorOptionId,
+        names: list,
+      });
+    } catch {
+      // A lookup that could not be read leaves every name unresolved.
+    }
+  }
+  const at = new Map(list.map((n, i) => [n, ids[i] ?? null]));
+  return (name) => at.get(name.trim()) ?? null;
+}
+
 const previewCardFields = {
   cardNumber: v.string(),
   cardName: v.string(),
@@ -17346,6 +17412,17 @@ export const fetchCardChecklist = action({
             ...match.siblingRows.flatMap((s) => published.rows[s.rowIndex].teams),
           ],
         );
+        // NEO-591 — which NB team each paired card's and row's team names mean
+        // (aliases included), so "Oakland Athletics" and "Oakland A's" are not
+        // a disagreement the operator is asked about.
+        const resolveTeamId = await resolveChecklistTeamIdentities(
+          ctx,
+          args.selectorOptionId,
+          match.matches.map((m) => ({ card: out[m.cardIndex], row: published.rows[m.rowIndex] })),
+          resolveText,
+          resolveProspect,
+          resolvePlace,
+        );
         // NEO-591 (variations) — how many cards hold each row. A stem link
         // gives one row to several cards; each keeps its own link, revert and
         // team conflict (rule 8: a card's own differing team is never
@@ -17403,6 +17480,7 @@ export const fetchCardChecklist = action({
             resolveText,
             resolveProspect,
             resolvePlace,
+            resolveTeamId,
           );
           // NEO-591 — the Prospect Card attribute is a claim about the card,
           // whatever became of the team (even a conflict). A held X rides

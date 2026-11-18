@@ -110,6 +110,36 @@ function sameNames(a: readonly string[], b: readonly string[]): boolean {
 }
 
 /**
+ * Do two team lists name the same NB teams? Each name goes through
+ * `resolveTeamId` (the product's own team resolver: aliases, era and sport
+ * scope included), which answers an NB team id or null. Agreement needs EVERY
+ * name on both sides to resolve and the two sets of teams to be equal. A name
+ * that does not resolve, or resolves to several, is no agreement: the
+ * operator picks (rules 7 and 8, no fuzzy guessing).
+ */
+function sameTeams(
+  a: readonly string[],
+  b: readonly string[],
+  resolveTeamId: ((name: string) => string | null) | undefined,
+): boolean {
+  if (!resolveTeamId || a.length === 0 || b.length === 0) return false;
+  const ids = (names: readonly string[]): Set<string> | null => {
+    const out = new Set<string>();
+    for (const raw of names) {
+      const id = resolveTeamId(raw.trim());
+      if (!id) return null;
+      out.add(id);
+    }
+    return out;
+  };
+  const left = ids(a);
+  const right = ids(b);
+  if (!left || !right || left.size !== right.size) return false;
+  for (const id of left) if (!right.has(id)) return false;
+  return true;
+}
+
+/**
  * Apply one row to one card. `resolveText` is asked only about a team text
  * with a comma (`checklistTeamTextNeedsResolving`) and answers the names the
  * card would carry for it, or `null` when it is refused (over the team cap, an
@@ -128,6 +158,13 @@ export function applyChecklistRow(
    * answers null, so a caller that does not ask changes nothing.
    */
   resolvePlace?: (text: string) => string | null,
+  /**
+   * NEO-591 — the NB team a team name means (aliases included: "Oakland
+   * Athletics" and "Oakland A's" are one team), or null when it names none or
+   * several. Two team lists that differ as strings still agree when they
+   * resolve to the same teams. Absent, strings are all that are compared.
+   */
+  resolveTeamId?: (name: string) => string | null,
 ): AppliedChecklistRow {
   // NEO-591 — settle each X first: a settled one is a team name like any
   // other, a held one is never a team string.
@@ -182,7 +219,10 @@ export function applyChecklistRow(
     : undefined;
   if (conflict?.teams) {
     const marketplace = conflict.teams.marketplace;
-    if (!teams || (!held && sameNames(teams, marketplace))) {
+    if (
+      !teams ||
+      (!held && (sameNames(teams, marketplace) || sameTeams(teams, marketplace, resolveTeamId)))
+    ) {
       delete conflict.teams;
     } else {
       conflict.teams = {
