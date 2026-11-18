@@ -16,7 +16,7 @@ import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
 import { Checkbox } from "../primitives/Checkbox";
-import { checklistClaimParts, PROSPECT_TEAM_JOINER } from "../../lib/checklists/prospect-team-text";
+import { checklistClaimParts, checklistClaimText, PROSPECT_TEAM_JOINER } from "../../lib/checklists/prospect-team-text";
 import { inertBackground } from "@/lib/dom/inert-background";
 import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import {
@@ -742,7 +742,7 @@ export default function PublishedChecklistDialog({
                               {row.teams.length > 0 || row.prospect || (row.prospectTeams?.length ?? 0) > 0 ? (
                                 // The claim as printed: teams, then "Prospect
                                 // (X)" / "Prospect" (collector review).
-                                checklistClaimParts(row).join(", ")
+                                checklistClaimText(row)
                               ) : row.noTeam ? (
                                 // The checklist's answer, so it reads at a
                                 // team's strength, unlike a blank cell.

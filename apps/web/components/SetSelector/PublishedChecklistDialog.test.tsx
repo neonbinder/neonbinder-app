@@ -535,7 +535,7 @@ describe("PublishedChecklistDialog — No Team (NEO-489)", () => {
       within(rows.find((r) => within(r).queryByText(n))!).getAllByRole("cell")[2];
     expect(cellOf("Cord Rager").textContent).toBe("Prospect (Oklahoma)");
     expect(cellOf("Pat Smith").textContent).toBe("Prospect");
-    expect(cellOf("Lee Jones").textContent).toBe("Cincinnati Reds, Prospect (Frisco)");
+    expect(cellOf("Lee Jones").textContent).toBe("Cincinnati Reds / Prospect (Frisco)");
     // A claim, so it reads at a team's strength, not as the muted lookup.
     expect(cellOf("Cord Rager").querySelector(".text-ink-3")).toBeNull();
   });

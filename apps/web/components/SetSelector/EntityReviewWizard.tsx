@@ -3535,9 +3535,19 @@ export default function EntityReviewWizard({
    * unticked; the operator can still tick it, and an answer once given holds.
    */
   const nameIsAPlace = (teamNearMatches ?? []).some((m) => m.locationMatch === true);
+  /**
+   * The default is not known until the matches arrive, and it can flip from
+   * ticked to unticked when they do. Until then, with no answer given, the box
+   * is held disabled, so a click on Link cannot save a place as an alias off a
+   * default that is about to change. The box stays mounted (see its comment).
+   */
+  const aliasDefaultPending =
+    current?.kind === "team" &&
+    saveAsAliasByRow[current._id] === undefined &&
+    teamNearMatches === undefined;
   const saveAsAlias =
     current && current.kind === "team"
-      ? (saveAsAliasByRow[current._id] ?? !nameIsAPlace)
+      ? (saveAsAliasByRow[current._id] ?? (!nameIsAPlace && !aliasDefaultPending))
       : false;
   /**
    * NEO-313 — the current name has been moved off the set's sport, and
@@ -5427,7 +5437,7 @@ export default function EntityReviewWizard({
                               id={TEAM_SAVE_AS_ALIAS_FIELD_ID}
                               type="checkbox"
                               checked={saveAsAlias}
-                              disabled={busy}
+                              disabled={busy || aliasDefaultPending}
                               aria-describedby={saveAsAliasHelpId}
                               onChange={(e) =>
                                 setSaveAsAliasByRow((prev) => ({

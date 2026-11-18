@@ -2934,6 +2934,25 @@ describe("EntityReviewWizard — save-as-alias checkbox", () => {
     });
   });
 
+  it("collector review: the box is held disabled and unticked while the matches are still on their way, so Link cannot save a place off a default that is about to flip", async () => {
+    const row = makeRow({ kind: "team", name: "Arizona", status: "ready" });
+    currentNearMatches = undefined;
+    currentRows = [row];
+    const view = renderWizard();
+
+    const box = () => screen.getByLabelText(rememberLabel("Arizona")) as HTMLInputElement;
+    expect(box().disabled).toBe(true);
+    expect(box().checked).toBe(false);
+
+    // The answer arrives: a place stays unticked, and the box is live.
+    currentNearMatches = [
+      { _id: "team_dbacks", name: "Arizona Diamondbacks", confidence: "exact", locationMatch: true },
+    ];
+    rerenderWizard(view.rerender);
+    expect(box().disabled).toBe(false);
+    expect(box().checked).toBe(false);
+  });
+
   it("collector review: a string that is not a place (no match is a location) keeps the ticked default", () => {
     currentNearMatches = [{ _id: "team_lsu", name: "LSU Tigers", confidence: "exact", matchedAlias: "LSU" }];
     currentRows = [makeRow({ kind: "team", name: "LSU", status: "ready" })];

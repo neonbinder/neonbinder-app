@@ -779,7 +779,7 @@ function TeamsLine({
           // when exactly one existing team is picked.
           <label
             className={[
-              "mt-1.5 flex items-center gap-2 text-xs text-ink-2",
+              "mt-1.5 flex items-start gap-2 text-xs text-ink-2",
               remember.available && !disabled ? "" : "opacity-60",
             ].join(" ")}
           >
@@ -791,7 +791,7 @@ function TeamsLine({
               onChange={(event) => remember.onChange(event.target.checked)}
               className={[
                 markerClass("remember"),
-                "h-3.5 w-3.5 rounded accent-neon-green-text focus-outline",
+                "mt-px h-3.5 w-3.5 shrink-0 rounded accent-neon-green-text focus-outline",
               ].join(" ")}
             />
             <span>{rememberLabel(remember.text)}</span>
