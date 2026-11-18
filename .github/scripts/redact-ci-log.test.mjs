@@ -114,3 +114,13 @@ test("fails closed: no node on PATH exits 127 with nothing on stdout", () => {
   assert.equal(r.status, 127);
   assert.equal(r.stdout, "");
 });
+
+test("redact-cli never passes an over-long line through raw, and stays fast", () => {
+  const CLI = join(dirname(SCRIPT), "redact-cli.mjs");
+  const long = "a1".repeat(30000);
+  const t = Date.now();
+  const r = spawnSync("node", [CLI], { input: `short ok\n${long}\nnext\n`, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.ok(Date.now() - t < 5000);
+  assert.equal(r.stdout, `short ok\n[line truncated: 60000 chars]\nnext\n`);
+});

@@ -78,7 +78,7 @@ function allSpecs() {
 // are planned in no shard, and each tag and its list must name the same files.
 // Checked on every plan.
 function checkTaggedList(specs, { list, tag, listName }) {
-  const tagged = specs.filter((s) => fs.readFileSync(path.join(TESTS, s), "utf8").includes(`"${tag}"`));
+  const tagged = specs.filter((s) => hasTag(fs.readFileSync(path.join(TESTS, s), "utf8"), tag));
   const missing = list.filter((s) => !specs.includes(s));
   const untagged = list.filter((s) => !tagged.includes(s));
   const unlisted = tagged.filter((s) => !list.includes(s));
@@ -95,6 +95,8 @@ function checkTaggedList(specs, { list, tag, listName }) {
 // refuses a tagged spec without `describe.configure({ retries: 0 })` before CI runs.
 // Comments are stripped first, so a configure call quoted in a comment does not count.
 const RETRIES_ZERO = /\b(?:test\.)?describe\.configure\(\s*\{[^}]*\bretries\s*:\s*0\b[^}]*\}\s*\)/;
+// A tag in any quote style ("@x", '@x', `@x`).
+const hasTag = (source, tag) => ['"', "'", "`"].some((q) => source.includes(`${q}${tag}${q}`));
 const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 
 /**
@@ -109,7 +111,7 @@ export function checkNoRetryTagged(specs, read, tags = [SELLER_TAG, BREAKER_TAG]
   const problems = [];
   for (const spec of specs) {
     const source = read(spec);
-    const tag = tags.find((t) => source.includes(`"${t}"`));
+    const tag = tags.find((t) => hasTag(source, t));
     if (tag && !RETRIES_ZERO.test(stripComments(source))) {
       problems.push(`${spec} carries ${tag} but lacks test.describe.configure({ retries: 0 }) (GUIDE hard rule 5)`);
     }

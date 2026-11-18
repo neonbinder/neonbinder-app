@@ -47,18 +47,25 @@ function mdRow(line) {
   return `| ${cells.map((c) => c.replace(/\|/g, "\\|")).join(" | ")} |`;
 }
 
+// The rules are quadratic on very long [\w.-] runs (about 1 s per 20k characters),
+// so a line over the cap is never passed through them, and never published raw.
+const MAX_LINE = 8000;
+/** @param {string} line */
+const guard = (line) => (line.length > MAX_LINE ? `[line truncated: ${line.length} chars]` : line);
+
 const literals = (process.env.REDACT_LITERALS ?? "").split("\n");
 
 try {
   const input = readFileSync(0, "utf8");
   if (mdRows) {
-    const rows = input.split("\n").filter((l) => l !== "").map(mdRow);
+    const rows = input.split("\n").filter((l) => l !== "").map((l) => mdRow(guard(l)));
     process.stdout.write(rows.length ? `${rows.join("\n")}\n` : "");
     process.exit(0);
   }
   const out = input
     .split("\n")
-    .map((line) => {
+    .map((raw) => {
+      const line = guard(raw);
       const safe = redact(redactLiterals(line, literals));
       return safe !== line && isJson(line) && !isJson(safe) ? '{"redacted":"line withheld"}' : safe;
     })

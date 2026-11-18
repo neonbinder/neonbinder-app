@@ -29,6 +29,12 @@ describe("checkNoRetryTagged", () => {
     ).toEqual([]);
   });
 
+  it("recognises a tag in single quotes and backticks, not only double quotes", () => {
+    const bare = (q) => `import { test } from "x";\ntest("x", { tag: [${q}@marketplace-seller${q}] }, async () => {});`;
+    expect(check({ "a/s.spec.ts": bare("'") })).toHaveLength(1);
+    expect(check({ "a/s.spec.ts": bare("`") })).toHaveLength(1);
+  });
+
   it("names a tagged spec that lacks the configure call, with its tag", () => {
     expect(
       check({

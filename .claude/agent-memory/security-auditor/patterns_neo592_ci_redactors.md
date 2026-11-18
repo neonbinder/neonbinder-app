@@ -50,3 +50,14 @@ created during a red test when that context closes (`willCloseBrowserContext`), 
 one a fixture opened from `browser`. Blanking each page first is the guard; a
 blank that times out falls through, so `page.close()` each page before
 `context.close()` is the fail-closed form.
+
+**Delta 964ac91e (escaped quotes + bare numbers):** the new value alternatives
+`(?:[^"\\]|\\.)+` are linear (disjoint first chars; 100k-char `\"` / `\\` runs
+scrub in ~1 ms). What still passes: a value nested one escape level deeper
+(`\"password\":\"ab\\\"cd\"` keeps `cd`), a negative number (`"apiKey":-1`).
+Pre-existing, not from this rule: STORAGE_HOST / EMAIL / *_HOST / SECRET_PAIR
+are quadratic on one unbroken `[\w.-]` run (~1 s per 20k chars) - a slowdown on
+a giant base64url blob, never a leak. The latency probe slices `error` to 120
+chars at write time, so `--summary` redacts after the cut (truncated host
+survives); the summary also skips REDACT_LITERALS. Planner's no-retry check
+detects tags only as `"@tag"` (double-quoted), same as the list check.
