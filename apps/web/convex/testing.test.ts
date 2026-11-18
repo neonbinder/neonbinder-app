@@ -1857,7 +1857,7 @@ describe("dashboard seeds: a test sale and test sync records (NEO-464)", () => {
     const me = t.withIdentity({ subject: USER_A });
     expect((await me.mutation(api.testing.seedMyTestSale, {})).matched).toBe(false);
     const sales = await me.query(api.dashboard.sales, {});
-    expect(sales.orders[0].lines).toEqual([{ quantity: 1, problem: "unmatched" }]);
+    expect(sales.orders[0].lines).toEqual([{ quantity: 1 }]);
     await expect(me.mutation(api.testing.seedMyTestSync, { pending: true, error: false })).rejects.toThrow(/Add a card to a box/);
   });
 
