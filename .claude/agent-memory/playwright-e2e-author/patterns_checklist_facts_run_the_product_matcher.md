@@ -30,11 +30,18 @@ stale when pairing became names first; specs asserted counts the product no long
   scope keeps the rule's pick after an operator pick; the title becomes `Edit name for #<picked> …`.
   The % shows once: exact `"90%"` count 1 plus sr-only `"Name match 90%"` count 1 (the sr-only
   words carry the same shown % as the amber).
+- Hand links (NEO-591, 80d9c935): linking a row to an unmatched card moves BOTH into Matched (no %,
+  no "Linked to" line, no row-side Unlink); the chip `Unlink card … from checklist row …` is the only
+  undo and sends them back ("Moved back to BSC only and Checklist only."). Keeping is an h3 toggle
+  `▼ Keeping (n)` under Matched: match it unanchored (`name: "Keeping (n)"`), never `/^Keeping/`.
+  Kept rows are Matched-style: `Edit name for #X …` / `Edit name for checklist row #X … · <variation>`,
+  a tag (`BSC`, `SL`, `Checklist row`), Remove names unchanged. A split pair's BSC half holding a
+  checklist link is KEPT, not sent to BSC only.
 - Stem link chip: `Checklist: #9 · all versions`, no %, no picker. Shared-row Unlink announces in a
-  `status` without id; one-marketplace card focus lands on `Remove #9b <name> from save list`.
-- A sibling row (`95b (Photo Variation)`) is pre-kept on Keeping as
-  `Checklist: #95b <player> · <team> · Photo Variation` (its Remove name has no variation); after
-  save the list sub-line reads
+  `status` without id; one-marketplace card focus lands on its Keeping title `Edit name for #9b <name>`.
+- A sibling row (`95b (Photo Variation)`) is pre-kept on Keeping as the row
+  `Edit name for checklist row #95b <player> · Photo Variation` (its Remove name keeps the team
+  line, no variation); after save the list sub-line reads
   `Variation of #95a · … · Photo Variation`. A drawer with a linked parent shows `#95a <name>` +
   `Clear variation parent`, not the number textbox.
 

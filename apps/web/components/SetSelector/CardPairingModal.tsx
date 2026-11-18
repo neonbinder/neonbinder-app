@@ -39,6 +39,7 @@ import { keyboardAwareCollision } from "@/lib/dnd/keyboard-aware-collision";
 import {
   conflictingNames,
   conflictingPlayers,
+  nameKey,
   playersKey,
   type NameDisagreement,
   type PlayersDisagreement,
@@ -51,7 +52,11 @@ import { isEditableTarget } from "../../lib/dom/is-editable-target";
 // rest of this screen's shared card rules do.
 import { MAX_CARD_PLAYERS } from "./card-attention";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
-import type { ChecklistConflict, TeamLookupOutcome } from "./checklist-conflict";
+import {
+  settlePlayersByName,
+  type ChecklistConflict,
+  type TeamLookupOutcome,
+} from "./checklist-conflict";
 // NEO-490 — the publisher's checklist as a third source: the name pairing the
 // server uses (so a suggestion here is the server's own rule), the merge of
 // the server's per-link answers, and the dialog's one-line row text.
@@ -79,6 +84,13 @@ import {
   type SourceNumbers,
 } from "./checklist-match-apply";
 import { checklistRowLine } from "./PublishedChecklistDialog";
+import {
+  findChoice,
+  pickChoices,
+  pickRadioOptions,
+  type PickChoice,
+  type PickOption,
+} from "./pick-options";
 
 /**
  * NEO-344 — the SPELLING of a typed card name, with only the invisible
@@ -590,6 +602,15 @@ type State = {
    */
   numberPicks: Map<string, string>;
   /**
+   * NEO-591 — the name the operator picked for a card whose checklist row has
+   * a different one (hand-linked or the server's pairing): `candidateKey` to
+   * name. The card keeps its own name until Confirm, which saves the pick as
+   * the card's name and counts it as the answer to the wizard's "Checklist
+   * disagreements" question about the same player. Dropped on Unlink, like a
+   * number pick.
+   */
+  namePicks: Map<string, string>;
+  /**
    * NEO-591 — the number a minted card arrived with, remembered the first
    * time the operator picks another so the picker can offer it again.
    */
@@ -656,6 +677,12 @@ type Action =
   // the render, since the render is not the only caller (the radiogroup's
   // arrow-key handler dispatches this too).
   | { type: "CHOOSE_NAME"; index: number; side: "bsc" | "sportlots" | "custom" }
+  /**
+   * NEO-591 — the name picker's choice, by VALUE. The picker lists one pill per
+   * distinct name from however many sources the row has (the marketplaces',
+   * the operator's checklist), so a pill is a name, not a marketplace.
+   */
+  | { type: "CHOOSE_NAME_VALUE"; index: number; value: string }
   // NEO-591: which printed number the card keeps. Keyed by `candidateKey`,
   // not an index: it works on a hand-linked row too.
   | { type: "CHOOSE_NUMBER"; cardKey: string; number: string }
@@ -1274,6 +1301,7 @@ function seedState({
     preKeptKeys: new Set([...bscPre.kept, ...slPre.kept].map(candidateKey)),
     checklistPreKept,
     numberPicks: new Map(),
+    namePicks: new Map(),
     mintedNumbers: new Map(),
     // NEO-341: only an ABSORB may say so — see `State.streamSettled`.
     streamSettled: false,
@@ -1487,7 +1515,8 @@ function checklistEdits(state: State): number {
     preTakenOut +
     state.checklistServerUnlinks +
     numberPicked +
-    state.numberPicks.size
+    state.numberPicks.size +
+    state.namePicks.size
   );
 }
 
@@ -1729,6 +1758,13 @@ function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
  * Returns the SAME state object once the row is already touched, so a second
  * click on the same pill costs no render and no re-sort.
  */
+function withoutKey(map: Map<string, string>, key: string): Map<string, string> {
+  if (!map.has(key)) return map;
+  const next = new Map(map);
+  next.delete(key);
+  return next;
+}
+
 function markTouched(state: State, index: number): State {
   const pair = state.matched[index];
   if (!pair || pair.touched) return state;
@@ -2123,6 +2159,7 @@ function baseReducer(state: State, action: Action): State {
           : [];
       return {
         ...state,
+        namePicks: withoutKey(state.namePicks, pairKey),
         matched: [...state.matched.filter((_, i) => i !== action.index), ...stays],
         unmatchedBsc:
           hasBsc && !linkStays ? [...state.unmatchedBsc, bscSide] : state.unmatchedBsc,
@@ -2252,6 +2289,7 @@ function baseReducer(state: State, action: Action): State {
      * anything is genuinely nothing, not a rename to the same value.
      */
     case "RENAME": {
+      const renamed = ((): State => {
       const pair = state.matched[action.index];
       if (!pair) return state;
       // NEO-344: canonicalised once, here, so every comparison below and the
@@ -2320,6 +2358,54 @@ function baseReducer(state: State, action: Action): State {
             : m,
         ),
       };
+      })();
+      // NEO-591: a name typed over a row whose checklist has its own is the
+      // operator's answer to that choice, the same as a pill.
+      const at = renamed === state ? undefined : renamed.matched[action.index];
+      if (!at || checklistNameOf(state, at.card) === undefined) return renamed;
+      return {
+        ...renamed,
+        namePicks: new Map(renamed.namePicks).set(candidateKey(at.card), at.card.cardName),
+      };
+    }
+    /**
+     * NEO-591 — the operator picks a name by value. A pill is one distinct
+     * name (`nameChoiceOf`), whoever said it.
+     *
+     * A name one of the marketplaces gave is the old pick: the card takes it
+     * and the pair's `nameConflict` follows, exactly as before. A name only
+     * the checklist gave waits in `namePicks`, as a number does, until Confirm.
+     * Either way the row is the operator's now (`touched`), and a row whose
+     * checklist offers a name records the pick so Confirm can count it.
+     */
+    case "CHOOSE_NAME_VALUE": {
+      const pair = state.matched[action.index];
+      if (!pair) return state;
+      const choice = nameChoiceOf(state, pair);
+      if (!choice) return state;
+      const hit = findChoice(choice.choices, action.value);
+      if (!hit) return state;
+      const conflict = pair.nameConflict;
+      // The pill is a value; which of the pair's own answers it is, is read
+      // back from the value (exact spelling first, as the pills are made).
+      const is = (name: string | undefined) =>
+        name !== undefined && hit.value === name.trim();
+      const side: "bsc" | "sportlots" | "custom" | undefined = !conflict
+        ? undefined
+        : is(conflict.custom)
+          ? "custom"
+          : is(conflict.bsc)
+            ? "bsc"
+            : is(conflict.sportlots)
+              ? "sportlots"
+              : undefined;
+      const settled =
+        side !== undefined
+          ? baseReducer(state, { type: "CHOOSE_NAME", index: action.index, side })
+          : markTouched(state, action.index);
+      const key = candidateKey(pair.card);
+      if (!choice.hasChecklist) return settled;
+      return { ...settled, namePicks: new Map(settled.namePicks).set(key, hit.value) };
     }
     /**
      * NEO-251 — the operator settles a roster disagreement.
@@ -2531,11 +2617,13 @@ function baseReducer(state: State, action: Action): State {
       );
       const at = state.matched.findIndex((m) => candidateKey(m.card) === action.cardKey);
       const back = at === -1 ? undefined : state.matched[at];
-      if (!back?.linkedFrom) return { ...state, checklistLinks };
+      if (!back?.linkedFrom) return { ...state, checklistLinks, namePicks: withoutKey(state.namePicks, action.cardKey) };
       // The card goes back where it came from, with the pick it never made
       // for a row it no longer has.
       const numberPicks = new Map(state.numberPicks);
       numberPicks.delete(action.cardKey);
+      const namePicks = new Map(state.namePicks);
+      namePicks.delete(action.cardKey);
       const card = back.card;
       const bsc = !!card.platformData.bsc;
       const kept = back.linkedFrom === "kept";
@@ -2543,6 +2631,7 @@ function baseReducer(state: State, action: Action): State {
         ...state,
         checklistLinks,
         numberPicks,
+        namePicks,
         matched: state.matched.filter((_, i) => i !== at),
         unmatchedBsc: !kept && bsc ? [...state.unmatchedBsc, card] : state.unmatchedBsc,
         unmatchedSl: !kept && !bsc ? [...state.unmatchedSl, card] : state.unmatchedSl,
@@ -2576,8 +2665,12 @@ function baseReducer(state: State, action: Action): State {
         ? { ...state, keptBsc: mapped }
         : { ...state, keptSl: mapped };
     }
-    case "UNLINK_SERVER_CHECKLIST":
-      return unlinkServerChecklist(state, action.cardKey);
+    case "UNLINK_SERVER_CHECKLIST": {
+      const next = unlinkServerChecklist(state, action.cardKey);
+      return next === state
+        ? state
+        : { ...next, namePicks: withoutKey(next.namePicks, action.cardKey) };
+    }
     default:
       return state;
   }
@@ -2649,6 +2742,7 @@ function label(card: PairingCard): string {
 function conflictScopeLabels(
   matched: MatchedPair[],
   minted?: ReadonlyMap<string, string>,
+  offersName?: (m: MatchedPair) => boolean,
 ): Map<string, string> {
   const byNumber = new Map<string, MatchedPair[]>();
   for (const m of matched) {
@@ -2658,7 +2752,14 @@ function conflictScopeLabels(
     // two controls on a single row must agree about what that row is called.
     // NEO-591: and a number to pick; named by the rule's number, which holds
     // still while the operator picks the other (`stableNumberOf`).
-    if (!m.nameConflict && !m.playersConflict && !numberChoiceOf(EMPTY_NUMBER_STATE, m.card)) continue;
+    if (
+      !m.nameConflict &&
+      !m.playersConflict &&
+      !numberChoiceOf(EMPTY_NUMBER_STATE, m.card) &&
+      !offersName?.(m)
+    ) {
+      continue;
+    }
     const number = stableNumberOf(m.card, minted);
     const rows = byNumber.get(number);
     if (rows) rows.push(m);
@@ -2697,13 +2798,6 @@ function numberChoiceLabel(n: string): string {
   return isNoNumber(n) ? "NNO" : `#${n}`;
 }
 
-/** The picker's option text: the checklist's own number says whose it is. */
-function numberOptionLabel(n: string, checklistOption: string | undefined): string {
-  return n === checklistOption
-    ? `${numberChoiceLabel(n)} · your checklist`
-    : numberChoiceLabel(n);
-}
-
 /**
  * NEO-591 — the numbers a Matched row offers, and which is chosen; null when
  * the sources print the card's number the same way (nothing to choose).
@@ -2724,15 +2818,126 @@ const EMPTY_NUMBER_STATE: Pick<
   mintedNumbers: new Map(),
 };
 
+/**
+ * NEO-591 — what the operator's checklist calls this card: its row's players,
+ * joined as the dialog prints a row. The row is the hand link's, else the one
+ * the server paired, else (a pair stored before the row was kept) the
+ * checklist's side of the card's players disagreement. Undefined when no
+ * checklist row is behind the card or the row names nobody.
+ */
+function checklistNameOf(
+  state: Pick<State, "checklistLinks" | "checklistRows">,
+  card: PairingCard,
+): string | undefined {
+  const rowIndex = state.checklistLinks.get(candidateKey(card));
+  const players =
+    (rowIndex === undefined ? undefined : state.checklistRows?.[rowIndex]?.players) ??
+    card.checklistLink?.row?.players ??
+    card.checklistConflict?.players?.checklist;
+  const name = (players ?? [])
+    .map((n) => n.trim())
+    .filter(Boolean)
+    .join(" / ");
+  return name || undefined;
+}
+
+/**
+ * The adapter from a Matched row to the name picker's list: the marketplaces'
+ * names (the pair's two when they disagree, else the card's own), the
+ * operator's checklist's, and a name the operator typed. Everything past this
+ * function reads a list of `{source, value}`.
+ */
+function nameSourceOptions(
+  state: Pick<State, "checklistLinks" | "checklistRows">,
+  m: MatchedPair,
+): PickOption[] {
+  const out: PickOption[] = [];
+  const conflict = m.nameConflict;
+  if (conflict) {
+    out.push({ source: "bsc", value: conflict.bsc }, { source: "sportlots", value: conflict.sportlots });
+  } else {
+    const platforms = [
+      ...(m.card.platformData.bsc ? ["bsc"] : []),
+      ...(m.card.platformData.sportlots ? ["sportlots"] : []),
+    ];
+    for (const source of platforms.length > 0 ? platforms : ["bsc"]) {
+      out.push({ source, value: m.card.cardName });
+    }
+  }
+  const checklist = checklistNameOf(state, m.card);
+  if (checklist !== undefined) out.push({ source: "checklist", value: checklist, own: true });
+  if (conflict?.custom !== undefined) out.push({ source: "typed", value: conflict.custom, exact: true });
+  return out;
+}
+
+/**
+ * NEO-591 — the names a Matched row offers, and which is chosen; null when the
+ * sources name the card the same way (nothing to choose). One answer for every
+ * name difference, wherever it came from: the two marketplaces, a marketplace
+ * and the operator's checklist, a server pairing or a hand link.
+ *
+ * Chosen: a pick the operator made, else what the card carries now (the
+ * default is the existing name rule: the pair's chosen side, or the card's own
+ * title).
+ */
+function nameChoiceOf(
+  state: Pick<State, "checklistLinks" | "checklistRows" | "namePicks">,
+  m: MatchedPair,
+): {
+  choices: PickChoice[];
+  chosen: string;
+  /** The operator's checklist is one of the sources. */
+  hasChecklist: boolean;
+} | null {
+  const sources = nameSourceOptions(state, m);
+  const choices = pickChoices(sources);
+  // Names that fold to the same key (accents, punctuation) are not a
+  // difference the marketplaces are asked about either (`conflictingNames`).
+  const differ = new Set(choices.map((c) => nameKey(c.value))).size > 1;
+  if (!m.nameConflict && !differ) return null;
+  if (choices.length < 2) return null;
+  const conflict = m.nameConflict;
+  const carried = conflict
+    ? conflict.chosen === "bsc"
+      ? conflict.bsc
+      : conflict.chosen === "sportlots"
+        ? conflict.sportlots
+        : (conflict.custom ?? conflict.bsc)
+    : m.card.cardName;
+  const picked = state.namePicks.get(candidateKey(m.card));
+  return {
+    choices,
+    chosen: (findChoice(choices, picked) ?? findChoice(choices, carried) ?? choices[0]).value,
+    hasChecklist: sources.some((o) => o.source === "checklist"),
+  };
+}
+
+/**
+ * The adapter from the wire's `sourceNumbers` (keyed bsc / sportlots /
+ * checklist) to the picker's list. Everything past this function reads a list
+ * of `{source, value}`, so a marketplace or a second checklist is one more
+ * entry here and nothing in the picker. A fully generic wire would send the
+ * list itself (`[{source, value}]`) and this would be a copy.
+ */
+function numberSourceOptions(printed: SourceNumbers): PickOption[] {
+  const out: PickOption[] = [];
+  if (printed.bsc !== undefined) out.push({ source: "bsc", value: printed.bsc });
+  if (printed.sportlots !== undefined) out.push({ source: "sportlots", value: printed.sportlots });
+  if (printed.checklist !== undefined) {
+    out.push({ source: "checklist", value: printed.checklist, own: true });
+  }
+  return out;
+}
+
 function numberChoiceOf(
   state: Pick<State, "checklistLinks" | "checklistRows" | "numberPicks" | "mintedNumbers">,
   card: PairingCard,
 ): {
   options: string[];
+  /** The same options as pills: value, who said it, whether only the operator did. */
+  choices: PickChoice[];
   chosen: string;
   disagree: boolean;
-  /** The option only the operator's checklist printed (named in the picker). */
-  checklistOption?: string;
 } | null {
   const key = candidateKey(card);
   const rowIndex = state.checklistLinks.get(key);
@@ -2741,13 +2946,17 @@ function numberChoiceOf(
     ...(card.sourceNumbers ?? (rowNumber !== undefined ? ownSourceNumbers(card) : {})),
     ...(rowNumber !== undefined ? { checklist: rowNumber } : {}),
   };
-  const options = distinctNumbers(printed);
+  const sources = numberSourceOptions(printed);
   // NEO-591: a minted card's own number (SportLots' "38" minted to "38b") is
   // an option beside the one that was printed.
   const minted = card.numberMinted
     ? (state.mintedNumbers.get(key) ?? card.cardNumber.trim())
     : undefined;
-  if (minted !== undefined && !options.includes(minted)) options.unshift(minted);
+  let choices = pickChoices(sources);
+  if (minted !== undefined && !choices.some((c) => c.value === minted)) {
+    choices = pickChoices([{ source: "minted", value: minted }, ...sources]);
+  }
+  const options = choices.map((c) => c.value);
   if (options.length < 2) return null;
   const picked = state.numberPicks.get(key)?.trim();
   const chosen =
@@ -2756,21 +2965,12 @@ function numberChoiceOf(
         ? picked
         : preferCardNumber(card.cardNumber, rowNumber).trim()
       : card.cardNumber.trim();
-  // NEO-591: the checklist is the operator's own upload, so its number is
-  // named as theirs. A number a marketplace printed too stays bare.
-  const folded = (n: string | undefined) => n?.trim().toLowerCase();
-  const checklistOption =
-    printed.checklist !== undefined &&
-    folded(printed.checklist) !== folded(printed.bsc) &&
-    folded(printed.checklist) !== folded(printed.sportlots)
-      ? options.find((o) => folded(o) === folded(printed.checklist))
-      : undefined;
   return {
     options,
+    choices,
     chosen: options.includes(chosen) ? chosen : options[0],
     // "38" and "38a" agree: offered, but nothing to flag.
     disagree: numbersDiffer(printed),
-    ...(checklistOption !== undefined ? { checklistOption } : {}),
   };
 }
 
@@ -3582,7 +3782,8 @@ export default function CardPairingModal({
   // by default whenever there is unmatched work — which is exactly the state
   // manual pairing happens in — and a warning inside a closed section is not a
   // warning.
-  const nameConflictCount = state.matched.filter((m) => m.nameConflict).length;
+  // NEO-591: and wherever the name difference came from, a checklist's included.
+  const nameConflictCount = state.matched.filter((m) => nameChoiceOf(state, m)).length;
   // NEO-251: counted SEPARATELY rather than folded into one "conflicts" total.
   // They are two different decisions on two different fields, and a single
   // number would tell the operator how much work there is without telling them
@@ -3594,8 +3795,9 @@ export default function CardPairingModal({
   // the WHOLE matched list rather than per row, because whether a row needs a
   // disambiguator at all is a property of its number's group, not of the row.
   const conflictScopes = useMemo(
-    () => conflictScopeLabels(state.matched, state.mintedNumbers),
-    [state.matched, state.mintedNumbers],
+    () => conflictScopeLabels(state.matched, state.mintedNumbers, (m) => !!nameChoiceOf(state, m)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- the name choice reads exactly these
+    [state.matched, state.mintedNumbers, state.checklistLinks, state.checklistRows, state.namePicks],
   );
   const bscFieldClass = useFieldTestClass();
   const slFieldClass = useFieldTestClass();
@@ -4108,6 +4310,21 @@ export default function CardPairingModal({
           );
         }
       }
+      // NEO-591: a name the operator picked where the checklist's differs is
+      // what the card saves as, and the answer to the wizard's question about
+      // the same player. After the answers, which is where a hand link's
+      // disagreement arrives.
+      if (state.namePicks.size > 0) {
+        const pairs = new Map(state.matched.map((m) => [candidateKey(m.card), m]));
+        cards = cards.map((card) => {
+          const key = candidateKey(card);
+          const pair = pairs.get(key);
+          if (!pair || !state.namePicks.has(key)) return card;
+          const choice = nameChoiceOf(state, pair);
+          if (!choice || !choice.hasChecklist) return card;
+          return settlePlayersByName({ ...card, cardName: choice.chosen }, choice.chosen);
+        });
+      }
       // NEO-496: the checklist rows the operator kept, as cards of their own,
       // after every marketplace card (so `conflictsByIndex` still addresses
       // the matched pairs at the front). Unkept rows are dropped. Then the
@@ -4357,14 +4574,7 @@ export default function CardPairingModal({
         }
         radioGroupLabel={`Number for ${scope}`}
         chosen={choice.chosen}
-        options={choice.options.map((n) => {
-          const text = numberOptionLabel(n, choice.checklistOption);
-          return {
-            side: n,
-            label: text,
-            ariaLabel: `${text} — use this number for ${scope}`,
-          };
-        })}
+        options={pickRadioOptions(choice.choices, "number", scope, numberChoiceLabel)}
         onChoose={(number, viaKeyboard) => {
           dispatch({ type: "CHOOSE_NUMBER", cardKey: key, number });
           if (viaKeyboard) refocusSelectedRadio("data-number-conflict", domKey(card));
@@ -4912,70 +5122,39 @@ export default function CardPairingModal({
                           name because the values differ as strings by construction:
                           `conflictingNames` only reports differing names, and
                           `custom` exists only when it matches neither. */}
-                      {m.nameConflict && (
-                        <ConflictRadioGroup
-                          handleAttr="data-name-conflict"
-                          handleKey={domKey(m.card)}
-                          groupLabel={`Name conflict on ${scope}`}
-                          warningId={`name-conflict-warning-${domKey(m.card)}`}
-                          warning="Potential names for this card — pick the right one before it is listed."
-                          radioGroupLabel={`Name for ${scope}`}
-                          chosen={m.nameConflict.chosen}
-                          // NEO-272 — each pill's "which card is this
-                          // for" qualifier is the row's SCOPE, the same
-                          // one naming the group and the radiogroup
-                          // above it, and not the bare card number it
-                          // used to be. A number carrying two conflicts
-                          // is precisely the shape `conflictScopeLabels`
-                          // exists for, and the marketplaces routinely
-                          // file one name across a card and its
-                          // variation — so on that row the two BSC pills
-                          // announced one identical sentence, leaving
-                          // the operator no way to hear which card
-                          // either would rename. The scope is also the
-                          // only qualifier that can go here: everything
-                          // name-derived is the value under dispute.
-                          // Unchanged on an unambiguous number, where
-                          // the scope IS `#<number>`.
-                          options={[
-                            {
-                              side: "bsc",
-                              label: m.nameConflict.bsc,
-                              ariaLabel: `${m.nameConflict.bsc} — use this name for ${scope}`,
-                            },
-                            {
-                              side: "sportlots",
-                              label: m.nameConflict.sportlots,
-                              ariaLabel: `${m.nameConflict.sportlots} — use this name for ${scope}`,
-                            },
-                            // The operator's own name, once they have typed one
-                            // that is neither marketplace's. Present on the SAME
-                            // `custom !== undefined` condition the reducer
-                            // guards `CHOOSE_NAME side:"custom"` and the
-                            // arrow-key cycle on, so "every option in the group
-                            // is reachable and exactly one is checked" holds by
-                            // construction rather than by three places agreeing.
-                            ...(m.nameConflict.custom !== undefined
-                              ? [
-                                  {
-                                    side: "custom" as const,
-                                    label: m.nameConflict.custom,
-                                    ariaLabel: `${m.nameConflict.custom} — use this name for ${scope}`,
-                                  },
-                                ]
-                              : []),
-                          ]}
-                          onChoose={(side, viaKeyboard) => {
-                            dispatch({ type: "CHOOSE_NAME", index: i, side });
-                            if (viaKeyboard) {
-                              refocusSelectedRadio(
-                                "data-name-conflict",
-                                domKey(m.card),
-                              );
-                            }
-                          }}
-                        />
-                      )}
+                      {(() => {
+                        // NEO-591: ONE name picker for every name difference,
+                        // whoever the sources are: one pill per distinct name,
+                        // the operator's checklist's marked as theirs.
+                        const nameChoice = nameChoiceOf(state, m);
+                        if (!nameChoice) return null;
+                        return (
+                          <ConflictRadioGroup
+                            handleAttr="data-name-conflict"
+                            handleKey={domKey(m.card)}
+                            groupLabel={`Name conflict on ${scope}`}
+                            warningId={`name-conflict-warning-${domKey(m.card)}`}
+                            warning="Potential names for this card — pick the right one before it is listed."
+                            radioGroupLabel={`Name for ${scope}`}
+                            chosen={nameChoice.chosen}
+                            // NEO-272 — each pill's "which card is this
+                            // for" qualifier is the row's SCOPE, the same
+                            // one naming the group and the radiogroup
+                            // above it. A number carrying two conflicts is
+                            // precisely the shape `conflictScopeLabels`
+                            // exists for. The scope is also the only
+                            // qualifier that can go here: everything
+                            // name-derived is the value under dispute.
+                            options={pickRadioOptions(nameChoice.choices, "name", scope)}
+                            onChoose={(value, viaKeyboard) => {
+                              dispatch({ type: "CHOOSE_NAME_VALUE", index: i, value });
+                              if (viaKeyboard) {
+                                refocusSelectedRadio("data-name-conflict", domKey(m.card));
+                              }
+                            }}
+                          />
+                        );
+                      })()}
                       {/* NEO-251: and the same for WHO IS ON the card. A
                           separate control because it is a separate decision —
                           the two marketplaces can agree about the title and
