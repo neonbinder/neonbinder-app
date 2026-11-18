@@ -29,5 +29,16 @@ apart); the row's own sport chip is aria-hidden inside a band. Scope a band thro
 identity: `npx convex run pickList:titleSports '{"titles":[...]}' --identity '{"subject":"probe","issuer":"probe"}'`
 (read-only; fine on your own deployment, never needed on shared dev). Only the words after `#<n>`
 are searched for the player/team. If it returns the sport, the CI preview (same reference bundle)
-will too. A title band counts "items", never "cards" (NEO-520). See
+will too. A title band counts "items", never "cards" (NEO-520).
+
+**A sport needs a leading year (NEO-590, after the first audit).** Only a title that opens with a year
+(after one "PSA 10"-style grader+grade) is sent to `titleSports` or filed under a sport; anything else
+files under Other even when the server would answer a sport ("Mike Trout Hoodie XL" probes Baseball).
+Both gates are CLIENT code (`pick/model.ts` `titleFacts` + `titleParses`, used by the store), so a
+planted break reaches the run through Vite HMR with no backend push. Make the fixture discriminating by
+seeding the year-less title into a run that counts the Baseball band exactly (the plant read 3, not 2).
+
+**A self-cleaning Pick List spec's failure screenshot shows the CLEANED list.** The finally block ships
+leftovers on a second page, but the failing page is a live Convex subscription, so its screenshot and
+error-context read "Nothing to pull". Read the assertion's Received value, not the screenshot. See
 [[sibling-edits-reload-a-local-vite-run]] for the eBay unmatched row names.

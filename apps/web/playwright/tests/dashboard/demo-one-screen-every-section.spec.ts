@@ -139,20 +139,28 @@ test(
     await expect(page).toHaveURL(/\/demo$/);
     await expect(orders).toBeVisible();
 
-    // NEO-590: an order whose only line NB holds no card for is named by its listing title and counted in
-    // items; all that matters is that it sold, so Out the Door never says a line is not matched (hidden
+    // NEO-590: an eBay order whose only line NB holds no card for is named by its listing title and counted
+    // in items; all that matters is that it sold, so Out the Door never says a line is not matched (hidden
     // lines counted too, DEMO-1003's title-only second line among them). Needs a Look still shows above,
     // for the demo's oversold order.
     const titleOnly = orders.getByRole("article", { name: "eBay order #12-34567-89099", exact: true });
     await expect(titleOnly.getByText("2023 Topps Chrome #121 Gunnar Henderson RC Orioles", { exact: true })).toBeVisible();
     await expect(titleOnly.getByText("1 item. Sold today.", { exact: true })).toBeVisible();
     await expect(orders.getByText(/matched/i)).toHaveCount(0);
+    // One line of several copies (DEMO-1001 sold 4 of one card) shows its quantity, not "and 3 more".
+    const oneLine = orders.getByRole("article", { name: "BuySportsCards order #DEMO-1001", exact: true });
+    await expect(oneLine.getByText("×4", { exact: true })).toBeVisible();
+    await expect(oneLine.getByText(/^and \d+ more/)).toHaveCount(0);
 
-    // An order opens to every card on it: check the opened order.
-    const showCards = orders.getByRole("button", { name: /^Show all \d+ cards? in .+ order / }).first();
+    // An order opens to every card on it: check the opened order. DEMO-1003 is a BuySportsCards order, whose
+    // lines are always cards, so it counts cards even with its title-only line (only eBay counts items).
+    const mixed = orders.getByRole("article", { name: "BuySportsCards order #DEMO-1003", exact: true });
+    await expect(mixed.getByText("2 cards. Sold today.", { exact: true })).toBeVisible();
+    const showCards = mixed.getByRole("button", { name: "Show all 2 cards in BuySportsCards order DEMO-1003", exact: true });
     await showCards.click();
     // The button's words flip with the state, so the open one is found by its new name.
-    await expect(orders.getByRole("button", { name: /^Hide the cards/, expanded: true }).first()).toBeVisible();
+    await expect(mixed.getByRole("button", { name: /^Hide the cards/, expanded: true })).toBeVisible();
+    await expect(mixed.getByText("2024 Score #333 Rome Odunze RC", { exact: true })).toBeVisible();
     await expectAccessible(page, { within: orders, label: "Dashboard demo, an order opened" });
 
     // With none open, the first binder on the shelf stands shut beside it; its cover

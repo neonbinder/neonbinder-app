@@ -12,8 +12,10 @@ Out the Door handles (NEO-464/NEO-590), same on the demo and signed in:
   Inventory Sales tab's article is `"eBay order <orderNo>"` with NO hash, so a
   helper built for one does not find the other. Use `exact: true`: minted order
   numbers can prefix each other.
-- The order's count line is one text node: `"1 item. Sold today."` ("item" when any
-  line has no NB card, else "card"; "Yesterday"/"N days ago" otherwise). Its row-wide
+- The order's count line is one text node: `"1 item. Sold today."` ("item" only when an
+  EBAY order has a line with no NB card; BuySportsCards orders always say "card", e.g. demo
+  DEMO-1003 "2 cards. Sold today."; "Yesterday"/"N days ago" otherwise). The toggle opened
+  reads "Hide the items|cards" to match. One line of quantity N shows "×N", never "and N-1 more". Its row-wide
   block makes it a good `toBeInViewport({ ratio: 1 })` target for "a long unspaced
   title wrapped": an overflowing row pushes the block past the edge (and the
   section's overflow-hidden clips it, which also lowers the ratio).

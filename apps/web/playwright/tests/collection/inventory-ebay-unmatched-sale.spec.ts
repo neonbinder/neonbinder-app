@@ -13,7 +13,9 @@
 //     divider, and a title naming no NB player or team under the "Other"
 //     band; never in "Can't find it", which keeps only a line with no title;
 //     a band walks its titles newest year first (a 2019 Mike Trout title, also
-//     a reference-seed Baseball player, sits under the 2024 one), and the Sport
+//     a reference-seed Baseball player, sits under the 2024 one), a title that
+//     does not open with a year files under Other even when it names an NB
+//     player (a Mike Trout hoodie is not a Baseball card), and the Sport
 //     filter offers "Other" while an Other line is on the list;
 //   - never ties it to a card by its title: the title here names a REAL card
 //     that sits in the seller's own box; that card is not on the list, its
@@ -34,9 +36,9 @@
 //
 // R7/R7a: reads the seed's 2024 Topps Chrome Base and writes ONLY the signed-in
 // user's own rows: one box `Ebay<token>`, one copy of #215 Nolan Arenado in it
-// (reserved for this spec, SET-REGISTRY.md) and four `marketplaceSales` orders
-// (`<token>e` and `<token>h` titled, `<token>g` with a 150-character unspaced title,
-// `<token>f` untitled), all shipped by the end.
+// (reserved for this spec, SET-REGISTRY.md) and five `marketplaceSales` orders
+// (`<token>e` and `<token>h` titled, `<token>k` titled with no year, `<token>g` with a
+// 150-character unspaced title, `<token>f` untitled), all shipped by the end.
 // Self-cleaning: #215's copy is typed back to 0 and the box deleted; on a
 // failure the finally block ships whatever order is still open, on a second
 // page so the failing one stays as the screenshot saw it (the bootstrap's
@@ -87,6 +89,7 @@ test(
     const untitled = `${env.ATTEMPT_TOKEN}f`;
     const long = `${env.ATTEMPT_TOKEN}g`;
     const older = `${env.ATTEMPT_TOKEN}h`;
+    const yearless = `${env.ATTEMPT_TOKEN}k`;
     // One unspaced token of 150 characters: nothing to break on, so the page must wrap it itself.
     const longTitle = `Long${env.ATTEMPT_TOKEN}`.padEnd(150, "w");
     // The title names a real card in the seller's box on purpose: NB must never read a title to find a card.
@@ -94,6 +97,9 @@ test(
     // NEO-590: an older Baseball title (Mike Trout is a Baseball player of the reference seed) whose set
     // words sort first ("Bowman" < "Topps Chrome") and which is seeded first: only the year puts it second.
     const olderTitle = `2019 Bowman #50 Mike Trout Thing${env.ATTEMPT_TOKEN}`;
+    // NEO-590: names the same Baseball player but opens with no year, so it is not read as a card:
+    // it must file under Other, never Baseball (the server alone would answer Baseball for it).
+    const yearlessTitle = `Mike Trout Hoodie XL Thing${env.ATTEMPT_TOKEN}`;
     const advance = isMobile ? "Enter" : "Tab";
     const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
     const pick = pickList(page);
@@ -149,6 +155,10 @@ test(
       await seedEbayOrder(page, { orderNo: titled, lines: [{ quantity: 1, title }] });
       open.add(titled);
       await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
+      await expect(pulledToggle(table, title)).toBeVisible();
+      await seedEbayOrder(page, { orderNo: yearless, lines: [{ quantity: 1, title: yearlessTitle }] });
+      open.add(yearless);
+      await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
 
       // --- NEO-590: both file under Baseball's band, newest year first, counted as items -----------
       const baseball = titleBand("Baseball");
@@ -157,6 +167,14 @@ test(
       await expect(inBaseball.nth(0)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(title)}`));
       await expect(inBaseball.nth(1)).toHaveAccessibleName(new RegExp(`^Pulled ${escapeRe(olderTitle)}`));
       await expect(baseball.getByText("2 items", { exact: true })).toBeVisible();
+      // --- NEO-590: a title with no leading year files under Other, whatever NB player it names --------
+      await expect(pulledToggle(titleBand("Other"), yearlessTitle)).toBeVisible();
+      await expect(pulledToggle(baseball, yearlessTitle)).toHaveCount(0);
+      await expect(pulledToggle(pickGroup(table, "Can't find it"), yearlessTitle)).toHaveCount(0);
+      await shipEbayOrder(page, yearless);
+      await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
+      open.delete(yearless);
+      await expect(pulledToggle(table, yearlessTitle)).toHaveCount(0);
       await shipEbayOrder(page, older);
       await expect(pick.heading).toBeVisible({ timeout: LAUNCH_GATE });
       open.delete(older);
