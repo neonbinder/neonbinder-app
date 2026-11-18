@@ -131,5 +131,11 @@
     "input": "{\"m\":\"{\\\"password\\\":\\\"ab\\\\\\\\cd\\\"}\"}",
     "absent": ["ab", "cd"],
     "present": ["[removed]"]
+  },
+  {
+    "name": "letter escapes inside a double-escaped secret value",
+    "input": "{\"m\":\"{\\\"password\\\":\\\"ab\\\\ncd\\\",\\\"cookie\\\":\\\"a=1\\\\u0026secretpart\\\"}\"}",
+    "absent": ["ab", "cd", "secretpart"],
+    "present": ["[removed]"]
   }
 ]
