@@ -37,13 +37,17 @@
  * spec once; locally 0. A spec that passes only on its retry is "flaky" in the
  * report: the gate counts it as passed, and playwright/support/flaky-reporter.mjs
  * lists it, with its first attempt's error, in <PW_REPORT_DIR>/flaky.json for the
- * job summary. The seed (`setup`) never
- * retries, and neither does a `@marketplace-seller` or `@bsc-breaker` spec: each
- * says `test.describe.configure({ retries: 0 })`, which beats this value and
- * `--retries` (support/fixtures.ts `noRetryOnSharedAccounts` refuses one that
- * forgot). In CI every red spec on e2e / e2e-mobile is followed by the failure reset
- * (support/fixtures.ts `resetAfterFailure`), so a retry starts from a clean
- * account; locally it runs only with PW_FAILURE_RESET=1.
+ * job summary. `bootstrap` takes the same one retry in CI: it is idempotent
+ * (it begins by resetting its account, then seeds it) and touches only its own
+ * worker's account, so a second run repeats the first. Of the projects, only
+ * the seed (`setup`) never retries (its own `retries: 0` below: a global wipe
+ * and the shared real sets), and neither does a `@marketplace-seller` or
+ * `@bsc-breaker` spec: each says `test.describe.configure({ retries: 0 })`,
+ * which beats this value and `--retries` (support/fixtures.ts
+ * `noRetryOnSharedAccounts` refuses one that forgot). In CI every red spec on
+ * e2e / e2e-mobile is followed by the failure reset (support/fixtures.ts
+ * `resetAfterFailure`), so a retry starts from a clean account; locally it
+ * runs only with PW_FAILURE_RESET=1.
  */
 import { defineConfig, devices } from "@playwright/test";
 import { ignoredSpecs } from "./playwright/project-scope.mjs";

@@ -86,9 +86,13 @@ Reference specs that show the patterns below:
    actions auto-wait. Do not branch or wait on something that synchronises
    nothing.
 5. **CI retries a failed spec once; local runs keep `retries: 0`** (Jason,
-   2026-11-18, NEO-592; the seed never retries). A retried pass is a red that
-   got lucky: the gate counts it as passed, the run summary lists it with its
-   first error (`support/flaky-reporter.mjs`), and it gets a `ci-fail` ticket.
+   2026-11-18, NEO-592). The `bootstrap` project takes the same one retry in
+   CI: it is idempotent (it begins by resetting its account, then seeds it) and
+   touches only its own worker's account, so a second run repeats the first.
+   Of the projects, only the seed (`setup`) never retries. A retried pass is
+   a red that got lucky: the gate counts it as passed, the run summary lists
+   it with its first error (`support/flaky-reporter.mjs`), and it gets a
+   `ci-fail` ticket.
    A spec retried in 3 of 20 runs is fixed before new feature work joins the
    queue. One worker per shard, each owning one test account
    (`TEST_EMAIL_<WORKER_INDEX>`); tests must not depend on order. After any red

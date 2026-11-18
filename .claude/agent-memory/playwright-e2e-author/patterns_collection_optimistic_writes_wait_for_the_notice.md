@@ -43,3 +43,27 @@ screenshot and error-context (both are taken at teardown). Do it on
 `context.newPage()` instead.
 
 Related: [[patterns_collection_optimistic_writes_wait_for_the_notice]], [[patterns_responsive_duplicates_and_text_locators]].
+
+## Fourth shape, the last write before the test ends (NEO-603, 2026-11-18)
+
+A spec whose LAST write is optimistic and ends on the optimistic state (the
+checklist row back to `Have <short>`) can close its page before the mutation is
+sent; the copy rides into the worker's next spec (a different spec goes red).
+Convex runs one client's mutations in order, so only the LAST optimistic write
+needs a server confirmation; earlier ones land before it.
+
+- Checklist row un-Have: the notice is the page's floating line (no drawer),
+  not portaled, so it sits inside `main`:
+  `confirmRemoved(page.getByRole("main"), \`Removed ${short}, Raw, Excellent\`)`
+  (real text ends ` · Main`; the helper anchors with `^`, so the prefix is enough).
+- Which writes are optimistic: `withOptimisticUpdate` in
+  `app/collection/final/data/convexStore.ts` (Have, Remove copy, move, trade,
+  want, container update/delete, box quantity, box listed), Profile default
+  condition, eBay setup card weight / Best Offer. Set-builder writes are not.
+- Binder/box delete is NOT optimistic-only: the confirm dialog closes only
+  after `await removeContainer`, so `confirm toBeHidden` is the server's answer.
+  Quantity "Pulled N of ..." is built from the server result, also an answer.
+- A settings radio: `"Saving…" toHaveCount(0)` is not a confirmation (passes on
+  a failed save and on a dead page). Settle on the loaded group
+  (`radio { checked: true }` count 1), branch on `isChecked()`, click, wait for
+  the "Saved." status.

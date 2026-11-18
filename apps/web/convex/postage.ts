@@ -211,7 +211,10 @@ export const storeEasypostKeyForUser = internalAction({
     });
 
     if (!response.ok) {
-      return { success: false, message: "Could not save the key. Try again." };
+      // NEO-604: the status only, so a diagnostic (the E2E seed page prints
+      // this) can tell a 401 from a 500. Never the response body, which may
+      // carry upstream detail, and never the key.
+      return { success: false, message: `Failed to store EasyPost key (${response.status})` };
     }
     return { success: true, message: "EasyPost key saved." };
   },
@@ -396,7 +399,11 @@ export const saveEasypostKey = action({
       userId,
       apiKey,
     });
-    if (!stored.success) return stored;
+    // NEO-604: the internal store's message carries the HTTP status for the
+    // seed page's diagnostics; a seller keeps the plain, actionable copy.
+    if (!stored.success) {
+      return { success: false, message: "Could not save the key. Try again." };
+    }
 
     // NEO-121 — register this seller's scan webhook, best-effort and SCHEDULED,
     // never awaited: the key is saved either way, and registration failing must
