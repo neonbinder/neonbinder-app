@@ -893,6 +893,111 @@ describe("playerNamesByIds, buildTitleContext, readManyByIds, collectSubtreeNode
       }
     });
 
+    /** A set with `types` variant types, each holding `perType` inserts. */
+    async function wideTree(t: T, types: number, perType: number) {
+      const sportId = await node(t, { level: "sport", value: "Baseball" });
+      const set = await node(t, { level: "setName", value: "Wide Set", parentId: sportId });
+      await t.run(async (ctx) => {
+        for (let v = 0; v < types; v++) {
+          const vt = await ctx.db.insert("selectorOptions", {
+            level: "variantType",
+            value: `Type ${v}`,
+            parentId: set,
+            platformData: {},
+            children: [],
+            lastUpdated: 1,
+          });
+          for (let i = 0; i < perType; i++) {
+            await ctx.db.insert("selectorOptions", {
+              level: "parallel",
+              value: `Parallel ${v}.${i}`,
+              parentId: vt,
+              platformData: {},
+              children: [],
+              lastUpdated: 1,
+            });
+          }
+        }
+      });
+      const all = await t.run(async (ctx) =>
+        (await ctx.db.query("selectorOptions").collect()).map((r) => ({
+          _id: r._id as string,
+          level: r.level ?? "",
+          parentId: r.parentId as string | undefined,
+        })),
+      );
+      return { set, all };
+    }
+
+    test("a level far wider than the cap stops at the chunk that crosses it: reads stay near the cap, not width x cap", async () => {
+      const t = newT();
+      const types = 40;
+      const perType = 30;
+      const cap = 60;
+      const { set, all } = await wideTree(t, types, perType);
+      const { out, probe } = await probed(t, (ctx) => collectSubtreeNodes(ctx, set, cap));
+      expect(out).toEqual(reference(all, set, cap));
+      expect(out.truncated).toBe(true);
+      expect(out.nodes).toHaveLength(cap);
+      // The root, the 40 types, then ONE chunk of 16 types each read at the
+      // room the cap had left (60 - 41 = 19, +1 to prove the overflow, +1 for
+      // a cycle's root). The level-parallel walk before this fix read all 40
+      // types at 61 rows each: 1 + 40 + 40 x 30 = 1241 documents.
+      const remaining = cap - (1 + types);
+      const bound = 1 + types + 16 * (remaining + 2);
+      expect(probe.stats.docs).toBeLessThanOrEqual(bound);
+      // 1 root get, 1 range for the set's types, then one chunk of 16.
+      expect(probe.stats.byTable.selectorOptions).toBe(1 + 16);
+      expect(probe.stats.gets).toBe(1);
+    });
+
+    test("a wide level gives the one-at-a-time node list and truncation point at every chunk edge", async () => {
+      const t = newT();
+      const types = 40;
+      const perType = 30;
+      const { set, all } = await wideTree(t, types, perType);
+      const size = 1 + types + types * perType;
+      const chunkEdge = 1 + types + 16 * perType;
+      const caps = [
+        1, 2, types, types + 1, types + 2, types + 31, types + 32,
+        chunkEdge - 1, chunkEdge, chunkEdge + 1, chunkEdge + perType,
+        2 * chunkEdge, size - 1, size, size + 1,
+      ];
+      for (const cap of caps) {
+        const got = await t.run((ctx) => collectSubtreeNodes(ctx, set, cap));
+        const expected = reference(all, set, cap);
+        expect(got, `cap ${cap}`).toEqual(expected);
+        expect(got.truncated, `cap ${cap}`).toBe(cap < size);
+      }
+    });
+
+    test("a parentId cycle that hands the root back as a child is skipped, and the cap still counts only new rows", async () => {
+      const t = newT();
+      // set -> insert -> 3 parallels, and the set is re-pointed at the insert,
+      // so the insert's range lists the (already seen) set FIRST, before its
+      // three parallels. One read short of the room (`remaining + 1`) would
+      // spend a slot on the set and never see the third parallel.
+      const sportId = await node(t, { level: "sport", value: "Baseball" });
+      const set = await node(t, { level: "setName", value: "Loop Set", parentId: sportId });
+      const insert = await node(t, { level: "variantType", value: "Loop Insert", parentId: set });
+      for (let i = 0; i < 3; i++) {
+        await node(t, { level: "parallel", value: `Loop Parallel ${i}`, parentId: insert });
+      }
+      await t.run((ctx) => ctx.db.patch(set, { parentId: insert }));
+      const all = await t.run(async (ctx) =>
+        (await ctx.db.query("selectorOptions").collect()).map((r) => ({
+          _id: r._id as string,
+          level: r.level ?? "",
+          parentId: r.parentId as string | undefined,
+        })),
+      );
+      for (let cap = 1; cap <= 7; cap++) {
+        const got = await t.run((ctx) => collectSubtreeNodes(ctx, set, cap));
+        expect(got, `cap ${cap}`).toEqual(reference(all, set, cap));
+        expect(got.truncated, `cap ${cap}`).toBe(cap < 5);
+      }
+    });
+
     test("a root that does not exist is an empty, untruncated answer", async () => {
       const t = newT();
       const { set } = await tree(t);
