@@ -9,6 +9,7 @@ import { MAX_LISTING_SHORT_NAME_LENGTH } from "../../convex/listingShortName";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
+  OVER_FIELD_CLASS,
   TitleLengthMeter,
 } from "./TitleLengthMeter";
 import {
@@ -634,7 +635,7 @@ function VariationLine({
         aria-invalid={length > ASPECT_VALUE_MAX || undefined}
         aria-disabled={disabled || undefined}
         readOnly={disabled}
-        className={FIELD_CLASS}
+        className={`${FIELD_CLASS} ${OVER_FIELD_CLASS}`}
       />
       <div id={meterId} className="flex justify-end text-xs">
         <TitleLengthMeter length={length} max={ASPECT_VALUE_MAX} />
@@ -822,7 +823,7 @@ function TitleRow({
           aria-invalid={over || undefined}
           aria-disabled={disabled || undefined}
           readOnly={disabled}
-          className={FIELD_CLASS}
+          className={`${FIELD_CLASS} ${OVER_FIELD_CLASS}`}
         />
         {card.leftOut.length > 0 && (
           // What this card's field lacks beyond its group's line — most often
@@ -870,7 +871,7 @@ function TitleRow({
             an alert: the step never blocks, so nothing here stops work. Its
             text changes only when the title crosses the cap, so it speaks
             once per crossing rather than per keystroke. */}
-        <p id={alertId} role="status" className="mt-0.5 text-xs text-notice-danger-ink empty:hidden">
+        <p id={alertId} role="status" className="mt-0.5 text-xs text-neon-pink-text empty:hidden">
           {over ? TITLE_OVER : ""}
         </p>
       </div>

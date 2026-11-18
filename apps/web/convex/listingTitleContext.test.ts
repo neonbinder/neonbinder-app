@@ -220,3 +220,77 @@ describe("listingTitleContext internals", () => {
     },
   );
 });
+
+describe("titleContext teamSplits (NEO-606)", () => {
+  test("carries the Location / Name of the set's team and of every resolved printed team, once", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId, athleticsId } = await seedTree(t, { withSetTeam: true });
+    // A second team, resolved by a card's printed name, and one with no location.
+    await t.run(async (ctx) => {
+      await ctx.db.insert("teams", {
+        location: "Seattle",
+        name: "Mariners",
+        nameNormalized: normalizeTeamName("Seattle Mariners"),
+        sportId,
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.insert("teams", {
+        name: "Brooklyn",
+        nameNormalized: normalizeTeamName("Brooklyn"),
+        sportId,
+        lastUpdated: Date.now(),
+      });
+    });
+    expect(athleticsId).toBeTruthy();
+
+    const result = await t.withIdentity(ADMIN_IDENTITY).action(
+      api.selectorOptions.resolveChecklistEntities,
+      {
+        selectorOptionId: leafId,
+        sportId,
+        cards: [
+          previewCard({ teams: ["Oakland Athletics"] }),
+          previewCard({ teams: ["Seattle Mariners", "Brooklyn"] }),
+        ],
+      },
+    );
+    expect(result.unknownTeams).toEqual([]);
+    // The set's own team (Oakland) is listed once even though a card names it too.
+    expect(result.titleContext?.teamSplits).toEqual([
+      { location: "Oakland", name: "Athletics" },
+      { location: "Seattle", name: "Mariners" },
+    ]);
+  });
+
+  test("a context whose teams have no location carries no teamSplits", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("teams", {
+        name: "Brooklyn",
+        nameNormalized: normalizeTeamName("Brooklyn"),
+        sportId,
+        lastUpdated: Date.now(),
+      });
+    });
+    const result = await t.withIdentity(ADMIN_IDENTITY).action(
+      api.selectorOptions.resolveChecklistEntities,
+      { selectorOptionId: leafId, sportId, cards: [previewCard({ teams: ["Brooklyn"] })] },
+    );
+    expect(result.titleContext?.teams).toEqual([{ printed: "Brooklyn", name: "Brooklyn" }]);
+    expect(result.titleContext?.teamSplits).toBeUndefined();
+  });
+
+  test("teamSplitsByIds refuses more than one page and is an internalQuery", async () => {
+    const t = convexTest(schema, modules);
+    const ids = Array.from(
+      { length: 201 },
+      () => "k17bad00000000000000000000000000" as unknown as Id<"teams">,
+    );
+    await expect(
+      t.query(internal.listingTitleContext.teamSplitsByIds, { ids }),
+    ).rejects.toThrow();
+    const src = readFileSync(join(__dirname, "listingTitleContext.ts"), "utf8");
+    expect(src).toContain("export const teamSplitsByIds = internalQuery({");
+  });
+});

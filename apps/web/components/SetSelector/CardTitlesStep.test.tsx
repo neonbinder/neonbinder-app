@@ -401,9 +401,31 @@ describe("CardTitlesStep — the meter is neutral until past the cap", () => {
       target: { value: "t".repeat(84) },
     });
     const meter = screen.getByText("84/80");
-    // The danger ink, never pink: pink is backing out and taking away.
-    expect(meter.parentElement?.className).toContain("text-notice-danger-ink");
-    expect(meter.parentElement?.className).not.toContain("neon-pink");
+    // NEO-606: neon pink is the app's error colour; the salmon danger ink is gone from here.
+    expect(meter.parentElement?.className).toContain("text-neon-pink-text");
+    expect(meter.parentElement?.className).not.toContain("notice-danger");
     expect(screen.getByText("4 over")).toBeTruthy();
+  });
+
+  test("NEO-606: past the cap the whole box is marked, in neon pink, and clears as soon as it fits", () => {
+    setup({ cards: [card("1")] });
+    const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    fireEvent.change(field, { target: { value: "t".repeat(84) } });
+    // happy-dom does not run the stylesheet: the invalid look is the
+    // `aria-invalid:` utilities, which apply exactly while the attribute is set.
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.className).toContain("aria-invalid:border-neon-pink-text");
+    expect(field.className).toContain("aria-invalid:ring-neon-pink-text");
+    // The note is pink text and tied to the box.
+    const note = screen.getByRole("status");
+    expect(note.textContent).toBe("Too long to list as-is.");
+    expect(note.className).toContain("text-neon-pink-text");
+    expect(note.className).not.toContain("notice-danger");
+    expect(field.getAttribute("aria-describedby")).toContain(note.id);
+    // Back under the cap: the box and the note both let go.
+    fireEvent.change(field, { target: { value: "t".repeat(80) } });
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
+    expect(field.getAttribute("aria-describedby")).not.toContain(note.id);
   });
 });

@@ -40,11 +40,13 @@ import {
  * This renders on TitleFixer's walker dialog, the wizard's Card titles step
  * and CardDetailPanel's drawer. All three paint with colour roles, which
  * follow the light/dark mode, so each tone reads 4.5:1 on any of them in
- * either mode. Over the cap is the danger notice ink everywhere: pink is the
- * colour of backing out and taking away (DESIGN.md), never of an error, and
- * on the drawer's graphite it measured 4.4:1 besides. There used to be a
- * `surface` prop choosing between two maps that differed only in that tone;
- * NEO-535 folded them into one.
+ * either mode. Over the cap is neon pink everywhere (NEO-606, Jason: "our
+ * error state color is the neon pink"): the text roles, and the field itself
+ * through {@link OVER_FIELD_CLASS}. The danger notice ink this used to borrow
+ * read as salmon beside the app's pink. Dark `neon-pink-text` was lifted to
+ * #ff40a3 for 4.5:1 on a graphite card (NEO-356), so the old 4.4:1 worry is
+ * gone. There used to be a `surface` prop choosing between two maps that
+ * differed only in that tone; NEO-535 folded them into one.
  *
  * ## The bands are display truncation, not rules
  *
@@ -80,8 +82,22 @@ const TONE_CLASS: Record<TitleLengthTone, string> = {
   ok: "text-ink-3",
   mobile: "text-notice-warn-ink",
   search: "text-neon-orange-text",
-  over: "text-notice-danger-ink",
+  over: "text-neon-pink-text",
 };
+
+/**
+ * NEO-606 — the whole field, not just the note under it, says "too long".
+ *
+ * Keyed on `aria-invalid` (which every too-long field already sets), so the
+ * highlight goes the moment the text fits, and the `aria-invalid:` variant
+ * outranks the primitive's own edge and well without an `!important`. The
+ * edge is the pink text role (3:1 against the field in both modes); the ring
+ * thickens it to 2px and the tint carries it for anyone who misses a line.
+ * The note is tied to the field by `aria-describedby`, so a screen reader
+ * hears the same thing a sighted operator sees.
+ */
+export const OVER_FIELD_CLASS =
+  "aria-invalid:border-neon-pink-text aria-invalid:ring-1 aria-invalid:ring-neon-pink-text aria-invalid:bg-neon-pink/10";
 
 /**
  * Classify a length against a cap.

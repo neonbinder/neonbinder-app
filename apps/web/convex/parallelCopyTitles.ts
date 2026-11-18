@@ -98,6 +98,8 @@ const listingInputsValidator = v.object({
   printRun: v.optional(v.number()),
   cardVariation: v.optional(v.string()),
   teamNames: v.array(v.string()),
+  // NEO-606 — the teams' Location / Name splits (`ListingCardInputs.teamSplits`).
+  teamSplits: v.optional(v.array(v.object({ location: v.string(), name: v.string() }))),
   sport: v.optional(v.string()),
 });
 

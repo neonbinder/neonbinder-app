@@ -9,7 +9,12 @@
 
 import { describe, expect, test } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
-import { assessNewCardListing, type TitleContext } from "../../convex/features/listingInputs";
+import {
+  assessNewCardListing,
+  listingInputsForCard,
+  type TitleContext,
+} from "../../convex/features/listingInputs";
+import { assessListingTitle } from "../../convex/features/generateListing";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import {
   buildTitleGroups,
@@ -510,5 +515,105 @@ describe("NEO-535 — Set name in titles on the step", () => {
     expect(validShortName("x".repeat(80))).toBe("x".repeat(80));
     expect(validShortName("x".repeat(81))).toBeUndefined();
     expect(validShortName("Topps\tSapphire")).toBeUndefined();
+  });
+});
+
+/**
+ * NEO-606 — a team whose row is split gives up its location before it goes,
+ * and the step's title is the one the commit and Regenerate will write. The
+ * split reaches the preview from the server's context (`teamSplits`), from the
+ * teams the operator picked or linked in the wizard (`names.teamSplits`), and
+ * from a team created in the Names phase (its Location / Name).
+ */
+describe("a split team in the preview (NEO-606)", () => {
+  const NY = { location: "New York", name: "Yankees" };
+  /**
+   * A 50-character "Set name in titles" box: "<box> Shohei Ohtani #1" is 66,
+   * "New York Yankees" would make 83, "Yankees" 74. The card is on the step
+   * because its own description lost a first name and the box did not.
+   */
+  const BOX = "B".repeat(50);
+  const boxed = (extra: Partial<TitleContext> = {}) =>
+    context({
+      setNameValue: "C".repeat(62),
+      listingShortName: BOX,
+      teams: [{ printed: "NY", name: "New York Yankees" }],
+      ...extra,
+    });
+  const teamCard = card("1", { teams: ["NY"] });
+
+  /** What Regenerate / the commit title: the same inputs, from the server's builder. */
+  const stored = (ctx: TitleContext, teamSplits?: Array<{ location: string; name: string }>) =>
+    assessListingTitle(
+      listingInputsForCard({ cardNumber: "1" }, ctx, {
+        playerNames: ["Shohei Ohtani"],
+        teamNames: ["New York Yankees"],
+        teamSplits,
+      }),
+    );
+
+  test("the preview says 'Yankees' from the server context, exactly as the stored title does", () => {
+    const ctx = boxed({ teamSplits: [NY] });
+    const [row] = rowsOf(buildTitleGroups([teamCard], ctx).titleGroups);
+    const written = stored(ctx, [NY]);
+    expect(row.title).toBe(`${BOX} Shohei Ohtani #1 Yankees`);
+    expect(row.title).toBe(written.title);
+    expect(row.leftOut).toEqual(written.dropped);
+    expect(row.leftOut).toEqual([]);
+  });
+
+  test("without the split the team is dropped whole, in the preview and the stored title alike", () => {
+    const ctx = boxed();
+    const [row] = rowsOf(buildTitleGroups([teamCard], ctx).titleGroups);
+    const written = stored(ctx);
+    // The sport the team's room had cost comes back in its place.
+    expect(row.title).toBe(`${BOX} Shohei Ohtani #1 Baseball`);
+    expect(row.title).toBe(written.title);
+    expect(row.leftOut).toEqual(["New York Yankees"]);
+    expect(row.leftOut).toEqual(written.dropped);
+  });
+
+  test("a team the operator picked or linked carries its split from the wizard's sources", () => {
+    const id = "t-ny" as Id<"teams">;
+    const names = {
+      teamNameById: new Map([[id, "New York Yankees"]]),
+      teamSplits: [NY],
+    };
+    const ctx = boxed();
+    const [row] = rowsOf(
+      buildTitleGroups([card("1")], ctx, [{ teamIds: [id] }], { names }).titleGroups,
+    );
+    expect(row.title).toBe(stored(ctx, [NY]).title);
+    expect(row.title.endsWith("#1 Yankees")).toBe(true);
+  });
+
+  test("a team created in the Names phase carries the Location / Name it was created with", () => {
+    const rows: TitleReviewRow[] = [
+      {
+        kind: "team",
+        name: "NYY",
+        decision: { action: "create", create: { location: "New York", name: "Yankees" } },
+      },
+    ];
+    const ctx = boxed({ teams: [] });
+    const [row] = rowsOf(
+      buildTitleGroups([card("1", { teams: ["NYY"] })], ctx, undefined, { names: { rows } })
+        .titleGroups,
+    );
+    expect(row.title).toBe(stored(ctx, [NY]).title);
+    expect(row.title.endsWith("#1 Yankees")).toBe(true);
+  });
+
+  test("a team with no location (no split) is dropped whole", () => {
+    const rows: TitleReviewRow[] = [
+      { kind: "team", name: "NYY", decision: { action: "create", create: { name: "New York Yankees" } } },
+    ];
+    const [row] = rowsOf(
+      buildTitleGroups([card("1", { teams: ["NYY"] })], boxed({ teams: [] }), undefined, {
+        names: { rows },
+      }).titleGroups,
+    );
+    expect(row.title).toBe(`${BOX} Shohei Ohtani #1 Baseball`);
+    expect(row.leftOut).toEqual(["New York Yankees"]);
   });
 });

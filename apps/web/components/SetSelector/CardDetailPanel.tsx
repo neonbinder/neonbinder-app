@@ -24,6 +24,7 @@ import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
   TitleFieldNote,
+  OVER_FIELD_CLASS,
   TitleLengthAlert,
   TitleLengthMeter,
   titleLengthState,
@@ -1372,7 +1373,7 @@ export default function CardDetailPanel({
               // No maxLength, deliberately: it would silently swallow the tail
               // of a pasted title, and an over-length title the operator cannot
               // SEE is one they cannot fix. Let it overflow and say so.
-              className={`${fieldClass("cardTitle")} block w-full resize-none p-1.5 text-sm [field-sizing:content]`}
+              className={`${fieldClass("cardTitle")} block w-full resize-none p-1.5 text-sm [field-sizing:content] ${OVER_FIELD_CLASS}`}
               placeholder="Listing title reused across marketplaces"
               aria-label="Card title"
               aria-invalid={titleState.over || Boolean(titleField.error) || undefined}
@@ -1696,10 +1697,10 @@ export default function CardDetailPanel({
               onChange={(e) => setVariationLength(e.target.value.length)}
               readOnly={variationField.busy}
               aria-busy={variationField.busy || undefined}
-              className={`${fieldClass("cardVariation")} w-full p-1.5 text-sm`}
+              className={`${fieldClass("cardVariation")} w-full p-1.5 text-sm ${OVER_FIELD_CLASS}`}
               placeholder="e.g. Gold Refractor"
               aria-label="Card variation"
-              aria-invalid={variationField.error ? true : undefined}
+              aria-invalid={variationField.error || variationLength > ASPECT_VALUE_MAX ? true : undefined}
               aria-describedby={
                 [
                   variationLength > ASPECT_VALUE_MAX ? variationAlertId : null,

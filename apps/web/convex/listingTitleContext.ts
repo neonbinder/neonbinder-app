@@ -35,8 +35,9 @@ import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { teamDefaultOf } from "./lib/selectorTeams";
-import { teamFullName } from "../lib/teams/team-name";
+import { teamFullName, teamSplitOf } from "../lib/teams/team-name";
 import type { TitleContext } from "./features/listingInputs";
+import type { ListingTeamSplit } from "./features/generateListing";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { titleChainFacts, titleChainFactsFields } from "./listingShortName";
@@ -47,6 +48,8 @@ export const TITLE_CONTEXT_PLAYER_PAGE = 200;
 
 /** Depth cap on the ancestor walk, as the prelude's sibling walks have. */
 const MAX_ANCESTOR_DEPTH = 16;
+
+const teamSplitValidator = v.object({ location: v.string(), name: v.string() });
 
 const nameMapValidator = v.array(v.object({ printed: v.string(), name: v.string() }));
 
@@ -59,6 +62,10 @@ export const titleContextValidator = v.object({
   // NEO-335 — the insert role, a parallel leaf, the nearest short name.
   ...titleChainFactsFields,
   setTeamNames: v.array(v.string()),
+  // NEO-606 — Location / Name of the teams the context names (the set-level
+  // ones and every resolved printed team) that have a location; the title
+  // matches them to a card's team by whole name.
+  teamSplits: v.optional(v.array(teamSplitValidator)),
   // NEO-528 round 3 — optional on the wire: an older server sends none.
   setPlayerNames: v.optional(v.array(v.string())),
   setPlayerId: v.optional(v.id("players")),
@@ -75,6 +82,7 @@ const setFactsValidator = v.object({
   inheritedFeatures: v.optional(v.record(v.string(), v.string())),
   ...titleChainFactsFields,
   setTeamNames: v.array(v.string()),
+  teamSplits: v.optional(v.array(teamSplitValidator)),
   setPlayerNames: v.optional(v.array(v.string())),
   setPlayerId: v.optional(v.id("players")),
   // NEO-528 + NEO-535 — the default cameos a new card is born with.
@@ -128,11 +136,16 @@ export const titleSetFacts = internalQuery({
     // NEO-556 — a No Team leaf names none: a stamped card's title carries no
     // team, exactly as a teamless one's does.
     const setTeamNames: string[] = [];
+    const setTeamSplits: ListingTeamSplit[] = [];
     const leafDefault = teamDefaultOf(leaf);
     // Not sliced: the chunk reads the whole list, and this must match it.
     for (const teamId of leafDefault.kind === "teams" ? leafDefault.teamIds : []) {
       const team = await ctx.db.get(teamId);
-      if (team) setTeamNames.push(teamFullName(team));
+      if (team) {
+        setTeamNames.push(teamFullName(team));
+        const split = teamSplitOf(team);
+        if (split) setTeamSplits.push(split);
+      }
     }
 
     // NEO-528 round 3 — "Player on every card": the player a new card with
@@ -161,6 +174,7 @@ export const titleSetFacts = internalQuery({
       ...(inheritedFeatures ? { inheritedFeatures } : {}),
       ...titleChainFacts(titleChain),
       setTeamNames,
+      ...(setTeamSplits.length > 0 ? { teamSplits: setTeamSplits } : {}),
       setPlayerNames,
       ...(setPlayerId ? { setPlayerId } : {}),
       ...(setCameoNames.length > 0 ? { setCameoNames } : {}),
@@ -191,6 +205,31 @@ export const playerNamesByIds = internalQuery({
 });
 
 /**
+ * NEO-606 — the Location / Name of the teams the resolve gate resolved, for
+ * the pre-save title to give a team's location up before the team, as the
+ * insert will. Bounded per call; the caller pages. A team with no location
+ * (or no longer there) adds nothing.
+ */
+export const teamSplitsByIds = internalQuery({
+  args: { ids: v.array(v.id("teams")) },
+  returns: v.array(teamSplitValidator),
+  handler: async (ctx, args) => {
+    if (args.ids.length > TITLE_CONTEXT_PLAYER_PAGE) {
+      throw new Error(
+        `teamSplitsByIds: ${args.ids.length} ids exceeds the ${TITLE_CONTEXT_PLAYER_PAGE}-id page`,
+      );
+    }
+    const out: ListingTeamSplit[] = [];
+    for (const id of args.ids) {
+      const team = await ctx.db.get(id);
+      const split = team ? teamSplitOf(team) : undefined;
+      if (split) out.push(split);
+    }
+    return out;
+  },
+});
+
+/**
  * What the resolve gate learned about each printed name, keyed by the SAME
  * normalisation it looked them up under (`normalizePlayerName` /
  * `normalizeTeamName`). Filled by `resolveUnknownsAndStartBatch`.
@@ -198,10 +237,15 @@ export const playerNamesByIds = internalQuery({
 export type ResolvedNames = {
   playerIdByNorm: Map<string, Id<"players">>;
   teamNameByNorm: Map<string, string>;
+  /**
+   * NEO-606 — the team row behind each `teamNameByNorm` entry (same key), so
+   * the context can carry the row's Location / Name split.
+   */
+  teamIdByNorm: Map<string, Id<"teams">>;
 };
 
 export function emptyResolvedNames(): ResolvedNames {
-  return { playerIdByNorm: new Map(), teamNameByNorm: new Map() };
+  return { playerIdByNorm: new Map(), teamNameByNorm: new Map(), teamIdByNorm: new Map() };
 }
 
 /**
@@ -257,8 +301,28 @@ export async function buildTitleContext(
     }
   }
 
+  // NEO-606 — the resolved teams' splits, beside the set-level ones the facts
+  // carry. A flat list: a card's team finds its split by whole name.
+  const teamIds = Array.from(new Set(args.resolved.teamIdByNorm.values()));
+  const splits = [...(facts.teamSplits ?? [])];
+  for (let i = 0; i < teamIds.length; i += TITLE_CONTEXT_PLAYER_PAGE) {
+    const page: ListingTeamSplit[] = await ctx.runQuery(
+      internal.listingTitleContext.teamSplitsByIds,
+      { ids: teamIds.slice(i, i + TITLE_CONTEXT_PLAYER_PAGE) },
+    );
+    splits.push(...page);
+  }
+  const seenSplits = new Set<string>();
+  const teamSplits = splits.filter((split) => {
+    const key = teamFullName(split);
+    if (seenSplits.has(key)) return false;
+    seenSplits.add(key);
+    return true;
+  });
+
   return {
     ...facts,
+    ...(teamSplits.length > 0 ? { teamSplits } : {}),
     players: Array.from(players, ([printed, name]) => ({ printed, name })),
     teams: Array.from(teams, ([printed, name]) => ({ printed, name })),
   };

@@ -236,6 +236,26 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     );
   });
 
+  it("NEO-606: over the cap the whole title box is marked in neon pink with the note, and clears when it fits", () => {
+    renderPanel(makeCard({ listingTitle: titleOfLength(81) }));
+
+    const field = titleInput();
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    // The `aria-invalid:` utilities are the box highlight (happy-dom runs no CSS).
+    expect(field.className).toContain("aria-invalid:border-neon-pink-text");
+    expect(field.className).toContain("aria-invalid:ring-neon-pink-text");
+    const alert = screen.getByRole("alert");
+    expect(alert.className).toContain("text-neon-pink-text");
+    expect(alert.className).not.toContain("notice-danger");
+    expect(field.getAttribute("aria-describedby")).toContain(alert.id);
+    // The counter beside it is the same pink.
+    expect(screen.getByText("81/80").parentElement?.className).toContain("text-neon-pink-text");
+
+    fireEvent.change(field, { target: { value: titleOfLength(80) } });
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
   it("does not cap the input itself — pasted overflow stays visible so it can be fixed", () => {
     renderPanel(makeCard({ listingTitle: "short" }));
     expect(titleInput().hasAttribute("maxLength")).toBe(false);
@@ -642,6 +662,10 @@ describe("CardDetailPanel — listing title length limits (NEO-101)", () => {
     const variation = screen.getByLabelText(
       "Card variation",
     ) as HTMLInputElement;
+    // NEO-606: the same pink box and note as the title while past 65.
+    expect(variation.getAttribute("aria-invalid")).toBe("true");
+    expect(variation.className).toContain("aria-invalid:border-neon-pink-text");
+    expect(notice.className).toContain("text-neon-pink-text");
     await editAndCommit(variation, "z".repeat(70));
 
     await waitFor(() => expect(mockUpdateCard).toHaveBeenCalled());

@@ -44,6 +44,7 @@ import {
   leftOutOfTitle,
   titleDescription,
   type ListingCardInputs,
+  type ListingTeamSplit,
   type ListingTitleAssessment,
 } from "./generateListing";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "./listingLimits";
@@ -111,6 +112,13 @@ export type ListingSetContext = {
 export type TitleContext = ListingSetContext & {
   /** Full names of the leaf's set-level teams, in stored order. */
   setTeamNames: string[];
+  /**
+   * NEO-606 — the Location / Name of the teams this context names (the
+   * set-level ones and every resolved printed team) that have a location, in
+   * no particular order: a card's team finds its split by whole name. Passed
+   * to the generator as `teamSplits`. Optional: an older server sends none.
+   */
+  teamSplits?: ListingTeamSplit[];
   /**
    * NEO-528 round 3 — the NB name of the player a new card with no player of
    * its own is born with ("Player on every card"), or empty. Optional: an
@@ -214,7 +222,12 @@ export function mergeCardFeatures(
 export function listingInputsForCard(
   card: ListingCardFacts,
   set: ListingSetContext,
-  names: { playerNames: string[]; teamNames?: string[]; cameoNames?: string[] },
+  names: {
+    playerNames: string[];
+    teamNames?: string[];
+    teamSplits?: ListingTeamSplit[];
+    cameoNames?: string[];
+  },
   mergedFeatures: Record<string, string> = mergeCardFeatures(card, set),
 ): ListingCardInputs {
   // NEO-335 — the insert's name joins the core on the insert row's NB ROLE,
@@ -258,6 +271,9 @@ export function listingInputsForCard(
     shortPrint: mergedFeatures.shortPrint,
     cardVariation: card.cardVariation,
     teamNames: names.teamNames,
+    // NEO-606 — absent when no team on the card has a split, so a card without
+    // one builds exactly the inputs it did before.
+    ...(names.teamSplits && names.teamSplits.length > 0 ? { teamSplits: names.teamSplits } : {}),
     sport: set.sportValue,
   };
 }
@@ -343,7 +359,12 @@ export function titleAttentionFieldsAtInsert(
 export function assessNewCardListing(
   card: ListingCardFacts,
   set: ListingSetContext,
-  names: { playerNames: string[]; teamNames?: string[]; cameoNames?: string[] },
+  names: {
+    playerNames: string[];
+    teamNames?: string[];
+    teamSplits?: ListingTeamSplit[];
+    cameoNames?: string[];
+  },
 ): {
   mergedFeatures: Record<string, string>;
   inputs: ListingCardInputs;

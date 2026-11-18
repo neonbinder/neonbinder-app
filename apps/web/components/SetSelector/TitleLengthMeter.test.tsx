@@ -17,6 +17,7 @@ import { describe, expect, it } from "vitest";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
+  OVER_FIELD_CLASS,
   TitleFieldNote,
   TitleLengthAlert,
   TitleLengthMeter,
@@ -219,5 +220,28 @@ describe("TitleFieldNote", () => {
     expect(
       screen.getByText("Auto title was cut short — rewrite it"),
     ).toBeTruthy();
+  });
+});
+
+describe("NEO-606 — the over-cap look is neon pink, on the text and on the field", () => {
+  it("paints the counter and the alert in the pink text role, never the salmon danger ink", () => {
+    render(
+      <>
+        <TitleLengthMeter length={81} />
+        <TitleLengthAlert id="a" length={81} />
+      </>,
+    );
+    expect(screen.getByText("81/80").parentElement?.className).toContain("text-neon-pink-text");
+    expect(screen.getByRole("alert").className).toContain("text-neon-pink-text");
+    expect(screen.getByRole("alert").className).not.toContain("notice-danger");
+  });
+
+  it("OVER_FIELD_CLASS is keyed on aria-invalid: edge, ring and tint in the pink roles", () => {
+    expect(OVER_FIELD_CLASS.split(" ")).toEqual([
+      "aria-invalid:border-neon-pink-text",
+      "aria-invalid:ring-1",
+      "aria-invalid:ring-neon-pink-text",
+      "aria-invalid:bg-neon-pink/10",
+    ]);
   });
 });

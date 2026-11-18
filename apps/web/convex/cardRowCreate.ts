@@ -34,6 +34,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import {
   assessListingTitle,
   generateListingDescription,
+  type ListingTeamSplit,
 } from "./features/generateListing";
 import {
   listingInputsForCard,
@@ -130,6 +131,12 @@ export type NewCardRow = {
   playerNames: string[];
   /** Canonical team names, for the listing text. */
   teamNames?: string[];
+  /**
+   * NEO-606 — the Location / Name split of those teams that have one, read
+   * off their rows by the caller, so the title can give a team's location up
+   * before the team. Absent when none is split.
+   */
+  teamSplits?: ListingTeamSplit[];
   /**
    * NEO-528 round 3 — the people the card is born with under "Also on this
    * card" (its cameos), with their NB names for the description's cameo
@@ -345,7 +352,12 @@ export function buildCardRowForInsert(
   const listingInputs = listingInputsForCard(
     card,
     set,
-    { playerNames, teamNames: card.teamNames, cameoNames: cameos.map((c) => c.name) },
+    {
+      playerNames,
+      teamNames: card.teamNames,
+      teamSplits: card.teamSplits,
+      cameoNames: cameos.map((c) => c.name),
+    },
     mergedFeatures,
   );
   const listingTitle = assessListingTitle(listingInputs);

@@ -37,7 +37,9 @@
  *    to drop. A number cut whole may still come back bare in the refill.
  * 3. Otherwise make the next cut.
  * 4. Refill: put cut tokens back, most valuable first, wherever they still
- *    fit, skipping any that do not. A REPEAT (rows 1-3) comes back only when
+ *    fit, skipping any that do not. A team that lost its location comes back
+ *    as its nickname first, whole only if that fits too (NEO-606). A REPEAT
+ *    (rows 1-3) comes back only when
  *    no real token (rows 9+) is still out. The number may come back without
  *    its "#" when that is the only way it fits.
  * 5. Still over 80 after the whole list: when the set has box text ("Set name
@@ -55,7 +57,11 @@
 import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./listingLimits";
 import { variantTypeKindFromTitle } from "../variantRole";
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
+import { teamFullName } from "../../lib/teams/team-name";
 import { parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
+
+/** NEO-606 — a team row's Location / Name, as `ListingCardInputs.teamSplits` carries it. */
+export type ListingTeamSplit = { location: string; name: string };
 
 export type ListingCardInputs = {
   cardNumber: string;
@@ -138,6 +144,18 @@ export type ListingCardInputs = {
    * Never parsed into city/nickname, never abbreviated to "SEA".
    */
   teamNames?: string[];
+  /**
+   * NEO-606 — the Location / Name split (NEO-236) of those `teamNames` whose
+   * team row has one: `{ location: "New York", name: "Yankees" }` for the
+   * team named "New York Yankees". NB's own data, read off the team rows by
+   * the caller; this module never works out where a location ends. A team in
+   * `teamNames` is matched to its split by its whole name (`location + " " +
+   * name`), so a split can ride in any order and a team with no split — a
+   * typed name that has no row yet, a row with no location — simply has none.
+   * The title gives a team's location up before the team itself (cut row 9);
+   * a team without a split can only be dropped whole.
+   */
+  teamSplits?: ListingTeamSplit[];
   /**
    * NEO-101 — the ancestor sport node's value, e.g. "Baseball". The weakest
    * token in the title; skipped when a team name already says it.
@@ -324,6 +342,23 @@ function distinctNames(names: ReadonlyArray<string> | undefined): string[] {
     if (!name || seen.has(key)) continue;
     seen.add(key);
     out.push(name);
+  }
+  return out;
+}
+
+/**
+ * NEO-606 — each split team's whole name → its nickname. The key is the name
+ * `teamNames` carries for the team (`teamFullName`: location, a space, name),
+ * so a split is found by equality, never by taking a name apart. A split with
+ * no location or no nickname gives the title nothing to cut and is left out.
+ */
+function teamNicknames(splits: ReadonlyArray<ListingTeamSplit> | undefined): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const split of splits ?? []) {
+    const location = split.location.trim();
+    const nickname = split.name.trim();
+    if (!location || !nickname) continue;
+    out.set(teamFullName({ name: nickname, location }), nickname);
   }
   return out;
 }
@@ -523,7 +558,18 @@ type TailKind =
  * sport inside a team). It is never cut, but the refill offers it back once
  * whatever said it has been cut and it is no longer said.
  */
-type TailToken = { kind: TailKind; text: string; in: boolean; latent?: true };
+type TailToken = {
+  kind: TailKind;
+  text: string;
+  in: boolean;
+  latent?: true;
+  /**
+   * NEO-606 — a team's nickname, when its row is split: what the title says of
+   * it once the location has been cut (`shrunk`).
+   */
+  short?: string;
+  shrunk?: boolean;
+};
 
 /** One title under construction: what is in, what is cut. */
 type TitleState = {
@@ -552,7 +598,9 @@ function renderTitle(state: TitleState): string {
   if (state.number && state.number.mode !== "out") {
     out.push(state.number.mode === "hash" ? `#${state.number.text}` : state.number.text);
   }
-  for (const token of state.tail) if (token.in) out.push(token.text);
+  for (const token of state.tail) {
+    if (token.in) out.push(token.shrunk && token.short ? token.short : token.text);
+  }
   // NEO-363 — `listingTitle` is required and never blank. A card with nothing
   // else to say still gets "#", as the pre-NEO-535 builder always gave it.
   return out.filter(Boolean).join(" ") || "#";
@@ -612,9 +660,14 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   if (variation) pushUnlessSaid("variation", variation);
   if (inputs.isRookie) push("rc", "RC");
   if (inputs.shortPrint && inputs.shortPrint !== "None") push("sp", inputs.shortPrint);
+  const nicknames = teamNicknames(inputs.teamSplits);
   for (const team of inputs.teamNames ?? []) {
     const trimmed = team.trim();
-    if (trimmed) pushUnlessSaid("team", trimmed);
+    if (!trimmed) continue;
+    pushUnlessSaid("team", trimmed);
+    // NEO-606 — a split team can give up its location before it goes.
+    const nickname = nicknames.get(trimmed);
+    if (nickname) state.tail[state.tail.length - 1].short = nickname;
   }
   // The second spelling of rookie, only beside an RC that is not a repeat.
   if (inputs.isRookie && !repeats.rc && !alreadySaid(renderTitle(state), "Rookie")) {
@@ -654,7 +707,11 @@ type Cut = {
  *   6  the sport (already skipped when a team name says it)
  *   7  the second "Rookie" (only ever beside a non-repeat RC)
  *   8  "Rookie" → "RC" inside the insert's name
- *   9  teams, last first
+ *   9  teams, last first. NEO-606 (Jason: "first drop city before dropping
+ *      full team name"): a team whose row has a Location / Name split gives
+ *      up its location first, every such team last first (9a, "New York
+ *      Yankees" → "Yankees"); only then do the teams go, last first (9b), the
+ *      nickname-only ones included. A team with no split goes at 9b whole.
  *   10 the card number (the "#" alone goes at 81, before any cut)
  *   11 first names, last player first, one per step
  *   12 SP / SSP
@@ -677,7 +734,7 @@ function planCuts(
     repeat = false,
     rank = cutRank(row),
   ) => {
-    cuts.push({ row, rank, real: row >= 9, repeat, out: false, cut, restores });
+    cuts.push({ row, rank, real: row >= TEAM_CITY_ROW, repeat, out: false, cut, restores });
   };
   const tokens = (kind: TailKind) => state.tail.filter((t) => t.kind === kind && t.in);
   const toggle = (row: number, token: TailToken, repeat = false) =>
@@ -717,6 +774,18 @@ function planCuts(
   if (state.parts.insertRc) {
     add(8, () => { state.insertAbbreviated = true; }, [() => { state.insertAbbreviated = false; }]);
   }
+  // NEO-606 — row 9a: a split team gives up its location first, last team
+  // first. Meaningful (`real`) like the team it belongs to.
+  for (const t of [...tokens("team")].reverse()) {
+    if (t.short === undefined) continue;
+    add(
+      TEAM_CITY_ROW,
+      () => { t.shrunk = true; },
+      [() => { t.shrunk = false; }],
+      false,
+      cutRank(TEAM_CITY_ROW, teamPlace(state, t)),
+    );
+  }
   for (const t of [...tokens("team")].reverse()) toggle(9, t);
   const number = state.number;
   if (number) {
@@ -755,6 +824,14 @@ const LAST_FIRST = 999;
  */
 const CAMEO_ROW = 5.5;
 const CAMEO_PLACES = 100;
+/**
+ * NEO-606 — a split team's location (row 9a), between the "Rookie" → "RC" cut
+ * (row 8) and the teams (row 9). Ranked 8,500 plus the team's last-first
+ * place, so it stays below every team's own rank (9,000 plus its place) for
+ * any card with fewer than 500 teams; the refill therefore puts a team back
+ * as its nickname before it gives any team its location back.
+ */
+const TEAM_CITY_ROW = 8.5;
 function cutRank(row: number, within = 0): number {
   return row * 1000 + within;
 }
@@ -783,7 +860,15 @@ function latentCuts(state: TitleState): Cut[] {
       repeat: false,
       out: true,
       cut: () => { token.in = false; },
-      restores: [() => { token.in = true; }],
+      // NEO-606 — a split team that does not fit whole is offered back as its
+      // nickname, as it would have been had the cuts reached it.
+      restores:
+        token.kind === "team" && token.short !== undefined
+          ? [
+              () => { token.shrunk = false; token.in = true; },
+              () => { token.shrunk = true; token.in = true; },
+            ]
+          : [() => { token.in = true; }],
     });
   }
   return out;
@@ -945,9 +1030,13 @@ export function leftOutOfTitle(inputs: ListingCardInputs, text: string): string[
     if (!phraseIn(name)) add(name);
   }
 
+  // NEO-606 — a team the title still names by its nickname is not left out,
+  // only its location is: the note lists a team once the title has stopped
+  // naming it at all, and the nickname of a split team is read off its row.
   const teams = (inputs.teamNames ?? []).map((t) => t.trim()).filter(Boolean);
+  const nicknames = teamNicknames(inputs.teamSplits);
   for (const team of [...teams].reverse()) {
-    if (!titleNamesTeam(text, team, inputs.sport)) add(team);
+    if (!titleNamesTeam(text, team, inputs.sport, nicknames.get(team))) add(team);
   }
 
   const cardNumber = inputs.cardNumber?.trim();
@@ -990,13 +1079,35 @@ export function leftOutOfTitle(inputs: ListingCardInputs, text: string): string[
  * "Ducks"). A one-word team is said only whole. Display only: it decides what
  * "Left out to fit" lists, never what a title carries.
  */
-function titleNamesTeam(text: string, team: string, sport: string | undefined): boolean {
+function titleNamesTeam(
+  text: string,
+  team: string,
+  sport: string | undefined,
+  nickname?: string,
+): boolean {
   if (alreadySaid(text, team) || roughlySays(text, team)) return true;
-  const words = team.split(/\s+/).filter(Boolean);
   const sportWord = sport?.trim().toLowerCase();
-  if (words.length > 1 && sportWord && words[words.length - 1].toLowerCase() === sportWord) {
-    words.pop();
-    if (roughlySays(text, words.join(" "))) return true;
+  const withoutSport = (name: string): string[] => {
+    const words = name.split(/\s+/).filter(Boolean);
+    if (words.length > 1 && sportWord && words[words.length - 1].toLowerCase() === sportWord) {
+      words.pop();
+    }
+    return words;
+  };
+  // NEO-606 — a split team's nickname is its row's own, not the last word of
+  // its name: "Red Sox" is said by "Red Sox", and a "Sox" in another team's
+  // name does not say it. A one-word nickname is said whole, like a one-word
+  // team, and the sport word is set aside as it is for a name.
+  if (nickname) {
+    return (
+      alreadySaid(text, nickname) ||
+      roughlySays(text, nickname) ||
+      roughlySays(text, withoutSport(nickname).join(" "))
+    );
+  }
+  const words = withoutSport(team);
+  if (words.length < team.split(/\s+/).filter(Boolean).length && roughlySays(text, words.join(" "))) {
+    return true;
   }
   return words.length > 1 && roughlySays(text, words[words.length - 1]);
 }

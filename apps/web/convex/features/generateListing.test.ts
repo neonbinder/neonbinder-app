@@ -1730,3 +1730,243 @@ describe("NEO-528 + NEO-535 — cameos in the title: named while there is room, 
     expect(generateListingDescription(inputs).split("\n")).toContain(`Cameo: ${cameo}.`);
   });
 });
+
+/**
+ * NEO-606 (Jason): "first drop city before dropping full team name. So 'New
+ * York Yankees' would become 'Yankees' and if that still doesn't fit then it
+ * would be dropped. This is the only change that should be made to the actual
+ * logic." The split comes from the team row (`teamSplits`), never from taking
+ * a name apart; a team without one can only be dropped whole, as before.
+ */
+describe("NEO-606 a team gives up its location before it goes", () => {
+  /**
+   * A card whose title WITHOUT any team is exactly `length` characters:
+   * "2024 Topps <filler> Shohei Ohtani #17" is 29 + the filler's length.
+   */
+  const card = (length: number, extra: Partial<ListingCardInputs> = {}): ListingCardInputs => ({
+    cardNumber: "17",
+    playerNames: ["Shohei Ohtani"],
+    year: "2024",
+    manufacturer: "Topps",
+    setName: "Q".repeat(length - 29),
+    ...extra,
+  });
+  const NY = { location: "New York", name: "Yankees" };
+  const BOS = { location: "Boston", name: "Red Sox" };
+  const LA = { location: "LA", name: "Giants" };
+  const teamOnly = (title: string) => title.slice(title.indexOf("#17") + 3).trim();
+
+  test("a title that fits keeps the whole team", () => {
+    const a = assessListingTitle(card(63, { teamNames: ["New York Yankees"], teamSplits: [NY] }));
+    expect(a.title.length).toBe(80);
+    expect(teamOnly(a.title)).toBe("New York Yankees");
+    expect(a.dropped).toEqual([]);
+  });
+
+  test("the city goes first: 'New York Yankees' becomes 'Yankees'", () => {
+    const a = assessListingTitle(card(66, { teamNames: ["New York Yankees"], teamSplits: [NY] }));
+    expect(teamOnly(a.title)).toBe("Yankees");
+    expect(a.title).toContain("#17 Yankees");
+    expect(a.fits).toBe(true);
+    // The title still names the team, so nothing about it is left out.
+    expect(a.dropped).toEqual([]);
+  });
+
+  test("the same card without a split drops the team whole, as before", () => {
+    const a = assessListingTitle(card(66, { teamNames: ["New York Yankees"] }));
+    expect(a.title.endsWith("#17")).toBe(true);
+    expect(a.dropped).toEqual(["New York Yankees"]);
+  });
+
+  test("the nickname alone is as long as the title may be", () => {
+    const a = assessListingTitle(card(72, { teamNames: ["New York Yankees"], teamSplits: [NY] }));
+    expect(a.title.length).toBe(80);
+    expect(teamOnly(a.title)).toBe("Yankees");
+    expect(a.dropped).toEqual([]);
+  });
+
+  test("the team goes only when its nickname still does not fit", () => {
+    const a = assessListingTitle(card(74, { teamNames: ["New York Yankees"], teamSplits: [NY] }));
+    expect(a.title.endsWith("#17")).toBe(true);
+    expect(a.title).not.toContain("Yankees");
+    expect(a.dropped).toEqual(["New York Yankees"]);
+  });
+
+  test("the '#' rule still comes before any cut and after the city cut", () => {
+    // Cutting the city lands on 81: the '#' goes and the nickname stays.
+    const a = assessListingTitle(card(73, { teamNames: ["New York Yankees"], teamSplits: [NY] }));
+    expect(a.title.endsWith("Ohtani 17 Yankees")).toBe(true);
+    expect(a.title.length).toBe(80);
+  });
+
+  test("a split that names another team gives this one nothing to cut", () => {
+    const a = assessListingTitle(card(66, { teamNames: ["New York Yankees"], teamSplits: [BOS] }));
+    expect(a.title.endsWith("#17")).toBe(true);
+    expect(a.dropped).toEqual(["New York Yankees"]);
+  });
+
+  test("a split with no location or no nickname gives nothing to cut", () => {
+    for (const split of [
+      { location: "", name: "Yankees" },
+      { location: "  ", name: "Yankees" },
+      { location: "New York", name: "" },
+    ]) {
+      const a = assessListingTitle(card(66, { teamNames: ["New York Yankees"], teamSplits: [split] }));
+      expect(a.title.endsWith("#17")).toBe(true);
+    }
+  });
+
+  test("a team with no location (no split) is only ever dropped whole", () => {
+    const fits = assessListingTitle(card(66, { teamNames: ["Athletics"], teamSplits: [NY] }));
+    expect(teamOnly(fits.title)).toBe("Athletics");
+    const over = assessListingTitle(card(75, { teamNames: ["Athletics"], teamSplits: [NY] }));
+    expect(over.title.endsWith("#17")).toBe(true);
+    expect(over.dropped).toEqual(["Athletics"]);
+  });
+
+  test("the splits can ride in any order, and a team is found by its whole name", () => {
+    const a = assessListingTitle(
+      card(50, { teamNames: ["Boston Red Sox", "New York Yankees"], teamSplits: [NY, BOS] }),
+    );
+    // The last team (New York) loses its city first, wherever its split sits.
+    expect(teamOnly(a.title)).toBe("Boston Red Sox Yankees");
+  });
+
+  describe("several teams", () => {
+    const two = (length: number, splits = [NY, BOS]) =>
+      assessListingTitle(
+        card(length, { teamNames: ["New York Yankees", "Boston Red Sox"], teamSplits: splits }),
+      );
+
+    test("every city is cut, last team first, before any team is", () => {
+      // 75 with the last team's city gone: only "Boston" went.
+      const first = two(50);
+      expect(first.title.length).toBe(75);
+      expect(teamOnly(first.title)).toBe("New York Yankees Red Sox");
+      // Both cities gone, and both teams are still named.
+      const both = two(64);
+      expect(teamOnly(both.title)).toBe("Yankees Red Sox");
+      expect(both.dropped).toEqual([]);
+    });
+
+    test("then the teams go, last first, as nicknames", () => {
+      const a = two(70);
+      expect(teamOnly(a.title)).toBe("Yankees");
+      expect(a.dropped).toEqual(["Boston Red Sox"]);
+      const none = two(78);
+      expect(teamOnly(none.title)).toBe("");
+      expect(none.dropped).toEqual(["Boston Red Sox", "New York Yankees"]);
+    });
+
+    test("a team with no split keeps its place in the order and is dropped whole", () => {
+      const a = assessListingTitle(
+        card(50, { teamNames: ["New York Yankees", "Tigres del Licey"], teamSplits: [NY] }),
+      );
+      // "Tigres del Licey" has nothing to cut; the Yankees lose their city.
+      expect(teamOnly(a.title)).toBe("Yankees Tigres del Licey");
+      const over = assessListingTitle(
+        card(64, { teamNames: ["New York Yankees", "Tigres del Licey"], teamSplits: [NY] }),
+      );
+      // The city goes, then the last team (whole) before the first team's nickname.
+      expect(teamOnly(over.title)).toBe("Yankees");
+      expect(over.dropped).toEqual(["Tigres del Licey"]);
+    });
+
+    test("the refill puts a city back where it fits again", () => {
+      // Both cities and then Boston's whole team are cut; once Red Sox is out
+      // there is room for LA's two letters, and "LA Giants" comes back whole.
+      const a = assessListingTitle(
+        card(67, { teamNames: ["LA Giants", "Boston Red Sox"], teamSplits: [LA, BOS] }),
+      );
+      expect(teamOnly(a.title)).toBe("LA Giants");
+      expect(a.dropped).toEqual(["Boston Red Sox"]);
+      // Without the room it stays a nickname.
+      const tight = assessListingTitle(
+        card(71, { teamNames: ["LA Giants", "Boston Red Sox"], teamSplits: [LA, BOS] }),
+      );
+      expect(teamOnly(tight.title)).toBe("Giants");
+    });
+
+    test("an earlier team's city is offered back before a later one's", () => {
+      // Cut: Boston's city, New York's city; refilled earliest team first.
+      const a = two(57);
+      expect(a.title.length).toBe(80);
+      expect(teamOnly(a.title)).toBe("Yankees Boston Red Sox");
+    });
+  });
+
+  test("nothing else about the drop order moves", () => {
+    // The city is cut before the team, and the team before the card number.
+    const a = assessListingTitle(card(82, { teamNames: ["New York Yankees"], teamSplits: [NY] }));
+    expect(a.dropped).toEqual(["New York Yankees", "#17"]);
+    expect(a.title.length).toBe(78);
+    // A cameo and the sport still go before any team gives up its city.
+    const cameo = assessListingTitle(
+      card(60, {
+        cameoNames: ["Ken Griffey Jr."],
+        sport: "Baseball",
+        teamNames: ["New York Yankees"],
+        teamSplits: [NY],
+      }),
+    );
+    expect(cameo.title).not.toContain("Griffey");
+    expect(cameo.title.endsWith("#17 New York Yankees")).toBe(true);
+  });
+
+  describe("a team the variation already says (latent)", () => {
+    const withVariation = (length: number, splits: typeof NY[]) =>
+      assessListingTitle(
+        card(length, {
+          cardVariation: "New York Yankees Logo",
+          teamNames: ["New York Yankees"],
+          teamSplits: splits,
+        }),
+      );
+
+    test("comes back as its nickname when the variation is cut and the whole name does not fit", () => {
+      const a = withVariation(70, [NY]);
+      expect(a.title.endsWith("#17 Yankees")).toBe(true);
+      expect(a.dropped).toEqual(["New York Yankees Logo"]);
+      // Without the split it is simply gone.
+      const plain = withVariation(70, []);
+      expect(plain.title.endsWith("#17")).toBe(true);
+    });
+  });
+
+  describe("leftOutOfTitle reads the split", () => {
+    const cardOf = (teamNames: string[], teamSplits: ListingCardInputs["teamSplits"]): ListingCardInputs => ({
+      cardNumber: "17",
+      playerNames: ["Shohei Ohtani"],
+      year: "2024",
+      manufacturer: "Topps",
+      setName: "Topps",
+      teamNames,
+      teamSplits,
+      sport: "Baseball",
+    });
+
+    test("a team named by its nickname is not left out; a team named by nothing is", () => {
+      const inputs = cardOf(["New York Yankees"], [NY]);
+      expect(leftOutOfTitle(inputs, "2024 Topps Shohei Ohtani #17 Yankees")).toEqual([]);
+      expect(leftOutOfTitle(inputs, "2024 Topps Shohei Ohtani #17")).toEqual(["New York Yankees"]);
+    });
+
+    test("a word of another team's name does not say a split team ('Sox')", () => {
+      const WHITE = { location: "Chicago", name: "White Sox" };
+      const inputs = cardOf(["Boston Red Sox", "Chicago White Sox"], [BOS, WHITE]);
+      // Without the split, "Sox" alone would have said both teams.
+      expect(leftOutOfTitle(inputs, "2024 Topps Shohei Ohtani #17 White Sox")).toEqual([
+        "Boston Red Sox",
+      ]);
+      expect(
+        leftOutOfTitle(cardOf(["Boston Red Sox", "Chicago White Sox"], undefined), "2024 Topps Shohei Ohtani #17 White Sox"),
+      ).toEqual([]);
+    });
+
+    test("a split nickname with a trailing sport word is said by the nickname alone", () => {
+      const DUCKS = { location: "Oregon", name: "Ducks baseball" };
+      const inputs = cardOf(["Oregon Ducks baseball"], [DUCKS]);
+      expect(leftOutOfTitle(inputs, "2024 Topps Ducks Shohei Ohtani #17")).toEqual([]);
+    });
+  });
+});

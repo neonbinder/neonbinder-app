@@ -158,7 +158,7 @@ The ESLint rule `theme/no-raw-palette` bans, in `app/`, `components/`, `src/` an
 
 ### Neon (the same fills in both modes)
 - **Binder Green** (`neon-green`): the brand and the forward action. Primary buttons, the Dashboard tab, success, the Radix accent (`accentColor="green"`; the green scale's step 9 is this value on sRGB screens, and wide-gamut screens get its Display P3 equivalent).
-- **Show-Sign Pink** (`neon-pink`): negative. Backing out (Cancel, Close, Stop, Sign out) and taking something away (Delete, Remove, Discard, Abort, Clear, an irreversible confirm, a destructive menu item or × on a chip). Never a decorative accent. (A Tilt Red for destructive was tried in NEO-356 and dropped: Jason, 2026-10-23, "the red has really lost the Neon vibe".)
+- **Show-Sign Pink** (`neon-pink`): negative. Backing out (Cancel, Close, Stop, Sign out), taking something away (Delete, Remove, Discard, Abort, Clear, an irreversible confirm, a destructive menu item or × on a chip), and an invalid field (its note, its counter and its box: see Components, Error). Never a decorative accent. (A Tilt Red for destructive was tried in NEO-356 and dropped: Jason, 2026-10-23, "the red has really lost the Neon vibe".)
 - **Marquee Cyan** (`neon-blue`): secondary buttons, the Collection tab, the light mode's offset shadow.
 - **Hazard Yellow** (`neon-yellow`): Inventory; also warnings.
 - **Admin Amber** (`neon-orange`): Admin and other gated features.
@@ -218,7 +218,7 @@ In dark these tiles are light greys, and `ink-3` and the pink and violet `-text`
 
 ### Notices
 
-`notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink. Danger is red in both modes: dark's red-900 family, and in light a pale red ground (#FDECEE), deep red ink (#A3001A) and a red rule (#C4001F). A notice is not a button: buttons never borrow its red. `text-notice-danger-ink` is also the ink for an inline error and for a count past a field's limit ("84/80 · 4 over", "Too long to list as-is."); neon pink never marks an error.
+`notice-{info,warn,danger,success}-{bg,ink,rule}`: a tinted ground, readable ink, a rule. Dark is the -900 ground / -200 to -300 ink / -700 rule family; light is a pale ground with deep ink. Danger is red in both modes: dark's red-900 family, and in light a pale red ground (#FDECEE), deep red ink (#A3001A) and a red rule (#C4001F). A notice is not a button: buttons never borrow its red. `text-notice-danger-ink` is the ink for the other inline error messages. A field past its limit is neon pink, not this red (Jason, 2026-11-18: "our error state color is the neon pink"): its count ("84/80 · 4 over"), its note ("Too long to list as-is.") and its box.
 
 A notice ink also stands alone as text on a dialog's `raised-deep` ground, with no tinted ground under it. Measured pairs that screens rely on, pinned by name in `tokens.test.tsx` (the adversarial sweep there covers every other text-on-surface pair):
 
@@ -328,7 +328,7 @@ Crisp, solid and few. One neon fill per decision. Every action button is `NeonBu
 - **Style:** `field` background, 1px `field-rule` border (3:1 in light), 6px radius, `ink` text, `ink-3` placeholder, 8px × 12px.
 - **Focus:** the `focus-outline` (cyan in dark, violet in light).
 - **Labels:** visible `text-sm` labels in `ink-2`, above the field (or left of it at 84px minimum width). A row's own name beside its field (`#12 Ohtani` beside its title) is that field's label, and takes the same size and ink.
-- **Error:** the message under the field is `text-sm` in `notice-danger-ink`, tied to the field by `aria-describedby` with `aria-invalid` set. Never neon pink: pink is backing out and taking away.
+- **Error:** neon pink is the error colour for an invalid field (Jason, 2026-11-18: "our error state color is the neon pink"). The whole field says so, not just the note: the box takes a neon pink border, a 1px ring and a 10% tint through `OVER_FIELD_CLASS` (`components/SetSelector/TitleLengthMeter.tsx`: `aria-invalid:` utilities, so it goes the moment `aria-invalid` clears), and the note and the counter are `text-neon-pink-text`. The note is tied to the field by `aria-describedby` with `aria-invalid` set. Pink text reaches 4.5:1 on `raised` (4.55:1 dark, 5.92:1 light) but not on `row` or `chip` surfaces (`TEXT_NEVER_ON`). The title and variation fields (card detail panel, Title fixer, Card titles step) use it today; other inline errors still use `notice-danger-ink` until they are moved.
 - **Off:** native `disabled`, or `aria-disabled` on a `readOnly` field that keeps focus while it waits, swaps the well for the `button-neutral` fill and the ink for `ink-2`, with a not-allowed cursor: the same swap a disabled button makes, one ink step lighter so the held value stays readable (`ink-3` misses 4.5:1 on that fill in dark). `Input` and `Textarea` own it (`components/primitives/field-off.ts`); a caller never fades a field with an opacity. Bare `readOnly` alone is not off: a field read-only only while an autosave lands must not flash grey.
 
 ### Lists and pickers
@@ -382,6 +382,6 @@ Spinners keep turning under reduced motion, at 2.4s a turn, because they are the
 - **Don't** set headings in gradient text; a heading takes its section's one hue (One Hue Per Section).
 - **Don't** hand-mix a near-neon hex. `#00B7FF` and `#FF2EB3` crept into 80 files before the 2026-10 audit folded them back into Marquee Cyan `#00C2FF` and Show-Sign Pink `#FF2E9A`.
 - **Don't** put a glow on a resting element.
-- **Don't** use neon pink for anything but negative actions (cancel and destructive).
+- **Don't** use neon pink for anything but the negative: cancel, destructive, and an invalid field's error treatment.
 - **Don't** reach for a hued palette step (`bg-red-600`). Every hue has a role; the lint rule refuses the step.
 - **Don't** draw a divider with `border-rule` inside a `bg-raised` card. In dark mode `rule` (#1D293D) matches the card's fill (#1E2939) and the line vanishes; use `border-rule-strong`.

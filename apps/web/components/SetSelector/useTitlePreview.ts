@@ -95,6 +95,13 @@ type PreviewResult = {
      * inside a modal dialog takes the whole dialog with it.
      */
     teamNames?: string[];
+    /**
+     * NEO-606 — the Location / Name of those teams that have one. The title
+     * gives a team's location up before the team, and `leftOutOfTitle` reads
+     * the same split, so the note and the title agree. Optional: an older
+     * deploy predates it, and without it a team is only ever dropped whole.
+     */
+    teamSplits?: Array<{ location: string; name: string }>;
     /** e.g. "Baseball". Optional for the same reason, and genuinely absent for
      * a set whose sport was never resolved. */
     sport?: string;

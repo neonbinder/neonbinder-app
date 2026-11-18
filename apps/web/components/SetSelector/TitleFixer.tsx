@@ -11,6 +11,7 @@ import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
   TitleFieldNote,
+  OVER_FIELD_CLASS,
   TitleLengthAlert,
   TitleLengthMeter,
   titleLengthState,
@@ -262,7 +263,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           // fixable. See the same note in CardDetailPanel.
           // The held look (readOnly + aria-disabled while busy) is the
           // Textarea primitive's own; no fade here.
-          className="block w-full resize-none p-1.5 text-sm [field-sizing:content]"
+          className={`block w-full resize-none p-1.5 text-sm [field-sizing:content] ${OVER_FIELD_CLASS}`}
           // Anchored to the card number so it cannot collide with the drawer's
           // own "Card title" field in a selector — Maestro's `id:` matcher
           // takes a regex, so `Card title for #.*` still targets it.
@@ -295,7 +296,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           id={titleAlertId}
           role={titleState.over && overByKeystroke ? "alert" : "status"}
           aria-atomic="true"
-          className={`mt-1 text-xs empty:hidden ${titleState.over ? "text-notice-danger-ink" : "text-neon-green-text"}`}
+          className={`mt-1 text-xs empty:hidden ${titleState.over ? "text-neon-pink-text" : "text-neon-green-text"}`}
         >
           {titleState.over ? TOO_LONG : fitsNow ? FITS_NOW : ""}
         </p>
@@ -372,8 +373,9 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
               e.preventDefault();
               void save();
             }}
-            className="w-full p-1.5 text-sm"
+            className={`w-full p-1.5 text-sm ${OVER_FIELD_CLASS}`}
             aria-label={`Card variation for #${row.cardNumber}`}
+            aria-invalid={variation.length > ASPECT_VALUE_MAX || undefined}
             aria-describedby={[
               variation.length > ASPECT_VALUE_MAX ? variationAlertId : null,
               saveHintId,

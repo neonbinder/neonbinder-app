@@ -287,3 +287,49 @@ describe("buildParallelChecklist — a parallel copy's title (NEO-535)", () => {
     expect(result.titlesToFix).toBe(total);
   }, 60_000);
 });
+
+describe("buildParallelChecklist — a split team gives up its location first (NEO-606)", () => {
+  test("a copy's title says 'Mets' when 'New York Mets' does not fit", async () => {
+    const t = convexTest(schema, modules);
+    // A 27-character parallel: the description is 51 characters, the player
+    // and number bring the title to 70, and "New York Mets" would make 84.
+    const NAME = "Qwertyuiopasdfg";
+    const { anime, parallel } = await seed(t, { value: "Kanji Orange Wave Refractor" });
+    const { mets, player } = await t.run(async (ctx) => {
+      const sport = (await ctx.db
+        .query("selectorOptions")
+        .filter((q) => q.eq(q.field("level"), "sport"))
+        .first())!;
+      const mets = await ctx.db.insert("teams", {
+        location: "New York",
+        name: "Mets",
+        nameNormalized: "mets new york",
+        sportId: sport._id,
+        lastUpdated: SENTINEL,
+      });
+      const player = await ctx.db.insert("players", {
+        name: NAME,
+        nameNormalized: normalizePlayerName(NAME),
+        sportId: sport._id,
+        lastUpdated: SENTINEL,
+      });
+      return { mets, player };
+    });
+    await addCard(t, anime, {
+      cardNumber: "1",
+      cardName: NAME,
+      playerIds: [player],
+      teamOnCardIds: [mets],
+    });
+
+    const result = await build(t, parallel);
+    expect(result.copied).toBe(1);
+    const [copy] = await cardsOn(t, parallel);
+    expect(copy.teamOnCardIds).toEqual([mets]);
+    expect(copy.listingTitle).toBe(
+      `2024 Topps Chrome Anime Kanji Orange Wave Refractor ${NAME} #1 Mets`,
+    );
+    expect(copy.listingTitle.length).toBeLessThanOrEqual(LISTING_TITLE_MAX);
+    expect(storedTitleFails(copy)).toBe(false);
+  });
+});
