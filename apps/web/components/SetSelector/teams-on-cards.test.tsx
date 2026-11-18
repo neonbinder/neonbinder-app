@@ -28,6 +28,9 @@ import {
   sameTeamAnswers,
   storedPeople,
   teamIdKey,
+  nameRequestSlices,
+  TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST,
+  TEAMS_SECTION_NAMES_PER_REQUEST,
   teamNameRequests,
   toggleTeam,
   teamAnswersByCard,
@@ -82,6 +85,7 @@ function build(
     setLeagueIds?: string[];
     settled?: ReadonlySet<number>;
     people?: StoredPeople;
+    leagueLevelById?: Record<string, string>;
   } = {},
 ) {
   return buildTeamsGroups({
@@ -101,6 +105,9 @@ function build(
       : {}),
     ...(extra.settled ? { settled: extra.settled } : {}),
     ...(extra.people ? { people: extra.people } : {}),
+    ...(extra.leagueLevelById
+      ? { leagueLevelById: new Map(Object.entries(extra.leagueLevelById)) }
+      : {}),
   });
 }
 
@@ -442,6 +449,14 @@ describe("choices and answers", () => {
     expect(sameTeamAnswers([{ teams: ["a"] }], [{ teams: ["b"] }])).toBe(false);
   });
 
+  test("withTeamAnswer: a remembered held X goes on the card as rememberTeamAs, beside the one picked team", () => {
+    const held = { ...card("1", ["Cord Rager"]), prospectTeams: ["Oklahoma"] };
+    const out = withTeamAnswer(held, { teamIds: [REDS], rememberAs: "Oklahoma" });
+    expect(out).toMatchObject({ teamIds: [REDS], rememberTeamAs: "Oklahoma" });
+    expect(out).not.toHaveProperty("rememberAs");
+    expect(withTeamAnswer(held, { teamIds: [REDS] })).not.toHaveProperty("rememberTeamAs");
+  });
+
   test("withTeamAnswer: unanswered card is the same object; teams replace the printed strings", () => {
     const original = card("9", ["X"], ["Team Card"]);
     expect(withTeamAnswer(original, undefined)).toBe(original);
@@ -644,8 +659,9 @@ describe("invariant 8 — a listing's team name holds the guess back", () => {
   test("the NB teams the listed name resolves to are offered FIRST, unselected", () => {
     const rows = [unruledTeam("Durham Bulls")];
     const cards = [card("1", ["Johnny Bench"], ["Durham Bulls"])];
+    // Every listed name also asks for the teams LOCATED there (collector review).
     expect(teamNameRequests(cards, rows)).toEqual([
-      { key: "bulls durham", name: "Durham Bulls" },
+      { key: "bulls durham", name: "Durham Bulls", location: true },
     ]);
     const BULLS = "team_bulls" as Id<"teams">;
     const groups = build(
@@ -1543,5 +1559,140 @@ describe("NEO-528 — defaultPlayerPositions: which preview cards the set's play
       entry(13, [" "]), // new, blank-only
     ];
     expect(defaultPlayerPositions(kept, stored)).toEqual([2, 3]);
+  });
+});
+
+describe("a team printed as a place (collector review)", () => {
+  test("Seattle Mariners is a chip beside 'Listed as: Seattle', unselected", () => {
+    const MARINERS = "team_mariners" as Id<"teams">;
+    const cards = [card("1", ["Julio Rodriguez"], ["Seattle"])];
+    // "Seattle" names no team, so the review parked it: a row nobody has ruled on.
+    const rows = [row({ kind: "team", name: "Seattle", decision: null })];
+    // The listing's place asks for the teams located there ...
+    expect(teamNameRequests(cards, rows)).toEqual([{ key: "seattle", name: "Seattle", location: true }]);
+    // ... and what the server finds there is a choice, never the pre-fill.
+    const groups = build(cards, rows, {}, 2025, {
+      teamNameEvidence: { seattle: [{ teamId: MARINERS, name: "Seattle Mariners", level: "major" }] },
+    });
+    expect(groups[0].listedNames).toEqual(["Seattle"]);
+    expect(labels(groups[0])).toContain("Seattle Mariners");
+    expect(groups[0].suggestion).toBeNull();
+  });
+
+  test("a career team of a created player is not a listed name, so it asks for no location", () => {
+    const rows = [
+      row({
+        kind: "player",
+        name: "Chris Potter",
+        decision: { action: "create" },
+        enrichment: { careerTeams: [{ name: "Roanoke Express", fromYear: 1994, toYear: 1996 }] },
+      }),
+    ];
+    expect(teamNameRequests([card("NNO", ["Chris Potter"])], rows)).toEqual([
+      { key: "express roanoke", name: "Roanoke Express" },
+    ]);
+  });
+});
+
+describe("nameRequestSlices — a call never asks for more places than the server will read", () => {
+  const places = (n: number, from = 0) =>
+    Array.from({ length: n }, (_, i) => ({ key: `p${from + i}`, name: `Place ${from + i}`, location: true as const }));
+  const plain = (n: number) => Array.from({ length: n }, (_, i) => ({ key: `n${i}`, name: `Name ${i}` }));
+
+  test("closes a call at the location cap, so the 9th place is asked in the next call", () => {
+    const slices = nameRequestSlices(places(TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST + 1));
+    expect(slices.map((s) => s.length)).toEqual([TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST, 1]);
+  });
+
+  test("names without a place fill a call to the name cap and never close it early", () => {
+    const slices = nameRequestSlices([...places(TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST), ...plain(40)]);
+    expect(slices.map((s) => s.length)).toEqual([TEAMS_SECTION_NAMES_PER_REQUEST, 16]);
+    for (const slice of slices) {
+      expect(slice.filter((r) => r.location).length).toBeLessThanOrEqual(TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST);
+    }
+  });
+
+  test("keeps first-seen order and every request exactly once; nothing is an empty call", () => {
+    const all = [...places(5), ...plain(3), ...places(11, 5)];
+    const slices = nameRequestSlices(all);
+    expect(slices.flat()).toEqual(all);
+    expect(slices.every((s) => s.length > 0)).toBe(true);
+    expect(nameRequestSlices([])).toEqual([]);
+  });
+});
+
+describe("a team staged in this wizard on a held Prospect (X) line (collector review)", () => {
+  // The held card's player has a career at a team the operator is creating in
+  // this wizard: "Oklahoma Sooners", filed under a league in the New Team step.
+  const heldCard = (): PreviewCardForTeams => ({
+    cardNumber: "NNO",
+    cardName: "Cord Rager",
+    players: ["Cord Rager"],
+    teams: [],
+    teamLookup: "checklist",
+    prospectTeam: "Oklahoma",
+    prospectTeams: ["Oklahoma"],
+    rawTeamName: "Oklahoma",
+  });
+  const rowsWith = (leagueId: string | undefined) => [
+    row({
+      kind: "player",
+      name: "Cord Rager",
+      enrichment: { careerTeams: [{ name: "Oklahoma Sooners", fromYear: 2024, toYear: 2026 }] },
+      decision: { action: "create" },
+    }),
+    row({
+      kind: "team",
+      name: "Oklahoma Sooners",
+      decision: { action: "create", create: { location: "Oklahoma", name: "Sooners", ...(leagueId ? { leagueId } : {}) } },
+    }),
+  ];
+
+  test("is offered when the league the operator filed it under is a college league", () => {
+    const groups = build([heldCard()], rowsWith("league_ncaa"), {}, 2026, {
+      leagueLevelById: { league_ncaa: "college" },
+      teamNameEvidence: { oklahoma: [] },
+    });
+    expect(groups[0].prospectHeld).toBe(true);
+    expect(labels(groups[0])).toContain("Oklahoma Sooners");
+    // Offered, never pre-selected: the held X is a claim.
+    expect(groups[0].suggestion).toBeNull();
+    expect(groups[0].refs.find((r) => r.label === "Oklahoma Sooners")?.level).toBe("college");
+  });
+
+  test("a minor league also qualifies", () => {
+    const groups = build([heldCard()], rowsWith("league_aaa"), {}, 2026, {
+      leagueLevelById: { league_aaa: "minor" },
+      teamNameEvidence: { oklahoma: [] },
+    });
+    expect(labels(groups[0])).toContain("Oklahoma Sooners");
+  });
+
+  test("a major league never qualifies, whatever the filing", () => {
+    const groups = build([heldCard()], rowsWith("league_mlb"), {}, 2026, {
+      leagueLevelById: { league_mlb: "major" },
+      teamNameEvidence: { oklahoma: [] },
+    });
+    expect(labels(groups[0])).not.toContain("Oklahoma Sooners");
+  });
+
+  test("a team with no league, or a league whose level is not known, is not offered", () => {
+    expect(labels(build([heldCard()], rowsWith(undefined), {}, 2026, { teamNameEvidence: { oklahoma: [] } })[0])).not.toContain(
+      "Oklahoma Sooners",
+    );
+    expect(
+      labels(
+        build([heldCard()], rowsWith("league_new"), {}, 2026, {
+          leagueLevelById: { league_other: "college" },
+          teamNameEvidence: { oklahoma: [] },
+        })[0],
+      ),
+    ).not.toContain("Oklahoma Sooners");
+  });
+
+  test("on an ordinary line (no held X) the same staged team is offered whatever its league", () => {
+    const plain: PreviewCardForTeams = { cardNumber: "1", cardName: "Cord Rager", players: ["Cord Rager"], teams: [] };
+    const groups = build([plain], rowsWith("league_mlb"), {}, 2026, { leagueLevelById: { league_mlb: "major" } });
+    expect(groups[0].prospectHeld).toBeUndefined();
   });
 });

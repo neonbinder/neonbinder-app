@@ -173,6 +173,12 @@ export type TeamAnswer = {
   teamIds?: Array<Id<"teams">>;
   teams?: string[];
   teamNone?: true;
+  /**
+   * "Remember … as a name for this team", ticked on a held "Prospect (X)"
+   * line: the held X, to be saved as an alias of the ONE existing team picked
+   * (`teamIds` has exactly one and `teams` none). Off unless ticked.
+   */
+  rememberAs?: string;
 };
 
 type TeamColors = { primary?: string; secondary?: string };
@@ -233,8 +239,10 @@ export interface TeamNameRequest {
   key: string;
   name: string;
   /**
-   * NEO-591 — also ask for the teams whose LOCATION is this name: it is the X
-   * of a held "Prospect (X)", where two or more teams may share the place.
+   * Also ask for the teams whose LOCATION is this name. Every name a LISTING
+   * printed gets it (collector review): Onyx prints teams as places
+   * ("Seattle"), and the place is the only thing that finds "Seattle
+   * Mariners". It adds choices; it never pre-fills one.
    */
   location?: true;
 }
@@ -288,6 +296,13 @@ export interface TeamsGroup {
    * minor or college league. Absent reads as false.
    */
   prospectHeld?: boolean;
+  /**
+   * The ONE held X of these cards, as the row printed it, when the line has
+   * exactly one: the text "Remember … as a name for this team" would save. A
+   * card with several held Xs has none (which X would the one team be a name
+   * for?), and an ordinary line has none.
+   */
+  heldX?: string;
   /** Server evidence for at least one player (or listed name) has not arrived yet. */
   loading: boolean;
 }
@@ -330,6 +345,35 @@ export const TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST = 8;
 
 /** How many name calls the section makes at most (×32 names). */
 export const TEAMS_SECTION_MAX_NAME_REQUESTS = 4;
+
+/**
+ * The name requests split into calls: at most `TEAMS_SECTION_NAMES_PER_REQUEST`
+ * names and `TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST` location names each, in
+ * first-seen order. The server gives the location leg to the first 8 names of
+ * a call and silently none to the rest, so a call is closed at 8 location
+ * names rather than letting the 9th be asked for and quietly not answered.
+ * A set whose listings print a place on every card (Onyx) therefore makes more
+ * calls than one that does not, for the same names.
+ */
+export function nameRequestSlices(requests: readonly TeamNameRequest[]): TeamNameRequest[][] {
+  const out: TeamNameRequest[][] = [];
+  let current: TeamNameRequest[] = [];
+  let locations = 0;
+  for (const request of requests) {
+    const full =
+      current.length >= TEAMS_SECTION_NAMES_PER_REQUEST ||
+      (request.location && locations >= TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST);
+    if (full && current.length > 0) {
+      out.push(current);
+      current = [];
+      locations = 0;
+    }
+    current.push(request);
+    if (request.location) locations++;
+  }
+  if (current.length > 0) out.push(current);
+  return out;
+}
 
 const norm = (raw: string): string => normalizeEntityName(raw.trim());
 
@@ -555,11 +599,21 @@ interface NamesView {
   skippedPlayerNames: ReadonlySet<string>;
   skippedTeamNames: ReadonlySet<string>;
   defaultPlayer?: DefaultPlayerForNewCards;
+  /**
+   * League id → its level, for a team staged in this wizard: its chip carries
+   * the level of the league the operator filed it under, so a held "Prospect
+   * (X)" line can offer it (a chip with no known level is not offered there).
+   */
+  leagueLevelById?: ReadonlyMap<string, string>;
 }
 
 const NOBODY: ReadonlySet<never> = new Set<never>();
 
-function namesView(rows: readonly TeamsReviewRow[], people?: StoredPeople): NamesView {
+function namesView(
+  rows: readonly TeamsReviewRow[],
+  people?: StoredPeople,
+  leagueLevelById?: ReadonlyMap<string, string>,
+): NamesView {
   const teamRowByKey = new Map<string, TeamsReviewRow>();
   const playerRowByKey = new Map<string, TeamsReviewRow>();
   for (const row of rows) {
@@ -576,6 +630,7 @@ function namesView(rows: readonly TeamsReviewRow[], people?: StoredPeople): Name
     skippedPlayerNames: people?.skippedPlayerNames ?? NOBODY,
     skippedTeamNames: people?.skippedTeamNames ?? NOBODY,
     ...(people?.defaultPlayer ? { defaultPlayer: people.defaultPlayer } : {}),
+    ...(leagueLevelById ? { leagueLevelById } : {}),
   };
 }
 
@@ -801,8 +856,9 @@ export function teamNameRequests(
   };
   for (const index of teamlessCardIndexes(cards, rows, settled, people)) {
     const card = cards[index];
-    const heldX = new Set(heldProspectNames(card).map(norm));
-    for (const listed of listedClaims(card, view)) add(listed, heldX.has(norm(listed)));
+    // Every listed name also asks for the teams LOCATED there (collector
+    // review): a held X is a place, and so is most of an Onyx checklist.
+    for (const listed of listedClaims(card, view)) add(listed, true);
     for (const player of cardPlayers(card, index, view)) {
       if (player.kind !== "created") continue;
       const dated = createdStints(player.row);
@@ -829,10 +885,16 @@ function refFromString(
   if (!row) return { key: `name:${key}`, label: raw.trim(), name: raw.trim() };
   const decision = row.decision;
   if (decision?.action === "create") {
+    // The level of the league the operator filed the team under in the New
+    // Team step (staged leagues have no id yet, so no level: not offered on a
+    // held prospect's line until the league exists).
+    const leagueId = decision.create?.leagueId;
+    const level = leagueId ? view.leagueLevelById?.get(leagueId) : undefined;
     return {
       key: `name:${key}`,
       label: decision.create ? teamFullName(decision.create) : row.name,
       ...(row.enrichment?.colors ? { colors: row.enrichment.colors } : {}),
+      ...(level ? { level } : {}),
       // The review row's own name: the key the commit's decision map is
       // built on, whatever the operator composed the team as.
       name: row.name,
@@ -996,10 +1058,12 @@ export function buildTeamsGroups(input: {
   setLeagueIds?: readonly string[];
   /** Who the stored data says is on the cards — see `StoredPeople`. */
   people?: StoredPeople;
+  /** League id → level, so a team staged in this wizard carries its league's level. */
+  leagueLevelById?: ReadonlyMap<string, string>;
 }): TeamsGroup[] {
   const { cards, rows, serverEvidence, setYear, linkedTeamNameById, currentYear, settled } =
     input;
-  const view = namesView(rows, input.people);
+  const view = namesView(rows, input.people, input.leagueLevelById);
   const rankCtx: RankContext = {
     view,
     teamNameEvidence: input.teamNameEvidence,
@@ -1149,6 +1213,7 @@ export function buildTeamsGroups(input: {
       lookupFailed,
       ...(checklistClaim ? { checklistClaim: true } : {}),
       ...(prospectHeld ? { prospectHeld: true } : {}),
+      ...(heldX.length === 1 ? { heldX: heldX[0] } : {}),
       loading,
     });
   }
@@ -1268,6 +1333,7 @@ export function answerForChoice(
   group: TeamsGroup,
   choice: GroupChoice,
   blockedTeamIds?: ReadonlySet<string>,
+  remember?: boolean,
 ): TeamAnswer | undefined {
   if (choice.kind === "none") return { teamNone: true };
   if (choice.kind !== "teams") return undefined;
@@ -1285,9 +1351,15 @@ export function answerForChoice(
     if (id && extra.has(id) && !blockedTeamIds?.has(id)) teamIds.push(id as Id<"teams">);
   }
   if (teamIds.length === 0 && teams.length === 0) return undefined;
+  const ids = [...new Set(teamIds)];
   return {
-    ...(teamIds.length > 0 ? { teamIds: [...new Set(teamIds)] } : {}),
+    ...(ids.length > 0 ? { teamIds: ids } : {}),
     ...(teams.length > 0 ? { teams: [...new Set(teams)] } : {}),
+    // Only for exactly one existing team: a staged team has no id to hang an
+    // alias on yet, and with two teams the X is a name for neither.
+    ...(remember && group.heldX && ids.length === 1 && teams.length === 0
+      ? { rememberAs: group.heldX }
+      : {}),
   };
 }
 
@@ -1300,15 +1372,21 @@ export function teamAnswersByCard(
   choices: Readonly<Record<string, GroupChoice>>,
   cardCount: number,
   blockedTeamIds?: ReadonlySet<string>,
+  /** Group keys whose "Remember … as a name for this team" is ticked. */
+  remembered?: ReadonlySet<string>,
 ): Array<TeamAnswer | undefined> {
   const out: Array<TeamAnswer | undefined> = new Array(cardCount).fill(undefined);
   for (const group of groups) {
     for (const card of group.cards) {
       if (card.index >= cardCount) continue;
+      // The box belongs to the LINE: a card with its own team answer does not
+      // carry it.
+      const own = choices[cardChoiceKey(group.key, card.index)];
       out[card.index] = answerForChoice(
         group,
         effectiveCardChoice(group, choices, card.index),
         blockedTeamIds,
+        remembered?.has(group.key) === true && !(own && own.kind !== "line"),
       );
     }
   }
@@ -1362,12 +1440,13 @@ export function sameTeamAnswers(
 export function withTeamAnswer<T extends PreviewCardForTeams>(
   card: T,
   answer: TeamAnswer | undefined,
-): T & TeamAnswer & { teamsAnswered?: true } {
+): Omit<T & TeamAnswer, "rememberAs"> & { teamsAnswered?: true; rememberTeamAs?: string } {
   if (!answer) return card;
   return {
     ...card,
     ...(answer.teamIds?.length ? { teamIds: answer.teamIds } : {}),
     ...(answer.teams?.length ? { teams: answer.teams, teamsAnswered: true as const } : {}),
     ...(answer.teamNone ? { teamNone: true as const } : {}),
+    ...(answer.rememberAs ? { rememberTeamAs: answer.rememberAs } : {}),
   };
 }

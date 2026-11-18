@@ -46,6 +46,7 @@ import {
   resolveTeamForSetYear,
   teamRowFields,
 } from "./lib/teamRow";
+import { teamLocationIs } from "./lib/prospectTeam";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 // NEO-535 — a rename reaches the descriptions of the team's cards.
@@ -2865,6 +2866,14 @@ export const nearMatches = query({
        * stays `Link to {name}`.
        */
       matchedAlias: v.optional(v.string()),
+      /**
+       * Collector review — the team's LOCATION is the typed string ("Seattle"
+       * for the Mariners): the string is a place, not a name for this team.
+       * The review wizard reads it to leave "Remember … as a name for this
+       * team" unticked, so a place is not saved as an alias that would later
+       * claim every set where the same word means another team.
+       */
+      locationMatch: v.optional(v.literal(true)),
     }),
   ),
   handler: async (ctx, args) => {
@@ -2901,6 +2910,7 @@ export const nearMatches = query({
         name: string;
         yearsActive?: { from: number; to?: number };
         matchedAlias?: string;
+        locationMatch?: true;
       }
     >();
     const normalized = normalizeTeamName(name);
@@ -2930,6 +2940,7 @@ export const nearMatches = query({
           ? { yearsActive: exact.yearsActive }
           : {}),
         ...(matchedAlias ? { matchedAlias } : {}),
+        ...(teamLocationIs(exact, name) ? { locationMatch: true as const } : {}),
       });
     }
 
@@ -2964,6 +2975,7 @@ export const nearMatches = query({
         _id: hit._id,
         name: teamFullName(hit),
         ...(hit.yearsActive !== undefined ? { yearsActive: hit.yearsActive } : {}),
+        ...(teamLocationIs(hit, name) ? { locationMatch: true as const } : {}),
       });
     }
 
@@ -2995,6 +3007,7 @@ export const nearMatches = query({
         ...(rows[index].matchedAlias
           ? { matchedAlias: rows[index].matchedAlias }
           : {}),
+        ...(rows[index].locationMatch ? { locationMatch: true as const } : {}),
       }));
   },
 });

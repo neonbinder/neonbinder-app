@@ -376,6 +376,7 @@ import {
 import { tallyFetchChecklistTeams } from "../lib/checklists/checklist-teams-tally";
 import { splitMarketplaceTeamNames } from "./adapters/marketplaceNames";
 import { MAX_CHECKLIST_TEAM_TEXTS, MAX_PROSPECT_TEAMS_PER_QUERY } from "./checklistCandidates";
+import { checklistClaimText } from "../lib/checklists/prospect-team-text";
 // NEO-591 — "Prospect (X)": the Prospect Card attribute, and X settled at fetch.
 import type { ProspectResolution } from "../lib/checklists/prospect";
 import {
@@ -4198,6 +4199,8 @@ type CardNameBearing = {
   // NEO-335 — operator-chosen NB team ids. Only the COUNT is bounded here;
   // the ids themselves are validated against the table by the commit.
   teamIds?: ReadonlyArray<unknown>;
+  // Collector review — see `previewCardFields.rememberTeamAs`.
+  rememberTeamAs?: string;
   // NEO-335 — BSC's unsplit team value, the commit's hint source.
   rawTeamName?: string;
   // NEO-591 — the X of a "Prospect (X)" the fetch held for the operator.
@@ -4294,6 +4297,14 @@ function assertCardBatchWithinLimits(
     ) {
       throw new Error(
         `${fnName}: ${where} carries a listed team value of ${card.rawTeamName.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+      );
+    }
+    if (
+      card.rememberTeamAs !== undefined &&
+      card.rememberTeamAs.length > MAX_TEAM_ALIAS_LENGTH
+    ) {
+      throw new Error(
+        `${fnName}: ${where} carries a name to remember of ${card.rememberTeamAs.length} characters; the limit is ${MAX_TEAM_ALIAS_LENGTH}.`,
       );
     }
     // NEO-591 — a held X comes back from the client like the raw value does.
@@ -15389,8 +15400,9 @@ export function checklistPairedRow(
   row: PublishedChecklistStoredRow,
   resolveText: (text: string) => readonly string[] | null,
   resolveProspect?: (text: string) => ProspectResolution | null,
+  resolvePlace?: (text: string) => string | null,
 ): Infer<typeof checklistPairedRowValidator> {
-  const own = checklistOnlyCard(row, resolveText, resolveProspect);
+  const own = checklistOnlyCard(row, resolveText, resolveProspect, resolvePlace);
   const teams = own.teams ?? [];
   // NEO-591 — when any X is held, the card is held whole (`applyChecklistRow`:
   // `teams` is empty, so a settled X and the row's other teams are not in it).
@@ -15400,10 +15412,22 @@ export function checklistPairedRow(
   // `teams` as its full name and `prospectTeams` is left out.
   const allX = (row.prospectTeams ?? []).map((x) => x.trim()).filter(Boolean);
   const held = allX.some((x) => resolveProspect?.(x)?.kind !== "team");
+  const pairedTeams = held ? [...row.teams] : teams;
+  // The team cell as the checklist printed it. Sent only when the row as
+  // paired would read differently (a settled "Prospect (X)" is in `teams` as
+  // the full name; a team text resolved to a team's name), so the row line in
+  // Match Cards is the same words before and after the link.
+  const claim = checklistClaimText(row);
+  const shown = checklistClaimText({
+    teams: pairedTeams,
+    prospect: own.isProspect === true,
+    prospectTeams: held ? allX : [],
+  });
   return {
     number: own.cardNumber,
     players: own.players ?? [],
-    teams: held ? [...row.teams] : teams,
+    teams: pairedTeams,
+    ...(claim && claim !== shown ? { claim } : {}),
     ...(row.noNumber || isNoNumber(own.cardNumber) ? { noNumber: true as const } : {}),
     // A held prospect team is not a No Team claim (its `teams` is empty too).
     ...(own.teamLookup === "checklist" && teams.length === 0 && own.prospectTeam === undefined
@@ -15428,8 +15452,9 @@ export function checklistOnlyCard(
   row: PublishedChecklistStoredRow,
   resolveText: (text: string) => readonly string[] | null,
   resolveProspect?: (text: string) => ProspectResolution | null,
+  resolvePlace?: (text: string) => string | null,
 ): ReconciledCard {
-  const applied = applyChecklistRow({}, row, resolveText, resolveProspect);
+  const applied = applyChecklistRow({}, row, resolveText, resolveProspect, resolvePlace);
   const players = [...(applied.fillPlayers ?? row.players)];
   const number = row.number.trim();
   return {
@@ -15577,6 +15602,58 @@ export async function resolveChecklistProspectTexts(
   };
 }
 
+/**
+ * Collector review — settle each distinct plain team text that is a PLACE
+ * ("Seattle"), through `checklistCandidates.resolveChecklistPlaceTeams`, and
+ * hand back the `resolvePlace` that `applyChecklistRow` asks. Shared by
+ * `fetchCardChecklist` step 3c and `publishedChecklistPairs`, like the other
+ * two resolvers, so an operator's own link settles a place exactly as the
+ * matcher's pair does.
+ *
+ * Distinct by the folded team key, a text with a comma is skipped (the
+ * whole-name-first resolver owns it), asked in batches of
+ * `MAX_PROSPECT_TEAMS_PER_QUERY`, at most `MAX_PLACE_TEAM_TEXTS` distinct
+ * texts per call. A text past the cap, or in a batch that fails, answers
+ * null: it stays as printed, which is today's behaviour (parked for the
+ * operator). The fetch neither fails nor guesses.
+ */
+export const MAX_PLACE_TEAM_TEXTS = 200;
+export async function resolveChecklistPlaceTexts(
+  ctx: Pick<ActionCtx, "runQuery">,
+  selectorOptionId: Id<"selectorOptions">,
+  texts: Iterable<string>,
+): Promise<(text: string) => string | null> {
+  const keyOf = (text: string) => normalizeEntityName(text);
+  const at = new Map<string, number>();
+  const toResolve: string[] = [];
+  for (const raw of texts) {
+    const t = raw.trim();
+    if (!t || checklistTeamTextNeedsResolving(t)) continue;
+    const key = keyOf(t);
+    if (at.has(key) || toResolve.length >= MAX_PLACE_TEAM_TEXTS) continue;
+    at.set(key, toResolve.length);
+    toResolve.push(t);
+  }
+  const answers: Array<string | null> = [];
+  for (let i = 0; i < toResolve.length; i += MAX_PROSPECT_TEAMS_PER_QUERY) {
+    const batch = toResolve.slice(i, i + MAX_PROSPECT_TEAMS_PER_QUERY);
+    try {
+      answers.push(
+        ...(await ctx.runQuery(internal.checklistCandidates.resolveChecklistPlaceTeams, {
+          selectorOptionId,
+          texts: batch,
+        })),
+      );
+    } catch {
+      answers.push(...batch.map(() => null));
+    }
+  }
+  return (text) => {
+    const i = at.get(keyOf(text.trim()));
+    return i === undefined ? null : (answers[i] ?? null);
+  };
+}
+
 const previewCardFields = {
   cardNumber: v.string(),
   cardName: v.string(),
@@ -15698,6 +15775,14 @@ const previewCardFields = {
   // card's `teams` NAMES resolve to, deduped, and held to `MAX_CARD_TEAMS`.
   // Count-bounded by `assertCardBatchWithinLimits`.
   teamIds: v.optional(v.array(v.id("teams"))),
+  // `rememberTeamAs` — the Teams step's "Remember … as a name for this team"
+  // on a HELD "Prospect (X)" line the operator settled (off unless ticked):
+  // the held X, to be saved as an alias of the ONE team picked in `teamIds`.
+  // A client claim, so the commit applies it only when it is exactly one
+  // validated pick and the text IS one of this card's own held Xs
+  // (`prospectTeams` / `prospectTeam` / `rawTeamName`); anything else is
+  // dropped, never written. Bounded by `assertCardBatchWithinLimits`.
+  rememberTeamAs: v.optional(v.string()),
   // `teamsAnswered` — this card's `teams` STRINGS are the operator's answer
   // in the wizard (a team staged in this review, or a sibling card's printed
   // team), not what the card printed. The commit resolves them exactly as it
@@ -17006,6 +17091,17 @@ export const fetchCardChecklist = action({
             ...match.unusedRowIndices.flatMap((i) => published.rows[i].prospectTeams ?? []),
           ],
         );
+        // Collector review — a team printed as a place ("Seattle"), settled to
+        // the one team in the set's league(s) with that location, else left as
+        // printed. Same rows as `resolveText`, so the matched rows go first.
+        const resolvePlace = await resolveChecklistPlaceTexts(
+          ctx,
+          args.selectorOptionId,
+          [
+            ...match.matches.flatMap((m) => published.rows[m.rowIndex].teams),
+            ...match.unusedRowIndices.flatMap((i) => published.rows[i].teams),
+          ],
+        );
         let conflicts = 0;
         let refused = 0;
         let noTeamFromChecklist = 0;
@@ -17023,7 +17119,12 @@ export const fetchCardChecklist = action({
             via: m.via,
             ...(m.confidence !== undefined ? { confidence: m.confidence } : {}),
             ...(m.checklistNumber !== undefined ? { checklistNumber: m.checklistNumber } : {}),
-            row: checklistPairedRow(published.rows[m.rowIndex], resolveText, resolveProspect),
+            row: checklistPairedRow(
+              published.rows[m.rowIndex],
+              resolveText,
+              resolveProspect,
+              resolvePlace,
+            ),
           };
           checklistLinkByCard.set(card, link);
           const applied = applyChecklistRow(
@@ -17031,6 +17132,7 @@ export const fetchCardChecklist = action({
             published.rows[m.rowIndex],
             resolveText,
             resolveProspect,
+            resolvePlace,
           );
           // NEO-591 — the Prospect Card attribute is a claim about the card,
           // whatever became of the team (even a conflict). A held X rides
@@ -17079,7 +17181,12 @@ export const fetchCardChecklist = action({
         // the checklist's answer (never looked up: it has no BSC ref); a row
         // naming no team leaves the team to the operator.
         for (const rowIndex of match.unusedRowIndices) {
-          const card = checklistOnlyCard(published.rows[rowIndex], resolveText, resolveProspect);
+          const card = checklistOnlyCard(
+            published.rows[rowIndex],
+            resolveText,
+            resolveProspect,
+            resolvePlace,
+          );
           if (card.teamLookup === "checklist") {
             checklistAnswered.add(card);
             if (card.teams?.length === 0 && !card.prospectTeam) noTeamFromChecklist++;
@@ -18033,6 +18140,85 @@ export const SAME_NAME_PREFETCH_CONCURRENCY = 25;
  * advancing, which must not be reported to the operator as a finished commit.
  */
 export const PRELUDE_MAX_PAGES = 200;
+
+/**
+ * Add the strings `names` to the team's aliases, when it does not already
+ * answer to them. The one alias writer behind "Remember … as a name for this
+ * team": the entity-review prelude (a step the operator linked) and
+ * `rememberTeamAliases` (a Teams-step line the operator settled) both call it,
+ * so the caps and the guard against another team's primary name cannot drift.
+ *
+ * Non-throwing by design: there is no operator in the loop and losing one
+ * alias must not abort a commit. A string over `MAX_TEAM_ALIAS_LENGTH`, a team
+ * already at `MAX_TEAM_ALIASES`, and a string that is another team's primary
+ * name in this sport are each logged (lengths and ids, never the string) and
+ * skipped; the link itself lands.
+ */
+async function rememberAliasesOnTeam(
+  ctx: MutationCtx,
+  linked: Doc<"teams">,
+  names: readonly string[],
+  caller: string,
+): Promise<void> {
+  const held = linked.aliases ?? [];
+  // Keys the team already answers to: its full name and every alias.
+  // `nameNormalized` IS `normalizeTeamName(teamFullName(row))` by
+  // construction (convex/lib/teamRow.ts), so it stands in for the name.
+  const answersTo = new Set<string>([
+    linked.nameNormalized,
+    ...held.map((a) => normalizeTeamName(a)),
+  ]);
+  const additions: string[] = [];
+  for (const name of names) {
+    const trimmed = name.trim();
+    const key = normalizeTeamName(trimmed);
+    if (!key || answersTo.has(key)) continue;
+    if (trimmed.length > MAX_TEAM_ALIAS_LENGTH) {
+      // Length, never the string: this reaches Sentry and the console.
+      console.warn(
+        `${caller}: a saveAsAlias string is ${trimmed.length} characters; the limit is ${MAX_TEAM_ALIAS_LENGTH}. Linked, not remembered.`,
+      );
+      continue;
+    }
+    if (held.length + additions.length >= MAX_TEAM_ALIASES) {
+      console.warn(
+        `${caller}: team ${linked._id} already holds ${MAX_TEAM_ALIASES} aliases. Linked, not remembered.`,
+      );
+      continue;
+    }
+    answersTo.add(key);
+    additions.push(trimmed);
+  }
+  if (additions.length === 0) return;
+  // NEO-284 security audit — a string that is another team's PRIMARY name
+  // in this sport is not remembered: stored as an alias it would lock that
+  // team out of its own edits (NAME_TAKEN on every save). NEO-307: in ANY
+  // era — a disjoint one cannot lock anyone out, but it steals the other
+  // team's retro cards (a 2026 "Brooklyn Dodgers" card resolving to LA).
+  // Warn-and-skip, like the caps above; the link itself still lands.
+  // `selfId` so the linked team's own name is not a clash.
+  const { aliases: safeAdditions, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
+    sportId: linked.sportId,
+    aliases: additions,
+    selfId: linked._id,
+  });
+  for (const { teamName } of dropped) {
+    // The owning team's display name only — never the parked string.
+    console.warn(
+      `${caller}: a saveAsAlias string is ${teamName}'s own name. Linked, not remembered.`,
+    );
+  }
+  if (safeAdditions.length === 0) return;
+  // Through the same helper every other writer uses, against the team's
+  // own composed name, so the stored list obeys the one contract. The
+  // inputs are inside the caps by the checks above, so this cannot throw.
+  const aliases = normalizeTeamAliasList(
+    [...held, ...safeAdditions],
+    teamFullName(linked),
+  );
+  await ctx.db.patch(linked._id, { aliases, lastUpdated: Date.now() });
+  await syncTeamAliases(ctx, { teamId: linked._id, sportId: linked.sportId, aliases });
+}
 
 /**
  * NEO-345 — the wizard's "Autographed cards" answer on the commit wire: one of
@@ -19377,64 +19563,7 @@ export const commitCardChecklistPrelude = internalMutation({
       if (!runCreates) break;
       const linked = await ctx.db.get(teamId);
       if (!linked || linked.sportId !== aliasSportByTeamId.get(teamId)) continue;
-      const held = linked.aliases ?? [];
-      // Keys the team already answers to: its full name and every alias.
-      // `nameNormalized` IS `normalizeTeamName(teamFullName(row))` by
-      // construction (convex/lib/teamRow.ts), so it stands in for the name.
-      const answersTo = new Set<string>([
-        linked.nameNormalized,
-        ...held.map((a) => normalizeTeamName(a)),
-      ]);
-      const additions: string[] = [];
-      for (const name of names) {
-        const trimmed = name.trim();
-        const key = normalizeTeamName(trimmed);
-        if (!key || answersTo.has(key)) continue;
-        if (trimmed.length > MAX_TEAM_ALIAS_LENGTH) {
-          // Length, never the string: this reaches Sentry and the console.
-          console.warn(
-            `commitCardChecklistPrelude: a saveAsAlias string is ${trimmed.length} characters; the limit is ${MAX_TEAM_ALIAS_LENGTH}. Linked, not remembered.`,
-          );
-          continue;
-        }
-        if (held.length + additions.length >= MAX_TEAM_ALIASES) {
-          console.warn(
-            `commitCardChecklistPrelude: team ${teamId} already holds ${MAX_TEAM_ALIASES} aliases. Linked, not remembered.`,
-          );
-          continue;
-        }
-        answersTo.add(key);
-        additions.push(trimmed);
-      }
-      if (additions.length === 0) continue;
-      // NEO-284 security audit — a string that is another team's PRIMARY name
-      // in this sport is not remembered: stored as an alias it would lock that
-      // team out of its own edits (NAME_TAKEN on every save). NEO-307: in ANY
-      // era — a disjoint one cannot lock anyone out, but it steals the other
-      // team's retro cards (a 2026 "Brooklyn Dodgers" card resolving to LA).
-      // Warn-and-skip, like the caps above; the link itself still lands.
-      // `selfId` so the linked team's own name is not a clash.
-      const { aliases: safeAdditions, dropped } = await dropAliasesThatArePrimaryNames(ctx, {
-        sportId: linked.sportId,
-        aliases: additions,
-        selfId: linked._id,
-      });
-      for (const { teamName } of dropped) {
-        // The owning team's display name only — never the parked string.
-        console.warn(
-          `commitCardChecklistPrelude: a saveAsAlias string is ${teamName}'s own name. Linked, not remembered.`,
-        );
-      }
-      if (safeAdditions.length === 0) continue;
-      // Through the same helper every other writer uses, against the team's
-      // own composed name, so the stored list obeys the one contract. The
-      // inputs are inside the caps by the checks above, so this cannot throw.
-      const aliases = normalizeTeamAliasList(
-        [...held, ...safeAdditions],
-        teamFullName(linked),
-      );
-      await ctx.db.patch(linked._id, { aliases, lastUpdated: Date.now() });
-      await syncTeamAliases(ctx, { teamId: linked._id, sportId: linked.sportId, aliases });
+      await rememberAliasesOnTeam(ctx, linked, names, "commitCardChecklistPrelude");
     }
 
     const stagedTeamIdByLabel = new Map<string, Id<"teams">>();
@@ -23918,6 +24047,48 @@ export const auditChecklistDataForResync = internalQuery({
  * still atomic in itself.
  */
 /**
+ * Collector review — save the held X the operator settled on a Teams-step
+ * line ("Remember “Oklahoma” as a name for this team") as an alias of the team
+ * they picked. Internal: only `commitCardChecklist` calls it, behind its own
+ * `requireAdmin`, with pairs it has already checked (one validated pick per
+ * card, the text one of that card's own held Xs).
+ *
+ * The same writer and the same caps as the entity-review "Remember" box
+ * (`rememberAliasesOnTeam`): a string another team holds as its primary name,
+ * a team at its alias limit, an over-long string are skipped and logged; the
+ * commit never fails on one. A team from another sport than the set is
+ * skipped. At most `MAX_REMEMBERED_CARD_ALIASES` pairs per call; the commit
+ * sends no more, and a longer list is refused.
+ */
+export const MAX_REMEMBERED_CARD_ALIASES = 50;
+export const rememberTeamAliases = internalMutation({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    pairs: v.array(v.object({ teamId: v.id("teams"), alias: v.string() })),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (args.pairs.length > MAX_REMEMBERED_CARD_ALIASES) {
+      throw new Error(
+        `rememberTeamAliases: ${args.pairs.length} pairs exceeds the ${MAX_REMEMBERED_CARD_ALIASES} limit`,
+      );
+    }
+    const sportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    if (!sportId) return null;
+    const namesByTeam = new Map<Id<"teams">, string[]>();
+    for (const { teamId, alias } of args.pairs) {
+      namesByTeam.set(teamId, [...(namesByTeam.get(teamId) ?? []), alias]);
+    }
+    for (const [teamId, names] of namesByTeam) {
+      const team = await ctx.db.get(teamId);
+      if (!team || team.sportId !== sportId) continue;
+      await rememberAliasesOnTeam(ctx, team, names, "rememberTeamAliases");
+    }
+    return null;
+  },
+});
+
+/**
  * NEO-335 — how many distinct operator-chosen team ids one validation read
  * covers. A read per id; well under a query's budget, and a real commit names
  * a handful of distinct teams, so one page is the normal case.
@@ -24124,6 +24295,29 @@ export const commitCardChecklist = action({
         `commitCardChecklist: ${
           card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
         } still carries an unsettled checklist disagreement. Settle it in the "Checklist says otherwise" step before committing.`,
+      );
+    }
+    // Security audit N2 — a held "Prospect (X)" is never a team string. The
+    // fetch hands the card `teams: []` and X in `prospectTeams`; a card that
+    // arrives with a team string equal to one of its own held Xs is a client
+    // that wrote the listing's name as NB data (rule 8). Refused, by NB's card
+    // number, never by echoing the text. An OPERATOR'S answer is exempt
+    // (`teamsAnswered`): a team staged in this review can carry the same name
+    // as X, and picking it is the operator's own decision.
+    for (const [index, card] of args.cards.entries()) {
+      if (card.teamsAnswered === true) continue;
+      const held = new Set(
+        [...(card.prospectTeams ?? []), ...(card.prospectTeam ? [card.prospectTeam] : [])]
+          .map((x) => normalizeTeamName(x.trim()))
+          .filter(Boolean),
+      );
+      if (held.size === 0) continue;
+      const printed = card.teams?.length ? card.teams : card.team ? [card.team] : [];
+      if (!printed.some((t) => held.has(normalizeTeamName(t.trim())))) continue;
+      throw new ConvexError(
+        `commitCardChecklist: ${
+          card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`
+        } carries a held prospect team as a team name. Pick the team in the Teams step.`,
       );
     }
     // NEO-335 — the "Card titles" answers, held to the write path's caps before
@@ -24350,6 +24544,44 @@ export const commitCardChecklist = action({
     };
 
     const createPages = await walkPrelude("creates");
+    // Collector review — "Remember … as a name for this team" on a held line
+    // the operator settled. After the creates, before anything resolves, like
+    // the entity-review box. Exactly one validated pick per card, and the text
+    // must be one of that card's own held Xs (a client claim otherwise); the
+    // rest is dropped, never written. A failure here never fails the commit.
+    {
+      const norm = (t: string) => normalizeTeamName(t.trim());
+      const pairs = new Map<string, { teamId: Id<"teams">; alias: string }>();
+      for (const card of args.cards) {
+        const alias = card.rememberTeamAs?.trim();
+        const picked = card.teamIds ?? [];
+        if (!alias || picked.length !== 1 || !operatorTeamNameById.has(picked[0])) continue;
+        const ownHeld = new Set(
+          [
+            ...(card.prospectTeams ?? []),
+            ...(card.prospectTeam ? [card.prospectTeam] : []),
+            ...(card.rawTeamName ? [card.rawTeamName] : []),
+          ]
+            .map(norm)
+            .filter(Boolean),
+        );
+        if (!ownHeld.has(norm(alias))) continue;
+        pairs.set(`${picked[0]}|${norm(alias)}`, { teamId: picked[0], alias });
+        if (pairs.size >= MAX_REMEMBERED_CARD_ALIASES) break;
+      }
+      if (pairs.size > 0) {
+        try {
+          await ctx.runMutation(internal.selectorOptions.rememberTeamAliases, {
+            selectorOptionId: args.selectorOptionId,
+            pairs: [...pairs.values()],
+          });
+        } catch {
+          console.warn(
+            `commitCardChecklist: ${pairs.size} remembered name(s) could not be saved. Committed without them.`,
+          );
+        }
+      }
+    }
     /*
      * What the creates phase minted, by the checklist name that asked for it.
      * Drawn from that phase's own `*IdByName` maps, which contain exactly the

@@ -19,7 +19,12 @@ import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 // NEO-333 — the whole-name-first team match, through the one resolution the
 // review gate and the commit prelude also use.
-import { findTeamsByFullName, resolveTeamForSetYear } from "./lib/teamRow";
+import { effectiveSetLeagueIds } from "./lib/selectorLeagues";
+import {
+  findTeamsByFullName,
+  resolveTeamForSetYear,
+  TEAM_ERA_SCAN_LIMIT,
+} from "./lib/teamRow";
 import { nameTokens } from "./lib/entityNearMatch";
 import { isProspectTeamLevel, pickProspectTeam, teamLocationIs } from "./lib/prospectTeam";
 import { teamFullName } from "../lib/teams/team-name";
@@ -1025,6 +1030,60 @@ const prospectResolutionValidator = v.union(
   v.object({ kind: v.literal("team"), name: v.string() }),
   v.object({ kind: v.literal("held") }),
 );
+
+/**
+ * The rows the sport holds under `x` as a full name (name or alias) plus the
+ * rows whose LOCATION is `x`, from one bounded `search_name` read. Shared by
+ * the Prospect (X) resolver and the city-string leg, so the two cannot read a
+ * location differently.
+ *
+ * `saturated` is the guard of rule 8. Both reads are windows
+ * (`TEAM_ERA_SCAN_LIMIT` for the name leg, `PROSPECT_TEAM_SEARCH_HITS` for the
+ * search): a window that came back FULL may have cut a second candidate off,
+ * and "exactly one" read from it would be a guess. A caller that settles on a
+ * count must answer held (or leave the text alone) when `saturated` is set.
+ */
+async function teamRowsForPlace(
+  ctx: QueryCtx | MutationCtx,
+  sportId: Id<"selectorOptions">,
+  x: string,
+): Promise<{ byName: Doc<"teams">[]; byLocation: Doc<"teams">[]; saturated: boolean }> {
+  const byName = await findTeamsByFullName(ctx, sportId, x);
+  let saturated = byName.length >= TEAM_ERA_SCAN_LIMIT;
+  const byLocation: Doc<"teams">[] = [];
+  const term = nameTokens(x).join(" ");
+  if (term) {
+    const hits = await ctx.db
+      .query("teams")
+      .withSearchIndex("search_name", (q) => q.search("nameNormalized", term).eq("sportId", sportId))
+      .take(PROSPECT_TEAM_SEARCH_HITS);
+    if (hits.length >= PROSPECT_TEAM_SEARCH_HITS) saturated = true;
+    for (const row of hits) {
+      if (teamLocationIs(row, x)) byLocation.push(row);
+    }
+  }
+  return { byName, byLocation, saturated };
+}
+
+/**
+ * The one team these candidates mean for the set year, as the string the card
+ * carries, or null. Exactly one row may survive the era pick, and the commit's
+ * own lookup (`resolveTeamForSetYear` on that string) must land on the same
+ * row, so the card cannot be written to another team than the one chosen.
+ */
+async function settleOneTeam(
+  ctx: QueryCtx | MutationCtx,
+  sportId: Id<"selectorOptions">,
+  setYear: number | undefined,
+  qualifying: readonly Doc<"teams">[],
+): Promise<string | null> {
+  const picked = pickProspectTeam(qualifying, setYear);
+  if (!picked) return null;
+  const name = teamFullName(picked);
+  const back = await resolveTeamForSetYear(ctx, sportId, name, setYear, { allowPastEra: true });
+  return back.teamId === picked._id ? name : null;
+}
+
 export const resolveProspectTeams = internalQuery({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -1053,31 +1112,83 @@ export const resolveProspectTeams = internalQuery({
         out.push(held);
         continue;
       }
-      const found = new Map<string, Doc<"teams">>();
-      for (const row of await findTeamsByFullName(ctx, sportId, x)) found.set(row._id, row);
-      const term = nameTokens(x).join(" ");
-      if (term) {
-        const hits = await ctx.db
-          .query("teams")
-          .withSearchIndex("search_name", (q) => q.search("nameNormalized", term).eq("sportId", sportId))
-          .take(PROSPECT_TEAM_SEARCH_HITS);
-        for (const row of hits) {
-          if (teamLocationIs(row, x)) found.set(row._id, row);
-        }
+      const { byName, byLocation, saturated } = await teamRowsForPlace(ctx, sportId, x);
+      // A window that came back full may hide a second team: held (rule 8).
+      if (saturated) {
+        out.push(held);
+        continue;
       }
+      const found = new Map<string, Doc<"teams">>();
+      for (const row of [...byName, ...byLocation]) found.set(row._id, row);
       const qualifying: Doc<"teams">[] = [];
       for (const row of found.values()) {
         if (isProspectTeamLevel(await levelOf(row.leagueId))) qualifying.push(row);
       }
-      const picked = pickProspectTeam(qualifying, setYear);
-      if (!picked) {
-        out.push(held);
+      const name = await settleOneTeam(ctx, sportId, setYear, qualifying);
+      out.push(name ? { kind: "team", name } : held);
+    }
+    return out;
+  },
+});
+
+/**
+ * NEO-591 (collector review) — a checklist team printed as a PLACE.
+ *
+ * Onyx prints teams as places ("Seattle", "Arizona", "St Louis"), and none of
+ * those is a team's name, so every such card was parked and the operator was
+ * asked about each one. When a plain team text names no team by name or alias,
+ * this tries the location: the teams whose location IS the text, limited to
+ * the set's league(s) (`effectiveSetLeagueIds`), picked for the set year, and
+ * EXACTLY ONE may remain. Then the same back-check as the Prospect resolver.
+ *
+ *  - "Seattle" in an MLB set is the Mariners (the Kraken and the Seahawks are
+ *    in other leagues). "New York" in an MLB set is two teams: unchanged.
+ *  - A set with no league skips this entirely: no guessing across leagues.
+ *  - A text some team already answers to by name or alias is left alone (the
+ *    commit resolves it as it always did), as is a text with a comma (the
+ *    whole-name-first resolver owns those). "(A)" / "(N)" are not read.
+ *  - A read that came back full (`teamRowsForPlace`) is not trusted to count:
+ *    the text is left alone, and the card stays parked for the operator.
+ *
+ * Answers are aligned with `texts`: the settled team's full name, else null
+ * (the text is unchanged). At most `MAX_PROSPECT_TEAMS_PER_QUERY` texts are
+ * read per call (about ten indexed reads each; the caller batches,
+ * `resolveChecklistPlaceTexts`); texts past it answer null. Internal: only
+ * `fetchCardChecklist` and `applyPublishedChecklistPairs` ask, behind their
+ * own `requireAdmin`.
+ */
+export const resolveChecklistPlaceTeams = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    texts: v.array(v.string()),
+  },
+  returns: v.array(v.union(v.string(), v.null())),
+  handler: async (ctx, args) => {
+    const none = args.texts.map(() => null);
+    const sportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    if (!sportId) return none;
+    const leagues = new Set<string>(await effectiveSetLeagueIds(ctx, args.selectorOptionId));
+    if (leagues.size === 0) return none;
+    const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
+    const out: Array<string | null> = [];
+    for (const [i, raw] of args.texts.entries()) {
+      const x = raw.trim();
+      if (
+        i >= MAX_PROSPECT_TEAMS_PER_QUERY ||
+        !x ||
+        x.length > MAX_PLAYER_NAME_LENGTH ||
+        x.includes(",")
+      ) {
+        out.push(null);
         continue;
       }
-      const name = teamFullName(picked);
-      // The commit's own lookup must land on the same row.
-      const back = await resolveTeamForSetYear(ctx, sportId, name, setYear, { allowPastEra: true });
-      out.push(back.teamId === picked._id ? { kind: "team", name } : held);
+      const { byName, byLocation, saturated } = await teamRowsForPlace(ctx, sportId, x);
+      if (byName.length > 0 || saturated) {
+        out.push(null);
+        continue;
+      }
+      const inLeague = byLocation.filter((row) => row.leagueId && leagues.has(row.leagueId));
+      out.push(await settleOneTeam(ctx, sportId, setYear, inLeague));
     }
     return out;
   },

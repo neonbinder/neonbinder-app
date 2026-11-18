@@ -18,6 +18,9 @@ import { api } from "./_generated/api";
 import schema from "./schema";
 import { Doc, Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
+import { teamRowFields } from "./lib/teamRow";
+import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
+import { applyChecklistRow } from "../lib/checklists/apply-published-row";
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -87,6 +90,9 @@ function card(opts: {
   prospectTeams?: string[];
   rawTeamName?: string;
   teamNone?: true;
+  teamIds?: Id<"teams">[];
+  teamsAnswered?: true;
+  rememberTeamAs?: string;
   applyFields?: string[];
   baseVersion?: number;
 }) {
@@ -102,6 +108,9 @@ function card(opts: {
     ...(opts.prospectTeams ? { prospectTeams: opts.prospectTeams } : {}),
     ...(opts.rawTeamName !== undefined ? { rawTeamName: opts.rawTeamName } : {}),
     ...(opts.teamNone ? { teamNone: opts.teamNone } : {}),
+    ...(opts.teamIds ? { teamIds: opts.teamIds } : {}),
+    ...(opts.teamsAnswered ? { teamsAnswered: opts.teamsAnswered } : {}),
+    ...(opts.rememberTeamAs !== undefined ? { rememberTeamAs: opts.rememberTeamAs } : {}),
     ...(opts.applyFields ? { applyFields: opts.applyFields } : {}),
     ...(opts.baseVersion !== undefined ? { baseVersion: opts.baseVersion } : {}),
   };
@@ -406,5 +415,164 @@ describe("commitCardChecklist — a held Prospect (X)", () => {
 
     expect((await rowsByNumber(t, leafId)).size).toBe(0);
     await settle(t);
+  });
+});
+
+describe("commitCardChecklist — held Xs joined into one hint (security audit S1)", () => {
+  test("three 50-character held Xs commit: the joined hint fits the bound and is what the card keeps", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const xs = ["A".repeat(50), "B".repeat(50), "C".repeat(50)];
+    const applied = applyChecklistRow({}, { players: [], teams: [], prospect: true, prospectTeams: xs }, () => null);
+    expect(applied.prospectTeam!.length).toBeLessThanOrEqual(MAX_PLAYER_NAME_LENGTH);
+
+    await commit(t, sportId, leafId, [
+      card({
+        cardNumber: "1",
+        bscRef: "B1",
+        isProspect: true,
+        teamLookup: "checklist",
+        prospectTeam: applied.prospectTeam,
+        prospectTeams: applied.prospectTeams,
+        rawTeamName: applied.prospectTeam,
+      }),
+    ]);
+
+    expect((await rowsByNumber(t, leafId)).get("1")!.bscTeamName).toBe(applied.prospectTeam);
+    await settle(t);
+  });
+});
+
+describe("commitCardChecklist — a held X is never a team string (security audit N2)", () => {
+  const heldAsTeam = (extra: Partial<Parameters<typeof card>[0]> = {}) =>
+    card({
+      cardNumber: "7",
+      bscRef: "B7",
+      isProspect: true,
+      teamLookup: "checklist",
+      teams: ["Oklahoma"],
+      prospectTeam: "Oklahoma",
+      prospectTeams: ["Oklahoma"],
+      rawTeamName: "Oklahoma",
+      ...extra,
+    });
+
+  test("refuses a card whose team string is one of its own held Xs, writing nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await expect(commit(t, sportId, leafId, [heldAsTeam()])).rejects.toThrow(
+      /card #7 carries a held prospect team as a team name/,
+    );
+    expect((await rowsByNumber(t, leafId)).size).toBe(0);
+  });
+
+  test("the comparison folds case and spacing, and reads the joined single hint too", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await expect(
+      commit(t, sportId, leafId, [heldAsTeam({ teams: ["  OKLAHOMA "], prospectTeams: undefined })]),
+    ).rejects.toThrow(/held prospect team as a team name/);
+  });
+
+  test("a card whose held X is not among its team strings is untouched by the guard", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await commit(t, sportId, leafId, [heldAsTeam({ teams: [], teamLookup: "checklist" })]);
+    expect((await rowsByNumber(t, leafId)).get("7")).toBeDefined();
+    await settle(t);
+  });
+
+  test("an operator's own answer is exempt: a team staged under the same name is their pick", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    await commit(t, sportId, leafId, [heldAsTeam({ teamsAnswered: true })]);
+    expect((await rowsByNumber(t, leafId)).get("7")).toBeDefined();
+    await settle(t);
+  });
+});
+
+describe("commitCardChecklist — Remember a held X as a name for the team picked", () => {
+  async function seedSooners(t: T, sportId: Id<"selectorOptions">) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        ...teamRowFields({ name: "Sooners", location: "Oklahoma State Univ" }),
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
+  const aliasesOf = (t: T, id: Id<"teams">) => t.run(async (ctx) => (await ctx.db.get(id))!.aliases ?? []);
+  const heldCard = (extra: Partial<Parameters<typeof card>[0]> = {}) =>
+    card({
+      cardNumber: "1",
+      bscRef: "B1",
+      isProspect: true,
+      teamLookup: "checklist",
+      prospectTeam: "Oklahoma",
+      prospectTeams: ["Oklahoma"],
+      rawTeamName: "Oklahoma",
+      ...extra,
+    });
+
+  test("saves the held X as an alias of the one team the operator picked", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const teamId = await seedSooners(t, sportId);
+    await commit(t, sportId, leafId, [heldCard({ teamIds: [teamId], rememberTeamAs: "Oklahoma" })]);
+    expect(await aliasesOf(t, teamId)).toEqual(["Oklahoma"]);
+    await settle(t);
+  });
+
+  test("off unless asked: the same pick without the box saves nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const teamId = await seedSooners(t, sportId);
+    await commit(t, sportId, leafId, [heldCard({ teamIds: [teamId] })]);
+    expect(await aliasesOf(t, teamId)).toEqual([]);
+    await settle(t);
+  });
+
+  test("a text that is not one of the card's own held Xs is dropped, never written", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const teamId = await seedSooners(t, sportId);
+    await commit(t, sportId, leafId, [heldCard({ teamIds: [teamId], rememberTeamAs: "Arizona" })]);
+    expect(await aliasesOf(t, teamId)).toEqual([]);
+    await settle(t);
+  });
+
+  test("only with exactly one picked team: two picks save nothing", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const a = await seedSooners(t, sportId);
+    const b = await t.run(async (ctx) =>
+      ctx.db.insert("teams", { ...teamRowFields({ name: "Bison", location: "Oklahoma Baptist" }), sportId, lastUpdated: Date.now() }),
+    );
+    await commit(t, sportId, leafId, [heldCard({ teamIds: [a, b], rememberTeamAs: "Oklahoma" })]);
+    expect(await aliasesOf(t, a)).toEqual([]);
+    expect(await aliasesOf(t, b)).toEqual([]);
+    await settle(t);
+  });
+
+  test("a string another team holds as its own name is not saved on the picked team", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const teamId = await seedSooners(t, sportId);
+    await t.run(async (ctx) =>
+      ctx.db.insert("teams", { ...teamRowFields({ name: "Oklahoma" }), sportId, lastUpdated: Date.now() }),
+    );
+    await commit(t, sportId, leafId, [heldCard({ teamIds: [teamId], rememberTeamAs: "Oklahoma" })]);
+    expect(await aliasesOf(t, teamId)).toEqual([]);
+    await settle(t);
+  });
+
+  test("a name to remember over the alias length refuses the commit before anything is written", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId, leafId } = await seedTree(t);
+    const teamId = await seedSooners(t, sportId);
+    await expect(
+      commit(t, sportId, leafId, [heldCard({ teamIds: [teamId], rememberTeamAs: "x".repeat(300) })]),
+    ).rejects.toThrow(/name to remember of 300 characters/);
+    expect((await rowsByNumber(t, leafId)).size).toBe(0);
   });
 });

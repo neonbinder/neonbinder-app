@@ -524,6 +524,22 @@ describe("PublishedChecklistDialog — No Team (NEO-489)", () => {
     },
   );
 
+  it("reads a Prospect (X) row's team cell as printed, never as \"We'll look it up\"; a bare Prospect reads Prospect (NEO-591)", async () => {
+    open();
+    await paste(
+      "#,Player,Team\n1,Cord Rager,Prospect (Oklahoma)\n2,Pat Smith,Prospect\n3,Lee Jones,Cincinnati Reds / Prospect (Frisco)",
+    );
+    await waitFor(() => expect(screen.getByText("3 rows")).toBeTruthy());
+    const rows = within(screen.getByRole("table")).getAllByRole("row");
+    const cellOf = (n: string) =>
+      within(rows.find((r) => within(r).queryByText(n))!).getAllByRole("cell")[2];
+    expect(cellOf("Cord Rager").textContent).toBe("Prospect (Oklahoma)");
+    expect(cellOf("Pat Smith").textContent).toBe("Prospect");
+    expect(cellOf("Lee Jones").textContent).toBe("Cincinnati Reds, Prospect (Frisco)");
+    // A claim, so it reads at a team's strength, not as the muted lookup.
+    expect(cellOf("Cord Rager").querySelector(".text-ink-3")).toBeNull();
+  });
+
   it("keeps the Players column's muted None for a row with no player", async () => {
     open();
     await paste("#,Player,Team\n5,,Cincinnati Reds");

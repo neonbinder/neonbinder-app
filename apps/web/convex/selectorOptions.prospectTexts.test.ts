@@ -4,6 +4,7 @@
  * bounded batches, and holds what it cannot ask), and the two card shapes
  * built from a checklist row (`checklistOnlyCard`, `checklistPairedRow`).
  */
+import { checklistClaimText } from "../lib/checklists/prospect-team-text";
 import { describe, expect, test, vi } from "vitest";
 import type { Id } from "./_generated/dataModel";
 import {
@@ -199,5 +200,27 @@ describe("checklistPairedRow — Prospect", () => {
   test("a bare Prospect is a No Team row that is also a prospect", () => {
     const paired = checklistPairedRow(row({ prospect: true, noTeam: true }), () => null);
     expect(paired).toMatchObject({ teams: [], noTeam: true, prospect: true });
+  });
+
+  test("collector review: a settled X carries the printed claim, so Match Cards reads Prospect (Oklahoma), not the full name", () => {
+    const paired = checklistPairedRow(row({ prospect: true, prospectTeams: ["Oklahoma"] }), () => null, sooners);
+    expect(paired.teams).toEqual(["Oklahoma Sooners"]);
+    expect(paired.claim).toBe("Prospect (Oklahoma)");
+  });
+
+  test("collector review: a bare Prospect needs no claim (its flag reads Prospect); a held mixed row reads right from its own fields", () => {
+    expect(checklistPairedRow(row({ prospect: true, noTeam: true }), () => null).claim).toBeUndefined();
+    const mixed = checklistPairedRow(
+      row({ prospect: true, teams: ["Boston Red Sox"], prospectTeams: ["Oklahoma", "Arizona"] }),
+      () => null,
+      sooners,
+    );
+    expect(mixed.claim).toBeUndefined();
+    expect(checklistClaimText(mixed)).toBe("Boston Red Sox / Prospect (Oklahoma) / Prospect (Arizona)");
+  });
+
+  test("collector review: a row whose claim the paired row already reads the same way carries none", () => {
+    const paired = checklistPairedRow(row({ teams: ["Boston Red Sox"] }), (t) => [t]);
+    expect(paired.claim).toBeUndefined();
   });
 });

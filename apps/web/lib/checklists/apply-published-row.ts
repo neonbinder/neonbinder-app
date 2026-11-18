@@ -31,6 +31,15 @@
  *       `MAX_CARD_TEAMS` (`teams: null`): the checklist says nothing usable
  *       about the team, the card keeps its lookup, and nothing is offered.
  *
+ * ## A team printed as a place (NEO-591 collector review)
+ *
+ *  - A plain team text no team answers to by name ("Seattle") may be a team's
+ *    location. `resolvePlace` (the server's `resolveChecklistPlaceTeams`)
+ *    answers the full name when exactly one team in the set's league(s) has
+ *    that location. The card then carries that team as a checklist team, and
+ *    against a marketplace team it is the ordinary conflict or agreement: a
+ *    card whose data names another team is never written over (rule 8).
+ *
  * ## Prospect (NEO-591, `prospect.ts`)
  *
  *  - A row that says Prospect (`prospect`, or any `prospectTeams`) marks the
@@ -51,6 +60,7 @@
  */
 import { MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
 import type { ProspectResolution } from "./prospect";
+import { joinProspectTeams } from "./prospect-team-text";
 import {
   checklistNameKey,
   compareChecklistRow,
@@ -82,7 +92,7 @@ export type AppliedChecklistRow = {
    * NEO-591 — the X of "Prospect (X)" that could not be settled to exactly one
    * minor-league or college team. Never a team string: `teams` is empty. The
    * card's "Listed as:" hint; the operator picks the team. Several are joined
-   * with " / ".
+   * with " / ", held to one name's length (`joinProspectTeams`).
    */
   prospectTeam?: string;
   /**
@@ -111,6 +121,13 @@ export function applyChecklistRow(
   resolveText: (text: string) => readonly string[] | null,
   /** Asked once per X of `row.prospectTeams`; absent or null answers held. */
   resolveProspect?: (text: string) => ProspectResolution | null,
+  /**
+   * Collector review — asked once per plain team text (no comma): the full
+   * name of the ONE team in the set's league(s) whose location the text is
+   * ("Seattle" in an MLB set), else null and the text stays as printed. Absent
+   * answers null, so a caller that does not ask changes nothing.
+   */
+  resolvePlace?: (text: string) => string | null,
 ): AppliedChecklistRow {
   // NEO-591 — settle each X first: a settled one is a team name like any
   // other, a held one is never a team string.
@@ -138,7 +155,7 @@ export function applyChecklistRow(
   for (const raw of row.teams) {
     const t = raw.trim();
     if (!t) continue;
-    const names = checklistTeamTextNeedsResolving(t) ? resolveText(t) : [t];
+    const names = checklistTeamTextNeedsResolving(t) ? resolveText(t) : [resolvePlace?.(t) ?? t];
     if (!names) {
       teams = null;
       break;
@@ -200,6 +217,6 @@ export function applyChecklistRow(
     ...(conflict ? { conflict } : {}),
     answered,
     ...(isProspect ? { isProspect: true as const } : {}),
-    ...(held ? { prospectTeam: heldX.join(" / "), prospectTeams: heldX } : {}),
+    ...(held ? { prospectTeam: joinProspectTeams(heldX), prospectTeams: heldX } : {}),
   };
 }

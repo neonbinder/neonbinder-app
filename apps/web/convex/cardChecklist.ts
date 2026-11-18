@@ -1834,6 +1834,14 @@ export const teamSuggestionsForPreview = query({
         `Too many team names to look up at once (${teamNameArgs.length}; max ${TEAM_SUGGESTION_MAX_TEAM_NAMES}).`,
       );
     }
+    // Security audit N1 — `locationNames` is a subset of `teamNames`, so it
+    // takes the same count bound. (Its entries are bounded by length below,
+    // before they are normalized.)
+    if ((args.locationNames ?? []).length > TEAM_SUGGESTION_MAX_TEAM_NAMES) {
+      throw new ConvexError(
+        `Too many place names to look up at once (${(args.locationNames ?? []).length}; max ${TEAM_SUGGESTION_MAX_TEAM_NAMES}).`,
+      );
+    }
     // NEO-335 security audit — the read budget. Each cap above is sized for a
     // call that does ONE of the two jobs; a full player slice plus a full name
     // slice in one transaction stacks both budgets. The browser already sends
@@ -2085,7 +2093,13 @@ export const teamSuggestionsForPreview = query({
     const teamNames: Array<{ teams: Array<SuggestedTeam> }> = [];
     const byName = new Map<string, Array<SuggestedTeam>>();
     const locationKeys = new Set(
-      (args.locationNames ?? []).map((n) => normalizeEntityName(n.trim())).filter(Boolean),
+      (args.locationNames ?? [])
+        .map((n) => n.trim())
+        // Skipped BEFORE normalizing: an over-long entry is never matched
+        // (`teamNames` skips the same names), so it must not cost the work.
+        .filter((n) => n.length > 0 && n.length <= TEAM_SUGGESTION_MAX_NAME_LENGTH)
+        .map((n) => normalizeEntityName(n))
+        .filter(Boolean),
     );
     let locationLegs = 0;
     for (const raw of teamNameArgs) {
@@ -2105,6 +2119,11 @@ export const teamSuggestionsForPreview = query({
       // NEO-591 — the location leg, for a name the caller asked it for: the
       // rows whose location IS the name. Only ever more choices; the browser
       // narrows a held prospect's to minor and college leagues.
+      //
+      // Security audit S2: unlike the fetch-time resolvers, this read decides
+      // nothing, it only lists. A window that came back full (16 hits) can cut
+      // a choice off the list, never settle a card on a guess, so it is
+      // deliberately not turned into a hold here.
       let located: Array<Doc<"teams">> = [];
       const term = nameTokens(trimmed).join(" ");
       if (term && locationKeys.has(key) && locationLegs < TEAM_SUGGESTION_MAX_LOCATION_NAMES) {

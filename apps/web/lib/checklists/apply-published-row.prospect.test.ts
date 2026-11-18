@@ -9,6 +9,8 @@ import { describe, expect, test, vi } from "vitest";
 import { MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
 import { applyChecklistRow } from "./apply-published-row";
 import type { ProspectResolution } from "./prospect";
+import { joinProspectTeams } from "./prospect-team-text";
+import { MAX_PLAYER_NAME_LENGTH } from "../players/name-limits";
 
 const noResolve = () => null;
 const answers =
@@ -223,5 +225,31 @@ describe("applyChecklistRow — a bare Prospect and a blank X", () => {
     const r = applyChecklistRow(card(), row({ teams: ["Boston Red Sox"] }), noResolve, resolve);
     expect(resolve).not.toHaveBeenCalled();
     expect(r).toEqual({ teams: ["Boston Red Sox"], answered: true });
+  });
+});
+
+describe("held Xs joined into one text stay inside a name's length (security audit S1)", () => {
+  const long = ["A".repeat(50), "B".repeat(50), "C".repeat(50)];
+
+  test("three 50-character held Xs: the exact list is kept, the joined text fits and names the first", () => {
+    const r = applyChecklistRow(card(), row({ prospect: true, prospectTeams: long }), noResolve, answers({}));
+    // The list, the source of truth, is untouched.
+    expect(r.prospectTeams).toEqual(long);
+    expect(r.prospectTeam!.length).toBeLessThanOrEqual(MAX_PLAYER_NAME_LENGTH);
+    expect(r.prospectTeam).toBe(`${long[0]} / ${long[1]} +1 more`);
+  });
+
+  test("a list that fits is joined whole with the separator, as before", () => {
+    expect(joinProspectTeams(["Oklahoma", "Arizona"])).toBe("Oklahoma / Arizona");
+    expect(joinProspectTeams(["Oklahoma"])).toBe("Oklahoma");
+    expect(joinProspectTeams([])).toBe("");
+  });
+
+  test("never past the bound, however many or however long", () => {
+    const many = Array.from({ length: 12 }, (_, i) => `School number ${i} of the list`);
+    for (const xs of [many, ["Z".repeat(300)], ["Y".repeat(100), "X".repeat(100)], [long[0], "W".repeat(200)]]) {
+      expect(joinProspectTeams(xs).length).toBeLessThanOrEqual(MAX_PLAYER_NAME_LENGTH);
+    }
+    expect(joinProspectTeams(many)).toMatch(/ \+\d+ more$/);
   });
 });

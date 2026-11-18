@@ -23,6 +23,7 @@
  * `ChecklistLinkRow` for the question.
  */
 
+import { joinProspectTeams } from "../../lib/checklists/prospect-team-text";
 import type { ChecklistConflict, TeamLookupOutcome } from "./checklist-conflict";
 import type { PairingCard } from "./CardPairingModal";
 
@@ -60,6 +61,12 @@ export type ChecklistLinkRow = {
    * string. A settled X is already in `teams` as its full name.
    */
   prospectTeams?: string[];
+  /**
+   * The row's team cell as the checklist printed it ("Prospect (Oklahoma)"),
+   * for display only, present when `teams` does not already read that way (a
+   * settled X is in `teams` as its full name). `checklistRowLine` prints it.
+   */
+  claim?: string;
 };
 
 /** What a linked card needs to carry into the question. */
@@ -263,6 +270,8 @@ export type ServerPairedRow = {
   noTeam?: true;
   prospect?: true;
   prospectTeams?: string[];
+  /** See `ChecklistLinkRow.claim`. */
+  claim?: string;
   cardName: string;
 };
 
@@ -305,16 +314,9 @@ export function pairedRowOf(row: ServerPairedRow): ChecklistLinkRow {
     ...(row.noTeam ? { noTeam: true as const } : {}),
     ...(row.prospect ? { prospect: true as const } : {}),
     ...(row.prospectTeams?.length ? { prospectTeams: [...row.prospectTeams] } : {}),
+    ...(row.claim ? { claim: row.claim } : {}),
   };
 }
-
-/**
- * NEO-591 — several held Xs ride a card as the exact list (`prospectTeams`)
- * and, for display and the "Listed as:" hint, as one `prospectTeam` joined the
- * way the server joins them (`applyChecklistRow`). The list is never rebuilt
- * by splitting the text.
- */
-export const PROSPECT_TEAM_JOINER = " / ";
 
 /**
  * Prefix of the `checklistRowId` an unlinked row is listed under. It never
@@ -337,7 +339,7 @@ export const UNLINKED_ROW_ID_PREFIX = "unlinked:";
 export function pairedRowCard(row: ServerPairedRow, rowId: string): PairingCard {
   const held = row.prospectTeams?.filter((x) => x.trim()) ?? [];
   const claimsTeam = row.teams.length > 0 || row.noTeam === true || held.length > 0;
-  const heldText = held.join(PROSPECT_TEAM_JOINER);
+  const heldText = joinProspectTeams(held);
   return {
     cardNumber: row.number,
     cardName: row.cardName,

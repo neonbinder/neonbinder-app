@@ -11,6 +11,7 @@ import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 import { MAX_CARD_TEAMS } from "./features/cardAttention";
+import { applyChecklistRow } from "../lib/checklists/apply-published-row";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -118,4 +119,25 @@ describe("checklistCandidates — Prospect", () => {
       expect(rows).toEqual([]);
     },
   );
+
+  test("three 50-character held Xs, built the way the fetch builds them, stream without refusing the batch (security audit S1)", async () => {
+    const t = convexTest(schema, modules);
+    const id = await seedRow(t);
+    const xs = ["A".repeat(50), "B".repeat(50), "C".repeat(50)];
+    const applied = applyChecklistRow({}, { players: [], teams: [], prospect: true, prospectTeams: xs }, () => null);
+    expect(applied.prospectTeams).toEqual(xs);
+    await start(t, id, [
+      cand("1", {
+        teams: [],
+        teamLookup: "checklist" as const,
+        isProspect: true,
+        prospectTeam: applied.prospectTeam,
+        prospectTeams: applied.prospectTeams,
+        rawTeamName: applied.prospectTeam,
+      }),
+    ]);
+    const res = await t.withIdentity(ADMIN).query(api.checklistCandidates.getReadyCandidates, { selectorOptionId: id });
+    expect(res.cards[0].prospectTeams).toEqual(xs);
+    expect(res.cards[0].prospectTeam!.length).toBeLessThanOrEqual(MAX_PLAYER_NAME_LENGTH);
+  });
 });

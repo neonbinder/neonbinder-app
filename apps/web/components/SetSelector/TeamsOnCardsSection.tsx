@@ -36,6 +36,7 @@ import {
   storedPeople,
   teamAnswersByCard,
   teamIdKey,
+  nameRequestSlices,
   teamNameRequests,
   TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST,
   TEAMS_SECTION_MAX_NAME_REQUESTS,
@@ -148,6 +149,8 @@ const OWN_TEAM_LABEL = "Just this card…";
 const MATCH_LINE_LABEL = "Match the others";
 /** A listing's team string, shown as plain text (Jason, NEO-335 Phase 2). */
 const LISTED_PREFIX = "Listed as:";
+/** The wizard's checkbox wording, so a name is remembered the same way in both places. */
+const rememberLabel = (text: string) => `Remember “${text}” as a name for this team`;
 const CHECKING_LABEL = "Checking teams…";
 const SUGGESTED_LABEL = "Teams suggested";
 const CAP_NOTE = `That is the limit of ${MAX_CARD_TEAMS} teams on one card. Remove one to add another.`;
@@ -225,7 +228,7 @@ type SuggestionQuery = {
   };
 };
 
-/** NEO-591 — the `locationNames` arg for one slice of name requests, or nothing. */
+/** The `locationNames` arg for one slice of name requests, or nothing. */
 function locationNamesOf(slice: readonly TeamNameRequest[]): { locationNames?: string[] } {
   const names = slice
     .filter((r) => r.location)
@@ -334,6 +337,7 @@ export default function TeamsOnCardsSection({
       ),
     [cards, rows, settled, people],
   );
+  const nameSlices = useMemo(() => nameRequestSlices(nameRequests), [nameRequests]);
   const anyTeamless = useMemo(
     () => buildTeamsGroups({
       cards,
@@ -364,22 +368,18 @@ export default function TeamsOnCardsSection({
         },
       };
     }
-    for (let i = 0; i < nameRequests.length; i += TEAMS_SECTION_NAMES_PER_REQUEST) {
-      out[`n${i / TEAMS_SECTION_NAMES_PER_REQUEST}`] = {
+    nameSlices.forEach((slice, s) => {
+      out[`n${s}`] = {
         query: api.cardChecklist.teamSuggestionsForPreview,
         args: {
           selectorOptionId,
           players: [],
-          teamNames: nameRequests
-            .slice(i, i + TEAMS_SECTION_NAMES_PER_REQUEST)
-            .map((r) => r.name),
-          // NEO-591: a held "Prospect (X)" also asks for the teams located in X.
-          ...locationNamesOf(
-            nameRequests.slice(i, i + TEAMS_SECTION_NAMES_PER_REQUEST),
-          ),
+          teamNames: slice.map((r) => r.name),
+          // Every listed name also asks for the teams located there.
+          ...locationNamesOf(slice),
         },
       };
-    }
+    });
     if (anyTeamless && Object.keys(out).length === 0) {
       out.meta = {
         query: api.cardChecklist.teamSuggestionsForPreview,
@@ -387,7 +387,7 @@ export default function TeamsOnCardsSection({
       };
     }
     return out;
-  }, [requests, nameRequests, selectorOptionId, anyTeamless]);
+  }, [requests, nameSlices, selectorOptionId, anyTeamless]);
   const results = useQueries(queries);
 
   const { serverEvidence, teamNameEvidence, setYear, sportId, setLeagueIds } = useMemo(() => {
@@ -406,12 +406,12 @@ export default function TeamsOnCardsSection({
       });
     }
     const names = new Map<string, ServerTeam[]>();
-    for (let s = 0; s * TEAMS_SECTION_NAMES_PER_REQUEST < nameRequests.length; s++) {
+    nameSlices.forEach((slice, s) => {
       (answered(`n${s}`)?.teamNames ?? []).forEach((entry, j) => {
-        const request = nameRequests[s * TEAMS_SECTION_NAMES_PER_REQUEST + j];
+        const request = slice[j];
         if (request) names.set(request.key, entry.teams);
       });
-    }
+    });
     // The set's facts are the same in every call; any answered one says them.
     const facts = Object.keys(results)
       .map(answered)
@@ -429,7 +429,21 @@ export default function TeamsOnCardsSection({
         return single ? [single] : [];
       })(),
     };
-  }, [results, requests, nameRequests]);
+  }, [results, requests, nameSlices]);
+
+  // A team staged in this wizard carries the level of the league it was filed
+  // under (the New Team step's League field), so a held "Prospect (X)" line
+  // can offer it. Read only when a line is held: nothing else uses a level.
+  const needsLevels = useMemo(
+    () => cards.some((c) => (c.prospectTeams?.length ?? 0) > 0 || !!c.prospectTeam),
+    [cards],
+  );
+  const leagues = useQuery(api.leagues.list, needsLevels && sportId ? { sportId } : "skip");
+  const leagueLevelById = useMemo(() => {
+    const out = new Map<string, string>();
+    for (const league of leagues ?? []) if (league.level) out.set(league._id, league.level);
+    return out;
+  }, [leagues]);
 
   const groups = useMemo(
     () =>
@@ -444,6 +458,7 @@ export default function TeamsOnCardsSection({
         teamNameEvidence,
         setLeagueIds,
         people,
+        leagueLevelById,
       }),
     [
       cards,
@@ -455,6 +470,7 @@ export default function TeamsOnCardsSection({
       teamNameEvidence,
       setLeagueIds,
       people,
+      leagueLevelById,
     ],
   );
 
@@ -477,9 +493,16 @@ export default function TeamsOnCardsSection({
     return { extraRefById: refs, blocked: foreign };
   }, [extraRows, sportId]);
 
+  /**
+   * Group keys whose "Remember … as a name for this team" is ticked. Off until
+   * the operator ticks it: a held X is usually a place, and a place saved as a
+   * name would claim every later set where the word means another team. Kept
+   * here, not in the choices, so flipping the line's team never loses it.
+   */
+  const [remembered, setRemembered] = useState<ReadonlySet<string>>(() => new Set());
   const answers = useMemo(
-    () => teamAnswersByCard(groups, choices, cards.length, blocked),
-    [groups, choices, cards.length, blocked],
+    () => teamAnswersByCard(groups, choices, cards.length, blocked, remembered),
+    [groups, choices, cards.length, blocked, remembered],
   );
   const reported = useRef<Array<TeamAnswer | undefined> | null>(null);
   useEffect(() => {
@@ -591,6 +614,28 @@ export default function TeamsOnCardsSection({
               }}
               disabled={disabled}
               markerClass={(suffix) => fieldClass(`team-${groupIndex}-${suffix}`)}
+              remember={
+                group.heldX
+                  ? {
+                      text: group.heldX,
+                      checked: remembered.has(group.key),
+                      // Exactly one EXISTING team picked: a staged team has no
+                      // id to hang a name on, and two teams share no one name.
+                      available:
+                        lineChoice.kind === "teams" &&
+                        lineChoice.refKeys.length === 1 &&
+                        lineChoice.refKeys[0].startsWith("id:") &&
+                        !blocked.has(lineChoice.refKeys[0].slice(3)),
+                      onChange: (next) =>
+                        setRemembered((prev) => {
+                          const out = new Set(prev);
+                          if (next) out.add(group.key);
+                          else out.delete(group.key);
+                          return out;
+                        }),
+                    }
+                  : undefined
+              }
             />
           );
         })}
@@ -641,6 +686,7 @@ function TeamsLine({
   onMatchLine,
   disabled,
   markerClass,
+  remember,
 }: {
   group: TeamsGroup;
   lineRow: ChoiceRowProps;
@@ -650,6 +696,13 @@ function TeamsLine({
   onMatchLine: (index: number) => void;
   disabled: boolean;
   markerClass: (suffix: string) => string;
+  /** A held "Prospect (X)" line with one X: the box that saves X as a name for the team picked. */
+  remember?: {
+    text: string;
+    checked: boolean;
+    available: boolean;
+    onChange: (next: boolean) => void;
+  };
 }) {
   const owner = lineOwner(group);
   const first = group.cards[0];
@@ -719,6 +772,31 @@ function TeamsLine({
       </span>
       <div className="mt-1.5 min-w-0 sm:mt-0">
         <ChoiceRow {...lineRow} owner={owner} markerClass={(s) => markerClass(`l-${s}`)} />
+        {remember && (
+          // The wizard's own "Remember" box and wording (EntityReviewWizard),
+          // so the two read as one thing. Always drawn on a held line, so a
+          // pick does not move anything under the cursor; it is live only
+          // when exactly one existing team is picked.
+          <label
+            className={[
+              "mt-1.5 flex items-center gap-2 text-xs text-ink-2",
+              remember.available && !disabled ? "" : "opacity-60",
+            ].join(" ")}
+          >
+            <input
+              type="checkbox"
+              aria-label={`${rememberLabel(remember.text)} — ${owner}`}
+              checked={remember.checked && remember.available}
+              disabled={disabled || !remember.available}
+              onChange={(event) => remember.onChange(event.target.checked)}
+              className={[
+                markerClass("remember"),
+                "h-3.5 w-3.5 rounded accent-neon-green-text focus-outline",
+              ].join(" ")}
+            />
+            <span>{rememberLabel(remember.text)}</span>
+          </label>
+        )}
       </div>
       {grouped && expanded && (
         <ul

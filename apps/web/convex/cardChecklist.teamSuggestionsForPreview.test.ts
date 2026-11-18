@@ -905,6 +905,38 @@ describe("teamSuggestionsForPreview — teamNames (choices, never a pick)", () =
     expect(located.map((x) => x.teamId)).not.toContain(ids.other);
   });
 
+  test("security audit N1: locationNames is bounded like teamNames, and an over-long entry is skipped, not matched", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        ...teamRowFields({ name: "Sooners", location: "Oklahoma" }),
+        sportId: s.sportId,
+        leagueId: s.ncaa,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const ask = (locationNames: string[]) =>
+      t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [],
+        teamNames: ["Oklahoma"],
+        locationNames,
+      });
+    // Past the cap teamNames has: refused outright.
+    await expect(
+      ask(Array.from({ length: TEAM_SUGGESTION_MAX_TEAM_NAMES + 1 }, (_, i) => `Place ${i}`)),
+    ).rejects.toThrow(/Too many place names/);
+    // At the cap it is accepted, and the entry that matters still works.
+    expect(
+      (await ask([...Array.from({ length: TEAM_SUGGESTION_MAX_TEAM_NAMES - 1 }, (_, i) => `Place ${i}`), "Oklahoma"]))
+        .teamNames[0].teams,
+    ).toHaveLength(1);
+    // An essay in the list is skipped (it can match no stored name) and does not stop the real one.
+    expect((await ask(["x".repeat(50_000), "Oklahoma"])).teamNames[0].teams).toHaveLength(1);
+    expect((await ask(["x".repeat(50_000)])).teamNames[0].teams).toEqual([]);
+  });
+
   test("a name resolves to every row it names in this sport, the era covering the set year first", async () => {
     const t = convexTest(schema, modules);
     const s = await seedLeagues(t);

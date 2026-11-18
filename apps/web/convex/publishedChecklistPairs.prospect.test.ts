@@ -181,3 +181,76 @@ describe("applyPublishedChecklistPairs — Prospect (X)", () => {
     expect(await counts(t)).toEqual(before);
   });
 });
+
+/**
+ * Collector review — Onyx prints teams as places. The operator's own link
+ * settles "Seattle" exactly as the matcher's pair does: the one team in the
+ * set's league(s) with that location, never against a team the card's data
+ * already names, and never when two teams share it or the set has no league.
+ */
+describe("applyPublishedChecklistPairs — a team printed as a place", () => {
+  const runPlace = async (
+    cardTeams: string[],
+    rowTeams: string[],
+    options: { setLeague?: boolean } = { setLeague: true },
+  ) => {
+    const t = convexTest(schema, modules);
+    const setId = await seed(t);
+    await t.run(async (ctx) => {
+      const mlb = (await ctx.db.query("leagues").collect()).find((l) => l.level === "major")!;
+      const team = (name: string, location: string) =>
+        ctx.db.insert("teams", {
+          ...teamRowFields({ name, location }),
+          sportId: mlb.sportId,
+          leagueId: mlb._id,
+          lastUpdated: 1,
+        });
+      await team("Mariners", "Seattle");
+      await team("Yankees", "New York");
+      await team("Mets", "New York");
+      if (options.setLeague) await ctx.db.patch(setId, { leagueIds: [mlb._id] });
+    });
+    const before = await counts(t);
+    const answers = await t.withIdentity(ADMIN).action(api.publishedChecklistPairs.applyPublishedChecklistPairs, {
+      selectorOptionId: setId,
+      pairs: [
+        {
+          card: { players: ["Cord Rager"], teams: cardTeams },
+          row: { number: "1", players: ["Cord Rager"], teams: rowTeams },
+        },
+      ],
+    });
+    expect(await counts(t)).toEqual(before);
+    return answers[0];
+  };
+
+  test("Seattle in an MLB set answers the card with the Mariners, as a checklist team", async () => {
+    expect(await runPlace([], ["Seattle"])).toEqual({ teams: ["Seattle Mariners"], teamLookup: "checklist" });
+  });
+
+  test("a card whose data already names that team agrees with the row", async () => {
+    expect(await runPlace(["Seattle Mariners"], ["Seattle"])).toEqual({
+      teams: ["Seattle Mariners"],
+      teamLookup: "checklist",
+    });
+  });
+
+  test("a card whose data names a DIFFERENT team is a conflict; nothing is written over it (rule 8)", async () => {
+    const answer = await runPlace(["Boston Red Sox"], ["Seattle"]);
+    expect(answer).toEqual({
+      checklistConflict: { teams: { marketplace: ["Boston Red Sox"], checklist: ["Seattle Mariners"] } },
+    });
+    expect(answer).not.toHaveProperty("teams");
+  });
+
+  test("New York is two MLB teams: the text stays as printed for the operator", async () => {
+    expect(await runPlace([], ["New York"])).toEqual({ teams: ["New York"], teamLookup: "checklist" });
+  });
+
+  test("a set with no league leaves Seattle as printed", async () => {
+    expect(await runPlace([], ["Seattle"], { setLeague: false })).toEqual({
+      teams: ["Seattle"],
+      teamLookup: "checklist",
+    });
+  });
+});

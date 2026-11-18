@@ -237,6 +237,8 @@ type FetchPreview = {
     /** NEO-335 — `teams` holds the operator's answer, not the printed strings. */
     teamsAnswered?: true;
     teamNone?: true;
+    /** Collector review — the held X to save as a name for the ONE team picked (`teamIds`). */
+    rememberTeamAs?: string;
     // NEO-137: WIRE shape from fetchCardChecklist — ref plus the marketplace
     // SET it came from. commitCardChecklist resolves setId to a slot on this
     // card's parent row.

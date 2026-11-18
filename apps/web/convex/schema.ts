@@ -1364,6 +1364,11 @@ export const checklistPairedRowValidator = v.object({
   noTeam: v.optional(v.literal(true)),
   prospect: v.optional(v.literal(true)),
   prospectTeams: v.optional(v.array(v.string())),
+  // Collector review — the row's team cell AS PRINTED ("Seattle", "Prospect
+  // (Oklahoma)"), for display only: Match Cards reads it on the row and in its
+  // Unlink label. Present only when it differs from `teams` joined (a settled
+  // Prospect (X) or a team printed as a place); nothing reads it back as data.
+  claim: v.optional(v.string()),
   cardName: v.string(),
 });
 

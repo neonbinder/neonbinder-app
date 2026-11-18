@@ -16,7 +16,7 @@ import {
   MAX_PROSPECT_TEAMS_PER_QUERY,
   PROSPECT_TEAM_SEARCH_HITS,
 } from "./checklistCandidates";
-import { teamRowFields } from "./lib/teamRow";
+import { TEAM_ERA_SCAN_LIMIT, teamRowFields } from "./lib/teamRow";
 import { normalizeEntityName } from "./lib/entityNearMatch";
 import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
 
@@ -405,5 +405,164 @@ describe("resolveProspectTeams — the place search is bounded", () => {
       await addTeam(t, world, { name: `Club ${i}`, location: "Crowded", level: "college" });
     }
     expect(await resolve(t, world, ["Crowded"])).toEqual([held]);
+  });
+});
+
+describe("resolveProspectTeams — a window that came back full is not trusted to count (security audit S2)", () => {
+  test("held when the search window is full and the qualifying twin ranked past it", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    // The one college team the window shows, then enough other rows at the
+    // place to fill it, then a second college team that ranks last (a long
+    // name scores lowest) and so falls past the cut.
+    await addTeam(t, world, { name: "Sooners", location: "Crowded", level: "college" });
+    for (let i = 0; i < PROSPECT_TEAM_SEARCH_HITS - 1; i++) {
+      await addTeam(t, world, { name: `Club ${i}`, location: "Crowded", level: "major" });
+    }
+    await addTeam(t, world, {
+      name: "Some Very Long Nickname With Many Additional Words In It Here",
+      location: "Crowded",
+      level: "college",
+    });
+    expect(await resolve(t, world, ["Crowded"])).toEqual([held]);
+  });
+
+  test("held when the full-name window is full and a second covering team is past it", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    // TEAM_ERA_SCAN_LIMIT - 1 closed eras and one covering era fill the
+    // window; a second covering row falls past it. Read alone, the window
+    // names exactly one covering team.
+    for (let i = 0; i < TEAM_ERA_SCAN_LIMIT - 1; i++) {
+      await addTeam(t, world, {
+        name: "RoughRiders",
+        location: "Frisco",
+        level: "minor",
+        yearsActive: { from: 1900 + i * 2, to: 1900 + i * 2 + 1 },
+      });
+    }
+    await addTeam(t, world, { name: "RoughRiders", location: "Frisco", level: "minor", yearsActive: { from: 2000 } });
+    await addTeam(t, world, { name: "RoughRiders", location: "Frisco", level: "minor", yearsActive: { from: 2010 } });
+    expect(await resolve(t, world, ["Frisco RoughRiders"])).toEqual([held]);
+  });
+});
+
+/** The set's league(s), the way a set carries them (read by `effectiveSetLeagueIds`). */
+async function inLeague(t: T, world: World, level: Level) {
+  await t.run((ctx) => ctx.db.patch(world.leafId, { leagueIds: [world.leagues[level]] }));
+}
+
+async function resolvePlaces(t: T, world: World, texts: string[]) {
+  return t.query(internal.checklistCandidates.resolveChecklistPlaceTeams, {
+    selectorOptionId: world.leafId,
+    texts,
+  });
+}
+
+describe("resolveChecklistPlaceTeams — a team printed as a place", () => {
+  test("Seattle in an MLB set is the Mariners; the other leagues' Seattle teams do not count", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "major");
+    await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major" });
+    await addTeam(t, world, { name: "Kraken", location: "Seattle", level: "other" });
+    await addTeam(t, world, { name: "Redhawks", location: "Seattle", level: "college" });
+    expect(await resolvePlaces(t, world, ["Seattle"])).toEqual(["Seattle Mariners"]);
+  });
+
+  test("two teams in the set's league share the place: left as printed (nothing picks the first)", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "major");
+    await addTeam(t, world, { name: "Yankees", location: "New York", level: "major" });
+    await addTeam(t, world, { name: "Mets", location: "New York", level: "major" });
+    expect(await resolvePlaces(t, world, ["New York", "New York (A)"])).toEqual([null, null]);
+  });
+
+  test("a set with no league skips the location leg entirely", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major" });
+    expect(await resolvePlaces(t, world, ["Seattle"])).toEqual([null]);
+  });
+
+  test("a set league the place's team is not in settles nothing", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "college");
+    await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major" });
+    expect(await resolvePlaces(t, world, ["Seattle"])).toEqual([null]);
+  });
+
+  test("a text some team already answers to by name or alias is left alone", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "major");
+    await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major", aliases: ["Seattle"] });
+    await addTeam(t, world, { name: "Rays", location: "Tampa Bay", level: "major" });
+    expect(await resolvePlaces(t, world, ["Seattle", "Tampa Bay Rays"])).toEqual([null, null]);
+  });
+
+  test("the set year picks among a place's eras; a lone past era is still the team", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t, "2001");
+    await inLeague(t, world, "major");
+    await addTeam(t, world, { name: "Pilots", location: "Seattle", level: "major", yearsActive: { from: 1969, to: 1969 } });
+    await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major", yearsActive: { from: 1977 } });
+    expect(await resolvePlaces(t, world, ["Seattle"])).toEqual(["Seattle Mariners"]);
+  });
+
+  test("left as printed when the commit's own lookup on the team's full name would not land on it", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "major");
+    await addTeam(t, world, { name: "Cougars", location: "Houston", level: "major" });
+    // Another league's row answers to the very same full name.
+    await addTeam(t, world, { name: "Cougars", location: "Houston", level: "college" });
+    expect(await resolvePlaces(t, world, ["Houston"])).toEqual([null]);
+  });
+
+  test("left as printed when the search window is full (a second team may be past it)", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "major");
+    await addTeam(t, world, { name: "Sooners", location: "Crowded", level: "major" });
+    for (let i = 0; i < PROSPECT_TEAM_SEARCH_HITS - 1; i++) {
+      await addTeam(t, world, { name: `Club ${i}`, location: "Crowded", level: "college" });
+    }
+    await addTeam(t, world, {
+      name: "Some Very Long Nickname With Many Additional Words In It Here",
+      location: "Crowded",
+      level: "major",
+    });
+    expect(await resolvePlaces(t, world, ["Crowded"])).toEqual([null]);
+  });
+
+  test("a text with a comma, a blank and an over-long text are left alone; texts past the per-call cap too", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "major");
+    await addTeam(t, world, { name: "Mariners", location: "Seattle", level: "major" });
+    const out = await resolvePlaces(t, world, [
+      "Seattle, Washington",
+      "  ",
+      "x".repeat(MAX_PLAYER_NAME_LENGTH + 1),
+      ...Array.from({ length: MAX_PROSPECT_TEAMS_PER_QUERY - 3 }, () => "Seattle"),
+      "Seattle",
+    ]);
+    expect(out.slice(0, 3)).toEqual([null, null, null]);
+    expect(out[3]).toBe("Seattle Mariners");
+    expect(out.at(-1)).toBeNull();
+  });
+
+  test("a team of another sport is never offered", async () => {
+    const t = convexTest(schema, modules);
+    const world = await seedWorld(t);
+    await inLeague(t, world, "major");
+    const football = await t.run((ctx) =>
+      ctx.db.insert("selectorOptions", { level: "sport", value: "Football", platformData: {}, children: [], lastUpdated: NOW }),
+    );
+    await addTeam(t, world, { name: "Seahawks", location: "Seattle", level: "major", sportId: football });
+    expect(await resolvePlaces(t, world, ["Seattle"])).toEqual([null]);
   });
 });

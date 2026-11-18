@@ -3526,9 +3526,18 @@ export default function EntityReviewWizard({
    * link path hands `handleLink`; for a player or league row it is empty, so
    * `saveAsAlias` never reaches the server on a kind that refuses it.
    */
+  /*
+   * Collector review — ticked unless the string is a bare PLACE. A listing that
+   * prints "Arizona" or "Seattle" names a location, not a name for the team
+   * that happens to be linked here; saving it as an alias would claim every
+   * later set where the same word means another team (Arizona is also the
+   * University of Arizona). So a string equal to some team's location starts
+   * unticked; the operator can still tick it, and an answer once given holds.
+   */
+  const nameIsAPlace = (teamNearMatches ?? []).some((m) => m.locationMatch === true);
   const saveAsAlias =
     current && current.kind === "team"
-      ? (saveAsAliasByRow[current._id] ?? true)
+      ? (saveAsAliasByRow[current._id] ?? !nameIsAPlace)
       : false;
   /**
    * NEO-313 — the current name has been moved off the set's sport, and
@@ -5406,7 +5415,7 @@ export default function EntityReviewWizard({
                           In the body, never in the footer: row 1 of the
                           footer is reserved (NEO-110).
 
-                          Ticked by default — see `saveAsAliasByRow`. Per row,
+                          Ticked by default unless the string is a bare place — see `saveAsAliasByRow`. Per row,
                           so an answer survives Back.
                         */}
                         <div className="space-y-0.5">

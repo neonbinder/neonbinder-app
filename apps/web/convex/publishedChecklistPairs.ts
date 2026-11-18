@@ -37,6 +37,7 @@ import {
   checkPublishedChecklist,
   publishedChecklistRowValidator,
   resolveChecklistCommaTexts,
+  resolveChecklistPlaceTexts,
   resolveChecklistProspectTexts,
 } from "./selectorOptions";
 
@@ -160,10 +161,15 @@ export const applyPublishedChecklistPairs = action({
       args.selectorOptionId,
       rows.flatMap((r) => r.prospectTeams ?? []),
     );
+    const resolvePlace = await resolveChecklistPlaceTexts(
+      ctx,
+      args.selectorOptionId,
+      rows.flatMap((r) => r.teams),
+    );
     let answered = 0;
     let conflicts = 0;
     const answers = cards.map((card, i) => {
-      const applied = applyChecklistRow(card, rows[i], resolveText, resolveProspect);
+      const applied = applyChecklistRow(card, rows[i], resolveText, resolveProspect, resolvePlace);
       if (applied.answered) answered++;
       if (applied.conflict) conflicts++;
       return {

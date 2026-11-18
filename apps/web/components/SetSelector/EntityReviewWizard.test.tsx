@@ -2893,6 +2893,55 @@ describe("EntityReviewWizard — save-as-alias checkbox", () => {
     });
   });
 
+  it("collector review: a string that is a bare PLACE starts unticked, and links with saveAsAlias: false", async () => {
+    const row = makeRow({ kind: "team", name: "Arizona", status: "ready" });
+    currentNearMatches = [
+      { _id: "team_dbacks", name: "Arizona Diamondbacks", confidence: "exact", locationMatch: true },
+    ];
+    currentRows = [row];
+    renderWizard();
+
+    const box = screen.getByLabelText(rememberLabel("Arizona")) as HTMLInputElement;
+    expect(box.checked).toBe(false);
+    fireEvent.click(screen.getByLabelText("Link to Arizona Diamondbacks"));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith({
+        reviewRowId: row._id,
+        action: "link",
+        linkedPlayerId: undefined,
+        linkedTeamId: "team_dbacks",
+        saveAsAlias: false,
+      });
+    });
+  });
+
+  it("collector review: the operator can still tick it for a place, and that answer is sent", async () => {
+    const row = makeRow({ kind: "team", name: "Arizona", status: "ready" });
+    currentNearMatches = [
+      { _id: "team_dbacks", name: "Arizona Diamondbacks", confidence: "exact", locationMatch: true },
+    ];
+    currentRows = [row];
+    renderWizard();
+
+    fireEvent.click(screen.getByLabelText(rememberLabel("Arizona")));
+    fireEvent.click(screen.getByLabelText("Link to Arizona Diamondbacks"));
+
+    await waitFor(() => {
+      expect(mockRecordDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ linkedTeamId: "team_dbacks", saveAsAlias: true }),
+      );
+    });
+  });
+
+  it("collector review: a string that is not a place (no match is a location) keeps the ticked default", () => {
+    currentNearMatches = [{ _id: "team_lsu", name: "LSU Tigers", confidence: "exact", matchedAlias: "LSU" }];
+    currentRows = [makeRow({ kind: "team", name: "LSU", status: "ready" })];
+    renderWizard();
+
+    expect((screen.getByLabelText(rememberLabel("LSU")) as HTMLInputElement).checked).toBe(true);
+  });
+
   it("is ABSENT entirely on a PLAYER row, even with a live Link control on screen", () => {
     currentNearMatches = [{ _id: "p9", name: "Mike Trout", confidence: "exact" }];
     currentRows = [makeRow({ kind: "player", name: "Mike Trout", status: "ready" })];

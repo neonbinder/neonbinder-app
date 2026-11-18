@@ -476,6 +476,13 @@ describe("NEO-496 — undoing the server's checklist pair", () => {
     });
   });
 
+  test("collector review: the printed claim rides on the relinkable row, for display", () => {
+    expect(pairedRowOf({ ...pairedRow, teams: ["Oklahoma Sooners"], prospect: true, claim: "Prospect (Oklahoma)" }).claim).toBe(
+      "Prospect (Oklahoma)",
+    );
+    expect(pairedRowOf(pairedRow)).not.toHaveProperty("claim");
+  });
+
   test("a No Team row claims no team; a row naming no team claims nothing", () => {
     const noTeam = pairedRowCard({ ...pairedRow, teams: [], noTeam: true }, "x");
     expect(noTeam.teams).toEqual([]);
