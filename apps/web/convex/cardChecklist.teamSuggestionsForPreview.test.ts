@@ -20,14 +20,17 @@ import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
 import { normalizeLeagueName } from "./leagues";
 import {
+  TEAM_SUGGESTION_MAX_LOCATION_NAMES,
   TEAM_SUGGESTION_MAX_PLAYERS,
   TEAM_SUGGESTION_MAX_TEAM_NAMES,
 } from "./cardChecklist";
 import {
+  TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST,
   TEAMS_SECTION_NAMES_PER_REQUEST,
   TEAMS_SECTION_PLAYERS_PER_REQUEST,
 } from "../components/SetSelector/teams-on-cards";
 import { insertTestCard } from "../lib/testing/card-row";
+import { teamRowFields } from "./lib/teamRow";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -356,6 +359,8 @@ describe("teamSuggestionsForPreview — gate and bounds", () => {
   test("the wizard slices its requests at the server's caps", () => {
     expect(TEAMS_SECTION_PLAYERS_PER_REQUEST).toBe(TEAM_SUGGESTION_MAX_PLAYERS);
     expect(TEAMS_SECTION_NAMES_PER_REQUEST).toBe(TEAM_SUGGESTION_MAX_TEAM_NAMES);
+    // NEO-591: and the location leg's own cap, so the two cannot drift.
+    expect(TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST).toBe(TEAM_SUGGESTION_MAX_LOCATION_NAMES);
   });
 
   test("refuses more team names than the cap, by count", async () => {
@@ -608,11 +613,11 @@ describe("teamSuggestionsForPreview — league preference (C2b)", () => {
     expect(result.setLeagueId).toBe(s.mlb);
     expect(result.players[0].answer).toEqual({
       tier: "preferredInWindow",
-      teams: [{ teamId: s.rays, name: "Tampa Bay Rays", rank: 0 }],
+      teams: [{ teamId: s.rays, name: "Tampa Bay Rays", rank: 0, level: "major" }],
     });
     // Never hidden: the affiliate stays offered, ranked.
     expect(result.players[0].candidates).toEqual([
-      { teamId: s.bulls, name: "Durham Bulls", rank: 2 },
+      { teamId: s.bulls, name: "Durham Bulls", rank: 2, level: "minor" },
     ]);
   });
 
@@ -653,7 +658,7 @@ describe("teamSuggestionsForPreview — league preference (C2b)", () => {
     ).players;
     expect(result.answer).toEqual({
       tier: "oneTeamInWindow",
-      teams: [{ teamId: s.badgers, name: "Wisconsin Badgers", rank: 2 }],
+      teams: [{ teamId: s.badgers, name: "Wisconsin Badgers", rank: 2, level: "college" }],
     });
   });
 
@@ -745,7 +750,7 @@ describe("teamSuggestionsForPreview — legends: a one-team career in the set's 
     ).players;
     expect(result.answer).toEqual({
       tier: "oneTeamCareerInLeague",
-      teams: [{ teamId: s.rays, name: "Tampa Bay Rays", rank: 0 }],
+      teams: [{ teamId: s.rays, name: "Tampa Bay Rays", rank: 0, level: "major" }],
     });
   });
 
@@ -863,6 +868,43 @@ describe("teamSuggestionsForPreview — NEO-569 undated stints (the Jackson Burn
 });
 
 describe("teamSuggestionsForPreview — teamNames (choices, never a pick)", () => {
+  test("NEO-591: locationNames also returns the teams LOCATED in the name, with their league level; other names get full-name rows alone", async () => {
+    const t = convexTest(schema, modules);
+    const s = await seedLeagues(t);
+    const ids = await t.run(async (ctx) => {
+      const make = (name: string, location: string, leagueId: Id<"leagues">) =>
+        ctx.db.insert("teams", {
+          ...teamRowFields({ name, location }),
+          sportId: s.sportId,
+          leagueId,
+          lastUpdated: Date.now(),
+        });
+      return {
+        sooners: await make("Sooners", "Oklahoma", s.ncaa),
+        redhawks: await make("RedHawks", "Oklahoma", s.il),
+        other: await make("Cowboys", "Oklahoma State", s.ncaa),
+      };
+    });
+    const ask = (locationNames?: string[]) =>
+      t.withIdentity(ADMIN).query(api.cardChecklist.teamSuggestionsForPreview, {
+        selectorOptionId: s.insertId,
+        players: [],
+        teamNames: ["Oklahoma"],
+        ...(locationNames ? { locationNames } : {}),
+      });
+    // Not asked for: no team is named just "Oklahoma", so nothing.
+    expect((await ask()).teamNames[0].teams).toEqual([]);
+    const located = (await ask(["oklahoma"])).teamNames[0].teams;
+    expect(located.map((x) => [x.teamId, x.level]).sort()).toEqual(
+      [
+        [ids.sooners, "college"],
+        [ids.redhawks, "minor"],
+      ].sort(),
+    );
+    // A place that merely starts the same is not the place.
+    expect(located.map((x) => x.teamId)).not.toContain(ids.other);
+  });
+
   test("a name resolves to every row it names in this sport, the era covering the set year first", async () => {
     const t = convexTest(schema, modules);
     const s = await seedLeagues(t);
@@ -889,7 +931,7 @@ describe("teamSuggestionsForPreview — teamNames (choices, never a pick)", () =
     // Another sport's "Jets" is never a choice.
     expect(result.teamNames[2].teams).toEqual([]);
     expect(result.teamNames[3].teams).toEqual([
-      { teamId: s.rays, name: "Tampa Bay Rays", rank: 0 },
+      { teamId: s.rays, name: "Tampa Bay Rays", rank: 0, level: "major" },
     ]);
   });
 });

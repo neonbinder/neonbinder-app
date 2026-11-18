@@ -3877,6 +3877,9 @@ export default defineSchema({
     // written as a team string (`teams` is empty), shown as the card's
     // listed-name hint (`rawTeamName`). Several held X are joined with " / ".
     prospectTeam: v.optional(v.string()),
+    // NEO-591 — the same held Xs as an exact list (never rebuilt by splitting
+    // `prospectTeam`), for the browser's pair question and Teams step.
+    prospectTeams: v.optional(v.array(v.string())),
     printRun: v.optional(v.number()),
     autographType: v.optional(v.string()),
     cardVariation: v.optional(v.string()),

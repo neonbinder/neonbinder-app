@@ -460,28 +460,117 @@ type TeamsRead = {
   prospectTeams: string[];
 };
 
+/** The index of the bracket that closes the "(" at `open`, or -1. */
+function closingBracketAt(text: string, open: number): number {
+  let depth = 0;
+  for (let i = open; i < text.length; i++) {
+    if (text[i] === "(") depth++;
+    else if (text[i] === ")" && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * Where a prospect claim inside a team field starts and ends. A claim is a
+ * WHOLE segment: "Prospect" or "Prospect (X)" with only the field's start or
+ * end, or a separator, on each side ("/", ";" and ", " always; in a line also
+ * a spaced dash and a run of dots). Text that merely holds the word ("Top
+ * Prospect (Oklahoma)", "Prospect (X) (note)") is no claim and is not listed.
+ * `readProspectCell` decides each candidate, so the client and the server
+ * read a claim alike.
+ */
+function prospectClaimSpans(
+  text: string,
+  inLine: boolean,
+): Array<{ start: number; end: number; team: string | null }> {
+  const spans: Array<{ start: number; end: number; team: string | null }> = [];
+  const word = /\bprospect\b/gi;
+  const separator = (i: number): boolean => {
+    const c = text[i];
+    if (c === "/" || c === ";" || c === "," || c === "…") return true;
+    if (!inLine) return false;
+    if (c === "-" || c === "–" || c === "—") return /\s/.test(text[i - 1] ?? "") && /\s/.test(text[i + 1] ?? "");
+    return c === "." && text.slice(Math.max(0, i - 2), i + 1) === "...";
+  };
+  for (let found = word.exec(text); found; found = word.exec(text)) {
+    const start = found.index;
+    let end = start + found[0].length;
+    let at = end;
+    while (text[at] === " ") at++;
+    if (text[at] === "(") {
+      const close = closingBracketAt(text, at);
+      if (close >= 0) end = close + 1;
+    }
+    word.lastIndex = end;
+    let before = start - 1;
+    while (before >= 0 && /\s/.test(text[before])) before--;
+    let after = end;
+    while (after < text.length && /\s/.test(text[after])) after++;
+    // The dash after a claim (inLine) must have a space on both sides too, so
+    // "after" is the dash itself or a dot run's first dot.
+    const afterIsSeparator =
+      after >= text.length ||
+      separator(after) ||
+      (inLine && text.slice(after, after + 3) === "...");
+    if (before >= 0 && !separator(before)) continue;
+    if (!afterIsSeparator) continue;
+    const claim = readProspectCell(text.slice(start, end));
+    if (claim) spans.push({ start, end, team: claim.team });
+  }
+  return spans;
+}
+
+/** X as the row carries it: brackets kept (a nested "(AA)" names the team), spacing collapsed. */
+function prospectX(team: string | null): string {
+  return team === null ? "" : cleanNamePart(team, true).replace(/\s+/g, " ").trim();
+}
+
+/** The word "Prospect" as a whole team name: never a team, whatever left it bare. */
+function isBareProspectName(name: string): boolean {
+  return name.normalize("NFKC").replace(/\s+/g, " ").trim().toLowerCase() === "prospect";
+}
+
+/**
+ * What one team cell says. A WHOLE "Prospect" / "Prospect (X)" cell, or a
+ * "/"-, ";"- or ","-separated segment of one, is the prospect claim (X into
+ * `prospectTeams`); the other segments are teams as before. The word alone
+ * never travels as a team name, even when something else left it bare ("Prospect
+ * (X) (note)" has its brackets dropped, and is neither a claim nor a team).
+ */
 function teamsFrom(cell: string, keepBrackets = false, readProspect = true): TeamsRead {
-  if (readProspect) {
-    const prospect = readProspectCell(cell);
-    if (prospect !== null) {
-      const x = prospect.team === null ? "" : cleanNamePart(prospect.team, true).replace(/\s+/g, " ").trim();
-      return { teams: [], noTeam: false, prospect: true, prospectTeams: x === "" ? [] : [x] };
+  let prospect = false;
+  const prospectTeams: string[] = [];
+  let text = cell;
+  if (readProspect && /prospect/i.test(cell)) {
+    const spans = prospectClaimSpans(cell, false);
+    if (spans.length > 0) {
+      prospect = true;
+      let rest = "";
+      let from = 0;
+      for (const span of spans) {
+        rest += `${cell.slice(from, span.start)}/`;
+        from = span.end;
+        const x = prospectX(span.team);
+        if (x !== "" && !prospectTeams.includes(x)) prospectTeams.push(x);
+      }
+      text = rest + cell.slice(from);
     }
   }
   // "None", "N/A", "No team listed", "-": no claim, the same as blank (D2).
-  if (isNoClaimTeamText(cell)) return { teams: [], noTeam: false, prospect: false, prospectTeams: [] };
+  if (isNoClaimTeamText(text)) return { teams: [], noTeam: false, prospect, prospectTeams };
   let noTeam = false;
   const teams = splitNames(
-    cleanNamePart(cell, keepBrackets),
+    cleanNamePart(text, keepBrackets),
     false,
     (name) => {
+      if (isBareProspectName(name)) return false;
       if (!isNoTeamText(name)) return true;
       noTeam = true;
       return false;
     },
     MAX_CARD_TEAMS,
   );
-  return { teams, noTeam, prospect: false, prospectTeams: [] };
+  return { teams, noTeam, prospect, prospectTeams };
 }
 
 /**
@@ -672,18 +761,52 @@ function splitPlayerAndTeam(rest: string): { playerPart: string; teamPart: strin
   return { playerPart: commaParts[0] ?? "", teamPart: "" };
 }
 
+/** Marks a set-aside prospect claim in a line (control characters a line cannot carry). */
+const CLAIM_OPEN = "\u0001";
+const CLAIM_CLOSE = "\u0002";
+const CLAIM_MARK = /\u0001(\d+)\u0002/g;
+
 /**
- * The raw team segment of a line when it is a prospect claim: the text after
- * the last separator `splitPlayerAndTeam` uses (a spaced dash, a run of
- * dots, ", ") that starts with "Prospect", brackets intact. Null when there
- * is none; `readProspectCell` still decides whether the whole segment is a
- * claim ("Prospect (Oklahoma) (Future Stars)" is not).
+ * Set each whole prospect claim of a line aside as a numbered marker, so the
+ * split into player and team (which drops brackets) cannot turn "Prospect
+ * (X)" into a bare "Prospect". `claims[n]` is the n-th claim's raw text.
  */
-function rawProspectSegment(rest: string): string | null {
-  const text = rest.replace(/\s+/g, " ").trim();
-  const match = /(?:^|[ ][-–—][ ]|,[ ]| ?(?:\.{3,}|…+) ?)(prospect\b[\s\S]*)$/i.exec(text);
-  const segment = match?.[1] ?? null;
-  return segment !== null && readProspectCell(segment) !== null ? segment : null;
+function protectProspectClaims(rest: string): { text: string; claims: string[] } {
+  const text = rest.replace(/[\u0001\u0002]/g, " ");
+  if (!/prospect/i.test(text)) return { text, claims: [] };
+  const spans = prospectClaimSpans(text, true);
+  const claims: string[] = [];
+  let out = "";
+  let from = 0;
+  for (const span of spans) {
+    out += `${text.slice(from, span.start)}${CLAIM_OPEN}${claims.length}${CLAIM_CLOSE}`;
+    claims.push(text.slice(span.start, span.end));
+    from = span.end;
+  }
+  return { text: out + text.slice(from), claims };
+}
+
+/** Put the claims' own text back (a claim that sat in the player part). */
+function restoreProspectClaims(text: string, claims: readonly string[]): string {
+  return text.replace(CLAIM_MARK, (mark, n: string) => claims[Number(n)] ?? mark);
+}
+
+/**
+ * The prospect claims in a line's team part: each marker is removed (a "/"
+ * stands in, so the teams around it still split) and its claim returned as
+ * the X it names, or null for a bare one.
+ */
+function takeProspectClaims(
+  teamPart: string,
+  claims: readonly string[],
+): { text: string; claims: Array<string | null> } {
+  const taken: Array<string | null> = [];
+  const text = teamPart.replace(CLAIM_MARK, (_mark, n: string) => {
+    const claim = claims[Number(n)] === undefined ? null : readProspectCell(claims[Number(n)]);
+    if (claim) taken.push(claim.team);
+    return "/";
+  });
+  return { text, claims: taken };
 }
 
 /**
@@ -702,8 +825,14 @@ function parseLine(
   const noNumber = match !== null && isNno(match[1]);
   const number = noNumber ? NO_NUMBER : match ? cleanNumber(match[1]) : null;
   if (!match || !number) return { reason: "No card number at the start" };
-  const split = splitPlayerAndTeam(match[2]);
-  let { playerPart, teamPart } = split;
+  // A line's brackets are notes ("(Future Stars)") and are dropped before the
+  // team is split off, which would turn "Prospect (X)" into a bare "Prospect".
+  // So each whole prospect claim is set aside first, as a marker the split
+  // cannot touch, and read back from the team part afterwards.
+  const protectedRest = protectProspectClaims(match[2]);
+  const split = splitPlayerAndTeam(protectedRest.text);
+  let playerPart = restoreProspectClaims(split.playerPart, protectedRest.claims);
+  let teamPart = split.teamPart;
   // "88 No Team": the only words after the number are the claim, so they are
   // the team part, never a player called "No Team".
   if (teamPart === "" && isNoTeamText(cleanNamePart(playerPart))) {
@@ -711,13 +840,24 @@ function parseLine(
     playerPart = "";
   }
   const players = playersFrom(playerPart);
-  // A line's brackets are notes ("(Future Stars)") and are dropped before the
-  // team is split off, so "Prospect (X)" reaches `teamPart` as a bare
-  // "Prospect". The claim is read from the raw team segment instead, and only
-  // when that whole segment is "Prospect" or "Prospect (X)".
-  const prospectSegment = teamPart.trim().toLowerCase() === "prospect" ? rawProspectSegment(match[2]) : null;
-  const read =
-    prospectSegment !== null ? teamsFrom(prospectSegment) : teamsFrom(teamPart, false, false);
+  // The claims in the team part; any other marker was in the player part and
+  // is back as the text it was. What is left of the team part is plain text:
+  // the word "Prospect" in it is not a claim (its brackets are gone).
+  const teamClaimsRead = takeProspectClaims(teamPart, protectedRest.claims);
+  const plain = teamsFrom(teamClaimsRead.text, false, false);
+  const read: TeamsRead = {
+    teams: plain.teams,
+    noTeam: plain.noTeam,
+    prospect: teamClaimsRead.claims.length > 0,
+    prospectTeams: [
+      ...new Set(
+        teamClaimsRead.claims.flatMap((claim) => {
+          const x = prospectX(claim);
+          return x === "" ? [] : [x];
+        }),
+      ),
+    ],
+  };
   const { teams } = read;
   const claims = teamClaims(teams, read.noTeam, read.prospect, read.prospectTeams);
   if (claims.conflict) return { reason: NO_TEAM_AND_A_TEAM };

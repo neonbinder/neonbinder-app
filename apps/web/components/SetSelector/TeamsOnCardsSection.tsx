@@ -37,6 +37,7 @@ import {
   teamAnswersByCard,
   teamIdKey,
   teamNameRequests,
+  TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST,
   TEAMS_SECTION_MAX_NAME_REQUESTS,
   TEAMS_SECTION_MAX_REQUESTS,
   TEAMS_SECTION_NAMES_PER_REQUEST,
@@ -48,6 +49,7 @@ import {
   type ServerPlayerEvidence,
   type ServerTeam,
   type TeamAnswer,
+  type TeamNameRequest,
   type TeamRef,
   type TeamsGroup,
   type TeamsReviewRow,
@@ -219,8 +221,18 @@ type SuggestionQuery = {
     selectorOptionId: Id<"selectorOptions">;
     players: Array<{ playerId?: Id<"players">; name?: string }>;
     teamNames?: string[];
+    locationNames?: string[];
   };
 };
+
+/** NEO-591 — the `locationNames` arg for one slice of name requests, or nothing. */
+function locationNamesOf(slice: readonly TeamNameRequest[]): { locationNames?: string[] } {
+  const names = slice
+    .filter((r) => r.location)
+    .slice(0, TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST)
+    .map((r) => r.name);
+  return names.length > 0 ? { locationNames: names } : {};
+}
 
 export default function TeamsOnCardsSection({
   selectorOptionId,
@@ -361,6 +373,10 @@ export default function TeamsOnCardsSection({
           teamNames: nameRequests
             .slice(i, i + TEAMS_SECTION_NAMES_PER_REQUEST)
             .map((r) => r.name),
+          // NEO-591: a held "Prospect (X)" also asks for the teams located in X.
+          ...locationNamesOf(
+            nameRequests.slice(i, i + TEAMS_SECTION_NAMES_PER_REQUEST),
+          ),
         },
       };
     }

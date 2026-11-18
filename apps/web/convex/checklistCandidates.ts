@@ -142,6 +142,7 @@ const candidateInputValidator = v.object({
   // with a held X: it is the card's "Listed as:" hint at commit.
   isProspect: v.optional(v.boolean()),
   prospectTeam: v.optional(v.string()),
+  prospectTeams: v.optional(v.array(v.string())),
   rawTeamName: v.optional(v.string()),
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
@@ -463,6 +464,7 @@ export const startCandidateBatch = internalMutation({
         "held prospect team names",
         "team",
       );
+      assertNames(c.cardNumber, c.prospectTeams ?? [], MAX_CARD_TEAMS, "held prospect teams", "team");
       // PR 451 — the checklist conflict's four lists, on the same terms.
       const checklist = c.checklistConflict;
       if (checklist) {
@@ -1138,6 +1140,7 @@ export const getReadyCandidates = query({
         // NEO-591 — see the schema note.
         isProspect: v.optional(v.boolean()),
         prospectTeam: v.optional(v.string()),
+        prospectTeams: v.optional(v.array(v.string())),
         printRun: v.optional(v.number()),
         autographType: v.optional(v.string()),
         cardVariation: v.optional(v.string()),
@@ -1197,6 +1200,7 @@ export const getReadyCandidates = query({
         isRelic: r.isRelic,
         isProspect: r.isProspect,
         prospectTeam: r.prospectTeam,
+        prospectTeams: r.prospectTeams,
         printRun: r.printRun,
         autographType: r.autographType,
         cardVariation: r.cardVariation,

@@ -151,6 +151,7 @@ import type * as lib_placeholderObjects from "../lib/placeholderObjects.js";
 import type * as lib_placeholderRefusals from "../lib/placeholderRefusals.js";
 import type * as lib_preprocessBaseline from "../lib/preprocessBaseline.js";
 import type * as lib_preprocessWarmup from "../lib/preprocessWarmup.js";
+import type * as lib_prospectTeam from "../lib/prospectTeam.js";
 import type * as lib_publishedChecklistCheck from "../lib/publishedChecklistCheck.js";
 import type * as lib_publishedChecklistSections from "../lib/publishedChecklistSections.js";
 import type * as lib_r2 from "../lib/r2.js";
@@ -384,6 +385,7 @@ declare const fullApi: ApiFromModules<{
   "lib/placeholderRefusals": typeof lib_placeholderRefusals;
   "lib/preprocessBaseline": typeof lib_preprocessBaseline;
   "lib/preprocessWarmup": typeof lib_preprocessWarmup;
+  "lib/prospectTeam": typeof lib_prospectTeam;
   "lib/publishedChecklistCheck": typeof lib_publishedChecklistCheck;
   "lib/publishedChecklistSections": typeof lib_publishedChecklistSections;
   "lib/r2": typeof lib_r2;

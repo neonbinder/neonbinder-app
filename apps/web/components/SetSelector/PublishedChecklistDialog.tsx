@@ -173,6 +173,8 @@ export function checklistTeamsLine(matched: number, total: number): string {
  * with " · Boston Red Sox" when the row names a team. Players and teams join
  * with " / ", as the dialog's other rosters do. A card printed with no number
  * reads "NNO Mike Lowell": "#NNO" would claim a number the card does not have.
+ * NEO-591: a "Prospect (X)" row reads its X where the team goes, so it is
+ * never mistaken for a row with no team; a bare "Prospect" is "No Team".
  * NEO-489: a row whose checklist said "No Team" reads " · No Team", the same
  * words the preview's team cell uses (`NO_TEAM_CELL`), so the operator sees
  * the claim before linking it.
@@ -183,10 +185,16 @@ export function checklistRowLine(row: {
   teams: readonly string[];
   noNumber?: true;
   noTeam?: true;
+  /**
+   * NEO-591 — the X of each "Prospect (X)", kept out of `teams`. It is the
+   * row's team as the checklist printed it, so it reads in the team's place.
+   */
+  prospectTeams?: readonly string[];
 }): string {
   const who = row.players.join(" / ");
   const base = `${row.noNumber ? "" : "#"}${row.number}${who ? ` ${who}` : ""}`;
-  if (row.teams.length > 0) return `${base} · ${row.teams.join(" / ")}`;
+  const teams = [...row.teams, ...(row.prospectTeams ?? [])];
+  if (teams.length > 0) return `${base} · ${teams.join(" / ")}`;
   return row.noTeam ? `${base} · ${NO_TEAM_CELL}` : base;
 }
 

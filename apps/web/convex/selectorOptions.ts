@@ -4202,6 +4202,8 @@ type CardNameBearing = {
   rawTeamName?: string;
   // NEO-591 — the X of a "Prospect (X)" the fetch held for the operator.
   prospectTeam?: string;
+  // NEO-591 — the same held Xs as a list.
+  prospectTeams?: ReadonlyArray<string>;
 };
 
 /**
@@ -4302,6 +4304,20 @@ function assertCardBatchWithinLimits(
       throw new Error(
         `${fnName}: ${where} carries a held prospect team of ${card.prospectTeam.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
       );
+    }
+    if (card.prospectTeams !== undefined) {
+      if (card.prospectTeams.length > MAX_CARD_TEAMS) {
+        throw new Error(
+          `${fnName}: ${where} carries ${card.prospectTeams.length} held prospect teams; the limit is ${MAX_CARD_TEAMS}.`,
+        );
+      }
+      for (const x of card.prospectTeams) {
+        if (x.length > MAX_PLAYER_NAME_LENGTH) {
+          throw new Error(
+            `${fnName}: ${where} carries a held prospect team of ${x.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+          );
+        }
+      }
     }
     // NEO-251 — the conflict field is two more rosters, on the same terms.
     // `startCandidateBatch` bounds it on the way OUT to the browser; this
@@ -15298,6 +15314,8 @@ interface ReconciledCard {
   isProspect?: boolean;
   /** NEO-591 — a "Prospect (X)" team the fetch held; never in `teams`. */
   prospectTeam?: string;
+  /** NEO-591 — the held Xs as the exact list (`prospectTeam` is them joined). */
+  prospectTeams?: string[];
   /** NEO-335 / NEO-591 — the "Listed as:" hint; a held X is its own. */
   rawTeamName?: string;
 }
@@ -15374,22 +15392,25 @@ export function checklistPairedRow(
 ): Infer<typeof checklistPairedRowValidator> {
   const own = checklistOnlyCard(row, resolveText, resolveProspect);
   const teams = own.teams ?? [];
-  // NEO-591 — the Xs still held, so the row rebuilds exactly when it is
-  // linked again (a settled X is already in `teams` as its full name).
-  const heldX = (row.prospectTeams ?? []).filter(
-    (x) => resolveProspect?.(x.trim())?.kind !== "team",
-  );
+  // NEO-591 — when any X is held, the card is held whole (`applyChecklistRow`:
+  // `teams` is empty, so a settled X and the row's other teams are not in it).
+  // The row the operator re-links must then reproduce that same answer, so it
+  // goes back as the checklist printed it: every X in `prospectTeams`, and the
+  // row's own `teams` as parsed. With every X settled, each is already in
+  // `teams` as its full name and `prospectTeams` is left out.
+  const allX = (row.prospectTeams ?? []).map((x) => x.trim()).filter(Boolean);
+  const held = allX.some((x) => resolveProspect?.(x)?.kind !== "team");
   return {
     number: own.cardNumber,
     players: own.players ?? [],
-    teams,
+    teams: held ? [...row.teams] : teams,
     ...(row.noNumber || isNoNumber(own.cardNumber) ? { noNumber: true as const } : {}),
     // A held prospect team is not a No Team claim (its `teams` is empty too).
     ...(own.teamLookup === "checklist" && teams.length === 0 && own.prospectTeam === undefined
       ? { noTeam: true as const }
       : {}),
     ...(own.isProspect ? { prospect: true as const } : {}),
-    ...(heldX.length > 0 ? { prospectTeams: heldX } : {}),
+    ...(held ? { prospectTeams: allX } : {}),
     cardName: own.cardName,
   };
 }
@@ -15421,7 +15442,11 @@ export function checklistOnlyCard(
     ...(applied.isProspect ? { isProspect: true } : {}),
     // NEO-591 — a held X is the card's "Listed as:" hint, never a team.
     ...(applied.prospectTeam
-      ? { prospectTeam: applied.prospectTeam, rawTeamName: applied.prospectTeam }
+      ? {
+          prospectTeam: applied.prospectTeam,
+          ...(applied.prospectTeams ? { prospectTeams: applied.prospectTeams } : {}),
+          rawTeamName: applied.prospectTeam,
+        }
       : {}),
     platformData: {},
   };
@@ -15573,6 +15598,10 @@ const previewCardFields = {
   // and does not read the card as a "No Team" claim (`checklistClaimsNoTeam`).
   // Bounded by `assertCardBatchWithinLimits`.
   prospectTeam: v.optional(v.string()),
+  // NEO-591 — the held Xs as the exact list `prospectTeam` joins: the browser
+  // rebuilds a checklist row from it, never by splitting the joined text. Sent
+  // back like `prospectTeam`; bounded by `assertCardBatchWithinLimits`.
+  prospectTeams: v.optional(v.array(v.string())),
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
   cardVariation: v.optional(v.string()),
@@ -17008,6 +17037,7 @@ export const fetchCardChecklist = action({
           // beside it; it is the card's team only if the checklist answers.
           if (applied.isProspect) card.isProspect = true;
           if (applied.prospectTeam) card.prospectTeam = applied.prospectTeam;
+          if (applied.prospectTeams) card.prospectTeams = applied.prospectTeams;
           const teamsFromRow = applied.answered && applied.teams !== null;
           link.revert = {
             ...(ownPlayers ? { players: ownPlayers } : {}),
@@ -17172,6 +17202,7 @@ export const fetchCardChecklist = action({
         // NEO-591 — the streamed path is the only path.
         ...(card.isProspect ? { isProspect: true } : {}),
         ...(card.prospectTeam ? { prospectTeam: card.prospectTeam } : {}),
+        ...(card.prospectTeams ? { prospectTeams: card.prospectTeams } : {}),
         ...(card.rawTeamName ? { rawTeamName: card.rawTeamName } : {}),
         printRun: card.printRun,
         autographType: card.autographType,
@@ -21503,12 +21534,21 @@ export const commitCardChecklistChunk = internalMutation({
         // listing title so the title names the team the row will carry, and
         // BEFORE the BSC enrichment check so a card that has a team is not
         // queued to be asked for one.
+        //
+        // NEO-591 (product invariant 8) — except a card whose listing or
+        // checklist NAMES a team the commit could not give it (`bscTeamHint`:
+        // set by the prelude only for a card with no team id and no pending
+        // name, minus a name the operator ruled "not a team", e.g. a held
+        // "Prospect (X)"). The data names a team, so no automated rule writes
+        // a different one: the set's team is not stamped and the operator
+        // decides (the Teams step asks, `setDefaultSettlesNewRow`).
+        const listingNamesATeam = (card.bscTeamHint?.trim() ?? "") !== "";
         const bornTeams = defaultTeamOnCardIds(
           {
             teamOnCardIds: card.teamOnCardIds,
             pendingTeamNames: insertPendingTeamNames,
           },
-          leafTeamIds ? { teamIds: leafTeamIds } : null,
+          leafTeamIds && !listingNamesATeam ? { teamIds: leafTeamIds } : null,
         );
         const insertTeamOnCardIds = bornTeams.ids ?? card.teamOnCardIds;
         const insertTeamNames = bornTeams.defaulted

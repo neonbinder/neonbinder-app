@@ -1268,6 +1268,15 @@ describe("checklistRowLine (NEO-490)", () => {
     );
   });
 
+  test("a Prospect (X) row reads X where the team goes, never as teamless; a bare Prospect is No Team (NEO-591)", () => {
+    expect(
+      checklistRowLine({ number: "NNO", players: ["Cord Rager"], teams: [], noNumber: true, prospect: true, prospectTeams: ["Frisco", "Dallas Baptist"] } as never),
+    ).toBe("NNO Cord Rager · Frisco / Dallas Baptist");
+    expect(
+      checklistRowLine({ number: "9", players: ["Show Card"], teams: [], noTeam: true, prospect: true } as never),
+    ).toBe("#9 Show Card · No Team");
+  });
+
   test("without the noNumber flag a number is a number, even one spelled NNO", () => {
     expect(checklistRowLine({ number: "NNO", players: ["Mike Lowell"], teams: [] })).toBe(
       "#NNO Mike Lowell",

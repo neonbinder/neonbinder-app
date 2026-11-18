@@ -3348,6 +3348,7 @@ describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () =
     ["bscTeamPool.ts", "enqueueBscTeamChecks", "internalMutation"],
     ["bscTeamPool.ts", "cancelAllBscTeamChecks", "internalMutation"],
     ["checklistCandidates.ts", "resolveChecklistTeamTexts", "internalQuery"],
+    ["checklistCandidates.ts", "resolveProspectTeams", "internalQuery"],
     ["adapters/buysportscards.ts", "runBscTeamCheckItem", "internalAction"],
     ["adapters/buysportscards.ts", "processBscTeamEnrichmentQueue", "internalAction"],
     ["adapters/buysportscards.ts", "probeBscChecklistBatch", "internalAction"],

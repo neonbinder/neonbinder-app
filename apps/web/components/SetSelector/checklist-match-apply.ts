@@ -52,6 +52,14 @@ export type ChecklistLinkRow = {
   noNumber?: true;
   /** NEO-489 — the checklist says this card shows no team ("No Team"). */
   noTeam?: true;
+  /** NEO-591 — the team cell said "Prospect" / "Prospect (X)": the card is a prospect. */
+  prospect?: true;
+  /**
+   * NEO-591 — the X of each "Prospect (X)" the server has not settled to one
+   * minor-league or college team. Out of `teams`: a held X is never a team
+   * string. A settled X is already in `teams` as its full name.
+   */
+  prospectTeams?: string[];
 };
 
 /** What a linked card needs to carry into the question. */
@@ -69,7 +77,15 @@ export type ChecklistPairRequest = {
   /** The card's `candidateKey` in the dialog; the answer comes back keyed by it. */
   cardKey: string;
   card: { cardNumber: string; players: string[]; teams: string[] };
-  row: { number: string; players: string[]; teams: string[]; noNumber?: true; noTeam?: true };
+  row: {
+    number: string;
+    players: string[];
+    teams: string[];
+    noNumber?: true;
+    noTeam?: true;
+    prospect?: true;
+    prospectTeams?: string[];
+  };
 };
 
 /**
@@ -84,6 +100,12 @@ export type ChecklistPairRequest = {
  *    teams. The card keeps its own values; the wizard's "Checklist says
  *    otherwise" step settles it.
  *  - `fillPlayers` — the card had no players and the row names some.
+ *  - NEO-591: `isProspect` — the row says Prospect, whatever became of the
+ *    team; `prospectTeam` — the X of "Prospect (X)" the server could not
+ *    settle to one minor-league or college team. It is never in `teams`, and
+ *    the operator picks the team. `rawTeamName` is the same text when the row
+ *    ANSWERED the card (the "Listed as:" hint); on a conflict the card takes
+ *    it only if the operator takes the checklist's side.
  *
  * Any of these can be absent: a row naming no team makes no claim about it.
  */
@@ -93,6 +115,11 @@ export type ChecklistPairAnswer = {
   teamLookup?: "checklist";
   checklistConflict?: ChecklistConflict;
   fillPlayers?: string[];
+  isProspect?: true;
+  prospectTeam?: string;
+  /** The held Xs as the exact list `prospectTeam` joins. */
+  prospectTeams?: string[];
+  rawTeamName?: string;
 };
 
 /** The fields of a card a checklist answer may change. */
@@ -100,6 +127,9 @@ type AnswerableCard = ChecklistLinkCard & {
   teamLookup?: TeamLookupOutcome;
   checklistConflict?: ChecklistConflict;
   rawTeamName?: string;
+  isProspect?: boolean;
+  prospectTeam?: string;
+  prospectTeams?: string[];
 };
 
 function clean(names: readonly string[] | undefined): string[] {
@@ -141,6 +171,11 @@ export function buildChecklistPairRequests<C extends ChecklistLinkCard>(
         // NEO-489: a "No Team" row is a claim; dropping the flag would turn
         // it into a row that names no team, which claims nothing.
         ...(row.noTeam ? { noTeam: true as const } : {}),
+        // NEO-591: and so is a Prospect row. Without these the server would
+        // read a row that is only a prospect as one that claims nothing, and
+        // a held X would be dropped: the relink would lose the claim.
+        ...(row.prospect ? { prospect: true as const } : {}),
+        ...(row.prospectTeams?.length ? { prospectTeams: [...row.prospectTeams] } : {}),
       },
     });
   }
@@ -159,6 +194,12 @@ export function buildChecklistPairRequests<C extends ChecklistLinkCard>(
  *    hint for a card that might save with no team, and this one has one —
  *    or the checklist said "No Team" (an empty `teams`, NEO-489), a claim
  *    that holds back any guess from that hint.
+ *
+ *  - NEO-591: a Prospect row marks the card `isProspect`, whatever became of
+ *    the team (a conflict included); a held X rides on it as `prospectTeam`,
+ *    never as a team string. When the row answered the team (`teams: []`), the
+ *    X is also the "Listed as:" hint (`rawTeamName`), after BSC's raw value is
+ *    dropped as above.
  *
  * Returns a new array; a card with no answer is returned by reference. The
  * number and `platformData` are never touched.
@@ -184,6 +225,9 @@ export function applyChecklistAnswers<C extends AnswerableCard>(
     if (answer.checklistConflict) {
       out.checklistConflict = answer.checklistConflict;
     }
+    if (answer.isProspect) out.isProspect = true;
+    if (answer.prospectTeam) out.prospectTeam = answer.prospectTeam;
+    if (answer.prospectTeams?.length) out.prospectTeams = [...answer.prospectTeams];
     const teams = clean(answer.teams);
     // NEO-489: an empty `teams` is the checklist's "No Team" claim, applied
     // only to a card with no team of its own (the server answers a card that
@@ -199,6 +243,7 @@ export function applyChecklistAnswers<C extends AnswerableCard>(
       out.teams = teams;
       out.teamLookup = "checklist";
       delete out.rawTeamName;
+      if (answer.rawTeamName) out.rawTeamName = answer.rawTeamName;
     }
     return next;
   });
@@ -216,6 +261,8 @@ export type ServerPairedRow = {
   teams: string[];
   noNumber?: true;
   noTeam?: true;
+  prospect?: true;
+  prospectTeams?: string[];
   cardName: string;
 };
 
@@ -256,8 +303,18 @@ export function pairedRowOf(row: ServerPairedRow): ChecklistLinkRow {
     teams: [...row.teams],
     ...(row.noNumber ? { noNumber: true as const } : {}),
     ...(row.noTeam ? { noTeam: true as const } : {}),
+    ...(row.prospect ? { prospect: true as const } : {}),
+    ...(row.prospectTeams?.length ? { prospectTeams: [...row.prospectTeams] } : {}),
   };
 }
+
+/**
+ * NEO-591 — several held Xs ride a card as the exact list (`prospectTeams`)
+ * and, for display and the "Listed as:" hint, as one `prospectTeam` joined the
+ * way the server joins them (`applyChecklistRow`). The list is never rebuilt
+ * by splitting the text.
+ */
+export const PROSPECT_TEAM_JOINER = " / ";
 
 /**
  * Prefix of the `checklistRowId` an unlinked row is listed under. It never
@@ -272,14 +329,28 @@ export const UNLINKED_ROW_ID_PREFIX = "unlinked:";
  * for a row no card paired (`checklistOnlyCard` on the server). Its team is
  * the checklist's answer (`teamLookup: "checklist"`) when the row names one
  * or says No Team; a row naming no team makes no claim.
+ *
+ * NEO-591: a Prospect row is `isProspect`; a held X is a team claim too, so
+ * the card is answered by the checklist with no team, and X is its
+ * `prospectTeam` and "Listed as:" hint, never a team string.
  */
 export function pairedRowCard(row: ServerPairedRow, rowId: string): PairingCard {
-  const claimsTeam = row.teams.length > 0 || row.noTeam === true;
+  const held = row.prospectTeams?.filter((x) => x.trim()) ?? [];
+  const claimsTeam = row.teams.length > 0 || row.noTeam === true || held.length > 0;
+  const heldText = held.join(PROSPECT_TEAM_JOINER);
   return {
     cardNumber: row.number,
     cardName: row.cardName,
     ...(row.players.length > 0 ? { players: [...row.players] } : {}),
-    ...(claimsTeam ? { teams: [...row.teams], teamLookup: "checklist" as const } : {}),
+    // A held row keeps the row's printed teams for relinking (`pairedRowOf`),
+    // but as a card it is held whole: no team string (`applyChecklistRow`).
+    ...(claimsTeam
+      ? { teams: held.length > 0 ? [] : [...row.teams], teamLookup: "checklist" as const }
+      : {}),
+    ...(row.prospect || held.length > 0 ? { isProspect: true } : {}),
+    ...(held.length > 0
+      ? { prospectTeam: heldText, prospectTeams: [...held], rawTeamName: heldText }
+      : {}),
     platformData: {},
     checklistRowId: rowId,
   };
@@ -297,6 +368,9 @@ export function pairedRowCard(row: ServerPairedRow, rowId: string): PairingCard 
  *    `"failed"` when BSC was never asked because the row answered, which is
  *    the operator-picks state (rule 8: missing data is never guessed).
  *    Otherwise the teams were the card's own, or its lookup's, and stay.
+ *  - NEO-591: the row's Prospect claim goes with it: no `isProspect`, no held
+ *    `prospectTeam` / `prospectTeams`, and the `rawTeamName` hint when it was that X (BSC's own
+ *    raw value, a different text, stays).
  *
  * Returns `null` for a card with no undoable pairing. The number, name and
  * `platformData` are never touched.
@@ -309,6 +383,12 @@ export function revertServerChecklistPair<C extends PairingCard>(card: C): C | n
   const out: PairingCard = next;
   delete out.checklistLink;
   delete out.checklistConflict;
+  delete out.isProspect;
+  if (out.rawTeamName !== undefined && out.rawTeamName === out.prospectTeam) {
+    delete out.rawTeamName;
+  }
+  delete out.prospectTeam;
+  delete out.prospectTeams;
   if (revert.players && revert.players.length > 0) out.players = [...revert.players];
   else delete out.players;
   if (revert.teamsFromRow) {

@@ -97,8 +97,9 @@ const PUBLISHED_CHECKLIST_NUMBER_CHARS = /^[#A-Za-z0-9. -]*$/;
  * team it is kept as sent, exactly as the parser keeps it.
  *
  * NEO-591: a row is a Prospect row (`prospect: true`) when the client flagged
- * it, sent `prospectTeams`, or its lone team string is a whole prospect cell
- * (`readProspectCell`). Each X is kept in `prospectTeams`, never in `teams`,
+ * it, sent `prospectTeams`, or any of its team strings is a whole prospect
+ * cell (`readProspectCell`, read string by string; the other strings stay
+ * teams). Each X is kept in `prospectTeams`, never in `teams`,
  * deduped, within a card's team cap together with `teams`. A bare Prospect
  * (no X, no other team) is a No Team row (`noTeam: true`); a No Team row that
  * names an X contradicts itself and refuses the whole checklist.
@@ -156,14 +157,16 @@ export function checkPublishedChecklist(
     // A no-claim word is dropped only as the whole cell (one string), as the
     // parser reads it; beside a team it is left as it is, like the client.
     const cleaned = clean(row.teams, MAX_CARD_TEAMS, "team");
-    // NEO-591 — a prospect cell is read only as the whole cell, the lone team
-    // string, exactly as the parser reads it (`readProspectCell`). The
-    // parser's own row carries the claim as flags and leaves no such string.
-    const prospectCell = cleaned.length === 1 ? readProspectCell(cleaned[0]) : null;
-    const cellTeams = prospectCell ? [] : cleaned;
+    // NEO-591 — each team string is read on its own: a string that is a whole
+    // prospect cell (`readProspectCell`) is the claim, any other stays a team,
+    // so ["Mets", "Prospect (Oklahoma)"] reads as the parser reads a cell
+    // "Mets / Prospect (Oklahoma)". The parser's own row carries the claim as
+    // flags and leaves no such string.
+    const prospectCells = cleaned.map((team) => readProspectCell(team));
+    const cellTeams = cleaned.filter((_, i) => prospectCells[i] === null);
     const claimedX = [
       ...clean(row.prospectTeams ?? [], MAX_CARD_TEAMS, "prospect team"),
-      ...(prospectCell?.team ? [prospectCell.team] : []),
+      ...prospectCells.flatMap((cell) => (cell?.team ? [cell.team] : [])),
     ].filter((x) => !isNoClaimTeamText(x) && !isNoTeamText(x));
     // Deduped as a card's teams are (the same folded key), in sent order.
     const seenX = new Set<string>();
@@ -173,7 +176,8 @@ export function checkPublishedChecklist(
       seenX.add(key);
       return true;
     });
-    const prospect = row.prospect === true || prospectCell !== null || prospectTeams.length > 0;
+    const prospect =
+      row.prospect === true || prospectCells.some((cell) => cell !== null) || prospectTeams.length > 0;
     const named = cellTeams.length === 1 && isNoClaimTeamText(cellTeams[0]) ? [] : cellTeams;
     const teams = named.filter((t) => !isNoTeamText(t));
     if (teams.length + prospectTeams.length > MAX_CARD_TEAMS) {

@@ -85,6 +85,12 @@ export type AppliedChecklistRow = {
    * with " / ".
    */
   prospectTeam?: string;
+  /**
+   * NEO-591 — the same held Xs as a list, exactly as the row named them. The
+   * client rebuilds a row from it (`prospectTeams`), never by splitting the
+   * joined `prospectTeam`.
+   */
+  prospectTeams?: string[];
 };
 
 function sameNames(a: readonly string[], b: readonly string[]): boolean {
@@ -194,6 +200,6 @@ export function applyChecklistRow(
     ...(conflict ? { conflict } : {}),
     answered,
     ...(isProspect ? { isProspect: true as const } : {}),
-    ...(held ? { prospectTeam: heldX.join(" / ") } : {}),
+    ...(held ? { prospectTeam: heldX.join(" / "), prospectTeams: heldX } : {}),
   };
 }

@@ -63,6 +63,7 @@ const pairAnswerValidator = v.object({
   checklistConflict: v.optional(checklistConflictValidator),
   isProspect: v.optional(v.literal(true)),
   prospectTeam: v.optional(v.string()),
+  prospectTeams: v.optional(v.array(v.string())),
   rawTeamName: v.optional(v.string()),
 });
 
@@ -173,6 +174,7 @@ export const applyPublishedChecklistPairs = action({
         ...(applied.conflict ? { checklistConflict: applied.conflict } : {}),
         ...(applied.isProspect ? { isProspect: true as const } : {}),
         ...(applied.prospectTeam ? { prospectTeam: applied.prospectTeam } : {}),
+        ...(applied.prospectTeams ? { prospectTeams: applied.prospectTeams } : {}),
         ...(applied.prospectTeam && applied.answered && applied.teams
           ? { rawTeamName: applied.prospectTeam }
           : {}),

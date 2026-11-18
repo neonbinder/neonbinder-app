@@ -199,6 +199,12 @@ type FetchPreview = {
     attributes?: string[];
     isRookie?: boolean;
     isRelic?: boolean;
+    /** NEO-591 — the checklist's Prospect claim; see `PairingCard.isProspect`. */
+    isProspect?: boolean;
+    /** NEO-591 — a held "Prospect (X)"; see `PairingCard.prospectTeam`. */
+    prospectTeam?: string;
+    /** NEO-591 — the held Xs as an exact list; see `PairingCard.prospectTeams`. */
+    prospectTeams?: string[];
     printRun?: number;
     autographType?: string;
     cardVariation?: string;
@@ -930,6 +936,10 @@ export default function CardChecklist({
             teams: p.row.teams,
             ...(p.row.noNumber ? { noNumber: true } : {}),
             ...(p.row.noTeam ? { noTeam: true } : {}),
+            // NEO-591: a Prospect row and its held Xs are claims; the server
+            // settles them the way it does for its own pairs.
+            ...(p.row.prospect ? { prospect: true } : {}),
+            ...(p.row.prospectTeams?.length ? { prospectTeams: p.row.prospectTeams } : {}),
           },
         })),
       },
@@ -940,6 +950,10 @@ export default function CardChecklist({
       ...(a.teamLookup ? { teamLookup: a.teamLookup } : {}),
       ...(a.checklistConflict ? { checklistConflict: a.checklistConflict } : {}),
       ...(a.players ? { fillPlayers: a.players } : {}),
+      ...(a.isProspect ? { isProspect: true as const } : {}),
+      ...(a.prospectTeam ? { prospectTeam: a.prospectTeam } : {}),
+      ...(a.prospectTeams?.length ? { prospectTeams: a.prospectTeams } : {}),
+      ...(a.rawTeamName ? { rawTeamName: a.rawTeamName } : {}),
     }));
   };
   /**

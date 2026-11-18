@@ -259,3 +259,4 @@
 - [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
 - [PDF runs ride along only with evidence](reference_pdf_runs_ride_along_only_when_they_add_evidence.md) — new reader record fields move the Topps golden snapshot; gate them; tsx probes need .mts
 - [convex data caps at 8192 rows](reference_convex_data_caps_at_8192_rows.md) — page a big table read-only with --order asc/desc and dedupe by _id
+- [New candidate field needs three client hand copies](reference_new_candidate_field_needs_three_client_hand_copies.md) — pairing-cards.ts, CardChecklist resolveChecklistPairs, PairingCard type pick fields by name; grep before done

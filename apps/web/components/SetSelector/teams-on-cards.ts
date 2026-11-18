@@ -14,6 +14,9 @@ import {
 } from "../../convex/lib/teamFill";
 import { teamFullName } from "../../lib/teams/team-name";
 import { checklistClaimsNoTeam } from "../../lib/checklists/no-team";
+// Browser-safe: pure (no server imports) — NEO-591's league-level rule for a
+// "Prospect (X)" team, the one the fetch settled X by.
+import { isProspectTeamLevel } from "../../convex/lib/prospectTeam";
 import type { TeamLookupOutcome } from "./checklist-conflict";
 
 export { MAX_CARD_TEAMS };
@@ -97,6 +100,20 @@ export { MAX_CARD_TEAMS };
  * a card is identified by its POSITION in the preview, which is the only
  * identity it has until it is saved (product invariant 7).
  *
+ * ## A held "Prospect (X)" (NEO-591)
+ *
+ * A checklist team cell "Prospect (X)" names the card's team, which must be a
+ * minor-league or college team. When the fetch could not settle X to exactly
+ * one such team it holds it: the card carries X as `prospectTeam` with no team
+ * string (`teamLookup: "checklist"`, so it is a card to ASK about, not a No
+ * Team claim). Here that is a listing's claim like any other (invariant 8):
+ * X is shown as the card's listed team ("Listed as: …"), nothing is
+ * pre-selected, and the teams the line offers are narrowed to those in a
+ * minor or college league (a major-league team is never a choice for it, and
+ * neither is a team whose league is unknown). "Other team…" still opens: the
+ * operator's own pick, or "No team", wins through `teamIds` / `teamNone`. X is
+ * never written as a team string.
+ *
  * ## Choices
  *
  * One line per player set. A line whose card has several people on it (or
@@ -136,6 +153,19 @@ export interface PreviewCardForTeams {
    * `checklistClaimsNoTeam`).
    */
   teamLookup?: TeamLookupOutcome;
+  /**
+   * NEO-591 — the X of a "Prospect (X)" the fetch held for the operator (see
+   * the section note). Never a team string; several are joined " / ".
+   */
+  prospectTeam?: string;
+  /** NEO-591 — the held Xs as the exact list `prospectTeam` joins. */
+  prospectTeams?: string[];
+  /**
+   * BSC's unsplit team value, kept only where `teams` does not already say it
+   * (a split that was refused, or over the cap). With no team strings it is
+   * the listing's claim about the team: see `listedClaims`.
+   */
+  rawTeamName?: string;
 }
 
 /** The operator's answer for one card, as the commit reads it. */
@@ -178,6 +208,11 @@ export interface ServerTeam {
   colors?: TeamColors;
   /** C2b — 0 the set's league, 1 its level, 2 other. Absent = 2. */
   rank?: number;
+  /**
+   * NEO-591 — the level of the team's league ("major", "minor", "college", …).
+   * Absent when the team has no league or its league has no level.
+   */
+  level?: string;
 }
 
 /** One player's evidence from `teamSuggestionsForPreview`. */
@@ -197,6 +232,11 @@ export interface EvidenceRequest {
 export interface TeamNameRequest {
   key: string;
   name: string;
+  /**
+   * NEO-591 — also ask for the teams whose LOCATION is this name: it is the X
+   * of a held "Prospect (X)", where two or more teams may share the place.
+   */
+  location?: true;
 }
 
 /** One team chip. */
@@ -212,6 +252,8 @@ export interface TeamRef {
   name?: string;
   /** C2b preference, for ordering. Absent = 2. */
   rank?: number;
+  /** NEO-591 — the team's league level, when it is an existing NB team that has one. */
+  level?: string;
 }
 
 /** Cards that share a player set (and a listing claim) share evidence, so they share one line. */
@@ -240,6 +282,12 @@ export interface TeamsGroup {
    * pre-filled over it. Absent reads as false.
    */
   checklistClaim?: boolean;
+  /**
+   * NEO-591 — these cards' checklist named a "Prospect (X)" team the fetch
+   * could not settle: X is in `listedNames`, and `refs` holds only teams in a
+   * minor or college league. Absent reads as false.
+   */
+  prospectHeld?: boolean;
   /** Server evidence for at least one player (or listed name) has not arrived yet. */
   loading: boolean;
 }
@@ -272,6 +320,13 @@ export const TEAMS_SECTION_NAMES_PER_REQUEST = 32;
 
 /** How many player calls the section makes at most (×32 players). */
 export const TEAMS_SECTION_MAX_REQUESTS = 8;
+
+/**
+ * NEO-591 — how many of one name call's names get the location leg. Mirrors
+ * `TEAM_SUGGESTION_MAX_LOCATION_NAMES` in convex/cardChecklist.ts (a browser
+ * bundle cannot import that module; the server ignores any past its own cap).
+ */
+export const TEAMS_SECTION_LOCATION_NAMES_PER_REQUEST = 8;
 
 /** How many name calls the section makes at most (×32 names). */
 export const TEAMS_SECTION_MAX_NAME_REQUESTS = 4;
@@ -336,8 +391,11 @@ export interface NewRowTeamCard extends PreviewCardForTeams {
  * NEO-556 — will the set-level default settle the team of this card when the
  * commit inserts it as a NEW row, so the wizard need not ask?
  *
- *  - A set team: always. The commit gives a teamless new row that team, and
- *    a card that resolves a team of its own has one anyway (NEO-277).
+ *  - A set team: when the card names none the commit could not give it. The
+ *    commit gives a teamless new row that team, and a card that resolves a
+ *    team of its own has one anyway (NEO-277). A held "Prospect (X)" or a
+ *    listing value kept as the "Listed as:" hint is a team the data names, so
+ *    the set's team is not stamped over it and the card is asked (invariant 8).
  *  - "No Team": only when the commit will STAMP the card No Team — the
  *    client half of `noTeamCardVerdict` as the commit asks it. Product
  *    invariant 8: a listing that names a team, or a BSC lookup that has not
@@ -357,10 +415,21 @@ export function setDefaultSettlesNewRow(
   card: NewRowTeamCard,
   setDefault: SetTeamDefaultKind,
 ): boolean {
-  if (setDefault === "teams") return true;
+  if (setDefault === "teams") {
+    // Invariant 8 (NEO-591): a card the data gives a team to (a held "Prospect
+    // (X)", or a listing's team the commit could not resolve into `teams`)
+    // never takes the set's team over it: the commit does not stamp it
+    // (`bscTeamHint`), so the operator is asked. A card that prints team
+    // strings has a team of its own (or a name waiting for review): as before.
+    if (cardTeamStrings(card).length > 0) return true;
+    if ((card.prospectTeam?.trim() ?? "") !== "") return false;
+    return (card.rawTeamName?.trim() ?? "") === "";
+  }
   if (setDefault !== "noTeam") return false;
   if (cardTeamStrings(card).length > 0) return false;
   if ((card.rawTeamName?.trim() ?? "") !== "") return false;
+  // NEO-591: a held "Prospect (X)" is a team the checklist named: asked.
+  if ((card.prospectTeam?.trim() ?? "") !== "") return false;
   if (!card.platformData?.bsc) return true;
   return card.teamLookup === "answered" || card.teamLookup === "checklist";
 }
@@ -522,6 +591,11 @@ function teamStringSkipped(raw: string, view: NamesView): boolean {
   return view.skippedTeamNames.has(key);
 }
 
+/** NEO-591 — the held Xs a card carries, from the exact list (never a split text). */
+function heldProspectNames(card: PreviewCardForTeams): string[] {
+  return (card.prospectTeams ?? []).map((x) => x.trim()).filter(Boolean);
+}
+
 /**
  * Invariant 8 — the printed team strings on a section card that still claim
  * a team: every one failed to resolve (that is how the card got here), minus
@@ -529,7 +603,25 @@ function teamStringSkipped(raw: string, view: NamesView): boolean {
  * is an answer to the claim, so it no longer holds the guess back.
  */
 function listedClaims(card: PreviewCardForTeams, view: NamesView): string[] {
-  return cardTeamStrings(card).filter((raw) => !teamStringSkipped(raw, view));
+  const printed = cardTeamStrings(card).filter((raw) => !teamStringSkipped(raw, view));
+  // NEO-591: a held "Prospect (X)" is the checklist's claim about the team, so
+  // it is listed beside whatever the card printed. Shown, never written.
+  const held = heldProspectNames(card).filter(
+    (x) => !printed.some((p) => norm(p) === norm(x)),
+  );
+  // Invariant 8: a card whose listing named a team the card carries no string
+  // for (BSC's raw value, its split refused) is a claim too, exactly like a
+  // printed string that failed to resolve. Without it nothing holds back a
+  // "same player in this set" pre-fill over the team the data names. Only when
+  // the card has no team string at all (a raw value beside strings is already
+  // said by them, and all of its parts skipped is the operator's ruling) and
+  // no held X (its hint is the X), and not a value the operator ruled out.
+  const raw = card.rawTeamName?.trim() ?? "";
+  const listing =
+    raw && cardTeamStrings(card).length === 0 && held.length === 0 && !teamStringSkipped(raw, view)
+      ? [raw]
+      : [];
+  return [...printed, ...held, ...listing];
 }
 
 /** Will this printed team string resolve to a team at commit? */
@@ -700,13 +792,17 @@ export function teamNameRequests(
 ): TeamNameRequest[] {
   const view = namesView(rows, people);
   const out = new Map<string, TeamNameRequest>();
-  const add = (raw: string) => {
+  const add = (raw: string, location = false) => {
     const key = norm(raw);
-    if (key && !out.has(key)) out.set(key, { key, name: raw.trim() });
+    if (!key) return;
+    const have = out.get(key);
+    if (!have) out.set(key, { key, name: raw.trim(), ...(location ? { location: true as const } : {}) });
+    else if (location && !have.location) have.location = true;
   };
   for (const index of teamlessCardIndexes(cards, rows, settled, people)) {
     const card = cards[index];
-    for (const listed of listedClaims(card, view)) add(listed);
+    const heldX = new Set(heldProspectNames(card).map(norm));
+    for (const listed of listedClaims(card, view)) add(listed, heldX.has(norm(listed)));
     for (const player of cardPlayers(card, index, view)) {
       if (player.kind !== "created") continue;
       const dated = createdStints(player.row);
@@ -760,6 +856,7 @@ function refFromServer(team: ServerTeam): TeamRef {
     ...(team.colors ? { colors: team.colors } : {}),
     teamId: team.teamId,
     ...(team.rank !== undefined ? { rank: team.rank } : {}),
+    ...(team.level !== undefined ? { level: team.level } : {}),
   };
 }
 
@@ -948,17 +1045,26 @@ export function buildTeamsGroups(input: {
     // (B1); one that says "No Team" never reaches this loop (NEO-489,
     // `teamlessCardIndexes`).
     const checklistClaim = card.teamLookup === "checklist";
+    // NEO-591 — a held "Prospect (X)": its line offers minor and college teams
+    // only, so it never shares a line with a card that offers any team (the
+    // no-players line pools every other card's claims).
+    const heldX = heldProspectNames(card);
+    const prospectHeld = heldX.length > 0;
+    const prospectKey = prospectHeld ? `|prospect:${heldX.map(norm).sort().join("|")}` : "";
     const claimKey =
       (listedNames.length > 0 ? `|listed:${listedNames.map(norm).sort().join("|")}` : "") +
       (lookupFailed ? "|lookup-failed" : "") +
-      (checklistClaim ? "|checklist" : "");
+      (checklistClaim ? "|checklist" : "") +
+      prospectKey;
     // No people → no player evidence at all, so every such card (a
     // checklist, a league leaders card, a highlight) shares ONE line, keyed
     // on having no players — never on a card's name. Its listing claims are
     // pooled: nothing on it is pre-filled anyway, and each card can still
     // take its own answer (C3).
     const groupKey =
-      players.length > 0 ? `players:${playerSetKey(players)}${claimKey}` : NO_PLAYERS_GROUP_KEY;
+      players.length > 0
+        ? `players:${playerSetKey(players)}${claimKey}`
+        : `${NO_PLAYERS_GROUP_KEY}${prospectKey}`;
     const existing = groups.get(groupKey);
     const entry = { index, cardNumber: card.cardNumber, cardName: card.cardName };
     if (existing) {
@@ -1024,10 +1130,13 @@ export function buildTeamsGroups(input: {
     }
 
     const lead = suggestion ?? [];
-    const refs = dedupeRefs([...lead, ...listedRefs, ...byRank(choices)]).slice(
-      0,
-      Math.max(TEAMS_SECTION_MAX_OPTIONS, lead.length),
-    );
+    // NEO-591: a held X is a minor-league or college team. A chip with no
+    // known level (a team staged in this wizard, a sibling card's printed
+    // team, a team with no league) cannot show it is one, so it is not offered.
+    const offered = (ref: TeamRef) => !prospectHeld || isProspectTeamLevel(ref.level);
+    const refs = dedupeRefs([...lead, ...listedRefs, ...byRank(choices)])
+      .filter(offered)
+      .slice(0, Math.max(TEAMS_SECTION_MAX_OPTIONS, lead.length));
 
     groups.set(groupKey, {
       key: groupKey,
@@ -1039,6 +1148,7 @@ export function buildTeamsGroups(input: {
       listedNames: [...listedNames],
       lookupFailed,
       ...(checklistClaim ? { checklistClaim: true } : {}),
+      ...(prospectHeld ? { prospectHeld: true } : {}),
       loading,
     });
   }

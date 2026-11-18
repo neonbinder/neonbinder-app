@@ -830,6 +830,31 @@ describe("created players — the window and the set's league (C2, C2b, C8)", ()
     expect(failed[0].suggestion).toBeNull();
   });
 
+  test("invariant 8: a listing's team the card carries no string for is shown as Listed as and never pre-filled over (NEO-591)", () => {
+    const evidence = { "name:bench johnny": {
+      answer: { tier: "oneTeamCareerInLeague", teams: [serverTeam(REDS, "Cincinnati Reds")] },
+      candidates: [],
+    } };
+    const listed = { ...card("1", ["Johnny Bench"]), teamLookup: "answered" as const, rawTeamName: "Reds / Padres" };
+    const groups = build([listed], [], evidence);
+    expect(groups[0].suggestion).toBeNull();
+    expect(groups[0].listedNames).toEqual(["Reds / Padres"]);
+    // The would-be pre-fill is one more choice, not an answer.
+    expect(labels(groups[0])).toContain("Cincinnati Reds");
+    expect(teamNameRequests([listed], []).map((r) => r.name)).toEqual(["Reds / Padres"]);
+    // The same card with no raw value is pre-filled as before.
+    const quiet = build([{ ...card("1", ["Johnny Bench"]), teamLookup: "answered" }], [], evidence);
+    expect(suggested(quiet[0])).toEqual(["Cincinnati Reds"]);
+    // A raw value the operator ruled "not a team" is no claim.
+    const ruledOut = build(
+      [listed],
+      [row({ kind: "team", name: "Reds / Padres", decision: { action: "skip" } })],
+      evidence,
+    );
+    expect(ruledOut[0].listedNames).toEqual([]);
+    expect(suggested(ruledOut[0])).toEqual(["Cincinnati Reds"]);
+  });
+
   test("C8: a prospect's major-league org (existing team, ranked by the server) beats his affiliates", () => {
     const RAYS = "team_rays" as Id<"teams">;
     const rows = [
@@ -1440,6 +1465,26 @@ describe("NEO-556 setDefaultSettlesNewRow", () => {
     expect(setDefaultSettlesNewRow(card, "none")).toBe(false);
   });
 
+  test("invariant 8: a set team never settles a card whose data names a team the commit did not give it", () => {
+    // A held "Prospect (X)".
+    expect(
+      setDefaultSettlesNewRow(
+        { ...card, ...bsc, teamLookup: "checklist", prospectTeam: "Frisco", rawTeamName: "Frisco" },
+        "teams",
+      ),
+    ).toBe(false);
+    // A listing value kept only as the "Listed as:" hint.
+    expect(
+      setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "answered", rawTeamName: "Padres / Cubs" }, "teams"),
+    ).toBe(false);
+    // A card that prints its own team string has one (or a name awaiting review).
+    expect(
+      setDefaultSettlesNewRow({ ...card, ...bsc, teams: ["Padres"], rawTeamName: "Padres" }, "teams"),
+    ).toBe(true);
+    // Blank claims are no claim.
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc, prospectTeam: " ", rawTeamName: " " }, "teams")).toBe(true);
+  });
+
   test("No Team settles a card with nothing to look up", () => {
     expect(setDefaultSettlesNewRow(card, "noTeam")).toBe(true);
   });
@@ -1458,6 +1503,7 @@ describe("NEO-556 setDefaultSettlesNewRow", () => {
     expect(
       setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "answered", rawTeamName: "Padres" }, "noTeam"),
     ).toBe(false);
+    expect(setDefaultSettlesNewRow({ ...card, prospectTeam: "Frisco" }, "noTeam")).toBe(false);
     expect(setDefaultSettlesNewRow({ ...card, teams: ["Padres"] }, "noTeam")).toBe(false);
     expect(setDefaultSettlesNewRow({ ...card, team: "Padres" }, "noTeam")).toBe(false);
     // Blank strings are no claim.

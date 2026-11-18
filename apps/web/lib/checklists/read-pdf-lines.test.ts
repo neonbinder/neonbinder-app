@@ -28,8 +28,12 @@ describe("groupPageItems — Topps columns by x-gap", () => {
       item("Los Angeles Dodgers®", 298, 686),
     ]);
     expect(lines).toEqual([
-      { cells: ["BASE CARDS"], xs: [53] },
-      { cells: ["1", "Shohei Ohtani", "Los Angeles Dodgers®"], xs: [53, 132.6, 298] },
+      { cells: ["BASE CARDS"], xs: [53], items: [{ text: "BASE CARDS", x: 53, end: 103, size: 10 }] },
+      {
+        cells: ["1", "Shohei Ohtani", "Los Angeles Dodgers®"],
+        xs: [53, 132.6, 298],
+        items: [{ text: "1", x: 53, end: 58, size: 10 }, { text: "Shohei Ohtani", x: 132.6, end: 197.6, size: 10 }, { text: "Los Angeles Dodgers®", x: 298, end: 398, size: 10 }],
+      },
     ]);
   });
 
@@ -41,7 +45,13 @@ describe("groupPageItems — Topps columns by x-gap", () => {
       // Touching run: no space added.
       item("Jr.", 180.1, 500),
     ]);
-    expect(lines).toEqual([{ cells: ["Bobby WittJr."], xs: [132.6] }]);
+    expect(lines).toEqual([
+      {
+        cells: ["Bobby WittJr."],
+        xs: [132.6],
+        items: [{ text: "Bobby", x: 132.6, end: 157.6, size: 10 }, { text: "Witt", x: 160.1, end: 180.1, size: 10 }, { text: "Jr.", x: 180.1, end: 195.1, size: 10 }],
+      },
+    ]);
   });
 
   it("puts items on one baseline within half a font height on one line, top to bottom", () => {
@@ -67,7 +77,14 @@ describe("groupPageItems — Topps columns by x-gap", () => {
       item("Craig Biggio", 132.6, 300),
       item("Houston  Astros®", 298, 300),
     ]);
-    expect(lines).toEqual([{ cells: ["Craig Biggio", "Houston Astros®"], xs: [132.6, 298] }]);
+    // The runs keep the raw text (the double space) and leave the blank run out.
+    expect(lines).toEqual([
+      {
+        cells: ["Craig Biggio", "Houston Astros®"],
+        xs: [132.6, 298],
+        items: [{ text: "Craig Biggio", x: 132.6, end: 192.6, size: 10 }, { text: "Houston  Astros®", x: 298, end: 378, size: 10 }],
+      },
+    ]);
   });
 
   it("starts a new cell at a gap of twice the font size, never under 12 pt", () => {
@@ -113,7 +130,15 @@ describe("readPdfLines — with pdf.js stood in", () => {
     expect(out).toEqual({
       ok: true,
       pages: 1,
-      lines: [{ page: 1, line: 1, cells: ["1", "Shohei Ohtani"], xs: [53, 132.6] }],
+      lines: [
+        {
+          page: 1,
+          line: 1,
+          cells: ["1", "Shohei Ohtani"],
+          xs: [53, 132.6],
+          items: [{ text: "1", x: 53, end: 58, size: 10 }, { text: "Shohei Ohtani", x: 132.6, end: 197.6, size: 10 }],
+        },
+      ],
     });
     expect(fake.getDocument).toHaveBeenCalledWith(
       expect.objectContaining({ disableFontFace: true, enableXfa: false }),
