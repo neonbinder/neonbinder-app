@@ -44,6 +44,13 @@
  * number simply cannot be paired by number. `kind` is the one partition: a
  * variation never pairs with a base card.
  *
+ * ## Names are compared without trailing print-run markers
+ *
+ * A checklist prints "Old Teammates SP" and its parser drops the "SP"; a
+ * marketplace keeps it in the card's name. Both sides' keys drop trailing
+ * markers (`dropTrailingMarkers`, the parser's own list), so the two meet.
+ * Stored names are never changed.
+ *
  * ## Confidence
  *
  * Same roster with the numbers agreeing: 1. Same roster with the numbers
@@ -61,6 +68,7 @@ import {
   strippedCardNumber,
 } from "./card-number";
 import { PLAYER_NAME_AUTO_LINK, pairNamesBySimilarity } from "./name-similarity";
+import { dropTrailingMarkers } from "./print-run-markers";
 import { cardNumberStem } from "./variations";
 import { normalizeEntityName, rosterKey } from "../entities/normalize-name";
 
@@ -193,7 +201,7 @@ function describe(
     const none = isNoNumber(item.number);
     return {
       index,
-      key: rosterKey(item.names),
+      key: rosterKey(item.names.map(dropTrailingMarkers)),
       none,
       exact: none ? "" : exactChecklistNumber(item.number),
       folded: none ? "" : normalizeChecklistNumber(item.number),
@@ -392,7 +400,7 @@ function pairKind<T extends NamesFirstItem>(
   const rLeft = R.filter(eligible);
   if (lLeft.length > 0 && rLeft.length > 0) {
     const firstName = (names: readonly string[]) => {
-      const first = names.map((n) => n.trim()).find(Boolean);
+      const first = names.map((n) => dropTrailingMarkers(n)).find(Boolean);
       return first ? normalizeEntityName(first) || undefined : undefined;
     };
     for (const p of pairNamesBySimilarity(

@@ -17513,6 +17513,9 @@ export const fetchCardChecklist = action({
           // the commit links them without searching by number.
           const parentCard = out[sibling.parentCardIndex];
           if (parentCard) {
+            // The token is unique per FETCH only (a position in this fetch's
+            // `out`). Any future path that merges two fetches' candidates into
+            // one commit must mint new tokens, or two groups would collide.
             const group = `g${sibling.parentCardIndex}`;
             parentCard.variationGroup = group;
             card.variationGroup = group;

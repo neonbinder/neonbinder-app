@@ -35,3 +35,13 @@ Durable traps:
   indices once.
 
 See [[patterns_checklist_commit_trust_boundary]], [[neo219-sanctioned-delete]].
+
+**Resolved in the fix round (delta-audited):** `numberMinted` skips the
+slot+number and no-ref tiers AND the incoming-count maps (narrows only; a
+forged flag gives nothing the client's free `cardNumber` does not), and the
+review query sees it through the same `previewCardValidator`. Parent link now
+rides `variationGroup` (server token `g<index>`, commit ignores >32 chars,
+exactly-one non-variation per token); it can only point at another card in
+the same commit, whose stored id comes from `storedIdByIndex` for this leaf.
+Residual: tokens are unique per fetch only, so any future path that merges
+two fetches into one commit must re-mint them.

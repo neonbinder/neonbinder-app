@@ -90,6 +90,7 @@
  */
 
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../../convex/features/cardAttention";
+import { HOBBY_MARKER_PATTERN } from "../cards/print-run-markers";
 import { isNoClaimTeamText, isNoTeamText, NO_TEAM_AND_A_TEAM } from "./no-team";
 import { bracketedNotesEnd, matchBrackets, readProspectCell } from "./prospect";
 import {
@@ -411,11 +412,11 @@ function dropMarkers(text: string): string {
   return text
     .replace(/(^|[\s,;])1\/1(?=$|[\s,;/])/g, "$1")
     .replace(/(^|[\s,;])#?\/\d+(?=$|[\s,;/])/g, "$1")
-    .replace(
-      /(^|[\s,/;])(?:RC|SP|SSP|VAR|HOF|AU|1[sS][tT]|EXCH|EXCHANGE|Exchange|UER|FBC)(?=$|[\s,/;])/g,
-      "$1",
-    );
+    .replace(MARKER_TOKENS, "$1");
 }
+
+/** The marker words as whole tokens; the list lives in `lib/cards/print-run-markers.ts`. */
+const MARKER_TOKENS = new RegExp(`(^|[\\s,/;])(?:${HOBBY_MARKER_PATTERN})(?=$|[\\s,/;])`, "g");
 
 /** "®" and "™" are never part of a name. */
 function dropTrademarks(text: string): string {
@@ -439,10 +440,12 @@ const VAR_KEYWORD = /(?<![\p{L}\p{N}])var(?![\p{L}\p{N}])\.?:?/giu;
 const MAY_HOLD_VARIATION = /var|image|photo|sp|short/i;
 /**
  * Characters a name never carries: C0 and C1 controls, the bidirectional
- * format characters (U+200E/200F, U+202A-202E, U+2066-2069) that can reorder
- * what an operator reads, and the line and paragraph separators U+2028/2029.
+ * format characters (U+061C, U+200E/200F, U+202A-202E, U+2066-2069) that can
+ * reorder what an operator reads, the zero-width characters (U+200B-200D,
+ * U+FEFF), and the line and paragraph separators U+2028/2029.
  */
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g;
+const CONTROL_CHARS =
+  /[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g;
 /** A note that is only a print-run marker ("SP", "SSP", "SP, SSP"): no variation name. */
 const PRINT_RUN_ONLY = /^(?:(?:ssp|sp)[\s,;/&-]*)+$/i;
 /** The most bracket groups looked at in one text. */

@@ -87,13 +87,20 @@ export function withoutChecklistNumber(
 
 /**
  * NEO-591 — the distinct numbers the sources printed, trimmed, in the order
- * BSC, SportLots, checklist: one choice each in the number picker.
+ * BSC, SportLots, checklist: one choice each in the number picker. Spellings
+ * that differ only in case ("38A" and "38a") are one number; the first
+ * spelling is the one kept.
  */
 export function distinctNumbers(numbers: SourceNumbers): string[] {
   const out: string[] = [];
+  const seen = new Set<string>();
   for (const n of [numbers.bsc, numbers.sportlots, numbers.checklist]) {
     const t = n?.trim();
-    if (t !== undefined && !out.includes(t)) out.push(t);
+    if (t === undefined) continue;
+    const folded = t.toLowerCase();
+    if (seen.has(folded)) continue;
+    seen.add(folded);
+    out.push(t);
   }
   return out;
 }

@@ -17,3 +17,10 @@ The "pick the card's number" control is the same `ConflictRadioGroup` the name/p
   on the Keeping shelf, and the minted number is remembered in `mintedNumbers` so it stays on offer.
 - `numberMinted` / `variationGroup` are commit inputs: `committable` must keep them (it strips only the
   dialog's wire-only fields: checklistLink, checklistRowId, sourceNumbers, preKept).
+
+Quiet variant (delta audit): when the sources agree on the number ("38" and "38a") the picker is a
+disclosure, not a warning. `ConflictRadioGroup`'s `warning` is optional (no sentence, neutral rail,
+no aria-describedby); the open state lives in a component-level Set (in-view tweak, not history).
+Group names differ between the two ("Number choice on X" vs "Number conflict on X") while the
+radiogroup keeps "Number for X". A per-shelf-side suffix in the scope keeps a Keeping-shelf group
+apart from a Matched row's on the same number.

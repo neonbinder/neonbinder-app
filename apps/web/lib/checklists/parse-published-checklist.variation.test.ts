@@ -116,6 +116,12 @@ describe("variationNameOf: bounds", () => {
     expect(name).toBe("Photo Varia tion x two");
   });
 
+  it("strips U+061C, the zero-width characters and the byte-order mark too", () => {
+    const name = variationNameOf("Judge (Photo\u061c Throw\u200bback\u200c x\u200d y\ufeff z)")!;
+    expect(/[\u061c\u200b-\u200d\ufeff]/.test(name)).toBe(false);
+    expect(name).toBe("Photo Throw back x y z");
+  });
+
   it("looks at only the first few bracket groups", () => {
     const text = `${"(RC) ".repeat(50)}(Photo Variation)`;
     expect(variationNameOf(text)).toBeUndefined();

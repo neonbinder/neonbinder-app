@@ -1141,3 +1141,20 @@ describe("matchPublishedChecklist: tiedCardIndices tells a tie from a card with 
     expect(r.matches[1].conflict?.players).toBeDefined();
   });
 });
+
+describe("matchPublishedChecklist: a trailing SP the parser dropped is not a different player", () => {
+  test("2011 Leaf shape: card 27b 'Old Teammates SP' takes row 27b 'Old Teammates', with no player conflict", () => {
+    const r = matchPublishedChecklist(
+      [card("27a", ["Pete Rose"]), card("27b", ["Old Teammates SP"])],
+      [row("27a", ["Pete Rose"]), row("27b", ["Old Teammates"])],
+    );
+    expect(r.matches.map((m) => [m.cardIndex, m.rowIndex, m.via])).toEqual([
+      [0, 0, "number"],
+      [1, 1, "number"],
+    ]);
+    expect(r.matches.every((m) => m.conflict === undefined)).toBe(true);
+    expect(r.siblingRows).toEqual([]);
+    expect(r.unusedRowIndices).toEqual([]);
+    expect(playersAgree(["Old Teammates SP"], ["Old Teammates"])).toBe(true);
+  });
+});

@@ -877,6 +877,24 @@ describe("a publisher checklist: variations (stem)", () => {
     const bidi = new Map((await stored(t)).map((r) => [r.cardNumber, r]));
     expect(bidi.get("38b")?.cardVariation).toBe("Photo variation two");
 
+    // Zero-width and BOM characters too (U+061C, U+200B-200D, U+FEFF).
+    await asAdmin.action(api.selectorOptions.fetchCardChecklist, {
+      selectorOptionId: leafId,
+      publishedChecklist: {
+        rows: [
+          { number: "38a", players: trout, teams: [] },
+          {
+            number: "38b",
+            players: trout,
+            teams: [],
+            variationName: "\ufeffPhoto\u200b\u200c\u200d\u061cvariation three",
+          },
+        ],
+      },
+    });
+    const zeroWidth = new Map((await stored(t)).map((r) => [r.cardNumber, r]));
+    expect(zeroWidth.get("38b")?.cardVariation).toBe("Photo variation three");
+
     await expect(
       asAdmin.action(api.selectorOptions.fetchCardChecklist, {
         selectorOptionId: leafId,

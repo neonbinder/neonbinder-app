@@ -252,6 +252,30 @@ describe("cards NB created open in Keeping", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  test("a pre-kept checklist row names its variation on the shelf, before Confirm", () => {
+    const row: PairingCard = {
+      cardNumber: "95b",
+      cardName: "Kyle Long",
+      cardVariation: "Photo Variation",
+      players: ["Kyle Long"],
+      platformData: {},
+      checklistRowId: "row-95b",
+      isVariation: true,
+      preKept: true,
+    };
+    const plain: PairingCard = {
+      cardNumber: "7",
+      cardName: "Plain Row",
+      players: ["Plain Row"],
+      platformData: {},
+      checklistRowId: "row-7",
+    };
+    mount({ sources: ["bsc", "checklist"], checklistOnly: [row, plain] });
+    // The same "· <variation>" the card label uses elsewhere.
+    expect(screen.getByText("Checklist: #95b Kyle Long · Photo Variation")).toBeTruthy();
+    expect(screen.queryByText(/Checklist: #7 Plain Row ·/)).toBeNull();
+  });
+
   test("a pre-kept checklist row starts kept too, and Remove lists it again", async () => {
     const row: PairingCard = {
       cardNumber: "38b",

@@ -586,3 +586,36 @@ describe("pairNamesFirst: a combo card left over in a roster group", () => {
     expect(r.tiedLeft).toEqual([0, 1]);
   });
 });
+
+// The checklist parser drops a trailing "SP"; a marketplace keeps it in the
+// card's name. Both sides' keys drop trailing markers, so they meet.
+describe("pairNamesFirst: trailing print-run markers are not part of the name", () => {
+  test("2011 Leaf shape: 27a pairs 27a and 27b pairs 27b, SP or not", () => {
+    const cards = [item("27a", "Pete Rose"), item("27b", "Old Teammates SP")];
+    const rows = [item("27a", "Pete Rose"), item("27b", "Old Teammates")];
+    const r = pairNamesFirst(cards, rows, { stemSiblingSide: "right" });
+    expect(brief(r)).toEqual([
+      [0, 0, "name", true],
+      [1, 1, "name", true],
+    ]);
+    expect(r.stemSiblings).toEqual([]);
+    expect(r.stemLinks).toEqual([]);
+  });
+
+  test("38a / 38b of one player, the second marked SP on one side only", () => {
+    const cards = [item("38a", "Joe Smith"), item("38b", "Joe Smith SP")];
+    const rows = [item("38b", "Joe Smith"), item("38a", "Joe Smith")];
+    const r = pairNamesFirst(cards, rows, { stemSiblingSide: "right" });
+    expect(brief(r)).toEqual([
+      [0, 1, "name", true],
+      [1, 0, "name", true],
+    ]);
+    expect(r.stemSiblings).toEqual([]);
+  });
+
+  test("the marker is dropped on either side, and the near-name tier reads the same key", () => {
+    expect(pairNamesFirst([item("5", "A One")], [item("5", "A One SSP")]).pairs).toHaveLength(1);
+    const near = pairNamesFirst([item("SIG-1", "Shohei Ohtani SP")], [item("9", "Shohei Otani")]);
+    expect(near.pairs[0].by).toBe("nearName");
+  });
+});

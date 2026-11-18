@@ -97,6 +97,7 @@
  * compared as for any pair.
  */
 
+import { dropTrailingMarkers } from "../cards/print-run-markers";
 import { pairNamesFirst, type NamesFirstPair } from "../cards/pair-names-first";
 import {
   cardNumbersAgree,
@@ -272,6 +273,10 @@ export function playersAgree(
   marketplace: readonly string[],
   checklist: readonly string[],
 ): boolean {
+  // A marketplace keeps a trailing "SP" the checklist parser drops; neither
+  // is a different player.
+  marketplace = marketplace.map(dropTrailingMarkers);
+  checklist = checklist.map(dropTrailingMarkers);
   if (namesKey(marketplace) === namesKey(checklist)) return true;
   const market = marketplace.map(checklistNameKey).filter(Boolean);
   const listed = checklist.map(checklistNameKey).filter(Boolean);

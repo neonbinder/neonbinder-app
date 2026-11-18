@@ -140,11 +140,12 @@ export function checkPublishedChecklist(
     if (row.subset !== undefined && row.subset.trim().length > MAX_PLAYER_NAME_LENGTH) {
       throw new ConvexError(`${where} has a set name over ${MAX_PLAYER_NAME_LENGTH} characters.`);
     }
-    // NEO-591 — the variation note: control and bidi/format characters out
-    // (a name never carries one; the set is the parser's own), whitespace
+    // NEO-591 — the variation note: control, bidi and zero-width format
+    // characters out (a name never carries one; the set is the parser's own:
+    // U+061C, U+200B-200F, U+2028/2029, U+202A-202E, U+2066-2069, U+FEFF), whitespace
     // folded, its own bound (not a player's).
     const variationName = (row.variationName ?? "")
-      .replace(/[\u0000-\u001f\u007f-\u009f\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, " ")
+      .replace(/[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
     if (variationName.length > MAX_VARIATION_NAME) {

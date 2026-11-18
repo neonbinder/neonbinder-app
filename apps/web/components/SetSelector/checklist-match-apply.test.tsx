@@ -8,7 +8,10 @@ import {
   applyChecklistAnswers,
   buildChecklistPairRequests,
   committable,
+  distinctNumbers,
+  numbersDifferInText,
   pairedRowCard,
+  pickedNumber,
   pairedRowOf,
   revertServerChecklistPair,
   unlinkableServerPair,
@@ -493,6 +496,15 @@ describe("NEO-496 — undoing the server's checklist pair", () => {
     expect(silent).not.toHaveProperty("teamLookup");
     expect(silent).not.toHaveProperty("players");
     expect(silent.cardName).toBe("Card #FS-1");
+  });
+});
+
+describe("NEO-591 — distinctNumbers", () => {
+  test("spellings that differ only in case are one number, the first spelling kept", () => {
+    expect(distinctNumbers({ bsc: "38A", sportlots: "38a", checklist: " 38 " })).toEqual(["38A", "38"]);
+    expect(distinctNumbers({ bsc: "nno", checklist: "NNO" })).toEqual(["nno"]);
+    expect(numbersDifferInText({ bsc: "38A", sportlots: "38a" })).toBe(false);
+    expect(pickedNumber({ bsc: "38A", checklist: "38a" })).toBe("38A");
   });
 });
 

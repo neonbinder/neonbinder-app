@@ -2611,6 +2611,13 @@ function numberChoiceLabel(n: string): string {
   return isNoNumber(n) ? "NNO" : `#${n}`;
 }
 
+/** The picker's option text: the checklist's own number says whose it is. */
+function numberOptionLabel(n: string, checklistOption: string | undefined): string {
+  return n === checklistOption
+    ? `${numberChoiceLabel(n)} · your checklist`
+    : numberChoiceLabel(n);
+}
+
 /**
  * NEO-591 — the numbers a Matched row offers, and which is chosen; null when
  * the sources print the card's number the same way (nothing to choose).
@@ -2634,7 +2641,13 @@ const EMPTY_NUMBER_STATE: Pick<
 function numberChoiceOf(
   state: Pick<State, "checklistLinks" | "checklistRows" | "numberPicks" | "mintedNumbers">,
   card: PairingCard,
-): { options: string[]; chosen: string; disagree: boolean } | null {
+): {
+  options: string[];
+  chosen: string;
+  disagree: boolean;
+  /** The option only the operator's checklist printed (named in the picker). */
+  checklistOption?: string;
+} | null {
   const key = candidateKey(card);
   const rowIndex = state.checklistLinks.get(key);
   const rowNumber = rowIndex === undefined ? undefined : state.checklistRows?.[rowIndex]?.number;
@@ -2657,11 +2670,21 @@ function numberChoiceOf(
         ? picked
         : preferCardNumber(card.cardNumber, rowNumber).trim()
       : card.cardNumber.trim();
+  // NEO-591: the checklist is the operator's own upload, so its number is
+  // named as theirs. A number a marketplace printed too stays bare.
+  const folded = (n: string | undefined) => n?.trim().toLowerCase();
+  const checklistOption =
+    printed.checklist !== undefined &&
+    folded(printed.checklist) !== folded(printed.bsc) &&
+    folded(printed.checklist) !== folded(printed.sportlots)
+      ? options.find((o) => folded(o) === folded(printed.checklist))
+      : undefined;
   return {
     options,
     chosen: options.includes(chosen) ? chosen : options[0],
     // "38" and "38a" agree: offered, but nothing to flag.
     disagree: numbersDiffer(printed),
+    ...(checklistOption !== undefined ? { checklistOption } : {}),
   };
 }
 
@@ -2708,8 +2731,12 @@ function ConflictRadioGroup<S extends string = ConflictSide>({
   /** Names the region: "Name conflict on #227c". */
   groupLabel: string;
   warningId: string;
-  /** The sentence explaining why there is a choice at all. */
-  warning: string;
+  /**
+   * The sentence explaining why there is a choice at all. Absent for a choice
+   * with nothing wrong in it (the number picker when the sources agree): no
+   * sentence, no pink rail.
+   */
+  warning?: string;
   /** Names the radiogroup: "Name for #227c". */
   radioGroupLabel: string;
   options: Array<{ side: S; label: string; ariaLabel: string }>;
@@ -2739,18 +2766,22 @@ function ConflictRadioGroup<S extends string = ConflictSide>({
       // the explanation and the pills are the decision; they read
       // top-to-bottom, always. (The pills themselves still wrap — see the
       // radiogroup's own `flex flex-wrap` below.)
-      className="flex flex-col items-start gap-1.5 border-l-2 border-neon-pink-text pl-2 py-1"
+      className={`flex flex-col items-start gap-1.5 border-l-2 pl-2 py-1 ${
+        warning ? "border-neon-pink-text" : "border-rule-strong"
+      }`}
       {...{ [handleAttr]: handleKey }}
     >
       {/* The sentence is ink, not pink: these groups sit on the Matched
           row's tile, and pink text misses 4.5:1 on a dark tile (3.2:1). The
           pink rail beside it (3.2:1 there, 5.9:1 on light's white tile, past
           the 3:1 a mark needs) still says "decide this". */}
-      <span id={warningId} className="text-xs text-ink">
-        {/* Decorative — the sentence itself carries the meaning, so AT
-            shouldn't also be made to announce "warning sign" first. */}
-        <span aria-hidden="true">⚠</span> {warning}
-      </span>
+      {warning && (
+        <span id={warningId} className="text-xs text-ink">
+          {/* Decorative — the sentence itself carries the meaning, so AT
+              shouldn't also be made to announce "warning sign" first. */}
+          <span aria-hidden="true">⚠</span> {warning}
+        </span>
+      )}
       {/*
         a11y (NEO-189 audit) — this is a mutually exclusive,
         always-exactly-one-chosen set, i.e. exactly the case the WAI-ARIA APG
@@ -2763,7 +2794,7 @@ function ConflictRadioGroup<S extends string = ConflictSide>({
       <div
         role="radiogroup"
         aria-label={radioGroupLabel}
-        aria-describedby={warningId}
+        aria-describedby={warning ? warningId : undefined}
         className="flex flex-wrap items-center gap-2"
         onKeyDown={(e) => {
           if (
@@ -2981,8 +3012,11 @@ function RadioMark({ checked }: { checked: boolean }) {
 function serverChecklistChip(
   link: NonNullable<PairingCard["checklistLink"]>,
   unlinkButton?: React.ReactNode,
-  /** False when the row beside it already shows the % (read out here still). */
-  percentVisible = true,
+  /**
+   * The % the row beside the chip already prints ("62%"). The chip then keeps
+   * only the words for a screen reader, and reads out THAT number.
+   */
+  shownPercent?: string,
 ) {
   const { label: text, printed, percent } = serverChecklistChipText(link);
   return (
@@ -2993,7 +3027,7 @@ function serverChecklistChip(
       >
         {text}
       </span>
-      {percent && percentVisible && (
+      {percent && shownPercent === undefined && (
         // A3: the percent alone says nothing to a screen reader; the hidden
         // words say what it measures. `relative` keeps the sr-only text
         // inside the chip.
@@ -3005,11 +3039,11 @@ function serverChecklistChip(
           {percent}
         </span>
       )}
-      {percent && !percentVisible && (
-        // The row shows this % already; the chip keeps the words for a
-        // screen reader without printing it twice.
+      {percent && shownPercent !== undefined && (
+        // The row shows its % already; the chip keeps the words for a screen
+        // reader without printing it twice, and says the number the row shows.
         <span className="relative">
-          <span className="sr-only">Name match {percent}</span>
+          <span className="sr-only">Name match {shownPercent}</span>
         </span>
       )}
       {unlinkButton}
@@ -3327,6 +3361,11 @@ export default function CardPairingModal({
     () => state.unmatchedBsc.length > 0 || state.unmatchedSl.length > 0,
   );
   const [confirming, setConfirming] = useState(false);
+  // NEO-591: the number pickers the operator opened where the sources agree
+  // ("38" and "38a"). An in-view disclosure, so state and not history.
+  const [openNumberPickers, setOpenNumberPickers] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   /**
    * NEO-220 — is the "throw this session away?" confirm on screen?
    *
@@ -4139,31 +4178,76 @@ export default function CardPairingModal({
     const choice = numberChoiceOf(state, card);
     if (!choice) return null;
     const key = candidateKey(card);
-    return (
+    // Where the sources print the same number differently but agree on it
+    // ("38" and "38a"), the choice is offered, not flagged: the chosen number
+    // and a way to change it.
+    const quiet = !choice.disagree;
+    const open = !quiet || openNumberPickers.has(key);
+    const group = (
       <ConflictRadioGroup
         handleAttr="data-number-conflict"
         handleKey={domKey(card)}
-        groupLabel={`Number conflict on ${scope}`}
+        groupLabel={quiet ? `Number choice on ${scope}` : `Number conflict on ${scope}`}
         warningId={`number-conflict-warning-${domKey(card)}`}
-        warning="Potential numbers for this card — pick the right one before it is listed."
+        warning={
+          quiet
+            ? undefined
+            : "Sources disagree on the number. We picked one; check the card back."
+        }
         radioGroupLabel={`Number for ${scope}`}
         chosen={choice.chosen}
-        options={choice.options.map((n) => ({
-          side: n,
-          label: numberChoiceLabel(n),
-          ariaLabel: `${numberChoiceLabel(n)} — use this number for ${scope}`,
-        }))}
+        options={choice.options.map((n) => {
+          const text = numberOptionLabel(n, choice.checklistOption);
+          return {
+            side: n,
+            label: text,
+            ariaLabel: `${text} — use this number for ${scope}`,
+          };
+        })}
         onChoose={(number, viaKeyboard) => {
           dispatch({ type: "CHOOSE_NUMBER", cardKey: key, number });
           if (viaKeyboard) refocusSelectedRadio("data-number-conflict", domKey(card));
         }}
       />
     );
+    if (!quiet) return group;
+    return (
+      <div className="flex flex-col items-start gap-1.5">
+        <span className="flex flex-wrap items-baseline gap-2">
+          {!open && (
+            <span className="text-xs text-ink-2">
+              Number {numberChoiceLabel(choice.chosen)}
+            </span>
+          )}
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={`Change number for ${scope}`}
+            onClick={() =>
+              setOpenNumberPickers((prev) => {
+                const next = new Set(prev);
+                if (!next.delete(key)) next.add(key);
+                return next;
+              })
+            }
+            className="py-2 -my-2 text-xs text-ink-3 underline decoration-dotted hover:text-neon-green-text focus-visible:text-neon-green-text focus-outline"
+          >
+            Change number
+          </button>
+        </span>
+        {open && group}
+      </div>
+    );
   };
 
   /** The number picker under a Keeping-shelf row, or nothing. */
-  const shelfNumberPicker = (card: PairingCard) => {
-    const picker = numberPicker(card, `#${stableNumberOf(card, state.mintedNumbers)}`);
+  const shelfNumberPicker = (card: PairingCard, side: "BSC" | "SL") => {
+    // The shelf side keeps this card's group apart from a Matched row's on the
+    // same number.
+    const picker = numberPicker(
+      card,
+      `#${stableNumberOf(card, state.mintedNumbers)} (Keeping, ${side})`,
+    );
     return picker ? <div className="w-full pb-1">{picker}</div> : null;
   };
 
@@ -4174,10 +4258,10 @@ export default function CardPairingModal({
    * own values back and the row is listed again, picked up by focus. A pair
    * stored before that data existed shows the chip alone.
    */
-  const serverChip = (card: PairingCard, percentVisible = true) => {
+  const serverChip = (card: PairingCard, shownPercent?: string) => {
     const link = card.checklistLink;
     if (!link) return null;
-    if (!unlinkableServerPair(card)) return serverChecklistChip(link, undefined, percentVisible);
+    if (!unlinkableServerPair(card)) return serverChecklistChip(link, undefined, shownPercent);
     const cardKey = candidateKey(card);
     // The row joins the end of the list (see `unlinkServerChecklist`), unless
     // other cards still share it (NEO-591 variations).
@@ -4218,12 +4302,12 @@ export default function CardPairingModal({
       >
         Unlink
       </button>,
-      percentVisible,
+      shownPercent,
     );
   };
-  const checklistChip = (card: PairingCard, percentVisible = true) => {
+  const checklistChip = (card: PairingCard, shownPercent?: string) => {
     // NEO-496: the server's own pairing reads the same way.
-    if (card.checklistLink) return serverChip(card, percentVisible);
+    if (card.checklistLink) return serverChip(card, shownPercent);
     const cardKey = candidateKey(card);
     const rowIndex = state.checklistLinks.get(cardKey);
     const row = rowIndex === undefined ? undefined : checklistRows?.[rowIndex];
@@ -4777,7 +4861,7 @@ export default function CardPairingModal({
                               Numbers differ
                             </span>
                           )}
-                          {checklistChip(m.card, !amberShown)}
+                          {checklistChip(m.card, amberShown ? `${Math.round(shown * 100)}%` : undefined)}
                         </span>
                         <span className="flex shrink-0 items-center gap-1">
                           {checklistLinkButton(m.card)}
@@ -5610,7 +5694,7 @@ export default function CardPairingModal({
                       </span>
                       {/* NEO-591: a minted variation card sits here alone, with
                           its printed number to choose against. */}
-                      {shelfNumberPicker(c)}
+                      {shelfNumberPicker(c, "BSC")}
                     </li>
                   ))}
                   {state.keptSl.map((c) => (
@@ -5643,7 +5727,7 @@ export default function CardPairingModal({
                       </span>
                       {/* NEO-591: a minted variation card sits here alone, with
                           its printed number to choose against. */}
-                      {shelfNumberPicker(c)}
+                      {shelfNumberPicker(c, "SL")}
                     </li>
                   ))}
                   {/* NEO-496 — checklist rows kept as cards of their own. */}
@@ -5655,6 +5739,10 @@ export default function CardPairingModal({
                     >
                       <span className="min-w-0">
                         Checklist: {checklistRowLine(checklistRows[rowIndex])}
+                        {/* NEO-591: a variation made from a row names itself
+                            before Confirm, as the card label does. */}
+                        {state.checklistCards[rowIndex]?.cardVariation &&
+                          ` · ${state.checklistCards[rowIndex].cardVariation}`}
                       </span>
                       <button
                         type="button"

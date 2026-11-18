@@ -107,6 +107,20 @@ describe("the Numbers differ note", () => {
     expect(chipWords.className).toContain("sr-only");
   });
 
+  test("the chip reads out the % the row shows, which is the lower of the pair and the link", () => {
+    // The pair is 80% and the link 90%: the row prints 80, so that is what
+    // the chip's hidden words must say, not the link's own 90.
+    mount({
+      sources: ["bsc", "checklist"],
+      autoMatched: [{ card: onyxCard(), confidence: 0.8 }],
+    });
+    expandMatched();
+    expect(screen.getByText("80%").getAttribute("aria-hidden")).toBe("true");
+    expect(screen.getByText("Name match 80%").className).toContain("sr-only");
+    expect(screen.queryByText("Name match 90%")).toBeNull();
+    expect(screen.queryByText(/90%/)).toBeNull();
+  });
+
   test("a near-name pair with no scored row keeps the % in its chip, read as Name match", () => {
     mount({
       sources: ["bsc", "checklist"],
@@ -144,22 +158,37 @@ describe("the number picker", () => {
   const picker = (scope: string) => screen.getByRole("radiogroup", { name: `Number for ${scope}` });
   const choice = (number: string, scope: string) =>
     screen.getByRole("radio", { name: `${number} — use this number for ${scope}` });
+  /** Open the quiet picker a row offers when its sources agree. */
+  const openPicker = (scope: string) =>
+    fireEvent.click(screen.getByRole("button", { name: `Change number for ${scope}` }));
+  const NNO = "NNO · your checklist";
 
   test("offers one choice per distinct number, with the rule's pick preselected", () => {
     mount({ sources: ["bsc", "checklist"], unmatchedBsc: [onyxCard()] });
     expandMatched();
     expect(screen.getByRole("group", { name: "Number conflict on #OV-ANFI" })).toBeTruthy();
     const radios = Array.from(picker("#OV-ANFI").querySelectorAll('[role="radio"]'));
-    expect(radios.map((r) => r.textContent?.replace(/^✓ /, ""))).toEqual(["#OV-ANFI", "NNO"]);
+    // The checklist's own number says whose it is; the marketplace's stays bare.
+    expect(radios.map((r) => r.textContent?.replace(/^✓ /, ""))).toEqual([
+      "#OV-ANFI",
+      "NNO · your checklist",
+    ]);
     expect(choice("#OV-ANFI", "#OV-ANFI").getAttribute("aria-checked")).toBe("true");
-    expect(choice("NNO", "#OV-ANFI").getAttribute("aria-checked")).toBe("false");
+    expect(choice(NNO, "#OV-ANFI").getAttribute("aria-checked")).toBe("false");
+    // The sources disagree: the warning says so, in the owner's words.
+    expect(
+      screen.getByText("Sources disagree on the number. We picked one; check the card back."),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Potential numbers/)).toBeNull();
+    // No disclosure: the choice is already open.
+    expect(screen.queryByRole("button", { name: /^Change number/ })).toBeNull();
   });
 
   test("picking the other number sets the card's number for Confirm, and the group keeps its name", async () => {
     const { onConfirm } = mount({ sources: ["bsc", "checklist"], unmatchedBsc: [onyxCard()] });
     expandMatched();
-    fireEvent.click(choice("NNO", "#OV-ANFI"));
-    expect(choice("NNO", "#OV-ANFI").getAttribute("aria-checked")).toBe("true");
+    fireEvent.click(choice(NNO, "#OV-ANFI"));
+    expect(choice(NNO, "#OV-ANFI").getAttribute("aria-checked")).toBe("true");
     expect(picker("#OV-ANFI")).toBeTruthy();
     await confirm();
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
@@ -173,10 +202,10 @@ describe("the number picker", () => {
     expandMatched();
     const first = choice("#OV-ANFI", "#OV-ANFI");
     expect(first.getAttribute("tabindex")).toBe("0");
-    expect(choice("NNO", "#OV-ANFI").getAttribute("tabindex")).toBe("-1");
+    expect(choice(NNO, "#OV-ANFI").getAttribute("tabindex")).toBe("-1");
     fireEvent.keyDown(picker("#OV-ANFI"), { key: "ArrowRight" });
-    expect(choice("NNO", "#OV-ANFI").getAttribute("aria-checked")).toBe("true");
-    await waitFor(() => expect(document.activeElement).toBe(choice("NNO", "#OV-ANFI")));
+    expect(choice(NNO, "#OV-ANFI").getAttribute("aria-checked")).toBe("true");
+    await waitFor(() => expect(document.activeElement).toBe(choice(NNO, "#OV-ANFI")));
   });
 
   test("38 and 38a agree: no note, but both are offered with the lettered one preselected", () => {
@@ -188,8 +217,64 @@ describe("the number picker", () => {
     mount({ sources: ["bsc", "checklist"], unmatchedBsc: [card] });
     expandMatched();
     expect(screen.queryByText("Numbers differ")).toBeNull();
-    expect(choice("#38a", "#38a").getAttribute("aria-checked")).toBe("true");
+    // Quiet: the chosen number and a way to change it. No warning, no
+    // "conflict", no radios until the operator asks.
+    expect(screen.getByText("Number #38a")).toBeTruthy();
+    expect(screen.queryByText(/Sources disagree/)).toBeNull();
+    expect(screen.queryByText("⚠")).toBeNull();
+    expect(screen.queryByRole("group", { name: /conflict/i })).toBeNull();
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    const button = screen.getByRole("button", { name: "Change number for #38a" });
+    expect(button.textContent).toBe("Change number");
+    expect(button.getAttribute("aria-expanded")).toBe("false");
+
+    openPicker("#38a");
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    // The same radio group, named for the number and not for a conflict.
+    expect(screen.getByRole("group", { name: "Number choice on #38a" })).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: "Number for #38a" })).toBeTruthy();
+    expect(screen.queryByText(/Sources disagree/)).toBeNull();
+    expect(choice("#38a · your checklist", "#38a").getAttribute("aria-checked")).toBe("true");
     expect(choice("#38", "#38a").getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(choice("#38", "#38a"));
+    expect(choice("#38", "#38a").getAttribute("aria-checked")).toBe("true");
+    // The pick holds the disclosure open and the group keeps its name.
+    expect(button.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("radiogroup", { name: "Number for #38a" })).toBeTruthy();
+
+    openPicker("#38a");
+    expect(screen.queryByRole("radiogroup")).toBeNull();
+    expect(screen.getByText("Number #38")).toBeTruthy();
+  });
+
+  test("the checklist's tag goes only on a number no marketplace printed", () => {
+    // 38a is the checklist's alone: tagged. 38 was BSC's: bare.
+    const card: PairingCard = {
+      ...bscCard("38a", "Ted Williams"),
+      sourceNumbers: { bsc: "38", checklist: "38a" },
+      checklistLink: { via: "playerName", confidence: 0.95, checklistNumber: "38a" },
+    };
+    mount({ sources: ["bsc", "checklist"], unmatchedBsc: [card] });
+    expandMatched();
+    openPicker("#38a");
+    expect(choice("#38a · your checklist", "#38a").textContent).toBe("✓ #38a · your checklist");
+    expect(screen.getByRole("radio", { name: "#38 — use this number for #38a" })).toBeTruthy();
+  });
+
+  test("the checklist's tag stays off a number a marketplace printed in another case", () => {
+    const card: PairingCard = {
+      ...bscCard("38A", "Ted Williams"),
+      sourceNumbers: { bsc: "38A", sportlots: "38", checklist: "38a" },
+      checklistLink: { via: "playerName", confidence: 0.95, checklistNumber: "38a" },
+    };
+    mount({ sources: ["bsc", "checklist"], unmatchedBsc: [card] });
+    expandMatched();
+    openPicker("#38A");
+    // 38A and 38a are one number, offered once, as BSC spelt it.
+    const radios = Array.from(
+      screen.getByRole("radiogroup", { name: "Number for #38A" }).querySelectorAll('[role="radio"]'),
+    );
+    expect(radios.map((r) => r.textContent?.replace(/^✓ /, ""))).toEqual(["#38A", "#38"]);
   });
 
   test("an untouched number pick closes at once", () => {
@@ -219,7 +304,7 @@ describe("the number picker", () => {
       />,
     );
     expandMatched();
-    fireEvent.click(choice("NNO", "#OV-ANFI"));
+    fireEvent.click(choice(NNO, "#OV-ANFI"));
     fireEvent.click(screen.getByLabelText("Cancel card matching"));
     expect(onClose).not.toHaveBeenCalled();
   });
@@ -259,7 +344,7 @@ describe("the number picker", () => {
     fireEvent.click(screen.getByLabelText("Link selected checklist row to #38 Card One"));
     // The rule keeps the digits over NNO; the operator takes NNO instead.
     expect(choice("#38", "#38").getAttribute("aria-checked")).toBe("true");
-    fireEvent.click(choice("NNO", "#38"));
+    fireEvent.click(choice(NNO, "#38"));
     await confirm();
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
     expect(confirmedCards(onConfirm)[0].cardNumber).toBe("NNO");
@@ -360,6 +445,8 @@ describe("a hand link between BSC and SportLots", () => {
 });
 
 describe("Unlink on the server's checklist pair", () => {
+  const openPicker = (scope: string) =>
+    fireEvent.click(screen.getByRole("button", { name: `Change number for ${scope}` }));
   const ROW = {
     number: "38a",
     players: ["Ted Williams"],
@@ -384,6 +471,7 @@ describe("Unlink on the server's checklist pair", () => {
     expandMatched();
     // 38 and 38a agree (no note), but the operator may still want either.
     expect(screen.queryByText("Numbers differ")).toBeNull();
+    openPicker("#38a");
     expect(screen.getByRole("radiogroup", { name: "Number for #38a" })).toBeTruthy();
 
     fireEvent.click(
@@ -391,6 +479,7 @@ describe("Unlink on the server's checklist pair", () => {
     );
 
     expect(screen.queryByRole("radiogroup", { name: /^Number for / })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Change number/ })).toBeNull();
     expect(screen.getByText("BSC: #38 Ted Williams")).toBeTruthy();
     await confirm();
     await waitFor(() => expect(onConfirm).toHaveBeenCalledTimes(1));
@@ -444,12 +533,18 @@ describe("a minted variation card on the Keeping shelf", () => {
     variationGroup: "grp-38",
     sourceNumbers: { sportlots: "38" },
   });
+  // The shelf side is in the scope, so the group cannot be mistaken for a
+  // Matched row's on the same number.
+  const SCOPE = "#38b (Keeping, SL)";
   const choice = (number: string) =>
-    screen.getByRole("radio", { name: `${number} — use this number for #38b` });
+    screen.getByRole("radio", { name: `${number} — use this number for ${SCOPE}` });
+  const openPicker = () =>
+    fireEvent.click(screen.getByRole("button", { name: `Change number for ${SCOPE}` }));
 
   test("offers the minted number beside the printed one, minted preselected", () => {
     mount({ unmatchedSl: [minted()] });
-    expect(screen.getByRole("radiogroup", { name: "Number for #38b" })).toBeTruthy();
+    openPicker();
+    expect(screen.getByRole("radiogroup", { name: `Number for ${SCOPE}` })).toBeTruthy();
     expect(choice("#38b").getAttribute("aria-checked")).toBe("true");
     expect(choice("#38").getAttribute("aria-checked")).toBe("false");
     // One card, not a pair: nothing to flag.
@@ -458,6 +553,7 @@ describe("a minted variation card on the Keeping shelf", () => {
 
   test("picking the printed number keeps it minted and in its group, and the minted one stays on offer", async () => {
     const { onConfirm } = mount({ unmatchedSl: [minted()] });
+    openPicker();
     fireEvent.click(choice("#38"));
     expect(choice("#38").getAttribute("aria-checked")).toBe("true");
     // The group keeps its name and the minted number is still a choice.
