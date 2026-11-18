@@ -67,3 +67,18 @@ needs a server confirmation; earlier ones land before it.
   a failed save and on a dead page). Settle on the loaded group
   (`radio { checked: true }` count 1), branch on `isChecked()`, click, wait for
   the "Saved." status.
+- Theme radio (Profile > Settings) is the same shape, with one more trap: the
+  group is never "loading"; until the profile query lands it shows the device's
+  localStorage copy. Safe in a cleanup only because every pick in the body
+  waits for "Saved." (copy and profile agree) and a red body is reset by the
+  harness. eBay card weight posts "Saved. Each card weighs in at N oz." after
+  the await, so it is already a server answer; Best Offer is not written by
+  any spec. Box Listed / rename / label / binder settings notices also post
+  after the await.
+- Planted break for "the cleanup trusts a failed save": `page.routeWebSocket`
+  on `/\/api\/.*\/sync$/`, answer the `Mutation` whose udfPath ends in the
+  mutation's name with `{type:"MutationResponse", requestId, success:false,
+  result, logLines:[]}` and do not forward it. Delay the answer ~1.5 s: an
+  instant refusal rolls back before `toBeChecked` polls, so the OLD vacuous
+  shape goes red too and proves nothing. Delayed, the old shape is green and
+  the fixed one red with the rollback alert in error-context (NEO-603 theme).

@@ -832,10 +832,15 @@ export class SecretsManagerService {
    *   here. NOT_FOUND and FAILED_PRECONDITION (already destroyed, e.g. by a
    *   concurrent writer) are the normal outcome of a race and are silent.
    * - **Never destroys the version we just wrote, nor a newer one.** Only
-   *   `N-1` is ever addressed. With two overlapping writers, A adding v10 and
-   *   B adding v11, A destroys v9 and B destroys v10, and v11, the newest,
-   *   survives both. That is the interleaving that once zeroed a secret, when
-   *   prune destroyed "everything but mine" (see git history).
+   *   versions numbered below the one this write created are addressed:
+   *   `N-1`, or `N-1` and `N-2` after an add that was retried on UNAVAILABLE
+   *   (`depth` 2; the first attempt may have landed as `N-1`). With two
+   *   overlapping writers, A adding v10 and B adding v11, A destroys v9 and B
+   *   destroys v10, and v11, the newest, survives both. That is the
+   *   interleaving that once zeroed a secret, when prune destroyed
+   *   "everything but mine" (see git history). A retried add can destroy a
+   *   concurrent writer's version, but only one that its own newer version
+   *   already hides from readers (last writer wins, as before).
    * - **Skipped when the created version is unknown.** Without the created
    *   name's ordinal there is no safe target, so nothing is destroyed.
    * - **No secret material and no infrastructure identifier is logged.** Only
