@@ -60,7 +60,7 @@ import {
 // NEO-490 — the publisher's checklist as a third source: the name pairing the
 // server uses (so a suggestion here is the server's own rule), the merge of
 // the server's per-link answers, and the dialog's one-line row text.
-import { isNoNumber } from "@/lib/checklists/match-published-checklist";
+import { isNoNumber, playersAgree } from "@/lib/checklists/match-published-checklist";
 import {
   applyChecklistAnswers,
   buildChecklistPairRequests,
@@ -2362,7 +2362,9 @@ function baseReducer(state: State, action: Action): State {
       // NEO-591: a name typed over a row whose checklist has its own is the
       // operator's answer to that choice, the same as a pill.
       const at = renamed === state ? undefined : renamed.matched[action.index];
-      if (!at || checklistNameOf(state, at.card) === undefined) return renamed;
+      if (!at || !nameSourceOptions(renamed, at).some((o) => o.source === "checklist")) {
+        return renamed;
+      }
       return {
         ...renamed,
         namePicks: new Map(renamed.namePicks).set(candidateKey(at.card), at.card.cardName),
@@ -2819,26 +2821,22 @@ const EMPTY_NUMBER_STATE: Pick<
 };
 
 /**
- * NEO-591 — what the operator's checklist calls this card: its row's players,
- * joined as the dialog prints a row. The row is the hand link's, else the one
- * the server paired, else (a pair stored before the row was kept) the
- * checklist's side of the card's players disagreement. Undefined when no
- * checklist row is behind the card or the row names nobody.
+ * NEO-591 — the players the operator's checklist lists for this card: the
+ * hand link's row, else the one the server paired, else (a pair stored before
+ * the row was kept) the checklist's side of the card's players disagreement.
+ * Undefined when no checklist row is behind the card or the row names nobody.
  */
-function checklistNameOf(
+function checklistPlayersOf(
   state: Pick<State, "checklistLinks" | "checklistRows">,
   card: PairingCard,
-): string | undefined {
+): string[] | undefined {
   const rowIndex = state.checklistLinks.get(candidateKey(card));
   const players =
     (rowIndex === undefined ? undefined : state.checklistRows?.[rowIndex]?.players) ??
     card.checklistLink?.row?.players ??
     card.checklistConflict?.players?.checklist;
-  const name = (players ?? [])
-    .map((n) => n.trim())
-    .filter(Boolean)
-    .join(" / ");
-  return name || undefined;
+  const named = (players ?? []).map((n) => n.trim()).filter(Boolean);
+  return named.length > 0 ? named : undefined;
 }
 
 /**
@@ -2846,6 +2844,14 @@ function checklistNameOf(
  * names (the pair's two when they disagree, else the card's own), the
  * operator's checklist's, and a name the operator typed. Everything past this
  * function reads a list of `{source, value}`.
+ *
+ * ONE rule for "the checklist names the card differently": `playersAgree`,
+ * the very check the server runs for its players disagreement
+ * (`compareChecklistRow`). A checklist that agrees (a trailing "SP" dropped,
+ * a surname only, a different order) is not a source of its own, so nothing
+ * is warned here that the wizard would not ask later. Agreeing with either
+ * marketplace's answer counts: a name a marketplace already gave needs no
+ * third pill.
  */
 function nameSourceOptions(
   state: Pick<State, "checklistLinks" | "checklistRows">,
@@ -2864,9 +2870,20 @@ function nameSourceOptions(
       out.push({ source, value: m.card.cardName });
     }
   }
-  const checklist = checklistNameOf(state, m.card);
-  if (checklist !== undefined) out.push({ source: "checklist", value: checklist, own: true });
-  if (conflict?.custom !== undefined) out.push({ source: "typed", value: conflict.custom, exact: true });
+  const listed = checklistPlayersOf(state, m.card);
+  if (listed !== undefined) {
+    const cardPlayers = (m.card.players ?? []).map((n) => n.trim()).filter(Boolean);
+    const answers: string[][] = [
+      cardPlayers.length > 0 ? cardPlayers : [m.card.cardName],
+      ...(conflict ? [[conflict.bsc], [conflict.sportlots]] : []),
+    ];
+    if (!answers.some((answer) => playersAgree(answer, listed))) {
+      out.push({ source: "checklist", value: listed.join(" / "), own: true });
+    }
+  }
+  if (conflict?.custom !== undefined) {
+    out.push({ source: "typed", value: conflict.custom, exact: true });
+  }
   return out;
 }
 
@@ -2910,6 +2927,23 @@ function nameChoiceOf(
     chosen: (findChoice(choices, picked) ?? findChoice(choices, carried) ?? choices[0]).value,
     hasChecklist: sources.some((o) => o.source === "checklist"),
   };
+}
+
+/**
+ * The name the operator picked on a row whose checklist names the card
+ * differently, if it is still one of the names on offer. Not `nameChoiceOf`:
+ * a name typed over the row can leave one pill (nothing left to choose) and is
+ * still the operator's answer.
+ */
+function settledNameOf(
+  state: Pick<State, "checklistLinks" | "checklistRows" | "namePicks">,
+  m: MatchedPair,
+): string | undefined {
+  const picked = state.namePicks.get(candidateKey(m.card));
+  if (picked === undefined) return undefined;
+  const sources = nameSourceOptions(state, m);
+  if (!sources.some((o) => o.source === "checklist")) return undefined;
+  return findChoice(pickChoices(sources), picked)?.value;
 }
 
 /**
@@ -4320,9 +4354,9 @@ export default function CardPairingModal({
           const key = candidateKey(card);
           const pair = pairs.get(key);
           if (!pair || !state.namePicks.has(key)) return card;
-          const choice = nameChoiceOf(state, pair);
-          if (!choice || !choice.hasChecklist) return card;
-          return settlePlayersByName({ ...card, cardName: choice.chosen }, choice.chosen);
+          const name = settledNameOf(state, pair);
+          if (name === undefined) return card;
+          return settlePlayersByName({ ...card, cardName: name }, name);
         });
       }
       // NEO-496: the checklist rows the operator kept, as cards of their own,

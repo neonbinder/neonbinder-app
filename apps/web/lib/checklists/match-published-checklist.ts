@@ -268,6 +268,12 @@ const SURNAME_SUFFIX = /(?: (?:jr|sr|ii|iii|iv|v))+$/;
  * first, so a full name never takes a surname's partner.
  *
  * A comparison for the conflict check only: never used to write a name.
+ *
+ * The ONE rule for "do these two sources name the card differently": the
+ * server's players disagreement (`compareChecklistRow`) and Match Cards' name
+ * picker (`nameSourceOptions` in the pairing dialog) both ask it, so the
+ * dialog never warns about a name the wizard would not. A trailing hobby
+ * marker ("SP"), a surname only, and a different order all agree.
  */
 export function playersAgree(
   marketplace: readonly string[],
