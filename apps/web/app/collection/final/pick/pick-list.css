@@ -48,6 +48,29 @@ html:has(.nb-pick) {
   container-type: inline-size;
 }
 
+/*
+ * NEO-598, Condensed rows: a wide row keeps one line, its long words clipped with
+ * an ellipsis (a mouse reads them in the title). A keyboard has no hover, and the
+ * clip would also cut the ring off an order link, so the row the keyboard is on
+ * unclips and wraps its words: that row may grow, every other row stays one line.
+ */
+@media (min-width: 48rem) {
+  .nb-pick-row:has(:focus-visible) td.nb-pick-line {
+    overflow: visible;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  .nb-pick-row:has(:focus-visible) .nb-pick-clip {
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+    min-width: 0;
+  }
+  .nb-pick-row:has(:focus-visible) .nb-pick-flow {
+    flex-wrap: wrap;
+  }
+}
+
 /* A new box's heading takes the keyboard; it lights up briefly so the eye follows. */
 .nb-pick-boxhead:focus {
   animation: nb-pick-arrive 1.2s ease-out;

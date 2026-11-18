@@ -599,8 +599,14 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect(team.className).toContain("truncate");
     expect(team.previousElementSibling?.textContent).toBe("Mike Trout");
     expect(team.parentElement?.className).not.toContain("flex-col");
+    // The name keeps a floor (the team and chips give way first); the keyboard's row can unclip it.
+    const name = within(trout).getAllByText("Mike Trout").find((el) => el.getAttribute("title") === "Mike Trout")!;
+    expect(name.className).toContain("min-w-[6ch]");
+    expect(name.className).toContain("nb-pick-clip");
+    // The 24px toggle carries an invisible hit area (a pseudo-element) inside the row's own height.
+    expect(within(trout).getByRole("button", { name: /^Pulled #27 Mike Trout/ }).className).toContain("md:after:-inset-y-1");
     // The wide cells hold their words on one line.
-    const wide = cells.filter((td) => td.className.includes("md:whitespace-nowrap"));
+    const wide = cells.filter((td) => td.className.includes("nb-pick-line") && td.className.includes("md:whitespace-nowrap"));
     expect(wide.length).toBeGreaterThanOrEqual(5);
   });
 
@@ -1042,5 +1048,73 @@ describe("the Pick List's rare states pass axe", () => {
     expect(within(region).getByRole("heading", { level: 3, name: /^Box not recorded · \d+ to pull$/ })).toBeTruthy();
     expect(within(region).getByText("These sold before NB kept track of boxes. Look wherever you keep the set.")).toBeTruthy();
     expect(violations).toEqual([]);
+  });
+});
+
+// NEO-598: Condensed's wide screen is a fixed-layout table, where a heading that spans more
+// columns than there are adds an empty one and takes a share of the width. So every group
+// heading spans exactly the columns the wide screen draws, with Qty and Slot on or off.
+// (A By the Box stop with slots is one flat run with no group heading, so Slot is checked on
+// the columns a row draws against the header; the headings are checked where they exist.)
+describe("NEO-598: Condensed headings span the wide screen's columns", () => {
+  type Line = import("./types").SaleLine;
+  const wide = (el: Element) => !el.className.split(/\s+/).includes("md:hidden");
+  // Qty shows where a row holds two or more: one line per card keeps it off; two copies put it on.
+  const one = (lines: Line[]) => lines.filter((l, i) => !l.card || lines.findIndex((m) => m.card?.id === l.card?.id) === i).map((l) => ({ ...l, quantity: 1 }));
+  const two = (lines: Line[]) => lines.map((l) => ({ ...l, quantity: 2 }));
+
+  async function tablesFor(shape: (lines: Line[]) => Line[], url: string) {
+    const { DemoPickListProvider, DEMO_PICK_DATA } = await import("./demoPickStore");
+    const { default: PickListTab } = await import("./PickListTab");
+    const { CollectionModeProvider } = await import("../mode");
+    window.localStorage.setItem(PICK_DENSITY_KEY, "condensed");
+    resetPickDensityForTests();
+    render(
+      <Theme>
+        <MemoryRouter initialEntries={[url]}>
+          <CollectionModeProvider mode="app" surface="inventory">
+            <DemoPickListProvider data={{ ...DEMO_PICK_DATA, lines: shape([...DEMO_PICK_DATA.lines]) }}>
+              <PickListTab />
+            </DemoPickListProvider>
+          </CollectionModeProvider>
+        </MemoryRouter>
+      </Theme>,
+    );
+    const region = await screen.findByRole("region", { name: "Pick List" });
+    return within(region).getAllByRole("table");
+  }
+
+  const cases = [
+    { qty: false, slot: false, url: "/inventory?tab=pick", shape: one },
+    { qty: true, slot: false, url: "/inventory?tab=pick", shape: two },
+    { qty: false, slot: true, url: "/inventory?tab=pick&pv=box", shape: one },
+    { qty: true, slot: true, url: "/inventory?tab=pick&pv=box", shape: two },
+  ];
+
+  it.each(cases)("Qty $qty, Slot $slot: a row draws 7 + Qty + Slot columns, and a group heading spans as many", async ({ qty, slot, url, shape }) => {
+    const tables = await tablesFor(shape, url);
+    let met = 0;
+    let headings = 0;
+    for (const table of tables) {
+      const headers = [...table.querySelectorAll("thead th")].filter(wide);
+      const hasQty = headers.some((th) => th.textContent?.includes("Qty"));
+      const hasSlot = headers.some((th) => th.textContent?.trim() === "Slot");
+      if (hasQty !== qty || hasSlot !== slot) continue;
+      const expected = 7 + (qty ? 1 : 0) + (slot ? 1 : 0);
+      expect(headers).toHaveLength(expected);
+      // Every data row draws as many wide columns (a listing with no number spans two of them).
+      for (const row of table.querySelectorAll("tr.nb-pick-row")) {
+        const drawn = [...row.querySelectorAll<HTMLTableCellElement>("td")].filter(wide).reduce((n, td) => n + td.colSpan, 0);
+        expect(drawn).toBe(expected);
+      }
+      for (const head of table.querySelectorAll<HTMLTableCellElement>("th[scope='rowgroup']")) {
+        expect(head.colSpan).toBe(expected);
+        headings += 1;
+      }
+      met += 1;
+    }
+    // The case really met a table with these columns, and (off a flat box run) a heading to check.
+    expect(met).toBeGreaterThan(0);
+    if (!slot) expect(headings).toBeGreaterThan(0);
   });
 });

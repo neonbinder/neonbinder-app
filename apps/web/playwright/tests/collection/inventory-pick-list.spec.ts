@@ -85,6 +85,7 @@ import {
   pickRow,
   pictureButton,
   pulledToggle,
+  rowLines,
   seedPickOrder,
   seen,
   shipPickOrder,
@@ -380,6 +381,13 @@ test(
         if (!isMobile) await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toHaveCount(0);
       };
       await expectCondensed();
+      if (!isMobile) {
+        // NEO-598: on a wide screen a Condensed row is one line, the described line's note included.
+        for (const row of [rowA, pickRow(table, CARD_I.short), pickRow(table, listedTitle)]) {
+          await expect.poll(() => rowLines(row)).toBeLessThanOrEqual(1.5);
+        }
+      }
+      await expectAccessible(page, { label: "Pick List, Condensed rows" });
       await expect(pick.matches).toHaveText("6 match.");
       // This device remembers it: a reload (a full page load: the launch gate) opens Condensed.
       await page.reload();

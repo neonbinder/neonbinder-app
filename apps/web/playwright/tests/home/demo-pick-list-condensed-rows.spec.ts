@@ -21,7 +21,7 @@
 // The demo is hard-coded data in the browser (demoPickStore.tsx), never
 // Convex, so nothing here writes anywhere (R7). Public: signed out (R4).
 import { test, expect, expectAccessible } from "../../support/fixtures";
-import { nameCell, pickList, pickRow, pictureButton, pulledToggle, seen, variantTag } from "../../support/pick-list";
+import { expectWithinCell, nameCell, pickList, pickRow, pictureButton, pulledToggle, rowLines, seen, variantTag } from "../../support/pick-list";
 
 // The rows the spec reads, by how each row's name begins (demoPickStore.tsx).
 const TROUT = "#27 Mike Trout, 2026 Topps Series 1";
@@ -36,6 +36,11 @@ const WITT = "2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr. #CCR
 // Slabs: the grade and the cert share the line.
 const OHTANI_SLAB = "#US1 Shohei Ohtani, 2018 Topps Update";
 const SANDERS_SLAB = "#257 Barry Sanders, 1989 Score";
+// Markers beside the name: Last ones, Short 1 (on a two-copy line), New, and the Not in NB chip on Nabers.
+const JUDGE = "#8B-12 Aaron Judge, 2026 Topps Series 1 8 Bit Ballers Red";
+const FIELDS = "#330 Malachi Fields, 2026 Topps";
+const FLAGG = "#1 Cooper Flagg, 2025-26 Topps Chrome";
+const BCP = "2025 Bowman Chrome Prospects #BCP-77 Auto";
 
 test(
   "Pick List demo: Condensed rows bring back the pre-NEO-522 screen, and this device remembers the choice",
@@ -46,11 +51,6 @@ test(
     // The row's last cell on screen (Order on a desktop, the one cell on a phone) carries its rule.
     const ruleUnder = (row: string) => seen(pickRow(table, row).getByRole("cell")).last();
     const regionWidth = async () => (await region.boundingBox())!.width;
-    // How many text lines tall a row stands, by its own line-height; a row on one line is about 1.
-    const linesTall = async (row: string) => {
-      const tr = pickRow(table, row);
-      return (await tr.boundingBox())!.height / (await tr.evaluate((el) => parseFloat(getComputedStyle(el).lineHeight)));
-    };
     const viewport = page.viewportSize()!;
 
     await page.goto("/demo/inventory?tab=pick");
@@ -104,13 +104,43 @@ test(
         expect(pic.width / pic.height).toBeCloseTo(5 / 7, 1);
         // One line per row: the team and chips beside the name, the note beside the set, the
         // slab's grade and cert, a long listing title in Can't find it (clipped, never wrapped).
-        for (const row of [TROUT, SKENES, SCHLITTLER, OHTANI_INSERT, NABERS, WITT, OHTANI_SLAB, SANDERS_SLAB]) {
-          await expect.poll(() => linesTall(row), { message: row }).toBeLessThanOrEqual(1.5);
+        // SKENES has two orders (BSC and eBay), joined on the line; JUDGE, FIELDS, FLAGG and NABERS
+        // carry a marker chip beside the name, which must stay whole inside its cell.
+        const rows = [TROUT, SKENES, SCHLITTLER, OHTANI_INSERT, NABERS, WITT, OHTANI_SLAB, SANDERS_SLAB, JUDGE, FIELDS, FLAGG];
+        for (const row of rows) {
+          await expect.poll(() => rowLines(pickRow(table, row)), { message: row }).toBeLessThanOrEqual(1.5);
         }
+        // The one-line rows never push the table past its page: long words clip with an ellipsis
+        // instead of widening a column (a fixed layout), so the list never scrolls sideways.
+        await expect.poll(async () => (await table.boundingBox())!.width - (await region.boundingBox())!.width).toBeLessThanOrEqual(1);
         await expect(seen(pickRow(table, SANDERS_SLAB).getByText("Cert 4021337", { exact: true }))).toBeVisible();
+        await expect(seen(pickRow(table, SKENES).getByText("BSC 88213", { exact: true }))).toBeVisible();
+        await expect(seen(pickRow(table, SKENES).getByText("eBay 12-3456", { exact: true }))).toBeVisible();
+        for (const [row, chip] of [
+          [JUDGE, "Last ones"],
+          [FIELDS, "Short 1"],
+          [FLAGG, "New"],
+          [NABERS, "Not in NB"],
+        ] as const) {
+          const marker = seen(pickRow(table, row).getByText(chip, { exact: true }));
+          await expect(marker).toBeVisible();
+          await expectWithinCell(marker);
+        }
       }
     };
     await expectCondensed();
+
+    if (!isMobile) {
+      // A keyboard cannot hover for a title: the row it is on unclips and wraps its words (the long
+      // Witt title), and the row it leaves goes back to one line. Arrow keys move between toggles.
+      await pulledToggle(table, BCP).focus();
+      await page.keyboard.press("ArrowDown");
+      await expect(pulledToggle(table, WITT)).toBeFocused();
+      await expect.poll(() => rowLines(pickRow(table, WITT))).toBeGreaterThan(1.5);
+      await page.keyboard.press("ArrowDown");
+      await expect(pulledToggle(table, TROUT)).toBeFocused();
+      await expect.poll(() => rowLines(pickRow(table, WITT))).toBeLessThanOrEqual(1.5);
+    }
 
     if (!isMobile) {
       // Condensed takes the same wide page as Spacious: at 1024 and at 1920 the list is as wide
@@ -119,6 +149,7 @@ test(
       await page.setViewportSize({ width: 1920, height: viewport.height });
       await expect.poll(regionWidth).toBe(spaciousWide);
       await expectCondensed();
+      await expectAccessible(page, { label: "Pick List demo, Condensed rows at 1920" });
       await page.setViewportSize(viewport);
     }
 

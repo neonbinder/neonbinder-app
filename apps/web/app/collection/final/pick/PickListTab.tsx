@@ -1854,10 +1854,12 @@ function CondensedRow({
   const vWord = facts?.variantWord ?? null;
   const vName = facts?.variantName ?? null;
   const tab = tabbable ? 0 : -1;
-  // NEO-598: a wide screen draws one line per row, so the cells are dense (the 24px
-  // controls set the row's height) and the text cells never wrap, clipping with an ellipsis.
+  // NEO-598: a wide screen draws one line per row, so the cells are dense (the 24px controls
+  // set the row's height) and the text cells never wrap, clipping with an ellipsis. The 24px
+  // toggle and the ~17x24 thumb meet WCAG 2.5.8 only through its spacing exception: tightening
+  // this padding, or moving the thumb nearer the toggle, breaks it. A keyboard row unclips (pick-list.css).
   const cell = "border-b border-rule px-2 align-middle max-md:py-2 md:py-0.5";
-  const lineCell = "md:overflow-hidden md:whitespace-nowrap";
+  const lineCell = "nb-pick-line md:overflow-hidden md:whitespace-nowrap";
 
   const onRowClick = (e: MouseEvent<HTMLTableRowElement>) => {
     if ((e.target as Element).closest("button, a, input, select")) return;
@@ -1897,22 +1899,22 @@ function CondensedRow({
   // note give way (ellipsis, full text in the title) before a chip does.
   const problemLine =
     !c && row.problem ? (
-      <span title={row.problem} className="min-w-0 shrink-[3] truncate text-xs text-notice-warn-ink">
+      <span title={row.problem} className="nb-pick-clip min-w-0 shrink-[3] truncate text-xs text-notice-warn-ink">
         {row.problem}
       </span>
     ) : null;
   const setLine = facts ? (
-    <span className="flex min-w-0 items-center gap-1.5">
+    <span className="nb-pick-flow flex min-w-0 items-center gap-1.5">
       {showSet && showSport && <SportChip code={facts.sportCode} name={facts.sportName} />}
       {showSet && (
-        <span title={facts.setTitle} className="min-w-0 truncate text-ink">
+        <span title={facts.setTitle} className="nb-pick-clip min-w-0 truncate text-ink">
           {facts.setTitle}
         </span>
       )}
       {role && <VariantChip role={role} />}
       {vWord && <VariantWordChip word={vWord} />}
       {vName && (
-        <span title={vName} className="min-w-0 truncate text-ink-2">
+        <span title={vName} className="nb-pick-clip min-w-0 truncate text-ink-2">
           {vName}
         </span>
       )}
@@ -1925,9 +1927,9 @@ function CondensedRow({
       {problemLine}
     </span>
   ) : (
-    <span className="flex min-w-0 items-center gap-1.5">
+    <span className="nb-pick-flow flex min-w-0 items-center gap-1.5">
       {row.listed?.sportName && <SportChip code={row.listed.sportCode ?? null} name={row.listed.sportName} />}
-      <span title={row.problem ?? undefined} className="min-w-0 truncate text-notice-warn-ink">
+      <span title={row.problem ?? undefined} className="nb-pick-clip min-w-0 truncate text-notice-warn-ink">
         {row.problem}
       </span>
     </span>
@@ -1954,7 +1956,7 @@ function CondensedRow({
   // Condition, or a slab's grade and cert.
   // Stacked on a phone; inline on a wide screen, where the grade leads and the cert follows it.
   const condition = (
-    <span className="max-md:flex max-md:flex-col md:block md:truncate">
+    <span className="nb-pick-clip max-md:flex max-md:flex-col md:block md:truncate">
       {row.grade ? (
         <>
           <span className="font-semibold text-ink">
@@ -1977,7 +1979,7 @@ function CondensedRow({
   );
   // Stacked on a phone; on a wide screen the orders join with commas on the one line.
   const orders = (
-    <span className="max-md:flex max-md:flex-col md:block md:truncate">
+    <span className="nb-pick-clip max-md:flex max-md:flex-col md:block md:truncate">
       {row.orders.map((o, i) => (
         <Fragment key={o.id}>
           {i > 0 && <span className="max-md:hidden">, </span>}
@@ -2004,12 +2006,13 @@ function CondensedRow({
   const team = c?.teams.map((t) => t.name).join(" / ");
   // The player cell's whole line (wide screens): the name, the team after it, the marker chips.
   const whoLine = (
-    <span className="flex min-w-0 items-center gap-2">
-      <span title={who} className={`min-w-0 truncate ${facts ? "font-semibold text-ink" : "text-ink"}`}>
+    <span className="nb-pick-flow flex min-w-0 items-center gap-2">
+      {/* The name keeps a floor, so it never shrinks to an ellipsis while a chip survives: the team goes first, then the chips clip. */}
+      <span title={who} className={`nb-pick-clip min-w-[6ch] truncate ${facts ? "font-semibold text-ink" : "text-ink"}`}>
         {who}
       </span>
       {team && (
-        <span title={team} className="min-w-0 shrink-[3] truncate text-xs text-ink-3">
+        <span title={team} className="nb-pick-clip min-w-0 shrink-[3] truncate text-xs text-ink-3">
           {team}
         </span>
       )}
@@ -2037,7 +2040,7 @@ function CondensedRow({
           aria-label={`Pulled ${name}`}
           tabIndex={tab}
           onClick={onToggle}
-          className={`grid place-items-center rounded border-2 focus-outline max-md:size-8 md:size-6 ${
+          className={`grid place-items-center rounded border-2 focus-outline max-md:size-8 md:relative md:size-6 md:after:absolute md:after:-inset-x-2.5 md:after:-inset-y-1 ${
             pulled ? "border-neon-green bg-neon-green text-on-neon-green" : "border-control text-transparent hover:border-ink-3"
           }`}
         >
