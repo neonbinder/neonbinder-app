@@ -280,9 +280,12 @@ async function resetWorkerAccount(
     gaveUp = true;
     // Playwright screenshots every page of a red test as its context closes, and
     // this page shows the account's credentials: leave it blank first (hard rule 7).
+    // A hung renderer can refuse the blank page, so close every page as well:
+    // Playwright captures only pages still open when the context closes.
     if (context) {
       for (const page of context.pages()) {
         await page.goto("about:blank", { timeout: RESET_STEP_MS }).catch(() => {});
+        await page.close().catch(() => {});
       }
       await context.close().catch(() => {});
     }

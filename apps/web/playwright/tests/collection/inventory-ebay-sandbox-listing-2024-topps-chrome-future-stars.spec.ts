@@ -824,7 +824,7 @@ test(
       await expect(editForm).toBeHidden();
       await yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRegExp(short)}, Raw, `) }).click();
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-      await confirmRemoved(drawer);
+      await confirmRemoved(drawer, `Removed ${short}, Raw, `);
       if (axe) await expectAccessible(page, { within: drawer, label: "Card drawer, its only copy removed" });
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();

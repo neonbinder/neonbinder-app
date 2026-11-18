@@ -17,6 +17,8 @@ Other facts from the NEO-358 delete-refusal spec: a hand-made card has no player
 
 **Third shape, the same notice twice (NEO-526, 2026-11-13):** every "Removed <short>, Raw, Excellent · Main" notice reads the same, so a `^Removed` wait only tells the FIRST Remove apart; the 2nd and 3rd waits pass on the stale notice, and a press lost to the reflow goes unseen (the next spec on the worker then found the card already Have). The page-level notice also outlives a closed drawer (10 s), so a Remove in the next drawer visit can be satisfied by the previous card's notice. Fix: `confirmRemoved(drawer)` in `support/collection.ts` after EVERY Remove (wait `^Removed `, press `Dismiss message`, expect the status empty), the last one included, before the next press or closing the drawer. In a `finally` it sits inside the best-effort try, so a miss is annotated and never masks the body's error. A spec that has run only on optimistic state is "green" with a Remove that never reached the server.
 
+**Pin the line (NEO-592, 2026-11-18):** every `confirmRemoved` call passes `Removed ${short}, <what>` (a prefix). `<what>` is `lineWhat`: `Raw, Excellent`, `Raw, Very Good ×2`, `PSA 10`; the notice then adds ` · <home>`. The Remove BUTTON's name uses `lineNames` instead (`, in Main`, `, line 2` only when two lines read the same), so never copy a button suffix into the pin. Where only the card is known (scan intake, box runs) pin `Removed #<n>, ` or `Removed ${short}, Raw, `. Proof: a wrong `×3` goes red with the real `Removed … ×2 · Main` in error-context.
+
 ## Optimistic tick then navigate reads from a second tab
 
 Seen on the NEO-500 Pick List: "Pull these 2" ticked both rows and posted its

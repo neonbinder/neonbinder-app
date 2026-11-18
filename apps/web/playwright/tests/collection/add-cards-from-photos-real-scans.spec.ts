@@ -268,7 +268,7 @@ test(
         await remove.first().click();
         await expect(remove).toHaveCount(left - 1);
         // The server's answer before the next Remove (every "Removed ..." notice of one card reads the same).
-        await confirmRemoved(drawer);
+        await confirmRemoved(drawer, `Removed ${short}, Raw, `);
       }
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
       await drawer.getByRole("button", { name: "Close card detail" }).click();

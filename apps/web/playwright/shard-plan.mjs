@@ -89,13 +89,42 @@ function checkTaggedList(specs, { list, tag, listName }) {
   ];
 }
 
+// GUIDE hard rule 5: a seller or breaker spec never retries (a retry writes to the
+// one shared seller again, or reopens the deployment-wide BSC gate). The runtime
+// backstop (`noRetryOnSharedAccounts`) refuses a retry only after a failure; this
+// refuses a tagged spec without `describe.configure({ retries: 0 })` before CI runs.
+// Comments are stripped first, so a configure call quoted in a comment does not count.
+const RETRIES_ZERO = /\b(?:test\.)?describe\.configure\(\s*\{[^}]*\bretries\s*:\s*0\b[^}]*\}\s*\)/;
+const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+
+/**
+ * Problems for every spec carrying one of `tags` whose source lacks a
+ * `describe.configure({ retries: 0 })`. `read(spec)` returns a spec's source.
+ * @param {string[]} specs
+ * @param {(spec: string) => string} read
+ * @param {string[]} [tags]
+ * @returns {string[]}
+ */
+export function checkNoRetryTagged(specs, read, tags = [SELLER_TAG, BREAKER_TAG]) {
+  const problems = [];
+  for (const spec of specs) {
+    const source = read(spec);
+    const tag = tags.find((t) => source.includes(`"${t}"`));
+    if (tag && !RETRIES_ZERO.test(stripComments(source))) {
+      problems.push(`${spec} carries ${tag} but lacks test.describe.configure({ retries: 0 }) (GUIDE hard rule 5)`);
+    }
+  }
+  return problems;
+}
+
 function checkSellerTags(specs) {
   const problems = [
     ...checkTaggedList(specs, { list: SELLER_SPECS, tag: SELLER_TAG, listName: "SELLER_SPECS" }),
     ...checkTaggedList(specs, { list: BREAKER_SPECS, tag: BREAKER_TAG, listName: "BREAKER_SPECS" }),
+    ...checkNoRetryTagged(specs, (s) => fs.readFileSync(path.join(TESTS, s), "utf8")),
     ...SELLER_SPECS.filter((s) => BREAKER_SPECS.includes(s)).map((s) => `${s} is in both SELLER_SPECS and BREAKER_SPECS`),
   ];
-  if (problems.length) throw new Error(`seller/breaker spec lists and tags disagree:\n  ${problems.join("\n  ")}`);
+  if (problems.length) throw new Error(`seller/breaker specs fail the planning checks (lists, tags, retries):\n  ${problems.join("\n  ")}`);
 }
 
 /** The specs a shard may be handed on `project`: everything but the ignored, the seller and the breaker specs. */
@@ -236,40 +265,47 @@ function fromResults(files) {
   );
 }
 
-const args = process.argv.slice(2);
-const pIdx = args.indexOf("--project");
-let project = PROJECTS[0];
-if (pIdx !== -1) {
-  project = args[pIdx + 1];
-  if (!PROJECTS.includes(project)) throw new Error(`--project must be one of ${PROJECTS.join(", ")}, got '${project}'`);
-  args.splice(pIdx, 2);
-}
-if (args[0] === "--seller") {
-  const rel = toPosix(path.relative(WEB, TESTS));
-  for (const spec of listSellerSpecs()) console.log(`${rel}/${spec}`);
-} else if (args[0] === "--breaker") {
-  const rel = toPosix(path.relative(WEB, TESTS));
-  for (const spec of listBreakerSpecs()) console.log(`${rel}/${spec}`);
-} else if (args[0] === "--projects") {
-  for (const p of PROJECTS) console.log(p);
-} else if (args[0] === "--from-results") {
-  if (!args[1]) throw new Error("usage: shard-plan.mjs --from-results <results.json>...");
-  fromResults(args.slice(1));
-} else {
-  const n = Number(args[0]);
-  const i = args[1] === undefined ? undefined : Number(args[1]);
-  if (!Number.isInteger(n) || n < 1 || (i !== undefined && (!Number.isInteger(i) || i < 1 || i > n))) {
-    throw new Error(
-      "usage: shard-plan.mjs <N> [<i> in 1..N] [--project <p>] | --from-results <results.json>... | --projects",
-    );
+function main(argv) {
+  const args = argv.slice(2);
+  const pIdx = args.indexOf("--project");
+  let project = PROJECTS[0];
+  if (pIdx !== -1) {
+    project = args[pIdx + 1];
+    if (!PROJECTS.includes(project)) throw new Error(`--project must be one of ${PROJECTS.join(", ")}, got '${project}'`);
+    args.splice(pIdx, 2);
   }
-  const shards = plan(n, project);
-  if (i === undefined) {
-    shards.forEach((s, k) =>
-      console.error(`shard ${k + 1}/${n} [${project}]: ${s.specs.length} specs, ~${Math.round(s.secs)}s`),
-    );
-  } else {
+  if (args[0] === "--seller") {
     const rel = toPosix(path.relative(WEB, TESTS));
-    for (const spec of shards[i - 1].specs) console.log(`${rel}/${spec}`);
+    for (const spec of listSellerSpecs()) console.log(`${rel}/${spec}`);
+  } else if (args[0] === "--breaker") {
+    const rel = toPosix(path.relative(WEB, TESTS));
+    for (const spec of listBreakerSpecs()) console.log(`${rel}/${spec}`);
+  } else if (args[0] === "--projects") {
+    for (const p of PROJECTS) console.log(p);
+  } else if (args[0] === "--from-results") {
+    if (!args[1]) throw new Error("usage: shard-plan.mjs --from-results <results.json>...");
+    fromResults(args.slice(1));
+  } else {
+    const n = Number(args[0]);
+    const i = args[1] === undefined ? undefined : Number(args[1]);
+    if (!Number.isInteger(n) || n < 1 || (i !== undefined && (!Number.isInteger(i) || i < 1 || i > n))) {
+      throw new Error(
+        "usage: shard-plan.mjs <N> [<i> in 1..N] [--project <p>] | --from-results <results.json>... | --projects",
+      );
+    }
+    const shards = plan(n, project);
+    if (i === undefined) {
+      shards.forEach((s, k) =>
+        console.error(`shard ${k + 1}/${n} [${project}]: ${s.specs.length} specs, ~${Math.round(s.secs)}s`),
+      );
+    } else {
+      const rel = toPosix(path.relative(WEB, TESTS));
+      for (const spec of shards[i - 1].specs) console.log(`${rel}/${spec}`);
+    }
   }
 }
+
+// Run as a CLI only: the unit tests import checkNoRetryTagged without planning.
+// Real paths on both sides, since import.meta.url is resolved through symlinks.
+const invoked = process.argv[1] && fs.existsSync(process.argv[1]) ? fs.realpathSync(process.argv[1]) : undefined;
+if (invoked === fs.realpathSync(fileURLToPath(import.meta.url))) main(process.argv);

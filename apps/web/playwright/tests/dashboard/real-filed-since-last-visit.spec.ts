@@ -142,13 +142,13 @@ test(
     await yourCopies.getByRole("button", { name: `Remove ${card.short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     // The server's answer, not the optimistic list: a copy left behind would ride into the worker's next spec.
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${card.short}, Raw, Excellent`);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     await again.getByRole("button", { name: `Details for ${added.short}`, exact: true }).click();
     await addedCopies.getByRole("button", { name: `Remove ${added.short}, Raw, Excellent`, exact: true }).click();
     await expect(addedCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-    await confirmRemoved(addedDrawer);
+    await confirmRemoved(addedDrawer, `Removed ${added.short}, Raw, Excellent`);
     await addedDrawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(addedDrawer).toBeHidden();
 

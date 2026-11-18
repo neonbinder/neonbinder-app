@@ -45,7 +45,7 @@ async function tidy(page: Page, card: Card, box: string): Promise<void> {
     await remove.click();
     await expect(none).toBeVisible();
     // The server's answer, not the optimistic list: a copy left behind would ride into the worker's next spec.
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${card.short}, Raw, Excellent`);
   }
   await drawer.getByRole("button", { name: "Close card detail" }).click();
   await expect(drawer).toBeHidden();

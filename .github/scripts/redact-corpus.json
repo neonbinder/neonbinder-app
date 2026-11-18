@@ -108,6 +108,12 @@
     "present": ["[long token removed]"]
   },
   {
+    "name": "secret value with an escaped quote inside, and a bare JSON number",
+    "input": "{\"password\":\"p@ss\\\"quoted\"} {\"apiKey\":12345} {\"count\":12345}",
+    "absent": ["quoted", "12345\"} {\"count", "p@ss", "\"apiKey\":12345"],
+    "present": ["\"count\":12345"]
+  },
+  {
     "name": "kept: function names, timings, review_gate_timing, request ids, hyphenated file names",
     "input": "{\"identifier\":\"auth:getSession\",\"executionTime\":0.0123,\"msg\":\"review_gate_timing\",\"ms\":812,\"requestId\":\"b7d2c0c5-9a9e-4c7f-8f1e-3a6d6e1d2f00\"} collection/copy-photo-upload-retry.spec.ts",
     "absent": [],

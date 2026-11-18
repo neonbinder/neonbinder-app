@@ -98,8 +98,9 @@ Reference specs that show the patterns below:
    shares, and a breaker spec's opens the deployment-wide BSC call gate again;
    the failure reset undoes neither. Each such file says
    `test.describe.configure({ retries: 0 })` (it beats the config and
-   `--retries`), and the `noRetryOnSharedAccounts` fixture refuses the retry of
-   a tagged spec that forgot, before its body runs.
+   `--retries`): `shard-plan.mjs` refuses to plan while a tagged file lacks
+   it, and the `noRetryOnSharedAccounts` fixture still refuses the retry of a
+   tagged spec that slipped past, before its body runs.
 6. **Public repo.** No secrets, account ids, internal URLs or deployment
    slugs in any file, comment, log line or artifact. Never `git add -A`,
    never `git stash` in a shared worktree.

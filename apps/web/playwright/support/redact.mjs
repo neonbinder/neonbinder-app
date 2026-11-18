@@ -62,8 +62,8 @@ const SCHEME = new RegExp(String.raw`\b(Bearer|Basic)\s+${MARKED}[A-Za-z0-9._~+/
 // the value: up to the closing quote when quoted, else up to a delimiter.
 const SECRET_PAIR = new RegExp(
   String.raw`\b([\w.-]*(?:token|secret|key|ticket|session|auth|passw(?:or)?d|signature|credential|cookie|jwt)[\w.-]*)` +
-    String.raw`(\\?["']?\s*(?:=\s*|:(?=\s|\\?["'])\s*)\\?["']?)` +
-    String.raw`${MARKED}(?:(?<=")[^"\\]+|(?<=')[^'\\]+|[^\s"',;&)}\]\\]+)`,
+    String.raw`(\\?["']?\s*(?:=\s*|:(?=\s|\\?["']|(?<=["']\s*:)\d)\s*)\\?["']?)` +
+    String.raw`${MARKED}(?:(?<=\\["'])[^"'\\]+|(?<=")(?:[^"\\]|\\.)+|(?<=')(?:[^'\\]|\\.)+|[^\s"',;&)}\]\\]+)`,
   "gi",
 );
 const JWT = /\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*/g;

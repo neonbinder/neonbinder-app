@@ -1,6 +1,6 @@
 ---
 name: neo592-ci-redactors
-description: Public CI text has two scrubbers with different rule sets (redact-ci-log.sh for logs/summaries, playwright/support/redact.mjs for suite output); audit which one each path really runs, and redact before any slice
+description: Public CI text scrubbing (NEO-592) - now ONE rule list (redact.mjs, CI via redact-cli.mjs); trace each public path to it, redact before any slice, and the residual gaps of the secret-pair rule
 metadata:
   type: feedback
 ---
@@ -30,3 +30,23 @@ superset of the other.
 **How to apply:** feed adversarial lines (email at the cut boundary, a URL with
 `__clerk_testing_token=`, `Bearer eyJ...`, `R2_BUCKET=x`, a virtual-hosted R2
 URL) through every path with the real scripts before approving.
+
+**Resolved in the delta (one redactor):** `redact-ci-log.sh` is now a wrapper over
+`redact-cli.mjs` -> `playwright/support/redact.mjs`, with a shared corpus tested
+both ways; `retry-summary.sh` redacts each TSV cell in full, then cuts. Fail-closed
+pattern that holds: buffer all input, write nothing on error; shell callers drop
+the artifact on non-zero (`PIPESTATUS[1]`, or `if ... > "$OUT.safe"`).
+
+Residual shapes the secret-pair rule misses (feed these on the next audit):
+- an escaped quote inside a quoted value (`"password":"a\"b"` keeps `\"b`);
+- an unquoted number (`{"apiKey":12345}`);
+- `name:value` with no space (deliberate, keeps `auth:getSession`), so
+  `secret:abc`, `x-api-key:VAL`, and URL userinfo on a dotless host
+  (`postgres://u:pw@localhost`) pass; userinfo on a dotted host is caught only by
+  the email rule as a side effect.
+
+Playwright screenshots (and ARIA-snapshots `pages()[0]`) every page of a context
+created during a red test when that context closes (`willCloseBrowserContext`), even
+one a fixture opened from `browser`. Blanking each page first is the guard; a
+blank that times out falls through, so `page.close()` each page before
+`context.close()` is the fail-closed form.

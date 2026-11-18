@@ -25,6 +25,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
+import { redact } from "../playwright/support/redact.mjs";
 
 const MAX_IN_FLIGHT = 60;
 const CALL_TIMEOUT_MS = 60_000;
@@ -59,7 +60,7 @@ function summarize(file, stallMs) {
   const slow = lines.filter((r) => r.ms >= stallMs || !r.ok);
   console.log(`probe calls at or over ${stallMs}ms, or failed: ${slow.length}`);
   for (const r of slow.slice(0, 200)) {
-    console.log(`  ${r.t} ${r.kind} ${r.ms}ms${r.ok ? "" : ` FAILED ${r.error}`}`);
+    console.log(`  ${r.t} ${r.kind} ${r.ms}ms${r.ok ? "" : ` FAILED ${redact(String(r.error ?? ""))}`}`);
   }
 }
 
