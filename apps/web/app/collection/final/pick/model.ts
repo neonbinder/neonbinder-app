@@ -18,9 +18,12 @@
  *
  * NEO-590: a sale with no card whose listing has only a title (every
  * unmatched eBay line) is filed by that title: its leading year and set words
- * (`parseListingTitle`) and the sport of an NB player or team the title names
- * (the store asks the server, `ListedCard.titleSport`). The title is parsed
- * for Pick List order only, never matched to a card and never written to NB.
+ * (`parseListingTitle`) and, only when the title opens with a year, the sport
+ * of an NB player or team it names (the store asks the server,
+ * `ListedCard.titleSport`). A title that does not parse (clothing, a lot, a
+ * set, no year) files under Other even if it names an NB team or player
+ * ("Kansas City Chiefs Hoodie XL"). The title is parsed for Pick List order
+ * only, never matched to a card and never written to NB.
  */
 
 import type { Infer } from "convex/values";
@@ -398,6 +401,15 @@ export function parseListingTitle(title: string): ParsedTitle {
   return { year, cardNumber: number, setText: rest.slice(0, at).trim() };
 }
 
+/**
+ * Whether a listing's title parses (NEO-590): it opens with a year. Only such
+ * a title may be filed under a sport, so only such a title is worth asking the
+ * server about (`pickList.titleSports`); anything else files under Other.
+ */
+export function titleParses(title: string): boolean {
+  return parseListingTitle(title).year !== null;
+}
+
 interface ListedPlace {
   sportName: string;
   year: number;
@@ -534,14 +546,16 @@ function factsOf(row: PickRow): RowFacts | null {
 
 /**
  * NEO-590 — a card-less row whose listing says too little to file by but has
- * a title: its year and set words from the title, its sport from the NB player
- * or team the title names (`titleSport`), else Other. Null with no title.
+ * a title: its year and set words from the title. Its sport is the NB player
+ * or team the title names (`titleSport`) only when the title parses (a leading
+ * year); an unparsed title ("Kansas City Chiefs Hoodie XL") files under Other
+ * whatever it names. Null with no title.
  */
 function titleFacts(listed: ListedCard): RowFacts | null {
   const title = listed.title?.trim();
   if (!title) return null;
   const parsed = parseListingTitle(title);
-  const sport = listed.titleSport;
+  const sport = parsed.year !== null ? listed.titleSport : null;
   const sportKey = sport ? sport.id : TITLE_OTHER_SPORT;
   return {
     sportKey,

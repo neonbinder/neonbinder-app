@@ -368,7 +368,8 @@ describe("NEO-509: the sports a sale names", () => {
     await mountWith([lostLine(1, { title: "  Vintage   binder lot " }, { platform: "ebay", orderNo: "27-1" })]);
     const [only] = store!.data!.lines;
     expect(only.listingTitle).toBe("Vintage binder lot");
-    expect(only.listed).toEqual({ title: "Vintage binder lot", titleSport: null });
+    // It does not parse (no leading year), so titleSports was never asked: no answer, not a null one.
+    expect(only.listed).toEqual({ title: "Vintage binder lot" });
     expect(only.order.venue).toBe("eBay");
     expect(only.problem).toBe("NB didn't list this one. Check the order's photo.");
   });
@@ -393,7 +394,8 @@ describe("NEO-509: the sports a sale names", () => {
     query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
       args.titles ? Promise.reject(new Error("offline")) : Promise.resolve([]),
     );
-    await mountWith([ebayTitled(1, "Vintage binder lot")]);
+    await mountWith([ebayTitled(1, "2021 Vintage binder lot")]);
+    expect(titleCalls()).toEqual([["2021 Vintage binder lot"]]);
     expect(store?.data?.lines).toHaveLength(1);
     expect(store!.data!.lines[0].listed?.titleSport).toBeNull();
   });
@@ -402,14 +404,40 @@ describe("NEO-509: the sports a sale names", () => {
     query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
       Promise.resolve(args.titles ? args.titles.map(() => null) : []),
     );
-    await mountWith([ebayTitled(1, "Mystery lot")]);
-    expect(store!.data!.lines[0].listed).toEqual({ title: "Mystery lot", titleSport: null });
+    await mountWith([ebayTitled(1, "2021 Mystery lot")]);
+    expect(store!.data!.lines[0].listed).toEqual({ title: "2021 Mystery lot", titleSport: null });
+  });
+
+  it("NEO-590: a title that does not parse (no leading year) is never sent to titleSports, and the list still finishes loading", async () => {
+    let land!: (answer: unknown) => void;
+    query.mockImplementation((_fn: unknown, args: { titles?: string[] }) =>
+      args.titles ? new Promise((resolve) => (land = resolve)) : Promise.resolve([]),
+    );
+    await mountWith([
+      ebayTitled(1, "Kansas City Chiefs Hoodie XL"),
+      ebayTitled(2, "Vintage binder lot"),
+      ebayTitled(3, "Topps Chrome #205 Some Player"),
+      ebayTitled(4, "2023 Prizm #4 Some Player"),
+    ]);
+    // Only the year-led title is asked, and the list waits for that one answer alone.
+    expect(titleCalls()).toEqual([["2023 Prizm #4 Some Player"]]);
+    expect(store?.data).toBeUndefined();
+    await act(async () => land([{ id: "sp-fb", name: "Football", code: "FB" }]));
+    const lines = store!.data!.lines;
+    expect(lines).toHaveLength(4);
+    expect(lines.map((l) => l.listed?.titleSport)).toEqual([undefined, undefined, undefined, { id: "sp-fb", name: "Football", code: "FB" }]);
+  });
+
+  it("NEO-590: a list of only unparseable titles asks nothing and loads at once", async () => {
+    await mountWith([ebayTitled(1, "Kansas City Chiefs Hoodie XL"), ebayTitled(2, "Lot of 50 mixed cards")]);
+    expect(titleCalls()).toEqual([]);
+    expect(store?.data?.lines).toHaveLength(2);
   });
 
   it("NEO-590: asks 21 distinct titles in a call of 20 and a call of 1, a repeated title once, and none for a line without a title", async () => {
     await mountWith([
-      ...Array.from({ length: 21 }, (_, n) => ebayTitled(n, `Lot ${n}`)),
-      ebayTitled(30, "Lot 0"),
+      ...Array.from({ length: 21 }, (_, n) => ebayTitled(n, `2021 Lot ${n}`)),
+      ebayTitled(30, "2021 Lot 0"),
       lostLine(31, { year: "2021", setName: "Score" }),
     ]);
     const calls = titleCalls();

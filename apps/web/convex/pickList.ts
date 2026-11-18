@@ -24,8 +24,10 @@
  *   - `sports`: the NB sport rows the lines' `listed.sportId` name (name and
  *     SKU code), hydrated once by the client like `cards`.
  *   - `titleSports` (NEO-590): the NB sport of the player or team a "Can't
- *     find it" line's listing title names, hydrated once like `sports`. It
- *     only orders the list; it matches no card and writes nothing.
+ *     find it" line's listing title names, hydrated once like `sports`. The
+ *     page asks only about a title that opens with a year; the rest file
+ *     under Other without a call. It only orders the list; it matches no
+ *     card and writes nothing.
  *   - `setPulled`: marks lines pulled or not, and recomputes the order's
  *     stored `pullOpen`.
  *
@@ -375,6 +377,8 @@ export const sports = query({
  * NEO-590 — the NB sport a listing's title names, aligned with `titles`: the
  * sport of the NB player (else team) the title says by its whole name, when
  * exactly one sport is named; null otherwise (the row files under Other).
+ * The page asks only about titles that open with a year; a title that does
+ * not parse (clothing, a lot) is never sent and files under Other.
  * Catalog data only, so any signed-in caller may read it. Per distinct title:
  * one `players` name search (`take(TITLE_SEARCH_TAKE)`) and one `teams` name
  * search (`take(TITLE_TEAM_SEARCH_TAKE)`), one `playerSports` read per player

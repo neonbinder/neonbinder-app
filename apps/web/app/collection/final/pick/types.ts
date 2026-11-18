@@ -103,8 +103,10 @@ export interface ListedCard {
   title?: string;
   /**
    * NEO-590 — the NB sport of the player or team the title names, asked of the
-   * server once per title (`pickList.titleSports`). Null: asked, and no single
-   * sport was found (the row files under Other). Absent: not asked.
+   * server once per title (`pickList.titleSports`), and only for a title that
+   * opens with a year. Null: asked, and no single sport was found (the row
+   * files under Other). Absent: not asked (the title does not parse, so the
+   * row files under Other). A title with no year never files under a sport.
    */
   titleSport?: { id: string; name: string; code: string | null } | null;
 }

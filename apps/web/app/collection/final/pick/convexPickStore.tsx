@@ -7,7 +7,7 @@ import { toCardWithPath } from "../data/convexStore";
 import type { Card, Condition } from "../data/types";
 import { EBAY_UNTITLED_SALE } from "../inventory/listing/copy";
 import { PageApiContext } from "../pageApi";
-import { listedTitle, listedYear, toListedCard, words, type RawListed, type SportRow, type TitleSport } from "./model";
+import { listedTitle, listedYear, titleParses, toListedCard, words, type RawListed, type SportRow, type TitleSport } from "./model";
 import { PickListStoreContext } from "./store";
 import type { ListedCard, PickBox, PickListData, PickListStore, PickPhoto, SaleLine } from "./types";
 
@@ -228,6 +228,12 @@ export function ConvexPickListProvider({ children }: { children: ReactNode }) {
   return <PickListStoreContext.Provider value={store}>{children}</PickListStoreContext.Provider>;
 }
 
+/** The title to ask `titleSports` about: one entry when it parses (NEO-590), none otherwise. */
+function askableTitle(raw: string | undefined): string[] {
+  const title = words(raw);
+  return title && titleParses(title) ? [title] : [];
+}
+
 function useConvexPickListStore(): PickListStore {
   const open = useQuery(api.pickList.open, {});
   const convex = useConvex();
@@ -315,10 +321,11 @@ function useConvexPickListStore(): PickListStore {
   }, [rawLines, convex]);
 
   // The sport each unmatched line's title names, once per title (NEO-590): the
-  // order it files in, never a match. A title that does not load files under
-  // Other (never a wait, never a guess).
+  // order it files in, never a match. Only a title that parses (a leading year)
+  // is asked; any other files under Other without a call. A title that does
+  // not load files under Other too (never a wait, never a guess).
   useEffect(() => {
-    const missing = [...new Set(rawLines.flatMap((l) => (l.cantFind && words(l.listed?.title) ? [words(l.listed?.title) as string] : [])))].filter(
+    const missing = [...new Set(rawLines.flatMap((l) => (l.cantFind ? askableTitle(l.listed?.title) : [])))].filter(
       (title) => !askedTitles.current.has(title),
     );
     if (!missing.length) return;
@@ -371,7 +378,8 @@ function useConvexPickListStore(): PickListStore {
     (l) =>
       (l.cantFind || !l.cardId || cards.has(l.cardId)) &&
       (!l.listed?.sportId || sports.has(l.listed.sportId)) &&
-      (!l.cantFind || !words(l.listed?.title) || titleSports.has(words(l.listed?.title) as string)),
+      // A title that is never asked (it does not parse) has no answer to wait for.
+      (!l.cantFind || !askableTitle(l.listed?.title).length || titleSports.has(askableTitle(l.listed?.title)[0])),
   );
   if (!loadedOnce && open && baseline && allLoaded) setLoadedOnce(true);
 
@@ -388,7 +396,7 @@ function useConvexPickListStore(): PickListStore {
     for (const raw of rawLines) {
       if (!raw.cantFind || !raw.listed) continue;
       const sportId = raw.listed.sportId as string | undefined;
-      const title = words(raw.listed.title);
+      const [title] = askableTitle(raw.listed.title);
       listedOf.set(raw.id, toListedCard(raw.listed, sportId ? sports.get(sportId) : undefined, title ? titleSports.get(title) : undefined));
     }
     const lostCount = new Map<string, number>();

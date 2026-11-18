@@ -990,8 +990,26 @@ describe("NEO-590: filing a card-less sale by its title", () => {
     expect(facts).toMatchObject({ sportName: "Other", sportKey: "title:other", year: null, fromTitle: true, sportCode: null });
   });
 
+  it("NEO-590: a title with no leading year files under Other even when the server named an NB team or sport", () => {
+    // The store never asks for such a title; a stray answer must not file it under a sport either.
+    for (const t of ["Kansas City Chiefs Hoodie XL", "Topps Chrome #205 Patrick Mahomes", "PSA 10 2023 Prizm Justin Herbert", "Lot of 50 football cards"]) {
+      const facts = rowFacts(mergeLines([title(t, FOOTBALL)])[0]);
+      expect(facts).toMatchObject({ sportName: "Other", sportKey: "title:other", sportCode: null, fromTitle: true });
+    }
+  });
+
+  it("NEO-590: a year-led title with a named player files under that sport", () => {
+    const facts = rowFacts(mergeLines([title("2023 Panini Prizm #12 Justin Herbert", FOOTBALL)])[0]);
+    expect(facts).toMatchObject({ sportName: "Football", sportKey: "sp-fb", sportCode: "FB", year: 2023, setName: "Panini Prizm", cardNumber: "12", fromTitle: true });
+  });
+
+  it("NEO-590: a hoodie among sports titles sits in Other, last", () => {
+    const sections = buildSections([title("Kansas City Chiefs Hoodie XL", FOOTBALL), title("2024 Prizm #1 A Player", FOOTBALL)], {}, defaults);
+    expect(sections.map((s) => s.kind === "set" && s.sportName)).toEqual(["Football", "Other"]);
+  });
+
   it("walks Other last, whatever the sports' names are", () => {
-    const rows = mergeLines([title("Zed lot", null), title("A thing", HOCKEY), title("Another", FOOTBALL)]);
+    const rows = mergeLines([title("2020 Zed lot", null), title("2020 A thing", HOCKEY), title("2020 Another", FOOTBALL)]);
     expect(sortRows(rows, null).map((r) => rowFacts(r)!.sportName)).toEqual(["Football", "Hockey", "Other"]);
   });
 
@@ -1004,10 +1022,10 @@ describe("NEO-590: filing a card-less sale by its title", () => {
 
   it("walks title rows newest year first, rows with no year last, then by set text", () => {
     const rows = mergeLines([
-      title("Zebra #1", FOOTBALL),
+      title("Zebra #1", null),
       title("2021 Select #1", FOOTBALL),
       title("2024 Prizm #1", FOOTBALL),
-      title("Absolutely #1", FOOTBALL),
+      title("Absolutely #1", null),
       title("2024 Mosaic #1", FOOTBALL),
     ]);
     expect(sortRows(rows, null).map((r) => r.listingTitle)).toEqual([

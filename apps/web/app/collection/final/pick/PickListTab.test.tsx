@@ -986,8 +986,8 @@ describe("the signed-in Pick List's ways out", () => {
       order,
       card: null,
       sportCode: null,
-      listingTitle: `Lot ${id}`,
-      listed: { title: `Lot ${id}`, titleSport: sport },
+      listingTitle: `2021 Lot ${id}`,
+      listed: { title: `2021 Lot ${id}`, titleSport: sport },
       problem: "NB didn't list this one. Check the order's photo.",
     });
     const zz = { id: "sp-zz", name: "Zorbball", code: "ZB" };
@@ -1019,8 +1019,8 @@ describe("the signed-in Pick List's ways out", () => {
       order,
       card: null,
       sportCode: null,
-      listingTitle: `Lot ${id}`,
-      listed: { title: `Lot ${id}`, titleSport: sport },
+      listingTitle: `2021 Lot ${id}`,
+      listed: { title: `2021 Lot ${id}`, titleSport: sport },
       problem: "NB didn't list this one. Check the order's photo.",
     });
     const zz = { id: "sp-zz", name: "Zorbball", code: "ZB" };
@@ -1079,8 +1079,8 @@ describe("the signed-in Pick List's ways out", () => {
       order: { id: "oe", venue: "eBay", number: "27-11111-22222" },
       card: null,
       sportCode: null,
-      listingTitle: "Lot order-chip",
-      listed: { title: "Lot order-chip", titleSport: { id: "sp-zz", name: "Zorbball", code: "ZB" } },
+      listingTitle: "2021 Lot order-chip",
+      listed: { title: "2021 Lot order-chip", titleSport: { id: "sp-zz", name: "Zorbball", code: "ZB" } },
       problem: "NB didn't list this one. Check the order's photo.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true, "/inventory?tab=pick&pgroup=order");
