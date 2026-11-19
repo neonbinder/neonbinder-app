@@ -878,6 +878,9 @@ jobs:
           CI: "true"
           APP_URL: http://localhost:3000
           PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          # NEO-398: the preview's bare deployment name, masked in failure
+          # attachments (support/wire-log.ts runLiterals, redact.mjs redactLiterals).
+          REDACT_LITERALS: ${{ needs.setup.outputs.convex_name }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           WORKER_INDEX: "0"
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
@@ -1127,6 +1130,9 @@ jobs:
           CI: "true"
           APP_URL: http://localhost:3000
           PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          # NEO-398: the preview's bare deployment name, masked in failure
+          # attachments (support/wire-log.ts runLiterals, redact.mjs redactLiterals).
+          REDACT_LITERALS: ${{ needs.setup.outputs.convex_name }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           WORKER_INDEX: ${{ matrix.worker }}
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
@@ -1411,6 +1417,9 @@ jobs:
           CI: "true"
           APP_URL: http://localhost:3000
           PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          # NEO-398: the preview's bare deployment name, masked in failure
+          # attachments (support/wire-log.ts runLiterals, redact.mjs redactLiterals).
+          REDACT_LITERALS: ${{ needs.setup.outputs.convex_name }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           # Worker 8: no shard uses it (shards are 0-7); accounts 0-11 exist.
           # The `bootstrap` project dependency seeds it first, as for a shard.
@@ -1559,6 +1568,9 @@ jobs:
           CI: "true"
           APP_URL: http://localhost:3000
           PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          # NEO-398: the preview's bare deployment name, masked in failure
+          # attachments (support/wire-log.ts runLiterals, redact.mjs redactLiterals).
+          REDACT_LITERALS: ${{ needs.setup.outputs.convex_name }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           # Worker 8: no shard uses it (shards are 0-7) and the seller job, the only other
           # user, has finished (this job needs it). The `bootstrap` project dependency
@@ -2048,6 +2060,9 @@ jobs:
           CI: "true"
           APP_URL: http://localhost:3000
           PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          # NEO-398: the preview's bare deployment name, masked in failure
+          # attachments (support/wire-log.ts runLiterals, redact.mjs redactLiterals).
+          REDACT_LITERALS: ${{ needs.setup.outputs.convex_name }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           WORKER_INDEX: "0"
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
@@ -2265,6 +2280,9 @@ jobs:
           CI: "true"
           APP_URL: http://localhost:3000
           PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          # NEO-398: the preview's bare deployment name, masked in failure
+          # attachments (support/wire-log.ts runLiterals, redact.mjs redactLiterals).
+          REDACT_LITERALS: ${{ needs.setup.outputs.convex_name }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           WORKER_INDEX: ${{ matrix.worker }}
           PAUSED_PLATFORMS: ${{ vars.NEONBINDER_PAUSED_PLATFORMS }}
@@ -2548,6 +2566,9 @@ jobs:
           CI: "true"
           APP_URL: http://localhost:3000
           PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          # NEO-398: the preview's bare deployment name, masked in failure
+          # attachments (support/wire-log.ts runLiterals, redact.mjs redactLiterals).
+          REDACT_LITERALS: ${{ needs.setup.outputs.convex_name }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           # Worker 8: no shard uses it (shards are 0-7); accounts 0-11 exist.
           # The `bootstrap` project dependency seeds it first, as for a shard.
@@ -2696,6 +2717,9 @@ jobs:
           CI: "true"
           APP_URL: http://localhost:3000
           PREVIEW_URL: ${{ needs.setup.outputs.url }}
+          # NEO-398: the preview's bare deployment name, masked in failure
+          # attachments (support/wire-log.ts runLiterals, redact.mjs redactLiterals).
+          REDACT_LITERALS: ${{ needs.setup.outputs.convex_name }}
           VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
           # Worker 8: no shard uses it (shards are 0-7) and the seller job, the only other
           # user, has finished (this job needs it). The `bootstrap` project dependency

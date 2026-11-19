@@ -47,8 +47,8 @@ import { BREAKER_TAG, SELLER_TAG } from "../project-scope.mjs";
 import { checkAccessibility, type AccessibleOptions } from "./a11y";
 import { BscFake } from "./bscFake";
 import { makeEnv, type FlowEnv } from "./env";
-import { redact } from "./redact.mjs";
-import { attachWireOnFailure, recordWire } from "./wire-log";
+import { redact, redactLiterals } from "./redact.mjs";
+import { attachWireOnFailure, recordWire, runLiterals } from "./wire-log";
 import { expectWorkerReset, WORKER_RESET_CAP_MS, WORKER_RESET_LAUNCH_MS, WORKER_RESET_REDIRECT } from "./worker-reset";
 
 export type SignIn = (
@@ -103,7 +103,7 @@ export const test = base.extend<{
     async ({ context }, use, testInfo) => {
       const lines = recordWire(context);
       await use();
-      await attachWireOnFailure(testInfo, lines());
+      await attachWireOnFailure(testInfo, lines);
     },
     { auto: true },
   ],
@@ -216,7 +216,9 @@ export const test = base.extend<{
       if (testInfo.status === testInfo.expectedStatus || lines.length === 0) return;
       // Scrubbed line by line: a Clerk call carries the testing token in its query,
       // a signed storage address its signature (./redact.mjs). Never raw.
-      const body = lines.map((line) => redact(line).slice(0, CONSOLE_LINE_CHARS)).join("\n");
+      // The run's bare deployment name first (./wire-log.ts runLiterals, NEO-398).
+      const literals = runLiterals();
+      const body = lines.map((line) => redact(redactLiterals(line, literals)).slice(0, CONSOLE_LINE_CHARS)).join("\n");
       await testInfo.attach("console", { body, contentType: "text/plain" });
     },
     { auto: true },
