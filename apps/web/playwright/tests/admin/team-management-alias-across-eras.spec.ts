@@ -9,8 +9,10 @@
 // edit (a colour) saves with that alias in the list. Moving the newer team's
 // start to 2020 makes the eras overlap, and the save is refused inline with the
 // forward-direction copy; the reload proves nothing was written. The older team
-// still saves its own edits, a years change included (the reverse check, era
-// aware, finds no overlapping holder of its name).
+// cannot run on to 2026 (that would overlap the team wearing its name; refused
+// inline, nothing written), and still saves its own edits, a years change that
+// stays clear included (the reverse check, era aware, finds no overlapping
+// holder of its name).
 //
 // Fixtures through the UI (GUIDE "Fixtures come from the UI"): Team Management
 // has no "add a team", so both teams are born in a player's career editor, as
@@ -173,6 +175,30 @@ test(
     await teamRow(page, OLD_ROW).click();
     await expect(page.getByRole("heading", { name: OLD, exact: true })).toBeVisible();
     await expect(from).toHaveValue("1968");
+
+    // The reverse direction: running the older team on to 2026 would overlap
+    // the newer team, which wears the older team's name as an alias. Refused
+    // inline; the name-collision guard answers before the alias-holder sentence
+    // can (the unit tests pin that order). (2026, not later: an end year past
+    // next year is refused as out of range before either check.)
+    const to = page.getByRole("spinbutton", { name: "to", exact: true });
+    await expect(to).toHaveValue("2024");
+    await to.fill("2026");
+    await save.click();
+    const reverse = page.getByRole("alert").filter({ hasText: `Another team in this sport is already called ${OLD}.` });
+    await expect(reverse).toBeVisible();
+    await expect(saved(OLD)).toHaveCount(0);
+    await expectAccessible(page, { label: "Team Management, older team's years edit refused" });
+    // Nothing was written: the reload reads the stored era.
+    await page.reload();
+    await expect(page.getByRole("heading", { name: OLD, exact: true })).toBeVisible({ timeout: LAUNCH_GATE });
+    await expect(to).toHaveValue("2024");
+    await expect(from).toHaveValue("1968");
+    await filter.fill(NEW);
+    await expect(teamsCounter(page, "2 matches")).toBeVisible();
+    await expect(teamRow(page, OLD_ROW)).toBeVisible();
+
+    // Its own edits still save, a years change that stays clear included.
     await primary.fill("#00843d");
     // Still clear of the newer team's 2025 start, so the era-aware reverse check finds no holder.
     await from.fill("1969");

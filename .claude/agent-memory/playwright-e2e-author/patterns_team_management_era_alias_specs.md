@@ -24,5 +24,21 @@ metadata:
   when the eras are disjoint: press Create twice.
 - Stints: after the chip, click the "Career history" heading, fill `Stint from year` /
   `Stint to year`, "Add stint", then the player's "Save".
+- Team years are range-checked first: an end year past next year is refused as
+  "A team end year must be a whole year between 1869 and <next year>." before any
+  alias or name check, so an overlap fixture extends to next year at most.
+- On the older team, an overlap with the team that wears its name as an alias is
+  refused by NAME_TAKEN ("Another team in this sport is already called <name>."),
+  not the alias-holder sentence.
+- Wizard New Team step with an alias clash: the sentence is said twice (step body
+  beside "Link to <holder> · <era>", and the footer as the disabled "Add as New
+  Team"'s accessible description). At the desktop project's 1024x629 the body's
+  Link button sits below the step's scroll fold, so a wrap check reads the footer
+  copy (`toBeInViewport({ ratio: 1 })` + `toHaveAccessibleDescription`). Dating the
+  draft clear of a DATED holder shows "No clash with that name now."; an undated
+  holder can never be cleared by the draft's years.
+- A printed name the gate leaves to the operator (no stints / stints on both
+  eras) is its own "New Team: <name>" step; one sync answers one question per
+  printed name, so each outcome needs its own one-card set.
 
 Related: [[reference_hand_made_rows_cannot_reach_the_commit_path]], [[patterns_custom_sport_player_specs_skip_lookups]]
