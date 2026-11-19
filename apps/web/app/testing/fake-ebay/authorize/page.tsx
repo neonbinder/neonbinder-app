@@ -41,32 +41,44 @@ export default function FakeEbayAuthorizePage() {
   const [busy, setBusy] = useState<Answer | null>(null);
   const [failure, setFailure] = useState<string | null>(null);
   const agreeRef = useRef<HTMLButtonElement>(null);
+  const altRef = useRef<HTMLButtonElement>(null);
+  // A press can land twice before the busy render does; this is the guard that sees it.
+  const inFlight = useRef(false);
   const live = enabled && state !== null && state !== "";
-  const canAgree = live && isAuthenticated && busy === null;
+  const ready = live && isAuthenticated;
+  const held = busy !== null || undefined;
 
   // Keyboard-first: Agree is the default answer, so it holds focus once it can act.
+  // Keyed on readiness only: a failed answer returns focus to the button pressed, not here.
   useEffect(() => {
-    if (canAgree) agreeRef.current?.focus({ preventScroll: true });
-  }, [canAgree]);
+    if (ready) agreeRef.current?.focus({ preventScroll: true });
+  }, [ready]);
 
   const goHome = (params: Record<string, string>) => {
     navigate({ pathname: "/profile/ebay", search: `?${new URLSearchParams(params).toString()}` }, { replace: true });
   };
 
   const answer = async (which: Answer) => {
-    if (!live || busy !== null) return;
+    if (!live || busy !== null || inFlight.current) return;
     setFailure(null);
     if (which === "decline") {
       goHome({ error: "access_denied", state });
       return;
     }
+    inFlight.current = true;
     setBusy(which);
+    // The held buttons stay in the tab order (aria-disabled), so focus never drops to <body>.
+    // Not every browser focuses a button on press; make it so the pressed one is where focus is.
+    const pressed = which === "alt" ? altRef.current : agreeRef.current;
+    pressed?.focus({ preventScroll: true });
     try {
       const { code } = await mintConsent(which === "alt" ? { seller: "alt" } : {});
       goHome({ code, state });
     } catch {
+      inFlight.current = false;
       setBusy(null);
       setFailure(FAILED);
+      pressed?.focus({ preventScroll: true });
     }
   };
 
@@ -88,16 +100,19 @@ export default function FakeEbayAuthorizePage() {
               ref={agreeRef}
               type="button"
               variant="primary"
-              disabled={!canAgree}
+              disabled={!ready}
+              aria-disabled={held}
               onClick={() => void answer("agree")}
               className="max-sm:min-h-11"
             >
               Agree
             </NeonButton>
             <NeonButton
+              ref={altRef}
               type="button"
               variant="secondary"
-              disabled={!canAgree}
+              disabled={!ready}
+              aria-disabled={held}
               onClick={() => void answer("alt")}
               className="max-sm:min-h-11"
             >
@@ -107,7 +122,7 @@ export default function FakeEbayAuthorizePage() {
               type="button"
               variant="negative"
               outline
-              disabled={busy !== null}
+              aria-disabled={held}
               onClick={() => void answer("decline")}
               className="max-sm:min-h-11"
             >

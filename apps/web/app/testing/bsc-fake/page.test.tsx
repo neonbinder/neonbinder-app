@@ -221,6 +221,15 @@ describe("TestingBscFakePage", () => {
     expect(DONE.test(line)).toBe(false);
   });
 
+  it("the status line is the page's one live region, inside <main>, and its text is unchanged", async () => {
+    renderPage("?clear=all");
+    const line = await statusText();
+    const region = screen.getByRole("status");
+    expect(region.textContent).toBe(line);
+    expect(region.closest("main")).not.toBeNull();
+    expect(screen.getAllByRole("main")).toHaveLength(1);
+  });
+
   it("signed out, waits for authentication and calls nothing", async () => {
     mocks.authed = false;
     renderPage("?clear=all");

@@ -120,17 +120,60 @@ describe("FakeEbayAuthorizePage", () => {
     expect(screen.queryByText(/does not talk to the fake/)).toBeNull();
   });
 
-  it("while signing in, both Agree answers are held and the status says so", async () => {
+  it("while signing in, every answer is held (aria-disabled, still focusable) and the status says so", async () => {
     let finish: (v: { code: string }) => void = () => {};
     mocks.mint = vi.fn(() => new Promise<{ code: string }>((resolve) => (finish = resolve)));
     renderAt(CONSENT);
     fireEvent.click(button("Agree"));
     expect(await screen.findByText("Signing in to the stand-in eBay…")).toBeTruthy();
-    expect((button("Agree") as HTMLButtonElement).disabled).toBe(true);
-    expect((button("Agree as another eBay account") as HTMLButtonElement).disabled).toBe(true);
+    for (const name of ["Agree", "Agree as another eBay account", "Decline"]) {
+      expect(button(name).getAttribute("aria-disabled")).toBe("true");
+      expect((button(name) as HTMLButtonElement).disabled).toBe(false);
+    }
     await act(async () => finish({ code: "late" }));
     await waitFor(() => expect(here).toContain("code=late"));
     expect(mocks.mint).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["Agree", "Agree as another eBay account"])("focus stays on %s while its answer is in flight", async (name) => {
+    let finish: (v: { code: string }) => void = () => {};
+    mocks.mint = vi.fn(() => new Promise<{ code: string }>((resolve) => (finish = resolve)));
+    renderAt(CONSENT);
+    await waitFor(() => expect(document.activeElement).toBe(button("Agree")));
+    act(() => button(name).focus());
+    fireEvent.click(button(name));
+    await screen.findByText("Signing in to the stand-in eBay…");
+    expect(document.activeElement).toBe(button(name));
+    expect(document.activeElement).not.toBe(document.body);
+    await act(async () => finish({ code: "late" }));
+  });
+
+  it.each(["Agree", "Agree as another eBay account"])("after a failure, focus is on %s, the button pressed", async (name) => {
+    mocks.mint = vi.fn(async () => {
+      throw new Error("no");
+    });
+    renderAt(CONSENT);
+    await waitFor(() => expect(document.activeElement).toBe(button("Agree")));
+    act(() => button(name).focus());
+    fireEvent.click(button(name));
+    await screen.findByText("Couldn't sign in to the stand-in eBay. Give it another try.");
+    expect(button(name).getAttribute("aria-disabled")).toBeNull();
+    expect(document.activeElement).toBe(button(name));
+  });
+
+  it("a second click while an answer is in flight does nothing, on any answer", async () => {
+    let finish: (v: { code: string }) => void = () => {};
+    mocks.mint = vi.fn(() => new Promise<{ code: string }>((resolve) => (finish = resolve)));
+    renderAt(CONSENT);
+    fireEvent.click(button("Agree"));
+    fireEvent.click(button("Agree"));
+    fireEvent.click(button("Agree as another eBay account"));
+    fireEvent.click(button("Decline"));
+    await screen.findByText("Signing in to the stand-in eBay…");
+    expect(mocks.mint).toHaveBeenCalledTimes(1);
+    expect(here).toBe(CONSENT);
+    await act(async () => finish({ code: "late" }));
+    await waitFor(() => expect(here).toContain("code=late"));
   });
 
   it("holds the Agree answers until the Convex client has the session, and says so when signed out", () => {

@@ -104,11 +104,11 @@ function TestingBscFakeContent() {
   }, [isAuthenticated, isLoading, query, setFaults, addOrder, clearFaults, clearGate, pollNow]);
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-surface">
-      <p className="text-ink-3 font-mono text-sm">
+    <main className="flex items-center justify-center min-h-screen bg-surface">
+      <p role="status" className="text-ink-3 font-mono text-sm">
         [testing-bsc-fake] {status}
       </p>
-    </div>
+    </main>
   );
 }
 
@@ -116,9 +116,9 @@ export default function TestingBscFakePage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center min-h-screen bg-surface">
-          <p className="text-ink-3 font-mono text-sm">[testing-bsc-fake] Loading…</p>
-        </div>
+        <main className="flex items-center justify-center min-h-screen bg-surface">
+          <p role="status" className="text-ink-3 font-mono text-sm">[testing-bsc-fake] Loading…</p>
+        </main>
       }
     >
       <TestingBscFakeContent />

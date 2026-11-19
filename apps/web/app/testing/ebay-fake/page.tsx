@@ -102,11 +102,11 @@ function TestingEbayFakeContent() {
   }, [isAuthenticated, isLoading, query, setSeller, addOrder, pollNow]);
 
   return (
-    <div className="flex items-center justify-center min-h-screen bg-surface">
-      <p className="text-ink-3 font-mono text-sm">
+    <main className="flex items-center justify-center min-h-screen bg-surface">
+      <p role="status" className="text-ink-3 font-mono text-sm">
         [testing-ebay-fake] {status}
       </p>
-    </div>
+    </main>
   );
 }
 
@@ -114,9 +114,9 @@ export default function TestingEbayFakePage() {
   return (
     <Suspense
       fallback={
-        <div className="flex items-center justify-center min-h-screen bg-surface">
-          <p className="text-ink-3 font-mono text-sm">[testing-ebay-fake] Loading…</p>
-        </div>
+        <main className="flex items-center justify-center min-h-screen bg-surface">
+          <p role="status" className="text-ink-3 font-mono text-sm">[testing-ebay-fake] Loading…</p>
+        </main>
       }
     >
       <TestingEbayFakeContent />
