@@ -804,7 +804,8 @@ test(
     await expect(platform.getByRole("heading", { level: 2, name: BSC, exact: true })).toBeVisible();
     await expect(platform.getByText("Listing", { exact: true })).toBeVisible();
     // Either the two cards wait for the next sync, or the 15-minute poll has
-    // already listed them (the header's two orders). The poll's own result is
+    // already listed them (the press-first and poll-first outcomes; the set's
+    // first press is never turned away). The poll's own result is
     // the row reading 2 listed with its folded "Gathering data" item.
     const queuedHeading = platform.getByRole("heading", { level: 3, name: "Queued for the next sync (2)", exact: true });
     const polledLine = row.getByText(/^2 listed(, 2 updated)?$/);
@@ -992,7 +993,10 @@ test(
     const photoSent = await refresh.last.getByRole("listitem", { name: "Upload photos, done", exact: true }).isVisible();
     if (refreshPress === "throttled") {
       // Turned away: the poll's run sent the photo, so the last run is that sending
-      // one (no "nothing sent" fallback: the press ran nothing of its own).
+      // one (no "nothing sent" fallback: the press ran nothing of its own). The
+      // ledger alone does not prove a run newer than the edit: the proof is the
+      // edit's queued row gone (`refreshQueued` at 0, above) after the
+      // `queueSettled` walk. Never drop that assert.
       await expect(refresh.last.getByRole("listitem")).toContainText([/^Gathering data, done$/, /^Upload photos, done$/]);
       await expect(refresh.nothingNew()).toHaveCount(0);
     } else if (photoSent) {

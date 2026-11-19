@@ -914,8 +914,19 @@ export async function pressSync(page: Page, sync: Locator, title: string): Promi
   const ran = said(`Syncing ${title} now. Watch it on Sync status.`);
   const throttled = said(`${title} is already in the works. Give it a minute, then Sync again.`);
   await sync.click();
-  await expect(ran.or(throttled).first()).toBeVisible();
-  return (await ran.first().isVisible()) ? "ran" : "throttled";
+  // Classified by whichever toast appeared first, never by a later look: a toast
+  // that auto-dismisses between the wait and a second read would flip the answer.
+  // One 7 s budget for both (GUIDE hard rule 3); the loser's wait is dropped.
+  const appeared = (toast: Locator, outcome: "ran" | "throttled") =>
+    toast
+      .first()
+      .waitFor({ state: "visible", timeout: 7_000 })
+      .then(() => outcome);
+  const outcome = await Promise.any([appeared(ran, "ran"), appeared(throttled, "throttled")]).catch(() => null);
+  if (outcome) return outcome;
+  // Neither toast within the budget: fail on the web-first assertion, whose message names both.
+  await expect(ran.or(throttled).first()).toBeVisible({ timeout: 1 });
+  throw new Error("Sync's toast arrived only after the 7 s budget");
 }
 
 /**

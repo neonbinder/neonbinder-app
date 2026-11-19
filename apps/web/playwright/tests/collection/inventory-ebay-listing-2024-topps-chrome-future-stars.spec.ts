@@ -577,7 +577,9 @@ test(
     // --- Sync: eBay takes the two with photos and holds the third back ---------------------------------
     // Pressed the moment the last write (the photo above) is in: nothing slow sits
     // between them, so the 15-minute poll has the narrowest window to list the
-    // box first (the header's two orders; the poll may still win it).
+    // box first (the poll may still win it). Of the header's three outcomes only
+    // two apply here: this is the set's first press, with no press in the minute
+    // before it, so it is never turned away and asserts "Syncing ... now" alone.
     await sync.click();
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     // After the press, a link to the result sits under Sync. It lands on Sync
@@ -693,6 +695,9 @@ test(
     if (relistPress === "throttled") {
       // Turned away: the poll's run sent the card, so the last run is a sending one.
       // No "nothing sent" fallback here: a press turned away ran nothing of its own.
+      // The ledger alone does not prove a run newer than the edit (step 4's run also
+      // uploaded and listed): the proof is the edit's queued row gone (`relistQueued`
+      // at 0, above) after the `queueSettled` walk. Never drop that assert.
       await expect(relist.last.getByRole("listitem")).toContainText([/^Upload photos, done$/, /^List the cards, done$/]);
       await expect(relist.nothingNew()).toHaveCount(0);
     } else if (relisted) {
