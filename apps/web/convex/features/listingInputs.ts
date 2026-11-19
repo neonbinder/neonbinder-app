@@ -348,6 +348,20 @@ export function storedCardVariation(raw: string | undefined): string | undefined
 }
 
 /**
+ * NEO-609 — the `listingTitleTruncated` value a GENERATED title is stored
+ * with, from the assessment it was written from: `true` while a Tidy Up cut is
+ * still out (or the title came from the box), `undefined` otherwise, which in
+ * a patch clears a flag the old title carried. The one reading every writer of
+ * a generated title uses (insert, Regenerate, a player link, a team removal);
+ * only an operator's own typed title clears the flag without asking it.
+ */
+export function generatedTitleTruncatedFlag(
+  assessment: Pick<ListingTitleAssessment, "coreFits">,
+): true | undefined {
+  return assessment.coreFits ? undefined : true;
+}
+
+/**
  * The row fields a NEW card is born with that `titleAttentionItems` reads,
  * from its assessment — exactly what `buildCardRowForInsert` writes when no
  * operator answer rides on the card.
@@ -358,7 +372,7 @@ export function titleAttentionFieldsAtInsert(
 ): TitleAttentionFields {
   return {
     listingTitle: assessment.title,
-    ...(assessment.coreFits ? {} : { listingTitleTruncated: true }),
+    ...(generatedTitleTruncatedFlag(assessment) ? { listingTitleTruncated: true } : {}),
     cardVariation: storedCardVariation(cardVariation),
   };
 }

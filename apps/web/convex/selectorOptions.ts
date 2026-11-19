@@ -47,6 +47,7 @@ import {
 import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./features/listingLimits";
 import {
   checkTitleAnswer,
+  generatedTitleTruncatedFlag,
   listingInputsForCard,
   mergeCardFeatures,
   type TitleContext,
@@ -6508,7 +6509,7 @@ export const addCustomCard = mutation({
       // NEO-101: recorded only when the core actually had to be cut — the
       // field is absent, not `false`, on the overwhelming majority of rows
       // that fit fine (mean real title length is 34 characters).
-      ...(listingTitle.coreFits ? {} : { listingTitleTruncated: true }),
+      ...(generatedTitleTruncatedFlag(listingTitle) ? { listingTitleTruncated: true } : {}),
       sportId: insertSportId,
       sortOrder: 0,
       lastUpdated: Date.now(),
@@ -6609,7 +6610,7 @@ async function regeneratedTextWithoutTeams(
       out.listingTitle = after.title;
       // As the commit writes it: flagged only when the core was cut;
       // `undefined` in a patch clears a flag the old title carried.
-      out.listingTitleTruncated = after.coreFits ? undefined : true;
+      out.listingTitleTruncated = generatedTitleTruncatedFlag(after);
     }
   }
   if (sent.description === undefined || sent.description === stored.listingDescription) {
@@ -6857,9 +6858,16 @@ export const updateCard = mutation({
       // the generator cut. Same discipline as the `teamNoneConfirmedAt`
       // retirement below, which is likewise conditioned on the write being a
       // real one rather than merely present.
-      const existingTitle = (await loadStoredCard()).listingTitle;
-      if (trimmedTitle !== existingTitle) {
-        filtered.listingTitleTruncated = undefined;
+      const storedCard = await loadStoredCard();
+      if (trimmedTitle !== storedCard.listingTitle) {
+        // NEO-609 — a title the generator writes for the card as it stands
+        // (the drawer's and the walker's Regenerate send exactly that) is
+        // GENERATED, and is stored with the flag its assessment gives it: a
+        // Tidy Up cut still out keeps the card in Tidy Up. Only a title
+        // somebody typed clears it.
+        const generated = await titleForStoredCard(ctx, storedCard);
+        filtered.listingTitleTruncated =
+          trimmedTitle === generated.title ? generatedTitleTruncatedFlag(generated) : undefined;
         titleChanged = true;
       }
     }

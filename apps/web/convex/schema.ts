@@ -2200,11 +2200,15 @@ export default defineSchema({
     // human may want to decide differently, which is why this drives a "needs attention" item
     // (`features/cardAttention.ts` → `titleTruncated`) rather than an error.
     //
-    // Set ONLY at insert, from `assessListingTitle(...).coreFits === false`,
-    // and omitted entirely otherwise. CLEARED (patched to `undefined`) by any
-    // operator write of `listingTitle` through `updateCard`: once a human has
-    // authored the title, whether the machine's attempt fit is no longer a
-    // question anyone is asking.
+    // Written with every GENERATED title (insert, Regenerate, a player link,
+    // a team removal), from `assessListingTitle(...).coreFits === false`
+    // (`generatedTitleTruncatedFlag`), and omitted entirely otherwise.
+    // CLEARED (patched to `undefined`) by an operator's own typed title
+    // through `updateCard`: once a human has authored the title, whether the
+    // machine's attempt fit is no longer a question anyone is asking. A title
+    // `updateCard` is handed that is exactly what the generator builds for the
+    // card as it stands (Regenerate) is generated, not typed, and takes the
+    // flag its assessment gives it.
     //
     // WHY IT IS STORED AT ALL, when nothing else about the write-once
     // generation is: a stored row does not carry the player names or the set

@@ -255,9 +255,10 @@ type CardDetailCard = {
   listingTitle?: string;
   /**
    * NEO-101: the auto-generated title did not fit and was cut at a word
-   * boundary, so what is stored is not the whole card. Set at creation and
-   * cleared server-side by any write of `listingTitle` — so an operator
-   * rewriting the title clears it by construction, with no flag to remember.
+   * boundary, so what is stored is not the whole card. Written with every
+   * generated title (creation, Regenerate) from its assessment, and cleared
+   * server-side by a title the operator typed — so rewriting the title clears
+   * it by construction, with no flag to remember.
    */
   listingTitleTruncated?: boolean;
   listingDescription?: string;

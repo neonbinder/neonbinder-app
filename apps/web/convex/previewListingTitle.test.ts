@@ -190,6 +190,72 @@ describe("previewListingTitle (NEO-101)", () => {
     expect(preview.coreFits).toBe(false);
   });
 
+  // NEO-609 — Regenerate in the card drawer stores the previewed title through
+  // `updateCard`. A title the generator itself builds for the card as it stands
+  // carries the flag its assessment gives it; only a typed one clears it.
+  describe("updateCard stores a Regenerate title with the generator's flag", () => {
+    const LONG_NAME = "Bartholomew Maximilian Alexander Christopher Fitzgerald-Worthington";
+
+    async function seedTidyUpCard() {
+      const t = convexTest(schema, modules);
+      const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+      const { sportId, variantTypeId } = await seedSubtree(t);
+      const playerId = await t.run(async (ctx) =>
+        ctx.db.insert("players", {
+          name: LONG_NAME,
+          nameNormalized: LONG_NAME.toLowerCase().split(" ").sort().join(" "),
+          sportId,
+          lastUpdated: Date.now(),
+        }),
+      );
+      const cardId = await insertCard(t, variantTypeId, {
+        cardNumber: "19",
+        playerIds: [playerId],
+        features: { season: "2024", manufacturer: "Topps", parallelName: "Base" },
+        listingTitle: "Something an earlier build wrote",
+        listingTitleTruncated: true,
+      });
+      return { t, asAdmin, cardId };
+    }
+
+    const flagOf = (t: ReturnType<typeof convexTest>, cardId: Id<"cardChecklist">) =>
+      t.run(async (ctx) => (await ctx.db.get(cardId))?.listingTitleTruncated ?? null);
+
+    test("the previewed title of a card still in Tidy Up keeps the flag", async () => {
+      const { t, asAdmin, cardId } = await seedTidyUpCard();
+      const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
+      expect(preview.tidyUp).toBe(true);
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: preview.title,
+      });
+      expect(await flagOf(t, cardId)).toBe(true);
+    });
+
+    test("a previewed title that fits cleanly clears the flag", async () => {
+      const { t, asAdmin, cardId } = await seedTidyUpCard();
+      await t.run(async (ctx) => {
+        await ctx.db.patch(cardId, { playerIds: [] });
+      });
+      const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
+      expect(preview.coreFits).toBe(true);
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: preview.title,
+      });
+      expect(await flagOf(t, cardId)).toBeNull();
+    });
+
+    test("a title the operator typed clears the flag", async () => {
+      const { t, asAdmin, cardId } = await seedTidyUpCard();
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: "2024 Topps Chrome Base #19 Fitzgerald-Worthington",
+      });
+      expect(await flagOf(t, cardId)).toBeNull();
+    });
+  });
+
   test("NEO-535: a stored card on a parallel leaf names the leaf, not the name its features inherited", async () => {
     const t = convexTest(schema, modules);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
