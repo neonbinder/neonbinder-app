@@ -135,15 +135,14 @@ describe("Onyx Vintage Baseball 2026 PDF through the real reader and parser", ()
     }
   });
 
-  it("reads Prospect (Oklahoma) as a prospect with a held-for-the-server team, not a team string", () => {
+  it("reads Prospect (Oklahoma) as a prospect whose printed team is Oklahoma", () => {
     expect(rowFor(BASE, "Cord Rager")).toEqual([
       {
         number: "NNO",
         players: ["Cord Rager"],
-        teams: [],
+        teams: ["Oklahoma"],
         noNumber: true,
         prospect: true,
-        prospectTeams: ["Oklahoma"],
       },
     ]);
   });
@@ -161,11 +160,10 @@ describe("Onyx Vintage Baseball 2026 PDF through the real reader and parser", ()
     ]);
   });
 
-  it("keeps a multi-word college in Prospect (Dallas Baptist)", () => {
+  it("keeps a multi-word college in Prospect (Dallas Baptist) as the card's team", () => {
     const [row] = rowFor(BASE, "Russ Smith");
     expect(row.prospect).toBe(true);
-    expect(row.prospectTeams).toEqual(["Dallas Baptist"]);
-    expect(row.teams).toEqual([]);
+    expect(row.teams).toEqual(["Dallas Baptist"]);
     expect(row.noTeam).toBeUndefined();
   });
 
@@ -179,13 +177,11 @@ describe("Onyx Vintage Baseball 2026 PDF through the real reader and parser", ()
     expect(section(DUAL).rows.every((r) => r.teams.length === 0 && r.noTeam === undefined)).toBe(true);
   });
 
-  it("never plants a prospect's X in a team list anywhere in the file", () => {
-    const x = new Set(
-      sections.sections.flatMap((s) => s.rows.flatMap((r) => r.prospectTeams ?? [])),
-    );
-    expect([...x].sort()).toContain("Oklahoma");
-    for (const r of sections.sections.flatMap((s) => s.rows)) {
-      for (const team of r.teams) expect(x.has(team)).toBe(false);
-    }
+  it("puts every prospect's X in its team list, and never the word Prospect itself", () => {
+    const rows = sections.sections.flatMap((s) => s.rows);
+    const prospects = rows.filter((r) => r.prospect && !r.noTeam);
+    expect(prospects.flatMap((r) => r.teams)).toContain("Oklahoma");
+    for (const r of prospects) expect(r.teams.length).toBeGreaterThan(0);
+    for (const r of rows) expect(r.teams.some((t) => /^prospect$/i.test(t))).toBe(false);
   });
 });

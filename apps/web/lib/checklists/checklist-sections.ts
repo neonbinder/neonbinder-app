@@ -126,7 +126,6 @@ function withoutSubset(row: PublishedChecklistRow): ChecklistSectionRow {
   if (row.noNumber) out.noNumber = true;
   if (row.noTeam) out.noTeam = true;
   if (row.prospect) out.prospect = true;
-  if (row.prospectTeams?.length) out.prospectTeams = row.prospectTeams;
   if (row.variationName) out.variationName = row.variationName;
   return out;
 }

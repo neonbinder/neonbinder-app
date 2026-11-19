@@ -301,7 +301,6 @@ function read(records: ChecklistCellRecord[]) {
       teams: r.teams,
       ...(r.noTeam ? { noTeam: true } : {}),
       ...(r.prospect ? { prospect: true } : {}),
-      ...(r.prospectTeams ? { prospectTeams: r.prospectTeams } : {}),
     })),
     skipped: out.skipped.map((s) => [s.text, s.reason] as const),
   };
@@ -566,7 +565,7 @@ describe("parser: Last Name / First Name PDFs", () => {
     expect(skipped.map(([, reason]) => reason)).toContain("Not under any section heading");
   });
 
-  it("reads Prospect cells in the team column as the claim, with brackets kept for X", () => {
+  it("reads Prospect cells in the team column as the claim, with X as the printed team", () => {
     const { rows } = read(
       pages([
         [
@@ -578,7 +577,7 @@ describe("parser: Last Name / First Name PDFs", () => {
       ]),
     );
     expect(rows).toEqual([
-      { subset: "Base Cards", number: "NNO", players: ["John Smith"], teams: [], prospect: true, prospectTeams: ["Oklahoma"] },
+      { subset: "Base Cards", number: "NNO", players: ["John Smith"], teams: ["Oklahoma"], prospect: true },
       { subset: "Base Cards", number: "NNO", players: ["Amy Lee"], teams: ["New York (N)"] },
       { subset: "Player Autographs", number: "NNO", players: ["Bob Jones"], teams: [], noTeam: true, prospect: true },
       { subset: "Player Autographs", number: "NNO", players: ["Sue Kim"], teams: [], noTeam: true, prospect: true },
@@ -591,7 +590,7 @@ describe("parser: Last Name / First Name outside a PDF", () => {
     const out = parsePublishedChecklist("Last Name,First Name,Team\nSmith,John,Mets\nLee,Amy,Prospect (Oklahoma)\nKim,Sue,Prospect\n", {});
     expect(out.rows).toEqual([
       { number: "NNO", players: ["John Smith"], teams: ["Mets"], noNumber: true },
-      { number: "NNO", players: ["Amy Lee"], teams: [], noNumber: true, prospect: true, prospectTeams: ["Oklahoma"] },
+      { number: "NNO", players: ["Amy Lee"], teams: ["Oklahoma"], noNumber: true, prospect: true },
       { number: "NNO", players: ["Sue Kim"], teams: [], noNumber: true, noTeam: true, prospect: true },
     ]);
   });
@@ -619,7 +618,7 @@ describe("parser: Last Name / First Name outside a PDF", () => {
       {},
     );
     expect(out.rows).toEqual([
-      { number: "NNO", players: ["John Smith"], teams: [], noNumber: true, prospect: true, prospectTeams: ["Oklahoma"], subset: "Autos" },
+      { number: "NNO", players: ["John Smith"], teams: ["Oklahoma"], noNumber: true, prospect: true, subset: "Autos" },
       { number: "NNO", players: ["Amy Lee"], teams: ["Mets"], noNumber: true, subset: "Autos" },
     ]);
   });

@@ -124,16 +124,12 @@ export type PublishedChecklistRow = {
   noTeam?: true;
   /**
    * The team cell said "Prospect" or "Prospect (X)" (NEO-591,
-   * `prospect.ts`): the card is a prospect. A claim about the card, never a
-   * team name. A bare "Prospect" with no other team also sets `noTeam`.
+   * `prospect.ts`): the card is a prospect. The word is a claim about the
+   * card, never a team name; the X of "Prospect (X)" IS the card's printed
+   * team and sits in `teams` like any other team text. A bare "Prospect" with
+   * no other team also sets `noTeam`.
    */
   prospect?: true;
-  /**
-   * The X of each "Prospect (X)" cell, kept OUT of `teams`: X must be a
-   * minor-league or college team, which only the server can check, so it
-   * settles X at fetch and holds what it cannot settle for the operator.
-   */
-  prospectTeams?: string[];
   /**
    * The publisher's note that marks this card as a variation (NEO-591): a
    * bracketed note such as "(Photo Variation)" or "[VAR Throwback]", or a
@@ -603,8 +599,6 @@ type TeamsRead = {
   noTeam: boolean;
   /** The cell was a "Prospect" / "Prospect (X)" claim (`prospect.ts`). */
   prospect: boolean;
-  /** The X of "Prospect (X)", at most one per cell; never in `teams`. */
-  prospectTeams: string[];
 };
 
 /**
@@ -673,13 +667,13 @@ function isBareProspectName(name: string): boolean {
 
 /**
  * What one team cell says. A WHOLE "Prospect" / "Prospect (X)" cell, or a
- * "/"-, ";"- or ","-separated segment of one, is the prospect claim (X into
- * `prospectTeams`); the other segments are teams as before. The word alone
- * never travels as a team name, even when something else left it bare.
+ * "/"-, ";"- or ","-separated segment of one, is the prospect claim; its X is
+ * the card's team and joins `teams` after the cell's other teams. The word
+ * alone never travels as a team name, even when something else left it bare.
  */
 function teamsFrom(cell: string, keepBrackets = false, readProspect = true): TeamsRead {
   let prospect = false;
-  const prospectTeams: string[] = [];
+  const claimedTeams: string[] = [];
   let text = cell;
   if (readProspect && /prospect/i.test(cell)) {
     const spans = prospectClaimSpans(cell, false);
@@ -691,13 +685,13 @@ function teamsFrom(cell: string, keepBrackets = false, readProspect = true): Tea
         rest += `${cell.slice(from, span.start)}/`;
         from = span.end;
         const x = prospectX(span.team);
-        if (x !== "" && !prospectTeams.includes(x)) prospectTeams.push(x);
+        if (x !== "" && !claimedTeams.includes(x)) claimedTeams.push(x);
       }
       text = rest + cell.slice(from);
     }
   }
   // "None", "N/A", "No team listed", "-": no claim, the same as blank (D2).
-  if (isNoClaimTeamText(text)) return { teams: [], noTeam: false, prospect, prospectTeams };
+  if (isNoClaimTeamText(text)) return { teams: [...claimedTeams], noTeam: false, prospect };
   let noTeam = false;
   const teams = splitNames(
     cleanNamePart(text, keepBrackets),
@@ -710,7 +704,8 @@ function teamsFrom(cell: string, keepBrackets = false, readProspect = true): Tea
     },
     MAX_CARD_TEAMS,
   );
-  return { teams, noTeam, prospect, prospectTeams };
+  for (const x of claimedTeams) if (!teams.includes(x)) teams.push(x);
+  return { teams, noTeam, prospect };
 }
 
 /**
@@ -723,16 +718,12 @@ function teamClaims(
   teams: readonly string[],
   noTeam: boolean,
   prospect: boolean,
-  prospectTeams: readonly string[],
-): { noTeam: boolean; conflict: boolean; fields: Pick<PublishedChecklistRow, "prospect" | "prospectTeams"> } {
-  const conflict = noTeam && (teams.length > 0 || prospectTeams.length > 0);
+): { noTeam: boolean; conflict: boolean; fields: Pick<PublishedChecklistRow, "prospect"> } {
+  const conflict = noTeam && teams.length > 0;
   return {
-    noTeam: noTeam || (prospect && teams.length === 0 && prospectTeams.length === 0),
+    noTeam: noTeam || (prospect && teams.length === 0),
     conflict,
-    fields: {
-      ...(prospect ? { prospect: true as const } : {}),
-      ...(prospectTeams.length > 0 ? { prospectTeams: [...prospectTeams] } : {}),
-    },
+    fields: prospect ? { prospect: true as const } : {},
   };
 }
 
@@ -834,16 +825,13 @@ function fourDigitYear(year: string | number | null | undefined): string | null 
 function overLimit(row: PublishedChecklistRow): string | null {
   if (row.number.length > PUBLISHED_CHECKLIST_MAX_NAME) return "Card number is too long";
   if (row.players.length > MAX_CARD_PLAYERS) return `More than ${MAX_CARD_PLAYERS} players on one card`;
-  if (row.teams.length + (row.prospectTeams?.length ?? 0) > MAX_CARD_TEAMS) {
+  if (row.teams.length > MAX_CARD_TEAMS) {
     return `More than ${MAX_CARD_TEAMS} teams on one card`;
   }
   if (row.players.some((p) => p.length > PUBLISHED_CHECKLIST_MAX_NAME)) {
     return "A player name is too long";
   }
-  if (
-    row.teams.some((t) => t.length > PUBLISHED_CHECKLIST_MAX_NAME) ||
-    (row.prospectTeams ?? []).some((t) => t.length > PUBLISHED_CHECKLIST_MAX_NAME)
-  ) {
+  if (row.teams.some((t) => t.length > PUBLISHED_CHECKLIST_MAX_NAME)) {
     return "A team name is too long";
   }
   if (row.subset !== undefined && row.subset.length > PUBLISHED_CHECKLIST_MAX_NAME) {
@@ -987,21 +975,18 @@ function parseLine(
   // the word "Prospect" in it is not a claim (its brackets are gone).
   const teamClaimsRead = takeProspectClaims(teamPart, protectedRest.claims);
   const plain = teamsFrom(teamClaimsRead.text, false, false);
+  // Each claim's X is the card's printed team, after the line's other teams.
+  const teams = [...plain.teams];
+  for (const claim of teamClaimsRead.claims) {
+    const x = prospectX(claim);
+    if (x !== "" && !teams.includes(x)) teams.push(x);
+  }
   const read: TeamsRead = {
-    teams: plain.teams,
+    teams,
     noTeam: plain.noTeam,
     prospect: teamClaimsRead.claims.length > 0,
-    prospectTeams: [
-      ...new Set(
-        teamClaimsRead.claims.flatMap((claim) => {
-          const x = prospectX(claim);
-          return x === "" ? [] : [x];
-        }),
-      ),
-    ],
   };
-  const { teams } = read;
-  const claims = teamClaims(teams, read.noTeam, read.prospect, read.prospectTeams);
+  const claims = teamClaims(teams, read.noTeam, read.prospect);
   if (claims.conflict) return { reason: NO_TEAM_AND_A_TEAM };
   if (
     players.length === 0 &&
@@ -1302,7 +1287,6 @@ function rowFromColumns(
   let notAPerson = false;
   let noTeam = false;
   let prospect = false;
-  const prospectTeams: string[] = [];
   const players: string[] = [];
   const teams: string[] = [];
   let variationName: string | undefined;
@@ -1339,7 +1323,6 @@ function rowFromColumns(
       teams.push(...read.teams);
       if (read.noTeam) noTeam = true;
       if (read.prospect) prospect = true;
-      prospectTeams.push(...read.prospectTeams);
     } else if (column === "subset" && subset === "") {
       subset = cell.replace(/\s+/g, " ").trim();
     }
@@ -1355,7 +1338,7 @@ function rowFromColumns(
     return { reason: numberCell ? "Card number isn't one we can read" : "No card number" };
   }
   // "No Team" beside a team, in one cell or across two team columns.
-  const claims = teamClaims(teams, noTeam, prospect, prospectTeams);
+  const claims = teamClaims(teams, noTeam, prospect);
   if (claims.conflict) return { reason: NO_TEAM_AND_A_TEAM };
   if (players.length === 0 && teams.length === 0 && !notAPerson && !claims.noTeam) {
     return { reason: "No player or team on this line" };

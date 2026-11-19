@@ -680,66 +680,27 @@ describe("collector review — playerless cards and the livery", () => {
   });
 });
 
-describe("collector review — 'Remember … as a name for this team' on a held Prospect (X)", () => {
-  const SOONERS = "team_sooners" as Id<"teams">;
-  const BADGERS = "team_badgers" as Id<"teams">;
-  const heldCard = (extra: Partial<PreviewCardForTeams> = {}): PreviewCardForTeams => ({
-    cardNumber: "NNO",
-    cardName: "Cord Rager",
-    players: ["Cord Rager"],
-    teams: [],
-    teamLookup: "checklist",
-    prospectTeam: "Oklahoma",
-    prospectTeams: ["Oklahoma"],
-    rawTeamName: "Oklahoma",
-    ...extra,
-  });
-  const REMEMBER = "Remember “Oklahoma” as a name for this team — Cord Rager";
-  beforeEach(() => {
-    nameAnswer = (name) =>
-      name === "Oklahoma"
-        ? [
-            { teamId: SOONERS, name: "Oklahoma Sooners", level: "college" } as Team,
-            { teamId: BADGERS, name: "Oklahoma Badgers", level: "college" } as Team,
-          ]
-        : [];
-  });
-
-  it("is drawn unticked on a held line, live only once exactly one existing team is picked", () => {
-    render(<Harness cards={[heldCard()]} />);
-    const box = screen.getByRole("checkbox", { name: REMEMBER }) as HTMLInputElement;
-    expect(box.checked).toBe(false);
-    expect(box.disabled).toBe(true);
-    fireEvent.click(screen.getByRole("radio", { name: "Oklahoma Sooners — Cord Rager" }));
-    expect((screen.getByRole("checkbox", { name: REMEMBER }) as HTMLInputElement).disabled).toBe(false);
-    // Picking a team alone remembers nothing.
-    expect(last()).toEqual([{ teamIds: [SOONERS] }]);
-  });
-
-  it("ticked, the answer carries the held X beside the one team picked", () => {
-    render(<Harness cards={[heldCard()]} />);
-    fireEvent.click(screen.getByRole("radio", { name: "Oklahoma Sooners — Cord Rager" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: REMEMBER }));
-    expect(last()).toEqual([{ teamIds: [SOONERS], rememberAs: "Oklahoma" }]);
-    // Unticked again: gone.
-    fireEvent.click(screen.getByRole("checkbox", { name: REMEMBER }));
-    expect(last()).toEqual([{ teamIds: [SOONERS] }]);
-  });
-
-  it("No team, or leaving it for later, remembers nothing even when ticked before", () => {
-    render(<Harness cards={[heldCard()]} />);
-    fireEvent.click(screen.getByRole("radio", { name: "Oklahoma Sooners — Cord Rager" }));
-    fireEvent.click(screen.getByRole("checkbox", { name: REMEMBER }));
-    fireEvent.click(screen.getByRole("radio", { name: "No team on this card — Cord Rager" }));
-    expect(last()).toEqual([{ teamNone: true }]);
-    expect((screen.getByRole("checkbox", { name: REMEMBER }) as HTMLInputElement).disabled).toBe(true);
-  });
-
-  it("is absent on an ordinary line and on a line with two held Xs", () => {
-    const { unmount } = render(<Harness cards={[card("1", ["Johnny Bench"])]} />);
+describe("NEO-591 — a Prospect (X) card's team is an ordinary Teams-step line", () => {
+  it("lists the printed team as the listing's claim like any team, with no Remember box and nothing pre-filled", () => {
+    nameAnswer = () => [];
+    render(
+      <Harness
+        cards={[
+          {
+            cardNumber: "NNO",
+            cardName: "Cord Rager",
+            players: ["Cord Rager"],
+            teams: ["Dallas Baptist"],
+            teamLookup: "checklist",
+            isProspect: true,
+          },
+        ]}
+        rows={[{ _id: "r1", kind: "team", name: "Dallas Baptist", decision: null }]}
+      />,
+    );
+    expect(screen.getByText("Listed as:")).toBeTruthy();
+    expect(screen.getByText("Dallas Baptist")).toBeTruthy();
     expect(screen.queryByRole("checkbox")).toBeNull();
-    unmount();
-    render(<Harness cards={[heldCard({ prospectTeam: "Oklahoma / Texas", prospectTeams: ["Oklahoma", "Texas"] })]} />);
-    expect(screen.queryByRole("checkbox")).toBeNull();
+    expect(last()).toEqual([undefined]);
   });
 });

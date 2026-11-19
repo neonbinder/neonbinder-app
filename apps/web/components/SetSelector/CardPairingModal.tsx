@@ -150,24 +150,9 @@ export type PairingCard = {
   /**
    * NEO-591 — the publisher checklist's team cell said "Prospect" /
    * "Prospect (X)": the card is born with the Prospect Card attribute. A claim
-   * about the card, whatever became of its team. Rides through the dialog.
+   * about the card; its X is a team like any other. Rides through the dialog.
    */
   isProspect?: boolean;
-  /**
-   * NEO-591 — the X of a "Prospect (X)" the fetch could not settle to exactly
-   * one minor-league or college team, held for the operator: the card's
-   * `teams` is empty and the Teams step asks. Never written as a team string
-   * (rule 8); `rawTeamName` carries the same text as the "Listed as:" hint
-   * once the checklist has answered the card. Several held Xs are joined
-   * " / ". Rides through the dialog untouched.
-   */
-  prospectTeam?: string;
-  /**
-   * NEO-591 — the held Xs as the exact list `prospectTeam` joins. A row that
-   * comes back from this card (`checklistRowOf`) reads the list, never
-   * splits the text.
-   */
-  prospectTeams?: string[];
   printRun?: number;
   autographType?: string;
   cardVariation?: string;
@@ -1360,19 +1345,15 @@ function splitChecklistMatched(cards: readonly PairingCard[]): {
  */
 export function checklistRowOf(card: PairingCard): ChecklistLinkRow {
   const teams = card.teams ?? [];
-  const held = card.prospectTeams ? [...card.prospectTeams] : [];
   return {
     number: card.cardNumber,
     players: card.players ?? [],
     teams,
     ...(isNoNumber(card.cardNumber) ? { noNumber: true as const } : {}),
-    ...(card.teamLookup === "checklist" && teams.length === 0 && held.length === 0
-      ? { noTeam: true as const }
-      : {}),
-    // NEO-591: the Prospect claim and any held X travel with the row, so an
-    // operator link sends them to the server and the claim is not lost.
-    ...(card.isProspect || held.length > 0 ? { prospect: true as const } : {}),
-    ...(held.length > 0 ? { prospectTeams: held } : {}),
+    ...(card.teamLookup === "checklist" && teams.length === 0 ? { noTeam: true as const } : {}),
+    // NEO-591: the Prospect claim travels with the row, so an operator link
+    // sends it to the server and the claim is not lost.
+    ...(card.isProspect ? { prospect: true as const } : {}),
   };
 }
 
@@ -1712,12 +1693,6 @@ function mergePair(bsc: PairingCard, sl: PairingCard): PairingCard {
     // NEO-591: the checklist's Prospect claim is about the card too, and rides
     // on whichever half carried it (the one holding its checklist pairing).
     ...(bsc.isProspect || sl.isProspect ? { isProspect: true } : {}),
-    ...((bsc.prospectTeam ?? sl.prospectTeam)
-      ? { prospectTeam: bsc.prospectTeam ?? sl.prospectTeam }
-      : {}),
-    ...((bsc.prospectTeams ?? sl.prospectTeams)
-      ? { prospectTeams: bsc.prospectTeams ?? sl.prospectTeams }
-      : {}),
     // NEO-478: a checklist disagreement is about the CARD, not about either
     // marketplace's half, so a hand-linked pair keeps whichever side carried
     // one. Dropping it would commit a card the operator was never asked

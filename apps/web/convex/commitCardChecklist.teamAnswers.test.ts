@@ -130,7 +130,6 @@ function card(opts: {
   teams?: string[];
   teamLookup?: "answered" | "failed" | "checklist";
   rawTeamName?: string;
-  prospectTeam?: string;
   teamIds?: Array<Id<"teams">>;
   teamsAnswered?: true;
   teamNone?: true;
@@ -148,7 +147,6 @@ function card(opts: {
     platformData,
     ...(opts.teamLookup ? { teamLookup: opts.teamLookup } : {}),
     ...(opts.rawTeamName !== undefined ? { rawTeamName: opts.rawTeamName } : {}),
-    ...(opts.prospectTeam !== undefined ? { prospectTeam: opts.prospectTeam } : {}),
     ...(opts.teamIds ? { teamIds: opts.teamIds } : {}),
     ...(opts.teamsAnswered ? { teamsAnswered: opts.teamsAnswered } : {}),
     ...(opts.teamNone ? { teamNone: opts.teamNone } : {}),
@@ -1073,8 +1071,6 @@ describe("commitCardChecklist — adversarial edges of the team answer (NEO-335)
         // BSC answered with a team NB could not split or resolve, and the
         // operator gave no pick.
         card({ cardNumber: "1", bscRef: "B1", teamLookup: "answered", rawTeamName: "Cardinals / Browns" }),
-        // A held "Prospect (X)": the checklist named X, which was never a team.
-        card({ cardNumber: "2", bscRef: "B2", teamLookup: "checklist", prospectTeam: "Frisco", rawTeamName: "Frisco" }),
         // The control: no claim at all, so the set's team is the card's.
         card({ cardNumber: "3", bscRef: "B3", teamLookup: "answered" }),
       ],
@@ -1082,7 +1078,6 @@ describe("commitCardChecklist — adversarial edges of the team answer (NEO-335)
 
     const rows = await rowsByNumber(t, leafId);
     expect(rows.get("1")!.teamOnCardIds).toBeUndefined();
-    expect(rows.get("2")!.teamOnCardIds).toBeUndefined();
     expect(rows.get("3")!.teamOnCardIds).toEqual([reds]);
   });
 

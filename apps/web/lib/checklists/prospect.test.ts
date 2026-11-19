@@ -1,7 +1,8 @@
 /**
  * NEO-591 — "Prospect" / "Prospect (X)" in a checklist team cell:
  * `readProspectCell` (the one reader the client parser and the server share)
- * and the claim as the line format reads it.
+ * and the claim as the line format reads it. X is the card's printed team
+ * (Jason, 2026-11-19): it lands in `teams` beside `prospect: true`.
  */
 import { describe, expect, it } from "vitest";
 import { parsePublishedChecklist, parsePublishedChecklistCells } from "./parse-published-checklist";
@@ -89,40 +90,37 @@ describe("Prospect in the line format (number player - team)", () => {
     ["2 Mike Trout, Prospect (Frisco RoughRiders (AA))", "Frisco RoughRiders (AA)"],
     ["3 Mike Trout ..... Prospect (Oklahoma)", "Oklahoma"],
     ["4 Mike Trout (Rookie) - Prospect (Oklahoma)", "Oklahoma"],
-  ] as const)("%s sets prospect and keeps X out of the teams", (line, x) => {
+  ] as const)("%s sets prospect and reads X as the team", (line, x) => {
     const [row] = parse(line).rows;
     expect(row.players).toEqual(["Mike Trout"]);
-    expect(row.teams).toEqual([]);
+    expect(row.teams).toEqual([x]);
     expect(row.prospect).toBe(true);
-    expect(row.prospectTeams).toEqual([x]);
     expect(row.noTeam).toBeUndefined();
   });
 
   it("reads a bare Prospect as a prospect with No Team", () => {
     const [row] = parse("8 Mike Trout - Prospect").rows;
     expect(row).toMatchObject({ players: ["Mike Trout"], teams: [], noTeam: true, prospect: true });
-    expect(row.prospectTeams).toBeUndefined();
   });
 
   it("reads Prospect (N/A) as bare", () => {
     const [row] = parse("9 Mike Trout - Prospect (N/A)").rows;
     expect(row).toMatchObject({ teams: [], noTeam: true, prospect: true });
-    expect(row.prospectTeams).toBeUndefined();
   });
 
-  it("reads prospect (X) (note) as a claim of X: the notes after the first bracket are dropped", () => {
+  it("reads prospect (X) (note) as the team X: the notes after the first bracket are dropped", () => {
     const [row] = parse("5 Mike Trout - prospect (Oklahoma) (Future Stars)").rows;
-    expect(row).toEqual({ number: "5", players: ["Mike Trout"], teams: [], prospect: true, prospectTeams: ["Oklahoma"] });
+    expect(row).toEqual({ number: "5", players: ["Mike Trout"], teams: ["Oklahoma"], prospect: true });
   });
 
   it("reads Mets, Prospect (Oklahoma) (RC) as the team and the claim", () => {
     const [row] = parse("15 Mike Trout - Mets, Prospect (Oklahoma) (RC)").rows;
-    expect(row).toEqual({ number: "15", players: ["Mike Trout"], teams: ["Mets"], prospect: true, prospectTeams: ["Oklahoma"] });
+    expect(row).toEqual({ number: "15", players: ["Mike Trout"], teams: ["Mets", "Oklahoma"], prospect: true });
   });
 
-  it("reads a Prospect (X) beside another team in the team part: the claim and the team", () => {
+  it("reads a Prospect (X) beside another team in the team part: both are teams, and the claim", () => {
     const [row] = parse("10 Mike Trout - Mets, Prospect (Oklahoma)").rows;
-    expect(row).toEqual({ number: "10", players: ["Mike Trout"], teams: ["Mets"], prospect: true, prospectTeams: ["Oklahoma"] });
+    expect(row).toEqual({ number: "10", players: ["Mike Trout"], teams: ["Mets", "Oklahoma"], prospect: true });
   });
 
   it("reads Mets / Prospect (bare) beside a team as a prospect without No Team", () => {
@@ -130,17 +128,16 @@ describe("Prospect in the line format (number player - team)", () => {
     expect(row).toEqual({ number: "11", players: ["Mike Trout"], teams: ["Mets"], prospect: true });
   });
 
-  it("reads two Prospect segments as one prospect with both X, never as 'Prospect , Prospect'", () => {
+  it("reads two Prospect segments as one prospect with both X as teams, never as 'Prospect , Prospect'", () => {
     const [row] = parse("12 Mike Trout - Prospect (Oklahoma), Prospect (Texas)").rows;
-    expect(row).toMatchObject({ teams: [], prospect: true, prospectTeams: ["Oklahoma", "Texas"] });
+    expect(row).toMatchObject({ teams: ["Oklahoma", "Texas"], prospect: true });
     const [bare] = parse("13 Mike Trout - Prospect, Prospect").rows;
     expect(bare).toMatchObject({ teams: [], noTeam: true, prospect: true });
-    expect(bare.prospectTeams).toBeUndefined();
   });
 
   it("keeps one X once when two segments name it", () => {
     const [row] = parse("14 Mike Trout - Prospect (Oklahoma) / Prospect (Oklahoma)").rows;
-    expect(row.prospectTeams).toEqual(["Oklahoma"]);
+    expect(row.teams).toEqual(["Oklahoma"]);
   });
 
   it("does not read a player named Prospect as a claim", () => {
@@ -154,21 +151,21 @@ describe("Prospect in the line format (number player - team)", () => {
     expect(row.prospect).toBeUndefined();
   });
 
-  it("never lets X into a team list on any line shape", () => {
+  it("puts X in the team list on every line shape", () => {
     for (const line of [
       "1 Mike Trout - Prospect (Oklahoma)",
       "2 Mike Trout, Prospect (Oklahoma)",
       "3 Mike Trout ..... Prospect (Oklahoma)",
     ]) {
-      expect(parse(line).rows[0].teams).not.toContain("Oklahoma");
+      expect(parse(line).rows[0].teams).toContain("Oklahoma");
     }
   });
 });
 
 describe("Prospect in a delimited file", () => {
-  it("reads two team columns, one Prospect (X) and one team, as a prospect with a team", () => {
+  it("reads two team columns, one Prospect (X) and one team, as a prospect with both teams", () => {
     const out = parsePublishedChecklist("Card #,Player,Team,Team\n1,Mike Trout,Prospect (Oklahoma),Mets\n", {});
-    expect(out.rows[0]).toMatchObject({ players: ["Mike Trout"], teams: ["Mets"], prospect: true, prospectTeams: ["Oklahoma"] });
+    expect(out.rows[0]).toMatchObject({ players: ["Mike Trout"], teams: ["Oklahoma", "Mets"], prospect: true });
     expect(out.rows[0].noTeam).toBeUndefined();
   });
 
@@ -185,18 +182,17 @@ describe("Prospect in a delimited file", () => {
   });
 
   it.each([
-    ["Prospect (Oklahoma) / Mets", ["Mets"], ["Oklahoma"]],
-    ["Mets / Prospect (Oklahoma)", ["Mets"], ["Oklahoma"]],
-    ["Mets; Prospect (Oklahoma)", ["Mets"], ["Oklahoma"]],
-    ["Mets, Prospect (Oklahoma)", ["Mets"], ["Oklahoma"]],
-    ["Prospect / Prospect (Texas)", [], ["Texas"]],
-    ["Prospect (Oklahoma) / Prospect (Texas)", [], ["Oklahoma", "Texas"]],
-    ["Prospect (A/B)", [], ["A/B"]],
-  ] as const)("reads the team cell %j segment by segment", (cell, teams, xs) => {
+    ["Prospect (Oklahoma) / Mets", ["Mets", "Oklahoma"]],
+    ["Mets / Prospect (Oklahoma)", ["Mets", "Oklahoma"]],
+    ["Mets; Prospect (Oklahoma)", ["Mets", "Oklahoma"]],
+    ["Mets, Prospect (Oklahoma)", ["Mets", "Oklahoma"]],
+    ["Prospect / Prospect (Texas)", ["Texas"]],
+    ["Prospect (Oklahoma) / Prospect (Texas)", ["Oklahoma", "Texas"]],
+    ["Prospect (A/B)", ["A/B"]],
+  ] as const)("reads the team cell %j segment by segment", (cell, teams) => {
     const out = parsePublishedChecklist(`Card #,Player,Team\n1,Mike Trout,"${cell}"\n`, {});
     expect(out.rows[0].teams).toEqual(teams);
     expect(out.rows[0].prospect).toBe(true);
-    expect(out.rows[0].prospectTeams).toEqual(xs);
   });
 
   it("reads Mets / Prospect as a team and a bare prospect, with no No Team", () => {
@@ -206,7 +202,7 @@ describe("Prospect in a delimited file", () => {
 
   it("reads two Prospect cells across two team columns as one prospect, no 'Prospect' team", () => {
     const out = parsePublishedChecklist("Card #,Player,Team,Team\n1,Mike Trout,Prospect,Prospect (Texas)\n", {});
-    expect(out.rows[0]).toEqual({ number: "1", players: ["Mike Trout"], teams: [], prospect: true, prospectTeams: ["Texas"] });
+    expect(out.rows[0]).toEqual({ number: "1", players: ["Mike Trout"], teams: ["Texas"], prospect: true });
   });
 
   it.each(["Prospect (Oklahoma) Rookie", "Prospect - Oklahoma"])(
@@ -219,15 +215,14 @@ describe("Prospect in a delimited file", () => {
   );
 
   it.each([
-    ["Prospect (Oklahoma) (note)", [], ["Oklahoma"]],
-    ["Prospect (Oklahoma) (RC)", [], ["Oklahoma"]],
-    ["Prospect (Oklahoma) (RC) / Mets", ["Mets"], ["Oklahoma"]],
-    ["Mets / Prospect (A) (B)", ["Mets"], ["A"]],
-  ] as const)("reads the first bracket of %j as X and drops the notes", (cell, teams, xs) => {
+    ["Prospect (Oklahoma) (note)", ["Oklahoma"]],
+    ["Prospect (Oklahoma) (RC)", ["Oklahoma"]],
+    ["Prospect (Oklahoma) (RC) / Mets", ["Mets", "Oklahoma"]],
+    ["Mets / Prospect (A) (B)", ["Mets", "A"]],
+  ] as const)("reads the first bracket of %j as X and drops the notes", (cell, teams) => {
     const out = parsePublishedChecklist(`Card #,Player,Team\n1,Mike Trout,"${cell}"\n`, {});
     expect(out.rows[0].teams).toEqual(teams);
     expect(out.rows[0].prospect).toBe(true);
-    expect(out.rows[0].prospectTeams).toEqual(xs);
   });
 
   it("leaves Top Prospect as the team text it always was", () => {
@@ -276,14 +271,13 @@ describe("Teams in a Last Name / First Name PDF keep only their first bracket (t
     expect(run(team)).toMatchObject({ players: ["Mike Trout"], teams, noNumber: true });
   });
 
-  it("reads Prospect (Oklahoma) (RC) as a claim of Oklahoma, not a team string", () => {
+  it("reads Prospect (Oklahoma) (RC) as the team Oklahoma and a prospect", () => {
     expect(run("Prospect (Oklahoma) (RC)")).toEqual({
       number: "NNO",
       players: ["Mike Trout"],
-      teams: [],
+      teams: ["Oklahoma"],
       noNumber: true,
       prospect: true,
-      prospectTeams: ["Oklahoma"],
     });
   });
 });

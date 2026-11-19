@@ -3,10 +3,9 @@
  *
  *  - `isProspect` is born as `features.isProspect = "true"` on a NEW card only
  *    (isRookie's route); a card that already exists is never touched by it.
- *  - A held "Prospect (X)" (`prospectTeam`, teams empty, teamLookup
- *    "checklist") is NOT a No Team claim: the card is stamped outcome
- *    "checklist", keeps X only as the "Listed as:" hint (`bscTeamName`), writes
- *    no team and no No Team stamp, and is never queued for BSC.
+ *  - The X of "Prospect (X)" is the card's printed team (Jason, 2026-11-19):
+ *    it arrives in `teams` and resolves at commit like any team string. The
+ *    card is not a No Team claim and is never queued for BSC.
  *  - A bare Prospect IS the No Team claim and is stamped as before.
  *
  * Fixture conventions mirror `commitCardChecklist.checklistAnswer.test.ts`.
@@ -19,8 +18,6 @@ import schema from "./schema";
 import { Doc, Id } from "./_generated/dataModel";
 import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import { teamRowFields } from "./lib/teamRow";
-import { MAX_PLAYER_NAME_LENGTH } from "../lib/players/name-limits";
-import { applyChecklistRow } from "../lib/checklists/apply-published-row";
 
 beforeEach(() => {
   vi.stubGlobal(
@@ -86,13 +83,10 @@ function card(opts: {
   isProspect?: boolean;
   teamLookup?: "answered" | "failed" | "checklist";
   teams?: string[];
-  prospectTeam?: string;
-  prospectTeams?: string[];
   rawTeamName?: string;
   teamNone?: true;
   teamIds?: Id<"teams">[];
   teamsAnswered?: true;
-  rememberTeamAs?: string;
   applyFields?: string[];
   baseVersion?: number;
 }) {
@@ -104,13 +98,10 @@ function card(opts: {
     platformData: opts.bscRef !== undefined ? { bsc: { ref: opts.bscRef } } : {},
     ...(opts.isProspect ? { isProspect: true } : {}),
     ...(opts.teamLookup ? { teamLookup: opts.teamLookup } : {}),
-    ...(opts.prospectTeam !== undefined ? { prospectTeam: opts.prospectTeam } : {}),
-    ...(opts.prospectTeams ? { prospectTeams: opts.prospectTeams } : {}),
     ...(opts.rawTeamName !== undefined ? { rawTeamName: opts.rawTeamName } : {}),
     ...(opts.teamNone ? { teamNone: opts.teamNone } : {}),
     ...(opts.teamIds ? { teamIds: opts.teamIds } : {}),
     ...(opts.teamsAnswered ? { teamsAnswered: opts.teamsAnswered } : {}),
-    ...(opts.rememberTeamAs !== undefined ? { rememberTeamAs: opts.rememberTeamAs } : {}),
     ...(opts.applyFields ? { applyFields: opts.applyFields } : {}),
     ...(opts.baseVersion !== undefined ? { baseVersion: opts.baseVersion } : {}),
   };
@@ -226,91 +217,34 @@ describe("commitCardChecklist — the Prospect Card attribute", () => {
   });
 });
 
-describe("commitCardChecklist — a held Prospect (X)", () => {
-  const held = (extra: Partial<Parameters<typeof card>[0]> = {}) =>
-    card({
-      cardNumber: "1",
-      bscRef: "B1",
-      isProspect: true,
-      teamLookup: "checklist",
-      prospectTeam: "Oklahoma",
-      rawTeamName: "Oklahoma",
-      ...extra,
-    });
+describe("commitCardChecklist — a Prospect (X) whose X is the printed team", () => {
+  async function seedSooners(t: T, sportId: Id<"selectorOptions">) {
+    return t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        ...teamRowFields({ name: "Sooners", location: "Oklahoma" }),
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+  }
 
-  test("is answered by the checklist, keeps X only as the Listed-as hint, and writes no team", async () => {
+  test("X resolves to the existing team like any team string, and the card is a prospect", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
+    const teamId = await seedSooners(t, sportId);
 
-    await commit(t, sportId, leafId, [held()]);
+    await commit(t, sportId, leafId, [
+      card({ cardNumber: "1", bscRef: "B1", isProspect: true, teamLookup: "checklist", teams: ["Oklahoma Sooners"] }),
+    ]);
 
     const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.teamCheckOutcome).toBe("checklist");
-    expect(row.teamCheckDoneAt).toEqual(expect.any(Number));
-    expect(row.bscTeamName).toBe("Oklahoma");
-    expect(row.teamOnCardIds).toBeUndefined();
+    expect(row.teamOnCardIds).toEqual([teamId]);
+    expect(row.teamNoneConfirmedAt).toBeUndefined();
     expect(row.features?.isProspect).toBe("true");
     await settle(t);
   });
 
-  test("is not stamped as a No Team claim: no confirmed-no-team stamp", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-
-    await commit(t, sportId, leafId, [held()]);
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.teamNoneConfirmedAt).toBeUndefined();
-    expect(row.teamNoneConfirmedByUserId).toBeUndefined();
-    await settle(t);
-  });
-
-  test("is not queued for the BSC team lane", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-
-    await commit(t, sportId, leafId, [held()]);
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect((await settle(t)).has(row._id)).toBe(false);
-  });
-
-  test("a checklist-only card (no BSC ref) with a held X keeps the hint too, and no stamp of any kind", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-
-    await commit(t, sportId, leafId, [held({ bscRef: undefined })]);
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.bscTeamName).toBe("Oklahoma");
-    expect(row.teamNoneConfirmedAt).toBeUndefined();
-    expect(row.teamOnCardIds).toBeUndefined();
-    expect((await settle(t)).has(row._id)).toBe(false);
-  });
-
-  test("the hint falls back to X when the card carries no raw value", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-
-    await commit(t, sportId, leafId, [
-      card({ cardNumber: "1", bscRef: "B1", isProspect: true, teamLookup: "checklist", prospectTeam: "Dallas Baptist" }),
-    ]);
-
-    expect((await rowsByNumber(t, leafId)).get("1")!.bscTeamName).toBe("Dallas Baptist");
-    await settle(t);
-  });
-
-  test("several held X reach the hint as the one joined text", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-
-    await commit(t, sportId, leafId, [held({ prospectTeam: "Oklahoma / Arizona", rawTeamName: "Oklahoma / Arizona" })]);
-
-    expect((await rowsByNumber(t, leafId)).get("1")!.bscTeamName).toBe("Oklahoma / Arizona");
-    await settle(t);
-  });
-
-  test("a checklist card with no team and no held X is still the No Team claim (the contrast)", async () => {
+  test("a bare Prospect (no team, answered by the checklist) is still the No Team claim", async () => {
     const t = convexTest(schema, modules);
     const { sportId, leafId } = await seedTree(t);
 
@@ -324,293 +258,5 @@ describe("commitCardChecklist — a held Prospect (X)", () => {
     expect(row.bscTeamName).toBeUndefined();
     expect(row.features?.isProspect).toBe("true");
     await settle(t);
-  });
-
-  test("a held X on a card that is not a checklist answer keeps no hint (only a checklist answer carries one)", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-
-    await commit(t, sportId, leafId, [
-      card({ cardNumber: "1", bscRef: "B1", isProspect: true, prospectTeam: "Oklahoma" }),
-    ]);
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.bscTeamName).toBeUndefined();
-    expect(row.teamNoneConfirmedAt).toBeUndefined();
-    await settle(t);
-  });
-
-  test("an operator's own No team on a held card wins and is stamped as theirs, with no checklist outcome", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-
-    await commit(t, sportId, leafId, [held({ teamNone: true })]);
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.teamNoneConfirmedAt).toEqual(expect.any(Number));
-    expect(row.teamNoneConfirmedByUserId).toBe(ADMIN_IDENTITY.subject);
-    await settle(t);
-  });
-
-  test("a name the operator ruled \"not a team\" is dropped from the hint", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await t.run(async (ctx) =>
-      ctx.db.insert("entityReviewQueue", {
-        selectorOptionId: leafId,
-        batchId: "batch-1",
-        createdByUserId: ADMIN_IDENTITY.subject,
-        kind: "team",
-        name: "Oklahoma",
-        sportId,
-        status: "ready",
-        decision: { action: "skip" },
-      }),
-    );
-
-    await commit(t, sportId, leafId, [held()], { batchId: "batch-1" });
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.bscTeamName).toBeUndefined();
-    expect(row.teamCheckOutcome).toBe("checklist");
-    await settle(t);
-  });
-
-  test("the exact held list is accepted and never becomes a team", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-
-    await commit(t, sportId, leafId, [
-      held({ prospectTeam: "Oklahoma / Arizona", prospectTeams: ["Oklahoma", "Arizona"], rawTeamName: "Oklahoma / Arizona" }),
-    ]);
-
-    const row = (await rowsByNumber(t, leafId)).get("1")!;
-    expect(row.teamOnCardIds).toBeUndefined();
-    expect(row.bscTeamName).toBe("Oklahoma / Arizona");
-    await settle(t);
-  });
-
-  test("more held X than a card's team cap, or an X over a name's length, is refused and nothing is written", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-
-    await expect(
-      commit(t, sportId, leafId, [held({ prospectTeams: Array.from({ length: 9 }, (_, i) => `School ${i}`) })]),
-    ).rejects.toThrow(/9 held prospect teams; the limit is 8/);
-    await expect(commit(t, sportId, leafId, [held({ prospectTeams: ["x".repeat(500)] })])).rejects.toThrow(
-      /held prospect team of 500 characters/,
-    );
-
-    expect((await rowsByNumber(t, leafId)).size).toBe(0);
-    await settle(t);
-  });
-
-  test("a held X over the name's length is refused and nothing is written", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-
-    await expect(
-      commit(t, sportId, leafId, [held({ prospectTeam: "x".repeat(500), rawTeamName: "Oklahoma" })]),
-    ).rejects.toThrow(/held prospect team/);
-
-    expect((await rowsByNumber(t, leafId)).size).toBe(0);
-    await settle(t);
-  });
-});
-
-describe("commitCardChecklist — held Xs joined into one hint (security audit S1)", () => {
-  test("three 50-character held Xs commit: the joined hint fits the bound and is what the card keeps", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    const xs = ["A".repeat(50), "B".repeat(50), "C".repeat(50)];
-    const applied = applyChecklistRow({}, { players: [], teams: [], prospect: true, prospectTeams: xs }, () => null);
-    expect(applied.prospectTeam!.length).toBeLessThanOrEqual(MAX_PLAYER_NAME_LENGTH);
-
-    await commit(t, sportId, leafId, [
-      card({
-        cardNumber: "1",
-        bscRef: "B1",
-        isProspect: true,
-        teamLookup: "checklist",
-        prospectTeam: applied.prospectTeam,
-        prospectTeams: applied.prospectTeams,
-        rawTeamName: applied.prospectTeam,
-      }),
-    ]);
-
-    expect((await rowsByNumber(t, leafId)).get("1")!.bscTeamName).toBe(applied.prospectTeam);
-    await settle(t);
-  });
-});
-
-describe("commitCardChecklist — a held X is never a team string (security audit N2)", () => {
-  const heldAsTeam = (extra: Partial<Parameters<typeof card>[0]> = {}) =>
-    card({
-      cardNumber: "7",
-      bscRef: "B7",
-      isProspect: true,
-      teamLookup: "checklist",
-      teams: ["Oklahoma"],
-      prospectTeam: "Oklahoma",
-      prospectTeams: ["Oklahoma"],
-      rawTeamName: "Oklahoma",
-      ...extra,
-    });
-
-  test("refuses a card whose team string is one of its own held Xs, writing nothing", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await expect(commit(t, sportId, leafId, [heldAsTeam()])).rejects.toThrow(
-      /card #7 carries a held prospect team as a team name/,
-    );
-    expect((await rowsByNumber(t, leafId)).size).toBe(0);
-  });
-
-  test("the comparison folds case and spacing, and reads the joined single hint too", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await expect(
-      commit(t, sportId, leafId, [heldAsTeam({ teams: ["  OKLAHOMA "], prospectTeams: undefined })]),
-    ).rejects.toThrow(/held prospect team as a team name/);
-  });
-
-  test("a card whose held X is not among its team strings is untouched by the guard", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await commit(t, sportId, leafId, [heldAsTeam({ teams: [], teamLookup: "checklist" })]);
-    expect((await rowsByNumber(t, leafId)).get("7")).toBeDefined();
-    await settle(t);
-  });
-
-  test("an operator's own answer is exempt: a team staged under the same name is their pick", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    await commit(t, sportId, leafId, [heldAsTeam({ teamsAnswered: true })]);
-    expect((await rowsByNumber(t, leafId)).get("7")).toBeDefined();
-    await settle(t);
-  });
-});
-
-describe("commitCardChecklist — Remember a held X as a name for the team picked", () => {
-  async function seedSooners(t: T, sportId: Id<"selectorOptions">) {
-    return t.run(async (ctx) =>
-      ctx.db.insert("teams", {
-        ...teamRowFields({ name: "Sooners", location: "Oklahoma State Univ" }),
-        sportId,
-        lastUpdated: Date.now(),
-      }),
-    );
-  }
-  const aliasesOf = (t: T, id: Id<"teams">) => t.run(async (ctx) => (await ctx.db.get(id))!.aliases ?? []);
-  const heldCard = (extra: Partial<Parameters<typeof card>[0]> = {}) =>
-    card({
-      cardNumber: "1",
-      bscRef: "B1",
-      isProspect: true,
-      teamLookup: "checklist",
-      prospectTeam: "Oklahoma",
-      prospectTeams: ["Oklahoma"],
-      rawTeamName: "Oklahoma",
-      ...extra,
-    });
-
-  test("saves the held X as an alias of the one team the operator picked", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    const teamId = await seedSooners(t, sportId);
-    await commit(t, sportId, leafId, [heldCard({ teamIds: [teamId], rememberTeamAs: "Oklahoma" })]);
-    expect(await aliasesOf(t, teamId)).toEqual(["Oklahoma"]);
-    await settle(t);
-  });
-
-  test("off unless asked: the same pick without the box saves nothing", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    const teamId = await seedSooners(t, sportId);
-    await commit(t, sportId, leafId, [heldCard({ teamIds: [teamId] })]);
-    expect(await aliasesOf(t, teamId)).toEqual([]);
-    await settle(t);
-  });
-
-  test("a text that is not one of the card's own held Xs is dropped, never written", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    const teamId = await seedSooners(t, sportId);
-    await commit(t, sportId, leafId, [heldCard({ teamIds: [teamId], rememberTeamAs: "Arizona" })]);
-    expect(await aliasesOf(t, teamId)).toEqual([]);
-    await settle(t);
-  });
-
-  test("security re-check: a card that holds no X cannot save BSC's raw team value as a name", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    const teamId = await seedSooners(t, sportId);
-    await commit(t, sportId, leafId, [
-      card({
-        cardNumber: "1",
-        bscRef: "B1",
-        rawTeamName: "Some BSC Value",
-        teamIds: [teamId],
-        rememberTeamAs: "Some BSC Value",
-      }),
-    ]);
-    expect(await aliasesOf(t, teamId)).toEqual([]);
-    await settle(t);
-  });
-
-  test("security re-check: a card with several held Xs cannot save their joined text, a cut '+N more' text, or either X alone", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    const teamId = await seedSooners(t, sportId);
-    const multi = (alias: string) =>
-      heldCard({
-        prospectTeam: "Oklahoma / Arizona",
-        prospectTeams: ["Oklahoma", "Arizona"],
-        rawTeamName: "Oklahoma / Arizona",
-        teamIds: [teamId],
-        rememberTeamAs: alias,
-      });
-    await commit(t, sportId, leafId, [multi("Oklahoma / Arizona")]);
-    expect(await aliasesOf(t, teamId)).toEqual([]);
-    await commit(t, sportId, leafId, [{ ...multi("Oklahoma +1 more"), prospectTeam: "Oklahoma +1 more" }]);
-    expect(await aliasesOf(t, teamId)).toEqual([]);
-    await commit(t, sportId, leafId, [multi("Oklahoma")]);
-    expect(await aliasesOf(t, teamId)).toEqual([]);
-    await settle(t);
-  });
-
-  test("only with exactly one picked team: two picks save nothing", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    const a = await seedSooners(t, sportId);
-    const b = await t.run(async (ctx) =>
-      ctx.db.insert("teams", { ...teamRowFields({ name: "Bison", location: "Oklahoma Baptist" }), sportId, lastUpdated: Date.now() }),
-    );
-    await commit(t, sportId, leafId, [heldCard({ teamIds: [a, b], rememberTeamAs: "Oklahoma" })]);
-    expect(await aliasesOf(t, a)).toEqual([]);
-    expect(await aliasesOf(t, b)).toEqual([]);
-    await settle(t);
-  });
-
-  test("a string another team holds as its own name is not saved on the picked team", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    const teamId = await seedSooners(t, sportId);
-    await t.run(async (ctx) =>
-      ctx.db.insert("teams", { ...teamRowFields({ name: "Oklahoma" }), sportId, lastUpdated: Date.now() }),
-    );
-    await commit(t, sportId, leafId, [heldCard({ teamIds: [teamId], rememberTeamAs: "Oklahoma" })]);
-    expect(await aliasesOf(t, teamId)).toEqual([]);
-    await settle(t);
-  });
-
-  test("a name to remember over the alias length refuses the commit before anything is written", async () => {
-    const t = convexTest(schema, modules);
-    const { sportId, leafId } = await seedTree(t);
-    const teamId = await seedSooners(t, sportId);
-    await expect(
-      commit(t, sportId, leafId, [heldCard({ teamIds: [teamId], rememberTeamAs: "x".repeat(300) })]),
-    ).rejects.toThrow(/name to remember of 300 characters/);
-    expect((await rowsByNumber(t, leafId)).size).toBe(0);
   });
 });

@@ -1,8 +1,9 @@
 /**
  * NEO-591 — `checkPublishedChecklist` re-derives the Prospect claim itself
  * (the client's flags are never trusted) and refuses what contradicts itself.
- * The parser leaves `prospect` / `prospectTeams` on a row; a hand-written call
- * may send either those or the raw cell, and both must read the same.
+ * The X of "Prospect (X)" is the card's printed team (Jason, 2026-11-19): the
+ * parser leaves `prospect` and X in `teams`; a hand-written call may send that
+ * or the raw cell, and both must read the same.
  */
 
 import { ConvexError } from "convex/values";
@@ -10,7 +11,7 @@ import { describe, expect, test } from "vitest";
 import { MAX_CARD_TEAMS } from "../features/cardAttention";
 import { parsePublishedChecklist } from "../../lib/checklists/parse-published-checklist";
 import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
-import { MAX_PUBLISHED_ROW_NAMES, checkPublishedChecklist } from "./publishedChecklistCheck";
+import { checkPublishedChecklist } from "./publishedChecklistCheck";
 
 type Sent = {
   number?: string;
@@ -18,26 +19,22 @@ type Sent = {
   teams?: string[];
   noTeam?: boolean;
   prospect?: boolean;
-  prospectTeams?: string[];
 };
 const one = (sent: Sent) => ({ number: "1", players: ["Cord Rager"], teams: [] as string[], ...sent });
 const checked = (sent: Sent) => checkPublishedChecklist({ rows: [one(sent)] })!.rows[0];
 
 describe("checkPublishedChecklist — Prospect", () => {
-  test("keeps a parser row's prospect and X, with X out of the teams", () => {
-    expect(checked({ prospect: true, prospectTeams: ["Oklahoma"] })).toEqual({
+  test("keeps a parser row's prospect and X as a team", () => {
+    expect(checked({ prospect: true, teams: ["Oklahoma"] })).toEqual({
       number: "1",
       players: ["Cord Rager"],
-      teams: [],
+      teams: ["Oklahoma"],
       prospect: true,
-      prospectTeams: ["Oklahoma"],
     });
   });
 
   test("reads a lone team string \"Prospect (Oklahoma)\" as the same row", () => {
-    expect(checked({ teams: ["Prospect (Oklahoma)"] })).toEqual(
-      checked({ prospect: true, prospectTeams: ["Oklahoma"] }),
-    );
+    expect(checked({ teams: ["Prospect (Oklahoma)"] })).toEqual(checked({ prospect: true, teams: ["Oklahoma"] }));
   });
 
   test.each(["Prospect", "prospect", "Prospect (N/A)", "Prospect ()", "Prospect (No Team)"])(
@@ -55,12 +52,10 @@ describe("checkPublishedChecklist — Prospect", () => {
 
   test("a prospect flag with no X and no team is a No Team row too", () => {
     expect(checked({ prospect: true })).toMatchObject({ noTeam: true, prospect: true, teams: [] });
-    expect(checked({ prospect: true }).prospectTeams).toBeUndefined();
   });
 
   test("a bare Prospect beside a real team is a prospect with that team, not No Team", () => {
-    const out = checked({ prospect: true, teams: ["Boston Red Sox"] });
-    expect(out).toEqual({
+    expect(checked({ prospect: true, teams: ["Boston Red Sox"] })).toEqual({
       number: "1",
       players: ["Cord Rager"],
       teams: ["Boston Red Sox"],
@@ -68,40 +63,19 @@ describe("checkPublishedChecklist — Prospect", () => {
     });
   });
 
-  test("an X beside a real team keeps both and is not No Team", () => {
-    const out = checked({ prospectTeams: ["Oklahoma"], teams: ["Boston Red Sox"] });
-    expect(out).toMatchObject({ teams: ["Boston Red Sox"], prospect: true, prospectTeams: ["Oklahoma"] });
-    expect(out.noTeam).toBeUndefined();
-  });
-
-  test("sending only prospectTeams is enough to make the row a prospect", () => {
-    expect(checked({ prospectTeams: ["Oklahoma"] })).toMatchObject({ prospect: true, prospectTeams: ["Oklahoma"] });
-  });
-
-  test("an X that says nothing is dropped (N/A, None, No Team), so a row of only those is no prospect", () => {
-    for (const x of ["N/A", "None", "No Team", " ", "-"]) {
-      const out = checked({ prospectTeams: [x] });
-      expect(out.prospect).toBeUndefined();
-      expect(out.prospectTeams).toBeUndefined();
-      expect(out.noTeam).toBeUndefined();
-    }
-  });
-
-  test("dedupes X by the folded team key, keeping the first spelling", () => {
-    expect(checked({ prospectTeams: ["Oklahoma", " oklahoma ", "OKLAHOMA"] }).prospectTeams).toEqual(["Oklahoma"]);
-  });
-
-  test("merges sent X with the one in a lone cell string, sent first, without repeating", () => {
-    expect(checked({ prospectTeams: ["Texas"], teams: ["Prospect (Oklahoma)"] }).prospectTeams).toEqual(["Texas", "Oklahoma"]);
-    expect(checked({ prospectTeams: ["oklahoma"], teams: ["Prospect (Oklahoma)"] }).prospectTeams).toEqual(["oklahoma"]);
-  });
-
-  test("reads each team string on its own: a prospect cell beside a team is the claim, the team stays", () => {
+  test("an X beside a real team keeps both teams and is not No Team", () => {
     const out = checked({ teams: ["Boston Red Sox", "Prospect (Oklahoma)"] });
-    expect(out.teams).toEqual(["Boston Red Sox"]);
+    expect(out.teams).toEqual(["Boston Red Sox", "Oklahoma"]);
     expect(out.prospect).toBe(true);
-    expect(out.prospectTeams).toEqual(["Oklahoma"]);
     expect(out.noTeam).toBeUndefined();
+  });
+
+  test("an X already among the teams is not repeated, by the folded team key", () => {
+    expect(checked({ teams: ["Oklahoma", "Prospect ( oklahoma )"] }).teams).toEqual(["Oklahoma"]);
+    expect(checked({ teams: ["Prospect (Oklahoma)", "Prospect (oklahoma)", "Prospect (Texas)"] }).teams).toEqual([
+      "Oklahoma",
+      "Texas",
+    ]);
   });
 
   test("a bare Prospect string beside a team is a prospect without No Team", () => {
@@ -109,13 +83,9 @@ describe("checkPublishedChecklist — Prospect", () => {
     expect(out.teams).toEqual(["Mets"]);
     expect(out.prospect).toBe(true);
     expect(out.noTeam).toBeUndefined();
-    expect(out.prospectTeams).toBeUndefined();
   });
 
-  test("two prospect strings are one prospect with both X, deduped, never a team named Prospect", () => {
-    const out = checked({ teams: ["Prospect (Oklahoma)", "Prospect (oklahoma)", "Prospect (Texas)"] });
-    expect(out.teams).toEqual([]);
-    expect(out.prospectTeams).toEqual(["Oklahoma", "Texas"]);
+  test("never a team named Prospect", () => {
     const bare = checked({ teams: ["Prospect", "Prospect"] });
     expect(bare.teams).toEqual([]);
     expect(bare).toMatchObject({ prospect: true, noTeam: true });
@@ -123,12 +93,8 @@ describe("checkPublishedChecklist — Prospect", () => {
 
   test("takes the first bracket as X and drops the notes after it, as the parser does", () => {
     for (const cell of ["Prospect (Oklahoma) (RC)", "Prospect (Oklahoma) (Future Stars)", "Prospect (Oklahoma) [SP] (x)"]) {
-      expect(checked({ teams: [cell] })).toEqual(
-        checked({ prospect: true, prospectTeams: ["Oklahoma"] }),
-      );
-      expect(checked({ teams: ["Mets", cell] })).toEqual(
-        checked({ teams: ["Mets"], prospect: true, prospectTeams: ["Oklahoma"] }),
-      );
+      expect(checked({ teams: [cell] })).toEqual(checked({ prospect: true, teams: ["Oklahoma"] }));
+      expect(checked({ teams: ["Mets", cell] })).toEqual(checked({ teams: ["Mets", "Oklahoma"], prospect: true }));
     }
   });
 
@@ -143,28 +109,8 @@ describe("checkPublishedChecklist — Prospect", () => {
     const out = checked(sent);
     expect(out.teams).toEqual(parsed.teams);
     expect(out.prospect).toBe(parsed.prospect);
-    expect(out.prospectTeams).toEqual(parsed.prospectTeams);
     // The raw cell, sent as one string per "/" segment, reads the same.
-    const raw = checked({ teams: cell.split(" / ") });
-    expect(raw).toEqual(out);
-  });
-
-  test("agrees with the parser's row for the same cell", () => {
-    expect(checked({ teams: ["Mets", "Prospect (Oklahoma)"] })).toEqual(
-      checked({ teams: ["Mets"], prospect: true, prospectTeams: ["Oklahoma"] }),
-    );
-  });
-
-  test("never moves an X into teams, whatever the shape sent", () => {
-    for (const sent of [
-      { teams: ["Prospect (Arizona)"] },
-      { prospect: true, prospectTeams: ["Arizona"] },
-      { prospectTeams: ["Arizona"], teams: [] },
-    ]) {
-      const out = checked(sent);
-      expect(out.teams).toEqual([]);
-      expect(out.prospectTeams).toEqual(["Arizona"]);
-    }
+    expect(checked({ teams: cell.split(" / ") })).toEqual(out);
   });
 });
 
@@ -176,11 +122,11 @@ describe("checkPublishedChecklist — Prospect contradictions and caps", () => {
   };
 
   test("refuses No Team beside an X (flag and X sent)", () => {
-    refuses({ noTeam: true, prospectTeams: ["Oklahoma"] });
+    refuses({ noTeam: true, prospect: true, teams: ["Oklahoma"] });
   });
 
   test("refuses a team string \"No Team\" beside an X", () => {
-    refuses({ teams: ["No Team"], prospectTeams: ["Oklahoma"] });
+    refuses({ teams: ["No Team", "Prospect (Oklahoma)"] });
   });
 
   test("refuses No Team beside a prospect cell string that carries an X", () => {
@@ -198,35 +144,24 @@ describe("checkPublishedChecklist — Prospect contradictions and caps", () => {
 
   test("counts teams and X together against a card's team cap", () => {
     const teams = Array.from({ length: MAX_CARD_TEAMS - 1 }, (_, i) => `Team ${i}`);
-    expect(() => checkPublishedChecklist({ rows: [one({ teams, prospectTeams: ["Oklahoma"] })] })).not.toThrow();
-    expect(() => checkPublishedChecklist({ rows: [one({ teams, prospectTeams: ["Oklahoma", "Texas"] })] })).toThrow(
-      `Row 1 of the official checklist names ${MAX_CARD_TEAMS + 1} teams; the limit is ${MAX_CARD_TEAMS}.`,
-    );
-  });
-
-  test("refuses more X than the card's team cap on their own", () => {
-    const prospectTeams = Array.from({ length: MAX_CARD_TEAMS + 1 }, (_, i) => `School ${i}`);
-    expect(() => checkPublishedChecklist({ rows: [one({ prospectTeams })] })).toThrow(
-      /names \d+ prospect teams; the limit is 8\./,
-    );
+    expect(() => checkPublishedChecklist({ rows: [one({ teams: [...teams, "Prospect (Oklahoma)"] })] })).not.toThrow();
+    expect(() =>
+      checkPublishedChecklist({ rows: [one({ teams: [...teams, "Prospect (Oklahoma)", "Prospect (Texas)"] })] }),
+    ).toThrow(`Row 1 of the official checklist names ${MAX_CARD_TEAMS + 1} teams; the limit is ${MAX_CARD_TEAMS}.`);
   });
 
   test("refuses an X that is over a name's length", () => {
-    expect(() => checkPublishedChecklist({ rows: [one({ prospectTeams: ["x".repeat(MAX_PLAYER_NAME_LENGTH + 1)] })] })).toThrow(
-      new RegExp(`prospect team name over ${MAX_PLAYER_NAME_LENGTH} characters`),
-    );
-  });
-
-  test("refuses more sent X strings than the raw cap, blanks included, before trimming", () => {
-    const prospectTeams = Array.from({ length: MAX_PUBLISHED_ROW_NAMES + 1 }, () => " ");
-    expect(() => checkPublishedChecklist({ rows: [one({ prospectTeams })] })).toThrow(
-      `Row 1 of the official checklist sends ${MAX_PUBLISHED_ROW_NAMES + 1} prospect team names; the limit is ${MAX_PUBLISHED_ROW_NAMES}.`,
-    );
+    expect(() =>
+      checkPublishedChecklist({ rows: [one({ teams: [`Prospect (${"x".repeat(MAX_PLAYER_NAME_LENGTH + 1)})`] })] }),
+    ).toThrow(new RegExp(`over ${MAX_PLAYER_NAME_LENGTH} characters`));
   });
 
   test("a section's label names the row", () => {
     expect(() =>
-      checkPublishedChecklist({ rows: [one({ noTeam: true, prospectTeams: ["Oklahoma"] })] }, { label: "section “Autos”" }),
+      checkPublishedChecklist(
+        { rows: [one({ noTeam: true, teams: ["Prospect (Oklahoma)"] })] },
+        { label: "section “Autos”" },
+      ),
     ).toThrow("Row 1 of section “Autos” says No Team and names a team.");
   });
 });

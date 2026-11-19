@@ -85,7 +85,6 @@ function build(
     setLeagueIds?: string[];
     settled?: ReadonlySet<number>;
     people?: StoredPeople;
-    leagueLevelById?: Record<string, string>;
   } = {},
 ) {
   return buildTeamsGroups({
@@ -105,9 +104,6 @@ function build(
       : {}),
     ...(extra.settled ? { settled: extra.settled } : {}),
     ...(extra.people ? { people: extra.people } : {}),
-    ...(extra.leagueLevelById
-      ? { leagueLevelById: new Map(Object.entries(extra.leagueLevelById)) }
-      : {}),
   });
 }
 
@@ -447,14 +443,6 @@ describe("choices and answers", () => {
     expect(sameTeamAnswers([undefined, { teamNone: true }], [undefined, { teamNone: true }])).toBe(true);
     expect(sameTeamAnswers([], [undefined])).toBe(false);
     expect(sameTeamAnswers([{ teams: ["a"] }], [{ teams: ["b"] }])).toBe(false);
-  });
-
-  test("withTeamAnswer: a remembered held X goes on the card as rememberTeamAs, beside the one picked team", () => {
-    const held = { ...card("1", ["Cord Rager"]), prospectTeams: ["Oklahoma"] };
-    const out = withTeamAnswer(held, { teamIds: [REDS], rememberAs: "Oklahoma" });
-    expect(out).toMatchObject({ teamIds: [REDS], rememberTeamAs: "Oklahoma" });
-    expect(out).not.toHaveProperty("rememberAs");
-    expect(withTeamAnswer(held, { teamIds: [REDS] })).not.toHaveProperty("rememberTeamAs");
   });
 
   test("withTeamAnswer: unanswered card is the same object; teams replace the printed strings", () => {
@@ -1482,13 +1470,6 @@ describe("NEO-556 setDefaultSettlesNewRow", () => {
   });
 
   test("invariant 8: a set team never settles a card whose data names a team the commit did not give it", () => {
-    // A held "Prospect (X)".
-    expect(
-      setDefaultSettlesNewRow(
-        { ...card, ...bsc, teamLookup: "checklist", prospectTeam: "Frisco", rawTeamName: "Frisco" },
-        "teams",
-      ),
-    ).toBe(false);
     // A listing value kept only as the "Listed as:" hint.
     expect(
       setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "answered", rawTeamName: "Padres / Cubs" }, "teams"),
@@ -1498,7 +1479,7 @@ describe("NEO-556 setDefaultSettlesNewRow", () => {
       setDefaultSettlesNewRow({ ...card, ...bsc, teams: ["Padres"], rawTeamName: "Padres" }, "teams"),
     ).toBe(true);
     // Blank claims are no claim.
-    expect(setDefaultSettlesNewRow({ ...card, ...bsc, prospectTeam: " ", rawTeamName: " " }, "teams")).toBe(true);
+    expect(setDefaultSettlesNewRow({ ...card, ...bsc, rawTeamName: " " }, "teams")).toBe(true);
   });
 
   test("No Team settles a card with nothing to look up", () => {
@@ -1519,7 +1500,6 @@ describe("NEO-556 setDefaultSettlesNewRow", () => {
     expect(
       setDefaultSettlesNewRow({ ...card, ...bsc, teamLookup: "answered", rawTeamName: "Padres" }, "noTeam"),
     ).toBe(false);
-    expect(setDefaultSettlesNewRow({ ...card, prospectTeam: "Frisco" }, "noTeam")).toBe(false);
     expect(setDefaultSettlesNewRow({ ...card, teams: ["Padres"] }, "noTeam")).toBe(false);
     expect(setDefaultSettlesNewRow({ ...card, team: "Padres" }, "noTeam")).toBe(false);
     // Blank strings are no claim.
@@ -1621,78 +1601,42 @@ describe("nameRequestSlices — a call never asks for more places than the serve
   });
 });
 
-describe("a team staged in this wizard on a held Prospect (X) line (collector review)", () => {
-  // The held card's player has a career at a team the operator is creating in
-  // this wizard: "Oklahoma Sooners", filed under a league in the New Team step.
-  const heldCard = (): PreviewCardForTeams => ({
+describe("a Prospect (X) card, X is the printed team (NEO-591)", () => {
+  // The checklist row said "Prospect (Dallas Baptist)": the card prints that
+  // team, like any plain team cell, and the Names step asks about it.
+  const prospect = (): PreviewCardForTeams => ({
     cardNumber: "NNO",
     cardName: "Cord Rager",
     players: ["Cord Rager"],
-    teams: [],
+    teams: ["Dallas Baptist"],
     teamLookup: "checklist",
-    prospectTeam: "Oklahoma",
-    prospectTeams: ["Oklahoma"],
-    rawTeamName: "Oklahoma",
+    isProspect: true,
   });
-  const rowsWith = (leagueId: string | undefined) => [
-    row({
-      kind: "player",
-      name: "Cord Rager",
-      enrichment: { careerTeams: [{ name: "Oklahoma Sooners", fromYear: 2024, toYear: 2026 }] },
-      decision: { action: "create" },
-    }),
-    row({
-      kind: "team",
-      name: "Oklahoma Sooners",
-      decision: { action: "create", create: { location: "Oklahoma", name: "Sooners", ...(leagueId ? { leagueId } : {}) } },
-    }),
-  ];
 
-  test("is offered when the league the operator filed it under is a college league", () => {
-    const groups = build([heldCard()], rowsWith("league_ncaa"), {}, 2026, {
-      leagueLevelById: { league_ncaa: "college" },
-      teamNameEvidence: { oklahoma: [] },
-    });
-    expect(groups[0].prospectHeld).toBe(true);
-    expect(labels(groups[0])).toContain("Oklahoma Sooners");
-    // Offered, never pre-selected: the held X is a claim.
+  test("a team created in the New Team step resolves at commit, so the card is not asked on the Teams step", () => {
+    const rows = [
+      row({
+        kind: "team",
+        name: "Dallas Baptist",
+        decision: { action: "create", create: { location: "Dallas", name: "Baptist" } },
+      }),
+    ];
+    expect(build([prospect()], rows, {}, 2026)).toEqual([]);
+  });
+
+  test("a team linked to an existing one resolves the same way", () => {
+    const rows = [
+      row({ kind: "team", name: "Dallas Baptist", decision: { action: "link", linkedTeamId: REDS } }),
+    ];
+    expect(build([prospect()], rows, {}, 2026)).toEqual([]);
+  });
+
+  test("a team the operator ruled 'not a team' leaves the card to the Teams step, with no pre-fill and no Remember box", () => {
+    const rows = [row({ kind: "team", name: "Dallas Baptist", decision: { action: "skip" } })];
+    const groups = build([prospect()], rows, {}, 2026);
+    expect(groups).toHaveLength(1);
     expect(groups[0].suggestion).toBeNull();
-    expect(groups[0].refs.find((r) => r.label === "Oklahoma Sooners")?.level).toBe("college");
-  });
-
-  test("a minor league also qualifies", () => {
-    const groups = build([heldCard()], rowsWith("league_aaa"), {}, 2026, {
-      leagueLevelById: { league_aaa: "minor" },
-      teamNameEvidence: { oklahoma: [] },
-    });
-    expect(labels(groups[0])).toContain("Oklahoma Sooners");
-  });
-
-  test("a major league never qualifies, whatever the filing", () => {
-    const groups = build([heldCard()], rowsWith("league_mlb"), {}, 2026, {
-      leagueLevelById: { league_mlb: "major" },
-      teamNameEvidence: { oklahoma: [] },
-    });
-    expect(labels(groups[0])).not.toContain("Oklahoma Sooners");
-  });
-
-  test("a team with no league, or a league whose level is not known, is not offered", () => {
-    expect(labels(build([heldCard()], rowsWith(undefined), {}, 2026, { teamNameEvidence: { oklahoma: [] } })[0])).not.toContain(
-      "Oklahoma Sooners",
-    );
-    expect(
-      labels(
-        build([heldCard()], rowsWith("league_new"), {}, 2026, {
-          leagueLevelById: { league_other: "college" },
-          teamNameEvidence: { oklahoma: [] },
-        })[0],
-      ),
-    ).not.toContain("Oklahoma Sooners");
-  });
-
-  test("on an ordinary line (no held X) the same staged team is offered whatever its league", () => {
-    const plain: PreviewCardForTeams = { cardNumber: "1", cardName: "Cord Rager", players: ["Cord Rager"], teams: [] };
-    const groups = build([plain], rowsWith("league_mlb"), {}, 2026, { leagueLevelById: { league_mlb: "major" } });
-    expect(groups[0].prospectHeld).toBeUndefined();
+    expect(groups[0]).not.toHaveProperty("heldX");
+    expect(groups[0]).not.toHaveProperty("prospectHeld");
   });
 });

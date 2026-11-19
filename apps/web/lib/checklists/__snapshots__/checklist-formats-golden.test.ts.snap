@@ -39604,10 +39604,9 @@ exports[`golden — CSV fixtures > prospect-team-cells.csv: leaf and set parses 
         "Colt Keith",
       ],
       "prospect": true,
-      "prospectTeams": [
+      "teams": [
         "Oklahoma",
       ],
-      "teams": [],
     },
     {
       "number": "3",
@@ -39615,10 +39614,9 @@ exports[`golden — CSV fixtures > prospect-team-cells.csv: leaf and set parses 
         "Bobby Witt Jr.",
       ],
       "prospect": true,
-      "prospectTeams": [
+      "teams": [
         "Dallas Baptist",
       ],
-      "teams": [],
     },
     {
       "number": "4",

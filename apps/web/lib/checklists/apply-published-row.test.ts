@@ -164,7 +164,7 @@ describe("applyChecklistRow: team names compared as NB teams, not strings", () =
   const row = (...teams: string[]) => ({ players: ["Mark Mulder"], teams });
 
   test("Oakland Athletics against Oakland A's, both aliases of one team: no disagreement, the card takes the row's team", () => {
-    const r = applyChecklistRow(card("Oakland Athletics"), row("Oakland A's"), noResolve, undefined, undefined, resolveTeamId);
+    const r = applyChecklistRow(card("Oakland Athletics"), row("Oakland A's"), noResolve, undefined, resolveTeamId);
     expect(r.conflict).toBeUndefined();
     expect(r.answered).toBe(true);
     expect(r.teams).toEqual(["Oakland A's"]);
@@ -180,7 +180,7 @@ describe("applyChecklistRow: team names compared as NB teams, not strings", () =
   });
 
   test("a real different team is still asked", () => {
-    const r = applyChecklistRow(card("Oakland Athletics"), row("Boston Red Sox"), noResolve, undefined, undefined, resolveTeamId);
+    const r = applyChecklistRow(card("Oakland Athletics"), row("Boston Red Sox"), noResolve, undefined, resolveTeamId);
     expect(r.conflict?.teams).toEqual({
       marketplace: ["Oakland Athletics"],
       checklist: ["Boston Red Sox"],
@@ -189,9 +189,9 @@ describe("applyChecklistRow: team names compared as NB teams, not strings", () =
   });
 
   test("a name that does not resolve is still asked, on either side", () => {
-    const checklistSide = applyChecklistRow(card("Oakland Athletics"), row("Oakland Elephants"), noResolve, undefined, undefined, resolveTeamId);
+    const checklistSide = applyChecklistRow(card("Oakland Athletics"), row("Oakland Elephants"), noResolve, undefined, resolveTeamId);
     expect(checklistSide.conflict?.teams).toBeDefined();
-    const marketplaceSide = applyChecklistRow(card("Oakland Elephants"), row("Oakland A's"), noResolve, undefined, undefined, resolveTeamId);
+    const marketplaceSide = applyChecklistRow(card("Oakland Elephants"), row("Oakland A's"), noResolve, undefined, resolveTeamId);
     expect(marketplaceSide.conflict?.teams).toBeDefined();
   });
 
@@ -201,7 +201,6 @@ describe("applyChecklistRow: team names compared as NB teams, not strings", () =
       row("Boston Red Sox", "Oakland A's"),
       noResolve,
       undefined,
-      undefined,
       resolveTeamId,
     );
     expect(agree.conflict).toBeUndefined();
@@ -209,7 +208,6 @@ describe("applyChecklistRow: team names compared as NB teams, not strings", () =
       card("Oakland Athletics", "Boston Red Sox"),
       row("Oakland A's"),
       noResolve,
-      undefined,
       undefined,
       resolveTeamId,
     );
@@ -221,7 +219,6 @@ describe("applyChecklistRow: team names compared as NB teams, not strings", () =
       { players: ["Mark Mulder"], team: "Oakland Athletics" },
       row("Oakland A's"),
       noResolve,
-      undefined,
       undefined,
       resolveTeamId,
     );

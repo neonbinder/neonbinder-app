@@ -27,7 +27,7 @@ import {
   TEAM_ERA_SCAN_LIMIT,
 } from "./lib/teamRow";
 import { nameTokens } from "./lib/entityNearMatch";
-import { isProspectTeamLevel, pickProspectTeam, teamLocationIs } from "./lib/prospectTeam";
+import { pickPlaceTeam, teamLocationIs } from "./lib/placeTeam";
 
 /**
  * NEO-591 — the longest number a candidate's `sourceNumbers` may carry per
@@ -156,12 +156,8 @@ const candidateInputValidator = v.object({
   attributes: v.optional(v.array(v.string())),
   isRookie: v.optional(v.boolean()),
   isRelic: v.optional(v.boolean()),
-  // NEO-591 — the checklist's Prospect claim, and the X of "Prospect (X)" the
-  // fetch held for the operator (see the schema note). `rawTeamName` rides
-  // with a held X: it is the card's "Listed as:" hint at commit.
+  // NEO-591 — the checklist's Prospect claim (see the schema note).
   isProspect: v.optional(v.boolean()),
-  prospectTeam: v.optional(v.string()),
-  prospectTeams: v.optional(v.array(v.string())),
   rawTeamName: v.optional(v.string()),
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
@@ -483,16 +479,15 @@ export const startCandidateBatch = internalMutation({
         "player",
       );
       assertNames(c.cardNumber, c.teams ?? [], MAX_CARD_TEAMS, "teams", "team");
-      // NEO-591 — a held X and the hint that carries it come back from the
-      // client on a public commit arg, so they are held to a name's length.
+      // The listed-team hint comes back from the client on a public commit
+      // arg, so it is held to a name's length.
       assertNames(
         c.cardNumber,
-        [c.prospectTeam, c.rawTeamName].filter((n): n is string => n !== undefined),
-        2,
-        "held prospect team names",
+        [c.rawTeamName].filter((n): n is string => n !== undefined),
+        1,
+        "listed team names",
         "team",
       );
-      assertNames(c.cardNumber, c.prospectTeams ?? [], MAX_CARD_TEAMS, "held prospect teams", "team");
       // PR 451 — the checklist conflict's four lists, on the same terms.
       const checklist = c.checklistConflict;
       if (checklist) {
@@ -1027,53 +1022,23 @@ export const resolveChecklistTeamTexts = internalQuery({
 });
 
 /**
- * NEO-591 — settle the X of each "Prospect (X)" checklist cell: the one
- * minor-league or college team it means, or held for the operator. The pure
- * rules (levels, the era pick, why a string cannot carry them) are in
- * `convex/lib/prospectTeam.ts`; this does the reads.
- *
- * For each distinct X (answers are aligned with `texts`):
- *
- *  1. candidates are the rows the sport holds under X as a full name
- *     (`findTeamsByFullName`, name or alias) plus up to
- *     `PROSPECT_TEAM_SEARCH_HITS` `search_name` hits whose location IS X
- *     ("Oklahoma", the place of the Oklahoma Sooners);
- *  2. only rows whose league is `minor` or `college` stay (a row with no
- *     league, an independent, international or "other" league never does);
- *  3. the set year picks among them (`pickProspectTeam`); exactly one row R
- *     may remain;
- *  4. R is settled only if `resolveTeamForSetYear(fullName(R))`, the lookup
- *     the Names gate and the commit prelude run on a team string, returns R
- *     too. Otherwise X is held.
- *
- * Settled: `{ kind: "team", name: fullName(R) }`, the string the card
- * carries. Anything else, including a lookup the bound cut off, is
- * `{ kind: "held" }`: the fetch neither fails nor guesses (rule 8).
- *
- * At most `MAX_PROSPECT_TEAMS_PER_QUERY` texts are read per call (each is a
- * handful of indexed reads; the caller batches, `resolveProspectTeamTexts`);
- * texts past it answer held. Internal: only `fetchCardChecklist` and
- * `applyPublishedChecklistPairs` ask, behind their own `requireAdmin`.
+ * The most team texts one place-resolver call reads (each is a handful of
+ * indexed reads; the caller batches, `resolveChecklistPlaceTexts`). Texts past
+ * it answer null.
  */
-export const MAX_PROSPECT_TEAMS_PER_QUERY = 20;
-/** How many `search_name` hits one X reads. */
-export const PROSPECT_TEAM_SEARCH_HITS = 32;
-const prospectResolutionValidator = v.union(
-  v.object({ kind: v.literal("team"), name: v.string() }),
-  v.object({ kind: v.literal("held") }),
-);
+export const MAX_PLACE_TEXTS_PER_QUERY = 20;
+/** How many `search_name` hits one text reads. */
+export const PLACE_TEAM_SEARCH_HITS = 32;
 
 /**
  * The rows the sport holds under `x` as a full name (name or alias) plus the
- * rows whose LOCATION is `x`, from one bounded `search_name` read. Shared by
- * the Prospect (X) resolver and the city-string leg, so the two cannot read a
- * location differently.
+ * rows whose LOCATION is `x`, from one bounded `search_name` read.
  *
  * `saturated` is the guard of rule 8. Both reads are windows
- * (`TEAM_ERA_SCAN_LIMIT` for the name leg, `PROSPECT_TEAM_SEARCH_HITS` for the
+ * (`TEAM_ERA_SCAN_LIMIT` for the name leg, `PLACE_TEAM_SEARCH_HITS` for the
  * search): a window that came back FULL may have cut a second candidate off,
  * and "exactly one" read from it would be a guess. A caller that settles on a
- * count must answer held (or leave the text alone) when `saturated` is set.
+ * count must leave the text alone when `saturated` is set.
  */
 async function teamRowsForPlace(
   ctx: QueryCtx | MutationCtx,
@@ -1088,8 +1053,8 @@ async function teamRowsForPlace(
     const hits = await ctx.db
       .query("teams")
       .withSearchIndex("search_name", (q) => q.search("nameNormalized", term).eq("sportId", sportId))
-      .take(PROSPECT_TEAM_SEARCH_HITS);
-    if (hits.length >= PROSPECT_TEAM_SEARCH_HITS) saturated = true;
+      .take(PLACE_TEAM_SEARCH_HITS);
+    if (hits.length >= PLACE_TEAM_SEARCH_HITS) saturated = true;
     for (const row of hits) {
       if (teamLocationIs(row, x)) byLocation.push(row);
     }
@@ -1109,59 +1074,12 @@ async function settleOneTeam(
   setYear: number | undefined,
   qualifying: readonly Doc<"teams">[],
 ): Promise<string | null> {
-  const picked = pickProspectTeam(qualifying, setYear);
+  const picked = pickPlaceTeam(qualifying, setYear);
   if (!picked) return null;
   const name = teamFullName(picked);
   const back = await resolveTeamForSetYear(ctx, sportId, name, setYear, { allowPastEra: true });
   return back.teamId === picked._id ? name : null;
 }
-
-export const resolveProspectTeams = internalQuery({
-  args: {
-    selectorOptionId: v.id("selectorOptions"),
-    texts: v.array(v.string()),
-  },
-  returns: v.array(prospectResolutionValidator),
-  handler: async (ctx, args) => {
-    const held = { kind: "held" as const };
-    const sportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
-    if (!sportId) return args.texts.map(() => held);
-    const setYear = await findSetYearForSelectorOption(ctx, args.selectorOptionId);
-    const levelByLeague = new Map<string, string | undefined>();
-    const levelOf = async (leagueId: Id<"leagues"> | undefined) => {
-      if (!leagueId) return undefined;
-      if (!levelByLeague.has(leagueId)) {
-        levelByLeague.set(leagueId, (await ctx.db.get(leagueId))?.level);
-      }
-      return levelByLeague.get(leagueId);
-    };
-    const out: Array<
-      { kind: "team"; name: string } | { kind: "held" }
-    > = [];
-    for (const [i, raw] of args.texts.entries()) {
-      const x = raw.trim();
-      if (i >= MAX_PROSPECT_TEAMS_PER_QUERY || !x || x.length > MAX_PLAYER_NAME_LENGTH) {
-        out.push(held);
-        continue;
-      }
-      const { byName, byLocation, saturated } = await teamRowsForPlace(ctx, sportId, x);
-      // A window that came back full may hide a second team: held (rule 8).
-      if (saturated) {
-        out.push(held);
-        continue;
-      }
-      const found = new Map<string, Doc<"teams">>();
-      for (const row of [...byName, ...byLocation]) found.set(row._id, row);
-      const qualifying: Doc<"teams">[] = [];
-      for (const row of found.values()) {
-        if (isProspectTeamLevel(await levelOf(row.leagueId))) qualifying.push(row);
-      }
-      const name = await settleOneTeam(ctx, sportId, setYear, qualifying);
-      out.push(name ? { kind: "team", name } : held);
-    }
-    return out;
-  },
-});
 
 /**
  * NEO-591 (collector review) — a checklist team printed as a PLACE.
@@ -1171,7 +1089,8 @@ export const resolveProspectTeams = internalQuery({
  * asked about each one. When a plain team text names no team by name or alias,
  * this tries the location: the teams whose location IS the text, limited to
  * the set's league(s) (`effectiveSetLeagueIds`), picked for the set year, and
- * EXACTLY ONE may remain. Then the same back-check as the Prospect resolver.
+ * EXACTLY ONE may remain, and the commit's own lookup of its full name must
+ * land on that same row (`settleOneTeam`).
  *
  *  - "Seattle" in an MLB set is the Mariners (the Kraken and the Seahawks are
  *    in other leagues). "New York" in an MLB set is two teams: unchanged.
@@ -1183,7 +1102,7 @@ export const resolveProspectTeams = internalQuery({
  *    the text is left alone, and the card stays parked for the operator.
  *
  * Answers are aligned with `texts`: the settled team's full name, else null
- * (the text is unchanged). At most `MAX_PROSPECT_TEAMS_PER_QUERY` texts are
+ * (the text is unchanged). At most `MAX_PLACE_TEXTS_PER_QUERY` texts are
  * read per call (about ten indexed reads each; the caller batches,
  * `resolveChecklistPlaceTexts`); texts past it answer null. Internal: only
  * `fetchCardChecklist` and `applyPublishedChecklistPairs` ask, behind their
@@ -1206,7 +1125,7 @@ export const resolveChecklistPlaceTeams = internalQuery({
     for (const [i, raw] of args.texts.entries()) {
       const x = raw.trim();
       if (
-        i >= MAX_PROSPECT_TEAMS_PER_QUERY ||
+        i >= MAX_PLACE_TEXTS_PER_QUERY ||
         !x ||
         x.length > MAX_PLAYER_NAME_LENGTH ||
         x.includes(",")
@@ -1328,8 +1247,6 @@ export const getReadyCandidates = query({
         isRelic: v.optional(v.boolean()),
         // NEO-591 — see the schema note.
         isProspect: v.optional(v.boolean()),
-        prospectTeam: v.optional(v.string()),
-        prospectTeams: v.optional(v.array(v.string())),
         printRun: v.optional(v.number()),
         autographType: v.optional(v.string()),
         cardVariation: v.optional(v.string()),
@@ -1394,8 +1311,6 @@ export const getReadyCandidates = query({
         isRookie: r.isRookie,
         isRelic: r.isRelic,
         isProspect: r.isProspect,
-        prospectTeam: r.prospectTeam,
-        prospectTeams: r.prospectTeams,
         printRun: r.printRun,
         autographType: r.autographType,
         cardVariation: r.cardVariation,

@@ -46,12 +46,10 @@ export const publishedChecklistRowValidator = v.object({
   // same, and refuses a row that says No Team and names a team.
   noTeam: v.optional(v.boolean()),
   // NEO-591 — the team cell said "Prospect" / "Prospect (X)": the card is a
-  // prospect, and each X is a team to settle at fetch (minor league or
-  // college only), kept out of `teams`. The re-check below also reads a
-  // prospect cell from a lone team string, so a row sent either way reads the
-  // same.
+  // prospect, and X is its printed team (already in `teams`). The re-check
+  // below also reads a prospect cell from a lone team string, so a row sent
+  // either way reads the same.
   prospect: v.optional(v.boolean()),
-  prospectTeams: v.optional(v.array(v.string())),
   // NEO-591 (variations) — the checklist's note for a variation row ("photo
   // variation"). Control characters are stripped and a name over
   // `MAX_VARIATION_NAME` is refused by the re-check below.
@@ -102,12 +100,12 @@ const PUBLISHED_CHECKLIST_NUMBER_CHARS = /^[#A-Za-z0-9. -]*$/;
  * team it is kept as sent, exactly as the parser keeps it.
  *
  * NEO-591: a row is a Prospect row (`prospect: true`) when the client flagged
- * it, sent `prospectTeams`, or any of its team strings is a whole prospect
- * cell (`readProspectCell`, read string by string; the other strings stay
- * teams). Each X is kept in `prospectTeams`, never in `teams`,
- * deduped, within a card's team cap together with `teams`. A bare Prospect
- * (no X, no other team) is a No Team row (`noTeam: true`); a No Team row that
- * names an X contradicts itself and refuses the whole checklist.
+ * it or any of its team strings is a whole prospect cell (`readProspectCell`,
+ * read string by string; the other strings stay teams). Each X is the card's
+ * printed team: it joins `teams` after the others, deduped, within a card's
+ * team cap. A bare Prospect (no X, no other team) is a No Team row
+ * (`noTeam: true`); a No Team row that names an X contradicts itself and
+ * refuses the whole checklist.
  */
 export function checkPublishedChecklist(
   published: PublishedChecklist | undefined,
@@ -178,35 +176,35 @@ export function checkPublishedChecklist(
     // NEO-591 — each team string is read on its own: a string that is a whole
     // prospect cell (`readProspectCell`) is the claim, any other stays a team,
     // so ["Mets", "Prospect (Oklahoma)"] reads as the parser reads a cell
-    // "Mets / Prospect (Oklahoma)". The parser's own row carries the claim as
-    // flags and leaves no such string.
+    // "Mets / Prospect (Oklahoma)": Mets and Oklahoma. The parser's own row
+    // carries the claim as a flag and leaves no such string.
     const prospectCells = cleaned.map((team) => readProspectCell(team));
     const cellTeams = cleaned.filter((_, i) => prospectCells[i] === null);
-    const claimedX = [
-      ...clean(row.prospectTeams ?? [], MAX_CARD_TEAMS, "prospect team"),
-      ...prospectCells.flatMap((cell) => (cell?.team ? [cell.team] : [])),
-    ].filter((x) => !isNoClaimTeamText(x) && !isNoTeamText(x));
-    // Deduped as a card's teams are (the same folded key), in sent order.
-    const seenX = new Set<string>();
-    const prospectTeams = claimedX.filter((x) => {
-      const key = normalizeEntityName(x);
-      if (seenX.has(key)) return false;
-      seenX.add(key);
-      return true;
-    });
-    const prospect =
-      row.prospect === true || prospectCells.some((cell) => cell !== null) || prospectTeams.length > 0;
+    const claimedX = prospectCells
+      .flatMap((cell) => (cell?.team ? [cell.team] : []))
+      .filter((x) => !isNoClaimTeamText(x) && !isNoTeamText(x));
+    const prospect = row.prospect === true || prospectCells.some((cell) => cell !== null);
     const named = cellTeams.length === 1 && isNoClaimTeamText(cellTeams[0]) ? [] : cellTeams;
-    const teams = named.filter((t) => !isNoTeamText(t));
-    if (teams.length + prospectTeams.length > MAX_CARD_TEAMS) {
+    const plainTeams = named.filter((t) => !isNoTeamText(t));
+    // Each X joins the other teams, deduped as a card's teams are (the same
+    // folded key), in sent order.
+    const seen = new Set(plainTeams.map((t) => normalizeEntityName(t)));
+    const teams = [...plainTeams];
+    for (const x of claimedX) {
+      const key = normalizeEntityName(x);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      teams.push(x);
+    }
+    if (teams.length > MAX_CARD_TEAMS) {
       throw new ConvexError(
-        `${where} names ${teams.length + prospectTeams.length} teams; the limit is ${MAX_CARD_TEAMS}.`,
+        `${where} names ${teams.length} teams; the limit is ${MAX_CARD_TEAMS}.`,
       );
     }
     // A bare "Prospect" is the No Team claim, unless the row names a team.
-    const bareProspect = prospect && teams.length === 0 && prospectTeams.length === 0;
-    const noTeam = row.noTeam === true || teams.length < named.length || bareProspect;
-    if (noTeam && (teams.length > 0 || prospectTeams.length > 0)) {
+    const bareProspect = prospect && teams.length === 0;
+    const noTeam = row.noTeam === true || plainTeams.length < named.length || bareProspect;
+    if (noTeam && teams.length > 0) {
       throw new ConvexError(`${where} says No Team and names a team.`);
     }
     return {
@@ -216,7 +214,6 @@ export function checkPublishedChecklist(
       ...(rowHasNoNumber({ number, noNumber: row.noNumber }) ? { noNumber: true } : {}),
       ...(noTeam ? { noTeam: true } : {}),
       ...(prospect ? { prospect: true } : {}),
-      ...(prospectTeams.length > 0 ? { prospectTeams } : {}),
       ...(variationName ? { variationName } : {}),
     };
   });

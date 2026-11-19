@@ -87,7 +87,6 @@ import ChecklistConflictStep, { type ChecklistConflictRow } from "./ChecklistCon
 import {
   applyChecklistChoice,
   checklistConflictIndexes,
-  checklistConflictShown,
   orphanedReviewRowIds,
   type ChecklistChoice,
   type ChecklistConflict,
@@ -693,8 +692,7 @@ export default function EntityReviewWizard({
       incomingPreviewCards
         ? checklistIndexes.flatMap((index) => {
             const card = incomingPreviewCards[index];
-            // NEO-591: a held "Prospect (X)" shows X on the checklist's side.
-            const conflict = checklistConflictShown(card);
+            const conflict = card.checklistConflict;
             return conflict
               ? [
                   {

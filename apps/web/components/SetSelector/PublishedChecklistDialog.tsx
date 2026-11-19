@@ -16,7 +16,7 @@ import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
 import { Textarea } from "../primitives/Textarea";
 import { Checkbox } from "../primitives/Checkbox";
-import { checklistClaimParts, checklistClaimText, PROSPECT_TEAM_JOINER } from "../../lib/checklists/prospect-team-text";
+import { checklistClaimParts, checklistClaimText, CLAIM_JOINER } from "../../lib/checklists/prospect-team-text";
 import { inertBackground } from "@/lib/dom/inert-background";
 import { useDebouncedValue } from "@/src/hooks/useDebouncedValue";
 import {
@@ -175,11 +175,10 @@ export function checklistTeamsLine(matched: number, total: number): string {
  * with " / ", as the dialog's other rosters do. A card printed with no number
  * reads "NNO Mike Lowell": "#NNO" would claim a number the card does not have.
  * NEO-591: the claim reads as the checklist printed it: "Prospect (Oklahoma)"
- * for a Prospect (X) row, held or settled, and "Prospect" for a bare one (not
- * "No Team"), so it is never mistaken for a row with no team. Mixed rows read
- * the printed teams first, then the prospect form, joined with " / ". A row
- * that arrives with its own `claim` (the server's text for a settled X, whose
- * `teams` holds the full name) prints that.
+ * for a Prospect (X) row and "Prospect" for a bare one (not "No Team"), so it
+ * is never mistaken for a row with no team. A row that arrives with its own
+ * `claim` (the server's text, whose `teams` holds a resolved full name)
+ * prints that.
  * NEO-489: a row whose checklist said "No Team" reads " · No Team", the same
  * words the preview's team cell uses (`NO_TEAM_CELL`), so the operator sees
  * the claim before linking it.
@@ -190,12 +189,7 @@ export function checklistRowLine(row: {
   teams: readonly string[];
   noNumber?: true;
   noTeam?: true;
-  /**
-   * NEO-591 — the X of each "Prospect (X)", kept out of `teams`. It is the
-   * row's team as the checklist printed it, so it reads in the team's place.
-   */
-  prospectTeams?: readonly string[];
-  /** NEO-591 — the cell for a bare "Prospect" row (its `noTeam` is also set). */
+  /** NEO-591 — the row is a Prospect row (a bare one also sets `noTeam`). */
   prospect?: boolean;
   /** The row's team cell as printed, when the server sent one. */
   claim?: string;
@@ -215,12 +209,11 @@ export function checklistTeamCell(row: {
   teams: readonly string[];
   noTeam?: boolean;
   prospect?: boolean;
-  prospectTeams?: readonly string[];
   claim?: string;
 }): string {
   if (row.claim) return row.claim;
   const parts = checklistClaimParts(row);
-  if (parts.length > 0) return parts.join(PROSPECT_TEAM_JOINER);
+  if (parts.length > 0) return parts.join(CLAIM_JOINER);
   return row.noTeam ? NO_TEAM_CELL : "";
 }
 
@@ -739,7 +732,7 @@ export default function PublishedChecklistDialog({
                               )}
                             </td>
                             <td className="px-3 py-1 align-top text-ink-2">
-                              {row.teams.length > 0 || row.prospect || (row.prospectTeams?.length ?? 0) > 0 ? (
+                              {row.teams.length > 0 || row.prospect ? (
                                 // The claim as printed: teams, then "Prospect
                                 // (X)" / "Prospect" (collector review).
                                 checklistClaimText(row)

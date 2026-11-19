@@ -459,24 +459,13 @@ describe("NEO-496 — undoing the server's checklist pair", () => {
     expect(committable(card)).not.toHaveProperty("checklistRowId");
   });
 
-  test("a held Prospect (X) row is a card held whole: no team string, the exact Xs, the joined hint (NEO-591)", () => {
-    const card = pairedRowCard(
-      { ...pairedRow, teams: ["Boston Red Sox"], prospect: true, prospectTeams: ["Oklahoma", "Arizona"] },
-      "x",
-    );
-    expect(card).toMatchObject({
-      teams: [],
-      teamLookup: "checklist",
-      isProspect: true,
-      prospectTeam: "Oklahoma / Arizona",
-      prospectTeams: ["Oklahoma", "Arizona"],
-      rawTeamName: "Oklahoma / Arizona",
-    });
-    // The row the operator relinks keeps the claim as printed.
-    expect(pairedRowOf({ ...pairedRow, teams: ["Boston Red Sox"], prospect: true, prospectTeams: ["Oklahoma", "Arizona"] })).toMatchObject({
-      teams: ["Boston Red Sox"],
+  test("a Prospect (X) row is a prospect card whose X is one of its teams (NEO-591)", () => {
+    const card = pairedRowCard({ ...pairedRow, teams: ["Dallas Baptist"], prospect: true }, "x");
+    expect(card).toMatchObject({ teams: ["Dallas Baptist"], teamLookup: "checklist", isProspect: true });
+    // The row the operator relinks keeps the claim.
+    expect(pairedRowOf({ ...pairedRow, teams: ["Dallas Baptist"], prospect: true })).toMatchObject({
+      teams: ["Dallas Baptist"],
       prospect: true,
-      prospectTeams: ["Oklahoma", "Arizona"],
     });
   });
 

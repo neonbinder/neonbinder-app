@@ -36,9 +36,9 @@ import { requireAdmin } from "./auth";
 // NEO-236: these two paths LOOK UP a team and link it; neither may create one.
 // See `convex/lib/teamRow.ts` and the notes on each handler below.
 import { findTeamsByFullName, resolveTeamForSetYear } from "./lib/teamRow";
-// NEO-591 — a held "Prospect (X)": the teams whose LOCATION is X, as choices.
+// NEO-591 — a listed place ("Oklahoma"): the teams whose LOCATION it is, as choices.
 import { nameTokens } from "./lib/entityNearMatch";
-import { teamLocationIs } from "./lib/prospectTeam";
+import { teamLocationIs } from "./lib/placeTeam";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { teamFullName } from "../lib/teams/team-name";
 // NEO-335: the wizard's pre-save team suggestions (`teamSuggestionsForPreview`).
@@ -1695,13 +1695,6 @@ const suggestedTeamValidator = v.object({
    * absent means "nothing to prefer", which the browser ranks as 2.
    */
   rank: v.optional(v.number()),
-  /**
-   * NEO-591 — the level of the team's league ("major", "minor", "college", …),
-   * so the browser can offer a held "Prospect (X)" card only the minor-league
-   * and college teams it may be. Absent when the team has no league or the
-   * league has no level.
-   */
-  level: v.optional(v.string()),
 });
 
 type SuggestedTeam = {
@@ -1709,7 +1702,6 @@ type SuggestedTeam = {
   name: string;
   colors?: { primary?: string; secondary?: string };
   rank?: number;
-  level?: string;
 };
 
 type PlayerSuggestionResult = {
@@ -1770,8 +1762,8 @@ type PlayerSuggestionResult = {
  * NEO-591: `locationNames` — a subset of `teamNames` that is ALSO read the
  * location way: the sport's teams whose location is the name ("Oklahoma", the
  * place of the Oklahoma Sooners, a name no row holds whole) join that name's
- * rows, as choices. It is asked for a held "Prospect (X)", where the fetch
- * found two or more teams in X and left the pick to the operator.
+ * rows, as choices. It is asked for every name a listing printed, since a
+ * checklist may print a team as its place.
  *
  * Suggestions only: nothing here writes, and nothing reads a marketplace
  * value or name — every key is an NB id, or the Base variant type read from
@@ -1971,7 +1963,6 @@ export const teamSuggestionsForPreview = query({
               // Only when there is a league to prefer: an unranked answer
               // stays byte-identical to what it was before C2b.
               ...(setPreference ? { rank } : {}),
-              ...(level ? { level } : {}),
             },
             rank,
           });
@@ -2117,8 +2108,7 @@ export const teamSuggestionsForPreview = query({
       const rows = await findTeamsByFullName(ctx, sportId, trimmed);
       const coveringId = pickTeamForYear(rows, setYear, { allowPastEra: true })?.row._id;
       // NEO-591 — the location leg, for a name the caller asked it for: the
-      // rows whose location IS the name. Only ever more choices; the browser
-      // narrows a held prospect's to minor and college leagues.
+      // rows whose location IS the name. Only ever more choices.
       //
       // Security audit S2: unlike the fetch-time resolvers, this read decides
       // nothing, it only lists. A window that came back full (16 hits) can cut

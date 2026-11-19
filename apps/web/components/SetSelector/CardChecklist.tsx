@@ -201,10 +201,6 @@ type FetchPreview = {
     isRelic?: boolean;
     /** NEO-591 — the checklist's Prospect claim; see `PairingCard.isProspect`. */
     isProspect?: boolean;
-    /** NEO-591 — a held "Prospect (X)"; see `PairingCard.prospectTeam`. */
-    prospectTeam?: string;
-    /** NEO-591 — the held Xs as an exact list; see `PairingCard.prospectTeams`. */
-    prospectTeams?: string[];
     printRun?: number;
     autographType?: string;
     cardVariation?: string;
@@ -237,8 +233,6 @@ type FetchPreview = {
     /** NEO-335 — `teams` holds the operator's answer, not the printed strings. */
     teamsAnswered?: true;
     teamNone?: true;
-    /** Collector review — the held X to save as a name for the ONE team picked (`teamIds`). */
-    rememberTeamAs?: string;
     // NEO-137: WIRE shape from fetchCardChecklist — ref plus the marketplace
     // SET it came from. commitCardChecklist resolves setId to a slot on this
     // card's parent row.
@@ -938,10 +932,9 @@ export default function CardChecklist({
             teams: p.row.teams,
             ...(p.row.noNumber ? { noNumber: true } : {}),
             ...(p.row.noTeam ? { noTeam: true } : {}),
-            // NEO-591: a Prospect row and its held Xs are claims; the server
-            // settles them the way it does for its own pairs.
+            // NEO-591: a Prospect row is a claim about the card; the server
+            // reads it the way it does for its own pairs.
             ...(p.row.prospect ? { prospect: true } : {}),
-            ...(p.row.prospectTeams?.length ? { prospectTeams: p.row.prospectTeams } : {}),
           },
         })),
       },
@@ -953,9 +946,6 @@ export default function CardChecklist({
       ...(a.checklistConflict ? { checklistConflict: a.checklistConflict } : {}),
       ...(a.players ? { fillPlayers: a.players } : {}),
       ...(a.isProspect ? { isProspect: true as const } : {}),
-      ...(a.prospectTeam ? { prospectTeam: a.prospectTeam } : {}),
-      ...(a.prospectTeams?.length ? { prospectTeams: a.prospectTeams } : {}),
-      ...(a.rawTeamName ? { rawTeamName: a.rawTeamName } : {}),
     }));
   };
   /**

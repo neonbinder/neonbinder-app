@@ -49,10 +49,6 @@ export type ReadyCandidate = {
   isRelic?: boolean;
   /** NEO-591 — the checklist's Prospect claim; see `PairingCard.isProspect`. */
   isProspect?: boolean;
-  /** NEO-591 — a held "Prospect (X)"; see `PairingCard.prospectTeam`. */
-  prospectTeam?: string;
-  /** NEO-591 — the held Xs as an exact list; see `PairingCard.prospectTeams`. */
-  prospectTeams?: string[];
   printRun?: number;
   autographType?: string;
   cardVariation?: string;
@@ -135,11 +131,9 @@ export function candidateToPairingCard(
     // NEO-335: BSC's raw team value, only on the rows the server kept one for
     // (a split or refused split). Spread on the same terms as `teamLookup`.
     ...(c.rawTeamName ? { rawTeamName: c.rawTeamName } : {}),
-    // NEO-591: the checklist's Prospect claim and any X it held, spread only
-    // when present so every other card is byte-identical to what it was.
+    // NEO-591: the checklist's Prospect claim, spread only when present so
+    // every other card is byte-identical to what it was.
     ...(c.isProspect ? { isProspect: true } : {}),
-    ...(c.prospectTeam ? { prospectTeam: c.prospectTeam } : {}),
-    ...(c.prospectTeams?.length ? { prospectTeams: c.prospectTeams } : {}),
     // NEO-478: the checklist's disagreement, on the same terms. It is NOT a
     // cross-marketplace question, so the dialog carries it through untouched
     // and the wizard's "Checklist says otherwise" step settles it.

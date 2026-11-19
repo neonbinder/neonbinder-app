@@ -1288,10 +1288,12 @@ export const listingSyncProgressValidator = v.object({
  * stored as `true`.
  *
  * NEO-591 — `prospect`: the team cell said "Prospect" / "Prospect (X)", so the
- * card is born with the Prospect Card attribute. `prospectTeams` holds each X
- * of a "Prospect (X)" cell, OUT of `teams`: X must be a minor-league or
- * college team, which the fetch settles (`convex/lib/prospectTeam.ts`) and
- * which is never written as a team string until it has been.
+ * card is born with the Prospect Card attribute. The X of "Prospect (X)" is
+ * the card's printed team (Jason, 2026-11-19) and is stored in `teams` like any
+ * other. `prospectTeams` is DEPRECATED: an earlier build stored the X here, out
+ * of `teams`. Nothing writes it now; the fetch folds it into `teams` on read
+ * (`foldLegacyProspectTeams`). Kept optional so a row stored by that build
+ * still passes the schema; remove it once no deployment holds one.
  */
 export const publishedChecklistStoredRowValidator = v.object({
   number: v.string(),
@@ -1300,6 +1302,7 @@ export const publishedChecklistStoredRowValidator = v.object({
   noNumber: v.optional(v.boolean()),
   noTeam: v.optional(v.boolean()),
   prospect: v.optional(v.boolean()),
+  /** DEPRECATED (NEO-591): never written; see the note above. */
   prospectTeams: v.optional(v.array(v.string())),
   // NEO-591 (variations) — the checklist's own note for a variation row
   // ("photo variation"), at most `MAX_VARIATION_NAME` characters with no
@@ -1335,10 +1338,9 @@ export const checklistConflictSidesValidator = v.object({
   checklist: v.array(v.string()),
 });
 /**
- * NEO-591 — the teams side of a conflict, plus `prospectClaim`: the checklist
- * side is a "Prospect (X)" claim. `checklist` holds the settled X teams (full
- * names) and is EMPTY when X is held for the operator, whose X the card
- * carries as `prospectTeam`. Never a team string written for a held X.
+ * The teams side of a conflict. `prospectClaim` is DEPRECATED (NEO-591): an
+ * earlier build marked a "Prospect (X)" checklist side with it. Nothing writes
+ * or reads it now; kept optional so a stored conflict still passes the schema.
  */
 export const checklistTeamConflictSidesValidator = v.object({
   marketplace: v.array(v.string()),
@@ -1356,10 +1358,10 @@ export const checklistConflictValidator = v.object({
  * name the row has as a card of its own (`checklistOnlyCard`). `teams` are
  * resolved like a checklist-only card's; `noTeam` is the row's "No Team".
  *
- * NEO-591 — `prospect` is the row's Prospect claim; `prospectTeams` holds only
- * the X teams HELD for the operator (a settled X is already in `teams` as its
- * full name). Together with `teams` they rebuild the row exactly, so an
- * unlinked row that is linked again still carries its claim.
+ * NEO-591 — `prospect` is the row's Prospect claim; its X is in `teams`, so
+ * `teams` and `prospect` rebuild the row exactly and an unlinked row that is
+ * linked again still carries its claim. `prospectTeams` is DEPRECATED: an
+ * earlier build held the X there; nothing writes it now.
  */
 export const checklistPairedRowValidator = v.object({
   number: v.string(),
@@ -1368,6 +1370,7 @@ export const checklistPairedRowValidator = v.object({
   noNumber: v.optional(v.literal(true)),
   noTeam: v.optional(v.literal(true)),
   prospect: v.optional(v.literal(true)),
+  /** DEPRECATED (NEO-591): never written. */
   prospectTeams: v.optional(v.array(v.string())),
   // Collector review — the row's team cell AS PRINTED ("Seattle", "Prospect
   // (Oklahoma)"), for display only: Match Cards reads it on the row and in its
@@ -3907,13 +3910,11 @@ export default defineSchema({
     // "Prospect (X)": the card is born with the Prospect Card attribute
     // (`features.isProspect`). Follows `isRookie`'s route to NEW cards only.
     isProspect: v.optional(v.boolean()),
-    // NEO-591 — X of a "Prospect (X)" cell the fetch could not settle to
-    // exactly one minor-league or college team. HELD for the operator: never
-    // written as a team string (`teams` is empty), shown as the card's
-    // listed-name hint (`rawTeamName`). Several held X are joined with " / ".
+    // DEPRECATED (NEO-591): an earlier build held the X of a "Prospect (X)"
+    // cell here, apart from `teams`. Nothing writes or reads either field now
+    // (the X is one of `teams`); kept optional so a stored candidate row still
+    // passes the schema.
     prospectTeam: v.optional(v.string()),
-    // NEO-591 — the same held Xs as an exact list (never rebuilt by splitting
-    // `prospectTeam`), for the browser's pair question and Teams step.
     prospectTeams: v.optional(v.array(v.string())),
     printRun: v.optional(v.number()),
     autographType: v.optional(v.string()),

@@ -613,11 +613,11 @@ describe("teamSuggestionsForPreview — league preference (C2b)", () => {
     expect(result.setLeagueId).toBe(s.mlb);
     expect(result.players[0].answer).toEqual({
       tier: "preferredInWindow",
-      teams: [{ teamId: s.rays, name: "Tampa Bay Rays", rank: 0, level: "major" }],
+      teams: [{ teamId: s.rays, name: "Tampa Bay Rays", rank: 0 }],
     });
     // Never hidden: the affiliate stays offered, ranked.
     expect(result.players[0].candidates).toEqual([
-      { teamId: s.bulls, name: "Durham Bulls", rank: 2, level: "minor" },
+      { teamId: s.bulls, name: "Durham Bulls", rank: 2 },
     ]);
   });
 
@@ -658,7 +658,7 @@ describe("teamSuggestionsForPreview — league preference (C2b)", () => {
     ).players;
     expect(result.answer).toEqual({
       tier: "oneTeamInWindow",
-      teams: [{ teamId: s.badgers, name: "Wisconsin Badgers", rank: 2, level: "college" }],
+      teams: [{ teamId: s.badgers, name: "Wisconsin Badgers", rank: 2 }],
     });
   });
 
@@ -750,7 +750,7 @@ describe("teamSuggestionsForPreview — legends: a one-team career in the set's 
     ).players;
     expect(result.answer).toEqual({
       tier: "oneTeamCareerInLeague",
-      teams: [{ teamId: s.rays, name: "Tampa Bay Rays", rank: 0, level: "major" }],
+      teams: [{ teamId: s.rays, name: "Tampa Bay Rays", rank: 0 }],
     });
   });
 
@@ -895,12 +895,7 @@ describe("teamSuggestionsForPreview — teamNames (choices, never a pick)", () =
     // Not asked for: no team is named just "Oklahoma", so nothing.
     expect((await ask()).teamNames[0].teams).toEqual([]);
     const located = (await ask(["oklahoma"])).teamNames[0].teams;
-    expect(located.map((x) => [x.teamId, x.level]).sort()).toEqual(
-      [
-        [ids.sooners, "college"],
-        [ids.redhawks, "minor"],
-      ].sort(),
-    );
+    expect(located.map((x) => x.teamId).sort()).toEqual([ids.sooners, ids.redhawks].sort());
     // A place that merely starts the same is not the place.
     expect(located.map((x) => x.teamId)).not.toContain(ids.other);
   });
@@ -963,7 +958,7 @@ describe("teamSuggestionsForPreview — teamNames (choices, never a pick)", () =
     // Another sport's "Jets" is never a choice.
     expect(result.teamNames[2].teams).toEqual([]);
     expect(result.teamNames[3].teams).toEqual([
-      { teamId: s.rays, name: "Tampa Bay Rays", rank: 0, level: "major" },
+      { teamId: s.rays, name: "Tampa Bay Rays", rank: 0 },
     ]);
   });
 });

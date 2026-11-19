@@ -26,18 +26,10 @@ export type TeamLookupOutcome = "answered" | "failed" | "checklist";
 /** Both sides of one disagreement, as the fetch sends it. */
 export type ChecklistSides = { marketplace: string[]; checklist: string[] };
 
-/**
- * The teams side of a disagreement. NEO-591: `prospectClaim` — the checklist
- * side is a "Prospect (X)" claim. Its `checklist` list holds the settled
- * teams and is EMPTY when X is held for the operator, whose X the card
- * carries as `prospectTeam` (never as a team string).
- */
-export type ChecklistTeamSides = ChecklistSides & { prospectClaim?: true };
-
 /** What the checklist and the marketplace disagree about on one card. */
 export type ChecklistConflict = {
   players?: ChecklistSides;
-  teams?: ChecklistTeamSides;
+  teams?: ChecklistSides;
 };
 
 /** The operator's answer for one card. */
@@ -51,11 +43,7 @@ export type ChecklistConflictCard = {
   teams?: string[];
   teamLookup?: TeamLookupOutcome;
   checklistConflict?: ChecklistConflict;
-  /** NEO-591 — the X of a "Prospect (X)" the fetch held; never a team string. */
-  prospectTeam?: string;
-  /** The held Xs as the exact list `prospectTeam` joins. */
-  prospectTeams?: string[];
-  /** The "Listed as:" hint; a held X is its own. */
+  /** The "Listed as:" hint. */
   rawTeamName?: string;
 };
 
@@ -95,13 +83,6 @@ function sameName(a: string, b: string): boolean {
  *   exactly how a No Team claim reads (`checklistClaimsNoTeam`): the card
  *   stays out of the Teams step and saves as a confirmed no-team card.
  *
- * - NEO-591: a checklist side that is a held "Prospect (X)" claim
- *   (`prospectClaim`, an empty side, the card's `prospectTeam`) is the same
- *   shape: picking it leaves `teams: []` with `teamLookup: "checklist"` and
- *   makes X the "Listed as:" hint (`rawTeamName`), so the Teams step asks and
- *   the card is not read as No Team (`checklistClaimsNoTeam`). Picking the
- *   marketplace's side drops the held X: that claim is turned down.
- *
  * Returns a new object; the input is never touched. A card with nothing to
  * settle comes back as it is (minus an empty `checklistConflict`).
  */
@@ -124,14 +105,6 @@ export function applyChecklistChoice<T extends ChecklistConflictCard>(
   if (conflict.teams) {
     next.teams = [...conflict.teams[choice]];
     next.teamLookup = choice === "checklist" ? "checklist" : "answered";
-    if (conflict.teams.prospectClaim) {
-      const held = card.prospectTeam?.trim() ?? "";
-      if (choice === "marketplace" || next.teams.length > 0) {
-        delete next.prospectTeam;
-        delete next.prospectTeams;
-      }
-      else if (held) next.rawTeamName = held;
-    }
   }
   return next;
 }
@@ -166,26 +139,6 @@ export function settlePlayersByName<T extends ChecklistConflictCard>(card: T, na
   const teams = card.checklistConflict?.teams;
   const settled = applyChecklistChoice({ ...card, checklistConflict: { players } }, choice);
   return teams ? { ...settled, checklistConflict: { teams } } : settled;
-}
-
-/**
- * NEO-591 — the conflict as the "Checklist says otherwise" step shows it.
- * A held "Prospect (X)" claim has an empty checklist side (X is never a team
- * string), which the step would read as the checklist's "No Team". The
- * checklist said X, so X is the text shown on that side. Display only:
- * `applyChecklistChoice` and `orphanedReviewRowIds` read the conflict itself.
- */
-export function checklistConflictShown(card: {
-  checklistConflict?: ChecklistConflict;
-  prospectTeam?: string;
-  prospectTeams?: string[];
-}): ChecklistConflict | undefined {
-  const conflict = card.checklistConflict;
-  if (!conflict?.teams?.prospectClaim || conflict.teams.checklist.length > 0) return conflict;
-  const held = (card.prospectTeams ?? []).map((x) => x.trim()).filter(Boolean);
-  const shown = held.length > 0 ? held : card.prospectTeam?.trim() ? [card.prospectTeam.trim()] : [];
-  if (shown.length === 0) return conflict;
-  return { ...conflict, teams: { ...conflict.teams, checklist: shown } };
 }
 
 /** "Rhett Lowder", "Alonso, Schwarber and Soto", or "nobody named". */

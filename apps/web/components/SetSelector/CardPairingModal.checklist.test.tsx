@@ -1293,22 +1293,16 @@ describe("checklistRowLine (NEO-490)", () => {
 
   test("a Prospect (X) row reads the claim as printed, never as teamless; a bare Prospect reads Prospect (NEO-591)", () => {
     expect(
-      checklistRowLine({ number: "NNO", players: ["Cord Rager"], teams: [], noNumber: true, prospect: true, prospectTeams: ["Oklahoma"] }),
+      checklistRowLine({ number: "NNO", players: ["Cord Rager"], teams: ["Oklahoma"], noNumber: true, prospect: true }),
     ).toBe("NNO Cord Rager · Prospect (Oklahoma)");
-    // Several Xs are several forms.
+    // Several Xs are one form with both teams.
     expect(
-      checklistRowLine({ number: "NNO", players: ["Cord Rager"], teams: [], noNumber: true, prospect: true, prospectTeams: ["Frisco", "Dallas Baptist"] }),
-    ).toBe("NNO Cord Rager · Prospect (Frisco) / Prospect (Dallas Baptist)");
+      checklistRowLine({ number: "NNO", players: ["Cord Rager"], teams: ["Frisco", "Dallas Baptist"], noNumber: true, prospect: true }),
+    ).toBe("NNO Cord Rager · Prospect (Frisco / Dallas Baptist)");
     // A bare Prospect is also a No Team row, but it reads as what was printed.
     expect(
       checklistRowLine({ number: "9", players: ["Show Card"], teams: [], noTeam: true, prospect: true }),
     ).toBe("#9 Show Card · Prospect");
-  });
-
-  test("a mixed row reads the printed teams first, then the prospect form, joined with ' / '", () => {
-    expect(
-      checklistRowLine({ number: "4", players: ["Cord Rager"], teams: ["Boston Red Sox"], prospect: true, prospectTeams: ["Oklahoma"] }),
-    ).toBe("#4 Cord Rager · Boston Red Sox / Prospect (Oklahoma)");
   });
 
   test("a row the server sends with its own printed claim prints that, so a settled X still reads Prospect (X)", () => {

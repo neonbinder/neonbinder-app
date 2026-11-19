@@ -20,10 +20,9 @@
  * and the server (to stamp confirmed no-team at commit) read the claim through
  * `checklistClaimsNoTeam`, so the two can never disagree.
  *
- * NEO-591: a card whose checklist said "Prospect (X)" with an X the fetch
- * could not settle (`prospectTeam`) also has no team string, but it is NOT a
- * No Team claim: the checklist named a team and the operator picks it. A bare
- * "Prospect" IS the claim (the row carries `noTeam`).
+ * NEO-591: "Prospect (X)" names X as the card's team, so it is a plain team
+ * text and never a No Team claim. A bare "Prospect" IS the claim (the row
+ * carries `noTeam`).
  */
 
 /** Skip reason for a row whose team cell(s) say "No Team" and name a team. */
@@ -76,11 +75,8 @@ export function checklistClaimsNoTeam(card: {
   teamLookup?: string;
   teams?: readonly string[];
   team?: string;
-  /** NEO-591 — a held "Prospect (X)": the checklist named a team nothing may write. */
-  prospectTeam?: string;
 }): boolean {
   if (card.teamLookup !== "checklist") return false;
-  if ((card.prospectTeam ?? "").trim() !== "") return false;
   const hasTeams = (card.teams ?? []).some((t) => t.trim() !== "");
   const hasTeam = (card.team ?? "").trim() !== "";
   return !hasTeams && !hasTeam;

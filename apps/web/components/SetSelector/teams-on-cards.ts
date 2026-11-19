@@ -14,9 +14,6 @@ import {
 } from "../../convex/lib/teamFill";
 import { teamFullName } from "../../lib/teams/team-name";
 import { checklistClaimsNoTeam } from "../../lib/checklists/no-team";
-// Browser-safe: pure (no server imports) — NEO-591's league-level rule for a
-// "Prospect (X)" team, the one the fetch settled X by.
-import { isProspectTeamLevel } from "../../convex/lib/prospectTeam";
 import type { TeamLookupOutcome } from "./checklist-conflict";
 
 export { MAX_CARD_TEAMS };
@@ -100,20 +97,6 @@ export { MAX_CARD_TEAMS };
  * a card is identified by its POSITION in the preview, which is the only
  * identity it has until it is saved (product invariant 7).
  *
- * ## A held "Prospect (X)" (NEO-591)
- *
- * A checklist team cell "Prospect (X)" names the card's team, which must be a
- * minor-league or college team. When the fetch could not settle X to exactly
- * one such team it holds it: the card carries X as `prospectTeam` with no team
- * string (`teamLookup: "checklist"`, so it is a card to ASK about, not a No
- * Team claim). Here that is a listing's claim like any other (invariant 8):
- * X is shown as the card's listed team ("Listed as: …"), nothing is
- * pre-selected, and the teams the line offers are narrowed to those in a
- * minor or college league (a major-league team is never a choice for it, and
- * neither is a team whose league is unknown). "Other team…" still opens: the
- * operator's own pick, or "No team", wins through `teamIds` / `teamNone`. X is
- * never written as a team string.
- *
  * ## Choices
  *
  * One line per player set. A line whose card has several people on it (or
@@ -154,13 +137,6 @@ export interface PreviewCardForTeams {
    */
   teamLookup?: TeamLookupOutcome;
   /**
-   * NEO-591 — the X of a "Prospect (X)" the fetch held for the operator (see
-   * the section note). Never a team string; several are joined " / ".
-   */
-  prospectTeam?: string;
-  /** NEO-591 — the held Xs as the exact list `prospectTeam` joins. */
-  prospectTeams?: string[];
-  /**
    * BSC's unsplit team value, kept only where `teams` does not already say it
    * (a split that was refused, or over the cap). With no team strings it is
    * the listing's claim about the team: see `listedClaims`.
@@ -173,12 +149,6 @@ export type TeamAnswer = {
   teamIds?: Array<Id<"teams">>;
   teams?: string[];
   teamNone?: true;
-  /**
-   * "Remember … as a name for this team", ticked on a held "Prospect (X)"
-   * line: the held X, to be saved as an alias of the ONE existing team picked
-   * (`teamIds` has exactly one and `teams` none). Off unless ticked.
-   */
-  rememberAs?: string;
 };
 
 type TeamColors = { primary?: string; secondary?: string };
@@ -214,11 +184,6 @@ export interface ServerTeam {
   colors?: TeamColors;
   /** C2b — 0 the set's league, 1 its level, 2 other. Absent = 2. */
   rank?: number;
-  /**
-   * NEO-591 — the level of the team's league ("major", "minor", "college", …).
-   * Absent when the team has no league or its league has no level.
-   */
-  level?: string;
 }
 
 /** One player's evidence from `teamSuggestionsForPreview`. */
@@ -260,8 +225,6 @@ export interface TeamRef {
   name?: string;
   /** C2b preference, for ordering. Absent = 2. */
   rank?: number;
-  /** NEO-591 — the team's league level, when it is an existing NB team that has one. */
-  level?: string;
 }
 
 /** Cards that share a player set (and a listing claim) share evidence, so they share one line. */
@@ -290,19 +253,6 @@ export interface TeamsGroup {
    * pre-filled over it. Absent reads as false.
    */
   checklistClaim?: boolean;
-  /**
-   * NEO-591 — these cards' checklist named a "Prospect (X)" team the fetch
-   * could not settle: X is in `listedNames`, and `refs` holds only teams in a
-   * minor or college league. Absent reads as false.
-   */
-  prospectHeld?: boolean;
-  /**
-   * The ONE held X of these cards, as the row printed it, when the line has
-   * exactly one: the text "Remember … as a name for this team" would save. A
-   * card with several held Xs has none (which X would the one team be a name
-   * for?), and an ordinary line has none.
-   */
-  heldX?: string;
   /** Server evidence for at least one player (or listed name) has not arrived yet. */
   loading: boolean;
 }
@@ -442,9 +392,9 @@ export interface NewRowTeamCard extends PreviewCardForTeams {
  *
  *  - A set team: when the card names none the commit could not give it. The
  *    commit gives a teamless new row that team, and a card that resolves a
- *    team of its own has one anyway (NEO-277). A held "Prospect (X)" or a
- *    listing value kept as the "Listed as:" hint is a team the data names, so
- *    the set's team is not stamped over it and the card is asked (invariant 8).
+ *    team of its own has one anyway (NEO-277). A listing value kept as the
+ *    "Listed as:" hint is a team the data names, so the set's team is not
+ *    stamped over it and the card is asked (invariant 8).
  *  - "No Team": only when the commit will STAMP the card No Team — the
  *    client half of `noTeamCardVerdict` as the commit asks it. Product
  *    invariant 8: a listing that names a team, or a BSC lookup that has not
@@ -465,20 +415,17 @@ export function setDefaultSettlesNewRow(
   setDefault: SetTeamDefaultKind,
 ): boolean {
   if (setDefault === "teams") {
-    // Invariant 8 (NEO-591): a card the data gives a team to (a held "Prospect
-    // (X)", or a listing's team the commit could not resolve into `teams`)
-    // never takes the set's team over it: the commit does not stamp it
-    // (`bscTeamHint`), so the operator is asked. A card that prints team
-    // strings has a team of its own (or a name waiting for review): as before.
+    // Invariant 8 (NEO-591): a card the data gives a team to (a listing's
+    // team the commit could not resolve into `teams`) never takes the set's
+    // team over it: the commit does not stamp it (`bscTeamHint`), so the
+    // operator is asked. A card that prints team strings has a team of its
+    // own (or a name waiting for review): as before.
     if (cardTeamStrings(card).length > 0) return true;
-    if ((card.prospectTeam?.trim() ?? "") !== "") return false;
     return (card.rawTeamName?.trim() ?? "") === "";
   }
   if (setDefault !== "noTeam") return false;
   if (cardTeamStrings(card).length > 0) return false;
   if ((card.rawTeamName?.trim() ?? "") !== "") return false;
-  // NEO-591: a held "Prospect (X)" is a team the checklist named: asked.
-  if ((card.prospectTeam?.trim() ?? "") !== "") return false;
   if (!card.platformData?.bsc) return true;
   return card.teamLookup === "answered" || card.teamLookup === "checklist";
 }
@@ -604,12 +551,6 @@ interface NamesView {
   skippedPlayerNames: ReadonlySet<string>;
   skippedTeamNames: ReadonlySet<string>;
   defaultPlayer?: DefaultPlayerForNewCards;
-  /**
-   * League id → its level, for a team staged in this wizard: its chip carries
-   * the level of the league the operator filed it under, so a held "Prospect
-   * (X)" line can offer it (a chip with no known level is not offered there).
-   */
-  leagueLevelById?: ReadonlyMap<string, string>;
 }
 
 const NOBODY: ReadonlySet<never> = new Set<never>();
@@ -617,7 +558,6 @@ const NOBODY: ReadonlySet<never> = new Set<never>();
 function namesView(
   rows: readonly TeamsReviewRow[],
   people?: StoredPeople,
-  leagueLevelById?: ReadonlyMap<string, string>,
 ): NamesView {
   const teamRowByKey = new Map<string, TeamsReviewRow>();
   const playerRowByKey = new Map<string, TeamsReviewRow>();
@@ -635,7 +575,6 @@ function namesView(
     skippedPlayerNames: people?.skippedPlayerNames ?? NOBODY,
     skippedTeamNames: people?.skippedTeamNames ?? NOBODY,
     ...(people?.defaultPlayer ? { defaultPlayer: people.defaultPlayer } : {}),
-    ...(leagueLevelById ? { leagueLevelById } : {}),
   };
 }
 
@@ -651,11 +590,6 @@ function teamStringSkipped(raw: string, view: NamesView): boolean {
   return view.skippedTeamNames.has(key);
 }
 
-/** NEO-591 — the held Xs a card carries, from the exact list (never a split text). */
-function heldProspectNames(card: PreviewCardForTeams): string[] {
-  return (card.prospectTeams ?? []).map((x) => x.trim()).filter(Boolean);
-}
-
 /**
  * Invariant 8 — the printed team strings on a section card that still claim
  * a team: every one failed to resolve (that is how the card got here), minus
@@ -664,24 +598,17 @@ function heldProspectNames(card: PreviewCardForTeams): string[] {
  */
 function listedClaims(card: PreviewCardForTeams, view: NamesView): string[] {
   const printed = cardTeamStrings(card).filter((raw) => !teamStringSkipped(raw, view));
-  // NEO-591: a held "Prospect (X)" is the checklist's claim about the team, so
-  // it is listed beside whatever the card printed. Shown, never written.
-  const held = heldProspectNames(card).filter(
-    (x) => !printed.some((p) => norm(p) === norm(x)),
-  );
   // Invariant 8: a card whose listing named a team the card carries no string
   // for (BSC's raw value, its split refused) is a claim too, exactly like a
   // printed string that failed to resolve. Without it nothing holds back a
   // "same player in this set" pre-fill over the team the data names. Only when
   // the card has no team string at all (a raw value beside strings is already
-  // said by them, and all of its parts skipped is the operator's ruling) and
-  // no held X (its hint is the X), and not a value the operator ruled out.
+  // said by them, and all of its parts skipped is the operator's ruling), and
+  // not a value the operator ruled out.
   const raw = card.rawTeamName?.trim() ?? "";
   const listing =
-    raw && cardTeamStrings(card).length === 0 && held.length === 0 && !teamStringSkipped(raw, view)
-      ? [raw]
-      : [];
-  return [...printed, ...held, ...listing];
+    raw && cardTeamStrings(card).length === 0 && !teamStringSkipped(raw, view) ? [raw] : [];
+  return [...printed, ...listing];
 }
 
 /** Will this printed team string resolve to a team at commit? */
@@ -890,16 +817,10 @@ function refFromString(
   if (!row) return { key: `name:${key}`, label: raw.trim(), name: raw.trim() };
   const decision = row.decision;
   if (decision?.action === "create") {
-    // The level of the league the operator filed the team under in the New
-    // Team step (staged leagues have no id yet, so no level: not offered on a
-    // held prospect's line until the league exists).
-    const leagueId = decision.create?.leagueId;
-    const level = leagueId ? view.leagueLevelById?.get(leagueId) : undefined;
     return {
       key: `name:${key}`,
       label: decision.create ? teamFullName(decision.create) : row.name,
       ...(row.enrichment?.colors ? { colors: row.enrichment.colors } : {}),
-      ...(level ? { level } : {}),
       // The review row's own name: the key the commit's decision map is
       // built on, whatever the operator composed the team as.
       name: row.name,
@@ -923,7 +844,6 @@ function refFromServer(team: ServerTeam): TeamRef {
     ...(team.colors ? { colors: team.colors } : {}),
     teamId: team.teamId,
     ...(team.rank !== undefined ? { rank: team.rank } : {}),
-    ...(team.level !== undefined ? { level: team.level } : {}),
   };
 }
 
@@ -1063,12 +983,10 @@ export function buildTeamsGroups(input: {
   setLeagueIds?: readonly string[];
   /** Who the stored data says is on the cards — see `StoredPeople`. */
   people?: StoredPeople;
-  /** League id → level, so a team staged in this wizard carries its league's level. */
-  leagueLevelById?: ReadonlyMap<string, string>;
 }): TeamsGroup[] {
   const { cards, rows, serverEvidence, setYear, linkedTeamNameById, currentYear, settled } =
     input;
-  const view = namesView(rows, input.people, input.leagueLevelById);
+  const view = namesView(rows, input.people);
   const rankCtx: RankContext = {
     view,
     teamNameEvidence: input.teamNameEvidence,
@@ -1114,17 +1032,10 @@ export function buildTeamsGroups(input: {
     // (B1); one that says "No Team" never reaches this loop (NEO-489,
     // `teamlessCardIndexes`).
     const checklistClaim = card.teamLookup === "checklist";
-    // NEO-591 — a held "Prospect (X)": its line offers minor and college teams
-    // only, so it never shares a line with a card that offers any team (the
-    // no-players line pools every other card's claims).
-    const heldX = heldProspectNames(card);
-    const prospectHeld = heldX.length > 0;
-    const prospectKey = prospectHeld ? `|prospect:${heldX.map(norm).sort().join("|")}` : "";
     const claimKey =
       (listedNames.length > 0 ? `|listed:${listedNames.map(norm).sort().join("|")}` : "") +
       (lookupFailed ? "|lookup-failed" : "") +
-      (checklistClaim ? "|checklist" : "") +
-      prospectKey;
+      (checklistClaim ? "|checklist" : "");
     // No people → no player evidence at all, so every such card (a
     // checklist, a league leaders card, a highlight) shares ONE line, keyed
     // on having no players — never on a card's name. Its listing claims are
@@ -1133,7 +1044,7 @@ export function buildTeamsGroups(input: {
     const groupKey =
       players.length > 0
         ? `players:${playerSetKey(players)}${claimKey}`
-        : `${NO_PLAYERS_GROUP_KEY}${prospectKey}`;
+        : NO_PLAYERS_GROUP_KEY;
     const existing = groups.get(groupKey);
     const entry = { index, cardNumber: card.cardNumber, cardName: card.cardName };
     if (existing) {
@@ -1199,12 +1110,7 @@ export function buildTeamsGroups(input: {
     }
 
     const lead = suggestion ?? [];
-    // NEO-591: a held X is a minor-league or college team. A chip with no
-    // known level (a team staged in this wizard, a sibling card's printed
-    // team, a team with no league) cannot show it is one, so it is not offered.
-    const offered = (ref: TeamRef) => !prospectHeld || isProspectTeamLevel(ref.level);
     const refs = dedupeRefs([...lead, ...listedRefs, ...byRank(choices)])
-      .filter(offered)
       .slice(0, Math.max(TEAMS_SECTION_MAX_OPTIONS, lead.length));
 
     groups.set(groupKey, {
@@ -1217,8 +1123,6 @@ export function buildTeamsGroups(input: {
       listedNames: [...listedNames],
       lookupFailed,
       ...(checklistClaim ? { checklistClaim: true } : {}),
-      ...(prospectHeld ? { prospectHeld: true } : {}),
-      ...(heldX.length === 1 ? { heldX: heldX[0] } : {}),
       loading,
     });
   }
@@ -1338,7 +1242,6 @@ export function answerForChoice(
   group: TeamsGroup,
   choice: GroupChoice,
   blockedTeamIds?: ReadonlySet<string>,
-  remember?: boolean,
 ): TeamAnswer | undefined {
   if (choice.kind === "none") return { teamNone: true };
   if (choice.kind !== "teams") return undefined;
@@ -1360,11 +1263,6 @@ export function answerForChoice(
   return {
     ...(ids.length > 0 ? { teamIds: ids } : {}),
     ...(teams.length > 0 ? { teams: [...new Set(teams)] } : {}),
-    // Only for exactly one existing team: a staged team has no id to hang an
-    // alias on yet, and with two teams the X is a name for neither.
-    ...(remember && group.heldX && ids.length === 1 && teams.length === 0
-      ? { rememberAs: group.heldX }
-      : {}),
   };
 }
 
@@ -1377,21 +1275,15 @@ export function teamAnswersByCard(
   choices: Readonly<Record<string, GroupChoice>>,
   cardCount: number,
   blockedTeamIds?: ReadonlySet<string>,
-  /** Group keys whose "Remember … as a name for this team" is ticked. */
-  remembered?: ReadonlySet<string>,
 ): Array<TeamAnswer | undefined> {
   const out: Array<TeamAnswer | undefined> = new Array(cardCount).fill(undefined);
   for (const group of groups) {
     for (const card of group.cards) {
       if (card.index >= cardCount) continue;
-      // The box belongs to the LINE: a card with its own team answer does not
-      // carry it.
-      const own = choices[cardChoiceKey(group.key, card.index)];
       out[card.index] = answerForChoice(
         group,
         effectiveCardChoice(group, choices, card.index),
         blockedTeamIds,
-        remembered?.has(group.key) === true && !(own && own.kind !== "line"),
       );
     }
   }
@@ -1445,13 +1337,12 @@ export function sameTeamAnswers(
 export function withTeamAnswer<T extends PreviewCardForTeams>(
   card: T,
   answer: TeamAnswer | undefined,
-): Omit<T & TeamAnswer, "rememberAs"> & { teamsAnswered?: true; rememberTeamAs?: string } {
+): T & TeamAnswer & { teamsAnswered?: true } {
   if (!answer) return card;
   return {
     ...card,
     ...(answer.teamIds?.length ? { teamIds: answer.teamIds } : {}),
     ...(answer.teams?.length ? { teams: answer.teams, teamsAnswered: true as const } : {}),
     ...(answer.teamNone ? { teamNone: true as const } : {}),
-    ...(answer.rememberAs ? { rememberTeamAs: answer.rememberAs } : {}),
   };
 }

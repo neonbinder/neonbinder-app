@@ -46,7 +46,7 @@ import {
   resolveTeamForSetYear,
   teamRowFields,
 } from "./lib/teamRow";
-import { teamLocationIs } from "./lib/prospectTeam";
+import { teamLocationIs } from "./lib/placeTeam";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
 // NEO-535 — a rename reaches the descriptions of the team's cards.

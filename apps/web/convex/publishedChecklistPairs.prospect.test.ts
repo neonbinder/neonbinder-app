@@ -1,9 +1,8 @@
 /**
  * NEO-591 — `applyPublishedChecklistPairs` with a "Prospect (X)" row, through
- * the real team reads (`resolveProspectTeams`): the operator's own link settles
- * X exactly as the fetch's matcher does. A settled X becomes the one minor or
- * college team's full name; anything else is held and is never a team string
- * (rule 8); an MLB club is never offered. Nothing is written.
+ * the real team reads: X is the card's printed team (Jason, 2026-11-19), so the
+ * operator's own link handles it exactly as the fetch's matcher does any team
+ * text (name, place, alias-aware agreement). Nothing is written.
  */
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
@@ -72,10 +71,16 @@ async function counts(t: T) {
   }));
 }
 
-type Row = { number: string; players: string[]; teams: string[]; noTeam?: boolean; prospect?: boolean; prospectTeams?: string[] };
-const run = async (cardTeams: string[], row: Partial<Row>) => {
+type Row = { number: string; players: string[]; teams: string[]; noTeam?: boolean; prospect?: boolean };
+const run = async (cardTeams: string[], row: Partial<Row>, options: { collegeSet?: boolean } = {}) => {
   const t = convexTest(schema, modules);
   const setId = await seed(t);
+  if (options.collegeSet) {
+    await t.run(async (ctx) => {
+      const college = (await ctx.db.query("leagues").collect()).find((l) => l.level === "college")!;
+      await ctx.db.patch(setId, { leagueIds: [college._id] });
+    });
+  }
   const before = await counts(t);
   const answers = await t.withIdentity(ADMIN).action(api.publishedChecklistPairs.applyPublishedChecklistPairs, {
     selectorOptionId: setId,
@@ -90,61 +95,40 @@ const run = async (cardTeams: string[], row: Partial<Row>) => {
   return answers[0];
 };
 
-describe("applyPublishedChecklistPairs — Prospect (X)", () => {
-  test("a college team found by its place answers the card with its full name", async () => {
-    expect(await run([], { prospect: true, prospectTeams: ["Oklahoma"] })).toEqual({
+describe("applyPublishedChecklistPairs — Prospect (X), X is the printed team", () => {
+  test("a team NB has no row for stays as printed, so the Names gate can ask", async () => {
+    expect(await run([], { teams: ["Prospect (Dallas Baptist)"] })).toEqual({
+      teams: ["Dallas Baptist"],
+      teamLookup: "checklist",
+      isProspect: true,
+    });
+  });
+
+  test("a place one team of the set's league answers to is that team, like any plain team text", async () => {
+    expect(await run([], { prospect: true, teams: ["Oklahoma"] }, { collegeSet: true })).toEqual({
       teams: ["Oklahoma Sooners"],
       teamLookup: "checklist",
       isProspect: true,
     });
   });
 
-  test("a prospect cell sent as the raw team string reads the same", async () => {
-    expect(await run([], { teams: ["Prospect (Oklahoma)"] })).toEqual(
-      await run([], { prospect: true, prospectTeams: ["Oklahoma"] }),
+  test("a prospect cell sent as the raw team string reads the same as the parsed row", async () => {
+    expect(await run([], { teams: ["Prospect (Oklahoma)"] }, { collegeSet: true })).toEqual(
+      await run([], { prospect: true, teams: ["Oklahoma"] }, { collegeSet: true }),
     );
   });
 
-  test("an X only an MLB club answers to is held: no team, the X as the listing's name", async () => {
-    const answer = await run([], { prospect: true, prospectTeams: ["Arizona"] });
+  test("X against a card with a different team is the ordinary conflict, and the prospect rides along", async () => {
+    const answer = await run(["Boston Red Sox"], { prospect: true, teams: ["Oklahoma"] }, { collegeSet: true });
     expect(answer).toEqual({
-      teams: [],
-      teamLookup: "checklist",
+      checklistConflict: { teams: { marketplace: ["Boston Red Sox"], checklist: ["Oklahoma Sooners"] } },
       isProspect: true,
-      prospectTeam: "Arizona",
-      prospectTeams: ["Arizona"],
-      rawTeamName: "Arizona",
-    });
-  });
-
-  test("an X no team answers to is held", async () => {
-    const answer = await run([], { prospect: true, prospectTeams: ["Texas"] });
-    expect(answer).toMatchObject({ teams: [], prospectTeam: "Texas", prospectTeams: ["Texas"], isProspect: true });
-  });
-
-  test("a held X against a card with a team is a conflict flagged as a prospect claim, and writes no team", async () => {
-    const answer = await run(["Boston Red Sox"], { prospect: true, prospectTeams: ["Arizona"] });
-    expect(answer).toEqual({
-      checklistConflict: { teams: { marketplace: ["Boston Red Sox"], checklist: [], prospectClaim: true } },
-      isProspect: true,
-      prospectTeam: "Arizona",
-      prospectTeams: ["Arizona"],
     });
     expect(answer).not.toHaveProperty("teams");
   });
 
-  test("a settled X against a different team is the ordinary conflict, flagged as a prospect claim", async () => {
-    const answer = await run(["Boston Red Sox"], { prospect: true, prospectTeams: ["Oklahoma"] });
-    expect(answer).toEqual({
-      checklistConflict: {
-        teams: { marketplace: ["Boston Red Sox"], checklist: ["Oklahoma Sooners"], prospectClaim: true },
-      },
-      isProspect: true,
-    });
-  });
-
-  test("a settled X that is the card's own team changes nothing but the prospect mark", async () => {
-    expect(await run(["Oklahoma Sooners"], { prospect: true, prospectTeams: ["Oklahoma"] })).toEqual({
+  test("X that is the card's own team changes nothing but the prospect mark", async () => {
+    expect(await run(["Oklahoma Sooners"], { prospect: true, teams: ["Oklahoma"] }, { collegeSet: true })).toEqual({
       teams: ["Oklahoma Sooners"],
       teamLookup: "checklist",
       isProspect: true,
@@ -173,7 +157,7 @@ describe("applyPublishedChecklistPairs — Prospect (X)", () => {
         pairs: [
           {
             card: { players: [], teams: [] },
-            row: { number: "NNO", players: ["Cord Rager"], teams: [], noTeam: true, prospectTeams: ["Oklahoma"] },
+            row: { number: "NNO", players: ["Cord Rager"], teams: ["Oklahoma"], noTeam: true, prospect: true },
           },
         ],
       }),
