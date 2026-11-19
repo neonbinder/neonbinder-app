@@ -685,6 +685,87 @@ describe("savePolicies", () => {
     expect(await s.me.action(api.ebayConnect.readPolicies, {})).toEqual({ ok: true, fulfillment: [], payment: [], returns: [] });
   });
 
+  describe("a slow eBay (NEO-592)", () => {
+    const TIMEOUT = "eBay took too long to answer. Try again in a bit.";
+    /** The next `n` eBay calls to `pathPart` time out (as an aborted fetch does); the rest are the fake account's. */
+    function slowFor(pathPart: string, n: number) {
+      const real = world.fetch;
+      const state = { left: n, seen: 0 };
+      vi.stubGlobal("fetch", (async (url: string | URL | Request, init?: RequestInit) => {
+        if (String(url).includes(pathPart)) {
+          state.seen += 1;
+          if (state.left > 0) {
+            state.left -= 1;
+            throw Object.assign(new Error("The operation was aborted due to timeout"), { name: "TimeoutError" });
+          }
+        }
+        return real(url, init);
+      }) as typeof fetch);
+      return state;
+    }
+
+    test("a slow first answer from eBay is tried again and the policies load", async () => {
+      world.fulfillment = [{ id: "F1", name: "NB Free Shipping", services: [{ code: "USPSGroundAdvantage", cost: "0.00", free: true }] }];
+      const s = await setup({ settings: {} });
+      const slow = slowFor("get_opted_in_programs", 1);
+      const r = await s.me.action(api.ebayConnect.readPolicies, {});
+      expect(r).toMatchObject({ ok: true, fulfillment: [expect.objectContaining({ id: "F1", name: "NB Free Shipping" })] });
+      expect(slow.seen).toBe(2);
+    });
+
+    test("a slow policy list is tried again too", async () => {
+      world.payment = [{ id: "P1", name: "Pay" }];
+      const s = await setup({ settings: {} });
+      const slow = slowFor("/payment_policy", 1);
+      expect(await s.me.action(api.ebayConnect.readPolicies, {})).toMatchObject({ ok: true, payment: [{ id: "P1", name: "Pay" }] });
+      expect(slow.seen).toBe(2);
+    });
+
+    test("two slow answers say eBay took too long, not that the account is empty or lacks a policy", async () => {
+      world.fulfillment = [{ id: "F1", name: "NB Free Shipping", services: [{ code: "USPSGroundAdvantage", cost: "0.00", free: true }] }];
+      const s = await setup({ settings: {} });
+      const slow = slowFor("get_opted_in_programs", 2);
+      expect(await s.me.action(api.ebayConnect.readPolicies, {})).toEqual({ ok: false, error: TIMEOUT });
+      expect(slow.seen).toBe(2);
+      const lists = slowFor("/fulfillment_policy", 2);
+      expect(await s.me.action(api.ebayConnect.readPolicies, {})).toEqual({ ok: false, error: TIMEOUT });
+      expect(lists.seen).toBe(2);
+    });
+
+    test("shipping names that time out cost nothing: no retry, the lists still load", async () => {
+      world.fulfillment = [{ id: "F1", name: "NB Free Shipping", services: [{ code: "USPSGroundAdvantage", cost: "0.00", free: true }] }];
+      const s = await setup({ settings: {} });
+      const slow = slowFor("get_shipping_services", 2);
+      expect(await s.me.action(api.ebayConnect.readPolicies, {})).toMatchObject({ ok: true, fulfillment: [expect.objectContaining({ id: "F1" })] });
+      expect(slow.seen).toBe(1);
+    });
+
+    test("a genuinely missing policy is an answer: ok, without that policy, and no timeout sentence", async () => {
+      world.fulfillment = [{ id: "F2", name: "NB Tracked (USPS Ground Advantage)", services: [{ code: "USPSGroundAdvantage", cost: "4.00" }] }];
+      const s = await setup({ settings: {} });
+      const r = await s.me.action(api.ebayConnect.readPolicies, {});
+      expect(r).toMatchObject({ ok: true });
+      if (r.ok) expect(r.fulfillment.map((p) => p.name)).toEqual(["NB Tracked (USPS Ground Advantage)"]);
+    });
+
+    test("Set me up with eBay too slow to say whether the account is in business policies opts it into nothing", async () => {
+      world.optedIn = false;
+      const s = await setup({ settings: {} });
+      slowFor("get_opted_in_programs", 2);
+      expect(await s.me.action(api.ebayConnect.createStandardPolicies, {})).toMatchObject({ ok: false, error: TIMEOUT });
+      expect(world.calls.filter((c) => c.path === "/sell/account/v1/program/opt_in")).toEqual([]);
+      expect(world.ebayWrites()).toEqual([]);
+    });
+
+    test("saving picks with a slow eBay says so and saves nothing", async () => {
+      world.payment = [{ id: "P1", name: "Pay" }];
+      const s = await setup({ settings: {} });
+      slowFor("get_opted_in_programs", 2);
+      expect(await s.me.action(api.ebayConnect.savePolicies, { paymentPolicyId: "P1" })).toEqual({ ok: false, error: TIMEOUT });
+      expect((await settingsRow(s))?.paymentPolicyId).toBeUndefined();
+    });
+  });
+
   test("a policy's summary names each service by eBay's own name from its metadata, never the code", async () => {
     world.shippingServices = [
       { shippingService: "USPSParcel", description: "USPS Ground Advantage", validForSellingFlow: true },

@@ -17,26 +17,54 @@
 // No isMobile branch: the dashboard is one column that wraps and the panel is
 // a sheet; the Send action is asserted on screen (toBeInViewport) on both.
 //
-// R7/R7a: writes only the signed-in user's own rows: a box and one copy in it on
-// one card of the seed's 2024 Topps Chrome Base (registered in SET-REGISTRY.md;
-// the seventh ordinary row, the other dashboard specs on this account use the
-// first six), the marked sync seed, and its own sync report. Self-cleaning: the
-// report is withdrawn, the seed cleared, the copy removed and the box deleted
-// through the UI; an afterEach does the same on a failure (the report and seed
-// first: left behind they show on this account's dashboard and in every admin's
-// queue). The box name is a single token minted from `env.ATTEMPT_TOKEN`.
-import { createBox, deleteBoxNamed, deleteOpenBox, drillToCollectorBase, inventoryTabs, ordinaryBaseRows, shortNameOf } from "../../support/collection";
+// A SET OF ITS OWN (NEO-592). An admin's close settles every open report on the
+// same variant and platform, whoever sent it (`syncReports.close`), and every
+// test account is an admin. While this spec boxed a card of the seed's 2024 Topps
+// Chrome Base, `real-sync-report-to-crew` (another worker, the same Base, eBay)
+// closed this spec's report mid-run. So the held card is a hand-made card in a
+// hand-made, per-attempt set (`nlg<token>`, SET-REGISTRY.md "Custom sets") under
+// the real Baseball > 2024 > Topps: the seed hangs the hold on the copy's
+// variant, so no other spec, worker or attempt can file or close a report on it.
+// A hand-made card has no linked player, so the collector sees only its number.
+//
+// R7/R7a: writes the set, its Insert > Base rows and one hand-added card (no
+// marketplace id anywhere beneath it; they stand after the run, per attempt), and
+// the signed-in user's own rows: a box and one copy in it, the marked sync seed,
+// and its own sync report. Self-cleaning: the report is withdrawn, the seed
+// cleared, the copy removed (confirmed by the server, `confirmRemoved`) and the
+// box deleted through the UI; an afterEach does the same on a failure (the report
+// and seed first: left behind they show on this account's dashboard and in every
+// admin's queue). Minted names are single tokens from `env.ATTEMPT_TOKEN`.
+import { confirmRemoved, createBox, deleteBoxNamed, deleteOpenBox, drillToCollectorChecklist, inventoryTabs, type CollectorSet } from "../../support/collection";
+import { addCardViaForm } from "../../support/cards";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
+import { drillToCustom } from "../../support/set-builder";
 import type { Page } from "@playwright/test";
 
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** What the body has written so far, so the failure hook can take it back. */
-const written: { box?: string; card?: { short: string; number: string; player: string }; reported?: boolean } = {};
+/** The card this attempt boxes: its set's name and its number, and how the collector names it. */
+interface HeldCard {
+  set: string;
+  number: string;
+  short: string;
+}
 
-/** The card's panel, by its title ("2024 Topps Chrome #<number> <player>..."). */
-const drawerOf = (page: Page, card: { number: string; player: string }) =>
-  page.getByRole("dialog", { name: new RegExp(`^2024 Topps Chrome #${escapeRegExp(card.number)} ${escapeRegExp(card.player)}`) });
+/** What the body has written so far, so the failure hook can take it back. */
+const written: { box?: string; card?: HeldCard; copied?: boolean; reported?: boolean } = {};
+
+/** The set of its own, as the collector's cascade reaches it: Baseball > 2024 > Topps > set > Insert > Base. */
+const ownChecklist = (set: string): CollectorSet => ({
+  sport: "Baseball",
+  year: "2024",
+  manufacturer: "Topps",
+  set,
+  checklist: { type: "Insert", name: "Base" },
+});
+
+/** The card's panel, by its title ("2024 <set> ... #<number>"). */
+const drawerOf = (page: Page, card: HeldCard) =>
+  page.getByRole("dialog", { name: new RegExp(`^2024 ${escapeRegExp(card.set)}.*#${escapeRegExp(card.number)}`) });
 
 /** The eBay set on the dashboard's Sync status, by its heading ("<set> on eBay"). */
 const ebaySet = (page: Page) =>
@@ -83,10 +111,12 @@ test.afterEach(async ({ context }, testInfo) => {
       await expect(clean.getByRole("heading", { level: 1, name: "Welcome back, slugger." })).toBeVisible();
     });
     const { card, box } = written;
-    if (card) {
+    // Only once the add was pressed can a copy exist; before that the card is not
+    // yet offered to the collector at all (a set is hidden until it holds a card).
+    if (card && written.copied) {
       await attempt(async () => {
         await clean.goto("/inventory?tab=checklists");
-        const stock = await drillToCollectorBase(clean);
+        const stock = await drillToCollectorChecklist(clean, ownChecklist(card.set));
         const drawer = drawerOf(clean, card);
         await stock.getByRole("button", { name: `Details for ${card.short}`, exact: true }).click();
         const yourCopies = drawer.getByRole("region", { name: `Your copies of ${card.short}`, exact: true });
@@ -97,6 +127,7 @@ test.afterEach(async ({ context }, testInfo) => {
         if (await remove.isVisible()) {
           await remove.click();
           await expect(none).toBeVisible();
+          await confirmRemoved(drawer, `Removed ${card.short}, Raw, Excellent`);
         }
         await drawer.getByRole("button", { name: "Close card detail" }).click();
         await expect(drawer).toBeHidden();
@@ -107,6 +138,7 @@ test.afterEach(async ({ context }, testInfo) => {
     await clean.close();
     written.box = undefined;
     written.card = undefined;
+    written.copied = undefined;
     written.reported = undefined;
   }
   if (failures.length > 0) throw failures[0];
@@ -117,24 +149,28 @@ test(
   { tag: ["@dashboard"] },
   async ({ page, signIn, env }) => {
     const box = `NoLeague${env.ATTEMPT_TOKEN}`;
+    const setName = `nlg${env.ATTEMPT_TOKEN}`;
+    const number = `569${env.ATTEMPT_TOKEN}`;
+    const card: HeldCard = { set: setName, number, short: `#${number}` };
     const greeting = page.getByRole("heading", { level: 1, name: "Welcome back, slugger." });
 
-    // --- A box with one card in it: what the held-back seed hangs on ----------
+    // --- A set of its own with one card: what the held-back seed hangs on ------
     // Any seed a broken earlier run left is cleared first (the page then forwards to the dashboard).
     await signIn("/testing/seed-dashboard?clear=1");
     await expect(greeting).toBeVisible({ timeout: LAUNCH_GATE });
+    // Ends on the set's Insert > Base checklist with its add-card form closed.
+    await drillToCustom(page, { sport: "Baseball", year: "2024", manufacturer: "Topps", set: setName, variantType: "Insert", variant: "Base" });
+    await addCardViaForm(page, { cardNumber: number, playerName: `Held${env.ATTEMPT_TOKEN}` });
+    written.card = card;
+
+    // --- A box with that card in it ---------------------------------------------
     await page.goto("/inventory?tab=boxes");
     await expect(page.getByRole("list", { name: "Your boxes" })).toBeVisible();
     await createBox(page, box);
     written.box = box;
     await page.goto("/inventory?tab=checklists");
     await expect(inventoryTabs(page).getByRole("link", { name: "Checklists", exact: true })).toHaveAttribute("aria-current", "page");
-    const stock = await drillToCollectorBase(page);
-    // The seventh ordinary row: the other dashboard specs on this account use the first six.
-    const row = ordinaryBaseRows(stock).nth(6);
-    await expect(row).toBeVisible();
-    const card = await shortNameOf(row);
-    written.card = card;
+    const stock = await drillToCollectorChecklist(page, ownChecklist(setName));
     const drawer = drawerOf(page, card);
     await stock.getByRole("button", { name: `Details for ${card.short}`, exact: true }).click();
     const yourCopies = drawer.getByRole("region", { name: `Your copies of ${card.short}`, exact: true });
@@ -142,6 +178,7 @@ test(
     const addForm = drawer.getByRole("form", { name: "Add a copy", exact: true });
     await addForm.getByRole("combobox", { name: "Where it lives" }).selectOption({ label: `${box} (box, for sale)` });
     await addForm.getByRole("spinbutton", { name: "Price", exact: true }).fill("2");
+    written.copied = true;
     await addForm.getByRole("button", { name: "Add to inventory" }).click();
     await expect(drawer.getByRole("status").filter({ hasText: `Added ${card.short}, Raw, Excellent` })).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
@@ -155,10 +192,7 @@ test(
     // Sync status says why, in a sentence, and that the fix is the crew's (not a pick the collector makes).
     const set = ebaySet(page);
     await expect(set).toBeVisible();
-    const heldCard = set
-      .getByRole("link")
-      .filter({ hasText: card.player })
-      .filter({ hasText: `#${card.number}` });
+    const heldCard = set.getByRole("link").filter({ hasText: card.short });
     await expect(heldCard).toBeVisible();
     await expect(heldCard.getByText(NO_LEAGUE_SENTENCE)).toBeVisible();
     await expect(set.getByText("On our crew, not you.")).toBeVisible();
@@ -218,10 +252,13 @@ test(
     await expect(greeting).toBeVisible();
     await expect(page.getByRole("region", { name: "Sync status" }).getByRole("article")).toHaveCount(0);
     await page.goto("/inventory?tab=checklists");
-    const again = await drillToCollectorBase(page);
+    const again = await drillToCollectorChecklist(page, ownChecklist(setName));
     await again.getByRole("button", { name: `Details for ${card.short}`, exact: true }).click();
     await yourCopies.getByRole("button", { name: `Remove ${card.short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
+    // The server's answer, not the optimistic list: a copy left behind would ride into the worker's next spec.
+    await confirmRemoved(drawer, `Removed ${card.short}, Raw, Excellent`);
+    written.copied = false;
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     await page.goto("/inventory?tab=boxes");

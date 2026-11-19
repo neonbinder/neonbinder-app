@@ -99,7 +99,12 @@ export function useStatusLine(): StatusLine {
   useEffect(() => {
     // A running undo keeps its line up: "Undone." (or why not) replaces it.
     if (!notice || held || notice.undoing) return;
-    const t = setTimeout(() => setNotice(null), NOTICE_MS);
+    // The timer takes down its own notice and no other: it can fire between a
+    // newer notice committing and this cleanup running (a slow tab, a busy
+    // main thread), and a bare `setNotice(null)` would then wipe the newer
+    // one with its Undo.
+    const { id } = notice;
+    const t = setTimeout(() => setNotice((prev) => (prev?.id === id ? null : prev)), NOTICE_MS);
     return () => clearTimeout(t);
   }, [notice, held]);
   /**

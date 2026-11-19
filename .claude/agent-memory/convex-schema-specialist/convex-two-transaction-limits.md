@@ -34,4 +34,6 @@ budget a finding is against. Every subagent I have briefed on this has defaulted
 to counting documents and inflated the pure-`.collect()` findings to the top of
 the list; state the convention explicitly in the brief.
 
+**Refinement (2026-11-17):** the system-operations error is the backend's syscall WALL-TIME budget (`DATABASE_UDF_SYSTEM_TIMEOUT`, 15 s), so the ~900/~4,000 calibration assumes sequential awaits at normal storage latency; see [[convex-concurrent-reads-are-batched]].
+
 Related: [[convex-per-row-cost-hides-in-entity-helpers]].

@@ -18,3 +18,4 @@
 - [Cross-service TS in node --test](reference_cross_service_ts_in_node_test.md) — strip types to a temp .mjs to run a sibling service's dependency-free TS against browser code
 - [Read-only by construction guard](reference_read_only_by_construction_guard.md) — wrap transport once, header-name allowlist, scoped scan + plants, root afterEach, key-presence leaks
 - [Secret Manager expiry update](reference_secret_manager_expiry_update.md) — sliding expiry: expireTime + mask expire_time (ttl on update unverified); extend before add
+- [Retry on non-idempotent secret write](reference_retry_on_nonidempotent_secret_write.md) — UNAVAILABLE retry can duplicate a version; prune two back; DEADLINE_EXCEEDED not retried

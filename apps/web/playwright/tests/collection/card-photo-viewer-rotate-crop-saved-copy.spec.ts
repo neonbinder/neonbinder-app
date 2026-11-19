@@ -207,7 +207,7 @@ test(
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
       // The list empties optimistically; "Removed ..." is the server's answer. Wait for it
       // before the drawer closes, and only then count the copy as gone.
-      await confirmRemoved(drawer);
+      await confirmRemoved(drawer, `Removed ${short}, Raw, Excellent`);
       copyLeft = false;
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();
@@ -223,7 +223,7 @@ test(
           await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
           await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
           // Leaving before the server answers could drop the Remove; wait for its notice.
-          await confirmRemoved(drawer);
+          await confirmRemoved(drawer, `Removed ${short}, Raw, Excellent`);
         } catch (e) {
           test.info().annotations.push({ type: "cleanup", description: `copy of ${short} left behind: ${String(e).slice(0, 200)}` });
         }

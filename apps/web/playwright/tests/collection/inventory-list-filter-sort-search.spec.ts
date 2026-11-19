@@ -314,7 +314,7 @@ test(
         const remove = copies.getByRole("button", { name: `Remove ${c.short}, ${line}`, exact: true });
         await remove.click();
         await expect(remove).toHaveCount(0);
-        await confirmRemoved(d);
+        await confirmRemoved(d, `Removed ${c.short}, ${line}`);
       }
       await expect(copies.getByRole("heading", { name: /^Your copies/ })).toBeVisible();
       await d.getByRole("button", { name: "Close card detail" }).click();

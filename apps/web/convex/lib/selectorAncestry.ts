@@ -25,6 +25,7 @@
 import { ConvexError } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { mapBounded, STORAGE_BATCH_WIDTH } from "./boundedConcurrency";
 import {
   SUB_VARIANT_INSERT_ONLY,
   SUB_VARIANT_INSERT_ONLY_MESSAGE,
@@ -212,22 +213,47 @@ export async function collectSubtreeNodes(
     { _id: root._id, level: root.level ?? "" },
   ];
   const seen = new Set<string>([rootId]);
-  const frontier: Array<{ _id: Id<"selectorOptions">; level: string }> = [nodes[0]];
-  while (frontier.length > 0) {
-    const parent = frontier.shift()!;
-    if (parent.level === "parallel") continue;
-    const children = await ctx.db
-      .query("selectorOptions")
-      .withIndex("by_parent", (q) => q.eq("parentId", parent._id))
-      .take(maxNodes + 1);
-    for (const child of children) {
-      if (seen.has(child._id)) continue;
-      seen.add(child._id);
-      if (nodes.length >= maxNodes) return { nodes, truncated: true };
-      const node = { _id: child._id, level: child.level ?? "" };
-      nodes.push(node);
-      frontier.push(node);
+  // NEO-592 — walked a LEVEL at a time: every expandable node of a level has
+  // its children read together (a set's inserts are dozens of independent
+  // ranges, and read one after another each paid a storage round trip), then
+  // the children are filed in the order the nodes were listed. That is the
+  // order the one-node-at-a-time walk produced (its queue was first in, first
+  // out), so the node list, the truncation point and which `maxNodes` rows are
+  // kept are unchanged; only the ranges of one level are read at once, a
+  // chunk at a time (see below).
+  let level: Array<{ _id: Id<"selectorOptions">; level: string }> = [nodes[0]];
+  while (level.length > 0) {
+    const parents = level.filter((node) => node.level !== "parallel");
+    const next: Array<{ _id: Id<"selectorOptions">; level: string }> = [];
+    // The level is read a CHUNK of storage-batch width at a time, and each
+    // chunk is filed before the next is dispatched, so a level far wider than
+    // the cap cannot read `width x (maxNodes + 1)` rows in one transaction:
+    // the walk stops at the chunk in which the cap is crossed. A parent needs
+    // at most `remaining + 1` unseen children to prove the cap is crossed
+    // (`remaining` is what the cap still has room for at the chunk's start,
+    // and only shrinks while the chunk is filed), plus one for the root, the
+    // only row a `parentId` cycle can hand back as an already-seen child.
+    for (let from = 0; from < parents.length; from += STORAGE_BATCH_WIDTH) {
+      const take = Math.max(maxNodes - nodes.length, 0) + 2;
+      const chunk = parents.slice(from, from + STORAGE_BATCH_WIDTH);
+      const childLists = await mapBounded(chunk, (parent) =>
+        ctx.db
+          .query("selectorOptions")
+          .withIndex("by_parent", (q) => q.eq("parentId", parent._id))
+          .take(take),
+      );
+      for (const children of childLists) {
+        for (const child of children) {
+          if (seen.has(child._id)) continue;
+          seen.add(child._id);
+          if (nodes.length >= maxNodes) return { nodes, truncated: true };
+          const node = { _id: child._id, level: child.level ?? "" };
+          nodes.push(node);
+          next.push(node);
+        }
+      }
     }
+    level = next;
   }
   return { nodes, truncated: false };
 }

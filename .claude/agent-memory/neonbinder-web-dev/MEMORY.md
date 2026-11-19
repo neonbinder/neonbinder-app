@@ -258,3 +258,9 @@
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
 - [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
 - [Dense one-line rows: wrap atomic pieces, never clip](reference_fixed_table_layout_counts_a_hidden_column_in_a_colspan.md) — nowrap atoms, w-1 short cols, no-clip assertion; table-fixed colSpan phantom col
+- [Repeating a set-building spec needs a full reseed](reference_repeating_a_set_building_spec_needs_a_full_reseed.md) — partial reset breaks setup; each repeat = agent-convex --seed + setup + bootstrap
+- [Review gate is hops times latency](reference_review_gate_is_hops_times_latency.md) — mapBounded in a query, settleAll in the action, prelude query, review_gate_timing line
+- [Bound R2 calls yourself](reference_bound_r2_calls_yourself_aws4fetch_retries_ten_times.md) — aws4fetch retries 5xx x10 past any signal; sign + fetch with an AbortController timer
+- [One-shot status read races the live-words frame](reference_one_shot_status_read_races_the_live_words_frame.md) — NoticeLine text lands a rAF later; waitFor it; notice timers clear only their own id
+- [Restore setTimeout spy before real timers](reference_restore_spy_before_real_timers.md) — spy restored after useRealTimers hangs the afterAll hook 10 s with green tests; monotonic ref ids for notices
+- [Bounded-fetch test: timer arms before the stub](reference_bounded_fetch_test_timer_arms_before_the_stub_is_reached.md) — sign() is async; stub sees an aborted signal; wait on stalled-body count; wrap setTimeout for drain tests
