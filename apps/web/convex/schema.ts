@@ -5701,6 +5701,13 @@ export default defineSchema({
     drainScheduledAt: v.optional(v.number()),
     drainLeaseToken: v.optional(v.string()),
     drainLeaseExpiresAt: v.optional(v.number()),
+    /**
+     * NEO-555: held while one poll of this owner's orders runs, so the cron's
+     * poll and the testing "poll now" never overlap (`listingSales.claimPoll`).
+     * A poll that died holding it is replaced once `pollLeaseExpiresAt` passes.
+     */
+    pollLeaseToken: v.optional(v.string()),
+    pollLeaseExpiresAt: v.optional(v.number()),
     /** A kick landed while a drain ran: its release runs the next one at once. */
     drainRequested: v.optional(v.boolean()),
     /**

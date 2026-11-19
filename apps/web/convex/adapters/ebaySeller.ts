@@ -37,6 +37,8 @@ import type { ActionCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { isPlatformPaused } from "../marketplacePause";
 import { ebayConfig, type EbayConfig } from "../lib/ebayEnv";
+import { actionBscIdTokenSource, resolveBscTarget } from "../lib/bscHttp";
+import { signForFake } from "../lib/fakeMarketplace";
 import {
   EBAY_CARD_CATEGORY_ID,
   EBAY_CATEGORY_TREE_ID,
@@ -396,6 +398,24 @@ async function reauthOnce(ctx: SessionCtx, session: EbaySellerSession): Promise<
   return await session.reauth;
 }
 
+/**
+ * NEO-555 — fake mode only: `init` signed for the fake (caller key, ID token
+ * in both headers, no redirect), exactly as `bscFetch` signs a BSC call. The
+ * target is read again here and must still be the fake; the token comes from
+ * `internal.fakeBsc.idToken` (cached per audience, so a session costs at most
+ * one mint). Throws when the deployment is no longer in fake mode or no token
+ * can be had: `send` turns a throw into a `network` failure, nothing is sent.
+ */
+async function fakeInitFor(ctx: SessionCtx, init: RequestInit): Promise<RequestInit> {
+  const target = resolveBscTarget(process.env);
+  if (target.mode !== "fake") throw new Error("fake eBay target unavailable");
+  return await signForFake(
+    target,
+    init,
+    actionBscIdTokenSource(() => ctx.runAction(internal.fakeBsc.idToken, {})),
+  );
+}
+
 function attemptOf(opts: SendOptions): { attempt?: number } {
   return opts.attempt !== undefined ? { attempt: opts.attempt } : {};
 }
@@ -416,7 +436,7 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
   const attempt = async (): Promise<Response | EbayFailure> => {
     const startedAt = Date.now();
     try {
-      const res = await fetch(url, {
+      const init: RequestInit = {
         method: opts.method,
         headers: headersFor(session, opts),
         ...(opts.json !== undefined ? { body: JSON.stringify(opts.json) } : {}),
@@ -424,7 +444,8 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
         // The bearer token goes to eBay's API host and nowhere else.
         redirect: "error",
         signal: AbortSignal.timeout(opts.timeoutMs),
-      });
+      };
+      const res = await fetch(url, session.config.environment === "fake" ? await fakeInitFor(ctx, init) : init);
       logCall(opts.operation, startedAt, res.ok ? "ok" : "http_error", res.status, opts.attempt);
       return res;
     } catch (err) {
@@ -1155,72 +1176,6 @@ export async function withdrawOffer(ctx: SessionCtx, session: EbaySellerSession,
     maxBytes: EBAY_MAX_BYTES.small,
   });
   return r.ok ? { ok: true, value: null } : r;
-}
-
-/**
- * `DELETE /sell/inventory/v1/inventory_item/{sku}`: removes the item. Sell
- * Inventory contract: this also deletes the SKU's unpublished offers and its
- * single-variation listings. 204 is success; 404 is already gone, so success.
- * A missing SKU may also answer 400/25702 ("could not be found or is not
- * available"): that stays a failure, because "not available" doesn't promise
- * gone, and a false failure costs a re-run where a false success hides a live
- * item. Testing cleanup only.
- */
-export async function deleteInventoryItem(ctx: SessionCtx, session: EbaySellerSession, sku: string): Promise<EbayResult<null>> {
-  const r = await send(ctx, session, {
-    operation: "deleteInventoryItem",
-    method: "DELETE",
-    path: `/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`,
-    timeoutMs: EBAY_TIMEOUTS_MS.write,
-    maxBytes: EBAY_MAX_BYTES.small,
-  });
-  if (r.ok || r.failure.httpStatus === 404) return { ok: true, value: null };
-  return r;
-}
-
-/** Items one inventory page asks for (eBay's contract: 1 to 200, default 25). */
-export const EBAY_INVENTORY_PAGE = 100;
-
-/**
- * `GET /sell/inventory/v1/inventory_item?limit=&offset=` → one page of the
- * seller's SKUs; nothing else of the items is held. Testing cleanup only.
- *
- * `offset` is a PAGE NUMBER on this route, not a record offset (Sell Inventory
- * contract: the first page is 0, the second 1), unlike `getOrdersPage`. So the
- * caller never does the arithmetic: `nextOffset` is the `offset` in eBay's own
- * `next` link, null when there is no `next`. A `next` NB can't read fails, so a
- * caller can never take a partial listing for the whole one.
- */
-export async function getInventorySkusPage(
-  ctx: SessionCtx,
-  session: EbaySellerSession,
-  offset: string,
-): Promise<EbayResult<{ skus: string[]; unreadable: number; nextOffset: string | null }>> {
-  const r = await send(ctx, session, {
-    operation: "getInventoryItems",
-    method: "GET",
-    path: "/sell/inventory/v1/inventory_item",
-    query: { limit: String(EBAY_INVENTORY_PAGE), offset },
-    timeoutMs: EBAY_TIMEOUTS_MS.read,
-    maxBytes: EBAY_MAX_BYTES.inventory,
-  });
-  if (!r.ok) return r;
-  const body = r.value.body;
-  if (!isRecord(body)) return { ok: false, failure: failure("bad_response", EBAY_SAYS.unreadable, { httpStatus: r.value.status }) };
-  const skus: string[] = [];
-  let unreadable = 0;
-  // An account with no items answers with no `inventoryItems` at all.
-  for (const raw of Array.isArray(body.inventoryItems) ? body.inventoryItems : []) {
-    // eBay's SKU limit is 50: a longer one is not an answer to act on.
-    if (isRecord(raw) && typeof raw.sku === "string" && raw.sku.length > 0 && raw.sku.length <= 100) skus.push(raw.sku);
-    else unreadable += 1;
-  }
-  let nextOffset: string | null = null;
-  if (typeof body.next === "string" && body.next.length > 0) {
-    nextOffset = /[?&]offset=(\d{1,9})(?:&|$)/.exec(body.next)?.[1] ?? null;
-    if (nextOffset === null) return { ok: false, failure: failure("bad_response", EBAY_SAYS.unreadable, { httpStatus: r.value.status }) };
-  }
-  return { ok: true, value: { skus, unreadable, nextOffset } };
 }
 
 // ── Fulfillment: orders ─────────────────────────────────────────────────────

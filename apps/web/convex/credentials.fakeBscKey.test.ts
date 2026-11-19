@@ -7,8 +7,9 @@
  *     change.
  *   - A fake deployment sends no BSC credential call to a browser service
  *     whose `/health` does not say `bscTarget: "fake"`.
- *   - `deleteFakeBscSessionsFromCli` deletes only this deployment's fake keys,
- *     and nothing outside fake mode.
+ *   - `deleteFakeSessionsFromCli` deletes only this deployment's fake keys,
+ *     and nothing outside fake mode (NEO-555: BSC here, eBay in
+ *     `credentials.fakeEbay.test.ts`).
  *
  * The browser service is stubbed; nothing leaves the process.
  */
@@ -130,7 +131,7 @@ describe("credKey", () => {
     expect(credKey("buysportscards", USER)).toBe(`buysportscards-credentials-${USER}`);
   });
 
-  test("fake mode leaves SportLots, eBay and EasyPost keys unchanged", () => {
+  test("fake BSC mode alone leaves SportLots, eBay and EasyPost keys unchanged (eBay has its own switch)", () => {
     armFake();
     expect(credKey("sportlots", USER)).toBe(`sportlots-credentials-${USER}`);
     expect(credKey("ebay", USER)).toBe(`ebay-credentials-${USER}`);
@@ -225,7 +226,7 @@ describe("fake mode refuses a browser service that is not on the fake", () => {
   });
 });
 
-describe("deleteFakeBscSessionsFromCli", () => {
+describe("deleteFakeSessionsFromCli (BSC)", () => {
   const FAKE_HEALTH = { status: "ok", contractVersion: 1, bscTarget: "fake" };
 
   test("deletes only this deployment's fake keys, one per user, and clears the flag", async () => {
@@ -233,9 +234,9 @@ describe("deleteFakeBscSessionsFromCli", () => {
     const asked = stubBrowser(FAKE_HEALTH);
     const t = await seeded([USER, OTHER_USER]);
 
-    const result = await t.action(internal.credentials.deleteFakeBscSessionsFromCli, {});
+    const result = await t.action(internal.credentials.deleteFakeSessionsFromCli, {});
 
-    expect(result).toEqual({ fake: true, users: 2, deleted: 2, failed: 0, truncated: false });
+    expect(result).toEqual({ fake: true, bsc: { users: 2, deleted: 2, failed: 0, truncated: false } });
     expect(asked.map(({ method }) => method)).toEqual(["DELETE", "DELETE"]);
     expect(asked.map(({ path }) => path).sort()).toEqual(
       [
@@ -254,7 +255,7 @@ describe("deleteFakeBscSessionsFromCli", () => {
     );
     expect(flags).toEqual([false, false]);
     // Counts only: no id or key in the log line.
-    const line = parsed(logs).find((e) => e.msg === "fake_bsc_session_cleanup");
+    const line = parsed(logs).find((e) => e.msg === "fake_session_cleanup" && e.platform === "buysportscards");
     expect(line).toMatchObject({ outcome: "ok", deleted: 2, failed: 0 });
     expect(JSON.stringify(line)).not.toContain(USER);
   });
@@ -264,9 +265,9 @@ describe("deleteFakeBscSessionsFromCli", () => {
     const asked = stubBrowser(FAKE_HEALTH);
     const t = await seeded(["a/../../credentials/x", "user_ok.dot", "user_%2e%2e", USER]);
 
-    const result = await t.action(internal.credentials.deleteFakeBscSessionsFromCli, {});
+    const result = await t.action(internal.credentials.deleteFakeSessionsFromCli, {});
 
-    expect(result).toEqual({ fake: true, users: 4, deleted: 1, failed: 3, truncated: false });
+    expect(result).toEqual({ fake: true, bsc: { users: 4, deleted: 1, failed: 3, truncated: false } });
     // Only the plain id's key went out, encoded, and nothing else was asked.
     expect(asked).toEqual([
       { method: "DELETE", path: `/credentials/buysportscards-credentials-fake-happy-otter-123-${USER}` },
@@ -278,9 +279,9 @@ describe("deleteFakeBscSessionsFromCli", () => {
     stubBrowser(FAKE_HEALTH, { deleteStatus: 500 });
     const t = await seeded();
 
-    const result = await t.action(internal.credentials.deleteFakeBscSessionsFromCli, {});
+    const result = await t.action(internal.credentials.deleteFakeSessionsFromCli, {});
 
-    expect(result).toEqual({ fake: true, users: 1, deleted: 0, failed: 1, truncated: false });
+    expect(result).toEqual({ fake: true, bsc: { users: 1, deleted: 0, failed: 1, truncated: false } });
     const flag = await t.run(async (ctx) => (await ctx.db.query("userProfiles").first())?.siteCredentials?.[0]?.hasCredentials);
     expect(flag).toBe(true);
   });
@@ -288,8 +289,8 @@ describe("deleteFakeBscSessionsFromCli", () => {
   test("an already-gone key (404) counts as deleted", async () => {
     armFake();
     stubBrowser(FAKE_HEALTH, { deleteStatus: 404 });
-    const result = await (await seeded()).action(internal.credentials.deleteFakeBscSessionsFromCli, {});
-    expect(result).toEqual({ fake: true, users: 1, deleted: 1, failed: 0, truncated: false });
+    const result = await (await seeded()).action(internal.credentials.deleteFakeSessionsFromCli, {});
+    expect(result).toEqual({ fake: true, bsc: { users: 1, deleted: 1, failed: 0, truncated: false } });
   });
 
   test("refuses outside fake mode: deletes nothing, sends nothing", async () => {
@@ -298,7 +299,7 @@ describe("deleteFakeBscSessionsFromCli", () => {
     const asked = stubBrowser(FAKE_HEALTH);
     const t = await seeded();
 
-    expect(await t.action(internal.credentials.deleteFakeBscSessionsFromCli, {})).toEqual({ fake: false });
+    expect(await t.action(internal.credentials.deleteFakeSessionsFromCli, {})).toEqual({ fake: false });
     expect(asked).toEqual([]);
   });
 
@@ -307,15 +308,15 @@ describe("deleteFakeBscSessionsFromCli", () => {
     const asked = stubBrowser(FAKE_HEALTH);
     const t = await seeded();
 
-    expect(await t.action(internal.credentials.deleteFakeBscSessionsFromCli, {})).toEqual({ fake: false });
+    expect(await t.action(internal.credentials.deleteFakeSessionsFromCli, {})).toEqual({ fake: false });
     expect(asked).toEqual([]);
   });
 
   test("a browser service not on the fake gets no delete", async () => {
     armFake();
     const asked = stubBrowser({ status: "ok", contractVersion: 1, bscTarget: "real" });
-    const result = await (await seeded()).action(internal.credentials.deleteFakeBscSessionsFromCli, {});
-    expect(result).toEqual({ fake: true, users: 1, deleted: 0, failed: 1, truncated: false });
+    const result = await (await seeded()).action(internal.credentials.deleteFakeSessionsFromCli, {});
+    expect(result).toEqual({ fake: true, bsc: { users: 1, deleted: 0, failed: 1, truncated: false } });
     expect(asked).toEqual([]);
   });
 
@@ -323,7 +324,7 @@ describe("deleteFakeBscSessionsFromCli", () => {
     armFake();
     vi.stubEnv("CONVEX_CLOUD_URL", "");
     const asked = stubBrowser(FAKE_HEALTH);
-    await expect((await seeded()).action(internal.credentials.deleteFakeBscSessionsFromCli, {})).rejects.toThrow(
+    await expect((await seeded()).action(internal.credentials.deleteFakeSessionsFromCli, {})).rejects.toThrow(
       /CONVEX_CLOUD_URL/,
     );
     expect(asked).toEqual([]);

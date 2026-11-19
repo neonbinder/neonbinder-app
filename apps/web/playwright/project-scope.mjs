@@ -8,18 +8,15 @@
 // test.skip(); it is left out of that project's plan instead.
 /** @type {Record<string, string[]>} */
 export const PROJECT_IGNORE = {
-  // NEO-453, TEMPORARY, Jason 2026-11-06: eBay's sandbox refuses every publish
-  // (400 / 25002) for any seller on our keyset, so this spec cannot pass. Restore
-  // it, its entry in SELLER_SPECS and its seller tag as soon as publish works.
-  e2e: [
-    "collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts",
-    // NEO-453, TEMPORARY, same cause: its step is a publish ("1 listed"). Restore it with the spec above.
-    "collection/inventory-ebay-sandbox-listing-title-over-80-lists-once-shortened.spec.ts",
-  ],
-  "e2e-mobile": [
-    "collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars.spec.ts",
-    "collection/inventory-ebay-sandbox-listing-title-over-80-lists-once-shortened.spec.ts",
-  ],
+  e2e: [],
+  // NEO-555: desktop only. What it proves is server behaviour on the stand-in
+  // eBay (an ebayError fault becomes a held-back reason, a 401 forces one token
+  // refresh and a retry, a second eBay account connects after a Disconnect), and
+  // each shows on a screen the phone run already checks through
+  // `collection/inventory-ebay-listing-2024-topps-chrome-future-stars` (the Sync
+  // status row and its held-back list) and `profile/ebay-connect-and-setup` (the
+  // consent page, the connection card, Disconnect). The phone run adds no UI coverage.
+  "e2e-mobile": ["profile/ebay-refusals-and-sign-out.spec.ts"],
 };
 
 /**
@@ -31,32 +28,6 @@ export function ignoredSpecs(project) {
   return PROJECT_IGNORE[project] ?? [];
 }
 
-// Specs that write to a marketplace seller account shared by EVERY PR's CI
-// (NEO-415): today the ONE eBay sandbox seller. Two PRs running one at once
-// clobber each other (one preview's sync zeroes the other's listings), and
-// sharding cannot fix that. So they are planned in NO shard: e2e.yml's
-// `seller-desktop` / `seller-mobile` jobs run them, one PR at a time repo-wide
-// (a queue, never a cancel), and the `e2e` gate still requires a passing
-// result for each on BOTH projects.
-//
-// NEO-552: BuySportsCards is NOT shared any more. Every test user has a fake BSC
-// account of their own (a namespace), so the two BSC listing specs left this
-// list and run in the ordinary shards: two PRs, or two shards of one, cannot
-// clobber each other's listings. Only eBay sandbox specs remain: the NEO-535
-// title hold, which lists nothing, and later the eBay listing spec once it is
-// restored (see PROJECT_IGNORE above).
-//
-// Each listed spec carries the tag below; shard-plan.mjs refuses to plan if the
-// tag and this list disagree in either direction, so a new seller spec cannot
-// slip into a shard (or a listed one lose its tag) unnoticed. Paths are
-// relative to playwright/tests/.
-export const SELLER_TAG = "@marketplace-seller";
-/** @type {string[]} */
-export const SELLER_SPECS = [
-  // NEO-535: the eBay hold (a title over 80 characters) and its re-queue; needs no publish.
-  "collection/inventory-ebay-sandbox-listing-title-over-80-is-held-then-requeued.spec.ts",
-];
-
 // Specs that open the BSC call gate (NEO-552). Convex holds ONE gate per
 // deployment (`convex/bscCallGate.ts`): a breaker that a 429, or a run of five
 // 5xx or timeouts, opens for every caller, and a token bucket in front of it.
@@ -65,7 +36,7 @@ export const SELLER_SPECS = [
 // until the window passes. Decision (NEO-552 plan): such specs run
 // serially, alone, never beside a shard. They are planned in NO shard:
 // e2e.yml's `breaker-desktop` / `breaker-mobile` jobs run them, each after the
-// pass's every shard and seller job has finished, and clear the gate in the
+// pass's every shard has finished, and clear the gate in the
 // spec's teardown (`bscFake` fixture, `api.testing.clearBscCallGate`). The
 // `e2e` gate still requires each to pass on BOTH projects.
 //

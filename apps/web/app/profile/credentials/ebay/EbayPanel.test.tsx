@@ -321,6 +321,35 @@ describe("Profile → Credentials → eBay, setup", () => {
     expect(make.getAttribute("href")).toBe("https://www.sandbox.ebay.com/bp/manage");
   });
 
+  it("test mode names the environment: the sandbox says sandbox, the stand-in says stand-in, production says nothing (NEO-555)", async () => {
+    connection = state({ environment: "sandbox" });
+    const sandbox = renderAt();
+    expect(await screen.findByText("Test mode: this NeonBinder talks to eBay's sandbox, so nothing lists for real.")).toBeTruthy();
+    expect(screen.getByText("Sandbox")).toBeTruthy();
+    sandbox.unmount();
+
+    connection = state({ environment: "fake" as never });
+    const fake = renderAt();
+    expect(await screen.findByText("Test mode: this NeonBinder talks to a stand-in eBay, so nothing lists for real.")).toBeTruthy();
+    // Not the sandbox: no sandbox line and no sandbox badge.
+    expect(screen.queryByText(/eBay's sandbox/)).toBeNull();
+    expect(screen.queryByText("Sandbox")).toBeNull();
+    fake.unmount();
+
+    connection = state({ environment: "production" });
+    renderAt();
+    await screen.findByRole("button", { name: "Connect eBay" });
+    expect(screen.queryByText(/Test mode/)).toBeNull();
+  });
+
+  it("on the stand-in the eBay link still goes to the production host (NEO-555)", async () => {
+    connection = state({ status: "connected", ebayUsername: "cardshark88", environment: "fake" as never });
+    fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: true, ...POLICIES, fulfillment: [] });
+    renderAt();
+    const make = await screen.findByRole("link", { name: "Make a shipping policy on eBay (opens in a new tab)" });
+    expect(make.getAttribute("href")).toBe("https://www.ebay.com/bp/manage");
+  });
+
   it("only Standard Envelope policies: $20 and up says so and links out to make a tracked one", async () => {
     fn("ebayConnect:readPolicies").mockResolvedValueOnce({ ok: true, ...POLICIES, fulfillment: [POLICIES.fulfillment[0]] });
     renderAt();
