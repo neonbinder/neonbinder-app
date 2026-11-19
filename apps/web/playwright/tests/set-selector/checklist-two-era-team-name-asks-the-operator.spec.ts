@@ -155,11 +155,11 @@ test(
     await oldDialog.getByRole("textbox", { name: "New team location (optional)" }).fill(`Loc${T}`);
     await oldDialog.getByLabel("New team active from (optional)").fill("1968");
     await oldDialog.getByLabel("New team active to").fill("2024");
-    // The name is already answered to (the newer team's alias): the second
-    // Create confirms the second era (the sibling spec reads this alert).
+    // The name is already answered to (the newer team's alias): the dialog says
+    // so, and the second Create confirms (the sibling spec reads this alert).
     const createOld = oldDialog.getByRole("button", { name: `Create team ${OLD}` });
     await createOld.click();
-    await expect(oldDialog.getByRole("alert").filter({ hasText: /Create again to add this as a second era\./ })).toBeVisible();
+    await expect(oldDialog.getByRole("alert").filter({ hasText: /Create again to add it as its own team\./ })).toBeVisible();
     await createOld.click();
     await expect(page.getByRole("button", { name: `Remove team ${OLD}` })).toBeVisible();
     await page.getByRole("heading", { name: "Career history" }).click();

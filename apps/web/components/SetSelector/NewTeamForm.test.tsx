@@ -71,6 +71,7 @@ let currentEras: Array<{
   location?: string;
   yearsActive?: { from: number; to?: number };
   label: string;
+  viaAlias?: boolean;
 }> = [];
 let queryCalls: Array<{ ref: string; args: unknown }>;
 
@@ -1477,6 +1478,50 @@ describe("NewTeamForm — active years", () => {
     expect(screen.getByText("1972–1996")).toBeTruthy();
     // Nothing is disabled by it — the operator can still create.
     expect(screen.getByLabelText("New team name")).toBeTruthy();
+  });
+
+  it("NEO-602: a team that only answers to the name is said to, not called an existing era", () => {
+    currentEras = [
+      {
+        _id: "t1",
+        name: "Athletics",
+        yearsActive: { from: 2025 },
+        label: "Athletics · 2025–present",
+        viaAlias: true,
+      },
+    ];
+    renderForm({ initial: { ...EMPTY, name: "Oakland Athletics" } });
+
+    expect(
+      screen.getByText(
+        /Athletics · 2025–present already answers to this name as an alias\./,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/already exists for/)).toBeNull();
+  });
+
+  it("NEO-602: a real same-name row beside an alias holder still gets the era hint", () => {
+    currentEras = [
+      {
+        _id: "t1",
+        name: "Athletics",
+        yearsActive: { from: 2025 },
+        label: "Athletics · 2025–present",
+        viaAlias: true,
+      },
+      {
+        _id: "t2",
+        name: "Oakland Athletics",
+        yearsActive: { from: 1968, to: 2024 },
+        label: "Oakland Athletics · 1968–2024",
+      },
+    ];
+    renderForm({ initial: { ...EMPTY, name: "Oakland Athletics" } });
+
+    expect(screen.getByText(/Oakland Athletics already exists for/)).toBeTruthy();
+    expect(screen.getByText("1968–2024")).toBeTruthy();
+    expect(screen.queryByText("2025–present")).toBeNull();
+    expect(screen.getByText(/Athletics · 2025–present already answers/)).toBeTruthy();
   });
 
   it("names an undated rival as such rather than leaving a gap", () => {

@@ -441,6 +441,32 @@ export function eraOverlapReason(
 }
 
 /**
+ * NEO-602 — the refusal for the REVERSE order of the alias rule: a team about
+ * to take a name that another team already answers to as an ALIAS.
+ *
+ * `holderLabel` is the holder named as a picker names a team
+ * (`teamOptionLabel`: "Athletics · 2025–present"), `reason` is the
+ * `eraOverlapReason` clause. ONE sentence, read by the server's refusals
+ * (`teams.assertNameNotAnotherTeamsAlias`) and by every client that previews
+ * or reports one (the review wizard, Team Management's save), so the wording
+ * cannot fork between them.
+ */
+export function aliasHolderSentence(holderLabel: string, reason: string): string {
+  return `${holderLabel} already answers to this name as an alias, and ${reason}. Remove it there, or give this team years that don't overlap.`;
+}
+
+/**
+ * NEO-602 — the same fact told where nothing is refused: the New Team dialog
+ * and form, for a name another team holds only as an ALIAS while its years do
+ * NOT overlap the draft's. That is allowed (the Athletics 2025– may wear
+ * "Oakland Athletics", the 1968–2024 team's own name), so it is a statement of
+ * who answers to the name, never "already exists" — nothing is named that.
+ */
+export function aliasHolderStatement(holderLabel: string): string {
+  return `${holderLabel} already answers to this name as an alias.`;
+}
+
+/**
  * "San Diego Padres · 1969–present" — a team named the way a picker has to name
  * it once two rows can share the name.
  *

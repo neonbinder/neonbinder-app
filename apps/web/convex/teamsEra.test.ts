@@ -144,6 +144,42 @@ describe("a sport may hold two teams under one name", () => {
   });
 });
 
+describe("erasByNameAndSport marks a row that only answers to the name (NEO-602)", () => {
+  test("an alias holder is viaAlias; a row called the name is not", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSportWithSet(t, "1985");
+    const { old } = await seedBothJets(t, sportId);
+    // A team that answers to "Oakland Athletics" without being called it.
+    const holder = await t.run(async (ctx) => {
+      const id = await ctx.db.insert("teams", {
+        name: "Athletics",
+        nameNormalized: normalizeTeamName("Athletics"),
+        sportId,
+        yearsActive: { from: 2025 },
+        aliases: ["Oakland Athletics"],
+        lastUpdated: 1,
+      });
+      await ctx.db.insert("teamAliases", {
+        teamId: id,
+        sportId,
+        aliasNormalized: normalizeTeamName("Oakland Athletics"),
+      });
+      return id;
+    });
+
+    const asUser = t.withIdentity(SIGNED_IN);
+    const viaAlias = await asUser.query(api.teams.erasByNameAndSport, {
+      name: "Oakland Athletics",
+      sportId,
+    });
+    expect(viaAlias.map((e) => [e._id, e.viaAlias])).toEqual([[holder, true]]);
+
+    const own = await asUser.query(api.teams.erasByNameAndSport, { name: JETS, sportId });
+    expect(own.some((e) => e._id === old)).toBe(true);
+    expect(own.every((e) => e.viaAlias === undefined)).toBe(true);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Card → team resolution
 // ---------------------------------------------------------------------------
@@ -354,6 +390,38 @@ describe("teams.findOrCreate — finding an era, and making one", () => {
       }),
     ).rejects.toThrow(/1972–1996/);
     expect(await t.run(async (ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+  });
+
+  test("…a REAL same-name row is TEAM_ERA_EXISTS with its era, never the alias refusal (NEO-602)", async () => {
+    const t = convexTest(schema, modules);
+    const { sportId } = await seedSportWithSet(t, "1985");
+    await t.run(async (ctx) =>
+      ctx.db.insert("teams", {
+        name: "Jets",
+        location: "Winnipeg",
+        nameNormalized: normalizeTeamName(JETS),
+        sportId,
+        yearsActive: { from: 1972, to: 1996 },
+        lastUpdated: 1,
+      }),
+    );
+
+    const data = await t
+      .withIdentity(ADMIN)
+      .mutation(api.teams.findOrCreate, {
+        name: "Jets",
+        location: "Winnipeg",
+        sportId,
+        yearsActive: { from: 2011 },
+      })
+      .then(
+        () => null,
+        (e: unknown) => (e as { data?: unknown }).data,
+      );
+    expect(data).toEqual({
+      code: "TEAM_ERA_EXISTS",
+      eras: [{ id: expect.any(String), years: "1972–1996" }],
+    });
   });
 
   test("…and goes through once the operator confirms the era", async () => {

@@ -53,6 +53,7 @@ import { requireTeamEra } from "./lib/teamEra";
 // NEO-535 — a rename reaches the descriptions of the team's cards.
 import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
 import {
+  aliasHolderSentence,
   eraLabel,
   eraOverlapReason,
   erasOverlap,
@@ -224,15 +225,24 @@ export const erasByNameAndSport = query({
         v.object({ from: v.number(), to: v.optional(v.number()) }),
       ),
       label: v.string(),
+      /**
+       * NEO-602 — `true` when the row only ANSWERS to the name (an alias) and
+       * is not called it. Absent for a row whose own name it is. Lets the New
+       * Team form say "answers to this name as an alias" instead of "already
+       * exists", which is false for these.
+       */
+      viaAlias: v.optional(v.boolean()),
     }),
   ),
   handler: async (ctx, args) => {
     if (!(await getCurrentUserId(ctx))) return [];
     const rows = await findTeamsByFullName(ctx, args.sportId, args.name);
+    const key = normalizeTeamName(args.name);
     return rows
       .map((team) => ({
         _id: team._id,
         name: team.name,
+        ...(team.nameNormalized !== key ? { viaAlias: true } : {}),
         ...(team.location !== undefined ? { location: team.location } : {}),
         ...(team.yearsActive !== undefined
           ? { yearsActive: team.yearsActive }
@@ -745,9 +755,10 @@ export async function assertNameNotAnotherTeamsAlias(
     // message.
     const label = teamOptionLabel(teamFullName(holder), holder.yearsActive);
     throw new ConvexError(
-      `${label} already answers to this name as an alias, and ` +
-        `${eraOverlapReason(selfEra(args.selfYears), holder.yearsActive)}. ` +
-        `Remove it there, or give this team years that don't overlap.`,
+      aliasHolderSentence(
+        label,
+        eraOverlapReason(selfEra(args.selfYears), holder.yearsActive),
+      ),
     );
   }
 }
@@ -1061,6 +1072,28 @@ export const findOrCreate = mutation({
     if (!args.newEra) {
       const sameName = await findTeamsByFullName(ctx, args.sportId, fullName);
       if (sameName.length > 0) {
+        /**
+         * NEO-602 — rows that only ANSWER to this name (an alias) are not a
+         * second era of it: nothing is called this. Told apart from a real
+         * same-name row by the primary key, so the dialog can say who answers
+         * to the name instead of "already exists". Still a confirmation, not a
+         * refusal: every row here has years disjoint from the new team's
+         * (an overlapping one was returned or refused above), which is exactly
+         * the case the rule allows — the operator is shown the holder and
+         * agrees. A mix with a real same-name row stays the same-name era
+         * question below.
+         */
+        const key = normalizeTeamName(fullName);
+        if (sameName.every((t) => t.nameNormalized !== key)) {
+          throw new ConvexError({
+            code: "TEAM_NAME_IS_ALIAS" as const,
+            holders: sameName.map((t) => ({
+              id: t._id,
+              name: teamFullName(t),
+              ...(t.yearsActive ? { yearsActive: t.yearsActive } : {}),
+            })),
+          });
+        }
         /**
          * A name that exists under a DIFFERENT era. Allowed — that is the
          * Winnipeg Jets case — but not silently: the operator is told which era
@@ -1810,6 +1843,15 @@ export const saveTeamFields = mutation({
       // `findCollidingTeams` takes an undated side as overlapping, so nothing
       // that used to be refused is now allowed by accident: the loosening
       // applies only where BOTH rows say when they played.
+      //
+      // NEO-602 — and only a row that is CALLED this name collides here.
+      // `findCollidingTeams` reads the primary-name + alias union, so a team
+      // that merely answers to the name as an alias came back as a clash too,
+      // and the operator was told "another team is already called X" when
+      // nothing is. The Athletics (2025–) wearing "Oakland Athletics" as an
+      // alias refused the real 1968–2024 Oakland Athletics' end year that way.
+      // The alias-only holder is the reverse-alias rule's to judge (below),
+      // with its own words, the holder's name and its era.
       const clash = (
         await findCollidingTeams(
           ctx,
@@ -1818,7 +1860,7 @@ export const saveTeamFields = mutation({
           nextYears,
           args.id,
         )
-      )[0];
+      ).find((row) => row.nameNormalized === fields.nameNormalized);
       if (clash) {
         throw new ConvexError(`NAME_TAKEN:${clash._id}`);
       }

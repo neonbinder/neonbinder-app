@@ -1041,7 +1041,7 @@ describe("NEO-602: saveTeamFields checks what a save adds, and re-checks when th
     expect((await t.run((ctx) => ctx.db.get(auburn)))!.yearsActive).toEqual({ from: 1930 });
   });
 
-  test("a years edit that widens over a team holding the name as an alias is refused (NAME_TAKEN: the collision check sees the alias holder first)", async () => {
+  test("a years edit that widens over a team holding the name as an alias is refused with the alias-holder copy, not NAME_TAKEN", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -1051,12 +1051,126 @@ describe("NEO-602: saveTeamFields checks what a save adds, and re-checks when th
       (row) => row.location === "Brooklyn",
     )!._id;
 
-    await expect(
-      asAdmin.mutation(api.teams.saveTeamFields, {
+    const message = await asAdmin
+      .mutation(api.teams.saveTeamFields, {
         id: brooklyn,
         yearsActive: { from: 1911, to: 1970 },
-      }),
-    ).rejects.toThrow(/NAME_TAKEN/);
+      })
+      .then(
+        () => null,
+        (e: unknown) => String((e as { data?: unknown }).data ?? e),
+      );
+    expect(message).toBe(
+      "Los Angeles Dodgers · 1958–present already answers to this name as an alias, and the two teams' years overlap. Remove it there, or give this team years that don't overlap.",
+    );
+    expect(message).not.toContain("NAME_TAKEN");
+  });
+});
+
+describe("NEO-602: Team Management tells a name clash from an alias-only one", () => {
+  /** The 1968–2024 Oakland Athletics, and the 2025– Athletics wearing its name as an alias. */
+  async function seedOaklandAndAthletics(t: T, sportId: Id<"selectorOptions">) {
+    const oakland = await insertTeam(t, sportId, {
+      name: "Oakland Athletics",
+      yearsActive: { from: 1968, to: 2024 },
+    });
+    const athletics = await insertTeam(t, sportId, {
+      name: "Athletics",
+      yearsActive: { from: 2025 },
+      aliases: ["Oakland Athletics"],
+    });
+    return { oakland, athletics };
+  }
+
+  async function saveMessage(t: T, args: Record<string, unknown>) {
+    return t
+      .withIdentity(ADMIN_IDENTITY)
+      .mutation(api.teams.saveTeamFields, args as never)
+      .then(
+        () => null,
+        (e: unknown) => String((e as { data?: unknown }).data ?? e),
+      );
+  }
+
+  test("stretching Oakland's end year over the Athletics gives the alias copy naming the holder and its era", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const { oakland } = await seedOaklandAndAthletics(t, sportId);
+
+    const message = await saveMessage(t, {
+      id: oakland,
+      name: "Oakland Athletics",
+      location: null,
+      yearsActive: { from: 1968, to: 2026 },
+    });
+    expect(message).toBe(
+      "Athletics · 2025–present already answers to this name as an alias, and the two teams' years overlap. Remove it there, or give this team years that don't overlap.",
+    );
+    expect(message).not.toContain("NAME_TAKEN");
+    // Refused whole.
+    expect((await t.run((ctx) => ctx.db.get(oakland)))!.yearsActive).toEqual({
+      from: 1968,
+      to: 2024,
+    });
+  });
+
+  test("an undated Oakland reads the undated variant of the reason", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const { oakland } = await seedOaklandAndAthletics(t, sportId);
+    // Clear Athletics' years behind the rule's back (a legacy row).
+    const athletics = (await t.run((ctx) => ctx.db.query("teams").collect())).find(
+      (row) => row.name === "Athletics",
+    )!;
+    await t.run((ctx) => ctx.db.patch(athletics._id, { yearsActive: undefined }));
+
+    const message = await saveMessage(t, {
+      id: oakland,
+      name: "Oakland Athletics",
+      location: null,
+      yearsActive: { from: 1968, to: 2026 },
+    });
+    expect(message).toBe(
+      "Athletics already answers to this name as an alias, and that team has no years on file, so they may overlap. Remove it there, or give this team years that don't overlap.",
+    );
+  });
+
+  test("an edit that stays clear of the Athletics saves", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const { oakland } = await seedOaklandAndAthletics(t, sportId);
+
+    await t.withIdentity(ADMIN_IDENTITY).mutation(api.teams.saveTeamFields, {
+      id: oakland,
+      name: "Oakland Athletics",
+      location: null,
+      yearsActive: { from: 1968, to: 2023 },
+    });
+    expect((await t.run((ctx) => ctx.db.get(oakland)))!.yearsActive).toEqual({
+      from: 1968,
+      to: 2023,
+    });
+  });
+
+  test("a REAL same-name row still refuses NAME_TAKEN:<id>", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const { oakland } = await seedOaklandAndAthletics(t, sportId);
+    // A second row actually CALLED "Oakland Athletics", in a disjoint era.
+    const second = await insertTeam(t, sportId, {
+      name: "Oakland Athletics",
+      yearsActive: { from: 2030 },
+    });
+
+    // Widening it back over the 1968–2024 row is a name collision, whoever
+    // else answers to the name as an alias.
+    const message = await saveMessage(t, {
+      id: second,
+      name: "Oakland Athletics",
+      location: null,
+      yearsActive: { from: 2000 },
+    });
+    expect(message).toBe(`NAME_TAKEN:${oakland}`);
   });
 });
 
@@ -1092,7 +1206,7 @@ describe("NEO-602: the reverse order — a team may not take a name an overlappi
     expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(2);
   });
 
-  test("…without the confirmation it asks (TEAM_ERA_EXISTS), exactly as a same-name era does", async () => {
+  test("…without the confirmation it asks (TEAM_NAME_IS_ALIAS), naming the holder instead of calling it an existing era", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -1107,10 +1221,45 @@ describe("NEO-602: the reverse order — a team may not take a name an overlappi
       })
       .then(
         () => null,
+        (e: unknown) => (e as { data?: unknown }).data,
+      );
+    expect(err).toEqual({
+      code: "TEAM_NAME_IS_ALIAS",
+      holders: [
+        {
+          id: expect.any(String),
+          name: "Los Angeles Dodgers",
+          yearsActive: { from: 1958 },
+        },
+      ],
+    });
+    expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
+  });
+
+  test("…a REAL same-name row beside it keeps the same-name era question (TEAM_ERA_EXISTS)", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await seedSport(t);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    await seedLaWithBrooklynAlias(t, sportId);
+    // A team actually called "Brooklyn Dodgers", 1911–1957, beside the alias.
+    await insertTeam(t, sportId, {
+      location: "Brooklyn",
+      name: "Dodgers",
+      yearsActive: { from: 1911, to: 1957 },
+    });
+
+    const err = await asAdmin
+      .mutation(api.teams.findOrCreate, {
+        name: "Dodgers",
+        location: "Brooklyn",
+        sportId,
+        yearsActive: { from: 1900, to: 1905 },
+      })
+      .then(
+        () => null,
         (e: unknown) => (e as { data?: { code?: string } }).data,
       );
     expect(err?.code).toBe("TEAM_ERA_EXISTS");
-    expect(await t.run((ctx) => ctx.db.query("teams").collect())).toHaveLength(1);
   });
 
   test("an OVERLAPPING (or undated) find still returns the alias holder, as it always did", async () => {
@@ -1150,7 +1299,7 @@ describe("NEO-602: the reverse order — a team may not take a name an overlappi
     expect((await t.run((ctx) => ctx.db.get(robins)))!.name).toBe("Dodgers");
   });
 
-  test("saveTeamFields: a RENAME onto the alias is refused when the team's years overlap the holder's (NAME_TAKEN)", async () => {
+  test("saveTeamFields: a RENAME onto the alias is refused when the team's years overlap the holder's (alias copy, not NAME_TAKEN)", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -1164,7 +1313,9 @@ describe("NEO-602: the reverse order — a team may not take a name an overlappi
 
     await expect(
       asAdmin.mutation(api.teams.saveTeamFields, { id: robins, name: "Dodgers" }),
-    ).rejects.toThrow(/NAME_TAKEN/);
+    ).rejects.toThrow(
+      /Los Angeles Dodgers · 1958–present already answers to this name as an alias, and the two teams' years overlap\./,
+    );
     expect((await t.run((ctx) => ctx.db.get(robins)))!.name).toBe("Robins");
   });
 

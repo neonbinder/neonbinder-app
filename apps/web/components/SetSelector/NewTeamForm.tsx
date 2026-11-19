@@ -3,7 +3,7 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 import { splitTeamName, teamFullName } from "../../lib/teams/team-name";
-import { eraLabel } from "../../lib/teams/team-era";
+import { aliasHolderStatement, eraLabel } from "../../lib/teams/team-era";
 import {
   entityNameQueryReadings,
   normalizeOrderedEntityName,
@@ -720,11 +720,21 @@ export default function NewTeamForm({
       ? { name: draftFullName(draft), sportId }
       : "skip",
   );
+  // NEO-602 — a row that only ANSWERS to the name (an alias) is not an era of
+  // it: nothing is called this. Told apart so the hint below can say which.
   const sameNameEras = useMemo(
     () =>
-      (existingEras ?? []).map(
-        (row) => eraLabel(row.yearsActive) || "no years yet",
-      ),
+      (existingEras ?? [])
+        .filter((row) => !row.viaAlias)
+        .map((row) => eraLabel(row.yearsActive) || "no years yet"),
+    [existingEras],
+  );
+  const aliasHolders = useMemo(
+    () =>
+      (existingEras ?? [])
+        .filter((row) => row.viaAlias)
+        // `label` is already "Name · years", composed by the server.
+        .map((row) => row.label),
     [existingEras],
   );
 
@@ -833,6 +843,16 @@ export default function NewTeamForm({
           />
         </FieldLabel>
       </div>
+
+      {aliasHolders.length > 0 && (
+        /* NEO-602 — the same statement, for a name no team is called but one
+           answers to as an alias. A statement, not a block: the operator may
+           still add a team of this name when its years don't overlap. */
+        <p className="text-xs text-ink-3">
+          {aliasHolders.map((label) => aliasHolderStatement(label)).join(" ")}{" "}
+          Give this one years that don't overlap if it is a different team.
+        </p>
+      )}
 
       {sameNameEras.length > 0 && (
         /* The hint the ticket asks for, and it is a statement rather than a

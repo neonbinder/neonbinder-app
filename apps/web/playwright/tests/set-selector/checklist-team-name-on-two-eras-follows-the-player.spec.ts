@@ -92,13 +92,13 @@ test(
     await oldDialog.getByRole("textbox", { name: "New team location (optional)" }).fill(`Loc${T}`);
     await oldDialog.getByLabel("New team active from (optional)").fill("1968");
     await oldDialog.getByLabel("New team active to").fill("2024");
-    // The dialog finds the name already answered to (by the newer team's alias)
-    // and asks for the same confirmation a second era of one name gets; the
-    // second Create makes the team (admin-teams-two-eras proves that step).
+    // The dialog finds the name already answered to (by the newer team's alias),
+    // says which team answers to it, and asks for a confirmation; the second
+    // Create makes the team (admin-teams-two-eras proves that step).
     const createOld = oldDialog.getByRole("button", { name: `Create team ${OLD}` });
     await createOld.click();
     await expect(
-      oldDialog.getByRole("alert").filter({ hasText: /already exists for 2025–present\. Create again to add this as a second era\./ }),
+      oldDialog.getByRole("alert").filter({ hasText: `${NEW} · 2025–present already answers to this name as an alias. This team's years don't overlap, so Create again to add it as its own team.` }),
     ).toBeVisible();
     await createOld.click();
     await expect(page.getByRole("button", { name: `Remove team ${OLD}` })).toBeVisible();

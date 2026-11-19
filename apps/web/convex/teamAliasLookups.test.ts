@@ -255,13 +255,13 @@ describe("NEO-284: findCollidingTeams treats an existing team's alias as a name 
     expect(colliding).toEqual([]);
   });
 
-  test("saveTeamFields renaming a team onto ANOTHER team's alias is refused with NAME_TAKEN:<id>", async () => {
-    // The public write path, not just the helper: the structured refusal is
-    // what Team Management keys "Open the existing team" on, so an alias
-    // collision must produce the same shape a primary-name collision does.
+  test("saveTeamFields renaming a team onto ANOTHER team's alias is refused with the alias-holder copy", async () => {
+    // The public write path, not just the helper. NEO-602: nothing is CALLED
+    // "LSU", so this is not `NAME_TAKEN:<id>` ("Another team is already called
+    // LSU"); it is the reverse alias rule, which names the holder and its era.
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
-    const holder = await insertTeamWithAliases(t, sportId, {
+    await insertTeamWithAliases(t, sportId, {
       location: "Baton Rouge",
       name: "Tigers",
       aliases: ["LSU"],
@@ -274,7 +274,9 @@ describe("NEO-284: findCollidingTeams treats an existing team's alias as a name 
         name: "LSU",
         location: null,
       }),
-    ).rejects.toThrow(`NAME_TAKEN:${holder}`);
+    ).rejects.toThrow(
+      "Baton Rouge Tigers already answers to this name as an alias, and neither team has years on file, so they may overlap. Remove it there, or give this team years that don't overlap.",
+    );
     expect((await t.run((ctx) => ctx.db.get(other)))!.name).toBe("Bayou Bengals");
   });
 
@@ -857,7 +859,7 @@ describe("NEO-284: recordDecision normalizes create.aliases and refuses over the
 // ===========================================================================
 
 describe("NEO-284 S1: an alias equal to another team's PRIMARY name locks that team out", () => {
-  test("REPRODUCTION (guard bypassed): with B holding A's full name as an alias, A's own saveTeamFields hits NAME_TAKEN:<B>", async () => {
+  test("REPRODUCTION (guard bypassed): with B holding A's full name as an alias, A's own re-save is no longer a lock-out, and a years edit names B", async () => {
     const t = convexTest(schema, modules);
     const sportId = await seedSport(t);
     const asAdmin = t.withIdentity(ADMIN_IDENTITY);
@@ -872,15 +874,23 @@ describe("NEO-284 S1: an alias equal to another team's PRIMARY name locks that t
       aliases: ["LSU Tigers"],
     });
 
-    // A re-saves its OWN name (the Team Management form sends every field)
-    // and is told it is taken — by a team it cannot see the connection to.
-    await expect(
-      asAdmin.mutation(api.teams.saveTeamFields, { id: a, name: "Tigers", location: "LSU" }),
-    ).rejects.toThrow(`NAME_TAKEN:${b}`);
-    // A cannot touch its years either: a years edit is an identity edit.
-    await expect(
-      asAdmin.mutation(api.teams.saveTeamFields, { id: a, yearsActive: { from: 1893 } }),
-    ).rejects.toThrow(`NAME_TAKEN:${b}`);
+    // A re-saves its OWN name (the Team Management form sends every field).
+    // It used to be told the name was taken, by a team it could not see the
+    // connection to. NEO-602: B is not CALLED that, it only answers to it, so
+    // an unchanged name and years is not a clash and saves.
+    await asAdmin.mutation(api.teams.saveTeamFields, { id: a, name: "Tigers", location: "LSU" });
+    // A years edit is an identity edit, and that one is judged by the reverse
+    // alias rule, which names B (never `NAME_TAKEN`, nothing is called that).
+    const message = await asAdmin
+      .mutation(api.teams.saveTeamFields, { id: a, yearsActive: { from: 1893 } })
+      .then(
+        () => null,
+        (e: unknown) => String((e as { data?: unknown }).data ?? e),
+      );
+    expect(message).toBe(
+      "Auburn Tigers already answers to this name as an alias, and that team has no years on file, so they may overlap. Remove it there, or give this team years that don't overlap.",
+    );
+    expect(b).toBeTruthy();
   });
 
   test("WITH the guard: the alias is refused at the writer, so the state above cannot be reached through Team Management", async () => {

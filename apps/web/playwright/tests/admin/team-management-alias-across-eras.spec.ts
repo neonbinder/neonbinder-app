@@ -178,14 +178,15 @@ test(
 
     // The reverse direction: running the older team on to 2026 would overlap
     // the newer team, which wears the older team's name as an alias. Refused
-    // inline; the name-collision guard answers before the alias-holder sentence
-    // can (the unit tests pin that order). (2026, not later: an end year past
-    // next year is refused as out of range before either check.)
+    // inline, in the alias-holder sentence naming the newer team and its era:
+    // nothing is CALLED the older name, so it is not a name collision. (2026,
+    // not later: an end year past next year is refused as out of range before
+    // either check.)
     const to = page.getByRole("spinbutton", { name: "to", exact: true });
     await expect(to).toHaveValue("2024");
     await to.fill("2026");
     await save.click();
-    const reverse = page.getByRole("alert").filter({ hasText: `Another team in this sport is already called ${OLD}.` });
+    const reverse = page.getByRole("alert").filter({ hasText: `${NEW_ROW} already answers to this name as an alias, and the two teams' years overlap. Remove it there, or give this team years that don't overlap.` });
     await expect(reverse).toBeVisible();
     await expect(saved(OLD)).toHaveCount(0);
     await expectAccessible(page, { label: "Team Management, older team's years edit refused" });

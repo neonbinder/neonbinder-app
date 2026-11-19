@@ -31,7 +31,12 @@ import { CopyButton } from "../primitives/CopyButton";
 // `hasExact` was written for.
 import { NearMatchPanel, type NearMatch } from "../entities/NearMatchPanel";
 import { TeamMatchSearch } from "../entities/TeamMatchSearch";
-import { eraOverlapReason, teamEraProblem, teamOptionLabel } from "../../lib/teams/team-era";
+import {
+  aliasHolderSentence as sharedAliasHolderSentence,
+  eraOverlapReason,
+  teamEraProblem,
+  teamOptionLabel,
+} from "../../lib/teams/team-era";
 import { useStaleWhileLoading } from "@/src/hooks/useStaleWhileLoading";
 import EntityLinkSearch from "./EntityLinkSearch";
 import SportSwitch from "./SportSwitch";
@@ -285,7 +290,7 @@ function aliasHolderSentence(
   draftYears: { from: number; to?: number } | undefined,
 ): string {
   const label = teamOptionLabel(holder.name, holder.yearsActive);
-  return `${label} already answers to this name as an alias, and ${eraOverlapReason(draftYears, holder.yearsActive)}. Remove it there, or give this team years that don't overlap.`;
+  return sharedAliasHolderSentence(label, eraOverlapReason(draftYears, holder.yearsActive));
 }
 
 /**
