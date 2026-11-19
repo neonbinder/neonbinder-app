@@ -22,3 +22,4 @@
 - [Budget sweep, GCS store untested](budget-sweep-and-gcs-store-untested.md) — removed/added expect pairing; cloud adapter tested via local store only; cold-start seed budgets
 - [Wildcard regex hides doubled words](wildcard-regex-around-a-label-hides-doubled-words.md) — `.*LABEL.*` passes a brand-doubled label; pin exact text for wording fixes
 - [Cross-service source-read tests vs path filters](cross-service-source-read-tests-vs-path-filters.md) — parity tests reading a sibling service only run if its lane's filter lists those paths, both ways
+- [Stored count replaced by live count](host-stored-count-replaced-by-live-count-stales-old-spec.md) — old spec asserting the button survives the fix goes stale; race token untested
