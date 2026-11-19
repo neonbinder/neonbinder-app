@@ -3258,8 +3258,9 @@ describe("NEO-481: a photo refresh reaches a BSC row that already shows a seller
   test.each([
     ["never answers", "hang"],
     ["answers 503 twice", "fault"],
+    ["is not there (404)", "missing"],
   ] as const)(
-    "NEO-592: with the real R2 read, a photo that %s costs two bounded tries, uploads nothing and keeps the refresh queued",
+    "NEO-592: with the real R2 read, a photo that %s uploads nothing and keeps the refresh queued",
     async (_name, behaviour) => {
       const s = await setup();
       const { v, bsc, att, copyId, card } = await listedWithSellerPhotos(s, ["front"]);
@@ -3280,6 +3281,7 @@ describe("NEO-481: a photo refresh reaches a BSC row that already shows a seller
         if (!(input instanceof Request) || !input.url.includes("r2.cloudflarestorage.com")) return await others(input, init);
         r2.push(input.method);
         if (behaviour === "fault") return new Response(null, { status: 503 });
+        if (behaviour === "missing") return new Response(null, { status: 404 });
         // A read that never answers: it ends only when the try's limit aborts it.
         return await new Promise<Response>((_, reject) => {
           if (input.signal.aborted) reject(input.signal.reason);
@@ -3295,7 +3297,8 @@ describe("NEO-481: a photo refresh reaches a BSC row that already shows a seller
 
       await drainOwnerImpl(stubCtx(s.t), { ownerId: OWNER, platform: "bsc" });
 
-      expect(r2).toEqual(["GET", "GET"]);
+      // A missing object is final at once; a hang or a fault gets its second try.
+      expect(r2).toEqual(behaviour === "missing" ? ["GET"] : ["GET", "GET"]);
       expect(att.uploads).toBe(1);
       expect(bsc.puts).toEqual([]);
       expect(await outbox(s)).toEqual([expect.objectContaining({ cardId: card, refreshPhotos: true, refreshAttempts: 1 })]);
@@ -3306,10 +3309,10 @@ describe("NEO-481: a photo refresh reaches a BSC row that already shows a seller
       expect(lines).toEqual([
         {
           msg: "r2_get",
-          attempts: 2,
-          status: behaviour === "fault" ? 503 : null,
+          attempts: behaviour === "missing" ? 1 : 2,
+          status: { hang: null, fault: 503, missing: 404 }[behaviour],
           durationMs: expect.any(Number),
-          outcome: behaviour === "fault" ? "error" : "timeout",
+          outcome: { hang: "timeout", fault: "error", missing: "missing" }[behaviour],
         },
       ]);
     },

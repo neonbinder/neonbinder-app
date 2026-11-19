@@ -421,6 +421,68 @@ describe("a GET has a time limit, body included (NEO-592)", () => {
     expect(R2_GET_MAX_BYTES).toBeGreaterThanOrEqual(3 * 1024 * 1024);
   });
 
+  /** A 200 whose body fails after one good chunk. */
+  const brokenBody = async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new Uint8Array([1]));
+          controller.error(new Error("connection reset"));
+        },
+      }),
+      { status: 200 },
+    );
+
+  test("a body that errors mid-read is tried again; the second try's bytes are the answer", async () => {
+    const config = configured();
+    const seen = tries(brokenBody, bytesOf(4, 5));
+    const got = await getObjectBytes(config, KEY);
+    expect(got.kind).toBe("ok");
+    expect(new Uint8Array((got as { bytes: ArrayBuffer }).bytes)).toEqual(new Uint8Array([4, 5]));
+    expect(seen).toEqual(["GET", "GET"]);
+    expect(logged()).toMatchObject([{ attempts: 2, status: 200, outcome: "ok" }]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("a body that errors mid-read on both tries ends as an error, after exactly two tries", async () => {
+    const config = configured();
+    const seen = tries(brokenBody, brokenBody);
+    await expect(getObjectBytes(config, KEY)).resolves.toEqual({ kind: "error", status: 200 });
+    expect(seen).toEqual(["GET", "GET"]);
+    expect(logged()).toEqual([
+      { msg: "r2_get", attempts: 2, status: 200, durationMs: expect.any(Number), outcome: "error" },
+    ]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test.each([
+    ["no content-length", undefined],
+    ["a non-numeric content-length", "lots"],
+  ] as const)("%s and a body over the limit is too large, and the read stops early", async (_name, length) => {
+    const config = configured();
+    let pulled = 0;
+    let cancelled = false;
+    tries(async () =>
+      new Response(
+        new ReadableStream({
+          pull(controller) {
+            pulled += 1;
+            controller.enqueue(new Uint8Array(2));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+        { status: 200, headers: length === undefined ? {} : { "content-length": length } },
+      ),
+    );
+    await expect(getObjectBytes(config, KEY, { maxBytes: 5 })).resolves.toEqual({ kind: "tooLarge" });
+    await vi.waitFor(() => expect(cancelled).toBe(true));
+    // 2 bytes a chunk, limit 5: the third chunk crosses it; the stream never runs on.
+    expect(pulled).toBeLessThanOrEqual(4);
+    expect(logged()).toMatchObject([{ attempts: 1, status: 200, outcome: "tooLarge" }]);
+  });
+
   test("aws4fetch's own retry is not used, and the log line names no key, URL or bucket", async () => {
     const config = configured();
     const viaClient = vi.spyOn(config.client, "fetch");

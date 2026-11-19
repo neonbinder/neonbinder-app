@@ -117,6 +117,13 @@ export async function signedGetUrl(config: R2Config, key: string, expiresSeconds
 export const R2_CALL_TIMEOUT_MS = 2_500;
 export const R2_CALL_ATTEMPTS = 2;
 
+/** A body that errored while being read (not a stall: the limit cut that off). Marks the throw as worth another try. */
+class BodyReadError extends Error {
+  constructor(readonly cause: unknown) {
+    super("R2 body read failed");
+  }
+}
+
 /** What `boundedRequest` came back with: an answer (and what `readBody` made of it), or no answer in time. */
 type Tried<T> = { kind: "answered"; res: Response; body: T | undefined } | { kind: "timeout" };
 
@@ -133,7 +140,9 @@ type Tried<T> = { kind: "answered"; res: Response; body: T | undefined } | { kin
  *
  * `readBody` runs on an answer worth keeping (anything but a server fault),
  * INSIDE the try's timer, so a body that stalls mid-stream is cut off and
- * tried again like a request that never answered. `progress.attempts` is the
+ * tried again like a request that never answered. A body that errors mid-read
+ * (`BodyReadError`, the stream broke) is tried again too; if the last try ends
+ * that way the error is thrown. `progress.attempts` is the
  * number of tries begun, kept up to date for a caller that logs a throw.
  *
  * The timer of every try is cleared when the try ends, so none outlives the call.
@@ -147,6 +156,7 @@ async function boundedRequest<T>(
 ): Promise<Tried<T>> {
   const url = `${config.base}/${key.split("/").map(encodeURIComponent).join("/")}`;
   let last: Response | null = null;
+  let bodyFault: BodyReadError | null = null;
   for (let attempt = 1; attempt <= R2_CALL_ATTEMPTS; attempt++) {
     progress.attempts = attempt;
     const controller = new AbortController();
@@ -161,13 +171,23 @@ async function boundedRequest<T>(
       // Tried again below: the answer we won't use gives its connection back.
       if (attempt < R2_CALL_ATTEMPTS) void res.body?.cancel().catch(() => {});
       last = res;
+      bodyFault = null;
     } catch (error) {
-      if (!timedOut) throw error;
-      last = null;
+      if (timedOut) {
+        last = null;
+        bodyFault = null;
+      } else if (error instanceof BodyReadError) {
+        // The stream broke mid-read: as transient as a timeout or a 5xx.
+        last = null;
+        bodyFault = error;
+      } else {
+        throw error;
+      }
     } finally {
       clearTimeout(timer);
     }
   }
+  if (bodyFault) throw bodyFault;
   return last ? { kind: "answered", res: last, body: undefined } : { kind: "timeout" };
 }
 
@@ -240,8 +260,33 @@ export async function getObjectBytes(
             void res.body?.cancel().catch(() => {});
             return { kind: "tooLarge" };
           }
-          const bytes = await res.arrayBuffer();
-          return bytes.byteLength > maxBytes ? { kind: "tooLarge" } : { kind: "ok", bytes };
+          // No (or an unreadable) length: read chunk by chunk and stop the
+          // moment the running total passes the limit.
+          const reader = res.body?.getReader();
+          if (!reader) return { kind: "ok", bytes: new ArrayBuffer(0) };
+          const chunks: Uint8Array[] = [];
+          let total = 0;
+          try {
+            for (;;) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              total += value.byteLength;
+              if (total > maxBytes) {
+                void reader.cancel().catch(() => {});
+                return { kind: "tooLarge" };
+              }
+              chunks.push(value);
+            }
+          } catch (error) {
+            throw new BodyReadError(error);
+          }
+          const bytes = new Uint8Array(total);
+          let at = 0;
+          for (const chunk of chunks) {
+            bytes.set(chunk, at);
+            at += chunk.byteLength;
+          }
+          return { kind: "ok", bytes: bytes.buffer };
         },
         progress,
       );
