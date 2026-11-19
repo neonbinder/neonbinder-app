@@ -56,6 +56,9 @@
 
 import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./listingLimits";
 import { variantTypeKindFromTitle } from "../variantRole";
+import { singularTypeName, singularWord } from "../listingShortName";
+
+export { singularTypeName };
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
 import { teamFullName } from "../../lib/teams/team-name";
 import { parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
@@ -70,7 +73,17 @@ export type ListingTeamSplit = { location: string; name: string };
  * NB data read off the rows (`listingShortName.titleChainFacts`); this module
  * never decides what a level IS, only what the title says of it.
  */
-export type ListingTitleLevel = { name: string; typeName?: string };
+export type ListingTitleLevel = {
+  name: string;
+  typeName?: string;
+  /**
+   * The level is the Base kind's: a card sitting directly on the set's Base
+   * variant type. Set from that type's kind (`variantRole`), never read off
+   * the level's name: a row an operator calls "Base" under an Insert type is
+   * an insert called Base (product invariant 4).
+   */
+  base?: true;
+};
 
 export type ListingCardInputs = {
   cardNumber: string;
@@ -476,36 +489,6 @@ function typeNameAsSaid(typeName: string): string {
   return singularTypeName(typeName);
 }
 
-/**
- * A word in the singular, by suffix alone: "Inserts" -> "Insert", "Legacies"
- * -> "Legacy", "Rookies" -> "Rookie" (a "kies" word keeps its "ie"). A word
- * ending in ss, us, is, series or species, and one already singular, is left
- * alone.
- */
-function singularWord(word: string): string {
-  const lower = word.toLowerCase();
-  if (lower.length < 3 || /(ss|us|is)$/.test(lower) || !lower.endsWith("s")) return word;
-  // The two English words that are their own plural.
-  if (/(series|species)$/.test(lower)) return word;
-  if (lower.length > 4 && lower.endsWith("ies") && !lower.endsWith("kies")) {
-    const y = word.endsWith("S") ? "Y" : "y";
-    return `${word.slice(0, -3)}${y}`;
-  }
-  return word.slice(0, -1);
-}
-
-/**
- * A variant type's name as a title, a description line and a preview chip
- * say it (one source, so they agree): the singular of its LAST word, so
- * "Short Prints" reads "Short Print".
- */
-export function singularTypeName(typeName: string): string {
-  const words = typeName.trim().split(/\s+/).filter(Boolean);
-  if (words.length === 0) return "";
-  words[words.length - 1] = singularWord(words[words.length - 1]);
-  return words.join(" ");
-}
-
 /** Is `text` the Base kind's word ("Base", "Bases"), read through the role helper? */
 function isBaseWord(text: string | undefined): boolean {
   return variantTypeKindFromTitle(text) === "base";
@@ -550,7 +533,12 @@ function effectiveLevels(inputs: ListingCardInputs): ListingTitleLevel[] {
   if (inputs.titleLevels) {
     for (const level of inputs.titleLevels) {
       const name = level.name.trim();
-      if (name) levels.push({ name, ...(level.typeName?.trim() ? { typeName: level.typeName.trim() } : {}) });
+      if (!name) continue;
+      levels.push({
+        name,
+        ...(level.typeName?.trim() ? { typeName: level.typeName.trim() } : {}),
+        ...(level.base ? { base: true as const } : {}),
+      });
     }
   } else {
     const insert = inputs.insertName?.trim();
@@ -571,7 +559,7 @@ function effectiveLevels(inputs: ListingCardInputs): ListingTitleLevel[] {
   // features' parallel name, when that is the Base kind's word.
   const featuresName = inputs.parallelName?.trim();
   if (levels.length === 0 && featuresName && isBaseWord(featuresName)) {
-    levels.push({ name: featuresName });
+    levels.push({ name: featuresName, base: true });
   }
   return levels;
 }
@@ -594,7 +582,7 @@ function builderDescriptionParts(inputs: ListingCardInputs): DescriptionParts {
   const head = () => [year, ...headTokens].filter(Boolean).join(" ");
   let above: { raw: string; text?: string } | undefined;
   for (const level of effectiveLevels(inputs)) {
-    if (isBaseWord(level.name)) {
+    if (level.base) {
       levels.push({ text: level.name, base: true });
       continue;
     }
@@ -616,9 +604,22 @@ function builderDescriptionParts(inputs: ListingCardInputs): DescriptionParts {
       // NEO-535 — the leading words a level shares with the one above it are
       // said once, by that one ("Anime" + "Anime Red Refractors" → "Anime Red
       // Refractors"; `parallelAfterInsert`).
-      const stripped = stripDoubledWords(parallelAfterInsert(raw, above.text ?? above.raw), inputs);
+      const trimmed = parallelAfterInsert(raw, above.text ?? above.raw);
+      const stripped = stripDoubledWords(trimmed, inputs);
       if (stripped && !alreadySaid([head(), ...said].filter(Boolean).join(" "), stripped)) {
         text = stripped;
+        // A type name never lands inside a level's own name. When this level
+        // opens with words the one above it says, the two read as one name
+        // ("Gold Wave" + "Gold Wave Refractors" -> "Gold Wave Refractors"),
+        // so the upper level's type name sits out instead of splitting it
+        // ("Gold Wave Parallel Refractors").
+        if (wordsOf(trimmed).length < wordsOf(raw).length) {
+          const upper = levels[levels.length - 1];
+          if (upper && !upper.base) {
+            upper.typeName = undefined;
+            upper.typeBase = undefined;
+          }
+        }
       }
     }
     // The top level keeps its type name even when the set already says its
@@ -1448,7 +1449,7 @@ export function generateListingDescription(
   // variant type's own name. Without them (a dash card, an older caller) the
   // Insert / Parallel lines are exactly what they were.
   const levels = inputs.titleLevels
-    ? effectiveLevels(inputs).filter((l) => !isBaseWord(l.name))
+    ? effectiveLevels(inputs).filter((l) => !l.base)
     : undefined;
   let setLabel: string | null;
   let variant: string;

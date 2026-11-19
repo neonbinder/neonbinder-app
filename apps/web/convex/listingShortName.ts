@@ -86,7 +86,19 @@ export type TitleChainRow = {
  * `TitleChainFacts.titleLevels`. See `ListingTitleLevel` in
  * `features/generateListing` (same shape; this file is the pure-validator side).
  */
-export type TitleLevelFact = { name: string; typeName?: string };
+export type TitleLevelFact = {
+  name: string;
+  typeName?: string;
+  /** A card sitting directly on the Base variant type (its KIND, never a name). */
+  base?: true;
+};
+
+/** `TitleLevelFact` as a validator, for every hand-kept copy of the facts. */
+export const titleLevelValidator = v.object({
+  name: v.string(),
+  typeName: v.optional(v.string()),
+  base: v.optional(v.literal(true)),
+});
 
 /**
  * The chain's title facts: the `ListingSetContext` fields NEO-335 adds, and
@@ -132,9 +144,7 @@ export const titleChainFactsFields = {
   insertIsRole: v.optional(v.boolean()),
   parallelLeafValue: v.optional(v.string()),
   listingShortName: v.optional(v.string()),
-  titleLevels: v.optional(
-    v.array(v.object({ name: v.string(), typeName: v.optional(v.string()) })),
-  ),
+  titleLevels: v.optional(v.array(titleLevelValidator)),
 };
 
 /**
@@ -187,19 +197,21 @@ export function titleChainFacts(
   let short: string | undefined;
   // NEO-609 — the levels, leaf first, each with its chain index (below).
   const levels: Array<TitleLevelFact & { index: number }> = [];
+  const typeName = variantType?.value?.trim();
   for (const [index, row] of chain.entries()) {
     if (row.level === "parallel") {
       levels.push({ index, name: row.value, typeName: SUB_VARIANT_TYPE_NAME });
     } else if (row.level === "insert") {
-      levels.push({
-        index,
-        name: row.value,
-        ...(variantType?.value?.trim() ? { typeName: variantType.value } : {}),
-      });
+      levels.push({ index, name: row.value, ...(typeName ? { typeName } : {}) });
     } else if (row.level === "variantType" && index === 0) {
       // A card sitting directly on a variant type. Base included (NEO-609, Q1:
-      // the title says "Base" and cuts it first); the title reads its kind.
-      levels.push({ index, name: row.value });
+      // the title says "Base" and cuts it first): flagged by the type's KIND.
+      // Named in the singular, as a type name is everywhere else.
+      if (variantTypeKindFromTitle(row.value) === "base") {
+        levels.push({ index, name: row.value, base: true });
+      } else {
+        levels.push({ index, name: singularTypeName(row.value) });
+      }
     }
     if (index === 0 && derivedVariantFlags(row.level, variantType)?.isParallel === true) {
       facts.parallelLeafValue = row.value;
@@ -231,7 +243,7 @@ export function titleChainFacts(
     for (const level of [...levels].reverse()) {
       // Base is not part of the description a box stands for (the title cuts
       // it first); a box title never says it.
-      if (variantTypeKindFromTitle(level.name) === "base") continue;
+      if (level.base) continue;
       if (level.index < shortIndex) {
         short = appendUnsaid(
           short,
@@ -243,9 +255,10 @@ export function titleChainFacts(
     facts.listingShortName = short;
   }
   if (levels.length > 0) {
-    facts.titleLevels = levels.reverse().map(({ name, typeName }) => ({
+    facts.titleLevels = levels.reverse().map(({ name, typeName, base }) => ({
       name,
       ...(typeName ? { typeName } : {}),
+      ...(base ? { base } : {}),
     }));
   }
   return facts;
@@ -256,6 +269,36 @@ export function titleChainFacts(
  * an insert row), so its type name is the NB word for what it is.
  */
 const SUB_VARIANT_TYPE_NAME = "Parallel";
+
+/**
+ * A word in the singular, by suffix alone: "Inserts" -> "Insert", "Legacies"
+ * -> "Legacy", "Rookies" -> "Rookie" (a "kies" word keeps its "ie"). A word
+ * ending in ss, us, is, series or species, and one already singular, is left
+ * alone.
+ */
+export function singularWord(word: string): string {
+  const lower = word.toLowerCase();
+  if (lower.length < 3 || /(ss|us|is)$/.test(lower) || !lower.endsWith("s")) return word;
+  // The two English words that are their own plural.
+  if (/(series|species)$/.test(lower)) return word;
+  if (lower.length > 4 && lower.endsWith("ies") && !lower.endsWith("kies")) {
+    const y = word.endsWith("S") ? "Y" : "y";
+    return `${word.slice(0, -3)}${y}`;
+  }
+  return word.slice(0, -1);
+}
+
+/**
+ * A variant type's name as a title, a description line and a preview chip
+ * say it (one source, so they agree): the singular of its LAST word, so
+ * "Short Prints" reads "Short Print".
+ */
+export function singularTypeName(typeName: string): string {
+  const words = typeName.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "";
+  words[words.length - 1] = singularWord(words[words.length - 1]);
+  return words.join(" ");
+}
 
 /** The autograph spellings a set description uses for one word. */
 const AUTO_WORDS: ReadonlySet<string> = new Set([

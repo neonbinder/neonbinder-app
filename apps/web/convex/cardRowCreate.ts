@@ -364,9 +364,11 @@ export function buildCardRowForInsert(
   // NEO-335 — the operator's answer from the "Card titles" step, when one
   // rode on the card: their own words, or the trimmed title kept. Either way
   // the cut-short question was put before save, so the flag is not written.
-  // NEO-535 — `coreFits` is false when the title lost a first name or was
-  // built from the set's box text; an over-cap title is flagged by its length
-  // (`titleOverLimit`), whatever this says.
+  // NEO-535 / NEO-609 — `coreFits` is false when a Tidy Up cut (a whole team,
+  // the number, SP, RELIC, a first name, RC, AUTO) is still out, or the title
+  // was built from the set's box text. An over-cap title has cut all of those,
+  // so it is flagged `listingTitleTruncated` too; `titleOverLimit` (its
+  // length) takes precedence when the attention items are read.
   const operatorTitle = card.listingTitle?.trim();
   const flagTruncated =
     !listingTitle.coreFits &&
@@ -406,7 +408,7 @@ export function buildCardRowForInsert(
     listingDescription: generateListingDescription(listingInputs, {
       cameoNames: cameos.map((c) => c.name),
     }),
-    // NEO-535: only when a first name was lost or the box text was used
+    // NEO-535 / NEO-609: only in Tidy Up, or when the box text was used
     // (see schema.ts), and NEO-335: never over an operator's pre-save answer.
     ...(flagTruncated ? { listingTitleTruncated: true } : {}),
     // NEO-221 / NEO-246 — omitted entirely when empty, so a fully-reviewed

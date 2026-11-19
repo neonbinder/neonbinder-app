@@ -425,6 +425,7 @@ import {
   pickTitleChainFacts,
   titleChainFacts,
   titleChainFactsFields,
+  titleLevelValidator,
   type TitleChainFacts,
 } from "./listingShortName";
 export { findAncestorLabels };
@@ -7190,8 +7191,12 @@ export const previewListingTitle = query({
     firstNameLost: v.boolean(),
     // NEO-535 — built from the set's box text ("Set name in titles").
     shortNameUsed: v.optional(v.boolean()),
-    // NEO-535 — false: the card belongs in the Card titles dialog for a first
-    // name or the box (`ListingTitleAssessment.coreFits`).
+    // NEO-609 — a Tidy Up cut (a whole team, the number, SP, RELIC, a first
+    // name, RC, AUTO) is still out (`ListingTitleAssessment.tidyUp`).
+    tidyUp: v.boolean(),
+    // NEO-535 / NEO-609 — false: the card is in Tidy Up (a cut from the line
+    // down is still out) or was built from the box (`ListingTitleAssessment.coreFits`).
+    // An over-cap title is flagged by its length as well as by this.
     coreFits: v.boolean(),
     dropped: v.array(v.string()),
     inputs: v.object({
@@ -7213,9 +7218,7 @@ export const previewListingTitle = query({
       insertName: v.optional(v.string()),
       // NEO-609 — every level of the chain with its variant type's name, so
       // the client re-assesses the same title and chips one per level.
-      titleLevels: v.optional(
-        v.array(v.object({ name: v.string(), typeName: v.optional(v.string()) })),
-      ),
+      titleLevels: v.optional(v.array(titleLevelValidator)),
       setShortName: v.optional(v.string()),
       parallelName: v.optional(v.string()),
       // NEO-335 — the leaf's parallel ROLE, which earns the parallel its
@@ -7242,13 +7245,14 @@ export const previewListingTitle = query({
     if (!card) throw new ConvexError("previewListingTitle: no such card");
     // NEO-358 — the body moved, unchanged, to `storedCardTitle.ts` (for the
     // NEO-358 title backfill, retired in NEO-363).
-    const { title, fits, firstNameLost, shortNameUsed, coreFits, dropped, inputs } =
+    const { title, fits, firstNameLost, shortNameUsed, tidyUp, coreFits, dropped, inputs } =
       await titleForStoredCard(ctx, card);
     return {
       title,
       fits,
       firstNameLost,
       ...(shortNameUsed ? { shortNameUsed: true } : {}),
+      tidyUp,
       coreFits,
       dropped,
       inputs,
