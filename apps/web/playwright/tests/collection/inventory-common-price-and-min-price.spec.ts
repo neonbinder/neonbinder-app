@@ -182,7 +182,7 @@ test(
     // --- Cleanup (R7): remove the copy (it is back in Main), then clear the common price
     await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${one.short}, Raw, Excellent`);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     // The common price is still what the collector set: no Sell panel wrote it.

@@ -242,8 +242,15 @@ const GRPC_RESOURCE_EXHAUSTED = 8;
  */
 const GRPC_FAILED_PRECONDITION = 9;
 
+/** The service could not be reached right now; transient (NEO-604). */
+const GRPC_UNAVAILABLE = 14;
+
 function isResourceExhaustedError(err: any): boolean {
   return err?.code === GRPC_RESOURCE_EXHAUSTED;
+}
+
+function isUnavailableError(err: any): boolean {
+  return err?.code === GRPC_UNAVAILABLE;
 }
 
 function isFailedPreconditionError(err: any): boolean {
@@ -251,24 +258,72 @@ function isFailedPreconditionError(err: any): boolean {
 }
 
 /**
- * Run a Secret Manager call, retrying it on RESOURCE_EXHAUSTED only.
+ * Retry budget for a Secret Manager call that failed with UNAVAILABLE (NEO-604).
+ *
+ * UNAVAILABLE is the transport saying "the service could not be reached right
+ * now" (a dropped connection, a Google front end restarting). A CI seed saw
+ * one on an EasyPost key write after 37 ms, which the route turned into a 500
+ * for a failure one more attempt would have ridden out. ONE retry, after a
+ * jittered 100-300 ms, so the most this adds to a call is 300 ms plus the
+ * failed attempt (which is fast: UNAVAILABLE is a connect-level failure, not a
+ * timeout). The retry budget is separate from the quota one, so a call refused
+ * on quota and then on a blip still gets both.
+ *
+ * DEADLINE_EXCEEDED (4) is deliberately NOT retried. By the time it is
+ * reported the call has already spent its whole deadline (5 s on a read,
+ * the client's default on a write), so a retry would double a wait the callers
+ * cannot afford, and on a write the request has very likely landed.
+ */
+const UNAVAILABLE_RETRY_BASE_MS = 200;
+
+/**
+ * Filled in by `withQuotaRetry` so a caller can learn that an attempt of a
+ * NON-idempotent call was retried after UNAVAILABLE. UNAVAILABLE does not say
+ * the first attempt did not execute: the connection can drop after the server
+ * committed. A write whose retry flag is set may therefore have created two
+ * versions (see `updateCredentials`, which prunes a second one when it is).
+ */
+export interface RetryOutcome {
+  unavailableRetried: boolean;
+}
+
+/**
+ * Run a Secret Manager call, retrying it on RESOURCE_EXHAUSTED (up to twice)
+ * and on UNAVAILABLE (once).
  *
  * Every other error propagates at once: they are answers (NOT_FOUND,
  * FAILED_PRECONDITION) or faults a retry will not fix. Exported for the
  * SportLots automated-access reader, which talks to the client directly.
  */
-export async function withQuotaRetry<T>(call: () => Promise<T>): Promise<T> {
-  for (let attempt = 0; ; attempt++) {
+export async function withQuotaRetry<T>(
+  call: () => Promise<T>,
+  outcome?: RetryOutcome,
+): Promise<T> {
+  let quotaRetries = 0;
+  let unavailableRetries = 0;
+  for (;;) {
     try {
       return await call();
     } catch (err: any) {
-      const base = QUOTA_RETRY_DELAYS_MS[attempt];
-      if (!isResourceExhaustedError(err) || base === undefined) throw err;
-      // Jitter, so a herd of refused callers does not retry in lockstep.
-      const delay = Math.round(base * (0.5 + Math.random()));
-      console.warn(
-        JSON.stringify({ msg: "secret_manager_quota_retry", attempt: attempt + 1, delayMs: delay }),
-      );
+      let delay: number;
+      if (isResourceExhaustedError(err)) {
+        const base = QUOTA_RETRY_DELAYS_MS[quotaRetries];
+        if (base === undefined) throw err;
+        quotaRetries++;
+        // Jitter, so a herd of refused callers does not retry in lockstep.
+        delay = Math.round(base * (0.5 + Math.random()));
+        console.warn(
+          JSON.stringify({ msg: "secret_manager_quota_retry", attempt: quotaRetries, delayMs: delay }),
+        );
+      } else if (isUnavailableError(err)) {
+        if (unavailableRetries >= 1) throw err;
+        unavailableRetries++;
+        if (outcome) outcome.unavailableRetried = true;
+        delay = Math.round(UNAVAILABLE_RETRY_BASE_MS * (0.5 + Math.random()));
+        console.warn(JSON.stringify({ msg: "secret_manager_unavailable_retry", delayMs: delay }));
+      } else {
+        throw err;
+      }
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
   }
@@ -543,6 +598,9 @@ export class SecretsManagerService {
     let createdVersionName: string | null | undefined;
     // NEO-552: a fake-BSC key's expiry moves to now + 72 h on every write.
     const fake = isFakeCredentialKey(key);
+    // NEO-604: set when an add was retried after UNAVAILABLE, which can leave
+    // a duplicate version behind. See the prune below.
+    const outcome: RetryOutcome = { unavailableRetried: false };
     try {
       // Extend BEFORE adding the version, so the version this call writes can
       // never land in a secret that expires a moment later. Best-effort: a
@@ -555,6 +613,7 @@ export class SecretsManagerService {
         secretName,
         payload,
         fake,
+        outcome,
       );
     } catch (err: any) {
       // Message only, and this is the sharpest case in the file: the failed
@@ -578,7 +637,20 @@ export class SecretsManagerService {
 
     // NEO-115: keep exactly one version. This is deliberately AFTER the write
     // succeeded and is best-effort — see destroyPreviousVersion.
-    await this.destroyPreviousVersion(secretName, secretId, createdVersionName);
+    //
+    // NEO-604: an add retried after UNAVAILABLE may have landed twice (the
+    // first attempt committed, then the connection dropped). The versions are
+    // identical payloads, so which one is "latest" does not matter to a reader,
+    // but pruning only N-1 would leave the first duplicate (N-1) AND the
+    // pre-write version (N-2) live, breaking the one-live-version rule. So a
+    // retried add prunes two back. When the first attempt had not landed, N-2
+    // is already destroyed and the extra destroy is a tolerated no-op.
+    await this.destroyPreviousVersion(
+      secretName,
+      secretId,
+      createdVersionName,
+      outcome.unavailableRetried ? 2 : 1,
+    );
   }
 
   /**
@@ -632,13 +704,16 @@ export class SecretsManagerService {
     secretName: string,
     payload: string,
     fake = false,
+    outcome?: RetryOutcome,
   ): Promise<string | null | undefined> {
     const addVersion = async (): Promise<string | null | undefined> => {
-      const [created] = await withQuotaRetry(() =>
-        this.client.addSecretVersion({
-          parent: secretName,
-          payload: { data: Buffer.from(payload, 'utf8') },
-        }),
+      const [created] = await withQuotaRetry(
+        () =>
+          this.client.addSecretVersion({
+            parent: secretName,
+            payload: { data: Buffer.from(payload, 'utf8') },
+          }),
+        outcome,
       );
       return created?.name;
     };
@@ -757,10 +832,15 @@ export class SecretsManagerService {
    *   here. NOT_FOUND and FAILED_PRECONDITION (already destroyed, e.g. by a
    *   concurrent writer) are the normal outcome of a race and are silent.
    * - **Never destroys the version we just wrote, nor a newer one.** Only
-   *   `N-1` is ever addressed. With two overlapping writers, A adding v10 and
-   *   B adding v11, A destroys v9 and B destroys v10, and v11, the newest,
-   *   survives both. That is the interleaving that once zeroed a secret, when
-   *   prune destroyed "everything but mine" (see git history).
+   *   versions numbered below the one this write created are addressed:
+   *   `N-1`, or `N-1` and `N-2` after an add that was retried on UNAVAILABLE
+   *   (`depth` 2; the first attempt may have landed as `N-1`). With two
+   *   overlapping writers, A adding v10 and B adding v11, A destroys v9 and B
+   *   destroys v10, and v11, the newest, survives both. That is the
+   *   interleaving that once zeroed a secret, when prune destroyed
+   *   "everything but mine" (see git history). A retried add can destroy a
+   *   concurrent writer's version, but only one that its own newer version
+   *   already hides from readers (last writer wins, as before).
    * - **Skipped when the created version is unknown.** Without the created
    *   name's ordinal there is no safe target, so nothing is destroyed.
    * - **No secret material and no infrastructure identifier is logged.** Only
@@ -777,11 +857,14 @@ export class SecretsManagerService {
    * @param secretId The bare `<site>-credentials-<clerkUserId>` id, the
    *   log-safe form.
    * @param createdVersionName Resource name of the version this write added.
+   * @param depth How many versions back from the created one to destroy: 1
+   *   normally, 2 after an add retried on UNAVAILABLE (NEO-604).
    */
   private async destroyPreviousVersion(
     secretName: string,
     secretId: string,
     createdVersionName: string | null | undefined,
+    depth = 1,
   ): Promise<void> {
     const createdOrdinal = createdVersionName ? versionOrdinal(createdVersionName) : undefined;
     if (createdOrdinal === undefined) {
@@ -791,18 +874,20 @@ export class SecretsManagerService {
       );
       return;
     }
-    if (createdOrdinal <= 1) return;
 
-    const previous = `${secretName}/versions/${createdOrdinal - 1}`;
-    try {
-      await withQuotaRetry(() => this.client.destroySecretVersion({ name: previous }));
-    } catch (err: any) {
-      if (isNotFoundError(err) || isFailedPreconditionError(err)) return;
-      console.error(
-        "Failed to destroy secret version '%s': %s",
-        shortVersion(secretId, previous),
-        describeSecretError(err),
-      );
+    for (let back = 1; back <= depth; back++) {
+      if (createdOrdinal - back < 1) return;
+      const previous = `${secretName}/versions/${createdOrdinal - back}`;
+      try {
+        await withQuotaRetry(() => this.client.destroySecretVersion({ name: previous }));
+      } catch (err: any) {
+        if (isNotFoundError(err) || isFailedPreconditionError(err)) continue;
+        console.error(
+          "Failed to destroy secret version '%s': %s",
+          shortVersion(secretId, previous),
+          describeSecretError(err),
+        );
+      }
     }
   }
-} 
+}

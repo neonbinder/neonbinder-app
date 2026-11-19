@@ -40,7 +40,11 @@ export const WITHDREW_SHOWN_MS = 5000;
 export default function CrewDesk() {
   const crew = useCrew();
   const desk = crew?.desk;
-  const [withdrew, setWithdrew] = useState<string | null>(null);
+  // Each withdraw's line carries its own id (a counter that only goes up), so
+  // a timer is matched to its line by id, never by words: two withdraws can
+  // say exactly the same thing.
+  const [withdrew, setWithdrew] = useState<{ id: number; text: string } | null>(null);
+  const lastWithdrewId = useRef(0);
   // The withdrawn report's id until the read has dropped its row; then the
   // keyboard moves (`focusAfterWithdraw`).
   const landing = useRef<string | null>(null);
@@ -52,7 +56,9 @@ export default function CrewDesk() {
   }, [desk, withdrew]);
   useEffect(() => {
     if (!withdrew) return;
-    const timer = setTimeout(() => setWithdrew(null), WITHDREW_SHOWN_MS);
+    // Takes down its own line only: a newer withdraw's words it raced with stay.
+    const { id } = withdrew;
+    const timer = setTimeout(() => setWithdrew((prev) => (prev?.id === id ? null : prev)), WITHDREW_SHOWN_MS);
     return () => clearTimeout(timer);
   }, [withdrew]);
   if (!crew) return null;
@@ -72,7 +78,7 @@ export default function CrewDesk() {
               onWithdrawing={() => setWithdrew(null)}
               onWithdrawn={(ask, words) => {
                 landing.current = ask.id;
-                setWithdrew(`Withdrew the report on ${words}.`);
+                setWithdrew({ id: ++lastWithdrewId.current, text: `Withdrew the report on ${words}.` });
               }}
             />
           )}
@@ -80,7 +86,7 @@ export default function CrewDesk() {
         </div>
       )}
       <p role="status" className={withdrew ? `${panels ? "mt-3 " : ""}text-sm font-semibold text-neon-green-text` : ""}>
-        {withdrew}
+        {withdrew?.text}
       </p>
     </div>
   );
