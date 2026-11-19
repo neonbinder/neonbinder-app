@@ -1,6 +1,7 @@
 # Security Auditor — Agent Memory Index
 
 - [Reviewing a live worktree](feedback_reviewing_a_live_worktree.md) — others edit it: never overwrite a file to test; re-run gates
+- [Neo611 roster players](patterns_neo611_roster_players.md) — caller epoch one-way safe; decision replay skips birth-year contradiction; held carries playerId
 - [Ar cleanup serving image](patterns_ar_cleanup_serving_image.md) — AR cleanup policies: when a KEEP rank guard protects the live image
 - [Attention flag suppression](patterns_attention_flag_suppression.md) — a flag cleared by any write of its field is clearable by an unrelated save
 - [Card drawer autosave](patterns_card_drawer_autosave.md) — NEO-216/217 per-field autosave; null-clear for numbers; userFacingMessage
@@ -240,4 +241,3 @@
 - [Neo556 copied-down decision stamp](patterns_neo556_copied_down_decision_stamp.md) — server-minted {setAt,setByUserId} copied down + reused for background stamps; cursor {i,t,c,r}; one bool two caps
 - [Merge guard survival; bscTeamPool enqueue](patterns_merge_resolution_guard_survival_and_bsc_lane_enqueue.md) — comm -23 line-survival check for merges; one-slot lane enqueue is bounded if admin/internal + row re-read
 - [Cross-workflow preview wait](patterns_cross_workflow_preview_wait.md) — waiter gate ⊆ builder's merge_group scope; tag-exists wait = stale revision
-- [Neo611 roster players](patterns_neo611_roster_players.md) — caller epoch one-way safe; decision replay skips birth-year contradiction; held carries playerId

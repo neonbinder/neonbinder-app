@@ -1,6 +1,7 @@
 # NeonBinder Web Dev — Agent Memory Index
 
 - [Disambiguate duplicate aria labels by rewording](disambiguate-duplicate-aria-labels-by-rewording.md) — When two instances of the same picker/component can be on screen at once, give the second instance labels that share NO substring with the first — never a suffixed var…
+- [Bulk-load op budget counts calls](reference_bulkload_op_budget_counts_calls_not_rows_or_stints.md) — roster leg: ~5 ops plain row, ~11 for a 3-alias create; budget tests need alias creates
 - [E2e viewport is the ux constraint](e2e-viewport-is-the-ux-constraint.md) — Admin screens are judged at the CI E2E viewport (1024x629); put status/feedback next to the control that produced it, because role="status" hides sighted-user gaps
 - [External ids must be verified live](external-ids-must-be-verified-live.md) — Wikidata/ESPN QIDs and other external identifiers shipped as constants must be checked against the live source before merge — four sportConfig hallOfFameQid values wer…
 - [Linking uis are drag and drop](feedback-linking-uis-are-drag-and-drop.md) — Any "these two lists describe the same things" pairing/linking UI must be drag-and-drop, and must say so on screen — Jason's operator feedback on NEO-189 / PR #205
@@ -258,7 +259,6 @@
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
 - [Host-stored count goes stale](host-stored-count-goes-stale-ask-the-door.md) — door reports live counts (onCounts + recount + countOnMount); no subscription for big parents
 - [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
-- [Bulk-load op budget counts calls](reference_bulkload_op_budget_counts_calls_not_rows_or_stints.md) — roster leg: ~5 ops plain row, ~11 for a 3-alias create; budget tests need alias creates
 - [Dense one-line rows: wrap atomic pieces, never clip](reference_fixed_table_layout_counts_a_hidden_column_in_a_colspan.md) — nowrap atoms, w-1 short cols, no-clip assertion; table-fixed colSpan phantom col
 - [Repeating a set-building spec needs a full reseed](reference_repeating_a_set_building_spec_needs_a_full_reseed.md) — partial reset breaks setup; each repeat = agent-convex --seed + setup + bootstrap
 - [Review gate is hops times latency](reference_review_gate_is_hops_times_latency.md) — mapBounded in a query, settleAll in the action, prelude query, review_gate_timing line
