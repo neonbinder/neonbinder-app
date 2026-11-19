@@ -1,8 +1,9 @@
 /**
  * NEO-426 — the wizard around the teamless-sport default: a card whose every
- * person plays a flagged sport saves as "No team" without a teams-step line,
- * and the Save step says how many (singular and plural), describing Confirm &
- * Save by that note (never relabelling it).
+ * person plays a flagged sport saves as "No Team" without a teams-step line,
+ * and the Save step names the people and the sport (one card, many cards,
+ * several sports), describing Confirm & Save by that note (never relabelling
+ * it).
  *
  * The pure rule is in teams-on-cards.teamlessSport.test.tsx and its server
  * twin in teamlessSport.clientServerParity.test.tsx; this file is the wiring:
@@ -25,6 +26,8 @@ let currentRows: unknown;
 /** undefined = still loading. */
 let flaggedSports: string[] | undefined;
 let linkedPlayers: Array<{ _id: string; name: string; sportId: string }> | undefined;
+/** The sport rows' names (SportSwitch's list). undefined = still loading. */
+let sportRows: Array<{ _id: string; value: string }> | undefined;
 
 vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
@@ -32,6 +35,7 @@ vi.mock("convex/react", () => ({
     if (ref === "entityReviewQueue.getBatch") return currentRows;
     if (ref === "sportTeamless.listTeamlessSportIds") return flaggedSports;
     if (ref === "players.getManyByIds") return linkedPlayers;
+    if (ref === "selectorOptions.getSelectorOptions") return sportRows;
     if (ref === "teams.getManyByIds") return [];
     return undefined;
   },
@@ -56,13 +60,14 @@ import EntityReviewWizard from "./EntityReviewWizard";
 const CONFIRM_SAVE_NAME = "Confirm & Save (Enter) — commit this review";
 const NEXT_NAME = "Next (Enter)";
 const NOTE_ONE =
-  "1 card saves with No team: its player's sport has none. Add a team later in the card editor.";
-const notePlural = (n: number) =>
-  `${n} cards save with No team: their players' sports have none. Add a team later in the card editor.`;
+  "Pat Nonsport saves with No Team. Non Sport has no teams. Add one later in the card editor.";
+const notePlural = (n: number, who = "Pat Nonsport") =>
+  `${n} cards save with No Team (Non Sport has no teams): ${who}. Add a team later in the card editor.`;
 const bar = () => screen.getByRole("progressbar", { name: "Wizard progress" });
 const onStep = () => bar().getAttribute("aria-valuetext") ?? "";
 const NONE = "sport-none";
 const BALL = "sport-ball";
+const GOLF = "sport-golf";
 
 let rowId = 0;
 function row(overrides: Record<string, unknown>) {
@@ -122,10 +127,15 @@ beforeEach(() => {
   rowId = 0;
   flaggedSports = [NONE];
   linkedPlayers = [];
+  sportRows = [
+    { _id: NONE, value: "Non Sport" },
+    { _id: BALL, value: "Baseball" },
+    { _id: GOLF, value: "Golf" },
+  ];
   currentRows = [row({ name: "Pat Nonsport" })];
 });
 
-describe("Save step: the 'saves with No team' note", () => {
+describe("Save step: the 'saves with No Team' note", () => {
   it("one stamped card: no teams step, the singular note, and Confirm & Save described by it", () => {
     renderWizard([{ cardNumber: "1", cardName: "Card", players: ["Pat Nonsport"] }]);
     expect(onStep()).toBe("Ready to save");
@@ -147,13 +157,101 @@ describe("Save step: the 'saves with No team' note", () => {
     expect(describedText(confirm())).toBe(notePlural(3));
   });
 
+  it("names up to five people, then 'and N more'", () => {
+    const names = ["Ann One", "Bob Two", "Cy Three", "Di Four", "Ed Five", "Flo Six", "Gus Seven"];
+    currentRows = names.map((name) => row({ name }));
+    renderWizard(
+      names.map((name, i) => ({ cardNumber: String(i + 1), cardName: `C${i}`, players: [name] })),
+    );
+    expect(
+      screen.getByText(
+        "7 cards save with No Team (Non Sport has no teams): Ann One, Bob Two, Cy Three, Di Four, Ed Five, and 2 more. Add a team later in the card editor.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("five people are all named, joined with 'and'", () => {
+    const names = ["Ann One", "Bob Two", "Cy Three", "Di Four", "Ed Five"];
+    currentRows = names.map((name) => row({ name }));
+    renderWizard(
+      names.map((name, i) => ({ cardNumber: String(i + 1), cardName: `C${i}`, players: [name] })),
+    );
+    expect(
+      screen.getByText(
+        "5 cards save with No Team (Non Sport has no teams): Ann One, Bob Two, Cy Three, Di Four and Ed Five. Add a team later in the card editor.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("two flagged sports on the cards: both are named", () => {
+    flaggedSports = [NONE, GOLF];
+    currentRows = [
+      row({ name: "Pat Nonsport" }),
+      row({ name: "Gil Golfer", sportId: GOLF, sportValue: "Golf" }),
+    ];
+    renderWizard([
+      { cardNumber: "1", cardName: "A", players: ["Pat Nonsport"] },
+      { cardNumber: "2", cardName: "B", players: ["Gil Golfer"] },
+    ]);
+    expect(
+      screen.getByText(
+        "2 cards save with No Team (Golf and Non Sport have no teams): Pat Nonsport and Gil Golfer. Add a team later in the card editor.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("one card with two teamless people reads in the plural", () => {
+    currentRows = [row({ name: "Pat Nonsport" }), row({ name: "Quinn Nonsport" })];
+    renderWizard([
+      { cardNumber: "1", cardName: "A", players: ["Pat Nonsport", "Quinn Nonsport"] },
+    ]);
+    expect(
+      screen.getByText(
+        "Pat Nonsport and Quinn Nonsport save with No Team. Non Sport has no teams. Add one later in the card editor.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("leaves the sport out, rather than guess, while the sport names are loading", () => {
+    sportRows = undefined;
+    renderWizard([{ cardNumber: "1", cardName: "Card", players: ["Pat Nonsport"] }]);
+    expect(
+      screen.getByText("Pat Nonsport saves with No Team. Add one later in the card editor."),
+    ).toBeTruthy();
+  });
+
+  it("a name that resolved before the sitting takes the one flagged sport", () => {
+    // One decided row elsewhere, so the sitting is open; Known Golfer has none.
+    currentRows = [row({ name: "Not A Person", decision: { action: "skip" } })];
+    renderWizard([{ cardNumber: "1", cardName: "Card", players: ["Known Golfer"] }], {
+      teamlessPlayerNames: ["Known Golfer"],
+    });
+    expect(
+      screen.getByText(
+        "Known Golfer saves with No Team. Non Sport has no teams. Add one later in the card editor.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("a name that resolved before the sitting with two flagged sports leaves the sport out", () => {
+    flaggedSports = [NONE, GOLF];
+    // One decided row elsewhere, so the sitting is open; Known Golfer has none.
+    currentRows = [row({ name: "Not A Person", decision: { action: "skip" } })];
+    renderWizard([{ cardNumber: "1", cardName: "Card", players: ["Known Golfer"] }], {
+      teamlessPlayerNames: ["Known Golfer"],
+    });
+    expect(
+      screen.getByText("Known Golfer saves with No Team. Add one later in the card editor."),
+    ).toBeTruthy();
+  });
+
   it("no flagged sport: no note, no teams-step change, and Confirm has no description", () => {
     flaggedSports = [];
     renderWizard([{ cardNumber: "1", cardName: "Card", players: ["Pat Nonsport"] }]);
     // The card is asked about, as before.
     expect(onStep()).toBe("Cards with no team");
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
-    expect(screen.queryByText(/save with No team/)).toBeNull();
+    expect(screen.queryByText(/save with No Team/)).toBeNull();
     expect(confirm().hasAttribute("aria-describedby")).toBe(false);
   });
 
@@ -180,7 +278,7 @@ describe("Save step: the 'saves with No team' note", () => {
     ]);
     expect(onStep()).toBe("Cards with no team");
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
-    expect(screen.queryByText(/save with No team/)).toBeNull();
+    expect(screen.queryByText(/save with No Team/)).toBeNull();
   });
 
   it("a card the parent marks settled is neither asked nor counted", () => {
@@ -188,7 +286,7 @@ describe("Save step: the 'saves with No team' note", () => {
       cardsWithSettledTeam: [0],
     });
     expect(onStep()).toBe("Ready to save");
-    expect(screen.queryByText(/save with No team/)).toBeNull();
+    expect(screen.queryByText(/save with No Team/)).toBeNull();
   });
 
   it("a card that re-syncs a stored row is asked, not counted", () => {
@@ -240,7 +338,7 @@ describe("Save step: the note beside the auto-linked intro", () => {
     // The card is asked (his sport has teams); step on to Save.
     expect(onStep()).toBe("Cards with no team");
     fireEvent.click(screen.getByRole("button", { name: NEXT_NAME }));
-    expect(screen.queryByText(/save with No team/)).toBeNull();
+    expect(screen.queryByText(/save with No Team/)).toBeNull();
     expect(describedText(confirm()).split(" | ")).toHaveLength(1);
   });
 });
@@ -292,5 +390,43 @@ describe("the plan waits for the facts the teams step reads", () => {
     ];
     renderWizard(cards);
     expect(valueNow()).not.toBe("0");
+  });
+});
+
+describe("New Player: the sport control says what it is for in a mixed deployment (C3)", () => {
+  /** An undecided new player under a set in `setSport`. */
+  const undecidedPlayer = (setSportId: string, setSportValue: string) =>
+    row({
+      name: "Pat Nonsport",
+      decision: undefined,
+      sportId: setSportId,
+      sportValue: setSportValue,
+      setSportId,
+      setSportValue,
+    });
+  const trigger = () => screen.getByRole("button", { name: "Sport for this name: Baseball" });
+
+  it("labels the control when the set's sport keeps teams but another sport does not", () => {
+    currentRows = [undecidedPlayer(BALL, "Baseball")];
+    renderWizard([{ cardNumber: "1", cardName: "A", players: ["Pat Nonsport"] }]);
+    // Same control, same accessible name; the label is now visible text too.
+    expect(trigger().textContent).toContain("Sport for this name:");
+    expect(trigger().textContent).toContain("Baseball");
+    // Never pre-moved on a guess, and not opened for the operator.
+    expect(trigger().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("stays the bare sport when no sport is flagged", () => {
+    flaggedSports = [];
+    currentRows = [undecidedPlayer(BALL, "Baseball")];
+    renderWizard([{ cardNumber: "1", cardName: "A", players: ["Pat Nonsport"] }]);
+    expect(trigger().textContent).not.toContain("Sport for this name:");
+  });
+
+  it("stays the bare sport when the set's own sport is the flagged one", () => {
+    currentRows = [undecidedPlayer(NONE, "Non Sport")];
+    renderWizard([{ cardNumber: "1", cardName: "A", players: ["Pat Nonsport"] }]);
+    const own = screen.getByRole("button", { name: "Sport for this name: Non Sport" });
+    expect(own.textContent).not.toContain("Sport for this name:");
   });
 });

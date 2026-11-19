@@ -110,7 +110,8 @@ import {
   type WizardStepKind,
 } from "./entity-review-steps";
 import {
-  autoNoTeamIndexes,
+  autoNoTeamNote,
+  autoNoTeamPeople,
   storedPeople,
   type DefaultPlayerWire,
   type GroupChoice,
@@ -1681,6 +1682,15 @@ export default function EntityReviewWizard({
     isOpen && previewCards !== undefined && onTeamAnswersChange !== undefined ? {} : "skip",
   );
   const hasTeamlessSports = (teamlessSportIds?.length ?? 0) > 0;
+  /**
+   * NEO-426 — the sport rows' names, for the Save step's No Team note ("Pokemon
+   * has no teams"). The same list SportSwitch reads; asked only beside a
+   * flagged sport, since that is the only time a note names one.
+   */
+  const sportRows = useQuery(
+    api.selectorOptions.getSelectorOptions,
+    hasTeamlessSports ? { level: "sport" } : "skip",
+  );
   const linkedPlayerIds = useMemo(() => {
     const ids = new Set<Id<"players">>();
     for (const row of rows ?? []) {
@@ -3278,24 +3288,48 @@ export default function EntityReviewWizard({
         linkedPlayerIds.length === 0 ||
         linkedPlayers !== undefined));
   /**
-   * NEO-426 — how many cards the teamless-sport default saves as "No team"
-   * without asking (`autoNoTeamIndexes`). Read on the Save step only, where
-   * every name is decided, so the count is exact; the commit stamps them.
+   * NEO-426 — the cards the teamless-sport default saves with No Team
+   * without asking (`autoNoTeamIndexes`), and who is on them. Read on the Save
+   * step only, where every name is decided, so the count is exact; the commit
+   * stamps them.
    */
-  const autoNoTeamCount = useMemo(
+  const autoNoTeam = useMemo(
     () =>
       teamsStepEnabled && previewCards && rows
-        ? autoNoTeamIndexes(
+        ? autoNoTeamPeople(
             previewCards,
             rows,
             cardsWithSettledTeam && cardsWithSettledTeam.length > 0
               ? new Set(cardsWithSettledTeam)
               : undefined,
             storedNames,
-          ).length
-        : 0,
+          )
+        : undefined,
     [teamsStepEnabled, previewCards, rows, cardsWithSettledTeam, storedNames],
   );
+  const autoNoTeamCount = autoNoTeam?.cards ?? 0;
+  /**
+   * The Save step's sentence: who saves with No Team and which sport has no
+   * teams. The sport clause is said only when it can be said whole: every
+   * person's home sport known (a name that resolved before the sitting names
+   * only a flagged sport, so with exactly one flagged sport that is it) and
+   * every name loaded. Otherwise it is left out, never guessed.
+   */
+  const autoNoTeamText = useMemo(() => {
+    if (!autoNoTeam) return "";
+    const sportIds = new Set(autoNoTeam.sportIds);
+    let whole = !autoNoTeam.sportUnknown;
+    if (autoNoTeam.sportUnknown && teamlessSportIds?.length === 1) {
+      sportIds.add(teamlessSportIds[0]);
+      whole = true;
+    }
+    const nameById = new Map((sportRows ?? []).map((sport) => [String(sport._id), sport.value]));
+    const sportNames = [...sportIds]
+      .map((id) => nameById.get(id))
+      .filter((name): name is string => !!name?.trim());
+    const complete = whole && sportIds.size > 0 && sportNames.length === sportIds.size;
+    return autoNoTeamNote(autoNoTeam, complete ? sportNames.sort() : []);
+  }, [autoNoTeam, sportRows, teamlessSportIds]);
   /** The teams step reports up through here so the titles step can read it. */
   const handleTeamAnswers = useCallback(
     (answers: Array<TeamAnswer | undefined>) => {
@@ -4843,7 +4877,22 @@ export default function EntityReviewWizard({
                           value={current.sportId}
                           setSportId={current.setSportId}
                           disabled={busy}
-                          prefix={null}
+                          prefix={
+                            // NEO-426 (C3) — a mixed deployment: this set's sport
+                            // keeps teams but another sport does not. A new
+                            // person is born in the set's sport unless the
+                            // operator moves them, and a flagged sport does
+                            // nothing for a name born elsewhere, so here the
+                            // control says what it is for instead of hiding
+                            // behind the bare sport. The same control, the same
+                            // name for assistive tech; never pre-moved on a guess.
+                            current.kind === "player" &&
+                            !pickStep &&
+                            hasTeamlessSports &&
+                            !teamlessSportIds?.includes(current.setSportId)
+                              ? "Sport for this name:"
+                              : null
+                          }
                           onOpenChange={(open) =>
                             setSportChooserOpenFor(open ? current._id : null)
                           }
@@ -6020,14 +6069,12 @@ export default function EntityReviewWizard({
                   </p>
                 )}
                 {/* NEO-426 — the cards the teamless-sport default saves as
-                    "No team" without a teams-step line. Said here because it
+                    "No Team" without a teams-step line. Said here because it
                     is the one place they are not asked about; a team added
                     later in the card editor sticks. */}
                 {autoNoTeamCount > 0 && (
                   <p id={autoNoTeamNoteId} className="text-sm text-ink-3">
-                    {autoNoTeamCount === 1
-                      ? "1 card saves with No team: its player's sport has none. Add a team later in the card editor."
-                      : `${autoNoTeamCount} cards save with No team: their players' sports have none. Add a team later in the card editor.`}
+                    {autoNoTeamText}
                   </p>
                 )}
                 {commitError && (
@@ -6473,7 +6520,7 @@ export default function EntityReviewWizard({
                       // NEO-424 (a11y) — autofocused on a batch that opened
                       // with every name linked for the operator, so it says
                       // why the dialog is up, as the teams step's Next does.
-                      // NEO-426 — and by the "saves with No team" note, when shown.
+                      // NEO-426 — and by the "saves with No Team" note, when shown.
                       aria-describedby={
                         [
                           autoLinkedIntro ? autoLinkedIntroId : null,

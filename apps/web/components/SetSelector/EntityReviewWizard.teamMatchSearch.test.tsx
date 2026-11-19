@@ -41,6 +41,11 @@ vi.mock("../../convex/_generated/api", () => ({
     sportTeamless: {
       listTeamlessSportIds: "sportTeamless.listTeamlessSportIds",
     },
+    // NEO-426: the sport names the Save step's No Team note reads (skipped
+    // here: nothing is flagged, but the ref is built before the skip).
+    selectorOptions: {
+      getSelectorOptions: "selectorOptions.getSelectorOptions",
+    },
     entityReviewQueue: {
       getBatch: "entityReviewQueue.getBatch",
       recordDecision: "entityReviewQueue.recordDecision",

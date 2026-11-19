@@ -837,13 +837,16 @@ export default function SetAttributesPanel({
   const handleToggleTeamlessSport = async (teamless: boolean) => {
     try {
       await setTeamlessSport({ sportId: selectorOptionId, teamless });
+      // Names the sport the operator just flagged; "this sport's people"
+      // covers a row whose name has not loaded yet.
+      const people = row.value.trim() ? `${row.value.trim()} people` : "this sport's people";
       showToast(
         teamless
-          ? "Marked — this sport's players save with No team now"
-          : "Cleared — this sport's cards ask for a team again",
+          ? `Marked — new cards of ${people} save with ${NO_TEAM_TEXT}`
+          : `Cleared — new cards of ${people} ask for a team again`,
       );
     } catch (e) {
-      showFailedToast(userFacingMessage(e, `Could not change ${SPORT_NO_TEAMS_TEXT}`));
+      showFailedToast(userFacingMessage(e, `Could not save ${SPORT_NO_TEAMS_TEXT}`));
     }
   };
 

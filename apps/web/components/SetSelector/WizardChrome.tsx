@@ -18,7 +18,9 @@ import { useState, type ReactNode } from "react";
  *   ├██████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░┤  ← the bar IS the header's edge
  *
  * The bar is the screen's single bold element: the neon green fill stands
- * where the header's grey divider used to be, so progress is literally the
+ * where the header's grey divider used to be (`neon-green-text`, the hue's
+ * text-role token: the bright fill is ~1.5:1 on the light track, this one is
+ * 3:1 or better in both themes and identical to the fill in dark), so progress is literally the
  * line between "where am I" and "what is this". Everything else in the header
  * is quiet type.
  *
@@ -38,10 +40,15 @@ import { useState, type ReactNode } from "react";
  *   the full title (also in its `title` attribute for a sighted hover).
  * - The bar is a `progressbar` named "Wizard progress": `aria-valuenow` is the
  *   rounded percent and `aria-valuetext` is the subtitle, so it reads as the
- *   step the operator is on rather than a number to decode. There is no live
- *   region: a bar that announced itself on every move would talk over the
- *   step's own heading, and the subtitle already changes with the screen.
- *
+ *   step the operator is on rather than a number to decode. The bar is not a
+ *   live region: one that announced itself on every move would talk over the
+ *   step's own heading, and a percent is not news.
+ * - The subtitle IS the step announcement: a polite `role="status"` that is
+ *   mounted before it has words and stays mounted while empty (a region that
+ *   appears together with its text is announced unreliably), so each move to
+ *   a new screen says its name ("New team", "Ready to save") once. The host
+ *   keeps this header mounted across steps, which is what lets the text
+ *   change inside one region instead of arriving with a new one.
  * The subtitle row has a fixed minimum height whatever it says, so the body
  * below the header never moves between steps (the NEO-110 rule the wizard's
  * footer already lives by).
@@ -218,7 +225,9 @@ export default function WizardChrome({
         >
           {title}
         </h2>
-        <p className="mt-0.5 min-h-5 text-sm text-ink-3">{subtitle}</p>
+        <p role="status" className="mt-0.5 min-h-5 text-sm text-ink-3">
+          {subtitle}
+        </p>
         {children}
       </div>
       <div
@@ -234,7 +243,7 @@ export default function WizardChrome({
           data-rail-fill=""
           data-rail-forward={forward ? "true" : "false"}
           className={[
-            "absolute inset-y-0 left-0 bg-neon-green shadow-[0_0_10px_rgb(0_213_88/calc(0.65*var(--glow)))]",
+            "absolute inset-y-0 left-0 bg-neon-green-text shadow-[0_0_10px_rgb(0_213_88/calc(0.65*var(--glow)))]",
             forward
               ? "transition-[width] duration-300 ease-out motion-reduce:transition-none"
               : "transition-none",

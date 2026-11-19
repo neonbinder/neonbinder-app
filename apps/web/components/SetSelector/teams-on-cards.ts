@@ -665,7 +665,18 @@ type CardPlayer = (
    * fetch's `teamlessPlayerNames`. Unknown = false.
    */
   teamless: boolean;
+  /**
+   * NEO-426 — that person's HOME sport id when the host's facts say it (a
+   * created player's row, a linked or default player's stored sport). A name
+   * that resolved before the sitting carries only the fetch's "flagged"
+   * verdict, so its sport is not known here.
+   */
+  sportId?: string;
 };
+
+function sportFact(sportId: string | undefined): { sportId?: string } {
+  return sportId === undefined ? {} : { sportId };
+}
 
 function sportIsTeamless(sportId: string | undefined, view: NamesView): boolean {
   return sportId !== undefined && view.teamlessSportIds.has(sportId);
@@ -697,6 +708,7 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
         display,
         row,
         teamless: sportIsTeamless(row.sportId, view),
+        sportId: row.sportId,
       });
     } else if (row && row.decision?.action === "link" && row.decision.linkedPlayerId) {
       const playerId = row.decision.linkedPlayerId as Id<"players">;
@@ -706,6 +718,7 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
         display,
         request: { key: `id:${playerId}`, playerId },
         teamless: sportIsTeamless(view.playerSportIds.get(playerId), view),
+        ...sportFact(view.playerSportIds.get(playerId)),
       });
     } else if (!row) {
       out.push({
@@ -733,6 +746,7 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
       display: fallback.name,
       request: { key: `id:${fallback.playerId}`, playerId: fallback.playerId },
       teamless: sportIsTeamless(view.playerSportIds.get(fallback.playerId), view),
+      ...sportFact(view.playerSportIds.get(fallback.playerId)),
     });
   }
   return out;
@@ -781,6 +795,93 @@ export function autoNoTeamIndexes(
   return wouldSaveTeamless(cards, view, settled).filter((index) =>
     takesNoTeamByDefault(cards[index], index, view),
   );
+}
+
+/**
+ * NEO-426 — who the teamless-sport default saves with No Team, for the Save
+ * step's note: the people on the cards `autoNoTeamIndexes` counts, by the name
+ * the card prints, and their home sports where the facts say them.
+ *
+ * `cards` is how many cards. `names` are distinct people (case-folded), in
+ * card order. `sportIds` are the distinct home sports that are known;
+ * `sportUnknown` is true when someone's home sport is not (a name that
+ * resolved before the sitting, which the fetch only flags), so the caller
+ * never presents a partial list of sports as the whole of it.
+ */
+export interface AutoNoTeamPeople {
+  cards: number;
+  names: string[];
+  sportIds: string[];
+  sportUnknown: boolean;
+}
+
+export function autoNoTeamPeople(
+  cards: readonly PreviewCardForTeams[],
+  rows: readonly TeamsReviewRow[],
+  settled?: ReadonlySet<number>,
+  people?: StoredPeople,
+): AutoNoTeamPeople {
+  const view = namesView(rows, people);
+  const indexes = autoNoTeamIndexes(cards, rows, settled, people);
+  const names = new Map<string, string>();
+  const sportIds = new Set<string>();
+  let sportUnknown = false;
+  for (const index of indexes) {
+    for (const player of cardPlayers(cards[index], index, view)) {
+      if (!names.has(player.key)) names.set(player.key, player.display);
+      if (player.sportId !== undefined) sportIds.add(player.sportId);
+      else sportUnknown = true;
+    }
+  }
+  return {
+    cards: indexes.length,
+    names: [...names.values()],
+    sportIds: [...sportIds],
+    sportUnknown,
+  };
+}
+
+/** "A", "A and B", "A, B and C". */
+function joinList(items: readonly string[]): string {
+  if (items.length <= 1) return items.join("");
+  return `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`;
+}
+
+/** Most names the Save step's note spells out before "and N more". */
+export const AUTO_NO_TEAM_NAMES_SHOWN = 5;
+
+/**
+ * The Save step's No Team note (NEO-426): who saves with No Team, and which
+ * sport has no teams, in the order an operator checks them.
+ *
+ *   One card:   "Jane Doe saves with No Team. Pokemon has no teams. Add one
+ *                later in the card editor."
+ *   Many cards: "7 cards save with No Team (Pokemon has no teams): Jane Doe,
+ *                Sam Lee, and 2 more. Add a team later in the card editor."
+ *
+ * `sportNames` are the sports' names, or empty when they cannot be said whole
+ * (a lookup that has not landed, or a person whose sport the data does not
+ * give): the sport clause is then left out rather than guessed. Empty string
+ * when no card takes the default.
+ */
+export function autoNoTeamNote(
+  facts: Pick<AutoNoTeamPeople, "cards" | "names">,
+  sportNames: readonly string[],
+): string {
+  if (facts.cards <= 0) return "";
+  const noTeams = sportNames.length === 1 ? "has" : "have";
+  if (facts.cards === 1) {
+    const who = joinList(facts.names);
+    const verb = facts.names.length > 1 ? "save" : "saves";
+    const sport = sportNames.length > 0 ? ` ${joinList(sportNames)} ${noTeams} no teams.` : "";
+    return `${who} ${verb} with No Team.${sport} Add one later in the card editor.`;
+  }
+  const shown = facts.names.slice(0, AUTO_NO_TEAM_NAMES_SHOWN);
+  const more = facts.names.length - shown.length;
+  const nameList = more > 0 ? `${shown.join(", ")}, and ${more} more` : joinList(shown);
+  const sport = sportNames.length > 0 ? ` (${joinList(sportNames)} ${noTeams} no teams)` : "";
+  const who = nameList !== "" ? `: ${nameList}` : "";
+  return `${facts.cards} cards save with No Team${sport}${who}. Add a team later in the card editor.`;
 }
 
 /** Every unsettled position none of whose printed team strings will resolve. */

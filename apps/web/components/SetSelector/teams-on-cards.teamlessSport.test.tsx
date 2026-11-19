@@ -22,6 +22,8 @@ import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
 import { cardsForTeamsStep } from "./entity-review-steps";
 import {
   autoNoTeamIndexes,
+  autoNoTeamNote,
+  autoNoTeamPeople,
   storedPeople,
   teamlessCardIndexes,
   type PreviewCardForTeams,
@@ -484,5 +486,90 @@ describe("cardsForTeamsStep: the step lists only the cards still asked", () => {
     expect(
       cardsForTeamsStep([card({ players: ["Ron Ballplayer"] })], [created("Ron Ballplayer", BALL)], [0], people()),
     ).toEqual([]);
+  });
+});
+
+describe("autoNoTeamPeople: who the default saves with No Team", () => {
+  const GOLF = "sport_golf";
+  const both: TeamlessFacts = { teamlessSportIds: [NONE, GOLF] };
+
+  test("counts the same cards autoNoTeamIndexes does, with distinct people and their sports", () => {
+    const cards = [
+      card({ players: ["Pat Nonsport"] }),
+      card({ players: ["pat nonsport"] }),
+      card({ players: ["Gil Golfer"] }),
+      card({ players: ["Ron Ballplayer"] }),
+    ];
+    const rows = [created("Pat Nonsport"), created("Gil Golfer", GOLF), created("Ron Ballplayer", BALL)];
+    const stored = people(both);
+    const got = autoNoTeamPeople(cards, rows, undefined, stored);
+    expect(got.cards).toBe(autoNoTeamIndexes(cards, rows, undefined, stored).length);
+    expect(got.cards).toBe(3);
+    expect(got.names).toEqual(["Pat Nonsport", "Gil Golfer"]);
+    expect(got.sportIds.sort()).toEqual([GOLF, NONE]);
+    expect(got.sportUnknown).toBe(false);
+  });
+
+  test("a linked player's sport comes from the stored player row", () => {
+    const stored = people({
+      teamlessSportIds: [NONE],
+      playerSportIds: new Map([[pid("pat"), NONE]]),
+    });
+    const got = autoNoTeamPeople([card()], [linked("Pat Nonsport", pid("pat"))], undefined, stored);
+    expect(got.sportIds).toEqual([NONE]);
+    expect(got.sportUnknown).toBe(false);
+  });
+
+  test("a name resolved before the sitting has no known sport", () => {
+    const stored = people({ teamlessPlayerNames: ["Pat Nonsport"] });
+    const got = autoNoTeamPeople([card()], [], undefined, stored);
+    expect(got.cards).toBe(1);
+    expect(got.names).toEqual(["Pat Nonsport"]);
+    expect(got.sportIds).toEqual([]);
+    expect(got.sportUnknown).toBe(true);
+  });
+
+  test("nothing stamped: nobody", () => {
+    expect(autoNoTeamPeople([card()], [created("Pat Nonsport", BALL)], undefined, people())).toEqual({
+      cards: 0,
+      names: [],
+      sportIds: [],
+      sportUnknown: false,
+    });
+  });
+});
+
+describe("autoNoTeamNote: the Save step's sentence", () => {
+  test("one card, one person, one sport", () => {
+    expect(autoNoTeamNote({ cards: 1, names: ["Pat Nonsport"] }, ["Non Sport"])).toBe(
+      "Pat Nonsport saves with No Team. Non Sport has no teams. Add one later in the card editor.",
+    );
+  });
+
+  test("one card, no sport to name", () => {
+    expect(autoNoTeamNote({ cards: 1, names: ["Pat Nonsport"] }, [])).toBe(
+      "Pat Nonsport saves with No Team. Add one later in the card editor.",
+    );
+  });
+
+  test("many cards, several sports, more than five people", () => {
+    expect(
+      autoNoTeamNote(
+        { cards: 9, names: ["A A", "B B", "C C", "D D", "E E", "F F", "G G", "H H"] },
+        ["Golf", "Non Sport"],
+      ),
+    ).toBe(
+      "9 cards save with No Team (Golf and Non Sport have no teams): A A, B B, C C, D D, E E, and 3 more. Add a team later in the card editor.",
+    );
+  });
+
+  test("three sports read as a list", () => {
+    expect(autoNoTeamNote({ cards: 3, names: ["A A"] }, ["Golf", "Non Sport", "Racing"])).toBe(
+      "3 cards save with No Team (Golf, Non Sport and Racing have no teams): A A. Add a team later in the card editor.",
+    );
+  });
+
+  test("no cards, no sentence", () => {
+    expect(autoNoTeamNote({ cards: 0, names: [] }, ["Golf"])).toBe("");
   });
 });

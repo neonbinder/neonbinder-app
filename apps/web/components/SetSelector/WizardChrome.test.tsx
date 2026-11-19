@@ -14,6 +14,7 @@ import WizardChrome, {
   WIZARD_TITLE,
 } from "./WizardChrome";
 import { STEP_SUBTITLE, type WizardStepKind } from "./entity-review-steps";
+import { contrastRatio, tokenHex } from "../../src/theme/tokens";
 
 const fill = () => document.querySelector<HTMLElement>("[data-rail-fill]")!;
 const bar = () => screen.getByRole("progressbar", { name: WIZARD_PROGRESS_LABEL });
@@ -70,11 +71,49 @@ describe("WizardChrome", () => {
     expect(bar().getAttribute("aria-valuenow")).toBe("33");
   });
 
-  it("has no step counter and no growth line", () => {
+  it("has no step counter and no growth line; the subtitle is the only live region", () => {
     render(<WizardChrome done={3} planned={12} subtitle="New team" />);
     expect(screen.queryByText(/Step \d+ of \d+/)).toBeNull();
-    expect(screen.queryByRole("status")).toBeNull();
-    expect(document.querySelector("[aria-live]")).toBeNull();
+    // One polite status, and it is the subtitle: the bar and its percent never speak.
+    const statuses = screen.getAllByRole("status");
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0].textContent).toBe("New team");
+    expect(bar().closest("[aria-live], [role=status]")).toBeNull();
+    expect(screen.queryByText(/%/)).toBeNull();
+  });
+
+  it("announces a step change: the status stays mounted and its text moves", () => {
+    const { rerender } = render(<WizardChrome done={1} planned={4} subtitle="New team" />);
+    const region = screen.getByRole("status");
+    rerender(<WizardChrome done={2} planned={4} subtitle="Ready to save" />);
+    // The same node, so a screen reader sees a text change rather than a new region.
+    expect(screen.getByRole("status")).toBe(region);
+    expect(region.textContent).toBe("Ready to save");
+  });
+
+  it("keeps the status mounted, empty, when there is no subtitle (the expired wizard)", () => {
+    const { rerender } = render(<WizardChrome done={1} planned={4} subtitle="" />);
+    const region = screen.getByRole("status");
+    expect(region.textContent).toBe("");
+    rerender(<WizardChrome done={1} planned={4} subtitle="New team" />);
+    expect(screen.getByRole("status")).toBe(region);
+    expect(region.textContent).toBe("New team");
+  });
+
+  it("paints the fill in the green text role, which meets 3:1 on the track in both themes", () => {
+    render(<WizardChrome done={1} planned={2} subtitle="New team" />);
+    expect(fill().className).toMatch(/(^|\s)bg-neon-green-text(\s|$)/);
+    expect(fill().className).not.toMatch(/(^|\s)bg-neon-green(\s|$)/);
+    // The bar's track is `bg-rule`. The bright fill (neon-green) is ~1.5:1 on it in light.
+    expect(contrastRatio(tokenHex("neon-green", "light"), tokenHex("rule", "light"))).toBeLessThan(3);
+    for (const mode of ["light", "dark"] as const) {
+      expect({
+        mode,
+        ok: contrastRatio(tokenHex("neon-green-text", mode), tokenHex("rule", mode)) >= 3,
+      }).toEqual({ mode, ok: true });
+    }
+    // Dark is unchanged: the text role is the fill itself.
+    expect(tokenHex("neon-green-text", "dark")).toBe(tokenHex("neon-green", "dark"));
   });
 
   it("is empty with no plan, and drops the value text with no subtitle", () => {

@@ -5420,7 +5420,25 @@ describe("SetAttributesPanel — No teams in this sport (NEO-426)", () => {
     });
     await waitFor(() => {
       expect(
-        screen.getByText("Marked — this sport's players save with No team now"),
+        screen.getByText("Marked — new cards of Pokemon people save with No Team"),
+      ).toBeTruthy();
+    });
+    // A confirmation: it speaks politely, in the status region, not the alert.
+    const toast = screen.getByText("Marked — new cards of Pokemon people save with No Team");
+    expect(toast.closest('[role="status"]')).not.toBeNull();
+    expect(toast.closest('[role="alert"]')).toBeNull();
+  });
+
+  it("falls back to 'this sport's people' while the row's name has not loaded", async () => {
+    currentRow = makeRow({ level: "sport", value: "" });
+    currentChain = [];
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: NAME }));
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText("Marked — new cards of this sport's people save with No Team"),
       ).toBeTruthy();
     });
   });
@@ -5440,7 +5458,7 @@ describe("SetAttributesPanel — No teams in this sport (NEO-426)", () => {
     });
     await waitFor(() => {
       expect(
-        screen.getByText("Cleared — this sport's cards ask for a team again"),
+        screen.getByText("Cleared — new cards of Pokemon people ask for a team again"),
       ).toBeTruthy();
     });
   });
@@ -5468,8 +5486,12 @@ describe("SetAttributesPanel — No teams in this sport (NEO-426)", () => {
       fireEvent.click(screen.getByRole("button", { name: NAME }));
     });
     await waitFor(() => {
-      expect(screen.getByText(/Could not change No teams in this sport|nope/)).toBeTruthy();
+      expect(screen.getByText("Failed: Could not save No teams in this sport")).toBeTruthy();
     });
+    // A failure is news to act on: the alert region, never the polite status.
+    const failure = screen.getByText("Failed: Could not save No teams in this sport");
+    expect(failure.closest('[role="alert"]')).not.toBeNull();
+    expect(failure.closest('[role="status"]')).toBeNull();
     expect(screen.getByRole("button", { name: NAME }).getAttribute("aria-pressed")).toBe("false");
   });
 });
