@@ -29,6 +29,10 @@
  *   captureConsole — an option, off by default: `test.use({ captureConsole: true })`
  *            keeps the page's console lines and attaches them, scrubbed
  *            (./redact.mjs), to a red result as `console`.
+ *   wireLog — automatic (NEO-398, ./wire-log.ts). A red result carries
+ *            `client-wire.log`: the context's page errors, console errors and
+ *            warnings, navigations and Convex frames (type, request id and
+ *            function path only), scrubbed by ./redact.mjs.
  *
  * Plus `expectAccessible(page, { within?, label? })`, the axe check (below),
  * and Playwright's own `isMobile` fixture for the rare genuine layout branch.
@@ -96,8 +100,8 @@ export const test = base.extend<{
 }>({
   // The client's side of a failure: attached as client-wire.log (./wire-log.ts, NEO-398).
   wireLog: [
-    async ({ page }, use, testInfo) => {
-      const lines = recordWire(page);
+    async ({ context }, use, testInfo) => {
+      const lines = recordWire(context);
       await use();
       await attachWireOnFailure(testInfo, lines());
     },

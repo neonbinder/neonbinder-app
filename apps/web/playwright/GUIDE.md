@@ -270,6 +270,8 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `captureConsole` option (`test.use({ captureConsole: true })`: a red result
   carries the page's console as the `console` attachment, scrubbed by
   `support/redact.mjs`; never attach raw console or network text yourself).
+  A third, `wireLog`, is automatic: every red result carries `client-wire.log`
+  (`support/wire-log.ts`, see "Reading a red run").
 - `support/worker-reset.ts`: the worker account's reset chain
   (`WORKER_RESET_REDIRECT`, `expectWorkerReset`), shared by the bootstrap and the
   failure reset.
@@ -1381,13 +1383,19 @@ otherwise). Locally run them alone, on your own deployment.
    correctly.
    For a page that looks stuck (a disabled button, "Saving…", a dialog that
    never closes), read the failure's `client-wire.log` attachment
-   (`support/wire-log.ts`, NEO-398): page errors, console errors, the Convex
-   socket's opens and closes, and one line per Convex frame with its type,
-   request id and function path (never arguments, values or tokens). It says
-   whether the server's reply reached the page and whether the page sent its
-   next call. `node playwright/red-run.mjs <run-id>` downloads the run's
-   reports and Convex logs and prints both sides per failed test, with the
-   preview's slowest calls in the test's last seconds. A successful mutation's
+   (`support/wire-log.ts`, NEO-398, on every red result): page errors, console
+   errors and warnings, navigations, the Convex socket's opens and closes, and
+   one line per Convex frame with its type, request id and function path (never
+   arguments, values, tokens or the deployment host; every line goes through
+   `support/redact.mjs`). It says whether the server's reply reached the page
+   and whether the page sent its next call. The opt-in `console` attachment
+   (`captureConsole`) is the page's whole console; `client-wire.log` keeps only
+   its errors and warnings, in order among the socket frames.
+   `node playwright/red-run.mjs <run-id>` downloads the run's reports and the
+   red jobs' Convex logs and prints both sides for each red try of each failed
+   or flaky test, with the screenshot and `error-context.md` paths and the
+   preview's slowest calls in that try's last seconds. It reads the latest
+   attempt (`--attempt <n>` for an earlier one); see its header. A successful mutation's
    promise resolves only once the tab's query set has caught up to that write
    (Convex's client waits for the next Transition), so a page can "hang" on
    `await` while the server shows the mutation finished in milliseconds: look
