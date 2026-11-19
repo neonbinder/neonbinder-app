@@ -35,6 +35,14 @@ import { pickPlaceTeam, teamLocationIs } from "./lib/placeTeam";
  * fetch clips to this and `startCandidateBatch` refuses a longer one.
  */
 export const MAX_SOURCE_NUMBER_LENGTH = 64;
+
+/**
+ * NEO-591 — the longest team cell a candidate may carry: every team a card may
+ * list at its name limit, a separator (" / ", ", ") between them, and room for
+ * a "Prospect (...)" wrapper. A cell is the printed text of at most that many
+ * teams, so a longer one is not ours.
+ */
+export const MAX_TEAM_CELL_LENGTH = MAX_CARD_TEAMS * (MAX_PLAYER_NAME_LENGTH + 3) + 16;
 import { teamFullName } from "../lib/teams/team-name";
 import { findSetYearForSelectorOption } from "./lib/selectorAncestry";
 import { findSportForSelectorOption } from "./cardChecklist";
@@ -509,6 +517,13 @@ export const startCandidateBatch = internalMutation({
             "team",
           );
         }
+      }
+      // NEO-591 — the printed team cell is display-only, but it is stored and
+      // read back on the same subscription as the names, so it is bounded too.
+      if (c.teamCell !== undefined && c.teamCell.length > MAX_TEAM_CELL_LENGTH) {
+        throw new Error(
+          `startCandidateBatch: card #${c.cardNumber.slice(0, MAX_SOURCE_NUMBER_LENGTH)} carries a team cell of ${c.teamCell.length} characters; the limit is ${MAX_TEAM_CELL_LENGTH}.`,
+        );
       }
       // NEO-591 — the numbers each source printed, held to a card number's
       // length like every other string that comes from a marketplace page.

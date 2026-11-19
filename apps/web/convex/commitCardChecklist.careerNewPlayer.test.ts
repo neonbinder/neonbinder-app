@@ -18,6 +18,7 @@ import { normalizeTeamName } from "./teams";
 import {
   normalizePlayerName,
   MAX_CAREER_NEW_PLAYERS,
+  MAX_CREATION_REF_LENGTH,
   MAX_CAREER_STINT_APPENDS,
   MAX_PLAYER_TEAM_YEARS,
 } from "./players";
@@ -548,6 +549,44 @@ describe("commitCardChecklist — careerNewPlayers retry", () => {
     expect(result.careerNewPlayers).toMatchObject({ created: 1, adopted: 0 });
     expect(await playersNamed(t, "Bob Allen")).toHaveLength(2);
   });
+
+  test("a ref on another operator's row hides nothing: a card printing the name still sees both rows", async () => {
+    const t = convexTest(schema, modules);
+    const { ids, namesake } = await twoBobAllens(t);
+    const theirs = await t.run((ctx) =>
+      ctx.db.insert("players", {
+        name: "Bob Allen",
+        nameNormalized: normalizePlayerName("Bob Allen"),
+        sportId: ids.sportId,
+        creationRef: "np-one",
+        createdByUserId: "someone_else",
+        lastUpdated: Date.now(),
+      }),
+    );
+
+    const result = await commit(
+      t,
+      ids,
+      [
+        makeCard({ cardNumber: "1", players: ["Bob Allen"], newPlayerByName: [{ name: "Bob Allen", ref: "np-one" }] }),
+        makeCard({ cardNumber: "2", players: ["Bob Allen"] }),
+      ],
+      { careerNewPlayers: [{ ref: "np-one", name: "Bob Allen", stints: [] }] },
+    );
+
+    // Not adopted, so a third row is minted for card 1 ...
+    expect(result.careerNewPlayers).toMatchObject({ created: 1, adopted: 0 });
+    expect(await playersNamed(t, "Bob Allen")).toHaveLength(3);
+    // ... and card 2 weighed BOTH rows that already carried the name, so it
+    // does not silently settle on the namesake as if the other were hidden
+    // (the other operator's matching ref excluded nothing).
+    const two = (await cardsOf(t, ids.leafId)).find((c) => c.cardNumber === "2")!;
+    // The cross-user row is weighed, and the era narrowing prefers it to the
+    // namesake whose stints are in other years; hidden, card 2 would have
+    // settled on the namesake exactly as the same-operator retry above does.
+    expect(two.playerIds).toEqual([theirs]);
+    expect(two.playerIds).not.toEqual([namesake]);
+  });
 });
 
 describe("commitCardChecklist — careerNewPlayers and a later re-sync", () => {
@@ -611,7 +650,8 @@ describe("commitCardChecklist — careerNewPlayers refusals write nothing", () =
 
   const cases: Case[] = [
     { label: "a malformed ref", message: /malformed reference/, build: () => ({ cards: [okCard({ newPlayerByName: [{ name: "Bob Allen", ref: "no spaces!" }] })], careerNewPlayers: [okNp({ ref: "no spaces!" })] }) },
-    { label: "a ref over 32 characters", message: /malformed reference/, build: () => ({ cards: [okCard({ newPlayerByName: [{ name: "Bob Allen", ref: "a".repeat(33) }] })], careerNewPlayers: [okNp({ ref: "a".repeat(33) })] }) },
+    { label: "a ref over 32 characters", message: /malformed reference/, build: () => ({ cards: [okCard()], careerNewPlayers: [okNp({ ref: "a".repeat(33) })] }) },
+    { label: "a per-card ref over 32 characters", message: /new-player reference of 33 characters; the limit is 32/, build: () => ({ cards: [okCard({ newPlayerByName: [{ name: "Bob Allen", ref: "a".repeat(33) }] })], careerNewPlayers: [okNp({ ref: "a".repeat(33) })] }) },
     { label: "an empty ref", message: /malformed reference/, build: () => ({ cards: [okCard({ newPlayerByName: [{ name: "Bob Allen", ref: "" }] })], careerNewPlayers: [okNp({ ref: "" })] }) },
     { label: "a repeated ref", message: /repeats another new player's reference/, build: () => ({ cards: [okCard()], careerNewPlayers: [okNp(), okNp({ name: "Other Person" })] }) },
     { label: "a blank name", message: /has no name/, build: () => ({ cards: [okCard()], careerNewPlayers: [okNp({ name: "   " })] }) },
@@ -706,6 +746,25 @@ describe("commitCardChecklist — careerNewPlayers refusals write nothing", () =
         careerNewPlayers: picks.map((p) => ({ ref: p.ref, name: `${p.name}${p.ref}`, stints: [] })),
       }),
     ).rejects.toThrow(/new-player picks, above the/);
+    expect(await allPlayers(t)).toEqual([]);
+  });
+
+  test("a per-card new-player ref longer than the commit's ref format allows is refused at the boundary", async () => {
+    const t = convexTest(schema, modules);
+    const ids = await seedSet(t);
+    expect(MAX_CREATION_REF_LENGTH).toBe(32);
+    const longRef = "r".repeat(MAX_CREATION_REF_LENGTH + 1);
+    await expect(
+      commit(t, ids, [makeCard({ players: ["Bob Allen"], newPlayerByName: [{ name: "Bob Allen", ref: longRef }] })]),
+    ).rejects.toThrow(/new-player reference of 33 characters; the limit is 32/);
+    // The other two entry points hold the same bound.
+    await expect(
+      t.withIdentity(ADMIN).action(api.selectorOptions.resolveChecklistEntities, {
+        selectorOptionId: ids.leafId,
+        sportId: ids.sportId,
+        cards: [makeCard({ players: ["Bob Allen"], newPlayerByName: [{ name: "Bob Allen", ref: longRef }] })],
+      }),
+    ).rejects.toThrow(/new-player reference of 33 characters/);
     expect(await allPlayers(t)).toEqual([]);
   });
 });

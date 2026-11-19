@@ -4333,6 +4333,13 @@ export const appendCareerStints = internalMutation({
 export const MAX_CAREER_NEW_PLAYERS = 50;
 
 /**
+ * Longest `creationRef` a "New player named X" answer may carry. The commit's
+ * ref format is `^[A-Za-z0-9_-]{1,MAX_CREATION_REF_LENGTH}$`; the per-card
+ * `newPlayerByName[].ref` is held to the same length at the boundary.
+ */
+export const MAX_CREATION_REF_LENGTH = 32;
+
+/**
  * NEO-591 — mint the players the operator chose as "New player named X" in the
  * wizard's career check, each with the career the operator staged, and hand
  * back ref → id.

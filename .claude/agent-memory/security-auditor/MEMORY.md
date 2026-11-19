@@ -247,3 +247,4 @@
 - [Neo591 names-first pairing](patterns_neo591_names_first_pairing.md) — minted/swapped numbers reach commit number tiers; stem parent re-guessed at commit
 - [Neo555 fake eBay cutover](patterns_neo555_fake_ebay_cutover.md) — two-gate resolver; request-keyed key names; merge-deploy removals; retired lane leaves creds
 - [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding
+- [Neo591 retry adoption token](patterns_neo591_retry_adoption_token.md) — row-stored retry token: exclusion must match adoption predicate; pin internal userId writers

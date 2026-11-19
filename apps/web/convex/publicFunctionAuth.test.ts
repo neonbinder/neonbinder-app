@@ -3349,6 +3349,11 @@ describe("PR 451 (NEO-487, NEO-478): the BSC wait, cooldown and team lane", () =
     ["bscTeamPool.ts", "cancelAllBscTeamChecks", "internalMutation"],
     ["checklistCandidates.ts", "resolveChecklistTeamTexts", "internalQuery"],
     ["checklistCandidates.ts", "resolveChecklistPlaceTeams", "internalQuery"],
+    // NEO-591 — the career check's helpers: the commit action calls them, a
+    // public twin would mint players or read the tables with no admin gate.
+    ["players.ts", "createCareerNewPlayers", "internalMutation"],
+    ["selectorOptions.ts", "validateCareerNewPlayers", "internalQuery"],
+    ["checklistCandidates.ts", "resolveTeamIdentities", "internalQuery"],
     ["adapters/buysportscards.ts", "runBscTeamCheckItem", "internalAction"],
     ["adapters/buysportscards.ts", "processBscTeamEnrichmentQueue", "internalAction"],
     ["adapters/buysportscards.ts", "probeBscChecklistBatch", "internalAction"],

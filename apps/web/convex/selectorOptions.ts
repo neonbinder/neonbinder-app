@@ -269,6 +269,7 @@ import {
   addPlayerSport,
   createCardYearTeamCache,
   MAX_CAREER_NEW_PLAYERS,
+  MAX_CREATION_REF_LENGTH,
   MAX_CAREER_STINT_APPENDS,
   MAX_PLAYER_TEAM_YEARS,
   narrowSameNamePlayersByCardYear,
@@ -4613,6 +4614,14 @@ function assertCardBatchWithinLimits(
       if (pick.name.length > MAX_PLAYER_NAME_LENGTH) {
         throw new Error(
           `${fnName}: ${where} carries a new-player pick of ${pick.name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+        );
+      }
+      // The ref is a client string that is compared and stored; the commit's
+      // format rule caps it, and the boundary holds the same length so an
+      // oversized one is refused before any phase reads it.
+      if (pick.ref.length > MAX_CREATION_REF_LENGTH) {
+        throw new Error(
+          `${fnName}: ${where} carries a new-player reference of ${pick.ref.length} characters; the limit is ${MAX_CREATION_REF_LENGTH}.`,
         );
       }
     }
@@ -19016,6 +19025,9 @@ export const commitCardChecklistPrelude = internalMutation({
      * an earlier attempt got as far as minting it), so it is not a namesake to
      * weigh: the same-name lookups below leave it out, and every OTHER card
      * with that name resolves exactly as it would have on the first attempt.
+     * A row is left out only when it ALSO carries the calling operator's
+     * `createdByUserId` (the test `createCareerNewPlayers` adopts by); a ref
+     * on someone else's row hides nothing.
      */
     excludePlayerCreationRefs: v.optional(v.array(v.string())),
     /**
@@ -20945,7 +20957,8 @@ export const commitCardChecklistPrelude = internalMutation({
      */
     const sameNamePrefetch = new Map<string, Array<Doc<"players">>>();
     // NEO-591 — `sameNamePlayers`, minus a row this commit's own new-player
-    // answer already minted (a retry). Not a namesake; see the arg.
+    // answer already minted (a retry). Not a namesake; see the arg. "Its own"
+    // is the ref AND the operator: `userId` is the caller's, read above.
     const excludedCreationRefs = new Set(args.excludePlayerCreationRefs ?? []);
     const sameNameForCommit = async (
       key: string,
@@ -20954,7 +20967,15 @@ export const commitCardChecklistPrelude = internalMutation({
       return excludedCreationRefs.size === 0
         ? rows
         : rows.filter(
-            (p) => p.creationRef === undefined || !excludedCreationRefs.has(p.creationRef),
+            (p) =>
+              !(
+                p.creationRef !== undefined &&
+                excludedCreationRefs.has(p.creationRef) &&
+                // The same two-part test `createCareerNewPlayers` adopts by: a
+                // ref alone is a client-chosen string, so another operator's
+                // row that happens to carry it stays a namesake.
+                p.createdByUserId === userId
+              ),
           );
     };
     if (args.phase === "resolve") {
@@ -25276,7 +25297,7 @@ export const commitCardChecklist = action({
       let nestedStints = 0;
       careerNewPlayers.forEach((np, i) => {
         const where = `new player ${i + 1}`;
-        if (!/^[A-Za-z0-9_-]{1,32}$/.test(np.ref)) {
+        if (!new RegExp(`^[A-Za-z0-9_-]{1,${MAX_CREATION_REF_LENGTH}}$`).test(np.ref)) {
           throw new ConvexError(`commitCardChecklist: ${where} carries a malformed reference.`);
         }
         if (declaredRefs.has(np.ref)) {

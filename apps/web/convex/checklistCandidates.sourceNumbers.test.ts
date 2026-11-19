@@ -10,7 +10,7 @@ import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
-import { MAX_SOURCE_NUMBER_LENGTH } from "./checklistCandidates";
+import { MAX_SOURCE_NUMBER_LENGTH, MAX_TEAM_CELL_LENGTH } from "./checklistCandidates";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -53,6 +53,24 @@ describe("sourceNumbers on a staged candidate", () => {
     expect(MAX_SOURCE_NUMBER_LENGTH).toBe(64);
     await expect(start("x".repeat(65))).rejects.toThrow(/source number of 65 characters/);
     await expect(start("x".repeat(64))).resolves.toMatchObject({ written: 1 });
+  });
+
+  test("a team cell over the bound is refused; at the bound it is accepted", async () => {
+    const t = convexTest(schema, modules);
+    const selectorOptionId = await seedRow(t);
+    const start = (cell: string) =>
+      t.mutation(internal.checklistCandidates.startCandidateBatch, {
+        selectorOptionId,
+        batchId: "batch-1",
+        userId: ADMIN.subject,
+        candidates: [candidate({ teamCell: cell })],
+        readyImmediately: true,
+      });
+
+    await expect(start("x".repeat(MAX_TEAM_CELL_LENGTH + 1))).rejects.toThrow(
+      /team cell of \d+ characters/,
+    );
+    await expect(start("x".repeat(MAX_TEAM_CELL_LENGTH))).resolves.toMatchObject({ written: 1 });
   });
 
   test("sourceNumbers, preKept, numberMinted and variationGroup round-trip through getReadyCandidates", async () => {
