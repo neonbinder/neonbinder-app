@@ -38,7 +38,20 @@
  * ORDERS are not cleared by teardown: the fake has no per-order delete, only a
  * whole-account reset, which would wipe the worker's listings too. An order
  * stays on the worker's fake account until the next reset, so a spec that
- * injects one must be the only user of the cards it names.
+ * injects one must be the only user of the cards it names. `pollNow()` (NEO-555)
+ * runs the worker's BuySportsCards sales poll at once and waits for it, so a
+ * spec need not wait out the 15-minute cron; when the cron's poll lands first
+ * the order is already stored and the poll reads nothing new, and the hop says
+ * "Polled" either way (assert the screen, not the count).
+ *
+ * ONE FAULT LIST PER NAMESPACE (NEO-555). The fake keeps one list of rules per
+ * worker for BOTH marketplaces it stands in for, and every `?rules=` visit
+ * REPLACES that list. So this class holds the worker's rules for each site and
+ * always posts the two merged: `setFaults` replaces the BuySportsCards rules and
+ * keeps the eBay ones, and the `ebayFake` fixture (./ebayFake.ts) replaces the
+ * eBay rules through `setSiteFaults("ebay", …)` and keeps the BuySportsCards ones.
+ * A spec that sets eBay faults never clears its own BuySportsCards faults, and
+ * the other way round. Teardown drops both.
  *
  * Contract helpers only: nothing here asserts product behaviour.
  */
@@ -68,7 +81,31 @@ export const BSC_PATH = {
 export type BscMethod = "GET" | "POST" | "PUT" | "DELETE";
 export type BscFaultKind = "429" | "503" | "delay" | "hang" | "reset";
 
-/** One fault rule, as `api.testing.setMyBscFaults` takes it (services/fake-bsc/CONTRACT.md, "Faults"). */
+/**
+ * One fault rule on the worker's list, either site's, as `api.testing.setMyBscFaults`
+ * takes it (services/fake-bsc/CONTRACT.md, "Faults"). The eBay kinds and their
+ * `status` / `errorIds` are built by ./ebayFake.ts (`ebayFault`).
+ */
+export interface FakeFaultRule {
+  match: { method: BscMethod; pathTemplate: string; cardId?: string };
+  kind: BscFaultKind | "ebayError" | "unauthorized";
+  delayMs?: number;
+  retryAfterS?: number;
+  times?: number;
+  ttlS?: number;
+  /** `ebayError` only: the HTTP status answered (400 to 599). */
+  status?: number;
+  /** `ebayError` only: eBay's error ids in the body (1 to 10). */
+  errorIds?: number[];
+}
+
+/** The site a rule is about: eBay rules match `ebay/…` templates, every other template is BuySportsCards. */
+export type FakeSite = "bsc" | "ebay";
+const siteOf = (rule: FakeFaultRule): FakeSite => (rule.match.pathTemplate.startsWith("ebay/") ? "ebay" : "bsc");
+/** The fake's cap on one namespace's list (`MAX_FAKE_BSC_FAULT_RULES`, convex/testing.ts). */
+const MAX_RULES = 20;
+
+/** One BuySportsCards fault rule, as `api.testing.setMyBscFaults` takes it (services/fake-bsc/CONTRACT.md, "Faults"). */
 export interface BscFaultRule {
   match: { method: BscMethod; pathTemplate: string; cardId?: string };
   kind: BscFaultKind;
@@ -139,18 +176,32 @@ export const bscFault = {
   answersUnavailable: (pathTemplate: string, o: RuleOptions = {}): BscFaultRule => ruleOf("reset", pathTemplate, o),
 };
 
+/**
+ * One item of an order. Either the BuySportsCards ids themselves, or (NEO-555,
+ * PROPOSED: the testing control does not take it yet) `listedCardNumber`: a card
+ * THIS worker listed on BuySportsCards, named by its printed number as the
+ * checklist shows it ("FS-1"). A spec never sees a BuySportsCards card id or an
+ * NB SKU (neither is on any screen), so it cannot name a sold card any other
+ * way. The control is to resolve the number against the caller's own live
+ * BuySportsCards links, exactly one (card numbers are not unique, CLAUDE.md
+ * invariant 7), and refuse otherwise.
+ */
+export type BscOrderItem =
+  | { cardId: string; condition: string; quantity: number; priceCents?: number; sellerSku?: string }
+  | { listedCardNumber: string; quantity: number; priceCents?: number };
+
 /** An order a buyer places, in NB's terms (`api.testing.addMyBscOrder`). */
 export interface BscOrder {
   orderNo?: string;
   /** Default `READY_TO_SHIP`. */
   status?: string;
   orderDateMs?: number;
-  items: Array<{ cardId: string; condition: string; quantity: number; priceCents?: number; sellerSku?: string }>;
+  items: BscOrderItem[];
 }
 
 const STATUS = /^\[testing-bsc-fake\] /;
-export const DONE = /^\[testing-bsc-fake\] (Fault rules set|Order added|Cleared)/;
-export const FAILED = /^\[testing-bsc-fake\] (Error:|Give exactly|\?(rules|order|clear)=|Testing mode)/;
+export const DONE = /^\[testing-bsc-fake\] (Fault rules set|Order added|Cleared|Polled)/;
+export const FAILED = /^\[testing-bsc-fake\] (Error:|Give exactly|\?(rules|order|clear|poll)=|Testing mode)/;
 
 /**
  * The control a spec drives through the `bscFake` fixture. One per test, bound
@@ -159,6 +210,8 @@ export const FAILED = /^\[testing-bsc-fake\] (Error:|Give exactly|\?(rules|order
 export class BscFake {
   private rulesSet = false;
   private gateAtRisk = false;
+  /** The worker's rules per site, as last posted (the fake holds them merged). */
+  private readonly rules: Record<FakeSite, readonly FakeFaultRule[]> = { bsc: [], ebay: [] };
   private readonly breakerAllowed: boolean;
 
   constructor(
@@ -179,16 +232,47 @@ export class BscFake {
    * the rules.
    */
   async setFaults(rules: readonly BscFaultRule[]): Promise<void> {
-    const risky = rules.filter((r) => BREAKER_KINDS.has(r.kind));
-    if (risky.length > 0 && !this.breakerAllowed) {
+    await this.setSiteFaults("bsc", rules);
+  }
+
+  /**
+   * Replace ONE site's rules and keep the other's: the fake's list is posted
+   * merged (the header). An empty `rules` drops that site's rules only. The
+   * eBay side is reached through the `ebayFake` fixture; a spec calls
+   * `setFaults` for BuySportsCards.
+   *
+   * Contract: ENTRY the worker is signed in. EXIT the fake holds exactly the
+   * merged rules (or none, when both sites are empty).
+   */
+  async setSiteFaults(site: FakeSite, rules: readonly FakeFaultRule[]): Promise<void> {
+    const strays = rules.filter((r) => siteOf(r) !== site);
+    if (strays.length > 0) {
+      throw new Error(
+        `A ${site === "ebay" ? "fake eBay" : "fake BuySportsCards"} fault must match ${site === "ebay" ? "an ebay/ template" : "a BuySportsCards template (not ebay/)"}: ` +
+          `${strays[0].match.pathTemplate} is the other site's.`,
+      );
+    }
+    const risky = rules.filter((r) => BREAKER_KINDS.has(r.kind as BscFaultKind));
+    if (site === "bsc" && risky.length > 0 && !this.breakerAllowed) {
       throw new Error(
         `A ${risky[0].kind} fault on ${risky[0].match.pathTemplate} can open the deployment-wide BSC call gate, which stops every shard's BuySportsCards calls. ` +
           `Tag this spec "${BREAKER_TAG}" and list it in BREAKER_SPECS (playwright/project-scope.mjs) so CI runs it alone after the shards.`,
       );
     }
-    this.rulesSet = true;
-    if (risky.length > 0) this.gateAtRisk = true;
-    await this.hop(`rules=${encodeURIComponent(JSON.stringify(rules))}`, "Fault rules set");
+    const merged = [...(site === "bsc" ? rules : this.rules.bsc), ...(site === "ebay" ? rules : this.rules.ebay)];
+    if (merged.length > MAX_RULES) {
+      throw new Error(`The fake holds at most ${MAX_RULES} fault rules per worker, both sites together; this would post ${merged.length}.`);
+    }
+    if (site === "bsc" && risky.length > 0) this.gateAtRisk = true;
+    if (merged.length === 0) {
+      // Nothing left on either site: the fake refuses an empty list, so drop it.
+      if (this.rulesSet) await this.hop("clear=faults", "Cleared");
+      this.rulesSet = false;
+    } else {
+      this.rulesSet = true;
+      await this.hop(`rules=${encodeURIComponent(JSON.stringify(merged))}`, "Fault rules set");
+    }
+    this.rules[site] = [...rules];
   }
 
   /** Add one order to the worker's fake seller history. Not cleared at teardown (see the header). */
@@ -196,13 +280,23 @@ export class BscFake {
     await this.hop(`order=${encodeURIComponent(JSON.stringify(order))}`, "Order added");
   }
 
-  /** Drop the worker's fault rules now, and the call gate when a rule could have opened it. */
+  /**
+   * Run the worker's BuySportsCards sales poll now and wait for it (`api.testing.pollMySalesNow`).
+   * Passes whether it or the cron's poll stores the order: assert the screen after it, never the count.
+   */
+  async pollNow(): Promise<void> {
+    await this.hop("poll=1", "Polled");
+  }
+
+  /** Drop the worker's fault rules now (both sites), and the call gate when a rule could have opened it. */
   async clear(): Promise<void> {
     if (!this.rulesSet && !this.gateAtRisk) return;
     const what = this.gateAtRisk ? "all" : "faults";
     await this.hop(`clear=${what}`, "Cleared");
     this.rulesSet = false;
     this.gateAtRisk = false;
+    this.rules.bsc = [];
+    this.rules.ebay = [];
   }
 
   /** The fixture's teardown: `clear()`, and it throws if the fake or the gate could not be cleared. */
@@ -214,13 +308,15 @@ export class BscFake {
     const control: Page = await this.context.newPage();
     try {
       await control.goto(`/testing/bsc-fake?${query}`, { waitUntil: "domcontentloaded" });
-      const done = control.getByText(DONE);
-      const failed = control.getByText(FAILED);
+      // The hop's one status line (role=status, inside <main>).
+      const line = control.getByRole("status");
+      const done = line.filter({ hasText: DONE });
+      const failed = line.filter({ hasText: FAILED });
       await expect(done.or(failed).first()).toBeVisible({ timeout: this.arrivalMs });
       if (await failed.isVisible()) {
         throw new Error(`The fake BuySportsCards control refused (${expected}): ${(await failed.innerText()).replace(STATUS, "")}`);
       }
-      await expect(control.getByText(new RegExp(`^\\[testing-bsc-fake\\] ${expected}`))).toBeVisible();
+      await expect(line.filter({ hasText: new RegExp(`^\\[testing-bsc-fake\\] ${expected}`) })).toBeVisible();
     } finally {
       await control.close();
     }

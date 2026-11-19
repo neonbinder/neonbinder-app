@@ -81,7 +81,7 @@ export const TOPPS_CHROME_2024: CollectorSet = {
 
 /**
  * The seed's 2024 Topps Chrome › Insert › Future Stars (20 cards), the
- * marketplace-seller listing specs' fixture (NEO-475; SET-REGISTRY.md). Its
+ * BuySportsCards and eBay listing specs' fixture (NEO-475; SET-REGISTRY.md). Its
  * checklist and Sync status both name it "2024 Topps Chrome Future Stars": an
  * insert reads as part of the set's name.
  */

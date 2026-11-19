@@ -7,6 +7,7 @@
  * report success. Both leave the page on /profile/credentials.
  */
 import { expect, type Page } from "@playwright/test";
+import { EBAY_POLICY, type EbayFake } from "./ebayFake";
 import type { FlowEnv } from "./env";
 import { test } from "./fixtures";
 
@@ -169,15 +170,26 @@ export async function saveBscSignIn(page: Page, opts: { listing?: boolean } = {}
 }
 
 // ---------------------------------------------------------------------------
-// NEO-415: eBay. It signs in by eBay's own consent screen, never a password,
-// so a spec cannot connect it through the UI. The seed hop connects the
-// sandbox seller with a refresh token the deployment holds (the same
-// `/testing/seed-credentials` route, `sites=ebay`), and Profile -> Credentials -> eBay
-// (its eBay tab; `/profile/ebay` forwards there) is where the connection is read, renewed and removed.
+// NEO-415: eBay. It signs in by eBay's own consent screen, never a password.
+// NEO-555: every test deployment's eBay is the fake (services/fake-bsc, one
+// seller per test user), whose consent screen is NB's own testing page
+// (`/testing/fake-ebay/authorize`), so a spec CAN connect through the UI
+// (profile/ebay-connect-and-setup does). The seed hop below connects the
+// worker's main fake seller the same way without the screen (the same
+// `/testing/seed-credentials` route, `sites=ebay`: a consent code minted and
+// exchanged server-side), for specs that are not about connecting. Profile ->
+// Credentials -> eBay (its eBay tab; `/profile/ebay` forwards there) is where the
+// connection is read, renewed and removed.
 // ---------------------------------------------------------------------------
 
 /** What Profile -> Credentials -> eBay says when the deployment has no eBay wiring. */
 export const EBAY_NOT_HOOKED_UP = "eBay isn't hooked up on this NeonBinder yet.";
+
+/**
+ * NEO-555: the safety line every eBay spec asserts before it lists: this
+ * deployment's eBay is the stand-in, so nothing reaches the real eBay.
+ */
+export const EBAY_TEST_MODE_LINE = "Test mode: this NeonBinder talks to a stand-in eBay, so nothing lists for real.";
 
 /**
  * Wait until Profile -> Credentials -> eBay's connection card has settled into ONE of its
@@ -194,31 +206,29 @@ export async function expectEbayHookedUp(page: Page): Promise<void> {
   await expect(connect.or(disconnect).first()).toBeVisible();
   if (await page.getByText(EBAY_NOT_HOOKED_UP, { exact: true }).isVisible()) {
     throw new Error(
-      "eBay is not configured on this deployment, so the eBay listing spec cannot run. " +
-        "Set EBAY_CLIENT_ID, EBAY_RU_NAME and EBAY_ENVIRONMENT=sandbox on the Convex deployment, " +
-        "the eBay client secret on the browser service it calls, and DEV_EBAY_REFRESH_TOKEN " +
-        "(a sandbox seller's refresh token) beside them. This spec never skips for missing setup.",
+      "eBay is not configured on this deployment, so the eBay specs cannot run. " +
+        "Set EBAY_ENVIRONMENT=fake on the Convex deployment (beside TESTING_RESET_SECRET and the fake " +
+        "BuySportsCards wiring; `npx convex run fakeBsc:ebayTarget` says fake when it is wired). " +
+        "This spec never skips for missing setup.",
     );
   }
 }
 
 /**
- * Connect the worker's sandbox eBay seller the way the bootstrap saves the
+ * Connect the worker's main fake eBay seller the way the bootstrap saves the
  * other sign-ins: the `/testing/seed-credentials` hop (no password, GUIDE hard
  * rule 7). The page must already be signed in. Lands on Profile -> Credentials -> eBay.
  *
  * `listing: true` (`listing=on`) is what a collector's own Connect does:
  * connected IS listing. Without it the hop marks the connection "not syncing".
- * Only the eBay listing spec passes `listing: true`; pair it with
- * `removeEbayConnection`.
+ * The eBay listing specs pass `listing: true`; pair it with `removeEbayConnection`.
  *
  * `gate` is the wait for the full page load the hop ends in (the caller's
- * `LAUNCH_GATE`: the hop is one token exchange with eBay, not a live sign-in).
+ * `LAUNCH_GATE`: the hop is one token exchange with the fake, not a live sign-in).
  * A hop that FAILS prints "Seed failed (...)" and goes nowhere; that is thrown
- * here with its reason. A hop that SKIPS (no refresh token on the deployment,
- * or eBay paused) lands on the page with eBay not connected: the caller's next
- * assertion names it. A deployment with no eBay wiring throws from
- * `expectEbayHookedUp`.
+ * here with its reason. A hop that SKIPS (eBay paused) lands on the page with
+ * eBay not connected: the caller's next assertion names it. A deployment with
+ * no eBay wiring throws from `expectEbayHookedUp`.
  */
 export async function saveEbayConnection(page: Page, opts: { listing?: boolean; gate: number }): Promise<void> {
   const listing = opts.listing ? "&listing=on" : "";
@@ -252,4 +262,79 @@ export async function removeEbayConnection(page: Page, opts: { gate: number }): 
     await expect(disconnect).toBeHidden();
   }
   await expect(page.getByRole("button", { name: "Connect eBay", exact: true })).toBeVisible();
+}
+
+/**
+ * NEO-555. Connect the worker's MAIN fake eBay seller with listing on and
+ * finish its setup, for the specs whose subject is what happens once eBay
+ * lists (the listing, over-80 and refusals specs). The connect-and-setup
+ * spec proves each of these steps in full on the `alt` seller; this is the
+ * same path with only the asserts each step needs to be known done.
+ *
+ *   1. The seller holds the two fixed shipping policies (`EBAY_POLICY`; seeded,
+ *      or already there from an earlier spec on the worker: ./ebayFake.ts).
+ *   2. The seed hop connects it, listing on. Connected, the test-mode line,
+ *      "5 to go".
+ *   3. Ships from saved (Enter in the last field); "4 to go".
+ *   4. "Set me up" when offered (a seller with no payment or returns policy yet;
+ *      an earlier spec on the worker made them, so it may not be): its answer
+ *      line. Otherwise it is gone, asserted.
+ *   5. NB Free Shipping for Cards under $20, NB Tracked for $20 and up, the
+ *      first Payment and Returns policy: "You're all set".
+ *
+ * ENTRY the page is signed in, eBay not connected, every other box already
+ * in-person (a connection that lists walks every card in a listed box). The
+ * caller records "connected" for its cleanup BEFORE calling: the hop may
+ * connect and still fail on the way back. EXIT on Profile -> Credentials ->
+ * eBay, connected and set up. Every step the standard budget except the hop's
+ * full page load (`gate`, the caller's LAUNCH_GATE).
+ */
+export async function connectEbayAndFinishSetup(page: Page, ebayFake: EbayFake, opts: { gate: number }): Promise<void> {
+  const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
+  const steps = page.getByRole("status").filter({ hasText: /to go\. Nothing lists on eBay until they're done\.$/ });
+  await ebayFake.holdShippingPolicy(EBAY_POLICY.free);
+  await ebayFake.holdShippingPolicy(EBAY_POLICY.tracked);
+  await saveEbayConnection(page, { listing: true, gate: opts.gate });
+  await expect(
+    page.getByText(/^Rockin' on eBay as .+ since .+\.$/),
+    "eBay did not connect after the seed hop. Either the deployment's eBay is not the fake (EBAY_ENVIRONMENT=fake), " +
+      "or eBay is paused here (NEONBINDER_PAUSED_PLATFORMS) while this runner's PAUSED_PLATFORMS does not name ebay.",
+  ).toBeVisible();
+  await expect(page.getByText(EBAY_TEST_MODE_LINE, { exact: true })).toBeVisible();
+  await expect(steps).toHaveText("5 to go. Nothing lists on eBay until they're done.");
+
+  // The seller's policies are read from eBay when the page opens; the read has
+  // landed when one of the seller's own shipping policies is offered, and "Set
+  // me up" renders in the same paint.
+  const underTwenty = page.getByRole("radiogroup", { name: "Cards under $20", exact: true });
+  const free = underTwenty.getByRole("radio", { name: EBAY_POLICY.free.name, exact: true });
+  await expect(free).toBeVisible();
+  const setMeUp = page.getByRole("button", { name: "Set me up", exact: true });
+  const setMeUpOffered = await setMeUp.isVisible();
+
+  await page.getByRole("textbox", { name: "ZIP code", exact: true }).fill("53703");
+  await page.getByRole("textbox", { name: "City", exact: true }).fill("Madison");
+  await page.getByRole("textbox", { name: "State", exact: true }).fill("WI");
+  await page.keyboard.press("Enter");
+  await expect(said("Saved. Your cards ship from here.")).toBeVisible();
+  await expect(steps).toHaveText("4 to go. Nothing lists on eBay until they're done.");
+
+  if (setMeUpOffered) {
+    await setMeUp.click();
+    await expect(said(/^(Made \d+ on your eBay account|You already had everything)/)).toBeVisible();
+  } else {
+    await expect(setMeUp).toBeHidden();
+  }
+  await free.click();
+  await expect(free).toBeChecked();
+  const tracked = page.getByRole("radiogroup", { name: "$20 and up", exact: true }).getByRole("radio", { name: EBAY_POLICY.tracked.name, exact: true });
+  await tracked.click();
+  await expect(tracked).toBeChecked();
+  for (const group of ["Payment", "Returns"]) {
+    const radios = page.getByRole("radiogroup", { name: group, exact: true }).getByRole("radio");
+    await radios.first().click();
+    await expect(page.getByRole("radiogroup", { name: group, exact: true }).getByRole("radio", { checked: true })).toHaveCount(1);
+  }
+  await expect(page.getByRole("heading", { level: 3, name: "You're all set", exact: true })).toBeVisible();
+  await expect(steps).toBeHidden();
 }

@@ -5,7 +5,8 @@ metadata:
   type: project
 ---
 
-A `@marketplace-seller` BSC spec red at `followRunToRest`/`followRunToEnd`
+(Pre-NEO-552, real BSC; the fake answers the profile at once.) A BSC listing
+spec red at `followRunToRest`/`followRunToEnd`
 with the screenshot showing "Send changes to BuySportsCards" still spinning
 (Read and Upload photos ticked) is the drain fetching the seller id inside
 the send step: `fetchBscSellerId` runs only when no seller id is stored, and

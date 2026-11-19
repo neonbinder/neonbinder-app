@@ -60,8 +60,24 @@
 //      back (a refresh BSC refused would be). The same two orders as every
 //      press (below): a poll that lands between the queue's read and the press
 //      sends the photo itself, and the press then sends nothing.
+//   3c. NEO-555 (D12), a sale: a buyer orders one of the first card on
+//      BuySportsCards. The order is injected on the worker's fake seller (which
+//      lowers its listing, as BuySportsCards does) and the sales poll run at
+//      once (`bscFake.pollNow`); the 15-minute cron poll may store it first, and
+//      the hop then reads nothing new, so the spec asserts the screen, never the
+//      poll's counts. The Sales tab shows `BuySportsCards order <no>` with the
+//      card's line by its NB name and nothing wrong with it; Back returns to Sync
+//      status; the first card's quick count reads 0 (its one copy sold) and the
+//      second's still 1.
+//      GAP (NEO-555 G1, reported): the sold card is named by its printed number
+//      (`listedCardNumber`). BuySportsCards sale lines match by BuySportsCards' own
+//      card id, which no screen shows, so a spec cannot write one. The testing
+//      control is to resolve the number against the caller's own BuySportsCards
+//      links (exactly one, else refuse); until it does, this spec is red at the
+//      sale's hop by design (GUIDE hard rule 1: never weakened to pass).
 //   4. They turn the box's "Listed on marketplaces" off, Sync again, and the
-//      set reads 0 listed, with both cards taken to 0.
+//      set reads 0 listed, with the second card taken to 0 (the first is
+//      already 0 on both sides: the sale lowered it).
 //   5. They stop: the BSC sign-in is removed and saved again WITHOUT listing=on
 //      and Profile reads "Not syncing." again. The afterEach does the same on a
 //      failure (after first zeroing the touched rows). The account ends
@@ -969,11 +985,47 @@ test(
     }
     await expectAccessible(page, { label: "Inventory Sync status, an edited photo sent again" });
 
-    // --- 3. The box goes in-person: Sync takes both off BSC --------------------
+    // --- 3c. NEO-555 (D12): a buyer's order lowers the box and shows on Sales -------------
+    // One of the first card, injected on the worker's fake seller (which lowers
+    // its listing, as BuySportsCards does), then the sales poll run now; the
+    // cron's poll may have stored it first, and the hop then reads nothing new:
+    // the screen below is the same either way, so the counts are never asserted.
+    // GAP G1 (header): the sold card is named by its printed number, which the
+    // testing control is to resolve to this worker's own BuySportsCards listing of it.
+    const orderNo = `${env.ATTEMPT_TOKEN}b`;
+    await bscFake.addOrder({ orderNo, items: [{ listedCardNumber: a.split(" ")[0].replace(/^#/, ""), quantity: 1 }] });
+    await bscFake.pollNow();
+    await tabs.getByRole("link", { name: "Sales", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sales/);
+    await expect(page.getByRole("heading", { level: 2, name: "What sold" })).toBeVisible();
+    const sale = page.getByRole("article", { name: `${BSC} order ${orderNo}`, exact: true });
+    await expect(sale).toBeVisible();
+    // The card's line: NB's own name for it, one sold, at the listing's price, and
+    // nothing said under it (a refused or oversold line carries a note after the
+    // price, so the line ends at the price).
+    const soldName = `${SET_LABEL} ${a}`;
+    const soldLine = sale.getByRole("listitem").filter({ hasText: soldName });
+    await expect(soldLine).toHaveCount(1);
+    await expect(soldLine).toHaveText(new RegExp(`^1× ${escapeRegExp(soldName)}.*${escapeRegExp(`${PRICE_SHOWN} each`)}$`));
+    await expectAccessible(page, { label: "Inventory Sales, a BuySportsCards order for a listed card" });
+    // Back steps to Sync status, where the last press was followed.
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    await expect(row.getByText(/^Synced /)).toBeVisible();
+    // The box: the first card's one copy sold (its quick count reads 0), the second's is untouched.
+    await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    await adding.selectOption({ label: boxName });
+    await expect(fieldA).toHaveValue("0");
+    await expect(fieldB).toHaveValue("1");
+
+    // --- 3. The box goes in-person: Sync takes the rest off BSC --------------------
     await page.goto("/inventory?tab=boxes");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-    await expect(boxSpine(2)).toBeVisible();
-    await boxSpine(2).click();
+    // One copy for sale: the second card's (the first card's sold).
+    await expect(boxSpine(1)).toBeVisible();
+    await boxSpine(1).click();
     await expect(page.getByRole("heading", { level: 2, name: boxName, exact: true })).toBeVisible();
     const listed = page.getByRole("checkbox", { name: "Listed on marketplaces", exact: true });
     // On by default.
@@ -1000,7 +1052,8 @@ test(
     // the press, finished. The reads fold into one data-gathering step on the
     // finished row (see "The ledger's steps" above), so that is the assertion.
     const takeDown = syncRun(platform, SET_LABEL, BSC);
-    const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
+    // The second card only: the sale already took the first to 0 on both sides, so nothing is sent for it.
+    const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 1 taken to 0$/);
     await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL), {}, BSC);
     // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
     await expect(takeDown.last).toBeVisible();
@@ -1015,7 +1068,7 @@ test(
     // tell the poll taking the cards down first from anything else having zeroed
     // them on the seller account. The account is the worker's own fake BSC
     // account (NEO-552), so the poll is the only other writer. The line is this run's
-    // count, so it says "2 taken to 0" only when this run sent them; a full read
+    // count, so it says "1 taken to 0" only when this run sent it; a full read
     // that found nothing to zero reads "0 listed".
     const tookDown = await takeDown.last.getByRole("listitem", { name: `${SEND}, done`, exact: true }).isVisible();
     if (tookDown) {
