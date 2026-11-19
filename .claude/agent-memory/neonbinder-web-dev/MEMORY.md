@@ -256,6 +256,7 @@
 - [Stacked branch merge after parent squash](reference_stacked_branch_merge_after_parent_squash.md) — merge base predates the parent: clean hunks duplicate code; re-merge with merge-tree base
 - [New listing problem reason: hand lists](reference_new_listing_problem_reason_has_hand_lists.md) — SYNC_HELD_REASONS, REPORTABLE_SYNC_REASONS judgement, test Reason union, spec copy literals
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
+- [Host-stored count goes stale](host-stored-count-goes-stale-ask-the-door.md) — door reports live counts (onCounts + recount + countOnMount); no subscription for big parents
 - [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
 - [Bulk-load op budget counts calls](reference_bulkload_op_budget_counts_calls_not_rows_or_stints.md) — roster leg: ~5 ops plain row, ~11 for a 3-alias create; budget tests need alias creates
 - [Repeating a set-building spec needs a full reseed](reference_repeating_a_set_building_spec_needs_a_full_reseed.md) — partial reset breaks setup; each repeat = agent-convex --seed + setup + bootstrap

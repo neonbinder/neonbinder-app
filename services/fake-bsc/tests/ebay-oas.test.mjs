@@ -49,14 +49,22 @@ describe("eBay OpenAPI conformance", () => {
 
   it("covers the operations NB reads (no silent skip)", () => {
     const checked = Object.entries(answers).filter(([n, a]) => a.status >= 200 && a.status < 300 && a.body !== undefined && oasFor(n));
-    // 2xx answers with a body and a published schema: everything but the token endpoint and the opt_in 409.
-    assert.equal(checked.length, 21, `checked ${checked.length} answers`);
+    // 2xx answers with a body and a published schema: everything but the token endpoint, the opt_in 409
+    // and `enable` (the sandbox answers it 200 with no body).
+    assert.equal(checked.length, 20, `checked ${checked.length} answers`);
   });
 
   it("eBay's error body is the documented ErrorDetailV3 envelope", () => {
-    const refused = answers["POST ebay/api/sell/inventory/v1/offer/:offerId/publish #25002"];
+    const refused = answers["POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused"];
     assert.equal(refused.status, 400);
     assert.deepEqual(Object.keys(shapeOf(refused.body)).sort(), ["", "errors", "errors[]", "errors[].category", "errors[].domain", "errors[].errorId", "errors[].message"]);
-    assert.equal(refused.body.errors[0].errorId, 25002);
+    // The sandbox refused publish with 25007, not 25002 (CONTRACT.md, "Write and read captures (eBay)").
+    assert.equal(refused.body.errors[0].errorId, 25007);
+  });
+
+  it("enable answers 200 with no body, as the sandbox did", () => {
+    const enable = answers["POST ebay/api/sell/inventory/v1/location/:merchantLocationKey/enable"];
+    assert.equal(enable.status, 200);
+    assert.equal(enable.body, undefined);
   });
 });

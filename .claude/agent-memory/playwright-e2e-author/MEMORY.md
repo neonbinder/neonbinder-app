@@ -64,7 +64,7 @@
 - [Worktree deployment onto the fake BSC](patterns_worktree_deployment_onto_the_fake_bsc.md) — NEO-552: set browser URL to the tagged revision, reportMisses, misses arrive in levels
 - [eBay hold spec on a hand-made set](patterns_ebay_hold_spec_on_a_handmade_set.md) — NEO-535: over-80 title fixture, hold-only run shape, tagged seller spec vs shard-plan
 - [Re-run a fresh-only spec w/o reseed](patterns_rerun_a_fresh_only_spec_without_a_reseed.md) — gcloud expired: restore spec + reset --except-reference-seed; push a break to prove stored-title asserts
-- [Parallel titles dialog specs](patterns_parallel_titles_dialog_specs.md) — NEO-535: builder-engineered names, box beats carry, sr-only duplicate status, Vite reload false red
+- [Parallel titles dialog specs](patterns_parallel_titles_dialog_specs.md) — NEO-535: builder-engineered names, box beats carry, sr-only duplicate status, Vite reload false red; NEO-581 partial fix + door unmounts at 0
 - [NEO-535 description, walker, Regenerate specs](patterns_neo535_description_walker_and_regenerate_specs.md) — stale builder text, walker order, rename fan-out shape, mobile-only wrap, plant traps
 - [Bulk walk busy label toBeHidden is vacuous](patterns_bulk_walk_busy_label_toBeHidden_is_vacuous.md) — wait for "(0)" or Next/Confirm after "Add remaining players as new", not the busy label gone
 - [Shared fast pool read ceiling](patterns_shared_fast_pool_read_ceiling.md) — NEO-529: FAST_READ_CEILING for "All N photos read."; no fast-vs-heavy E2E spec

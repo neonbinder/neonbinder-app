@@ -48,4 +48,5 @@
 - [NEO-555 probe/capture adversarial](reference_neo555_probe_capture_adversarial.md) — shallow-freeze trap, signal guard, body-read leak, break-check by revert
 - [NEO-556 No Team adversarial patterns](reference_neo556_no_team_adversarial_patterns.md) — oracle cartesian, ?raw source pins, client-vs-server commit agreement
 - [NEO-611 roster players tests](reference_neo611_roster_players_tests.md) — epoch helper, budget fixture, held asserts, source pin, boundary + twinOfKey quirks
+- [NEO-581 countSeq + busy window](reference_neo581_countseq_and_busy_window.md) — which door seq checks bite; busy-at-zero label window is unobservable
 - [NEO-592 gate parity patterns](reference_neo592_gate_parity_patterns.md) — origin/main differential via sibling copy, db probe, outside-in call counting, mutant runner

@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import { LOADER, startFake } from "./helpers.mjs";
 
 const require = createRequire(import.meta.url);
-const { compareEbayDrift, ebayCatalogueHash } = require("../dist/src/ebay/drift.js");
+const { compareEbayDrift, ebayCatalogueHash, EBAY_ASPECT_READ_PATHS } = require("../dist/src/ebay/drift.js");
 const { sampleAnswers, endpointName } = require("../dist/src/ebay/sample.js");
 const { shapeOf } = require("../dist/src/shape.js");
 const { Catalogue } = require("../dist/src/catalogue.js");
@@ -33,7 +33,11 @@ const SHIP_BODY = {
     { shippingService: "US_eBayStandardEnvelope", description: "eBay Standard Envelope", shippingCarrier: "USPS", internationalService: false, validForSellingFlow: true, shippingCostTypes: ["FLAT_RATE"], shippingCategory: "ECONOMY" },
   ],
 };
+/** What the prod probe reports for row 7: the three leaves NB reads, nothing else of `aspectConstraint`. */
 const ASPECTS_BODY = { aspects: [{ localizedAspectName: "Sport", aspectConstraint: { aspectRequired: true, aspectMaxLength: 65 } }, { localizedAspectName: "Team", aspectConstraint: { aspectRequired: false } }] };
+/** The sandbox recording: the same aspects with all eleven `aspectConstraint` children SPECS.ebayItemAspects keeps. */
+const constraint = (c) => ({ aspectAdvancedDataType: "STRING", aspectApplicableTo: ["PRODUCT"], aspectDataType: "STRING", aspectEnabledForVariations: false, aspectFormat: "", aspectMode: "FREE_TEXT", aspectUsage: "RECOMMENDED", expectedRequiredByDate: "2026-01-01T00:00:00.000Z", itemToAspectCardinality: "SINGLE", ...c });
+const ASPECTS_RECORDED = { aspects: ASPECTS_BODY.aspects.map((a) => ({ ...a, aspectConstraint: constraint(a.aspectConstraint) })) };
 
 async function catalogueWith(recordings) {
   const c = new Catalogue(new MemoryStore());
@@ -45,7 +49,7 @@ async function catalogueWith(recordings) {
 const rec = (path, query, body) => ({ request: { method: "GET", path, query }, response: { status: 200, body } });
 const RECORDINGS = [
   rec("ebay/api/sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services", [], SHIP_BODY),
-  rec("ebay/api/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category", [["category_id", "261328"]], ASPECTS_BODY),
+  rec("ebay/api/commerce/taxonomy/v1/category_tree/0/get_item_aspects_for_category", [["category_id", "261328"]], ASPECTS_RECORDED),
 ];
 
 /** A probe body built from the fake's own answers: what an unchanged eBay would send. */
@@ -163,6 +167,55 @@ describe("eBay drift: compare", () => {
     probe.shapes[SHIP]["shippingServices[].brandNewField"] = "string";
     const out = compareEbayDrift(probe, recorded).result;
     assert.deepEqual(out.paths, [`${SHIP} shippingServices[].shippingService`]);
+  });
+
+  it("row 7 as the probe reports it (three leaves of aspectConstraint) against an eleven-child recording is ok", () => {
+    assert.equal(Object.keys(ASPECTS_RECORDED.aspects[0].aspectConstraint).length, 11);
+    assert.equal(Object.keys(ASPECTS_BODY.aspects[0].aspectConstraint).length, 2);
+    const out = compareEbayDrift(cleanProbe(), recorded).result;
+    assert.equal(out.endpoints.find((e) => e.endpoint === ASPECTS).verdict, "ok");
+    assert.deepEqual(out.paths, []);
+    assert.equal(out.outcome, "ok");
+  });
+
+  it("row 7: a change in a reported path is still drift (retyped, missing, or a lost name)", () => {
+    const retyped = cleanProbe();
+    retyped.shapes[ASPECTS]["aspects[].aspectConstraint.aspectRequired"] = "string";
+    assert.deepEqual(compareEbayDrift(retyped, recorded).result.paths, [`${ASPECTS} aspects[].aspectConstraint.aspectRequired`]);
+    const maxLen = cleanProbe();
+    maxLen.shapes[ASPECTS]["aspects[].aspectConstraint.aspectMaxLength"] = "string";
+    assert.deepEqual(compareEbayDrift(maxLen, recorded).result.paths, [`${ASPECTS} aspects[].aspectConstraint.aspectMaxLength`]);
+    const name = cleanProbe();
+    name.shapes[ASPECTS]["aspects[].localizedAspectName"] = "number";
+    assert.deepEqual(compareEbayDrift(name, recorded).result.paths, [`${ASPECTS} aspects[].localizedAspectName`]);
+    const gone = cleanProbe();
+    delete gone.shapes[ASPECTS]["aspects[].aspectConstraint.aspectRequired"];
+    assert.deepEqual(compareEbayDrift(gone, recorded).result.paths, [`${ASPECTS} aspects[].aspectConstraint.aspectRequired`]);
+    // A constraint child the probe does not report is not compared even when it is retyped.
+    const extra = cleanProbe();
+    extra.shapes[ASPECTS]["aspects[].aspectConstraint.aspectMode"] = "number";
+    assert.equal(compareEbayDrift(extra, recorded).result.outcome, "ok");
+  });
+
+  it("the paths compared on row 7 are the browser allowlist's aspects paths and their parents", () => {
+    const src = readFileSync(new URL("../../browser/src/routes/ebay-probe-allowlist.ts", import.meta.url), "utf8");
+    const block = /^  aspects: Object\.freeze\(\[\n([\s\S]*?)\n  \]\),/m.exec(src);
+    assert.ok(block, "EBAY_PROBE_SHAPE_PATHS.aspects not found");
+    // A list built from a named constant would slip past the literal-only read below.
+    assert.deepEqual([...block[1].matchAll(/\.\.\.[A-Za-z_$][\w$]*/g)].map((m) => m[0]), ["...ERROR_PATHS"], "the aspects block spreads something other than ...ERROR_PATHS");
+    const reported = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).filter((p) => p.startsWith("aspects"));
+    assert.deepEqual(reported.sort(), ["aspects[].aspectConstraint.aspectMaxLength", "aspects[].aspectConstraint.aspectRequired", "aspects[].localizedAspectName"]);
+    // Every reported path, and each of its ancestors (the allowlist reports parents implicitly).
+    const want = new Set([""]);
+    for (const p of reported) {
+      const parts = p.split(".");
+      for (let i = 1; i <= parts.length; i++) {
+        const prefix = parts.slice(0, i).join(".");
+        want.add(prefix);
+        if (i === 1) want.add(prefix.replace(/\[\]$/, ""));
+      }
+    }
+    assert.deepEqual([...EBAY_ASPECT_READ_PATHS].sort(), [...want].sort());
   });
 
   it("rows 5 and 7 unrecorded are 'unrecorded pinned key'; a hash with no recording is a warning", async () => {
