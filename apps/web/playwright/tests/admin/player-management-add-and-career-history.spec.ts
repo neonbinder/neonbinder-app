@@ -37,6 +37,9 @@ test(
     await expectAccessible(page, { within: dialog, label: "New Team dialog" });
     await dialog.getByRole("button", { name: `Create team ${team}` }).click();
     await expect(page.getByRole("button", { name: `Remove team ${team}` })).toBeVisible();
+    // NEO-617: a stint has one team, so the picker no longer invites a second.
+    await expect(page.getByRole("button", { name: "Change team" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Add team" })).toBeHidden();
 
     // Stint 1, the LATER one, added first so the ordering assert means something.
     await page.getByRole("heading", { name: "Career history" }).click(); // closes the typeahead

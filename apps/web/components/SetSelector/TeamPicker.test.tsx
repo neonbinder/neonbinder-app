@@ -1830,3 +1830,163 @@ describe("TeamPicker — labels prop (NEO-277)", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// NEO-617 — `single`: a field that holds exactly one team (a career stint)
+// ---------------------------------------------------------------------------
+
+describe("TeamPicker — single mode (NEO-617)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    currentSelectedRows = [makeTeam("t1", "New York Yankees")];
+    currentCandidates = [
+      makeTeam("t1", "New York Yankees"),
+      makeTeam("t2", "Boston Red Sox"),
+    ];
+    currentLeagues = [];
+    currentSports = [];
+    queryCalls = [];
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("picking a team REPLACES the held one rather than appending", () => {
+    const { onChange } = renderPicker({ single: true, value: [tid("t1")] });
+
+    fireEvent.click(screen.getByLabelText("Change team"));
+    fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith([tid("t2")]);
+  });
+
+  it("multi mode is unchanged: the same pick appends", () => {
+    const { onChange } = renderPicker({ value: [tid("t1")] });
+
+    openPopover();
+    fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+
+    expect(onChange).toHaveBeenCalledWith([tid("t1"), tid("t2")]);
+    // ...and still stays open for a third.
+    expect(screen.getByRole("listbox")).toBeTruthy();
+  });
+
+  it("closes the popover on a pick and hands focus back to the trigger", async () => {
+    const { onChange } = renderPicker({ single: true, value: [] });
+
+    openPopover();
+    fireEvent.click(screen.getByLabelText("Add Boston Red Sox"));
+
+    expect(onChange).toHaveBeenCalledWith([tid("t2")]);
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.activeElement).toBe(screen.getByLabelText("Add team"));
+  });
+
+  it("Enter on the highlighted row picks and closes too", () => {
+    const { onChange } = renderPicker({ single: true, value: [] });
+
+    openPopover();
+    fireEvent.keyDown(screen.getByLabelText("Search teams"), { key: "Enter" });
+
+    expect(onChange).toHaveBeenCalledWith([tid("t1")]);
+    expect(screen.queryByRole("listbox")).toBeNull();
+  });
+
+  it("offers no '+ Add team' once a team is held: one chip with its ×, and a 'Change team' trigger", () => {
+    renderPicker({ single: true, value: [tid("t1")] });
+
+    expect(screen.getByLabelText("Team: New York Yankees")).toBeTruthy();
+    expect(screen.getByLabelText("Remove team New York Yankees")).toBeTruthy();
+    expect(screen.queryByLabelText("Add team")).toBeNull();
+    const change = screen.getByRole("button", { name: "Change team" });
+    // Label in name (SC 2.5.3), and no "+": nothing is being added.
+    expect(change.textContent).toBe("Change team");
+    expect(change.getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("'Change team' opens the same popover", () => {
+    renderPicker({ single: true, value: [tid("t1")] });
+
+    fireEvent.click(screen.getByRole("button", { name: "Change team" }));
+
+    expect(screen.getByRole("listbox")).toBeTruthy();
+    expect(screen.getByLabelText("Search teams")).toBeTruthy();
+  });
+
+  it("clearing the chip brings '+ Add team' back", () => {
+    function Harness() {
+      const [value, setValue] = React.useState<Array<Id<"teams">>>([tid("t1")]);
+      return <TeamPicker single value={value} onChange={setValue} sportId={SPORT_ID} />;
+    }
+    render(<Harness />);
+    expect(screen.queryByLabelText("Add team")).toBeNull();
+
+    fireEvent.click(screen.getByLabelText("Remove team New York Yankees"));
+
+    expect(screen.getByLabelText("Add team").textContent).toBe("+ Add team");
+    expect(screen.queryByRole("button", { name: "Change team" })).toBeNull();
+  });
+
+  it("an empty single picker reads exactly like a multi one", () => {
+    currentSelectedRows = [];
+    renderPicker({ single: true, value: [] });
+
+    expect(screen.getByLabelText("Add team").textContent).toBe("+ Add team");
+  });
+
+  it("Backspace on an empty query still clears the one chip", () => {
+    const { onChange } = renderPicker({ single: true, value: [tid("t1")] });
+    fireEvent.click(screen.getByRole("button", { name: "Change team" }));
+
+    fireEvent.keyDown(screen.getByLabelText("Search teams"), { key: "Backspace" });
+
+    expect(onChange).toHaveBeenCalledWith([]);
+  });
+
+  it("Tab from the 'Change team' trigger still moves into the open popover", () => {
+    renderPicker({ single: true, value: [tid("t1")] });
+    fireEvent.click(screen.getByRole("button", { name: "Change team" }));
+    const trigger = screen.getByRole("button", { name: "Change team" });
+    trigger.focus();
+
+    fireEvent.keyDown(trigger, { key: "Tab" });
+
+    expect(document.activeElement).toBe(screen.getByLabelText("Search teams"));
+  });
+
+  it("Escape closes without picking and returns focus to the trigger", async () => {
+    const { onChange } = renderPicker({ single: true, value: [tid("t1")] });
+    fireEvent.click(screen.getByRole("button", { name: "Change team" }));
+
+    fireEvent.keyDown(screen.getByLabelText("Search teams"), { key: "Escape" });
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole("listbox")).toBeNull();
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Change team" }),
+    );
+  });
+
+  it("a whole-set labels override without `change` still gets the default 'Change team'", () => {
+    renderPicker({
+      single: true,
+      value: [tid("t1")],
+      labels: {
+        root: "Stint team picker",
+        trigger: "Add stint team",
+        search: "Search stint teams",
+        results: "Stint team results",
+      },
+    });
+
+    expect(screen.getByRole("button", { name: "Change team" })).toBeTruthy();
+  });
+});

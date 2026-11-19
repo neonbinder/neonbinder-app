@@ -45,6 +45,13 @@ export type TeamPickerLabels = {
    * voice-control user says what they see). Default "Add team" → "+ Add team".
    */
   trigger: string;
+  /**
+   * NEO-617 — the trigger's name AND visible text once a `single` picker holds
+   * its team (no "+": nothing is being added, the team is being swapped).
+   * Optional so existing whole-set overrides stay valid; absent, the default
+   * "Change team" is used. Unused by a multi picker.
+   */
+  change?: string;
   /** The popover's search input. Default "Search teams". */
   search: string;
   /** The popover listbox. Default "Team typeahead results". */
@@ -54,6 +61,7 @@ export type TeamPickerLabels = {
 export const DEFAULT_TEAM_PICKER_LABELS: TeamPickerLabels = {
   root: "Team picker",
   trigger: "Add team",
+  change: "Change team",
   search: "Search teams",
   results: "Team typeahead results",
 };
@@ -139,6 +147,18 @@ export type TeamPickerNoTeam = {
  *     carries the two boundary hops itself rather than leaving them to DOM
  *     order; see `PickerPopover`.
  *
+ * NEO-617 — `single` mode, for a field that holds exactly one team (a career
+ * stint). Everything above stays; what changes is the multi-pick affordance:
+ *   - picking a team REPLACES the current one (`onChange([id])`), closes the
+ *     popover and returns focus to the trigger, instead of staying open for a
+ *     second pick;
+ *   - while a team is held there is no "+ Add team" invitation. The one chip
+ *     stays, with its × to clear it, and the dashed trigger beside it reads
+ *     "Change team" (no "+") and reopens the same popover. Clearing the chip
+ *     brings "+ Add team" back;
+ *   - Backspace on an empty input still clears the one chip.
+ * Default is multi, so every existing caller is unchanged.
+ *
  * Pointer users get an outside-click close as well — see the effect below for
  * why that is not just polish.
  */
@@ -167,6 +187,7 @@ export default function TeamPicker({
   ariaDescribedBy,
   contextOptionId,
   noTeam,
+  single = false,
 }: {
   value: Array<Id<"teams">>;
   onChange: (next: Array<Id<"teams">>) => void;
@@ -210,6 +231,11 @@ export default function TeamPicker({
    * has its own "No team on this card" button). See `TeamPickerNoTeam`.
    */
   noTeam?: TeamPickerNoTeam;
+  /**
+   * NEO-617 — this field holds ONE team. See the header comment. Default false
+   * (multi-team card behaviour).
+   */
+  single?: boolean;
 }) {
   const noTeamOn = noTeam?.value === true;
   // Resolve currently-selected ids → display rows for the chip labels.
@@ -530,20 +556,26 @@ export default function TeamPicker({
     // NEO-556: a team picked over No Team REPLACES it. The list is only the
     // new team (No Team carries none), and that non-empty list is the one
     // signal the caller needs — see `TeamPickerNoTeam`.
-    onChange(noTeamOn ? [id] : [...value, id]);
+    onChange(noTeamOn || single ? [id] : [...value, id]);
     setQuery("");
     setHighlightIdx(0);
+    if (single) {
+      // NEO-617: one team per field, so the pick is the whole answer. Close
+      // and hand focus back to the trigger (now "Change team").
+      closePopover();
+      return;
+    }
     // Stay open so the user can pick a second team on a dual-team
     // card without re-clicking the trigger. Re-focus the input.
     setTimeout(() => inputRef.current?.focus(), 0);
   };
 
-  const closePopover = () => {
+  function closePopover() {
     setPopoverOpen(false);
     setQuery("");
     // Return focus to the trigger so Tab order stays predictable.
     setTimeout(() => triggerRef.current?.focus(), 0);
-  };
+  }
 
   /**
    * Close on Tab (or Shift+Tab) out of the picker while the popover is open —
@@ -589,6 +621,12 @@ export default function TeamPicker({
       setQuery("");
     }, 0);
   };
+
+  // NEO-617: a single picker that holds its team swaps rather than adds.
+  const changing = single && value.length > 0;
+  const triggerLabel = changing
+    ? (labels.change ?? DEFAULT_TEAM_PICKER_LABELS.change!)
+    : labels.trigger;
 
   return (
     <div
@@ -656,7 +694,7 @@ export default function TeamPicker({
             e.stopPropagation();
             first.focus();
           }}
-          aria-label={labels.trigger}
+          aria-label={triggerLabel}
           aria-describedby={ariaDescribedBy}
           aria-expanded={popoverOpen}
           // a11y (SC 1.4.11 Non-text Contrast): the dashed border IS this
@@ -669,7 +707,7 @@ export default function TeamPicker({
               instance that renames the trigger renames what people see, so
               "Add set team" reads on screen as "+ Add set team" and a voice
               command of what is shown still lands (SC 2.5.3). */}
-          + {labels.trigger}
+          {changing ? triggerLabel : `+ ${triggerLabel}`}
         </button>
 
         {popoverOpen && (

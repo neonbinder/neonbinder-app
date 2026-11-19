@@ -2123,14 +2123,12 @@ function PlayerDetail({
             <span className={STINT_LABEL_CLASS}>Team</span>
             <div className={`flex items-center ${FIELD_BOX_HEIGHT}`}>
               <TeamPicker
-                // Single stint at a time, so the picker's array is collapsed to
-                // its most recent pick rather than accumulating chips: a stint
-                // has one team, and the multi-select is the shared component's
-                // contract, not this field's.
+                // NEO-617: a stint has exactly one team.
+                single
                 value={pendingTeam ? [pendingTeam] : []}
                 onChange={(next) => {
                   setStintError(null);
-                  setPendingTeam(next.length > 0 ? next[next.length - 1] : null);
+                  setPendingTeam(next[0] ?? null);
                 }}
                 sportId={player.sportId}
               />
