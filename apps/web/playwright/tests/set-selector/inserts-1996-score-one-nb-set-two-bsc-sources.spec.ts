@@ -196,12 +196,27 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(wizard.getByText(`And ${SERIES_1_CARDS - TITLE_ROWS_SHOWN} more, saved as generated.`, { exact: true })).toBeVisible();
   await expectAccessible(page, { within: wizard, label: "Card titles step, every title left something out (SportLots paused)" });
 
+  // NEO-606: a box typed past 80 is refused in place, on the wizard's own surface: the box is
+  // invalid, the refusal is an alert, and no title takes it. Axe reads it in both modes while
+  // it shows.
+  const overBox = `${LONG_DESCRIPTION} Hologram Foil Extra`;
+  expect(overBox).toHaveLength(87);
+  await box.fill(overBox);
+  await box.press("Enter");
+  const boxRefusal = wizard.getByRole("alert").filter({ hasText: "Set name in titles tops out" });
+  await expect(boxRefusal).toHaveText("Set name in titles tops out at 80 characters.");
+  await expect(box).toHaveAttribute("aria-invalid", "true");
+  await expect(title(12)).toHaveValue(`${LONG_DESCRIPTION} Daulton #12`);
+  await expectAccessible(page, { within: wizard, label: "Card titles step, Set name in titles over 80 refused" });
+
   // ── P5. Trim the box: only the titles that lost a first name or ran long change ──
   await box.fill(SHORT_BOX);
   // Enter settles the box in place; its status is read at the settle. It counts every
   // title, the ones past the 50 drawn too: #76, over 80 after every cut, fits now.
   await box.press("Enter");
   await expect(wizard.getByText("Every title fits now.")).toBeVisible();
+  await expect(boxRefusal).toHaveCount(0);
+  await expect(box).not.toHaveAttribute("aria-invalid", "true");
   await expect(box).toHaveAccessibleDescription(/\b43\/80\b/);
   // #12 has its first name back, opening with the box text verbatim, and its team fits as
   // the nickname, where it would not fit whole (NEO-606): nothing is reported left out.

@@ -231,6 +231,8 @@ test(
     const stored = await fixerTitle.inputValue();
     await fixerRegenerate.click();
     await expect(fixerTitle).toHaveValue(regeneratedOver);
+    // What the rebuilt title was built from stays on show beside it.
+    await expect(fixer.getByRole("list", { name: "Title built from" })).toBeVisible();
     await expect(fixerTitle).toHaveAttribute("aria-invalid", "true");
     await expect(fixerTooLong).toBeVisible();
     await expect(fixerLeftOut).toHaveCount(0);

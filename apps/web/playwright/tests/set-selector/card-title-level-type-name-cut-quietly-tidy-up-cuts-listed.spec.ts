@@ -17,8 +17,10 @@
 //     saved after the title was built.
 //   * With a print run of 25 saved, the walker's Regenerate keeps "/25" and
 //     the level's name, gives up the team, the number and the first name, and
-//     the note lists all three. Saved, the walker is all clear and the drawer
-//     holds that title. Back undoes the drill's pick of the level.
+//     the note lists all three. Saved, the walker has walked the card, and the
+//     drawer holds that title. A generated title still past the Tidy Up line
+//     keeps its flag (only a typed title clears it), so the card's badge and
+//     the "1 needs you" pill stay. Back undoes the drill's pick of the level.
 //
 // R2 - every title is a full-string match computed with the generator
 // (`assessListingTitle`), so a type name that is not singular, not cut, cut
@@ -179,8 +181,11 @@ test(
     await expect(walker).toBeHidden();
 
     // ── STEP 4: the stored title is the one the walker saved ──
-    await expect(badge).toBeHidden();
-    await expect(page.getByRole("button", { name: /^[0-9]+ needs? you$/ })).toBeHidden();
+    // It is the generator's own title and still leaves out a team, the number
+    // and a first name, so the card stays in Tidy Up: only a typed title
+    // clears the flag.
+    await expect(badge).toBeVisible();
+    await expect(pill).toBeVisible();
     await editCardButton(page, NUMBER).click();
     await expect(cardTitle).toHaveValue(listedTitle);
     await expect(leftOut).toHaveText(`Left out to fit: ${team}, #${NUMBER}, ${FIRST}`);
