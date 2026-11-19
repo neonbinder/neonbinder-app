@@ -281,6 +281,24 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
     // instead of the capped list. It stands in for `teams.listForManagement`,
     // so it carries that list's gate.
     ["teams.searchForManagement", (t) => t.query(api.teams.searchForManagement, { query: "Yankees" })],
+    // NEO-602. The editor that writes a team's name, years and aliases (and so
+    // the alias-holder refusals). `requireAdmin` runs before the team lookup,
+    // but the id validator runs before the handler, so a real row is seeded
+    // for a well-formed id; the refusal is the gate, not a missing row.
+    [
+      "teams.saveTeamFields",
+      async (t, sportId) => {
+        const id = await t.run(async (ctx) =>
+          ctx.db.insert("teams", {
+            name: "Yankees",
+            nameNormalized: "yankees",
+            sportId,
+            lastUpdated: 1,
+          }),
+        );
+        return t.mutation(api.teams.saveTeamFields, { id, name: "Bombers" });
+      },
+    ],
     // NEO-495. The list it stands in for, now that it also answers the league
     // dropdown from the league's own rows. Admin-only since NEO-156; pinned
     // here when its arguments grew.

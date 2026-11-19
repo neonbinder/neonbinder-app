@@ -214,11 +214,12 @@ test(
       await expect(cleared).toBeVisible();
       // The refusal (", and <reason>. Remove it there, …") is gone from the step
       // and the footer. What stays is the form's statement of who answers to
-      // the name: allowed now, so told, never refused (NEO-602).
+      // the name: allowed now, so told, never refused, and without the advice
+      // clause because the draft's years already clear the holder's (NEO-602).
       await expect(wizard.getByText(/already answers to this name as an alias, and /)).toHaveCount(0);
       await expect(
         wizard.getByText(
-          `${FIXTURE_TEAM} · 1990–1996 already answers to this name as an alias. Give this one years that don't overlap if it is a different team.`,
+          `${FIXTURE_TEAM} · 1990–1996 already answers to this name as an alias.`,
           { exact: true },
         ),
       ).toBeVisible();
