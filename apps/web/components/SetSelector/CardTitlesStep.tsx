@@ -41,7 +41,7 @@ import type { TeamAnswer } from "./teams-on-cards";
  *      text, shared by every card that prints it, with a `72/65` meter. The
  *      operator trims it in place; untouched, the card saves as before and
  *      the walker's warn-only item stays.
- *   2. **Titles** that lost a first name or still run over the cap
+ *   2. **Titles** that had to leave something out (Tidy Up) or still run over the cap
  *      (NEO-535: the builder never cuts description words to force a fit) —
  *      grouped by what the generated titles left out, each card's title in
  *      its own field, kept by default and editable in place, with the same
@@ -105,7 +105,7 @@ const VARIATION_LEAD = "Variation's too long to list. Trim it to 65.";
 const TITLE_OVER = "Too long to list as-is.";
 
 /** NEO-535 copy, in the NB voice (no sign-off needed, Jason reviews while testing). */
-const TITLES_LEAD = "These titles lost a first name or ran long. Keep 'em, or make 'em yours.";
+const TITLES_LEAD = "These titles had to leave something out. Check what went, then keep 'em or make 'em yours.";
 const SHORT_LEAD = "Set name hogging the title? Trim it here and every title below gets it.";
 const SHORT_LABEL = "Set name in titles";
 const stillOverLine = (n: number) =>

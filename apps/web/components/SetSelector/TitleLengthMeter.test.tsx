@@ -225,7 +225,7 @@ describe("TitleFieldNote", () => {
 });
 
 describe("NEO-606 — the over-cap look is neon pink, on the text and on the field", () => {
-  it("paints the counter and the alert in the pink text role, never the salmon danger ink", () => {
+  it("paints the counter and the alert in the pink text role itself, not through the danger notice role", () => {
     render(
       <>
         <TitleLengthMeter length={81} />

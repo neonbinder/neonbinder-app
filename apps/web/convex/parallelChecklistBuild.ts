@@ -2099,7 +2099,7 @@ export const insertParallelCardsPage = internalMutation({
         cameoNames: born.cameos.map((c) => c.name),
       });
       let outcome: ParallelCopyTitle | undefined =
-        assessment.fits && !assessment.firstNameLost
+        assessment.fits && !assessment.tidyUp
           ? { ...assessment, failing: false }
           : undefined;
       if (outcome === undefined) {

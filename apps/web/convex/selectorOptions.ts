@@ -422,8 +422,10 @@ import {
   findAncestorLabels,
   LISTING_SHORT_NAME_LEVELS,
   normalizeListingShortName,
+  pickTitleChainFacts,
   titleChainFacts,
   titleChainFactsFields,
+  type TitleChainFacts,
 } from "./listingShortName";
 export { findAncestorLabels };
 // Re-exported for callers that reached the ceiling through this module before
@@ -7209,6 +7211,11 @@ export const previewListingTitle = query({
       // NEO-335 — the insert's name (already gated on its NB role) and the
       // set's short name for titles, so the TitleFixer can chip them.
       insertName: v.optional(v.string()),
+      // NEO-609 — every level of the chain with its variant type's name, so
+      // the client re-assesses the same title and chips one per level.
+      titleLevels: v.optional(
+        v.array(v.object({ name: v.string(), typeName: v.optional(v.string()) })),
+      ),
       setShortName: v.optional(v.string()),
       parallelName: v.optional(v.string()),
       // NEO-335 — the leaf's parallel ROLE, which earns the parallel its
@@ -20484,11 +20491,6 @@ type CommitPrelude = {
   setNameValue?: string;
   /** NEO-272 — see the returns validator. */
   manufacturerBrandUnknown?: boolean;
-  /** NEO-335 — see the returns validator (`titleChainFacts`). */
-  insertNameValue?: string;
-  insertIsRole?: boolean;
-  parallelLeafValue?: string;
-  listingShortName?: string;
   existingCustomCardNumbers: string[];
   existingIdByBscRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
   existingIdBySlRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
@@ -20499,7 +20501,7 @@ type CommitPrelude = {
   }>;
   ambiguousMatchKeys: string[];
   slotBySetId: Array<{ side: MatchSide; setId: string; slot: string }>;
-};
+} & TitleChainFacts; // NEO-335/609 — see the returns validator (`titleChainFactsFields`).
 
 /**
  * One card as the chunk phase sees it: names already resolved to ids by the
@@ -21549,11 +21551,10 @@ export const commitCardChecklistChunk = internalMutation({
             setNameValue: args.setNameValue,
             manufacturerBrandUnknown: args.manufacturerBrandUnknown,
             inheritedFeatures: args.inheritedFeatures,
-            // NEO-335 — the insert role, a parallel leaf, the short name.
-            insertNameValue: args.insertNameValue,
-            insertIsRole: args.insertIsRole,
-            parallelLeafValue: args.parallelLeafValue,
-            listingShortName: args.listingShortName,
+            // NEO-335 — the insert role, a parallel leaf, the short name;
+            // NEO-609 — and every level. Picked by key, so a fact added to
+            // `titleChainFactsFields` travels without a line here.
+            ...pickTitleChainFacts(args),
           },
           // NEO-313 — the new card's player index, kept inside
           // `insertCardRow` with `fresh: true` and this chunk's `cardSport`.
@@ -24621,11 +24622,9 @@ export const commitCardChecklist = action({
             // NEO-272 — see the prelude's returns validator.
             manufacturerBrandUnknown: prelude.manufacturerBrandUnknown,
             inheritedFeatures: prelude.inheritedFeatures,
-            // NEO-335 — the chain's title facts, from the same last page.
-            insertNameValue: prelude.insertNameValue,
-            insertIsRole: prelude.insertIsRole,
-            parallelLeafValue: prelude.parallelLeafValue,
-            listingShortName: prelude.listingShortName,
+            // NEO-335 — the chain's title facts, from the same last page
+            // (NEO-609: picked by key; see `pickTitleChainFacts`).
+            ...pickTitleChainFacts(prelude),
             // NEO-221 — the names this commit settled, so the chunk's update
             // branch retires only what it is entitled to. The same two lists
             // the finalize phase is handed below.

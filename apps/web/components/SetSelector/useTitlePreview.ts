@@ -78,6 +78,12 @@ type PreviewResult = {
      * set's short name for titles. Optional: an older deploy predates them.
      */
     insertName?: string;
+    /**
+     * NEO-609 — every level of the chain with its variant type's name, top
+     * level first. One chip each, labelled with the type's name. Optional: an
+     * older deploy predates it, and the Insert / Parallel chips stand.
+     */
+    titleLevels?: Array<{ name: string; typeName?: string }>;
     setShortName?: string;
     parallelName?: string;
     /** NEO-335 — the leaf's parallel ROLE (earns the "Parallel" label). */
@@ -203,11 +209,24 @@ function pushDescription(
   // Keyed on the flag, never on the manufacturer's name.
   if (!inputs.manufacturerBrandUnknown) push("Maker", inputs.manufacturer);
   push("Set", inputs.setName);
-  push("Insert", inputs.insertName);
+  // NEO-609 — one chip per level the title names, labelled with its variant
+  // type's own name (a level with no type above it has no label: the chip is
+  // just its name). The
+  // Base word is cut first and is no source fact worth a chip.
+  const levels = inputs.titleLevels?.filter((l) => variantTypeKindFromTitle(l.name) !== "base");
+  if (levels) {
+    for (const level of levels) push(level.typeName?.trim() ?? "", level.name);
+  } else {
+    push("Insert", inputs.insertName);
+  }
   // NEO-535 — "Base" names no parallel (the Base kind's word, read through the
-  // role helper, never a literal), so a base card shows no Parallel chip.
+  // role helper, never a literal), so a base card shows no Parallel chip. With
+  // levels, a parallel they already carry has its chip.
   const parallel = inputs.parallelName?.trim();
-  if (parallel && variantTypeKindFromTitle(parallel) !== "base") push("Parallel", parallel);
+  const carried = levels?.some((l) => l.name.trim().toLowerCase() === parallel?.toLowerCase());
+  if (parallel && !carried && variantTypeKindFromTitle(parallel) !== "base") {
+    push("Parallel", parallel);
+  }
 }
 
 export type TitlePreview = {

@@ -2192,11 +2192,12 @@ export default defineSchema({
     // backfill (`backfillListingDescriptions`) has not reached may lack it,
     // and such a row is not found by the search until it is filled.
     listingDescription: v.optional(v.string()),
-    // NEO-101: the auto-generated title's CORE (year / manufacturer / set /
-    // players) did not fit inside eBay's 80-character cap at creation time, so
-    // the generator cut it at a word boundary to keep room for the card number.
+    // NEO-101 / NEO-609: the card is in Tidy Up. The auto-generated title fit
+    // eBay's 80-character cap only by a cut from the Tidy Up line down (a
+    // whole team, the card number, SP, RELIC, a first name, RC or AUTO; the
+    // "#" alone is not one), or it was built from the set's box text.
     // The title is valid and listable — it is just missing identifying words a
-    // human should put back, which is why this drives a "needs attention" item
+    // human may want to decide differently, which is why this drives a "needs attention" item
     // (`features/cardAttention.ts` → `titleTruncated`) rather than an error.
     //
     // Set ONLY at insert, from `assessListingTitle(...).coreFits === false`,

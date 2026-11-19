@@ -42,10 +42,10 @@ import {
  * follow the light/dark mode, so each tone reads 4.5:1 on any of them in
  * either mode. Over the cap is neon pink everywhere (NEO-606, Jason: "our
  * error state color is the neon pink"): the text roles, and the field itself
- * through {@link OVER_FIELD_CLASS}. The danger notice ink this used to borrow
- * read as salmon beside the app's pink. Dark `neon-pink-text` was lifted to
- * #ff40a3 for 4.5:1 on a graphite card (NEO-356), so the old 4.4:1 worry is
- * gone. There used to be a `surface` prop choosing between two maps that
+ * through {@link OVER_FIELD_CLASS}. The counter and alert paint `neon-pink-text`
+ * directly; the error ink (`notice-danger-ink`) is the same pink, so every error
+ * on screen reads as one colour. Dark `neon-pink-text` was lifted to #ff40a3 for
+ * 4.5:1 on a graphite card (NEO-356), so the old 4.4:1 worry is gone. There used to be a `surface` prop choosing between two maps that
  * differed only in that tone; NEO-535 folded them into one.
  *
  * ## The bands are display truncation, not rules

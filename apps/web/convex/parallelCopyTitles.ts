@@ -88,6 +88,10 @@ const listingInputsValidator = v.object({
   manufacturerBrandUnknown: v.optional(v.boolean()),
   setName: v.optional(v.string()),
   insertName: v.optional(v.string()),
+  // NEO-609 — every level with its variant type's name.
+  titleLevels: v.optional(
+    v.array(v.object({ name: v.string(), typeName: v.optional(v.string()) })),
+  ),
   setShortName: v.optional(v.string()),
   parallelName: v.optional(v.string()),
   parallelIsRole: v.optional(v.boolean()),

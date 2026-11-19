@@ -28,6 +28,7 @@
       "dark-selection": { "role": "neutral", "displayName": "Selection (dark)", "canonical": "#00C2FF" },
       "dark-neon-purple-text": { "role": "tertiary", "displayName": "Profile Violet Text (dark)", "canonical": "#B56BFF" },
       "dark-neon-pink-text": { "role": "secondary", "displayName": "Show-Sign Pink Text (dark)", "canonical": "#FF40A3" },
+      "dark-notice-danger-rule": { "role": "secondary", "displayName": "Error Pink Rule (dark)", "canonical": "#DF1C8A", "purpose": "An error banner's edge." },
       "light-surface": { "role": "neutral", "displayName": "Page (light)", "canonical": "#F7F8FC" },
       "light-raised": { "role": "neutral", "displayName": "Raised (light)", "canonical": "#FFFFFF" },
       "light-field": { "role": "neutral", "displayName": "Field (light)", "canonical": "#FFFFFF" },
@@ -43,6 +44,8 @@
       "light-offset": { "role": "neutral", "displayName": "Offset Shadow (light)", "canonical": "#00C2FF" },
       "light-neon-green-text": { "role": "primary", "displayName": "Binder Green Text (light)", "canonical": "#007A3B" },
       "light-neon-pink-text": { "role": "secondary", "displayName": "Show-Sign Pink Text (light)", "canonical": "#C40068" },
+      "light-notice-danger-bg": { "role": "secondary", "displayName": "Error Pink Ground (light)", "canonical": "#FDE9F2", "purpose": "An error banner's tint." },
+      "light-notice-danger-rule": { "role": "secondary", "displayName": "Error Pink Rule (light)", "canonical": "#C40068", "purpose": "An error banner's edge." },
       "light-neon-blue-text": { "role": "secondary", "displayName": "Marquee Cyan Text (light)", "canonical": "#006DA6" },
       "light-neon-yellow-text": { "role": "tertiary", "displayName": "Hazard Yellow Text (light)", "canonical": "#7A6400" },
       "light-neon-orange-text": { "role": "tertiary", "displayName": "Admin Amber Text (light)", "canonical": "#9A4D00" },
@@ -187,7 +190,8 @@
       "**Don't** set headings in gradient text; a heading takes its section's one hue (One Hue Per Section).",
       "**Don't** hand-mix a near-neon hex. `#00B7FF` and `#FF2EB3` crept into 80 files before the 2026-10 audit folded them back into Marquee Cyan `#00C2FF` and Show-Sign Pink `#FF2E9A`.",
       "**Don't** put a glow on a resting element.",
-      "**Don't** use neon pink for anything but negative actions (cancel and destructive).",
+      "**Don't** use neon pink for anything but the negative: cancel, destructive, and errors (an invalid field, an error message, an error banner).",
+      "**Don't** paint an error red or salmon. Errors are neon pink (`notice-danger-*`); the only reds left are a sport's and a team's own colours and the SP attribute badge (`pick-red`).",
       "**Don't** reach for a hued palette step (`bg-red-600`). Every hue has a role; the lint rule refuses the step.",
       "**Don't** draw a divider with `border-rule` inside a `bg-raised` card. In dark mode `rule` (#1D293D) matches the card's fill (#1E2939) and the line vanishes; use `border-rule-strong`."
     ]

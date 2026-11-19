@@ -72,7 +72,7 @@ import {
 
 /** Copy (NB voice; Jason reviews while testing). */
 export const TITLES_DIALOG_TITLE = "Card titles";
-const TITLES_DIALOG_LEAD = "Fresh off the build: these titles ran long or lost a first name.";
+const TITLES_DIALOG_LEAD = "Fresh off the build: these titles had to leave something out.";
 export const SAVE_TITLES_LABEL = "Save titles";
 export const SAVING_TITLES_LABEL = "Saving titles…";
 export const NOT_NOW_LABEL = "Not now";

@@ -55,13 +55,22 @@
  */
 
 import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./listingLimits";
-import { variantTypeKindFromTitle } from "../variantRole";
+import { sameTitleWord, variantTypeKindFromTitle } from "../variantRole";
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
 import { teamFullName } from "../../lib/teams/team-name";
 import { parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
 
 /** NEO-606 — a team row's Location / Name, as `ListingCardInputs.teamSplits` carries it. */
 export type ListingTeamSplit = { location: string; name: string };
+
+/**
+ * NEO-609 — one level of the card's set chain, as its variant-type rows name
+ * it: the level's own NB name ("Future Stars") and, when a variant type sits
+ * above it, that type's name ("Inserts", "Proof"). Top level first. Both are
+ * NB data read off the rows (`listingShortName.titleChainFacts`); this module
+ * never decides what a level IS, only what the title says of it.
+ */
+export type ListingTitleLevel = { name: string; typeName?: string };
 
 export type ListingCardInputs = {
   cardNumber: string;
@@ -101,6 +110,15 @@ export type ListingCardInputs = {
    * part of the description and is never cut.
    */
   insertName?: string;
+  /**
+   * NEO-609 — EVERY level of the chain below the set, top level first, each
+   * with its variant type's name (`ListingTitleLevel`). The title names them
+   * all: the level's name is part of the description and is never cut, its
+   * type name is a quiet cut (rows 5-6). Absent (a dash card, an older
+   * caller): the levels are built from `insertName` / `parallelName` /
+   * `parallelIsRole` exactly as before NEO-609.
+   */
+  titleLevels?: ListingTitleLevel[];
   /**
    * NEO-535 — the set's box text ("Set name in titles"): the WHOLE set
    * description (year, maker, set, insert, parallel) as the operator typed it.
@@ -192,9 +210,17 @@ export type ListingTitleAssessment = {
    */
   shortNameUsed?: true;
   /**
-   * False when the card belongs in the Card titles dialog for a first name or
-   * the box: it lost a first name, or its title was built from the box. A row
-   * is born with `listingTitleTruncated` when this is false. An over-cap title
+   * NEO-609 — a Tidy Up cut (rows 12-20: a whole team, the card number, SP,
+   * RELIC, a first name, RC or AUTO) is still out after the refill. Dropping
+   * only the "#" is not one. True for a title built from the box too when the
+   * box version cut one. What a parallel copy's "does the builder's title
+   * work" test reads (`features/carriedTitle`).
+   */
+  tidyUp: boolean;
+  /**
+   * False when the card belongs in the Card titles dialog (Tidy Up): a
+   * Tidy Up cut is still out, or its title was built from the box. A row is
+   * born with `listingTitleTruncated` when this is false. An over-cap title
    * is flagged by its length (`titleOverLimit`), not by this.
    *
    * Kept under its NEO-101 name so the insert paths read one field.
@@ -253,25 +279,32 @@ function startsWithWord(value: string, prefix: string): boolean {
 /**
  * NEO-335 — the label words the old title builder put after an insert's and a
  * parallel's names: "1996 Score Dugout Collection Insert …", "… Gold
- * Parallel". Cut rows 4 and 5.
+ * Parallel". Since NEO-609 a level's label is its variant type's own name
+ * (`ListingTitleLevel.typeName`); these two are what the levels are built
+ * with when a caller passes no `titleLevels` (the dash card, an older caller).
  */
 export const INSERT_LABEL = "Insert";
 export const PARALLEL_LABEL = "Parallel";
 
 /**
- * Does `name` already end with `label` as a word, singular or plural ("Gold
- * Insert", "Prizm Parallels")? Then the label would only repeat it.
+ * Does `name` already end with `typeName` as a word, singular or plural
+ * ("Gold Insert" with "Inserts", "Prizm Parallels" with "Parallel")? Then the
+ * type name would only repeat it. A type name of several words is matched
+ * word for word, the last one singular or plural.
  */
-function endsWithLabel(name: string, label: string): boolean {
-  const words = name.trim().toLowerCase().split(/\s+/);
-  const last = words[words.length - 1] ?? "";
-  const word = label.toLowerCase();
-  return last === word || last === `${word}s`;
+function endsWithTypeName(name: string, typeName: string): boolean {
+  const named = wordsOf(name);
+  const wanted = wordsOf(typeName);
+  if (wanted.length === 0 || named.length < wanted.length) return false;
+  const tail = named.slice(named.length - wanted.length);
+  return tail.every((word, i) =>
+    i < wanted.length - 1 ? word === wanted[i] : sameTitleWord(word, wanted[i]),
+  );
 }
 
 /**
- * NEO-335 — "Rookie" shortened to "RC" in an insert's name ("Rookie Debut" →
- * "RC Debut"). Cut row 8. Exactly the old builder's replacement: the FIRST
+ * NEO-335 — "Rookie" shortened to "RC" in a level's name ("Rookie Debut" →
+ * "RC Debut"). Cut row 10 (NEO-609: every level, not only the insert). Exactly the old builder's replacement: the FIRST
  * occurrence, case-sensitive, no word boundary — so "Rookies" reads "RCs" and
  * a lowercase "rookie" is left alone.
  */
@@ -363,7 +396,7 @@ function teamNicknames(splits: ReadonlyArray<ListingTeamSplit> | undefined): Map
   return out;
 }
 
-/** The words that make AUTO, RC and RELIC repeats (cut rows 1-3). */
+/** The words that make AUTO, RC and RELIC repeats (cut rows 2-4, 14, 15). */
 const AUTO_WORDS: ReadonlySet<string> = new Set([
   "auto",
   "autos",
@@ -373,6 +406,10 @@ const AUTO_WORDS: ReadonlySet<string> = new Set([
 ]);
 const ROOKIE_WORDS: ReadonlySet<string> = new Set(["rookie", "rookies", "rc", "rcs"]);
 const RELIC_WORDS: ReadonlySet<string> = new Set(["relic", "relics"]);
+/** NEO-609 — a title that says "Memorabilia" lets RELIC go at row 14. */
+const MEMORABILIA_WORDS: ReadonlySet<string> = new Set(["memorabilia"]);
+/** NEO-609 — a title that says "Signature(s)" lets AUTO go at row 15. */
+const SIGNATURE_WORDS: ReadonlySet<string> = new Set(["signature", "signatures"]);
 
 function says(text: string, words: ReadonlySet<string>): boolean {
   return bareWordsOf(text).some((w) => words.has(w));
@@ -415,130 +452,217 @@ function stripDoubledWords(name: string, inputs: ListingCardInputs): string {
     .join(" ");
 }
 
+/**
+ * NEO-609 — the switches Jason may flip. Each is one constant or one function;
+ * nothing else in this module knows the answer.
+ *
+ *   Q1  DECIDED (Jason 2026-11-18): "Base" IS in the full title ("2024 Topps
+ *       Chrome Base Mike Trout"), and is the first word cut (row 1). Wherever
+ *       a Base level or type sits in the chain it renders as a token and goes
+ *       first, quietly. A Base card with no Base level in its chain (a dash
+ *       card, a caller with no `titleLevels`) says it through its features'
+ *       parallel name, when that is the Base kind's word. Not a switch any
+ *       more: `LevelParts.base` / `typeBase` are the whole of it.
+ *   Q2  Where a type name sits against its level's name. Default after:
+ *       "Future Stars Inserts". false: before, "Inserts Future Stars".
+ *   Q3  How a type name is worded: `typeNameAsSaid` (default verbatim from
+ *       the variant type's row, "Inserts").
+ *   Q4  Where the "#"-at-81 rule starts: `HASH_RULE_FROM_ROW` (default the
+ *       first Tidy Up row, so a quiet cut is always made before a "#" is).
+ *   Q5  "Left out to fit" is unchanged (`leftOutOfTitle`).
+ */
+const TYPE_NAME_FOLLOWS_LEVEL = true;
+function typeNameAsSaid(typeName: string): string {
+  return typeName.trim();
+}
+
+/** Is `text` the Base kind's word ("Base", "Bases"), read through the role helper? */
+function isBaseWord(text: string | undefined): boolean {
+  return variantTypeKindFromTitle(text) === "base";
+}
+
+/**
+ * One level of a description: the words the title says of it and the type
+ * name that may follow (or lead) them. A level whose words the set already
+ * says has no `text`.
+ */
+type LevelParts = {
+  /** The level's own words, year and maker stripped. Never cut (but see `base`). */
+  text?: string;
+  /** The level IS the Base word ("Base"): its `text` is cut first (row 1). */
+  base?: true;
+  /** The type name is the Base word: cut first (row 1) rather than at row 5. */
+  typeBase?: true;
+  /** The level's words with "Rookie" → "RC" (cut row 10), when that differs. */
+  rc?: string;
+  /** The variant type's name (cut rows 5-6). */
+  typeName?: string;
+};
+
 /** The description half of a title: the builder's own, or the box text. */
 type DescriptionParts = {
   /** Year + maker + set, or the whole box text. Never cut. */
   head: string;
-  /** The insert's words as the title says them. Never cut. */
-  insert?: string;
-  /** The insert's words with "Rookie" → "RC" (cut row 8), when that differs. */
-  insertRc?: string;
-  /** "Insert" follows the insert (cut row 4). */
-  insertLabel: boolean;
-  /** The parallel's words. Never cut. */
-  parallel?: string;
-  /** "Parallel" follows the parallel (cut row 5). */
-  parallelLabel: boolean;
+  /** Every level of the chain, top level first. Empty for the box text. */
+  levels: LevelParts[];
 };
 
 /**
- * The builder's description, in parts. The insert collapses into the set when
- * it is named after it ("Topps Chrome Refractor" under "Topps Chrome"), and is
- * left out when the set already says every word of it; otherwise it follows
- * the set with the year and maker words stripped (row 0). The parallel follows
- * the insert the same way, and the leading words it shares with the insert's
- * name are said once (NEO-535, `parallelAfterInsert`). A "parallel" that is
- * the card's own variation text (NEO-189 copies `cardVariation` into
- * `features.parallelName`) is not a parallel: the variation states itself in
- * the tail.
+ * The levels the title names (NEO-609): the caller's `titleLevels` when it
+ * has them, else the insert and the parallel as before. A real parallel name
+ * the levels do not already carry (the features' snapshot name, a copy's own)
+ * follows them with no type name; one that is the card's own variation text
+ * (NEO-189 copies `cardVariation` into `features.parallelName`) is not a
+ * level: the variation states itself in the tail.
+ */
+function effectiveLevels(inputs: ListingCardInputs): ListingTitleLevel[] {
+  const levels: ListingTitleLevel[] = [];
+  if (inputs.titleLevels) {
+    for (const level of inputs.titleLevels) {
+      const name = level.name.trim();
+      if (name) levels.push({ name, ...(level.typeName?.trim() ? { typeName: level.typeName.trim() } : {}) });
+    }
+  } else {
+    const insert = inputs.insertName?.trim();
+    if (insert) levels.push({ name: insert, typeName: INSERT_LABEL });
+  }
+  if (isRealParallel(inputs)) {
+    const raw = inputs.parallelName!.trim();
+    const variation = inputs.cardVariation?.trim().toLowerCase();
+    const carried = levels.some((l) => l.name.toLowerCase() === raw.toLowerCase());
+    if (raw.toLowerCase() !== variation && !carried) {
+      levels.push({
+        name: raw,
+        ...(!inputs.titleLevels && inputs.parallelIsRole === true ? { typeName: PARALLEL_LABEL } : {}),
+      });
+    }
+  }
+  // Q1 — a Base card with no level in its chain says Base through its
+  // features' parallel name, when that is the Base kind's word.
+  const featuresName = inputs.parallelName?.trim();
+  if (levels.length === 0 && featuresName && isBaseWord(featuresName)) {
+    levels.push({ name: featuresName });
+  }
+  return levels;
+}
+
+/**
+ * The builder's description, in parts. The top level collapses into the set
+ * when it is named after it ("Topps Chrome Refractor" under "Topps Chrome"),
+ * and is left out when the set already says every word of it; otherwise it
+ * follows the set with the year and maker words stripped. Each level below
+ * follows the same way, and the leading words it shares with the level above
+ * are said once (NEO-535, `parallelAfterInsert`). A level literally named
+ * Base is a token of its own (cut first, Q1): it takes no part in any of that.
  */
 function builderDescriptionParts(inputs: ListingCardInputs): DescriptionParts {
   const year = inputs.year?.trim();
   const setTokens = manufacturerAndSetTokens(inputs);
-  const insertRaw = inputs.insertName?.trim();
   let headTokens = setTokens;
-  let insert: string | undefined;
-  if (insertRaw) {
-    const joined = setTokens.join(" ");
-    const last = setTokens[setTokens.length - 1];
-    if (setTokens.length > 0 && startsWithWord(insertRaw, joined)) {
-      headTokens = [];
-      insert = insertRaw;
-    } else if (last && startsWithWord(insertRaw, last)) {
-      headTokens = setTokens.slice(0, -1);
-      insert = insertRaw;
-    } else if (!alreadySaid(joined, insertRaw)) {
-      insert = stripDoubledWords(insertRaw, inputs) || undefined;
+  const levels: LevelParts[] = [];
+  const said: string[] = [];
+  const head = () => [year, ...headTokens].filter(Boolean).join(" ");
+  let above: { raw: string; text?: string } | undefined;
+  for (const level of effectiveLevels(inputs)) {
+    if (isBaseWord(level.name)) {
+      levels.push({ text: level.name, base: true });
+      continue;
     }
-  }
-  const head = [year, ...headTokens].filter(Boolean).join(" ");
-  const soFar = [head, insert].filter(Boolean).join(" ");
-
-  let parallel: string | undefined;
-  const variation = inputs.cardVariation?.trim().toLowerCase();
-  if (isRealParallel(inputs)) {
-    const raw = inputs.parallelName!.trim();
-    if (raw.toLowerCase() !== variation) {
-      // NEO-535 — the leading words the parallel shares with its insert are
-      // said once, by the insert ("Anime" + "Anime Red Refractors" →
-      // "Anime Red Refractors"; `parallelAfterInsert`).
-      const stripped = stripDoubledWords(parallelAfterInsert(raw, insert ?? insertRaw), inputs);
-      if (stripped && !alreadySaid(soFar, stripped)) parallel = stripped;
+    const raw = level.name;
+    let text: string | undefined;
+    if (above === undefined) {
+      const joined = setTokens.join(" ");
+      const last = setTokens[setTokens.length - 1];
+      if (setTokens.length > 0 && startsWithWord(raw, joined)) {
+        headTokens = [];
+        text = raw;
+      } else if (last && startsWithWord(raw, last)) {
+        headTokens = setTokens.slice(0, -1);
+        text = raw;
+      } else if (!alreadySaid(joined, raw)) {
+        text = stripDoubledWords(raw, inputs) || undefined;
+      }
+    } else {
+      // NEO-535 — the leading words a level shares with the one above it are
+      // said once, by that one ("Anime" + "Anime Red Refractors" → "Anime Red
+      // Refractors"; `parallelAfterInsert`).
+      const stripped = stripDoubledWords(parallelAfterInsert(raw, above.text ?? above.raw), inputs);
+      if (stripped && !alreadySaid([head(), ...said].filter(Boolean).join(" "), stripped)) {
+        text = stripped;
+      }
     }
+    // The top level keeps its type name even when the set already says its
+    // words ("2026 Topps Chrome Update Insert"); a lower level, only with them.
+    const typeRaw = level.typeName?.trim();
+    const typeName =
+      typeRaw &&
+      (text !== undefined || above === undefined) &&
+      !endsWithTypeName(text ?? raw, typeRaw)
+        ? typeNameAsSaid(typeRaw)
+        : undefined;
+    levels.push({
+      text,
+      rc: text && rookieAsRc(text) !== text ? rookieAsRc(text) : undefined,
+      typeName,
+      ...(typeName && isBaseWord(typeName) ? { typeBase: true as const } : {}),
+    });
+    if (text) said.push(text);
+    above = { raw, text };
   }
-
-  const insertRc = insert && rookieAsRc(insert) !== insert ? rookieAsRc(insert) : undefined;
-  return {
-    head,
-    insert,
-    insertRc,
-    insertLabel: !!insertRaw && !endsWithLabel(insertRaw, INSERT_LABEL),
-    parallel,
-    parallelLabel:
-      !!parallel && inputs.parallelIsRole === true && !endsWithLabel(parallel, PARALLEL_LABEL),
-  };
+  return { head: head(), levels };
 }
 
-/** The box text as a description: verbatim, no labels, nothing to shorten. */
+/** The box text as a description: verbatim, no type names, nothing to shorten. */
 function boxDescriptionParts(box: string): DescriptionParts {
-  return { head: box.trim(), insertLabel: false, parallelLabel: false };
+  return { head: box.trim(), levels: [] };
+}
+
+/** A level's words and type name, in the order the title says them (Q2). */
+function levelWords(name: string | undefined, typeName: string | undefined): string[] {
+  const words = TYPE_NAME_FOLLOWS_LEVEL ? [name, typeName] : [typeName, name];
+  return words.filter((w): w is string => !!w);
 }
 
 /**
- * NEO-535 — the builder's full set description, without the "Insert" and
- * "Parallel" labels: "2026 Leaf Metal 1991 Gold Prospects Autographs
- * Prismatic Silver". What the "Set name in titles" box is prefilled with when
- * no value is stored (`listingInputs.setDescriptionForTitles`). Ignores
- * `setShortName`.
+ * NEO-535 — the builder's full set description, without the type names:
+ * "2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver". What the
+ * "Set name in titles" box is prefilled with when no value is stored
+ * (`listingInputs.setDescriptionForTitles`). Ignores `setShortName`.
  */
 export function titleDescription(inputs: ListingCardInputs): string {
   const parts = builderDescriptionParts(inputs);
-  return [parts.head, parts.insert, parts.parallel].filter(Boolean).join(" ");
+  return [parts.head, ...parts.levels.filter((l) => !l.base).map((l) => l.text)]
+    .filter(Boolean)
+    .join(" ");
 }
 
 /**
  * NEO-535 — every form the builder's description can take in a title it
- * wrote, longest first: with and without the "Insert" and "Parallel" labels
- * (cut rows 4 and 5), and with the insert's "Rookie" read as "RC" (row 8).
- * What `features/carriedTitle` looks for in a source card's hand-edited title
- * to tell its description from the operator's own words. Ignores
- * `setShortName` (the caller adds the box text as its own candidate).
+ * wrote, longest first: with and without each level's type name (cut rows
+ * 5-6, or 1 for Base), with each level's "Rookie" read as "RC" (row 10), and
+ * with or without the Base word (row 1). What `features/carriedTitle` looks for in a
+ * source card's hand-edited title to tell its description from the
+ * operator's own words. Ignores `setShortName` (the caller adds the box text
+ * as its own candidate).
  */
 export function titleDescriptionForms(inputs: ListingCardInputs): string[] {
   const parts = builderDescriptionParts(inputs);
-  const inserts: Array<string | undefined> = parts.insert
-    ? [parts.insert, ...(parts.insertRc ? [parts.insertRc] : [])]
-    : [undefined];
-  const insertLabels = parts.insertLabel ? [true, false] : [false];
-  const parallelLabels = parts.parallelLabel ? [true, false] : [false];
-  const forms = new Set<string>();
-  for (const insert of inserts) {
-    for (const insertLabel of insertLabels) {
-      for (const parallelLabel of parallelLabels) {
-        const form = [
-          parts.head,
-          insert,
-          insertLabel ? INSERT_LABEL : undefined,
-          parts.parallel,
-          parallelLabel ? PARALLEL_LABEL : undefined,
-        ]
-          .filter(Boolean)
-          .join(" ");
-        if (form) forms.add(form);
+  let forms: string[][] = [[parts.head]];
+  for (const level of parts.levels) {
+    const names = level.text
+      ? [level.text, ...(level.rc ? [level.rc] : []), ...(level.base ? [undefined] : [])]
+      : [undefined];
+    const types = level.typeName ? [level.typeName, undefined] : [undefined];
+    const next: string[][] = [];
+    for (const form of forms) {
+      for (const name of names) {
+        for (const type of types) next.push([...form, ...levelWords(name, type)]);
       }
     }
+    forms = next;
   }
-  return [...forms].sort((a, b) => b.length - a.length);
+  const out = new Set(forms.map((words) => words.filter(Boolean).join(" ")).filter(Boolean));
+  return [...out].sort((a, b) => b.length - a.length);
 }
 
 type TailKind =
@@ -574,9 +698,12 @@ type TailToken = {
 /** One title under construction: what is in, what is cut. */
 type TitleState = {
   parts: DescriptionParts;
-  insertAbbreviated: boolean;
-  insertLabelIn: boolean;
-  parallelLabelIn: boolean;
+  /**
+   * Per level of `parts.levels`: its "Rookie" read as "RC" (row 10), its type
+   * name in (rows 5-6), and its own words in (only a Base level's are ever cut,
+   * row 1).
+   */
+  levels: Array<{ abbreviated: boolean; typeIn: boolean; textIn: boolean }>;
   players: Array<{ full: string; short?: string; firstOut: boolean }>;
   /** NEO-528 — the cameos, after the players; each whole name in or out. */
   cameos: Array<{ name: string; in: boolean }>;
@@ -586,11 +713,11 @@ type TitleState = {
 
 function renderTitle(state: TitleState): string {
   const out: string[] = [state.parts.head];
-  const { insert, insertRc, parallel } = state.parts;
-  if (insert) out.push(state.insertAbbreviated && insertRc ? insertRc : insert);
-  if (state.insertLabelIn) out.push(INSERT_LABEL);
-  if (parallel) out.push(parallel);
-  if (state.parallelLabelIn) out.push(PARALLEL_LABEL);
+  state.parts.levels.forEach((level, index) => {
+    const now = state.levels[index];
+    const name = !now.textIn ? undefined : now.abbreviated && level.rc ? level.rc : level.text;
+    out.push(...levelWords(name, now.typeIn ? level.typeName : undefined));
+  });
   const players = state.players.map((p) => (p.firstOut && p.short ? p.short : p.full));
   // NEO-528 — the people also pictured follow the card's own, in one run.
   for (const cameo of state.cameos) if (cameo.in) players.push(cameo.name);
@@ -619,7 +746,7 @@ function renderTitle(state: TitleState): string {
 /** The full title's state, before any cut, for one description. */
 function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   state: TitleState;
-  repeats: { auto: boolean; rc: boolean; relic: boolean };
+  repeats: Repeats;
 } {
   const players = distinctNames(inputs.playerNames).map((full) => ({
     full,
@@ -633,24 +760,32 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
     .map((name) => ({ name, in: true }));
   const state: TitleState = {
     parts,
-    insertAbbreviated: false,
-    insertLabelIn: parts.insertLabel,
-    parallelLabelIn: parts.parallelLabel,
+    levels: parts.levels.map((level) => ({
+      abbreviated: false,
+      typeIn: !!level.typeName,
+      textIn: true,
+    })),
     players,
     cameos,
     ...(cardNumber ? { number: { text: cardNumber, mode: "hash" as const } } : {}),
     tail: [],
   };
 
-  // What the title says besides the tokens themselves: the description and
-  // the variation. AUTO, RC and RELIC are REPEATS when it already says them.
-  const description = [parts.head, parts.insert, parts.parallel].filter(Boolean).join(" ");
+  // What the title says that is never cut: the description (the set words and
+  // every level's own name, NOT the cuttable type names: "Autographs" as a
+  // type must not make AUTO a repeat) and the variation. AUTO, RC and RELIC
+  // are REPEATS when it already says them.
+  const description = [parts.head, ...parts.levels.filter((l) => !l.base).map((l) => l.text)]
+    .filter(Boolean)
+    .join(" ");
   const variation = inputs.cardVariation?.trim();
   const context = [description, variation].filter(Boolean).join(" ");
-  const repeats = {
+  const repeats: Repeats = {
     auto: says(context, AUTO_WORDS),
     rc: says(context, ROOKIE_WORDS),
     relic: says(context, RELIC_WORDS),
+    memorabilia: says(context, MEMORABILIA_WORDS),
+    signature: says(context, SIGNATURE_WORDS),
   };
 
   const push = (kind: TailKind, text: string) => {
@@ -688,6 +823,65 @@ function fullTitleState(inputs: ListingCardInputs, parts: DescriptionParts): {
   return { state, repeats };
 }
 
+/** What the title already says in words that are never cut (see `fullTitleState`). */
+type Repeats = {
+  auto: boolean;
+  rc: boolean;
+  relic: boolean;
+  /** "Memorabilia" is said: RELIC goes at row 14 instead of 17. */
+  memorabilia: boolean;
+  /** "Signature(s)" is said: AUTO goes at row 15 instead of 20. */
+  signature: boolean;
+};
+
+/**
+ * The cut list's rows (NEO-609, Jason 2026-11-18, titles only). Rows 1-11 are
+ * quiet cuts. From `TIDY_UP_ROW` on, a cut that is still out after the refill
+ * sends the card to Tidy Up ("there are decisions that a human may want to
+ * make differently").
+ */
+const ROW = {
+  base: 1,
+  autoRepeat: 2,
+  rcRepeat: 3,
+  relicRepeat: 4,
+  typeName: 5, // 5 the top level's type name, 6 the next level's, and so on down
+  cameo: 7,
+  sport: 8,
+  secondRookie: 9,
+  rookieAsRc: 10,
+  teamCity: 11,
+  team: 12,
+  number: 13,
+  relicMemorabilia: 14,
+  autoSignature: 15,
+  shortPrint: 16,
+  relic: 17,
+  firstName: 18,
+  rc: 19,
+  auto: 20,
+} as const;
+const TIDY_UP_ROW = ROW.team;
+
+/**
+ * Q4 — the first row whose cut is preceded by the "#" rule (at exactly 81
+ * characters with the number's "#" still on, the "#" alone goes and the loop
+ * stops). Row 13's own words are "'#' alone first"; Jason's earlier rule
+ * checked before EVERY cut. Default: from the first Tidy Up row, so every
+ * quiet cut is made before a "#" is, and the "#" goes before anything a human
+ * would want to decide.
+ */
+const HASH_RULE_FROM_ROW: number = TIDY_UP_ROW;
+
+/**
+ * A row whose cut is a loss: a meaningful token an operator is shown as left
+ * out, and one that holds a repeat back from the refill while it is out. The
+ * cameos and everything from the team's city on.
+ */
+function isRealRow(row: number): boolean {
+  return row === ROW.cameo || row >= ROW.teamCity;
+}
+
 /** One cut, and how to undo it. `restores` are tried in order on refill. */
 type Cut = {
   row: number;
@@ -695,9 +889,9 @@ type Cut = {
   rank: number;
   /** A latent token's text: offered back only while the title does not say it. */
   latentText?: string;
-  /** Rows 9+: a token an operator is shown as left out. */
+  /** A token an operator is shown as left out (`isRealRow`). */
   real: boolean;
-  /** Rows 1-3: AUTO, RC or RELIC the title already says. */
+  /** Rows 2-4: AUTO, RC or RELIC the title already says. */
   repeat: boolean;
   out: boolean;
   cut: () => void;
@@ -705,46 +899,59 @@ type Cut = {
 };
 
 /**
- * The cut list, in order (1 = first to go):
+ * The cut list, in order (1 = first to go; NEO-609):
  *
- *   1  AUTO, when the title says auto/autograph(s)/autographed (repeat)
- *   2  RC, when the title says Rookie/Rookies/RC (repeat)
- *   3  RELIC, when the title says Relic/Relics (repeat)
- *   4  the "Insert" label
- *   5  the "Parallel" label
- *   5½ cameos (the people also pictured), last first, each whole name
+ *   1  Base: a Base level's word, or a type named Base
+ *   2  AUTO, when the title says auto/autograph(s)/autographed (repeat)
+ *   3  RC, when the title says Rookie/Rookies/RC (repeat)
+ *   4  RELIC, when the title says Relic/Relics (repeat)
+ *   5  the top level's type name, then each level's below it ("Inserts",
+ *      "Parallel": whatever the variant type rows are called)
+ *   7  cameos (the people also pictured), last first, each whole name
  *      (NEO-528, Jason: dropped before anything else with meaning)
- *   6  the sport (already skipped when a team name says it)
- *   7  the second "Rookie" (only ever beside a non-repeat RC)
- *   8  "Rookie" → "RC" inside the insert's name
- *   9  teams, last first. NEO-606 (Jason: "first drop city before dropping
- *      full team name"): a team whose row has a Location / Name split gives
- *      up its location first, every such team last first (9a, "New York
- *      Yankees" → "Yankees"); only then do the teams go, last first (9b), the
- *      nickname-only ones included. A team with no split goes at 9b whole.
- *   10 the card number (the "#" alone goes at 81, before any cut)
- *   11 first names, last player first, one per step
- *   12 SP / SSP
- *   13 RC (non-repeat)
- *   14 RELIC (non-repeat)
- *   15 the variation
- *   16 AUTO (non-repeat)
+ *   8  the sport (already skipped when a team name says it)
+ *   9  the second "Rookie" (only ever beside a non-repeat RC)
+ *   10 "Rookie" -> "RC" inside a level's name, top level first
+ *   11 teams' cities, last team first (NEO-606, Jason: "first drop city
+ *      before dropping full team name"): a team whose row has a Location /
+ *      Name split gives up its location; a team with no split has none.
+ *   --- Tidy Up line: from here a cut still out after the refill sends the
+ *       card to Tidy Up ---
+ *   12 whole teams, last first, the nickname-only ones included
+ *   13 the card number (the "#" alone goes first at exactly 81; Q4)
+ *   14 RELIC, when the title says Memorabilia
+ *   15 AUTO, when the title says Signature(s)
+ *   16 SP / SSP
+ *   17 RELIC
+ *   18 first names, last player first, one per step
+ *   19 RC
+ *   20 AUTO
  *
- * Rows 4, 5 and 8 exist only on the builder's description, never on the box.
+ * Never cut: the year, the maker and set words, every level's own name, /N,
+ * the surname and the variation. Still over 80 after the list: `fits` is
+ * false and the card is flagged `titleOverLimit`.
+ *
+ * Rows 5, 10 and the levels exist only on the builder's description, never on
+ * the box.
  */
-function planCuts(
-  state: TitleState,
-  repeats: { auto: boolean; rc: boolean; relic: boolean },
-): Cut[] {
+function planCuts(state: TitleState, repeats: Repeats): Cut[] {
   const cuts: Cut[] = [];
   const add = (
     row: number,
     cut: () => void,
     restores: Array<() => void>,
     repeat = false,
-    rank = cutRank(row),
+    within = 0,
   ) => {
-    cuts.push({ row, rank, real: row >= TEAM_CITY_ROW, repeat, out: false, cut, restores });
+    cuts.push({
+      row,
+      rank: cutRank(row, within),
+      real: isRealRow(row),
+      repeat,
+      out: false,
+      cut,
+      restores,
+    });
   };
   const tokens = (kind: TailKind) => state.tail.filter((t) => t.kind === kind && t.in);
   const toggle = (row: number, token: TailToken, repeat = false) =>
@@ -753,73 +960,94 @@ function planCuts(
       () => { token.in = false; },
       [() => { token.in = true; }],
       repeat,
-      cutRank(row, token.kind === "team" ? teamPlace(state, token) : 0),
+      token.kind === "team" ? teamPlace(state, token) : 0,
     );
 
-  if (repeats.auto) for (const t of tokens("auto")) toggle(1, t, true);
-  if (repeats.rc) for (const t of tokens("rc")) toggle(2, t, true);
-  if (repeats.relic) for (const t of tokens("relic")) toggle(3, t, true);
-  if (state.insertLabelIn) {
-    add(4, () => { state.insertLabelIn = false; }, [() => { state.insertLabelIn = true; }]);
+  // Row 1: Base, wherever the chain has it (a level of that name, or a type).
+  state.parts.levels.forEach((level, index) => {
+    const now = state.levels[index];
+    if (level.base) {
+      add(ROW.base, () => { now.textIn = false; }, [() => { now.textIn = true; }], false, index);
+    } else if (level.typeBase && now.typeIn) {
+      add(ROW.base, () => { now.typeIn = false; }, [() => { now.typeIn = true; }], false, index);
+    }
+  });
+  for (const t of tokens("auto")) {
+    if (repeats.auto) toggle(ROW.autoRepeat, t, true);
+    else toggle(repeats.signature ? ROW.autoSignature : ROW.auto, t);
   }
-  if (state.parallelLabelIn) {
-    add(5, () => { state.parallelLabelIn = false; }, [() => { state.parallelLabelIn = true; }]);
+  for (const t of tokens("rc")) {
+    if (repeats.rc) toggle(ROW.rcRepeat, t, true);
+    else toggle(ROW.rc, t);
   }
+  for (const t of tokens("relic")) {
+    if (repeats.relic) toggle(ROW.relicRepeat, t, true);
+    else toggle(repeats.memorabilia ? ROW.relicMemorabilia : ROW.relic, t);
+  }
+  // Rows 5-6...: each level's type name, top level first.
+  state.parts.levels.forEach((level, index) => {
+    const now = state.levels[index];
+    if (!level.typeName || !now.typeIn || level.typeBase) return;
+    add(ROW.typeName, () => { now.typeIn = false; }, [() => { now.typeIn = true; }], false, index);
+  });
   // NEO-528 — the cameos, after the no-loss cuts and before everything that
   // carries meaning. A meaningful cut (`real`), so a repeat is not put back
   // while a cameo is still out; refilled last of the meaningful cuts.
   for (const [index, cameo] of [...state.cameos.entries()].reverse()) {
-    cuts.push({
-      row: CAMEO_ROW,
-      rank: cutRank(CAMEO_ROW, CAMEO_PLACES - index),
-      real: true,
-      repeat: false,
-      out: false,
-      cut: () => { cameo.in = false; },
-      restores: [() => { cameo.in = true; }],
-    });
+    add(
+      ROW.cameo,
+      () => { cameo.in = false; },
+      [() => { cameo.in = true; }],
+      false,
+      CAMEO_PLACES - index,
+    );
   }
-  for (const t of tokens("sport")) toggle(6, t);
-  for (const t of tokens("rookie")) toggle(7, t);
-  if (state.parts.insertRc) {
-    add(8, () => { state.insertAbbreviated = true; }, [() => { state.insertAbbreviated = false; }]);
-  }
-  // NEO-606 — row 9a: a split team gives up its location first, last team
-  // first. Meaningful (`real`) like the team it belongs to.
+  for (const t of tokens("sport")) toggle(ROW.sport, t);
+  for (const t of tokens("rookie")) toggle(ROW.secondRookie, t);
+  state.parts.levels.forEach((level, index) => {
+    const now = state.levels[index];
+    if (!level.rc || now.abbreviated) return;
+    add(
+      ROW.rookieAsRc,
+      () => { now.abbreviated = true; },
+      [() => { now.abbreviated = false; }],
+      false,
+      index,
+    );
+  });
+  // NEO-606 — a split team gives up its location first, last team first.
+  // Meaningful (`real`) like the team it belongs to.
   for (const t of [...tokens("team")].reverse()) {
     if (t.short === undefined) continue;
     add(
-      TEAM_CITY_ROW,
+      ROW.teamCity,
       () => { t.shrunk = true; },
       [() => { t.shrunk = false; }],
       false,
-      cutRank(TEAM_CITY_ROW, teamPlace(state, t)),
+      teamPlace(state, t),
     );
   }
-  for (const t of [...tokens("team")].reverse()) toggle(9, t);
+  for (const t of [...tokens("team")].reverse()) toggle(ROW.team, t);
   const number = state.number;
   if (number) {
-    add(10, () => { number.mode = "out"; }, [
+    add(ROW.number, () => { number.mode = "out"; }, [
       () => { number.mode = "hash"; },
       () => { number.mode = "bare"; },
     ]);
   }
+  for (const t of tokens("sp")) toggle(ROW.shortPrint, t);
   for (const [index, player] of [...state.players.entries()].reverse()) {
     if (player.short === undefined) continue;
     add(
-      11,
+      ROW.firstName,
       () => { player.firstOut = true; },
       [() => { player.firstOut = false; }],
       false,
-      cutRank(11, LAST_FIRST - index),
+      LAST_FIRST - index,
     );
   }
-  for (const t of tokens("sp")) toggle(12, t);
-  if (!repeats.rc) for (const t of tokens("rc")) toggle(13, t);
-  if (!repeats.relic) for (const t of tokens("relic")) toggle(14, t);
-  for (const t of tokens("variation")) toggle(15, t);
-  if (!repeats.auto) for (const t of tokens("auto")) toggle(16, t);
-  return cuts;
+  // Rows run in order: sorted by rank, stable within a rank.
+  return cuts.sort((a, b) => a.rank - b.rank);
 }
 
 /**
@@ -828,36 +1056,31 @@ function planCuts(
  * (is cut sooner, and refilled later).
  */
 const LAST_FIRST = 999;
-/**
- * NEO-528 — the cameos' place: between the "Parallel" label (row 5) and the
- * sport (row 6). Ranked 5,500 down to 5,400, last cameo lowest (cut first).
- */
-const CAMEO_ROW = 5.5;
+/** The cameos' places within their row, last cameo lowest (cut first). */
 const CAMEO_PLACES = 100;
-/**
- * NEO-606 — a split team's location (row 9a), between the "Rookie" → "RC" cut
- * (row 8) and the teams (row 9). Ranked 8,500 plus the team's last-first
- * place, so it stays below every team's own rank (9,000 plus its place) for
- * any card with fewer than 500 teams; the refill therefore puts a team back
- * as its nickname before it gives any team its location back.
- */
-const TEAM_CITY_ROW = 8.5;
 function cutRank(row: number, within = 0): number {
   return row * 1000 + within;
 }
 
-/** A team token's place within row 9: last first. */
+/** A team token's place within its row: last first. */
 function teamPlace(state: TitleState, token: TailToken): number {
   return LAST_FIRST - state.tail.filter((t) => t.kind === "team").indexOf(token);
 }
 
 /**
  * The latent tokens as cuts already made, ranked where the cut list would
- * have cut them: the sport at row 6, a team at row 9 in its last-first place,
- * the variation at row 15.
+ * have cut them: the sport at row 8, a team at row 12 in its last-first
+ * place. The variation is never cut, so a latent one (left out because the
+ * title said it) ranks past the list and comes back first, the moment
+ * whatever said it has been cut.
  */
+const VARIATION_LATENT_ROW = ROW.auto + 1;
 function latentCuts(state: TitleState): Cut[] {
-  const rowOf: Partial<Record<TailKind, number>> = { sport: 6, team: 9, variation: 15 };
+  const rowOf: Partial<Record<TailKind, number>> = {
+    sport: ROW.sport,
+    team: ROW.team,
+    variation: VARIATION_LATENT_ROW,
+  };
   const out: Cut[] = [];
   for (const token of state.tail) {
     const row = token.latent ? rowOf[token.kind] : undefined;
@@ -866,7 +1089,7 @@ function latentCuts(state: TitleState): Cut[] {
       row,
       rank: cutRank(row, token.kind === "team" ? teamPlace(state, token) : 0),
       latentText: token.text,
-      real: row >= 9,
+      real: isRealRow(row),
       repeat: false,
       out: true,
       cut: () => { token.in = false; },
@@ -888,10 +1111,11 @@ function latentCuts(state: TitleState): Cut[] {
 function cutToFit(
   inputs: ListingCardInputs,
   parts: DescriptionParts,
-): { title: string; fits: boolean; firstNamesLost: number } {
+): { title: string; fits: boolean; firstNamesLost: number; tidyUp: boolean } {
   const { state, repeats } = fullTitleState(inputs, parts);
   const length = () => renderTitle(state).length;
-  // Step 2's "#" rule: at exactly 81, the "#" alone goes, and the loop stops.
+  // Step 2's "#" rule: at exactly 81, the "#" alone goes, and the loop stops
+  // (before a cut from `HASH_RULE_FROM_ROW` on; Q4).
   const hashRule = (): boolean => {
     if (length() === LISTING_TITLE_MAX + 1 && state.number?.mode === "hash") {
       state.number.mode = "bare";
@@ -904,7 +1128,7 @@ function cutToFit(
   const done: Cut[] = [];
   for (const cut of planned) {
     if (length() <= LISTING_TITLE_MAX) break;
-    if (hashRule()) break;
+    if (cut.row >= HASH_RULE_FROM_ROW && hashRule()) break;
     cut.cut();
     cut.out = true;
     done.push(cut);
@@ -934,6 +1158,10 @@ function cutToFit(
     title,
     fits: title.length <= LISTING_TITLE_MAX,
     firstNamesLost: state.players.filter((p) => p.firstOut).length,
+    // Tidy Up: a cut from the line down that the refill could not undo. Only
+    // cuts actually made count: a latent token never was one, and a "#"
+    // dropped on its own (`hashRule`, or a number that came back bare) is not.
+    tidyUp: done.some((c) => c.out && c.row >= TIDY_UP_ROW),
   };
 }
 
@@ -971,7 +1199,8 @@ export function assessListingTitle(inputs: ListingCardInputs): ListingTitleAsses
     firstNameLost,
     dropped: leftOutOfTitle(inputs, chosen.title),
     ...(boxUsed ? { shortNameUsed: true as const } : {}),
-    coreFits: !firstNameLost && !boxUsed,
+    tidyUp: chosen.tidyUp,
+    coreFits: !chosen.tidyUp && !boxUsed,
   };
 }
 
@@ -1026,7 +1255,7 @@ export function leftOutOfTitle(inputs: ListingCardInputs, text: string): string[
   const parts = builderDescriptionParts(inputs);
   const box = inputs.setShortName?.trim();
   if (!(box && phraseIn(box))) {
-    for (const segment of [parts.head, parts.insert, parts.parallel]) {
+    for (const segment of [parts.head, ...parts.levels.filter((l) => !l.base).map((l) => l.text)]) {
       const missing = (segment ?? "")
         .split(/\s+/)
         .filter((w) => w && w !== "&" && !wordIn(w));
@@ -1182,11 +1411,36 @@ export function generateListingDescription(
   // Prospects") both stay whole. The Insert and Parallel lines are unchanged.
   const parallelSaysInsert =
     !!parallel && !parallelIsVariation && parallelOpensWithInsert(parallel, insert);
-  const setLabel =
-    (parallelSaysInsert
-      ? descriptionSetLabel({ ...inputs, insertName: parallel })
-      : descriptionSetLabel(inputs)) || null;
-  const variant = parallel && !parallelIsVariation && !parallelSaysInsert ? ` ${parallel}` : "";
+  // NEO-609 (Q6) — with the chain's levels in hand the description names every
+  // one of them: the top level in the opening line's set label, the levels
+  // below it after it (a level opening with the one above it stands for both,
+  // as a parallel does for its insert), and a line per level headed by its
+  // variant type's own name. Without them (a dash card, an older caller) the
+  // Insert / Parallel lines are exactly what they were.
+  const levels = inputs.titleLevels
+    ? effectiveLevels(inputs).filter((l) => !isBaseWord(l.name))
+    : undefined;
+  let setLabel: string | null;
+  let variant: string;
+  if (levels) {
+    let labelName = levels[0]?.name;
+    const rest: string[] = [];
+    for (const level of levels.slice(1)) {
+      if (rest.length === 0 && labelName && parallelOpensWithInsert(level.name, labelName)) {
+        labelName = level.name;
+      } else {
+        rest.push(level.name);
+      }
+    }
+    setLabel = descriptionSetLabel({ ...inputs, insertName: labelName }) || null;
+    variant = rest.map((name) => ` ${name}`).join("");
+  } else {
+    setLabel =
+      (parallelSaysInsert
+        ? descriptionSetLabel({ ...inputs, insertName: parallel })
+        : descriptionSetLabel(inputs)) || null;
+    variant = parallel && !parallelIsVariation && !parallelSaysInsert ? ` ${parallel}` : "";
+  }
 
   const who = players.join(" & ");
   const numbered = number ? ` ${number}` : "";
@@ -1200,8 +1454,16 @@ export function generateListingDescription(
     lines.push(`Card${numbered}.`);
   }
 
-  if (insert) lines.push(`Insert: ${insert}.`);
-  if (parallel && !parallelIsVariation) lines.push(`Parallel: ${parallel}.`);
+  if (levels) {
+    for (const level of levels) {
+      if (level.typeName && !isBaseWord(level.typeName)) {
+        lines.push(`${level.typeName}: ${level.name}.`);
+      }
+    }
+  } else {
+    if (insert) lines.push(`Insert: ${insert}.`);
+    if (parallel && !parallelIsVariation) lines.push(`Parallel: ${parallel}.`);
+  }
   if (variation) {
     lines.push(variation.endsWith(".") ? `Variation: ${variation}` : `Variation: ${variation}.`);
   }
@@ -1243,6 +1505,9 @@ export function generateListingDescription(
 const DESCRIPTION_FACT_LINES: readonly RegExp[] = [
   /^Insert: .+\.$/,
   /^Parallel: .+\.$/,
+  // NEO-609 (Q6) — a level's line is headed by its variant type's own name,
+  // whatever that is: "Proof: Animated Autographs Pre-Production Proofs Lazer Red."
+  /^[^:\n]{1,60}: .+\.$/,
   /^Variation: .+$/,
   /^Serial numbered to \d+ \(\/\d+\)\.$/,
   /^Autographed \(AUTO\), .+\.$/,

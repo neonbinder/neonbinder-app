@@ -335,9 +335,10 @@ function FieldFeedback({
         </p>
       )}
       {error && (
-        // a11y: NOT the neon pink as text — 4.4:1 on this drawer's raised
-        // surface in dark, under WCAG 1.4.3's 4.5:1 floor. The danger notice
-        // ink clears 4.5:1 here in both modes (NEO-356).
+        // a11y: the error ink is neon pink (`notice-danger-ink` IS
+        // `neon-pink-text`, NEO-606: one pink for errors). This drawer is the
+        // `raised` surface, where it reads 4.55:1 in dark and 5.92:1 in light;
+        // it would miss on a row or chip tile (`TEXT_NEVER_ON`).
         <p
           id={errorId}
           role="alert"
@@ -1438,9 +1439,11 @@ export default function CardDetailPanel({
                     // on this panel in both modes (NEO-356 roles).
                     className="rounded-full border border-rule-strong bg-raised/60 px-2 py-0.5 text-[10px] text-ink-2"
                   >
-                    <span className="mr-1 uppercase tracking-wide text-ink-3">
-                      {chip.label}
-                    </span>
+                    {chip.label && (
+                      <span className="mr-1 uppercase tracking-wide text-ink-3">
+                        {chip.label}
+                      </span>
+                    )}
                     {chip.value}
                   </li>
                 ))}
@@ -1796,10 +1799,10 @@ export default function CardDetailPanel({
               />
             )}
             {parentError && (
-              // a11y: NOT the neon pink as text — 4.4:1 on this panel's
-              // raised surface in dark, under WCAG 1.4.3's 4.5:1 minimum. An
-              // error message has to be legible, so it uses the danger notice
-              // ink, which clears 4.5:1 here in both modes (NEO-356).
+              // a11y: the error ink is neon pink (`notice-danger-ink` IS
+              // `neon-pink-text`, NEO-606). On this panel's `raised` surface
+              // it reads 4.55:1 in dark and 5.92:1 in light; it would miss on
+              // a row or chip tile (`TEXT_NEVER_ON`).
               <p className="text-xs text-notice-danger-ink mt-1" role="alert">
                 {parentError}
               </p>

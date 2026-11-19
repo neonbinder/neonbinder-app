@@ -401,7 +401,7 @@ describe("CardTitlesStep — the meter is neutral until past the cap", () => {
       target: { value: "t".repeat(84) },
     });
     const meter = screen.getByText("84/80");
-    // NEO-606: neon pink is the app's error colour; the salmon danger ink is gone from here.
+    // NEO-606: neon pink is the app's error colour; the counter paints the pink text role directly, not the danger notice role.
     expect(meter.parentElement?.className).toContain("text-neon-pink-text");
     expect(meter.parentElement?.className).not.toContain("notice-danger");
     expect(screen.getByText("4 over")).toBeTruthy();

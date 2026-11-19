@@ -51,6 +51,7 @@ import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "./listingLimits";
 import {
   MAX_LISTING_SHORT_NAME_LENGTH,
   normalizeListingShortName,
+  type TitleLevelFact,
 } from "../listingShortName";
 
 /**
@@ -94,6 +95,13 @@ export type ListingSetContext = {
    * is written to the leaf and so covers the whole description.
    */
   listingShortName?: string;
+  /**
+   * NEO-609 — EVERY level of the chain below the set, top level first, with
+   * each one's variant type name (`titleChainFacts`). The title names them
+   * all. Absent: the levels are built from `insertNameValue` /
+   * `parallelLeafValue` as before.
+   */
+  titleLevels?: TitleLevelFact[];
 };
 
 /**
@@ -246,6 +254,7 @@ export function listingInputsForCard(
   const parallelName =
     set.parallelLeafValue?.trim() || mergedFeatures.parallelName?.trim() || undefined;
   const setShortName = set.listingShortName?.trim() || undefined;
+  const titleLevels = set.titleLevels && set.titleLevels.length > 0 ? set.titleLevels : undefined;
   // NEO-335 — the leaf's parallel ROLE earns the parallel its "Parallel"
   // label. `parallelLeafValue` is set by `titleChainFacts` only on that role
   // (`derivedVariantFlags`), so its presence is the role, never its wording.
@@ -261,6 +270,9 @@ export function listingInputsForCard(
     manufacturerBrandUnknown: set.manufacturerBrandUnknown,
     setName: set.setNameValue,
     ...(insertName ? { insertName } : {}),
+    // NEO-609 — absent when the chain has no level, so a Base card builds
+    // exactly the inputs it did before.
+    ...(titleLevels ? { titleLevels } : {}),
     ...(setShortName ? { setShortName } : {}),
     parallelName,
     ...(parallelIsRole ? { parallelIsRole: true } : {}),
