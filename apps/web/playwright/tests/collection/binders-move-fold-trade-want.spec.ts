@@ -560,7 +560,7 @@ test(
     await expect(line("Raw, Excellent ×3").getByText("Main")).toBeVisible();
     await yourCopies.getByRole("button", { name: `Remove ${one.short}, Raw, Excellent ×3`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${one.short}, Raw, Excellent ×3`);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
 

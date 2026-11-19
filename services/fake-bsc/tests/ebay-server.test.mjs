@@ -5,12 +5,15 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createVerify } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { ADMIN_KEY, CALLER, LOADER, setLogSink, startFake } from "./helpers.mjs";
 
 const require = createRequire(import.meta.url);
 const { FAKE_EBAY_CLIENT_ID, FAKE_EBAY_CLIENT_SECRET } = require("../dist/src/ebay/tokens.js");
 const { FAKE_EBAY_PUBLIC_KEY_ID } = require("../dist/src/ebay/notificationKey.js");
-const { EBAY_CAPTURE_ENDPOINTS } = require("../dist/src/ebay/captures.js");
+const { EBAY_CAPTURE_ENDPOINTS, EBAY_REQUIRED_CAPTURES } = require("../dist/src/ebay/captures.js");
 const { planMisses } = require("../dist/recorder/record.js");
 const { replayRefusal } = require("../dist/src/replayAllowlist.js");
 
@@ -282,7 +285,9 @@ describe("fake eBay: the seller flow NB drives (rows 1-4, 6, 9-12)", () => {
     assert.equal((await ebay(fake, "GET", `${INV}/location/neonbinder-main`, { token: other })).body.merchantLocationStatus, "DISABLED");
     const { merchantLocationStatus: _s, ...details } = LOCATION;
     assert.equal((await ebay(fake, "POST", `${INV}/location/neonbinder-main/update_location_details`, { token: other, body: details })).status, 204);
-    assert.equal((await ebay(fake, "POST", `${INV}/location/neonbinder-main/enable`, { token: other })).status, 200);
+    const enabled = await ebay(fake, "POST", `${INV}/location/neonbinder-main/enable`, { token: other });
+    assert.equal(enabled.status, 200);
+    assert.equal(enabled.body, null, "the sandbox answers enable with an empty body");
     assert.equal((await ebay(fake, "GET", `${INV}/location/neonbinder-main`, { token: other })).body.merchantLocationStatus, "ENABLED");
   });
 
@@ -346,6 +351,21 @@ describe("fake eBay: the seller flow NB drives (rows 1-4, 6, 9-12)", () => {
     assert.equal((await ebay(fake, "POST", `${INV}/offer/${offerId}/publish`, { token: other })).body.listingId, pub.body.listingId);
   });
 
+  it("a published offer reads back with listing.listingId and status PUBLISHED; an unpublished one has no listing", async () => {
+    await ebay(fake, "POST", `${INV}/bulk_create_or_replace_inventory_item`, { token: tok, body: { requests: [item("NB2-pub-NM")] } });
+    const created = await ebay(fake, "POST", `${INV}/bulk_create_offer`, { token: tok, body: { requests: [offer("NB2-pub-NM", policies)] } });
+    assert.equal(created.status, 200);
+    const before = await ebay(fake, "GET", `${INV}/offer?sku=NB2-pub-NM`, { token: tok });
+    assert.equal(before.body.offers[0].status, "UNPUBLISHED");
+    assert.equal(before.body.offers[0].listing, undefined);
+    const { listingId } = await list(fake, tok, "NB2-pub2-NM", policies);
+    const got = await ebay(fake, "GET", `${INV}/offer?sku=NB2-pub2-NM`, { token: tok });
+    assert.equal(got.status, 200);
+    assert.equal(typeof got.body.offers[0].listing.listingId, "string");
+    assert.equal(got.body.offers[0].listing.listingId, listingId);
+    assert.equal(got.body.offers[0].status, "PUBLISHED");
+  });
+
   it("an order line's legacyItemId is the published listing id; a paid order sells the quantity down", async () => {
     const { offerId, listingId } = await list(fake, tok, "NB2-o-NM", policies);
     const injected = await fake.call("POST", "/__fake/ebay/orders", { body: { ns: NS, order: { lines: [{ sku: "NB2-o-NM", quantity: 2 }, { title: "A card NB never listed", quantity: 1, priceCents: 150 }] } } });
@@ -407,6 +427,8 @@ describe("fake eBay: the seller flow NB drives (rows 1-4, 6, 9-12)", () => {
     const wd = await ebay(fake, "POST", `${INV}/offer/${offerId}/withdraw`, { token: tok });
     assert.equal(wd.status, 200);
     assert.equal(typeof wd.body.listingId, "string");
+    // Production's withdraw answer is {listingId} with no warnings (capture of 2026-11-17).
+    assert.deepEqual(Object.keys(wd.body), ["listingId"]);
     assert.equal((await ebay(fake, "POST", `${INV}/offer/${offerId}/withdraw`, { token: tok })).status, 404);
     assert.equal((await ebay(fake, "DELETE", `${INV}/inventory_item/NB2-w-NM`, { token: tok })).status, 204);
     assert.equal((await ebay(fake, "DELETE", `${INV}/inventory_item/NB2-w-NM`, { token: tok })).status, 404);
@@ -649,7 +671,7 @@ describe("fake eBay: captures", () => {
   before(async () => (fake = await startFake()));
   after(() => fake.close());
 
-  it("accepts every eBay capture name, checks it against the fake's answer, and never makes one required", async () => {
+  it("accepts every eBay capture name, checks it against the fake's answer, and then has none of the eBay names missing", async () => {
     const synth = require("../dist/src/ebay/captures.js").ebaySynthesisedCapture;
     for (const endpoint of EBAY_CAPTURE_ENDPOINTS) {
       const s = synth(endpoint);
@@ -661,6 +683,62 @@ describe("fake eBay: captures", () => {
     assert.deepEqual(health.body.writeCaptures.missing, ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"]);
   });
 
+  it("reports the required eBay captures on /__fake/health until each is stored, by name, like the BSC two", async () => {
+    const fresh = await startFake();
+    try {
+      const bsc = ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"];
+      const first = (await fresh.call("GET", "/__fake/health")).body.writeCaptures;
+      assert.deepEqual(first, { missing: [...bsc, ...EBAY_REQUIRED_CAPTURES] });
+      assert.ok(first.missing.includes("POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused"), "the sandbox's publish refusal is required");
+      assert.ok(first.missing.includes("POST ebay/api/sell/inventory/v1/offer/:offerId/publish"), "so is the production publish");
+
+      const synth = require("../dist/src/ebay/captures.js").ebaySynthesisedCapture;
+      const store = async (endpoint) => {
+        const s = synth(endpoint);
+        const r = await fresh.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint, status: s.status, shape: s.shape } });
+        assert.equal(r.status, 200, endpoint);
+      };
+      const refused = "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused";
+      await store(refused);
+      const after = (await fresh.call("GET", "/__fake/health")).body.writeCaptures.missing;
+      assert.deepEqual(after, [...bsc, ...EBAY_REQUIRED_CAPTURES.filter((e) => e !== refused)]);
+
+      // A read capture (not a write) does not satisfy a required write.
+      await store("GET ebay/api/sell/inventory/v1/offer");
+      assert.deepEqual((await fresh.call("GET", "/__fake/health")).body.writeCaptures.missing, after);
+    } finally {
+      await fresh.close();
+    }
+  });
+
+  it("keeps every required name readable by Convex's narrowMissingCaptures (its pattern read from source), the list inside its cap, and the Convex test's list equal to the fake's", () => {
+    const convex = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../apps/web/convex");
+    const source = readFileSync(path.join(convex, "fakeBsc.ts"), "utf8");
+    // The pattern a missing name must match, and the cap, exactly as the Convex action holds them.
+    const pattern = /typeof m === "string" && \/(.+)\/\.test\(m\)/.exec(source);
+    assert.ok(pattern, "narrowMissingCaptures no longer filters names with an inline pattern: update this pin");
+    const readable = new RegExp(pattern[1]);
+    const cap = /const MAX_MISSING_CAPTURES = (\d+);/.exec(source);
+    assert.ok(cap, "MAX_MISSING_CAPTURES not found in fakeBsc.ts");
+
+    const { WRITE_ENDPOINTS } = require("../dist/src/paths.js");
+    const required = [...Object.keys(WRITE_ENDPOINTS), ...EBAY_REQUIRED_CAPTURES];
+    for (const e of required) assert.match(e, readable, `${e}: Convex would read the whole health answer as unreadable`);
+    assert.equal(new Set(required).size, required.length, "no name twice");
+    assert.ok(required.length <= Number(cap[1]), `${required.length} required names, Convex reads at most ${cap[1]}`);
+    for (const e of EBAY_REQUIRED_CAPTURES) assert.ok(EBAY_CAPTURE_ENDPOINTS.includes(e), `${e} is a capture name the fake accepts`);
+
+    // The pattern still refuses what it should (a changed pattern that accepts anything would pass the loop above).
+    for (const bad of ["not an endpoint", "PUT a{b}", "POST ebay/api/x #Re fused", "POST ebay/api/x # "]) assert.doesNotMatch(bad, readable, bad);
+
+    // The list the Convex test holds is the fake's list.
+    const test = readFileSync(path.join(convex, "fakeBsc.test.ts"), "utf8");
+    const block = /const REQUIRED_CAPTURE_NAMES = \[([^\]]*)\];/.exec(test);
+    assert.ok(block, "REQUIRED_CAPTURE_NAMES not found in fakeBsc.test.ts");
+    const held = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual([...held].sort(), [...required].sort(), "apps/web/convex/fakeBsc.test.ts REQUIRED_CAPTURE_NAMES differs from the fake's required list");
+  });
+
   it("flags a capture whose shape lacks a path the fake answers with", async () => {
     const r = await fake.call("POST", "/__fake/write-captures", {
       email: LOADER,
@@ -669,6 +747,182 @@ describe("fake eBay: captures", () => {
     });
     assert.equal(r.body.verdict, "shape_drift");
     assert.deepEqual(r.body.paths, ["listingId"]);
+  });
+
+  it("a capture may lack the fields eBay includes only for some objects, but never one the fake always sends, and a present one is type-checked", async () => {
+    const { checkCapture } = require("../dist/src/captures.js");
+    const synth = require("../dist/src/ebay/captures.js").ebaySynthesisedCapture;
+    const without = (shape, starts) => Object.fromEntries(Object.entries(shape).filter(([p]) => !starts.some((s) => p === s || p.startsWith(`${s}.`) || p.startsWith(`${s}[]`))));
+    const check = (endpoint, shape, status = 200) => checkCapture({ endpoint, status, shape, capturedAt: "2026-11-16T00:00:00.000Z" });
+    const ID = "GET ebay/apiz/commerce/identity/v1/user";
+    const RET = "GET ebay/api/sell/account/v1/return_policy";
+    const OFFERS = "GET ebay/api/sell/inventory/v1/offer";
+    const ITEMS = "GET ebay/api/sell/inventory/v1/inventory_item";
+
+    // The first sandbox capture's four reads: the answer without the optional paths is fine.
+    assert.equal(check(ID, without(synth(ID).shape, ["status"])).verdict, "ok");
+    assert.equal(check(RET, without(synth(RET).shape, ["returnPolicies[].categoryTypes[].default"])).verdict, "ok");
+    assert.equal(check(OFFERS, without(synth(OFFERS).shape, ["offers[].listing"])).verdict, "ok");
+    const items = without(synth(ITEMS).shape, ["inventoryItems[].conditionDescriptors", "inventoryItems[].packageWeightAndSize.packageType", "inventoryItems[].product.aspects.*"]);
+    assert.equal(check(ITEMS, items).verdict, "ok");
+    // A first item with no aspects at all, or without the one name the fake sends (Sport), is not drift either.
+    assert.equal(check(ITEMS, without(synth(ITEMS).shape, ["inventoryItems[].product.aspects"])).verdict, "ok");
+    assert.equal(check(ITEMS, without(synth(ITEMS).shape, ["inventoryItems[].product.aspects.Sport"])).verdict, "ok");
+
+    // A path not on the list is still drift when the capture lacks it.
+    const noId = without(synth(ID).shape, ["userId"]);
+    assert.deepEqual(check(ID, noId).paths, ["userId"]);
+    assert.deepEqual(check(OFFERS, without(synth(OFFERS).shape, ["offers[].offerId"])).paths, ["offers[].offerId"]);
+
+    // A listed path that IS in the capture is still compared by type.
+    const typed = { ...synth(ID).shape, status: ["number"] };
+    assert.deepEqual(check(ID, typed).paths, ["status"]);
+
+    // enable: an empty body is the sandbox's answer. The check is one-way (the fake must not invent, a
+    // capture may hold more), so a capture with an extra field is not drift; a 4xx is, by status class.
+    const EN = "POST ebay/api/sell/inventory/v1/location/:merchantLocationKey/enable";
+    assert.deepEqual(synth(EN), { status: 200, shape: {} });
+    assert.equal(check(EN, {}).verdict, "ok");
+    assert.equal(check(EN, { "": ["object"], x: ["string"] }).verdict, "ok");
+    assert.deepEqual(check(EN, {}, 400).paths, ["$status"]);
+
+    // The refusal is filed as #refused (the sandbox's id was 25007, not 25002); the old name is gone.
+    const REFUSED = "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused";
+    assert.equal(synth(REFUSED).status, 400);
+    assert.ok(EBAY_CAPTURE_ENDPOINTS.includes(REFUSED));
+    assert.ok(!EBAY_CAPTURE_ENDPOINTS.some((e) => e.endsWith("#25002")));
+    const stale = await fake.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint: "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #25002", status: 400, shape: { "": ["object"] } } });
+    assert.equal(stale.status, 400);
+  });
+
+  it("a published offer's listing is optional only as a whole: once present, listing.listingId is required and typed", async () => {
+    const { checkCapture } = require("../dist/src/captures.js");
+    const synth = require("../dist/src/ebay/captures.js").ebaySynthesisedCapture;
+    const OFFERS = "GET ebay/api/sell/inventory/v1/offer";
+    const check = (shape) => checkCapture({ endpoint: OFFERS, status: 200, shape, capturedAt: "2026-11-16T00:00:00.000Z" });
+    const base = synth(OFFERS).shape;
+    const dropped = (...paths) => Object.fromEntries(Object.entries(base).filter(([p]) => !paths.includes(p)));
+    const noListing = Object.fromEntries(Object.entries(base).filter(([p]) => p !== "offers[].listing" && !p.startsWith("offers[].listing.")));
+
+    // An unpublished offer: no listing at all.
+    assert.equal(check(noListing).verdict, "ok");
+    // A published offer whose listing lacks the fields NB does not read.
+    assert.equal(check(dropped("offers[].listing.listingStatus", "offers[].listing.soldQuantity")).verdict, "ok");
+    // A published offer with listingId missing (a rename upstream) is drift.
+    assert.deepEqual(check(dropped("offers[].listing.listingId")).paths, ["offers[].listing.listingId"]);
+    // ... and so is a listingId of another type.
+    assert.deepEqual(check({ ...base, "offers[].listing.listingId": ["number"] }).paths, ["offers[].listing.listingId"]);
+    // ... and a listing that is not an object.
+    assert.ok(check({ ...noListing, "offers[].listing": ["string"] }).paths.includes("offers[].listing"));
+    // The status NB reads is never optional.
+    assert.deepEqual(check(dropped("offers[].status")).paths, ["offers[].status"]);
+    // A capture holding only a child of `listing` (no `listing` key of its own) still has a listing: listingId is required.
+    const onlyChild = { ...noListing, "offers[].listing.listingStatus": ["string"] };
+    assert.deepEqual(check(onlyChild).paths, ["offers[].listing.listingId"]);
+  });
+
+  it("the optional list is scoped to its own endpoint", async () => {
+    const { checkCapture } = require("../dist/src/captures.js");
+    const { isOptionalCapturePath, ebaySynthesisedCapture: synth } = require("../dist/src/ebay/captures.js");
+    const ID = "GET ebay/apiz/commerce/identity/v1/user";
+    const OFFERS = "GET ebay/api/sell/inventory/v1/offer";
+    const ITEMS = "GET ebay/api/sell/inventory/v1/inventory_item";
+    const RET = "GET ebay/api/sell/account/v1/return_policy";
+    assert.equal(isOptionalCapturePath(ID, "status", {}), true);
+    // `status` is optional for the identity answer only.
+    assert.equal(isOptionalCapturePath(OFFERS, "status", {}), false);
+    assert.equal(isOptionalCapturePath(OFFERS, "offers[].status", {}), false);
+    assert.equal(isOptionalCapturePath(ITEMS, "status", {}), false);
+    // Another endpoint's listed paths do not leak across.
+    assert.equal(isOptionalCapturePath(OFFERS, "inventoryItems[].conditionDescriptors", {}), false);
+    assert.equal(isOptionalCapturePath(ITEMS, "offers[].listing", {}), false);
+    assert.equal(isOptionalCapturePath(RET, "offers[].listing", {}), false);
+    // An endpoint name that is an Object.prototype key has no list (hasOwn, not a lookup through the prototype).
+    assert.equal(isOptionalCapturePath("constructor", "name", {}), false);
+    assert.equal(isOptionalCapturePath("__proto__", "length", {}), false);
+    // Through the check: dropping a required offers path is drift, listing or no listing.
+    const shape = Object.fromEntries(Object.entries(synth(OFFERS).shape).filter(([p]) => p !== "offers[].offerId" && p !== "offers[].status"));
+    const r = checkCapture({ endpoint: OFFERS, status: 200, shape, capturedAt: "2026-11-16T00:00:00.000Z" });
+    assert.equal(r.verdict, "shape_drift");
+    assert.deepEqual(r.paths, ["offers[].offerId", "offers[].status"]);
+    // And the identity answer still passes without its optional status while a required path is flagged.
+    const idShape = Object.fromEntries(Object.entries(synth(ID).shape).filter(([p]) => p !== "status" && p !== "username"));
+    assert.deepEqual(checkCapture({ endpoint: ID, status: 200, shape: idShape, capturedAt: "2026-11-16T00:00:00.000Z" }).paths, ["username"]);
+  });
+
+  it("a present optional path with the wrong type is drift: array-prefixed paths and aspects", async () => {
+    const { checkCapture } = require("../dist/src/captures.js");
+    const synth = require("../dist/src/ebay/captures.js").ebaySynthesisedCapture;
+    const RET = "GET ebay/api/sell/account/v1/return_policy";
+    const ITEMS = "GET ebay/api/sell/inventory/v1/inventory_item";
+    const check = (endpoint, shape) => checkCapture({ endpoint, status: 200, shape, capturedAt: "2026-11-16T00:00:00.000Z" });
+
+    const DEFAULT = "returnPolicies[].categoryTypes[].default";
+    assert.deepEqual(check(RET, { ...synth(RET).shape, [DEFAULT]: ["string"] }).paths, [DEFAULT]);
+    const PKG = "inventoryItems[].packageWeightAndSize.packageType";
+    assert.deepEqual(check(ITEMS, { ...synth(ITEMS).shape, [PKG]: ["number"] }).paths, [PKG]);
+    // A descriptor list that is not an array, and a descriptor name that is not a string.
+    const DESC = "inventoryItems[].conditionDescriptors";
+    assert.ok(check(ITEMS, { ...synth(ITEMS).shape, [DESC]: ["object"] }).paths.includes(DESC));
+    assert.ok(check(ITEMS, { ...synth(ITEMS).shape, [`${DESC}[].name`]: ["number"] }).paths.includes(`${DESC}[].name`));
+    // aspects: the whole object, a named aspect and the collapsed `*` form.
+    const ASP = "inventoryItems[].product.aspects";
+    assert.ok(check(ITEMS, { ...synth(ITEMS).shape, [ASP]: ["array"] }).paths.includes(ASP));
+    assert.deepEqual(check(ITEMS, { ...synth(ITEMS).shape, [`${ASP}.Sport`]: ["string"] }).paths, [`${ASP}.Sport`]);
+    assert.deepEqual(check(ITEMS, { ...synth(ITEMS).shape, [`${ASP}.*`]: ["string"] }).paths, [`${ASP}.*`]);
+  });
+
+  it("a BSC write capture missing a path the fake answers with is still shape_drift", async () => {
+    const { checkCapture, synthesisedWrite } = require("../dist/src/captures.js");
+    for (const endpoint of ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"]) {
+      const s = synthesisedWrite(endpoint);
+      const paths = Object.keys(s.shape);
+      assert.ok(paths.length > 1, endpoint);
+      const full = checkCapture({ endpoint, status: s.status, shape: s.shape, capturedAt: "2026-11-16T00:00:00.000Z" });
+      assert.equal(full.verdict, "ok", endpoint);
+      // Drop each path in turn: none is optional for a BSC write, whatever the eBay list holds.
+      for (const p of paths) {
+        const shape = Object.fromEntries(Object.entries(s.shape).filter(([k]) => k !== p));
+        const r = checkCapture({ endpoint, status: s.status, shape, capturedAt: "2026-11-16T00:00:00.000Z" });
+        assert.equal(r.verdict, "shape_drift", `${endpoint}: ${p}`);
+        assert.ok(r.paths.includes(p), `${endpoint}: ${p}`);
+      }
+    }
+  });
+
+  it("the 2026-11-17 captures (sandbox reads, production writes) compare ok against the fake's answers", async () => {
+    const { checkCapture } = require("../dist/src/captures.js");
+    const synth = require("../dist/src/ebay/captures.js").ebaySynthesisedCapture;
+    // The drift each stored capture showed against the pre-fix fake: the capture lacked exactly these paths.
+    const lacking = {
+      "GET ebay/api/sell/account/v1/return_policy": ["returnPolicies[].categoryTypes[].default"],
+      "GET ebay/api/sell/inventory/v1/inventory_item": [
+        "inventoryItems[].conditionDescriptors",
+        "inventoryItems[].conditionDescriptors[]",
+        "inventoryItems[].conditionDescriptors[].name",
+        "inventoryItems[].conditionDescriptors[].values",
+        "inventoryItems[].conditionDescriptors[].values[]",
+        "inventoryItems[].packageWeightAndSize.packageType",
+        "inventoryItems[].product.aspects.*",
+        "inventoryItems[].product.aspects.*[]",
+      ],
+      "GET ebay/api/sell/inventory/v1/offer": ["offers[].listing", "offers[].listing.listingId", "offers[].listing.listingStatus", "offers[].listing.soldQuantity"],
+      "GET ebay/apiz/commerce/identity/v1/user": ["status"],
+      "POST ebay/api/sell/inventory/v1/location/:merchantLocationKey/enable": [""],
+    };
+    for (const [endpoint, paths] of Object.entries(lacking)) {
+      const s = synth(endpoint);
+      const shape = Object.fromEntries(Object.entries(s.shape).filter(([p]) => !paths.includes(p)));
+      const r = checkCapture({ endpoint, status: s.status, shape, capturedAt: "2026-11-17T02:00:00.000Z" });
+      assert.deepEqual([r.verdict, r.paths], ["ok", []], endpoint);
+    }
+    // Withdraw drifted on `warnings` (production sends none). The fake no longer answers with it, so there is
+    // nothing to remove from a capture: these asserts carry the proof, and an unchanged shape is ok.
+    const wd = synth("POST ebay/api/sell/inventory/v1/offer/:offerId/withdraw");
+    assert.equal(checkCapture({ endpoint: "POST ebay/api/sell/inventory/v1/offer/:offerId/withdraw", status: wd.status, shape: wd.shape, capturedAt: "2026-11-17T02:00:00.000Z" }).verdict, "ok");
+    // The withdraw answer carries no warnings; publish still does.
+    assert.equal("warnings" in synth("POST ebay/api/sell/inventory/v1/offer/:offerId/withdraw").shape, false);
+    assert.equal("warnings" in synth("POST ebay/api/sell/inventory/v1/offer/:offerId/publish").shape, true);
   });
 
   it("refuses an eBay name it does not know", async () => {

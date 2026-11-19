@@ -37,6 +37,8 @@ import type { ActionCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
 import { isPlatformPaused } from "../marketplacePause";
 import { ebayConfig, type EbayConfig } from "../lib/ebayEnv";
+import { actionBscIdTokenSource, resolveBscTarget } from "../lib/bscHttp";
+import { signForFake } from "../lib/fakeMarketplace";
 import {
   EBAY_CARD_CATEGORY_ID,
   EBAY_CATEGORY_TREE_ID,
@@ -56,6 +58,35 @@ export const EBAY_TIMEOUTS_MS = {
   media: 60_000,
   token: 20_000,
 } as const;
+
+/**
+ * The policy-list read path (NEO-592): the account's programs, then its three
+ * policy lists, read when the eBay panel opens and held to the page's 7 s UX
+ * budget. Each try waits at most `attemptMs`; a try that times out is tried
+ * once more; and both stages of the path (programs, then the lists) share one
+ * `budgetMs` wall clock, so the whole read answers inside the budget even when
+ * eBay is slow on both. A timeout stays a timeout (`kind: "timeout"`): it is
+ * never read as "the account has no such policy".
+ */
+export const EBAY_POLICY_READ_MS = {
+  attemptMs: 3_000,
+  budgetMs: 5_500,
+  /** Below this much of the budget left, a retry is not started (it could not finish). */
+  minRetryMs: 500,
+} as const;
+
+/** The read path's shared clock: when it must have answered by, and whether a slow try is tried again. */
+export interface EbayReadBudget {
+  /** Epoch ms the whole read must be done by. */
+  deadline: number;
+  /** Try a timed-out call once more (default true). The optional shipping-metadata read says false. */
+  retry?: boolean;
+}
+
+/** A budget for a read path that starts now. */
+export function startPolicyReadBudget(now: number = Date.now()): EbayReadBudget {
+  return { deadline: now + EBAY_POLICY_READ_MS.budgetMs };
+}
 
 export const EBAY_MAX_BYTES = {
   small: 256 * 1024,
@@ -367,6 +398,24 @@ async function reauthOnce(ctx: SessionCtx, session: EbaySellerSession): Promise<
   return await session.reauth;
 }
 
+/**
+ * NEO-555 — fake mode only: `init` signed for the fake (caller key, ID token
+ * in both headers, no redirect), exactly as `bscFetch` signs a BSC call. The
+ * target is read again here and must still be the fake; the token comes from
+ * `internal.fakeBsc.idToken` (cached per audience, so a session costs at most
+ * one mint). Throws when the deployment is no longer in fake mode or no token
+ * can be had: `send` turns a throw into a `network` failure, nothing is sent.
+ */
+async function fakeInitFor(ctx: SessionCtx, init: RequestInit): Promise<RequestInit> {
+  const target = resolveBscTarget(process.env);
+  if (target.mode !== "fake") throw new Error("fake eBay target unavailable");
+  return await signForFake(
+    target,
+    init,
+    actionBscIdTokenSource(() => ctx.runAction(internal.fakeBsc.idToken, {})),
+  );
+}
+
 function attemptOf(opts: SendOptions): { attempt?: number } {
   return opts.attempt !== undefined ? { attempt: opts.attempt } : {};
 }
@@ -387,7 +436,7 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
   const attempt = async (): Promise<Response | EbayFailure> => {
     const startedAt = Date.now();
     try {
-      const res = await fetch(url, {
+      const init: RequestInit = {
         method: opts.method,
         headers: headersFor(session, opts),
         ...(opts.json !== undefined ? { body: JSON.stringify(opts.json) } : {}),
@@ -395,7 +444,8 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
         // The bearer token goes to eBay's API host and nowhere else.
         redirect: "error",
         signal: AbortSignal.timeout(opts.timeoutMs),
-      });
+      };
+      const res = await fetch(url, session.config.environment === "fake" ? await fakeInitFor(ctx, init) : init);
       logCall(opts.operation, startedAt, res.ok ? "ok" : "http_error", res.status, opts.attempt);
       return res;
     } catch (err) {
@@ -476,20 +526,60 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
   return { ok: true, value: { status: res.status, body, location: res.headers.get("location") } };
 }
 
+/**
+ * `send` for a call on the policy-read path: each try waits at most
+ * `EBAY_POLICY_READ_MS.attemptMs` and never past the path's deadline; a try
+ * that times out is tried once more while at least `minRetryMs` of the budget
+ * is left. Only a timeout is retried (the call is a GET, so repeating it is
+ * safe); an answer, a refusal, a sign-out or a network failure ends it. With
+ * no budget the call is the plain `read` call, unchanged. The retry's log
+ * lines carry `attempt: 2`.
+ */
+async function sendRead(
+  ctx: SessionCtx,
+  session: EbaySellerSession,
+  opts: Omit<SendOptions, "timeoutMs">,
+  budget: EbayReadBudget | undefined,
+): Promise<EbayResult<SendValue>> {
+  if (!budget) return await send(ctx, session, { ...opts, timeoutMs: EBAY_TIMEOUTS_MS.read });
+  const { attemptMs, minRetryMs } = EBAY_POLICY_READ_MS;
+  const tryOnce = async (attempt: number): Promise<EbayResult<SendValue>> => {
+    const left = budget.deadline - Date.now();
+    return await send(ctx, session, {
+      ...opts,
+      // A first try always gets a real wait, even on a budget already spent.
+      timeoutMs: Math.min(attemptMs, Math.max(left, minRetryMs)),
+      ...(attempt > 1 ? { attempt } : {}),
+    });
+  };
+  const first = await tryOnce(1);
+  if (first.ok || first.failure.kind !== "timeout" || budget.retry === false) return first;
+  if (budget.deadline - Date.now() < minRetryMs) return first;
+  return await tryOnce(2);
+}
+
 // ── Account: programs and business policies ─────────────────────────────────
 
 /** The program a seller must be in to use business policies. */
 export const SELLING_POLICY_MANAGEMENT = "SELLING_POLICY_MANAGEMENT";
 
 /** `GET /sell/account/v1/program/get_opted_in_programs` → program types. */
-export async function getOptedInPrograms(ctx: SessionCtx, session: EbaySellerSession): Promise<EbayResult<string[]>> {
-  const r = await send(ctx, session, {
-    operation: "getOptedInPrograms",
-    method: "GET",
-    path: "/sell/account/v1/program/get_opted_in_programs",
-    timeoutMs: EBAY_TIMEOUTS_MS.read,
-    maxBytes: EBAY_MAX_BYTES.small,
-  });
+export async function getOptedInPrograms(
+  ctx: SessionCtx,
+  session: EbaySellerSession,
+  budget?: EbayReadBudget,
+): Promise<EbayResult<string[]>> {
+  const r = await sendRead(
+    ctx,
+    session,
+    {
+      operation: "getOptedInPrograms",
+      method: "GET",
+      path: "/sell/account/v1/program/get_opted_in_programs",
+      maxBytes: EBAY_MAX_BYTES.small,
+    },
+    budget,
+  );
   if (!r.ok) return r;
   const programs = isRecord(r.value.body) && Array.isArray(r.value.body.programs) ? r.value.body.programs : [];
   return {
@@ -518,15 +608,24 @@ export async function optInToProgram(ctx: SessionCtx, session: EbaySellerSession
 type PolicyKind = "fulfillment_policy" | "payment_policy" | "return_policy";
 
 /** `GET /sell/account/v1/<kind>?marketplace_id=EBAY_US` → the raw body (narrowed by `lib/ebayListing`). */
-export async function getPolicies(ctx: SessionCtx, session: EbaySellerSession, kind: PolicyKind): Promise<EbayResult<unknown>> {
-  const r = await send(ctx, session, {
-    operation: `get_${kind}`,
-    method: "GET",
-    path: `/sell/account/v1/${kind}`,
-    query: { marketplace_id: EBAY_MARKETPLACE_ID },
-    timeoutMs: EBAY_TIMEOUTS_MS.read,
-    maxBytes: EBAY_MAX_BYTES.policies,
-  });
+export async function getPolicies(
+  ctx: SessionCtx,
+  session: EbaySellerSession,
+  kind: PolicyKind,
+  budget?: EbayReadBudget,
+): Promise<EbayResult<unknown>> {
+  const r = await sendRead(
+    ctx,
+    session,
+    {
+      operation: `get_${kind}`,
+      method: "GET",
+      path: `/sell/account/v1/${kind}`,
+      query: { marketplace_id: EBAY_MARKETPLACE_ID },
+      maxBytes: EBAY_MAX_BYTES.policies,
+    },
+    budget,
+  );
   return r.ok ? { ok: true, value: r.value.body } : r;
 }
 
@@ -620,14 +719,22 @@ export interface EbayShippingServiceInfo {
 }
 
 /** `GET /sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services`, narrowed. */
-export async function getShippingServices(ctx: SessionCtx, session: EbaySellerSession): Promise<EbayResult<EbayShippingServiceInfo[]>> {
-  const r = await send(ctx, session, {
-    operation: "getShippingServices",
-    method: "GET",
-    path: `/sell/metadata/v1/shipping/marketplace/${EBAY_MARKETPLACE_ID}/get_shipping_services`,
-    timeoutMs: EBAY_TIMEOUTS_MS.read,
-    maxBytes: EBAY_MAX_BYTES.shipping,
-  });
+export async function getShippingServices(
+  ctx: SessionCtx,
+  session: EbaySellerSession,
+  budget?: EbayReadBudget,
+): Promise<EbayResult<EbayShippingServiceInfo[]>> {
+  const r = await sendRead(
+    ctx,
+    session,
+    {
+      operation: "getShippingServices",
+      method: "GET",
+      path: `/sell/metadata/v1/shipping/marketplace/${EBAY_MARKETPLACE_ID}/get_shipping_services`,
+      maxBytes: EBAY_MAX_BYTES.shipping,
+    },
+    budget,
+  );
   if (!r.ok) return r;
   const list = isRecord(r.value.body) && Array.isArray(r.value.body.shippingServices) ? r.value.body.shippingServices : [];
   const out: EbayShippingServiceInfo[] = [];
@@ -1069,72 +1176,6 @@ export async function withdrawOffer(ctx: SessionCtx, session: EbaySellerSession,
     maxBytes: EBAY_MAX_BYTES.small,
   });
   return r.ok ? { ok: true, value: null } : r;
-}
-
-/**
- * `DELETE /sell/inventory/v1/inventory_item/{sku}`: removes the item. Sell
- * Inventory contract: this also deletes the SKU's unpublished offers and its
- * single-variation listings. 204 is success; 404 is already gone, so success.
- * A missing SKU may also answer 400/25702 ("could not be found or is not
- * available"): that stays a failure, because "not available" doesn't promise
- * gone, and a false failure costs a re-run where a false success hides a live
- * item. Testing cleanup only.
- */
-export async function deleteInventoryItem(ctx: SessionCtx, session: EbaySellerSession, sku: string): Promise<EbayResult<null>> {
-  const r = await send(ctx, session, {
-    operation: "deleteInventoryItem",
-    method: "DELETE",
-    path: `/sell/inventory/v1/inventory_item/${encodeURIComponent(sku)}`,
-    timeoutMs: EBAY_TIMEOUTS_MS.write,
-    maxBytes: EBAY_MAX_BYTES.small,
-  });
-  if (r.ok || r.failure.httpStatus === 404) return { ok: true, value: null };
-  return r;
-}
-
-/** Items one inventory page asks for (eBay's contract: 1 to 200, default 25). */
-export const EBAY_INVENTORY_PAGE = 100;
-
-/**
- * `GET /sell/inventory/v1/inventory_item?limit=&offset=` → one page of the
- * seller's SKUs; nothing else of the items is held. Testing cleanup only.
- *
- * `offset` is a PAGE NUMBER on this route, not a record offset (Sell Inventory
- * contract: the first page is 0, the second 1), unlike `getOrdersPage`. So the
- * caller never does the arithmetic: `nextOffset` is the `offset` in eBay's own
- * `next` link, null when there is no `next`. A `next` NB can't read fails, so a
- * caller can never take a partial listing for the whole one.
- */
-export async function getInventorySkusPage(
-  ctx: SessionCtx,
-  session: EbaySellerSession,
-  offset: string,
-): Promise<EbayResult<{ skus: string[]; unreadable: number; nextOffset: string | null }>> {
-  const r = await send(ctx, session, {
-    operation: "getInventoryItems",
-    method: "GET",
-    path: "/sell/inventory/v1/inventory_item",
-    query: { limit: String(EBAY_INVENTORY_PAGE), offset },
-    timeoutMs: EBAY_TIMEOUTS_MS.read,
-    maxBytes: EBAY_MAX_BYTES.inventory,
-  });
-  if (!r.ok) return r;
-  const body = r.value.body;
-  if (!isRecord(body)) return { ok: false, failure: failure("bad_response", EBAY_SAYS.unreadable, { httpStatus: r.value.status }) };
-  const skus: string[] = [];
-  let unreadable = 0;
-  // An account with no items answers with no `inventoryItems` at all.
-  for (const raw of Array.isArray(body.inventoryItems) ? body.inventoryItems : []) {
-    // eBay's SKU limit is 50: a longer one is not an answer to act on.
-    if (isRecord(raw) && typeof raw.sku === "string" && raw.sku.length > 0 && raw.sku.length <= 100) skus.push(raw.sku);
-    else unreadable += 1;
-  }
-  let nextOffset: string | null = null;
-  if (typeof body.next === "string" && body.next.length > 0) {
-    nextOffset = /[?&]offset=(\d{1,9})(?:&|$)/.exec(body.next)?.[1] ?? null;
-    if (nextOffset === null) return { ok: false, failure: failure("bad_response", EBAY_SAYS.unreadable, { httpStatus: r.value.status }) };
-  }
-  return { ok: true, value: { skus, unreadable, nextOffset } };
 }
 
 // ── Fulfillment: orders ─────────────────────────────────────────────────────

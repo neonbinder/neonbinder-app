@@ -4877,10 +4877,12 @@ export default function CardPairingModal({
                       key={shelf ? shelf.key : candidateKey(m.card)}
                       data-keeping-row={shelf ? `${shelf.kind}:${shelf.id}` : undefined}
                       // A tile row, like the columns' rows. Not a control, so
-                      // no hover fill. On a dark tile ink-3 and pink text
-                      // miss 4.5:1, so quiet text here is ink-2, an error is
-                      // notice-danger-ink, and Unlink fills pink under the
-                      // pointer (DESIGN.md: Rows, chips and neutral buttons).
+                      // no hover fill. On a dark tile ink-3 and the error pink
+                      // (neon-pink-text, which notice-danger-ink is) miss
+                      // 4.5:1, so quiet text here is ink-2, an error message
+                      // sits on its own `field` well, and Unlink fills pink
+                      // under the pointer (DESIGN.md: Rows, chips and neutral
+                      // buttons).
                       className="flex flex-col gap-1 text-sm text-ink-2 bg-row border border-row-rule rounded px-2 py-1"
                     >
                       {/* NEO-490 (S5): both levels wrap, so at 320px the
@@ -5012,7 +5014,11 @@ export default function CardPairingModal({
                                 <span
                                   id={`name-edit-error-${domKey(m.card)}`}
                                   role="alert"
-                                  className="text-xs text-notice-danger-ink"
+                                  // The error pink (neon-pink-text) misses 4.5:1
+                                  // on this row's dark tile, so the message
+                                  // sits on its own `field` well, like the
+                                  // input beside it.
+                                  className="rounded bg-field px-1.5 py-0.5 text-xs text-notice-danger-ink"
                                 >
                                   {nameError.message}
                                 </span>
@@ -5342,7 +5348,10 @@ export default function CardPairingModal({
                             <span
                               id={`players-edit-error-${domKey(m.card)}`}
                               role="alert"
-                              className="text-xs text-notice-danger-ink"
+                              // Same as the name editor's: the error pink
+                              // misses 4.5:1 on the row's dark tile, so it
+                              // sits on a `field` well.
+                              className="rounded bg-field px-1.5 py-0.5 text-xs text-notice-danger-ink"
                             >
                               {playersError.message}
                             </span>

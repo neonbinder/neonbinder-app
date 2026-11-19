@@ -49,6 +49,8 @@ import {
 import { teamLocationIs } from "./lib/placeTeam";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
+// NEO-592: bounded concurrency for independent reads inside one query.
+import { mapBounded } from "./lib/boundedConcurrency";
 // NEO-535 — a rename reaches the descriptions of the team's cards.
 import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
 import { eraLabel, teamOptionLabel } from "../lib/teams/team-era";
@@ -140,6 +142,35 @@ const teamDocValidator = v.object({
   lastUpdated: v.number(),
 });
 
+/**
+ * NEO-592 — the one derivation of "which team does this card name mean" as a
+ * DOCUMENT, shared by `findByNameAndSport` (one name, public) and
+ * `findManyByNameAndSport` (the review gate's batch).
+ *
+ * `resolveTeamForSetYear` already holds the winning row among its candidates,
+ * so the row is returned from there instead of being read a second time. The
+ * `db.get` fallback only answers a row that somehow is not among its own
+ * candidates, which `pickTeamForYear` cannot produce.
+ *
+ * NEO-236: `name` is a FULL name — a marketplace payload, a Wikidata label, or
+ * an operator's typed string. NEO-254: it resolves to at most ONE of that
+ * name's eras; `null` where it used to return `.first()` is the point.
+ * NEO-307: `setYear` here is the SET's year (the review gate's), so a card may
+ * show a team's past (`allowPastEra`).
+ */
+async function resolveTeamDocForSetYear(
+  ctx: QueryCtx,
+  sportId: Id<"selectorOptions">,
+  name: string,
+  setYear: number | undefined,
+): Promise<Doc<"teams"> | null> {
+  const { teamId, candidates } = await resolveTeamForSetYear(ctx, sportId, name, setYear, {
+    allowPastEra: true,
+  });
+  if (!teamId) return null;
+  return candidates.find((row) => row._id === teamId) ?? (await ctx.db.get(teamId));
+}
+
 export const findByNameAndSport = query({
   args: {
     name: v.string(),
@@ -159,25 +190,45 @@ export const findByNameAndSport = query({
   returns: v.union(teamDocValidator, v.null()),
   handler: async (ctx, args) => {
     await requireSignedIn(ctx);
-    // NEO-236: `name` here is a FULL name — a marketplace payload, a Wikidata
-    // label, or an operator's typed string. It resolves to a split row because
-    // the dedup key is derived from the composed full name; see
-    // convex/lib/teamRow.ts.
-    //
-    // NEO-254: and to at most ONE of that name's eras. `null` where it used to
-    // return `.first()` is the point of the change — an ambiguous name is not
-    // an answer, and handing back an arbitrary era is what pointed 1985 cards
-    // at a 2011 franchise.
-    const { teamId } = await resolveTeamForSetYear(
-      ctx,
-      args.sportId,
-      args.name,
-      args.setYear,
-      // NEO-307: `setYear` here is the SET's year (the review gate's), so a
-      // card may show a team's past. See `resolveTeamForSetYear` rule 1.
-      { allowPastEra: true },
+    return await resolveTeamDocForSetYear(ctx, args.sportId, args.name, args.setYear);
+  },
+});
+
+/** NEO-592 — names one `findManyByNameAndSport` call answers, at most. */
+export const FIND_MANY_TEAMS_BY_NAME_MAX = 50;
+
+/**
+ * NEO-592 — `findByNameAndSport` for up to 50 names in ONE query, so the
+ * review gate pays one action-to-query hop for its team names instead of one
+ * per name (a 2024 set prints ~30 of them).
+ *
+ * The sport and the set year are the batch's. The answer is ALIGNED with
+ * `names`: element i is exactly what `findByNameAndSport` returns for
+ * `{ name: names[i], sportId, setYear }`, through the same helper, so a batch
+ * can never answer a name differently from the single call. Names are resolved
+ * concurrently (`mapBounded`) and share nothing. More than 50 is refused, never
+ * truncated: a silently short answer would read as "no such team" for the tail.
+ *
+ * Internal: the gate is its only caller, and it has already checked the
+ * operator. The public single-name query keeps its own sign-in gate.
+ */
+export const findManyByNameAndSport = internalQuery({
+  args: {
+    sportId: v.id("selectorOptions"),
+    setYear: v.optional(v.number()),
+    names: v.array(v.string()),
+  },
+  returns: v.array(v.union(teamDocValidator, v.null())),
+  handler: async (ctx, args): Promise<Array<Doc<"teams"> | null>> => {
+    if (args.names.length > FIND_MANY_TEAMS_BY_NAME_MAX) {
+      throw new ConvexError({
+        code: "too_many_names",
+        message: `findManyByNameAndSport answers at most ${FIND_MANY_TEAMS_BY_NAME_MAX} names per call; got ${args.names.length}.`,
+      });
+    }
+    return await mapBounded(args.names, (name) =>
+      resolveTeamDocForSetYear(ctx, args.sportId, name, args.setYear),
     );
-    return teamId ? await ctx.db.get(teamId) : null;
   },
 });
 
@@ -1209,8 +1260,9 @@ export const resolveTeamByCardPlayers = internalQuery({
     setYear: v.optional(v.number()),
     cardPlayerIds: v.array(v.array(v.id("players"))),
   },
-  returns: v.union(v.id("teams"), v.null()),
-  handler: async (ctx, args): Promise<Id<"teams"> | null> => {
+  // NEO-592 — the row itself, so the gate does not read it back in a second hop.
+  returns: v.union(teamDocValidator, v.null()),
+  handler: async (ctx, args): Promise<Doc<"teams"> | null> => {
     // A CARD caller: the past-era allowance applies, exactly as the gate's own
     // resolution of the same name did (NEO-307).
     const { teamId, candidates } = await resolveTeamForSetYear(
@@ -1221,12 +1273,14 @@ export const resolveTeamByCardPlayers = internalQuery({
       { allowPastEra: true },
     );
     if (teamId !== null) return null;
-    return await narrowTeamRowsByCardPlayers(
+    const narrowedId = await narrowTeamRowsByCardPlayers(
       ctx,
       candidates,
       args.cardPlayerIds,
       args.setYear,
     );
+    // The answer is one of `candidates`, so its row is already in hand.
+    return narrowedId ? (candidates.find((row) => row._id === narrowedId) ?? null) : null;
   },
 });
 

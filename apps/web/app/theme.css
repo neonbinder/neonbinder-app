@@ -114,9 +114,17 @@
   --notice-warn-bg: color-mix(in oklab, oklch(41.4% 0.112 45.904) 20%, transparent);
   --notice-warn-ink: oklch(87.9% 0.169 91.605);
   --notice-warn-rule: oklch(55.5% 0.163 48.998);
-  --notice-danger-bg: color-mix(in oklab, oklch(39.6% 0.141 25.723) 30%, transparent);
-  --notice-danger-ink: oklch(88.5% 0.062 18.334);
-  --notice-danger-rule: oklch(50.5% 0.213 27.518);
+  /* Danger is neon pink, not red (Jason, 2026-11-18: "there shouldn't be any
+   * salmon, that is not one of our colors. errors are neon pink."). One pink
+   * for errors: the ink IS `neon-pink-text`, so it carries that role's bars
+   * (TEXT_NEVER_ON: not on a row, chip or neutral tile in dark). The rule and
+   * the tinted ground are the neon pink's own hue (OKLCH 354); the ground is
+   * kept dark enough that the ink reads 4.6:1 or better on it over a card
+   * (4.9:1 on `raised`). Do not raise the wash alpha above 30%: that is what
+   * the 4.6:1 floor was measured at. */
+  --notice-danger-bg: color-mix(in oklab, oklch(26% 0.1 354) 30%, transparent);
+  --notice-danger-ink: var(--neon-pink-text);
+  --notice-danger-rule: oklch(60% 0.235 354);
   --notice-success-bg: color-mix(in oklab, oklch(39.3% 0.095 152.535) 20%, transparent);
   --notice-success-ink: oklch(87.1% 0.15 154.449);
   --notice-success-rule: oklch(52.7% 0.154 150.069);
@@ -328,11 +336,12 @@
   --notice-warn-bg: #fff5d6;
   --notice-warn-ink: #6b4e00;
   --notice-warn-rule: #a36a00;
-  /* Danger is a notice, not a button: red in both modes, as dark's red-900
-   * family already is. Buttons never borrow it (negative is pink). */
-  --notice-danger-bg: #fdecee;
-  --notice-danger-ink: #a3001a;
-  --notice-danger-rule: #c4001f;
+  /* Danger is neon pink in both modes, never red or salmon. It is a notice,
+   * not a button: buttons never borrow it. The ink is `neon-pink-text` (one
+   * pink for errors, with that role's bars); the rule is the same value. */
+  --notice-danger-bg: #fde9f2;
+  --notice-danger-ink: var(--neon-pink-text);
+  --notice-danger-rule: #c40068;
   --notice-success-bg: #e7f7ed;
   --notice-success-ink: #006632;
   --notice-success-rule: #007a3b;

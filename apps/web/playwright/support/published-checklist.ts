@@ -204,6 +204,12 @@ export interface ChecklistEdits {
   split?: Readonly<Record<string, ReadonlyArray<{ number: string; note?: string }>>>;
   /** Rows left out (a variation the publisher does not list). */
   drop?: readonly string[];
+  /**
+   * Rows appended (NEO-574): rows the publisher lists that the marketplace has no card for (a spec's
+   * own player on cards only the checklist names, kept in Match Cards). Throws when a row's number is
+   * already in the file, so it can only ever ADD checklist-only rows. Applied after every other edit.
+   */
+  extraRows?: readonly ChecklistRow[];
 }
 
 /** One cell into CSV (quoted when it holds a comma, a quote or a newline). */
@@ -213,6 +219,12 @@ function csvCell(cell: string): string {
 
 /** A captured file's text with `edits` applied (the file as it is when there are none). */
 function editedCsv(name: ChecklistName, edits: ChecklistEdits = {}): string {
+  const changed = changedCsv(name, edits);
+  return edits.extraRows === undefined ? changed : withExtraRows(name, changed, edits.extraRows);
+}
+
+/** `editedCsv` without the appended rows: team cells, renumbering, splitting and dropping. */
+function changedCsv(name: ChecklistName, edits: ChecklistEdits): string {
   const text = readFileSync(`${DIRECTORY}${name}.csv`, "utf8");
   const keys = [
     ...Object.keys(edits.teamCells ?? {}),
@@ -263,9 +275,9 @@ function parsedRows(text: string): PublishedChecklistRow[] {
   return parsePublishedChecklist(text).rows;
 }
 
-/** Does this row answer its card's team: a named team, "No Team", or a Prospect claim (`applyChecklistRow`'s `answered`). */
+/** Does this row answer its card's team: a named team (a `Prospect (X)` cell's X is one) or "No Team" (`applyChecklistRow`'s `answered`). */
 function answersTeam(row: PublishedChecklistRow): boolean {
-  return row.teams.length > 0 || row.noTeam === true || (row.prospectTeams?.length ?? 0) > 0;
+  return row.teams.length > 0 || row.noTeam === true;
 }
 
 /**
@@ -363,6 +375,24 @@ export function previewRowCount(dialog: Locator, rows: number): Locator {
 }
 
 /**
+ * `text` (a captured file, perhaps edited) with `extra` rows appended. Throws when an extra row's
+ * number is already in the file, so it can only ever ADD checklist-only rows.
+ */
+function withExtraRows(name: ChecklistName, text: string, extra: readonly ChecklistRow[]): string {
+  const lines = text.split("\n").filter((l) => l.trim() !== "");
+  const header = cells(lines[0]);
+  const numberAt = header.indexOf("number");
+  const taken = new Set(lines.slice(1).map((line) => cells(line)[numberAt]));
+  const out = [...lines];
+  for (const row of extra) {
+    if (taken.has(row.number)) throw new Error(`${name}.csv already has a row numbered "${row.number}": an extra row must be checklist-only.`);
+    taken.add(row.number);
+    out.push(header.map((column) => csvCell(row[column as keyof ChecklistRow] ?? "")).join(","));
+  }
+  return `${out.join("\n")}\n`;
+}
+
+/**
  * Upload a captured checklist and use it. Contract: ENTRY a checklist section
  * with "Add the official checklist" on screen (the set's Base or variant is
  * open). EXIT the dialog is closed and the chip "Official checklist: N rows"
@@ -374,6 +404,13 @@ export function previewRowCount(dialog: Locator, rows: number): Locator {
  * read through the product's parser and matcher. A card the marketplace already gives a team
  * and whose row disagrees is the operator's to settle, which the fetch does not count as
  * answered by the checklist (the caller subtracts each from `matched`).
+ *
+ * `edits.extraRows` (NEO-574) appends rows to the file. Each must carry a number the
+ * marketplace does not list for the set (and the file does not hold): a checklist-only
+ * row, so the facts' `rows` grow by them and `matched` does not (a checklist-only row is
+ * not a card until it is kept in Match Cards). Once kept and saved, each is a card its
+ * checklist row gives a team, so the line the save lands with counts them: N there is
+ * `matched` plus the kept rows (measured NEO-574).
  */
 export async function usePublishersChecklist(
   page: Page,
@@ -459,7 +496,9 @@ export function matchCardsDialog(page: Page): Locator {
  * This is the operator who wants every card the marketplace listed and nothing
  * the checklist alone adds: it keeps every marketplace single ("Keep all
  * BSC-only cards", and SportLots' when that column holds any), keeps no
- * checklist-only row, and confirms. A spec whose feature IS Match Cards drives
+ * checklist-only row, and confirms. With `keepChecklistOnly: n` (NEO-574) it
+ * also keeps the checklist's own rows: the column must read "Checklist only
+ * (n)" first, and every one of them is kept ("Keep all checklist-only cards"). A spec whose feature IS Match Cards drives
  * the dialog itself; this is for the specs that only pass through it.
  *
  * The fetch is a live BSC round trip, and Confirm unlocks only once this run's
@@ -476,7 +515,7 @@ export function matchCardsDialog(page: Page): Locator {
  */
 export async function confirmChecklistMatchCards(
   page: Page,
-  { facts, what }: { facts?: ChecklistFacts; what: string },
+  { facts, what, keepChecklistOnly }: { facts?: ChecklistFacts; what: string; keepChecklistOnly?: number },
 ): Promise<void> {
   const dialog = matchCardsDialog(page);
   await expectAfterMarketplace(page, dialog, { platform: "BuySportsCards", what: `Match Cards after ${what}` });
@@ -491,6 +530,11 @@ export async function confirmChecklistMatchCards(
       await dialog.getByRole("button", { name: `Keep all ${side}-only cards` }).click();
       await expect(dialog.getByRole("heading", { name: `${side} only (0)` })).toBeVisible();
     }
+  }
+  if (keepChecklistOnly !== undefined) {
+    await expect(dialog.getByRole("heading", { name: `Checklist only (${keepChecklistOnly})` })).toBeVisible();
+    await dialog.getByRole("button", { name: "Keep all checklist-only cards" }).click();
+    await expect(dialog.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
   }
   await confirm.click();
   await expect(dialog).toBeHidden();

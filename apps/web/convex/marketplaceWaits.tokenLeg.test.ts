@@ -47,19 +47,24 @@ vi.mock("./credentials", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./credentials")>();
   const { internalAction } = await import("./_generated/server");
   const { v } = await import("convex/values");
+  const getSiteToken = internalAction({
+    args: { site: v.string() },
+    returns: v.any(),
+    handler: async () => {
+      st.events.push({ kind: "token:start", at: Date.now() });
+      await pause(st.tokenDelayMs);
+      st.events.push({ kind: "token:end", at: Date.now() });
+      if (st.tokenMode === "throw") throw new Error("sign-in failed");
+      return st.tokenMode === "token" ? { token: "test-bsc-token" } : null;
+    },
+  });
   return {
     ...actual,
-    getSiteToken: internalAction({
-      args: { site: v.string() },
-      returns: v.any(),
-      handler: async () => {
-        st.events.push({ kind: "token:start", at: Date.now() });
-        await pause(st.tokenDelayMs);
-        st.events.push({ kind: "token:end", at: Date.now() });
-        if (st.tokenMode === "throw") throw new Error("sign-in failed");
-        return st.tokenMode === "token" ? { token: "test-bsc-token" } : null;
-      },
-    }),
+    getSiteToken,
+    // NEO-605: the BSC adapter reads the token by calling this directly,
+    // not through `runAction(getSiteToken)`; the same stub answers both.
+    siteTokenForCurrentUser: (ctx: unknown, site: string) =>
+      (getSiteToken as unknown as { _handler: (c: unknown, a: { site: string }) => unknown })._handler(ctx, { site }),
     refreshSiteTokenAfterRejection: internalAction({
       args: { site: v.string() },
       returns: v.object({ refreshed: v.boolean() }),

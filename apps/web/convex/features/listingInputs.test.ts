@@ -206,9 +206,20 @@ describe("the stored variation is the trimmed one (NEO-335 adversarial pass)", (
     const padded = CASES.find((c) => c.card.cardNumber === "44b")!;
     const built = buildCardRowForInsert(newCardRow(padded), padded.set, NOW);
     expect(built.row.cardVariation).toBe("v".repeat(ASPECT_VALUE_MAX));
-    expect(
-      assessNewCardListing(padded.card, padded.set, { playerNames: padded.playerNames }).items,
-    ).toEqual([]);
+    // NEO-609: a variation is never cut from the title, so a 65-character one
+    // beside the set and player runs the title over the cap. That is the ONLY
+    // thing flagged (by length): the padding is not counted against the
+    // variation's own aspect limit, and the trimmed card reads the same.
+    const items = assessNewCardListing(padded.card, padded.set, {
+      playerNames: padded.playerNames,
+    }).items;
+    expect(items.map((i) => i.kind)).toEqual(["titleOverLimit"]);
+    const trimmed = assessNewCardListing(
+      { ...padded.card, cardVariation: "v".repeat(ASPECT_VALUE_MAX) },
+      padded.set,
+      { playerNames: padded.playerNames },
+    ).items;
+    expect(items).toEqual(trimmed);
   });
 
   test("a blank variation is stored as none", () => {

@@ -10,9 +10,9 @@
 //
 // Reads only: it saves, tests and clears nothing, and works on whatever state
 // the worker's eBay is in (not wired, not connected, connected), so it needs
-// no eBay wiring and no fixture. The connection itself is proved by
-// `collection/inventory-ebay-sandbox-listing-2024-topps-chrome-future-stars`, and the consent
-// round trip by `profile/ebay-return-and-errors`.
+// no eBay wiring and no fixture. The connection itself and the setup below it
+// are proved by `profile/ebay-connect-and-setup` (on the stand-in eBay, NEO-555),
+// and the consent round trip's other endings by `profile/ebay-return-and-errors`.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
 test(

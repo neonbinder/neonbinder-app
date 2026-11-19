@@ -160,7 +160,9 @@ describe("a checklist's counts agree", () => {
     const spoken = within(strip).getByText(/ lit up/).textContent ?? "";
     const [, base, all] = /^\d+ of (\d+) lit up, \d+ of (\d+) with variations/.exec(spoken) ?? [];
     expect(Number(all), spoken).toBeGreaterThan(Number(base));
-  });
+    // Three full demo-page renders and a navigation in one synchronous test: about 1 s
+    // alone, over the 5 s default on a loaded runner. Heavy by nature, so a scoped 30 s.
+  }, 30_000);
 });
 
 describe("a card for sale is out of the checklist (NEO-359)", () => {

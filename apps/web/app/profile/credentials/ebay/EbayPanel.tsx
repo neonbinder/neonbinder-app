@@ -231,6 +231,9 @@ export default function EbayPanel({
   };
 
   const sandbox = connection?.environment === "sandbox";
+  // NEO-555: a test deployment's eBay is a stand-in (only ever reachable there).
+  // Not the sandbox: its links stay the production hosts, and it has no badge.
+  const standIn = connection?.environment === "fake";
 
   return (
     <div className="space-y-6">
@@ -255,6 +258,11 @@ export default function EbayPanel({
           {sandbox && (
             <p className="text-sm text-ink-3">
               Test mode: this NeonBinder talks to {EBAY_NAME}&apos;s sandbox, so nothing lists for real.
+            </p>
+          )}
+          {standIn && (
+            <p className="text-sm text-ink-3">
+              Test mode: this NeonBinder talks to a stand-in {EBAY_NAME}, so nothing lists for real.
             </p>
           )}
 

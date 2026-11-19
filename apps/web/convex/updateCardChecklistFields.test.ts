@@ -16,6 +16,8 @@ import { describe, expect, test } from "vitest";
 import { api } from "./_generated/api";
 import schema from "./schema";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
+import { generatedTitleTruncatedFlag } from "./features/listingInputs";
+import { titleForStoredCard } from "./storedCardTitle";
 import { LISTING_DESCRIPTION_MAX } from "./features/listingLimits";
 import {
   BLANK_LISTING_DESCRIPTION_REFUSAL,
@@ -1415,5 +1417,69 @@ describe("updateCard pending-name bounds (NEO-246)", () => {
     const stored = await asAdmin.run(async (ctx) => ctx.db.get(cardId));
     expect(stored!.pendingPlayerNames).toEqual(["Never Reviewed"]);
     expect(stored!.pendingTeamNames).toEqual(["Reno Aces"]);
+  });
+});
+
+describe("generatedTitleTruncatedFlag (NEO-609)", () => {
+  test("a core that fits clears the flag; one that does not keeps it", () => {
+    expect(generatedTitleTruncatedFlag({ coreFits: true })).toBeUndefined();
+    expect(generatedTitleTruncatedFlag({ coreFits: false })).toBe(true);
+  });
+});
+
+describe("updateCard saving a title the generator would write (NEO-609)", () => {
+  const LONG = "Bartholomew Maximilian Alexander Christopher Fitzgerald-Worthington";
+
+  /** The seeded card, linked to a player; `long` makes its title a Tidy Up one. */
+  async function linked(long: boolean) {
+    const s = await seed();
+    const playerId = await s.asAdmin.run(async (ctx) => {
+      const id = await ctx.db.insert("players", {
+        name: long ? LONG : "Shohei Ohtani",
+        nameNormalized: (long ? LONG : "Shohei Ohtani").toLowerCase().split(" ").sort().join(" "),
+        sportId: s.sportId,
+        lastUpdated: Date.now(),
+      });
+      await ctx.db.patch(s.cardId, { playerIds: [id], listingTitleTruncated: long ? true : undefined });
+      return id;
+    });
+    const generated = await s.asAdmin.run(async (ctx) =>
+      titleForStoredCard(ctx, (await ctx.db.get(s.cardId))!),
+    );
+    return { ...s, playerId, generated };
+  }
+  const flagOf = (s: Awaited<ReturnType<typeof linked>>) =>
+    s.asAdmin.run(async (ctx) => ((await ctx.db.get(s.cardId))!.listingTitleTruncated ?? false));
+
+  test("equal to the generated title on a Tidy Up card: the flag stays true", async () => {
+    const s = await linked(true);
+    expect(s.generated.tidyUp).toBe(true);
+    await s.asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: s.cardId,
+      listingTitle: s.generated.title,
+    });
+    expect(await flagOf(s)).toBe(true);
+  });
+
+  test("equal to the generated title with no Tidy Up: the flag clears", async () => {
+    const s = await linked(false);
+    expect(s.generated.tidyUp).toBe(false);
+    await s.asAdmin.run(async (ctx) => {
+      await ctx.db.patch(s.cardId, { listingTitleTruncated: true });
+    });
+    await s.asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: s.cardId,
+      listingTitle: s.generated.title,
+    });
+    expect(await flagOf(s)).toBe(false);
+  });
+
+  test("a title that differs from the generated one clears the flag", async () => {
+    const s = await linked(true);
+    await s.asAdmin.mutation(api.selectorOptions.updateCard, {
+      id: s.cardId,
+      listingTitle: `${s.generated.title.slice(0, 40)} by hand`,
+    });
+    expect(await flagOf(s)).toBe(false);
   });
 });

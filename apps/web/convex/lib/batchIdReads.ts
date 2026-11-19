@@ -45,6 +45,7 @@
 
 import type { QueryCtx } from "../_generated/server";
 import type { Doc, Id, TableNames } from "../_generated/dataModel";
+import { mapBounded } from "./boundedConcurrency";
 
 /**
  * The most rows one batch id → row query answers for.
@@ -108,13 +109,15 @@ export async function readManyByIds<T extends TableNames>(
     );
   }
 
-  const rows: Array<Doc<T>> = [];
-  for (const id of window) {
-    // `ctx.db.get` resolves the table from the id, but TypeScript cannot prove
-    // that through an unresolved `T`; the cast restates what the call already
-    // guarantees at every concrete call site.
-    const row = (await ctx.db.get(id)) as Doc<T> | null;
-    if (row !== null) rows.push(row);
-  }
-  return rows;
+  // NEO-592 — the ids are distinct and independent, so the reads go out
+  // together (up to 16 to storage per round) instead of one round trip each.
+  // The answer keeps the input order and still drops ids that resolve to
+  // nothing. `ctx.db.get` resolves the table from the id, but TypeScript cannot
+  // prove that through an unresolved `T`; the cast restates what the call
+  // already guarantees at every concrete call site.
+  const found = await mapBounded(
+    window,
+    async (id) => (await ctx.db.get(id)) as Doc<T> | null,
+  );
+  return found.filter((row): row is Doc<T> => row !== null);
 }

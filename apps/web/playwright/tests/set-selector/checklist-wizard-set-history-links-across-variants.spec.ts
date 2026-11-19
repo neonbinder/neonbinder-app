@@ -85,6 +85,7 @@ import {
   confirmSaveButton,
   expectStepLeft,
   openDecidedList,
+  passCareerCheck,
   personSkip,
   readBackDecision,
   readStep,
@@ -408,6 +409,10 @@ test(
 
     // STAR was never an undecided step: he is in the Decided list, linked, with the reason.
     await expect(wizard.getByRole("button", { name: `Skip ${STAR} — not a person`, exact: true })).toBeHidden();
+    // NEO-574: Brantley was the last name, and a known player here has no stint with his card's
+    // team by 2010, so a "Career check" comes next; it shows no Decided list (that is on the names
+    // and on Save). It is not this spec's business: Next leaves it as is and writes nothing.
+    await passCareerCheck(page);
     const decided = await openDecidedList(page);
     const starRow = decided.getByRole("listitem").filter({ has: page.getByText(STAR, { exact: true }) });
     await expect(

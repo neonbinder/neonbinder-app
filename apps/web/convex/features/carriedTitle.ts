@@ -11,8 +11,9 @@
  *   3. Otherwise the builder's flagged result is stored, and the card goes to
  *      the Card titles dialog.
  *
- * "Failing" is the builder's title over 80 after every cut, or one that lost a
- * first name. A title built from the box that fits with full names is NOT
+ * "Failing" is the builder's title over 80 after every cut, or one that
+ * sits in Tidy Up (NEO-609: a Tidy Up cut, which includes a lost first name,
+ * is still out). A title built from the box that fits with full names is NOT
  * failing: the box is the operator's own answer and it worked.
  *
  * Pure and browser-safe (the dialog reruns the same order when the operator
@@ -179,7 +180,9 @@ export function assessParallelCopyTitle(
   carriedRest?: string,
 ): ParallelCopyTitle {
   const builder = assessListingTitle(inputs);
-  if (builder.fits && !builder.firstNameLost) return { ...builder, failing: false };
+  // NEO-609 — "works" is: fits, and nothing from the Tidy Up line is still
+  // out (a whole team, the number, SP, RELIC, a first name, RC, AUTO).
+  if (builder.fits && !builder.tidyUp) return { ...builder, failing: false };
   if (carriedRest !== undefined) {
     const rest = withPrintRun(carriedRest, inputs.printRun);
     const headed = (description: string) => [description, rest].filter(Boolean).join(" ");
@@ -193,6 +196,7 @@ export function assessParallelCopyTitle(
         // The operator's own words: whatever they left out was their call.
         firstNameLost: false,
         dropped: leftOutOfTitle(inputs, title),
+        tidyUp: false,
         coreFits: true,
         carried: true,
         failing: false,

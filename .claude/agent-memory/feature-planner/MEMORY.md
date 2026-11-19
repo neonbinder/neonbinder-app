@@ -75,8 +75,13 @@
 - [Shape probes see one account state](shape-probes-see-one-account-state.md) — probe account has no listings: listed-only keys are optional in drift; fake empty row and root form must match the probe
 - [CI step timings live in the HTML report](ci-step-timings-live-in-the-html-report.md) — per-step duration by file:line in the embedded zip; unexecuted line = other flag branch; one run = two samples
 - [Account-wide batch counts need a baseline](account-wide-batch-counts-need-a-baseline.md) — hopper seed leaves a collecting job; "running" counts/cap leak across specs on a worker (NEO-529)
+- [Existing-player questions are card steps](existing-player-questions-are-card-steps-not-review-rows.md) — no review row for a resolved name; client-state step like Teams/checklist; prospects + empty careers flood a career-year rule (NEO-574)
 - [Fake code deploys only from main](fake-service-code-deploys-only-from-main.md) — fake capability merges before the PR whose E2E calls it; browser-facing steps go on a /testing SPA route
 - [Set team default: copy-down vs lookup](set-team-default-copy-down-vs-lookup.md) — teamIds copied down + cascaded; NEO-528 defaults looked up; never mix for one attribute
 - [PDF checklist geometry is in pdf.js items](pdf-checklist-geometry-lives-in-pdfjs-items.md) — cell-gap merge hides column splits; one straddling item = overflowed cell; Title Case headings via fontName
 - [Qualified team claims settle before they become strings](qualified-team-claims-settle-before-they-become-strings.md) — commit resolves team strings unrestricted; settle a league-limited claim at fetch with a same-row check, or hold it off `teams`
 - [Card pairing is names-first, two matchers](card-pairing-is-names-first-two-matchers.md) — BSC/SL step 1a-1c + matchPublishedChecklist; number kinds never partition name passes (Onyx 0 of 56)
+- [Title chain facts are hand-passed](title-chain-facts-are-hand-passed-at-the-commit-chunk.md) — new chain fact: 2 explicit commit passes + 2 inputs validators; Tidy Up = coreFits except parallel-copy short-circuit
+- [Runner region sets the probe p50](runner-region-sets-the-probe-p50.md) — shard probe spread is the runner's region; compare load with server-side ping, loop:loop buckets, OCC
+- [Admin close settles a whole report group](admin-close-settles-a-whole-report-group.md) — group-wide admin writes cross workers; give each report-filing spec its own variant + platform
+- [Suite red rate is a long tail](suite-red-rate-is-a-long-tail.md) — 470 executions at zero retries: 0.3% per execution is 75% red; plan by family and policy; first red on a worker is the cause

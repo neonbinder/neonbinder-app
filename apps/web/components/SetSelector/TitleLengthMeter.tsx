@@ -40,11 +40,13 @@ import {
  * This renders on TitleFixer's walker dialog, the wizard's Card titles step
  * and CardDetailPanel's drawer. All three paint with colour roles, which
  * follow the light/dark mode, so each tone reads 4.5:1 on any of them in
- * either mode. Over the cap is the danger notice ink everywhere: pink is the
- * colour of backing out and taking away (DESIGN.md), never of an error, and
- * on the drawer's graphite it measured 4.4:1 besides. There used to be a
- * `surface` prop choosing between two maps that differed only in that tone;
- * NEO-535 folded them into one.
+ * either mode. Over the cap is neon pink everywhere (NEO-606, Jason: "our
+ * error state color is the neon pink"): the text roles, and the field itself
+ * through {@link OVER_FIELD_CLASS}. The counter and alert paint `neon-pink-text`
+ * directly; the error ink (`notice-danger-ink`) is the same pink, so every error
+ * on screen reads as one colour. Dark `neon-pink-text` was lifted to #ff40a3 for
+ * 4.5:1 on a graphite card (NEO-356), so the old 4.4:1 worry is gone. There used to be a `surface` prop choosing between two maps that
+ * differed only in that tone; NEO-535 folded them into one.
  *
  * ## The bands are display truncation, not rules
  *
@@ -80,8 +82,33 @@ const TONE_CLASS: Record<TitleLengthTone, string> = {
   ok: "text-ink-3",
   mobile: "text-notice-warn-ink",
   search: "text-neon-orange-text",
-  over: "text-notice-danger-ink",
+  over: "text-neon-pink-text",
 };
+
+/**
+ * NEO-606 — the whole field, not just the note under it, says "too long".
+ *
+ * Keyed on `data-over`, which {@link overFieldProps} sets from LENGTH alone,
+ * never on `aria-invalid`: a refused save also sets `aria-invalid`, and that
+ * error keeps its own look (its message stays the danger ink), so the pink box
+ * means one thing — past the cap. It goes the moment the text fits. The edge
+ * is the pink text role; the ring thickens it to 2px and the tint carries it
+ * for anyone who misses a line.
+ *
+ * Held (`aria-disabled`, or native `disabled`): the grey `button-neutral` fill
+ * wins over the tint (`FIELD_OFF`), while the pink edge and ring stay, so a
+ * held over-cap field still reads as both. The stacked
+ * `aria-disabled:data-[over=true]:` variant carries three attributes' worth of
+ * specificity against the tint's two, so the win does not hang on stylesheet
+ * order.
+ */
+export const OVER_FIELD_CLASS =
+  "data-[over=true]:border-neon-pink-text data-[over=true]:ring-1 data-[over=true]:ring-neon-pink-text data-[over=true]:bg-neon-pink/10 aria-disabled:data-[over=true]:bg-button-neutral disabled:data-[over=true]:bg-button-neutral";
+
+/** Spread onto a field that wears {@link OVER_FIELD_CLASS}: the length-only hook. */
+export function overFieldProps(over: boolean): { "data-over"?: "true" } {
+  return over ? { "data-over": "true" } : {};
+}
 
 /**
  * Classify a length against a cap.

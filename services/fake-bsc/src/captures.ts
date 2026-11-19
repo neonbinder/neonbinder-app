@@ -8,7 +8,7 @@ import { readShape, shapeOf, synthConformsTo, type Shape } from "./shape";
 import { photoAnswer, putAnswer } from "./synth/sheet";
 import type { Listing, NamespaceState } from "./state";
 import type { ObjectStore } from "./store/types";
-import { EBAY_CAPTURE_ENDPOINTS, ebayCaptureSlug, ebaySynthesisedCapture, isEbayCaptureEndpoint } from "./ebay/captures";
+import { EBAY_CAPTURE_ENDPOINTS, EBAY_REQUIRED_CAPTURES, ebayCaptureSlug, ebaySynthesisedCapture, isEbayCaptureEndpoint, isOptionalCapturePath } from "./ebay/captures";
 
 /** A BSC write endpoint, or an eBay read or write capture name (`src/ebay/captures.ts`). */
 export type CaptureEndpoint = WriteEndpoint | string;
@@ -88,7 +88,7 @@ export interface CaptureVerdict {
 /** Does the fake's answer fit the real one? Paths only. */
 export function checkCapture(capture: WriteCapture): CaptureVerdict {
   const synth = synthesisedWrite(capture.endpoint);
-  const paths = synthConformsTo(synth.shape, capture.shape).paths;
+  const paths = synthConformsTo(synth.shape, capture.shape, isWriteEndpoint(capture.endpoint) ? undefined : (p) => isOptionalCapturePath(capture.endpoint, p, capture.shape)).paths;
   const statusClass = (s: number) => Math.floor(s / 100);
   if (statusClass(synth.status) !== statusClass(capture.status)) paths.unshift("$status");
   return { endpoint: capture.endpoint, capturedAt: capture.capturedAt, verdict: paths.length ? "shape_drift" : "ok", paths };
@@ -123,12 +123,13 @@ export class Captures {
   }
 
   /**
-   * The write endpoints the specs drive that have no stored capture. Empty
-   * once `recorder capture-write` has run for each. Without a capture the
-   * fake's synthesised write answer is checked against nothing.
+   * The required write endpoints that have no stored capture: BSC's two (the
+   * specs drive them; stored by `recorder capture-write`) and the eBay writes
+   * the recorder stores (`EBAY_REQUIRED_CAPTURES`; stored by `recorder
+   * ebay-capture`, sandbox and `--prod`). Empty once each has one. Without a
+   * capture the fake's synthesised write answer is checked against nothing.
    */
-  missing(): WriteEndpoint[] {
-    // BSC only: no eBay endpoint is required until the cutover (NEO-555 PR B).
-    return (Object.keys(WRITE_ENDPOINTS) as WriteEndpoint[]).filter((e) => !this.latest.has(e));
+  missing(): CaptureEndpoint[] {
+    return [...Object.keys(WRITE_ENDPOINTS), ...EBAY_REQUIRED_CAPTURES].filter((e) => !this.latest.has(e));
   }
 }

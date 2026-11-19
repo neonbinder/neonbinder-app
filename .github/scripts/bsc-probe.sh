@@ -4,6 +4,7 @@
 # browser-deploy.yml (dev and prod lanes) and bsc-drift.yml.
 #
 # Usage: bsc-probe.sh <real|fake> [--health-only]
+#   --health-only with fake also requires /health ebayFake=true (NEO-555).
 #
 # Env:
 #   TARGET_URL        browser service or tagged revision URL (no trailing /)
@@ -38,14 +39,26 @@ curl -sS --max-time 60 -o "$out/health.json" \
 if [ "$health_only" = "--health-only" ]; then
   echo '{}' > "$out/probe.json"
   target=$(jq -r '.bscTarget // ""' "$out/health.json" 2>/dev/null || true)
-  if [ "$target" = "$expect" ]; then
-    echo "bscTarget=$target"
-    [ -z "${GITHUB_OUTPUT:-}" ] || echo "outcome=ok" >> "$GITHUB_OUTPUT"
-    exit 0
+  if [ "$target" != "$expect" ]; then
+    echo "::error::/health says bscTarget='${target}', expected '${expect}'"
+    [ -z "${GITHUB_OUTPUT:-}" ] || echo "outcome=wrong_target" >> "$GITHUB_OUTPUT"
+    exit 1
   fi
-  echo "::error::/health says bscTarget='${target}', expected '${expect}'"
-  [ -z "${GITHUB_OUTPUT:-}" ] || echo "outcome=wrong_target" >> "$GITHUB_OUTPUT"
-  exit 1
+  # NEO-555: a fake run also needs the browser service to honour fake eBay keys
+  # (/health `ebayFake`, B1). A revision without it would answer a fake eBay
+  # connect with an unconfigured-eBay error, or reach the real eBay.
+  if [ "$expect" = "fake" ]; then
+    ebay_fake=$(jq -r '.ebayFake' "$out/health.json" 2>/dev/null || true)
+    if [ "$ebay_fake" != "true" ]; then
+      echo "::error::/health says ebayFake='${ebay_fake}', expected 'true'"
+      [ -z "${GITHUB_OUTPUT:-}" ] || echo "outcome=wrong_target" >> "$GITHUB_OUTPUT"
+      exit 1
+    fi
+    echo "ebayFake=true"
+  fi
+  echo "bscTarget=$target"
+  [ -z "${GITHUB_OUTPUT:-}" ] || echo "outcome=ok" >> "$GITHUB_OUTPUT"
+  exit 0
 fi
 
 if [ "$expect" = "fake" ]; then

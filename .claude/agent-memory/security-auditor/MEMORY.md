@@ -1,6 +1,7 @@
 # Security Auditor — Agent Memory Index
 
 - [Reviewing a live worktree](feedback_reviewing_a_live_worktree.md) — others edit it: never overwrite a file to test; re-run gates
+- [Neo611 roster players](patterns_neo611_roster_players.md) — caller epoch one-way safe; decision replay skips birth-year contradiction; held carries playerId
 - [Ar cleanup serving image](patterns_ar_cleanup_serving_image.md) — AR cleanup policies: when a KEEP rank guard protects the live image
 - [Attention flag suppression](patterns_attention_flag_suppression.md) — a flag cleared by any write of its field is clearable by an unrelated save
 - [Card drawer autosave](patterns_card_drawer_autosave.md) — NEO-216/217 per-field autosave; null-clear for numbers; userFacingMessage
@@ -80,7 +81,7 @@
 - [Neo356 theme prepaint](patterns_neo356_theme_prepaint.md) — inline pre-paint script: compare to literals; no CSP in apps/web
 - [Neo358 collector rows pin catalog](patterns_neo358_collector_rows_pin_catalog.md) — user copies guarding catalog deletes/moves = signed-in
 - [Neo364 client-carried undo](patterns_neo364_client_carried_undo.md) — forged inverse = raw write API; per-step owner/home/class/qty re-check held
-- [Cross-run artifacts](patterns_cross_run_artifacts.md) — A CI job that reads other runs' artifacts must filter to this repo's runs
+- [Cross-run artifacts](patterns_cross_run_artifacts.md) — CI jobs and local scripts reading run artifacts: fork filter; nested-zip symlink escape
 - [Unauthenticated probe functions](patterns_unauthenticated_probe_functions.md) — weigh a no-auth ping against an auth-failing call (not zero)
 - [Neo408 seed without exports](patterns_neo408_seed_without_exports.md) — internal read fns replacing `convex export`: reachability = deploy key
 - [Neo370 scheduled marketplace poll](patterns_neo370_scheduled_marketplace_poll.md) — 24/7 poll: credential gating; backoff == interval
@@ -117,6 +118,11 @@
 - [Neo552 fake upstream](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; probe leaks; TOCTOU
 - [Live-account probe and capture](patterns_live_account_probe_and_capture.md) — wrap transport; signal guard; stderr EPIPE/EIO kills it; scripts need checkout
 - [Neo569 league ids](patterns_neo569_league_ids.md) — registry fixture the body refuses = vacuous gate test; new hold reason freezes live qty/price
+- [Neo592 concurrent reads](patterns_neo592_concurrent_reads.md) — batching drops early-exit caps (level BFS); moved checks need own test
+- [Neo592 CI redactors](patterns_neo592_ci_redactors.md) — one rule list now; redact before slicing; secret-pair residual gaps; blank+close pages
+- [Neo592 bounded R2 GET](patterns_neo592_bounded_r2_get.md) — hand-signed GET keeps signal; pinned log keys; absent CL reads whole body pre-cap
+- [Neo604 retried secret add](patterns_neo604_retried_secret_add.md) — UNAVAILABLE retry on add; N-2 prune safe: destroys only below created ordinal
+- [Fake target env label](patterns_fake_target_environment_label.md) — fake config labelled "production" passes env-echo guards; echo "fake" outward
 - [Feedback reviewing a live worktree](feedback_reviewing_a_live_worktree.md) — When auditing a monorepo worktree, another agent may be editing it concurrently — never temporarily overwrite a file to test something, and re-run lint/tests before re…
 - [Patterns ar cleanup serving image](patterns_ar_cleanup_serving_image.md) — Availability invariant for the Artifact Registry cleanup policies in terraform main.tf — when a KEEP rank guard actually protects the live serving image and when it si…
 - [Patterns attention flag suppression](patterns_attention_flag_suppression.md) — Review rule for NeonBinder "needs attention" flags — a stored flag cleared by any write of its field is silently clearable by an unrelated save; check the client's mut…
@@ -233,8 +239,11 @@
 - [Neo535 rename fan-out + title chain](patterns_neo535_rename_fanout_and_title_chain.md) — per-row probe × row cap in budget doors; value-keyed chain stop ≠ generation; fan-out skips eBay requeue; chained second leg doubles cap; merge --cc audit
 - [Neo552 fake upstream + recorder](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; probe leaks; TOCTOU; prefix delete via ..; mode guard; undo-by-SKU namespace
 - [Neo552 fake upstream + recorder](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; TOCTOU; .. prefix; SKU ns; durable list needs write rate; sweep only older versions
+- [Neo574 client id override](patterns_neo574_client_id_override.md) — per-card id override + stint writer: validator shape that held; dedupe gap
 - [Neo556 copied-down decision stamp](patterns_neo556_copied_down_decision_stamp.md) — server-minted {setAt,setByUserId} copied down + reused for background stamps; cursor {i,t,c,r}; one bool two caps
 - [Merge guard survival; bscTeamPool enqueue](patterns_merge_resolution_guard_survival_and_bsc_lane_enqueue.md) — comm -23 line-survival check for merges; one-slot lane enqueue is bounded if admin/internal + row re-read
 - [Cross-workflow preview wait](patterns_cross_workflow_preview_wait.md) — waiter gate ⊆ builder's merge_group scope; tag-exists wait = stale revision
 - [Neo591 prospect claims + PDF runs](patterns_neo591_prospect_claims_and_pdf_runs.md) — joined text breaks per-name cap; saturated take() is no "exactly one"; runs past parser cap
 - [Neo591 names-first pairing](patterns_neo591_names_first_pairing.md) — minted/swapped numbers reach commit number tiers; stem parent re-guessed at commit
+- [Neo555 fake eBay cutover](patterns_neo555_fake_ebay_cutover.md) — two-gate resolver; request-keyed key names; merge-deploy removals; retired lane leaves creds
+- [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding

@@ -231,6 +231,29 @@ describe("EntityColumn — unlink notice (NEO-211 plan D)", () => {
     expect(toast.textContent).toContain("No longer listed on BSC: 2 sets");
   });
 
+  it("the toast still goes after its time when the sync row changes under it (NEO-592)", async () => {
+    // The toast's timer used to be tied to the status effect, so the row
+    // changing again (a re-run, the dismiss) cut the timer and left the toast up for good.
+    vi.useFakeTimers();
+    try {
+      state.status = doneWithUnlinked;
+      const view = await renderColumn();
+      expect(document.querySelector('[aria-live="polite"]')).not.toBeNull();
+      state.status = null;
+      view.rerender(<EntityColumn {...setProps} />);
+      await act(async () => {
+        vi.advanceTimersByTime(5999);
+      });
+      expect(document.querySelector('[aria-live="polite"]')).not.toBeNull();
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+      });
+      expect(document.querySelector('[aria-live="polite"]')).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("leaves the column usable behind it", async () => {
     state.status = doneWithUnlinked;
     await renderColumn();

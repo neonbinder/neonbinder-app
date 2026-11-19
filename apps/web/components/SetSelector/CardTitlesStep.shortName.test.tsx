@@ -21,8 +21,6 @@ afterEach(() => {
 /** "2026 Topps <this>" is 69 characters: titles keep the surname, not the first name. */
 const FIRST_NAME_SET = "Chrome Update Series Sapphire Edition Platinum Anniversary";
 const PREFILL = `2026 Topps ${FIRST_NAME_SET}`;
-const LONG_VARIATION =
-  "Image Variation; Wearing a throwback uniform with the 1970s powder blue logo";
 
 const CONTEXT: TitleContext = {
   sportValue: "Baseball",
@@ -36,7 +34,7 @@ const OVER: TitleContext = { ...CONTEXT, setNameValue: `${FIRST_NAME_SET} Collec
 
 const LABEL = "Set name in titles";
 const LEAD = "Set name hogging the title? Trim it here and every title below gets it.";
-const TITLES_LEAD = "These titles lost a first name or ran long. Keep 'em, or make 'em yours.";
+const TITLES_LEAD = "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.";
 const BOX = "2026 Topps Chrome Sapphire";
 
 function card(n: string, extra: Partial<PreviewCardForTitles> = {}): PreviewCardForTitles {
@@ -98,9 +96,11 @@ describe("CardTitlesStep — the box shows whenever the step lists titles", () =
   });
 
   test("only a variation on the step: no box", () => {
+    // A variation is never cut (NEO-609), so only a title short enough to
+    // carry it whole leaves the variation as the sole fault.
     setup({
-      cards: [card("1", { cardVariation: LONG_VARIATION })],
-      titleContext: { ...CONTEXT, setNameValue: "Chrome" },
+      cards: [card("1", { players: [], cardVariation: "v".repeat(66) })],
+      titleContext: { ...CONTEXT, setNameValue: "X", inheritedFeatures: {} },
     });
     expect(screen.queryByRole("textbox", { name: LABEL })).toBeNull();
     expect(screen.getByRole("heading", { name: "Variation's too long to list. Trim it to 65." }))

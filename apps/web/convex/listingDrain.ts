@@ -64,7 +64,7 @@ import { drainEbayOwnerImpl } from "./listingDrainEbay";
 import { copyPhotoObjectKey, MAX_COPY_PHOTO_BYTES } from "./copyPhotos";
 import { planBscFanOut, resolveBscFacetFilters } from "./bscFacets";
 import { resolvableSides, type ResolvableRow } from "./marketplaceResolvability";
-import { r2Config } from "./lib/r2";
+import { getObjectBytes, r2Config } from "./lib/r2";
 import { commonPriceCentsOf } from "./listingGate";
 import {
   bscConditionsForEra,
@@ -1529,18 +1529,19 @@ type VariantResult =
   /** Another NB owner holds the seller account: stop, push nothing. */
   | { kind: "sellerConflict" };
 
+/**
+ * NEO-592: one R2 GET with a time limit (`getObjectBytes`: 2.5 s a try, two
+ * tries, the body read inside the limit), shared by the BuySportsCards and
+ * eBay drains. The bytes, or null for everything else (no R2 here, a missing
+ * object, one over `maxBytes`, a timeout, a fault): the callers read null as
+ * "not this run" and keep the card queued. The run therefore waits about 5 s
+ * at most on a photo that will not come, not the 12 s it took in CI.
+ */
 export async function defaultFetchPhoto(key: string, maxBytes: number): Promise<ArrayBuffer | null> {
   const config = r2Config();
   if (!config) return null;
-  const res = await config.client.fetch(`${config.base}/${key.split("/").map(encodeURIComponent).join("/")}`, {
-    method: "GET",
-  });
-  if (!res.ok) {
-    await res.text().catch(() => "");
-    return null;
-  }
-  const bytes = await res.arrayBuffer();
-  return bytes.byteLength > maxBytes ? null : bytes;
+  const got = await getObjectBytes(config, key, { maxBytes });
+  return got.kind === "ok" ? got.bytes : null;
 }
 
 /**

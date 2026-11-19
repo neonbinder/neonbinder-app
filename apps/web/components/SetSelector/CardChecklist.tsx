@@ -40,6 +40,14 @@ import {
   type TeamAnswer,
 } from "./teams-on-cards";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
+// NEO-574: the "Career check" step's answers, put on the cards at commit.
+import {
+  applyCareerCardEdit,
+  careerContextAsks,
+  sameCareerFields,
+  type CareerCommitFields,
+  type CareerContext,
+} from "./career-check";
 import CardPairingModal, {
   type PairingCard,
   type PairingConflicts,
@@ -330,6 +338,20 @@ type FetchPreview = {
    * step was part of the sitting and answered. Client state only.
    */
   autographFormat?: AutographFormat;
+  /**
+   * NEO-574 — `resolveChecklistEntities`' `careerContext`: the set's year and
+   * what the gate resolved and judged, for the wizard's "Career check" step.
+   * Absent on an older server answer, or a set with no year: no career step.
+   */
+  careerContext?: CareerContext;
+  /**
+   * NEO-574 — the career step's answers: stints to add and per-card edits
+   * (`playerIdByName`, `teamIds`, a team string dropped), the edits
+   * POSITIONALLY ALIGNED with `cards`. Client state only: `runCommit` puts
+   * them on the cards and sends the stints, and they are forgotten with the
+   * preview.
+   */
+  careerFields?: CareerCommitFields;
 };
 
 /** The confirmed cards, waiting on the content-diff review. */
@@ -2192,8 +2214,14 @@ export default function CardChecklist({
     // NEO-332's `ambiguousPlayers` is not read here any more: the banner
     // counts every name as one (`entityConfirmationMessage`), and the wizard
     // finds a same-name row's pick step from the row itself.
-    const { unknownPlayers, unknownTeams, batchId, titleContext, autoLinkedCount: autoLinkedWire } =
-      await resolveEntities({
+    const {
+      unknownPlayers,
+      unknownTeams,
+      batchId,
+      titleContext,
+      careerContext,
+      autoLinkedCount: autoLinkedWire,
+    } = await resolveEntities({
         selectorOptionId: variantId,
         sportId,
         cards: kept.map(({ card }) => card),
@@ -2273,6 +2301,7 @@ export default function CardChecklist({
       playerlessIndexes,
       ...(defaultPlayer ? { defaultPlayer } : {}),
       ...(titleContext ? { titleContext } : {}),
+      ...(careerContext ? { careerContext } : {}),
       cards: kept.map(({ card }) => card),
       decisions: kept.map(({ index }) => ({
         applyFields: review.applyFieldsByIndex[index],
@@ -2337,7 +2366,19 @@ export default function CardChecklist({
     // the only place that disagreement is settled (rule 7: never silently),
     // and the commit refuses a card still carrying one.
     const askChecklist = checklistConflictIndexes(preview.cards).length > 0;
-    if (noNames && !askTeams && !askTitles && !askAutograph && !askChecklist) {
+    // NEO-574 — and a new card whose team its (existing) player's career does
+    // not show gets the wizard's "Career check" step. With no names to review
+    // every pair is the gate's own to judge (`careerContext.gaps`); a pair it
+    // did not judge is put to the wizard, which reads it.
+    const askCareer =
+      noNames &&
+      careerContextAsks(
+        preview.cards,
+        existingIndexes,
+        careerContext,
+        skippedPlayerNames,
+      );
+    if (noNames && !askTeams && !askTitles && !askAutograph && !askChecklist && !askCareer) {
       // No wizard on this path — nothing to hold the preview for, and nothing
       // to render `commitError`. `runCommit` has already put the failure in the
       // sync banner (`Commit failed: …`), which is the only place an operator
@@ -2417,7 +2458,10 @@ export default function CardChecklist({
           // carrying a disagreement is sent as it is; the commit refuses it,
           // and the wizard's step holds Save until there is none.
           const choice = preview.checklistChoices?.[i];
-          const card = choice ? applyChecklistChoice(incoming, choice) : incoming;
+          const checked = choice ? applyChecklistChoice(incoming, choice) : incoming;
+          // NEO-574: the career step's edits (a different player or team) go
+          // on next, ahead of the teams and titles answers made against them.
+          const card = applyCareerCardEdit(checked, preview.careerFields?.cardEdits[i]);
           const decision = preview.decisions[i];
           const reviewed = decision?.applyFields?.length
             ? {
@@ -2445,6 +2489,11 @@ export default function CardChecklist({
         // NEO-345: how this leaf's autographs are signed, only when the
         // wizard's "Autographed cards" step asked and was answered.
         ...(preview.autographFormat ? { autographFormat: preview.autographFormat } : {}),
+        // NEO-574: the stints the career check added, only when it asked and
+        // the operator said yes to one.
+        ...(preview.careerFields?.stints.length
+          ? { careerStints: preview.careerFields.stints }
+          : {}),
       });
       // NEO-195: the candidates have been promoted into cardChecklist, so the
       // staging rows have done their job. Dropping them here rather than
@@ -2675,6 +2724,17 @@ export default function CardChecklist({
     setPendingPreview((prev) => {
       if (!prev || prev.autographFormat === value) return prev;
       return { ...prev, autographFormat: value };
+    });
+  }, []);
+
+  /**
+   * NEO-574 — the wizard's "Career check" answers, held on the preview until
+   * commit. `undefined` = nothing to send.
+   */
+  const handleCareerFields = useCallback((fields: CareerCommitFields | undefined) => {
+    setPendingPreview((prev) => {
+      if (!prev || sameCareerFields(prev.careerFields, fields)) return prev;
+      return { ...prev, careerFields: fields };
     });
   }, []);
 
@@ -4542,6 +4602,11 @@ export default function CardChecklist({
           // when this leaf has not said how its autographs are signed.
           hasAutographFormat={leafAutographFormat !== undefined}
           onAutographFormatChange={handleAutographFormat}
+          // NEO-574: the "Career check" step, first after the names, when a
+          // new card's team is missing from its player's career.
+          sportId={pendingPreview.sportId}
+          careerContext={pendingPreview.careerContext}
+          onCareerChange={handleCareerFields}
           /**
            * NEO-221 (D9) — BACK, not abort.
            *

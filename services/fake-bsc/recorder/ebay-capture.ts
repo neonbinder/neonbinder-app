@@ -5,13 +5,13 @@
  *
  *   Sandbox: the reads and the writes the sandbox accepts, on objects named
  *     NBCAPTURE-SBX-<yyyymmdd>, all removed at the end.
- *   Production (`--prod`, Jason only): ONE real listing to capture what the
+ *   Production (`--prod`, manual, the account owner only): ONE real listing to capture what the
  *     sandbox refuses (media, publish, price update, withdraw). Pre-checks
  *     before any write; exactly the seven writes the dry run prints; a
  *     `finally` that withdraws and deletes whatever the run made, at most
  *     three tries each, then verifies.
  */
-import { endpointName } from "../src/ebay/sample";
+import { endpointName, REFUSED } from "../src/ebay/sample";
 import type { EbayOp } from "../src/ebay/paths";
 import { shapeOf, type Shape } from "../src/shape";
 import { EbayStop, errorIdsOf, type EbayApi, type EbayCall, type EbayEnv, type EbayResponse } from "./ebay-api";
@@ -615,7 +615,7 @@ export async function runSandboxCapture(deps: SandboxDeps): Promise<SandboxOutco
           }
         } else {
           report(`publish refused as expected (HTTP ${pub.status}, errorIds ${errorIdsOf(pub.body).join(",") || "none"})`);
-          keep("publishOffer", pub, "25002");
+          keep("publishOffer", pub, REFUSED);
         }
       }
     }

@@ -106,6 +106,7 @@ import {
   expectChecklistDisagreementFirst,
   nextStepButton,
   openDecidedList,
+  passCareerCheck,
   pickDisagreementSide,
   readBackDecision,
   reviewWizard,
@@ -240,6 +241,9 @@ async function expectLowderNames(lowder: Locator): Promise<void> {
     names.getByRole("radio", { name: "Rhett Lowdr · your checklist — use this name for #SIG-RL", exact: true }),
   ).not.toBeChecked();
 }
+
+/** One character past the 120 a card or player name may carry (`MAX_PLAYER_NAME_LENGTH`). */
+const OVER_LONG_NAME = `Rhett ${"Lowder".repeat(20)}x`.slice(0, 121);
 
 test(
   "Published checklist — rows whose numbers match no card pair to the cards by player name, and the card's own player settles the club",
@@ -392,6 +396,9 @@ test(
     // OFF first, while the combobox is closed: no alias is saved (PHASE B reads the decision back).
     await answerClubStep(page);
 
+    // NEO-574: the catalogue's prospects here have no stint with their card's club by 2026, so a
+    // "Career check" comes first; it is not this spec's business ("Keep as is" writes nothing).
+    await passCareerCheck(page);
     // "Cards with no team" holds Mike Lowell ONLY: the other 13 took their team from the checklist.
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
     await expect(wizard.getByRole("radiogroup", { name: /^Team for / })).toHaveCount(1);
@@ -435,6 +442,24 @@ test(
     await expectLowderNames(lowder);
     await expectAccessible(page, { within: matchCards, label: "Match Cards dialog, a near-name pair" });
 
+    // NEO-606: a card name past 120 characters is refused where it was typed. The editor stays
+    // open with the text, the field is invalid, and the refusal is an alert on its own field
+    // well (the error pink misses 4.5:1 on the row's tile); axe reads it in both modes while it
+    // shows. Escape abandons the edit, the dialog stays, and the card keeps its name.
+    await lowder.getByRole("button", { name: "Edit name for #SIG-RL Rhett Lowder" }).click();
+    const lowderName = matchCards.getByRole("textbox", { name: "Edit name for #SIG-RL", exact: true });
+    await lowderName.fill(OVER_LONG_NAME);
+    await lowderName.press("Enter");
+    const nameRefusal = matchCards.getByRole("alert").filter({ hasText: "Card names are limited to" });
+    await expect(nameRefusal).toHaveText("Card names are limited to 120 characters — shorten it to save.");
+    await expect(lowderName).toHaveValue(OVER_LONG_NAME);
+    await expect(lowderName).toHaveAttribute("aria-invalid", "true");
+    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog, a card name over 120 refused" });
+    await lowderName.press("Escape");
+    await expect(lowderName).toBeHidden();
+    await expect(nameRefusal).toHaveCount(0);
+    await expect(matchCards.getByRole("button", { name: "Edit name for #SIG-RL Rhett Lowder" })).toBeVisible();
+
     // The operator undoes the near pair and makes it again with the buttons: the card goes to the keep
     // shelf, the row to "Checklist only"; linked again, both leave their lists for one Matched row
     // (NEO-591), which carries the chip's Unlink and no % (a hand link is not scored).
@@ -467,6 +492,8 @@ test(
     // checklist, and all 14 reach the save.
     await expectClubStep();
     await answerClubStep(page);
+    // Past the career check (NEO-574), the step that is up is not the teams step.
+    await passCareerCheck(page);
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
     await advanceToSave(page);
     await expect(wizard.getByText(`Save ${MIXED.cards} cards?`)).toBeVisible();
@@ -502,7 +529,9 @@ test(
 
     await expectClubStep();
     await answerClubStep(page);
-    // Every card has its team, so the walk goes straight past the teams step.
+    // Every card has its team, so the walk goes straight past the teams step (past the career
+    // check first, NEO-574: the step that is up is then not the teams step).
+    await passCareerCheck(page);
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeHidden();
     await advanceToSave(page);
     await expect(wizard.getByText(`Save ${WHOLE.cards} cards?`)).toBeVisible();

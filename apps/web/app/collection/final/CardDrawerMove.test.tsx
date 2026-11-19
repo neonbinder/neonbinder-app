@@ -38,6 +38,8 @@ function renderDrawer(cardId: string = STACK.cardId) {
 }
 
 const frames = () => act(() => new Promise<void>((r) => setTimeout(r, 40)));
+/** Resolves once a frame has run after the caller's: the status line writes its words in one (NEO-529), so a "says nothing" check is only meaningful after this. */
+const afterFrame = () => act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())); });
 const lines = (drawer: HTMLElement) => within(within(drawer).getByRole("region", { name: /^Your copies of / })).getAllByRole("listitem");
 /** The stack of three's Take off sale / Sell button (its line id is stable through a split). */
 const stackSell = (drawer: HTMLElement) =>
@@ -93,7 +95,7 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     expect(options).toContain("Slab case");
   });
 
-  it("asks how many on a stack, all of them to start, and refuses a number outside 1 to the stack", () => {
+  it("asks how many on a stack, all of them to start, and refuses a number outside 1 to the stack", async () => {
     const drawer = renderDrawer();
     fireEvent.click(stackSell(drawer));
     const panel = within(drawer).getByRole("form", { name: /^Take .+ off sale$/ });
@@ -107,6 +109,7 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     expect(go().getAttribute("aria-disabled")).toBe("true");
     expect(within(panel).getByText("Pick 1 to 3.")).toBeTruthy();
     fireEvent.click(go());
+    await afterFrame();
     expect(within(drawer).getByRole("form", { name: /^Take .+ off sale$/ })).toBeTruthy();
     expect(status(/off sale/)).toBe(false);
     fireEvent.change(qty, { target: { value: "4" } });
@@ -123,11 +126,11 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     await waitFor(() => expect(lines(drawer)).toHaveLength(LINES + 1));
     await frames();
 
-    expect(status(/^Took 2 of #.+ off sale\. They're back in Slab case\.$/)).toBe(true);
+    await waitFor(() => expect(status(/^Took 2 of #.+ off sale\. They're back in Slab case\.$/)).toBe(true));
     const kept = stackSell(drawer);
     expect(kept.textContent).toBe("Take off sale");
     expect(within(drawer).getByText(/×2/)).toBeTruthy();
-    expect(document.activeElement).toBe(kept);
+    await waitFor(() => expect(document.activeElement).toBe(kept));
     expect(within(drawer).queryByRole("form", { name: /off sale$/ })).toBeNull();
   });
 
@@ -142,11 +145,11 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     await waitFor(() => expect(lines(drawer)).toHaveLength(LINES));
     await frames();
 
-    expect(status(/stacked with the ones already there/)).toBe(true);
+    await waitFor(() => expect(status(/stacked with the ones already there/)).toBe(true));
     const stack = within(drawer).getByText(/×3/).closest("li")!;
     const twin = within(stack).getByRole("button", { name: /^Move #/ });
     expect(twin.getAttribute("data-copy-move")).not.toBe(STACK.id);
-    expect(document.activeElement).toBe(twin);
+    await waitFor(() => expect(document.activeElement).toBe(twin));
   });
 
   it("a binder's line moves to another binder only, and Sell puts it in a box", async () => {
@@ -166,7 +169,7 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     expect(options).toContain("Main");
     fireEvent.click(within(movePanel).getByRole("button", { name: "Keep it here" }));
     await frames();
-    expect(document.activeElement).toBe(move);
+    await waitFor(() => expect(document.activeElement).toBe(move));
 
     // Sell: boxes only, and the line reads For sale once it lands.
     const sell = stackSell(drawer);
@@ -249,7 +252,7 @@ describe("the drawer's Move, Sell and Take off sale", () => {
     fireEvent.keyDown(within(drawer).getByRole("form", { name: /off sale$/ }), { key: "Escape" });
     await frames();
     expect(within(drawer).queryByRole("form", { name: /off sale$/ })).toBeNull();
-    expect(document.activeElement).toBe(button);
+    await waitFor(() => expect(document.activeElement).toBe(button));
 
     fireEvent.click(button);
     fireEvent.click(within(drawer).getByRole("button", { name: "Leave it for sale" }));

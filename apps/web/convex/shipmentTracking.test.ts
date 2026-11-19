@@ -1346,6 +1346,22 @@ describe("postage.saveEasypostKey", () => {
   });
 });
 
+describe("postage.saveEasypostKey failure", () => {
+  // NEO-604: the internal store's message now carries an HTTP status for the
+  // seed page; a seller still gets the plain copy, and nothing is scheduled.
+  test("keeps the seller-facing copy when the store answers non-OK", async () => {
+    const t = convexTest(schema, modules);
+    const calls = recordingStub(async () => jsonResponse({ error: "boom" }, 500));
+
+    const result = await t
+      .withIdentity({ subject: USER })
+      .action(api.postage.saveEasypostKey, { apiKey: "EZTK_test" });
+
+    expect(result).toEqual({ success: false, message: "Could not save the key. Try again." });
+    expect(calls.every((c) => c.method === "PUT")).toBe(true);
+  });
+});
+
 describe("postage.clearEasypostKey", () => {
   test("unregisters the webhook BEFORE deleting the key", async () => {
     const t = convexTest(schema, modules);
