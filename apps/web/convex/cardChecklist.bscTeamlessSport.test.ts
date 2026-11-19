@@ -265,4 +265,60 @@ describe("applyBscTeamResolution for a teamless sport (NEO-426)", () => {
     expect(card.teamNoneConfirmedAt).toBe(5);
     expect(card.teamNoneConfirmedByUserId).toBe("user_operator");
   });
+  // The one existing-row path that can earn the sport default: a re-sync
+  // attaches a BSC ref to a row with no team, no ruling and no lookup answer,
+  // the chunk queues the lookup (`teamAnswer.enqueue`), and BSC's own "no team"
+  // answer is what stamps it (NEO-556's leaf default, same path).
+  describe("a re-sync attaches a BSC ref to an existing row (chunk, then BSC's answer)", () => {
+    const resyncAttachingRef = async (t: T, fx: Fx, id: Id<"cardChecklist">) =>
+      t.mutation(internal.selectorOptions.commitCardChecklistChunk, {
+        selectorOptionId: fx.leaf,
+        sportValue: "Golf",
+        setNameValue: "Greens",
+        operatorUserId: "operator_neo426",
+        cards: [
+          {
+            cardNumber: "1",
+            cardName: "Card 1",
+            platformData: { bsc: { ref: "bsc-9" } },
+            sortOrder: 1,
+            playerNames: [],
+            teamNames: [],
+            existingId: id,
+          },
+        ] as never,
+      });
+
+    test("the chunk queues the lookup and stamps nothing; BSC's empty answer then stamps the sport default", async () => {
+      const { t, fx } = await seed();
+      const id = await seedCard(t, fx, { playerIds: [fx.tiger], platformData: {} });
+      const out = await resyncAttachingRef(t, fx, id);
+      expect(out.bscTeamEnrichmentIds).toEqual([id]);
+      const queued = (await getCard(t, id))!;
+      expect(queued.platformData.bsc?.ref).toBe("bsc-9");
+      expect(queued.teamNoneConfirmedAt).toBeUndefined();
+
+      await apply(t, id, "", []);
+      const card = (await getCard(t, id))!;
+      expect(card.teamNoneConfirmedAt).toEqual(expect.any(Number));
+      expect(card.teamNoneConfirmedByUserId).toBe(SPORT_SETTER);
+      expect(card.teamCheckOutcome).toBe("answered");
+    });
+
+    test("when BSC names a team NB holds on that answer, the row gets the team and no stamp", async () => {
+      const { t, fx } = await seed();
+      const team = await t.run(async (ctx) =>
+        ctx.db.insert("teams", { ...teamRowFields({ location: "Augusta", name: "Nationals" }), sportId: fx.golf, lastUpdated: NOW }),
+      );
+      const id = await seedCard(t, fx, { playerIds: [fx.tiger], platformData: {} });
+      const out = await resyncAttachingRef(t, fx, id);
+      expect(out.bscTeamEnrichmentIds).toEqual([id]);
+
+      await apply(t, id, "Augusta Nationals", ["Augusta Nationals"]);
+      const card = (await getCard(t, id))!;
+      expect(card.teamOnCardIds).toEqual([team]);
+      expect(card.teamNoneConfirmedAt).toBeUndefined();
+      expect(card.teamNoneConfirmedByUserId).toBeUndefined();
+    });
+  });
 });

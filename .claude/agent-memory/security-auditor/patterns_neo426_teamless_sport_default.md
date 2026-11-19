@@ -1,46 +1,24 @@
 ---
-name: patterns-neo426-teamless-sport-default
-description: NEO-426 teamless-sport "No team" default (sport-row teamlessSport stamp) — server auto-stamp of a suppression flag; the re-sync door that ignores an unaccepted incoming team; operator un-confirm has no stored marker; who sees setByUserId
+name: neo426-teamless-sport-default
+description: NEO-426 sport-level "No team" default — birth-only by design; the async BSC-answer door still reaches existing rows; bounded sport scan fails closed
 metadata:
   type: project
 ---
-NEO-426 lets the server stamp `teamNoneConfirmedAt` (the missing-team
-suppression flag, see [[patterns-neo102-card-team-none]]) WITHOUT an operator
-answer when every player's HOME sport row carries `teamlessSport`
-(`{setAt,setByUserId}`, same shape as [[patterns-neo556-copied-down-decision-stamp]]).
-Rebuilt 2026-11-19 on NEO-556's shared `noTeamCardVerdict`; auth was clean
-(setter + list query requireAdmin, registered; player-sport reader internal).
 
-**Escalation test for any server-derived default of an operator answer:**
-compare it with what the client wire can already send (`teamNone: true` per
-card from an admin). A default fed into the same verdict grants nothing new
-at BIRTH. It is the doors that never had an operator answer that bite.
+A "default to No team" rule (leaf NEO-556, sport NEO-426) is a birth-time answer.
+Stamping it on a re-synced row fired when an incoming team was named but not
+accepted (no applyFields / stale baseVersion), breaking invariant 8, and re-stamped
+cards an operator had taken out of No team. Fix was to drop the re-sync stamp.
 
-**Trap 1 (re-sync door): the verdict reads what the row WILL HAVE, not what
-the incoming data CLAIMS.** On an existing row, an incoming
-`card.teamOnCardIds` is written only through `applyFields` + `baseVersion`;
-unaccepted or stale, `effectiveTeamIds` stays empty and the verdict says
-`stamp` although the data named a team (rule 8). Any "stamp on re-sync" must
-also hold on the incoming card's resolved teams. NEO-556 never stamped on
-re-sync, so this door is new whenever a later default adds it.
-Resolved in NEO-426 by removing the re-sync stamp: the sport default stamps
-at birth, addCustomCard and the BSC no-team answer only (NEO-556's shape).
+**Why:** "operator took it out of No team" is not persisted (only
+teamNoneConfirmedAt exists), so any later default door cannot tell it apart from
+"never ruled".
 
-**Trap 2: operator un-confirm leaves no trace.** `updateCard teamNone:false`
-and `addCustomCard teamNone:false` only clear/omit the stamp; nothing records
-"operator wants a team". A later automated stamp path that runs on existing
-rows (re-sync; a no-ref hand-added row matches by number via
-`existingIdByNumberNoRef`) silently re-suppresses it. Ask for a stored
-decline marker honoured by every automated stamp, or no stamp on existing rows.
-NEO-426 took "no stamp on existing rows".
-
-**setByUserId audience:** whole-doc `selectorOptionDocValidator` readers
-(getSelectorOptions, getSelectorOptionById, getInsertTreeByVariantType) are
-all requireAdmin and already ship `createdByUserId` and `noTeamDefault`;
-`getAncestorChain` projects (boolean only). No non-admin reader of sport rows
-exists; brandView projects platformData only. Same audience, so a note, not a
-finding — re-check if a non-admin reader of selectorOptions docs appears.
-
-**Absent-vs-failed lookup trap (still true):** a predicate that refuses on
-`teamLookup === "failed"` but passes on `undefined` treats "no lookup" as "no
-team"; the shared verdict's `hasBscRef && teamCheckDoneAt === undefined` holds.
+**How to apply:** when auditing a new default-stamp, grep every caller of the
+default reader (`defaultFor(`, `stampNoTeam(`). The BSC lookup answer
+(`applyBscTeamResolution` → `noTeamDefaultStamp`) still applies defaults to an
+EXISTING row when a re-sync attaches a BSC ref and enqueues the lookup — accepted
+because BSC's data names no team, but it is the one surviving existing-row door.
+A bounded flagged-row scan (`.take(N)`) must fail closed (empty map + warn), and
+its test must cover both cap-1 (read in full) and cap (empty). Related:
+[[neo102-card-team-none]], [[attention-flag-suppression]].

@@ -118,6 +118,7 @@
 - [Neo552 fake upstream](patterns_neo552_fake_upstream_and_recorder.md) — unsigned token trusts IAM; miss list; NaN cap; probe leaks; TOCTOU
 - [Live-account probe and capture](patterns_live_account_probe_and_capture.md) — wrap transport; signal guard; stderr EPIPE/EIO kills it; scripts need checkout
 - [Neo569 league ids](patterns_neo569_league_ids.md) — registry fixture the body refuses = vacuous gate test; new hold reason freezes live qty/price
+- [Neo426 teamless sport default](patterns_neo426_teamless_sport_default.md) — default stamps birth-only; BSC-answer door still hits existing rows; scan fails closed
 - [Neo592 concurrent reads](patterns_neo592_concurrent_reads.md) — batching drops early-exit caps (level BFS); moved checks need own test
 - [Neo592 CI redactors](patterns_neo592_ci_redactors.md) — one rule list now; redact before slicing; secret-pair residual gaps; blank+close pages
 - [Neo592 bounded R2 GET](patterns_neo592_bounded_r2_get.md) — hand-signed GET keeps signal; pinned log keys; absent CL reads whole body pre-cap
