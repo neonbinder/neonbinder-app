@@ -1831,7 +1831,7 @@ function assertRowBirthYear(
     (!Number.isInteger(birthYear) || birthYear < min || birthYear > max)
   ) {
     throw new ConvexError(
-      `The birth year for "${key}" is ${birthYear}; expected a whole year between ${min} and ${max}.`,
+      `The birth year for "${key}" is out of range; expected a whole year between ${min} and ${max}.`,
     );
   }
 }
@@ -2362,8 +2362,10 @@ export const previewPlayerStints = internalQuery({
  * `candidate-undated`, `incoming-undated`, or `decision` (an operator's
  * answer). When either side has no birth year the name is all that agrees, and
  * writing a career onto the wrong undated man is the one mistake this loader
- * cannot take back. Such a row is `held`: NOTHING is written, and the result
- * names the candidate and its birth year so the driver can show it. It adopts
+ * cannot take back. Such a row is `held`: NOTHING is written, `playerId` is
+ * null, and `candidates` names the one player found, with `candidateBirthYear`,
+ * so the driver can show it. A decision never overrides a contradiction: if both
+ * the row and the chosen player are dated and differ, the call is refused. It adopts
  * once the answers file carries `{ adopt: id }`. The birth year is filled only
  * on a decision adopt of an undated row; aliases are unioned only on a
  * `match` or `decision` adopt.
@@ -2450,9 +2452,9 @@ const rosterBirthYearCheckValidator = v.union(
 const rosterPlayerResultValidator = v.object({
   key: v.string(),
   /**
-   * The player written or found. On `held` it is the candidate that WOULD be
-   * adopted (nothing was written to it). Null on `ambiguous` and on a preview
-   * `would-create`.
+   * The player written or found. Null whenever nothing was written to or
+   * for a player: `held` (the candidate is in `candidates`), `ambiguous`, and a
+   * preview `would-create`.
    */
   playerId: v.union(v.id("players"), v.null()),
   status: v.union(
@@ -2480,7 +2482,7 @@ const rosterPlayerResultValidator = v.object({
   twinOfKey: v.optional(v.string()),
   /** Create: the rule forked because every dated candidate had another birth year. */
   forked: v.optional(v.boolean()),
-  /** `ambiguous` and `held`: the players the operator chooses between. */
+  /** `ambiguous` and `held`: the players the operator chooses between (`held`: the one found). */
   candidates: v.optional(
     v.array(
       v.object({
@@ -2757,6 +2759,19 @@ async function loadRosterPlayers(
             `can only pick between players that answer to the name being loaded.`,
         );
       }
+      if (
+        chosen.birthYear !== undefined &&
+        row.birthYear !== undefined &&
+        chosen.birthYear !== row.birthYear
+      ) {
+        // An answer cannot override a contradiction: the operator named a
+        // person the dataset says was born in another year. Neither year is
+        // echoed (the message reaches logs and Sentry).
+        throw new ConvexError(
+          `The birth year of the player chosen for "${key}" contradicts the row; ` +
+            `correct the player or drop the row's birth year.`,
+        );
+      }
       player = chosen;
       matchedBy = "decision";
       birthYearCheck = "decision";
@@ -2809,7 +2824,7 @@ async function loadRosterPlayers(
         if (check !== "match") {
           results.push({
             key,
-            playerId: c.player!._id,
+            playerId: null,
             status: "held",
             birthYearCheck: check,
             ...(c.birthYear !== undefined ? { candidateBirthYear: c.birthYear } : {}),

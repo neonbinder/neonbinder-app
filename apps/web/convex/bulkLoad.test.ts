@@ -1317,7 +1317,11 @@ describe("NEO-331: a dataset row that names no league gets no league", () => {
 });
 
 describe("source pin: the armed gate on every bulk-load writer (NEO-611)", () => {
-  const src = readFileSync(join(__dirname, "bulkLoad.ts"), "utf8");
+  const raw = readFileSync(join(__dirname, "bulkLoad.ts"), "utf8");
+  /** Comments removed, so a word in a comment can neither satisfy nor hide a check. */
+  const stripComments = (text: string) =>
+    text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:"'`\\])\/\/.*$/gm, "$1");
+  const src = stripComments(raw);
   /** Each `export const name = internalMutation|internalQuery({` with its body up to the next export. */
   const defs = [
     ...src.matchAll(/export const (\w+) = (internalMutation|internalQuery|mutation|query|action|internalAction)\(/g),
@@ -1326,6 +1330,38 @@ describe("source pin: the armed gate on every bulk-load writer (NEO-611)", () =>
     kind: m[2],
     body: src.slice(m.index!, all[i + 1]?.index ?? src.length),
   }));
+
+  test("the pin sees every definition the file is known to export (a missed one would pass unchecked)", () => {
+    // upsertLeagues, upsertTeams, upsertPlayerStints, upsertPlayers; previewTeams,
+    // previewPlayerStints, previewPlayers. A new writer raises these; a regex
+    // that stops matching lowers them and fails here instead of passing empty.
+    expect(defs.length).toBeGreaterThanOrEqual(7);
+    expect(defs.filter((d) => d.kind === "internalMutation").length).toBeGreaterThanOrEqual(4);
+    expect(defs.filter((d) => d.kind === "internalQuery").length).toBeGreaterThanOrEqual(3);
+    expect(src.match(/export const \w+ = internal(Mutation|Query)\(/g)?.length).toBe(defs.length);
+  });
+
+  test("every function-builder call in the file is one of the matched definitions (no generic or aliased builder slips past)", () => {
+    // Capitalised builders anywhere; lowercase ones only as an assigned value,
+    // because `ctx.db.query(` is not a definition.
+    const builders =
+      src.match(/(?:\b(?:internal)?(?:Mutation|Query|Action)\s*[<(]|=\s*(?:internal)?(?:mutation|query|action)\s*[<(])/g) ?? [];
+    expect(builders.length).toBe(defs.length);
+    expect(src.match(/export const \w+ = \w+\s*</g) ?? []).toEqual([]);
+  });
+
+  test("a mention of the gate in a comment does not count as the gate", () => {
+    const sample = [
+      "// assertBulkLoadArmed(args.confirm);",
+      "/* assertBulkLoadArmed(x) */",
+      "export const a = internalMutation({ handler: async () => {} });",
+    ].join("\n");
+    expect(stripComments(sample)).not.toMatch(/assertBulkLoadArmed\(/);
+    // In the real file: one call per mutation plus the function's own declaration.
+    expect(src.match(/assertBulkLoadArmed\(/g)?.length).toBe(
+      defs.filter((d) => d.kind === "internalMutation").length + 1,
+    );
+  });
 
   test("every internalMutation calls assertBulkLoadArmed, and none is public", () => {
     const mutations = defs.filter((d) => d.kind.endsWith("utation"));

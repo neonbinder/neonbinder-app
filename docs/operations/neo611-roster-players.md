@@ -69,8 +69,12 @@ new row and fold into it. Nothing stored tells "made by this load" from "NB
 already held it", so the driver supplies the line:
 
 - Take **one** `loadStartedAt` (milliseconds since the epoch) before the first
-  call of the load. Send the **same value** on every call, resume and rerun of
-  that load. A value in the future is refused.
+  call of the load, and **persist it next to the answers file**. Send the
+  **same value** on every call, resume and rerun of that load; a resumed
+  driver must read it back, never take a fresh one. A value in the future is
+  refused, but a later one (still in the past) is accepted and silently hides
+  every row created before it from the twin check, so the loader cannot catch
+  a driver that takes a new epoch on resume.
 - When the row the rule would adopt was created at or after `loadStartedAt`
   and no answer named it, the result is `ambiguous` with
   `reason: "created-this-run"`, and that candidate carries `createdThisRun`.
@@ -98,9 +102,10 @@ Only `match` and `decision` write. With `candidate-undated` or
 `incoming-undated` (when neither side has a year, the incoming side is the one
 reported) the name is all that agrees, and a career written onto the wrong
 undated person cannot be taken back, so the row is **`held`**: status `held`,
-nothing written, and the result still carries `playerId` (the candidate),
-`birthYearCheck`, `candidateBirthYear` and `candidates` so the driver can show
-the operator who it found. The operator answers `decision: { adopt: <id> }`, or
+nothing written, and the result still carries `birthYearCheck`,
+`candidateBirthYear` and `candidates` so the driver can show
+the operator who it found. `playerId` is null (nothing was written to or for
+a player); the candidate is `candidates[0]`. The operator answers `decision: { adopt: <id> }`, or
 `decision: { create: true }` if it is someone else.
 
 On a decision adopt the birth year is filled when the player has none. Aliases
@@ -111,11 +116,13 @@ are unioned (never removed, capped at the player alias limit; the overflow is
 
 | decision | effect |
 |---|---|
-| `{ adopt: id }` | adopt that player. Refused (the call fails) unless the player is in this sport (home or added) and answers to the row's name (primary or alias). Skips the twin check and the held check. |
+| `{ adopt: id }` | adopt that player. Refused (the call fails) unless the player is in this sport (home or added) and answers to the row's name (primary or alias), and also when both the row and the player have a birth year and they differ: an answer does not override a contradiction, so correct the player or drop the row's birth year. Skips the twin check and the held check. |
 | `{ create: true }` | insert a new player regardless of candidates. **Not idempotent**: replaying it inserts another. Record the new id and replay it as `{ adopt: id }`. Also confirms a one-word name (§2). |
 
 ### 1.5 Keys and chunks
 
+- Keys are opaque dataset ids, never names: refusal text echoes the key, and
+  error text reaches logs and Sentry.
 - One key per row; a key repeated within a call is refused. Never split one key
   across rows.
 - At most 100 rows per call and 64 stints per row. A call that spends its

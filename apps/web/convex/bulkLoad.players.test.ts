@@ -17,9 +17,13 @@ import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
 import { normalizePlayerName } from "./players";
+import { BULK_LOAD_PLAYER_OP_BUDGET } from "./bulkLoad";
 import {
-  BULK_LOAD_PLAYER_OP_BUDGET,
-} from "./bulkLoad";
+  MAX_PLAYER_ALIAS_LENGTH,
+  MAX_PLAYER_ALIASES,
+  MAX_PLAYER_TEAM_YEARS,
+  PLAYER_AMBIGUITY_SCAN_LIMIT,
+} from "./players";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -178,7 +182,7 @@ describe("the gate", () => {
         loadStartedAt: e,
         players: [{ key: "a", name: "Pat White", stints: [] }],
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Expected `BULK_LOAD`, got `yes`/);
     expect(await allPlayers(t)).toEqual([]);
   });
 
@@ -201,6 +205,23 @@ describe("the gate", () => {
     await expectNoSideEffects(t);
   });
 
+  test("previewPlayers with a wrong confirm is refused by the validator, and writes nothing", async () => {
+    // The handler's own "requires confirm" check sits behind the argument
+    // validator, so convex-test can only reach the validator's refusal.
+    const t = convexTest(schema, modules);
+    await fixture(t);
+    const e = await epoch();
+    await expect(
+      t.query(internal.bulkLoad.previewPlayers, {
+        confirm: "yes" as unknown as typeof CONFIRM,
+        sport: "Baseball",
+        loadStartedAt: e,
+        players: [{ key: "a", name: "Pat White", stints: [] }],
+      }),
+    ).rejects.toThrow(/Expected `BULK_LOAD`, got `yes`/);
+    expect(await allPlayers(t)).toEqual([]);
+  });
+
   test("a sport the deployment does not hold is refused by name, never created", async () => {
     const t = convexTest(schema, modules);
     armed();
@@ -213,8 +234,12 @@ describe("the gate", () => {
     armed();
     await fixture(t);
     const future = Date.now() + 60 * 60 * 1000;
-    await expect(load(t, future, [{ key: "a", name: "Pat White" }])).rejects.toThrow();
-    await expect(preview(t, future, [{ key: "a", name: "Pat White" }])).rejects.toThrow();
+    await expect(load(t, future, [{ key: "a", name: "Pat White" }])).rejects.toThrow(
+      /loadStartedAt is in the future/,
+    );
+    await expect(preview(t, future, [{ key: "a", name: "Pat White" }])).rejects.toThrow(
+      /loadStartedAt is in the future/,
+    );
     expect(await allPlayers(t)).toEqual([]);
   });
 });
@@ -397,10 +422,21 @@ describe("outcomes: create, adopt, ambiguous (D3)", () => {
     armed();
     await fixture(t);
     const e = await epoch();
-    await expect(load(t, e, [{ key: "a", name: "Pat White", birthYear: 1500 }])).rejects.toThrow();
+    const tooLate = new Date().getFullYear() + 1;
+    await expect(load(t, e, [{ key: "a", name: "Pat White", birthYear: 1500 }])).rejects.toThrow(
+      /The birth year for "a" is out of range; expected a whole year between/,
+    );
     await expect(
-      load(t, e, [{ key: "a", name: "Pat White", birthYear: new Date().getFullYear() + 1 }]),
-    ).rejects.toThrow();
+      load(t, e, [{ key: "a", name: "Pat White", birthYear: tooLate }]),
+    ).rejects.toThrow(/out of range; expected a whole year between/);
+    // The message never echoes the offending value (it reaches logs and Sentry).
+    for (const year of [1500, tooLate]) {
+      const err = await load(t, e, [{ key: "a", name: "Pat White", birthYear: year }]).then(
+        () => null,
+        (x: unknown) => x as Error,
+      );
+      expect(err?.message).not.toContain(String(year));
+    }
     expect(await allPlayers(t)).toEqual([]);
   });
 });
@@ -548,9 +584,10 @@ describe("every adopt reports a birth-year check (D5)", () => {
     ]);
     expect(out.results[0]).toMatchObject({
       status: "held",
-      playerId: p,
+      playerId: null,
       birthYearCheck: "candidate-undated",
     });
+    expect(out.results[0].candidates?.map((c) => c.id)).toEqual([p]);
     expect(out.results[0].candidateBirthYear).toBeUndefined();
     const row = await playerRow(t, p);
     expect(row!.teamYears).toBeUndefined();
@@ -578,10 +615,11 @@ describe("every adopt reports a birth-year check (D5)", () => {
     ]);
     expect(out.results[0]).toMatchObject({
       status: "held",
-      playerId: p,
+      playerId: null,
       birthYearCheck: "incoming-undated",
       candidateBirthYear: 1980,
     });
+    expect(out.results[0].candidates?.map((c) => c.id)).toEqual([p]);
     const row = await playerRow(t, p);
     expect(row!.teamYears).toBeUndefined();
     expect(row!.aliases).toBeUndefined();
@@ -643,13 +681,55 @@ describe("every adopt reports a birth-year check (D5)", () => {
     expect((await playerRow(t, p))!.birthYear).toBe(1980);
   });
 
-  test("a decision adopt never overwrites a birth year the row already has", async () => {
+  test("a decision adopt whose birth year CONTRADICTS the player's is refused, naming the key and neither year, and writes nothing", async () => {
     const t = convexTest(schema, modules);
     armed();
     const f = await fixture(t);
     const p = await seedPlayer(t, f.sportId, "Pat White", { birthYear: 1980 });
-    const e = await epoch();
-    await load(t, e, [{ key: "a", name: "Pat White", birthYear: 1975, decision: { adopt: p } }]);
+    const before = await snapshot(t);
+    const rows: RowIn[] = [
+      {
+        key: "k1",
+        name: "Pat White",
+        birthYear: 1975,
+        aliases: ["Patrick White"],
+        stints: [{ teamId: f.padres, fromYear: 2003 }],
+        decision: { adopt: p },
+      },
+    ];
+    for (const run of [
+      async () => load(t, await epoch(), rows),
+      async () => preview(t, await epoch(), rows),
+    ]) {
+      const err = await run().then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err?.message).toMatch(/The birth year of the player chosen for "k1" contradicts the row/);
+      expect(err?.message).not.toMatch(/1975|1980/);
+    }
+    expect(await snapshot(t)).toEqual(before);
+  });
+
+  test("a decision adopt with the SAME birth year on both sides is accepted and leaves it alone", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    const p = await seedPlayer(t, f.sportId, "Pat White", { birthYear: 1980 });
+    const out = await load(t, await epoch(), [
+      { key: "a", name: "Pat White", birthYear: 1980, decision: { adopt: p } },
+    ]);
+    expect(out.results[0]).toMatchObject({ status: "adopted", playerId: p });
+    expect((await playerRow(t, p))!.birthYear).toBe(1980);
+  });
+
+  test("a decision adopt on a dated player with an undated row is accepted and keeps the player's year", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    const p = await seedPlayer(t, f.sportId, "Pat White", { birthYear: 1980 });
+    const out = await load(t, await epoch(), [{ key: "a", name: "Pat White", decision: { adopt: p } }]);
+    expect(out.results[0].status).toBe("adopted");
     expect((await playerRow(t, p))!.birthYear).toBe(1980);
   });
 
@@ -679,9 +759,10 @@ describe("every adopt reports a birth-year check (D5)", () => {
       birthYearCheck: "match",
     });
     expect(out.results[1]).toMatchObject({
-      playerId: undated,
+      playerId: null,
       birthYearCheck: "candidate-undated",
     });
+    expect(out.results[1].candidates?.map((c) => c.id)).toEqual([undated]);
     expect(out.results[1].status).toMatch(/held/);
     expect((await playerRow(t, dated))!.teamYears).toBeUndefined();
     expect((await playerRow(t, undated))!.teamYears).toBeUndefined();
@@ -774,7 +855,7 @@ describe("matching through aliases and sport membership, and replay (D2)", () =>
     const e = await epoch();
     await expect(
       load(t, e, [{ key: "k", name: "Pat White", decision: { adopt: foreign } }]),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/is not a player in this sport/);
     expect(await allPlayers(t)).toHaveLength(1);
   });
 
@@ -809,7 +890,13 @@ describe("a rerun creates nothing (the driver contract)", () => {
 
     const second = await load(t, await epoch(), roster);
     expect(second.results.map((r) => r.status)).toEqual(["adopted", "adopted", "held"]);
-    expect(second.results.map((r) => r.playerId)).toEqual(first.results.map((r) => r.playerId));
+    // The adopted keys name their players; the held one names none, only its candidate.
+    expect(second.results.map((r) => r.playerId)).toEqual([
+      first.results[0].playerId,
+      first.results[1].playerId,
+      null,
+    ]);
+    expect(second.results[2].candidates?.map((c) => c.id)).toEqual([first.results[2].playerId]);
     expect(await allPlayers(t)).toHaveLength(3);
   });
 
@@ -949,7 +1036,7 @@ describe("stints and keys (D6)", () => {
         { key: "dup", name: "Pat White", birthYear: 1980 },
         { key: "dup", name: "Geno Smith", birthYear: 1990 },
       ]),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/appears more than once in this call/);
     expect(await allPlayers(t)).toEqual([]);
   });
 
@@ -1070,5 +1157,447 @@ describe("single-token names (D7)", () => {
     const out = await load(t, await epoch(), [{ key: "a", name: "Ichiro", birthYear: 1973 }]);
     expect(out.results[0].status).toBe("created");
     expect(await allPlayers(t)).toHaveLength(1);
+  });
+});
+
+
+/** Every table the loader can write, so "refused" can mean "nothing changed". */
+async function snapshot(t: T) {
+  return t.run(async (ctx) => ({
+    players: await ctx.db.query("players").collect(),
+    aliases: await ctx.db.query("playerAliases").collect(),
+    sports: await ctx.db.query("playerSports").collect(),
+    scheduled: await ctx.db.system.query("_scheduled_functions").collect(),
+  }));
+}
+
+/** `n` distinct two-word names that share no token with one another. */
+function uniqueNames(n: number): string[] {
+  const letters = "abcdefghijklmnopqrstuvwxyz";
+  return Array.from({ length: n }, (_, i) => {
+    const tag = `${letters[i % 26]}${letters[Math.floor(i / 26)]}`;
+    return `Given${tag} Family${tag}`;
+  });
+}
+
+/** `n` distinct aliases that do not collide with any name above. */
+function uniqueAliases(n: number, prefix = "Nick"): string[] {
+  const letters = "abcdefghijklmnopqrstuvwxyz";
+  return Array.from({ length: n }, (_, i) => `${prefix}${letters[i % 26]}${letters[Math.floor(i / 26)]} Zed`);
+}
+
+describe("nearExisting: a create beside a near name lists it and still proceeds", () => {
+  test("a create beside a close name lists it, capped at three, and the create goes ahead", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    const near: Id<"players">[] = [];
+    for (let i = 0; i < 5; i++) {
+      near.push(await seedPlayer(t, f.sportId, "Patrick White", { birthYear: 1960 + i }));
+    }
+    const e = await epoch();
+    const out = await load(t, e, [{ key: "a", name: "Pat White", birthYear: 1980 }]);
+    expect(out.results[0].status).toBe("created");
+    const listed = out.results[0].nearExisting ?? [];
+    expect(listed).toHaveLength(3);
+    for (const hit of listed) {
+      expect(near).toContain(hit.id);
+      expect(hit.name).toBe("Patrick White");
+      expect(typeof hit.confidence).toBe("string");
+      expect(hit.birthYear).toBeGreaterThanOrEqual(1960);
+    }
+    expect(new Set(listed.map((h) => h.id)).size).toBe(3);
+    // The create went ahead: six rows now, the new one not among its own neighbours.
+    expect(await allPlayers(t)).toHaveLength(6);
+    expect(listed.map((h) => h.id)).not.toContain(out.results[0].playerId);
+  });
+
+  test("a single near name is listed whole, under the cap", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    const p = await seedPlayer(t, f.sportId, "Patrick White");
+    const out = await load(t, await epoch(), [{ key: "a", name: "Pat White", birthYear: 1980 }]);
+    expect(out.results[0].status).toBe("created");
+    expect(out.results[0].nearExisting?.map((h) => h.id)).toEqual([p]);
+    expect(out.results[0].nearExisting?.[0]).not.toHaveProperty("birthYear");
+  });
+
+  test("with nothing near, the field is absent rather than empty", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    await seedPlayer(t, f.sportId, "Geno Smith", { birthYear: 1990 });
+    const out = await load(t, await epoch(), [{ key: "a", name: "Pat White", birthYear: 1980 }]);
+    expect(out.results[0].status).toBe("created");
+    expect("nearExisting" in out.results[0]).toBe(false);
+  });
+
+  test("the preview lists the same near names for a would-create", async () => {
+    const t = convexTest(schema, modules);
+    const f = await fixture(t);
+    const p = await seedPlayer(t, f.sportId, "Patrick White");
+    const out = await preview(t, await epoch(), [{ key: "a", name: "Pat White", birthYear: 1980 }]);
+    expect(out.results[0].status).toBe("would-create");
+    expect(out.results[0].nearExisting?.map((h) => h.id)).toEqual([p]);
+    expect(await allPlayers(t)).toHaveLength(1);
+  });
+});
+
+describe("the per-row stint cap", () => {
+  const stintsOf = (n: number, f: { padres: Id<"teams">; cubs: Id<"teams"> }) =>
+    Array.from({ length: n }, (_, i) => ({
+      teamId: i % 2 === 0 ? f.padres : f.cubs,
+      fromYear: 1930 + i,
+      toYear: 1930 + i,
+    }));
+
+  test("exactly the cap lands in full", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    const out = await load(t, await epoch(), [
+      { key: "a", name: "Journey Man", birthYear: 1975, stints: stintsOf(MAX_PLAYER_TEAM_YEARS, f) },
+    ]);
+    expect(out.results[0].status).toBe("created");
+    expect(out.summary.stintsAdded).toBe(MAX_PLAYER_TEAM_YEARS);
+    expect((await playerRow(t, out.results[0].playerId!))!.teamYears).toHaveLength(
+      MAX_PLAYER_TEAM_YEARS,
+    );
+  });
+
+  test("one stint over the cap is refused with its message, and nothing is written", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    const before = await snapshot(t);
+    const over = MAX_PLAYER_TEAM_YEARS + 1;
+    const rows = [
+      { key: "a", name: "Pat White", birthYear: 1980 },
+      { key: "b", name: "Journey Man", birthYear: 1975, stints: stintsOf(over, f) },
+    ];
+    const pattern = new RegExp(`"b" has ${over} stints; the limit is ${MAX_PLAYER_TEAM_YEARS}`);
+    await expect(load(t, await epoch(), rows)).rejects.toThrow(pattern);
+    await expect(preview(t, await epoch(), rows)).rejects.toThrow(pattern);
+    expect(await snapshot(t)).toEqual(before);
+  });
+});
+
+describe("twinOfKey names the first key (preview only; the mutation cannot know it)", () => {
+  test("the preview twin inside one call points at the first key", async () => {
+    const t = convexTest(schema, modules);
+    await fixture(t);
+    const out = await preview(t, await epoch(), [
+      { key: "first", name: "Chris Young" },
+      { key: "second", name: "Chris Young" },
+    ]);
+    expect(out.results[1]).toMatchObject({
+      status: "ambiguous",
+      reason: "created-this-run",
+      twinOfKey: "first",
+    });
+    // A simulated row has no id to show, so the key is the only pointer.
+    expect(out.results[1].candidates).toEqual([]);
+  });
+
+  test("the preview twin points at the FIRST key even with three keys of one name", async () => {
+    const t = convexTest(schema, modules);
+    await fixture(t);
+    const out = await preview(t, await epoch(), [
+      { key: "first", name: "Chris Young" },
+      { key: "second", name: "Chris Young" },
+      { key: "third", name: "Chris Young" },
+    ]);
+    expect(out.results[1].twinOfKey).toBe("first");
+    expect(out.results[2].twinOfKey).toBe("first");
+  });
+
+  test("the mutation twin (one call) names a candidate row but no key: rows do not store keys", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    await fixture(t);
+    const out = await load(t, await epoch(), [
+      { key: "first", name: "Chris Young" },
+      { key: "second", name: "Chris Young" },
+    ]);
+    expect(out.results[1]).toMatchObject({ status: "ambiguous", reason: "created-this-run" });
+    expect(out.results[1].candidates?.map((c) => c.id)).toEqual([out.results[0].playerId]);
+    expect("twinOfKey" in out.results[1]).toBe(false);
+  });
+
+  test("the mutation twin across two calls names the row, not a key", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    await fixture(t);
+    const e = await epoch();
+    const first = await load(t, e, [{ key: "first", name: "Chris Young", birthYear: 1979 }]);
+    const second = await load(t, e, [{ key: "second", name: "Chris Young", birthYear: 1979 }]);
+    expect(second.results[0].candidates?.map((c) => c.id)).toEqual([first.results[0].playerId]);
+    expect("twinOfKey" in second.results[0]).toBe(false);
+  });
+});
+
+describe("aliasesAdded and aliasesSkipped on an adopt", () => {
+  test("two new aliases beside one already held: added 2, nothing skipped (a held alias is not a skip)", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    const p = await seedPlayer(t, f.sportId, "Pat White", { birthYear: 1980, aliases: ["Patty"] });
+    const out = await load(t, await epoch(), [
+      { key: "a", name: "Pat White", birthYear: 1980, aliases: ["Patty", "Patrick White", "P. White"] },
+    ]);
+    expect(out.results[0].status).toBe("adopted");
+    expect(out.results[0].aliasesAdded).toBe(2);
+    expect("aliasesSkipped" in out.results[0]).toBe(false);
+    expect((await playerRow(t, p))!.aliases).toHaveLength(3);
+  });
+
+  test("with nothing new to add, both keys are absent", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    await seedPlayer(t, f.sportId, "Pat White", { birthYear: 1980, aliases: ["Patty"] });
+    const out = await load(t, await epoch(), [
+      { key: "a", name: "Pat White", birthYear: 1980, aliases: ["patty"], stints: [{ teamId: f.padres }] },
+    ]);
+    expect(out.results[0].status).toBe("adopted");
+    expect("aliasesAdded" in out.results[0]).toBe(false);
+    expect("aliasesSkipped" in out.results[0]).toBe(false);
+  });
+
+  test("a row with no aliases at all reports neither key", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    await seedPlayer(t, f.sportId, "Pat White", { birthYear: 1980 });
+    const out = await load(t, await epoch(), [{ key: "a", name: "Pat White", birthYear: 1980 }]);
+    expect("aliasesAdded" in out.results[0]).toBe(false);
+    expect("aliasesSkipped" in out.results[0]).toBe(false);
+  });
+
+  test("a player already at the alias cap: no throw, every incoming alias skipped, aliases unchanged", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    const held = uniqueAliases(MAX_PLAYER_ALIASES, "Held");
+    const p = await seedPlayer(t, f.sportId, "Pat White", { birthYear: 1980, aliases: held });
+    const incoming = uniqueAliases(3, "Fresh");
+    const aliasRowsBefore = (await aliasRows(t)).length;
+    const out = await load(t, await epoch(), [
+      { key: "a", name: "Pat White", birthYear: 1980, aliases: incoming },
+    ]);
+    expect(out.results[0].status).toBe("adopted");
+    expect(out.results[0].aliasesSkipped).toBe(incoming.length);
+    expect("aliasesAdded" in out.results[0]).toBe(false);
+    const row = await playerRow(t, p);
+    expect(row!.aliases).toEqual(held);
+    expect(row!.lastUpdated).toBe(1_700_000_000_000);
+    expect((await aliasRows(t)).length).toBe(aliasRowsBefore);
+  });
+
+  test("partial room: adds up to the cap and skips the rest", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    const held = uniqueAliases(MAX_PLAYER_ALIASES - 2, "Held");
+    const p = await seedPlayer(t, f.sportId, "Pat White", { birthYear: 1980, aliases: held });
+    const incoming = uniqueAliases(5, "Fresh");
+    const out = await load(t, await epoch(), [
+      { key: "a", name: "Pat White", birthYear: 1980, aliases: incoming },
+    ]);
+    expect(out.results[0].aliasesAdded).toBe(2);
+    expect(out.results[0].aliasesSkipped).toBe(3);
+    const row = await playerRow(t, p);
+    expect(row!.aliases).toEqual([...held, ...incoming.slice(0, 2)]);
+    const flat = (await aliasRows(t)).filter((r) => r.playerId === p);
+    expect(flat).toHaveLength(MAX_PLAYER_ALIASES);
+  });
+
+  test("the preview reports the same added and skipped counts and writes nothing", async () => {
+    const t = convexTest(schema, modules);
+    const f = await fixture(t);
+    const held = uniqueAliases(MAX_PLAYER_ALIASES - 1, "Held");
+    const p = await seedPlayer(t, f.sportId, "Pat White", { birthYear: 1980, aliases: held });
+    const out = await preview(t, await epoch(), [
+      { key: "a", name: "Pat White", birthYear: 1980, aliases: uniqueAliases(3, "Fresh") },
+    ]);
+    expect(out.results[0].status).toBe("would-adopt");
+    expect(out.results[0].aliasesAdded).toBe(1);
+    expect(out.results[0].aliasesSkipped).toBe(2);
+    expect((await playerRow(t, p))!.aliases).toEqual(held);
+  });
+});
+
+describe("candidatesTruncated on the name-fragment branch", () => {
+  async function seedWalkers(t: T, sportId: Id<"selectorOptions">, n: number) {
+    const letters = "abcdefghijklmnopqrstuvwxyz";
+    for (let i = 0; i < n; i++) {
+      await seedPlayer(t, sportId, `Given${letters[i % 26]}${letters[Math.floor(i / 26)]} Walker`, {
+        birthYear: 1950 + i,
+      });
+    }
+  }
+
+  test("above the candidate cap the list is cut and flagged truncated", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    await seedWalkers(t, f.sportId, PLAYER_AMBIGUITY_SCAN_LIMIT + 1);
+    const out = await load(t, await epoch(), [{ key: "a", name: "Walker", birthYear: 1990 }]);
+    expect(out.results[0]).toMatchObject({ status: "ambiguous", reason: "name-fragment" });
+    expect(out.results[0].candidates).toHaveLength(PLAYER_AMBIGUITY_SCAN_LIMIT);
+    expect(out.results[0].candidatesTruncated).toBe(true);
+    expect(await allPlayers(t)).toHaveLength(PLAYER_AMBIGUITY_SCAN_LIMIT + 1);
+  });
+
+  test("exactly at the cap the list is whole and the flag is absent", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    await seedWalkers(t, f.sportId, PLAYER_AMBIGUITY_SCAN_LIMIT);
+    const out = await load(t, await epoch(), [{ key: "a", name: "Walker", birthYear: 1990 }]);
+    expect(out.results[0].reason).toBe("name-fragment");
+    expect(out.results[0].candidates).toHaveLength(PLAYER_AMBIGUITY_SCAN_LIMIT);
+    expect("candidatesTruncated" in out.results[0]).toBe(false);
+  });
+
+  test("a single clash reports no flag", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    await seedWalkers(t, f.sportId, 1);
+    const out = await load(t, await epoch(), [{ key: "a", name: "Walker", birthYear: 1990 }]);
+    expect(out.results[0].candidates).toHaveLength(1);
+    expect("candidatesTruncated" in out.results[0]).toBe(false);
+  });
+});
+
+describe("input refusals leave every table untouched", () => {
+  async function refused(t: T, rows: RowIn[], pattern: RegExp) {
+    const before = await snapshot(t);
+    await expect(load(t, await epoch(), rows)).rejects.toThrow(pattern);
+    await expect(preview(t, await epoch(), rows)).rejects.toThrow(pattern);
+    expect(await snapshot(t)).toEqual(before);
+  }
+
+  test("a name with no letters or digits is refused; a digits-led name is the allowed side", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    await fixture(t);
+    await refused(
+      t,
+      [
+        { key: "ok", name: "Fine Player", birthYear: 1980 },
+        { key: "bad", name: "?! ?!", birthYear: 1980 },
+      ],
+      /The player name for "bad" has no letters or digits in it/,
+    );
+    const out = await load(t, await epoch(), [{ key: "n", name: "007 Bond", birthYear: 1980 }]);
+    expect(out.results[0].status).toBe("created");
+  });
+
+  test("a stint with an end year and no start year is refused; a start year alone is the allowed side", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    await refused(
+      t,
+      [{ key: "bad", name: "Pat White", birthYear: 1980, stints: [{ teamId: f.padres, toYear: 2005 }] }],
+      /A stint for "bad" has an end year and no start year/,
+    );
+    const out = await load(t, await epoch(), [
+      { key: "ok", name: "Pat White", birthYear: 1980, stints: [{ teamId: f.padres, fromYear: 2005 }] },
+    ]);
+    expect(out.results[0].stints.map((s) => s.outcome)).toEqual(["added"]);
+  });
+
+  test("more aliases than the cap is refused; exactly the cap lands", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    await fixture(t);
+    await refused(
+      t,
+      [{ key: "bad", name: "Pat White", birthYear: 1980, aliases: uniqueAliases(MAX_PLAYER_ALIASES + 1) }],
+      new RegExp(`"bad" has ${MAX_PLAYER_ALIASES + 1} aliases; the limit is ${MAX_PLAYER_ALIASES}`),
+    );
+    const out = await load(t, await epoch(), [
+      { key: "ok", name: "Pat White", birthYear: 1980, aliases: uniqueAliases(MAX_PLAYER_ALIASES) },
+    ]);
+    expect(out.results[0].status).toBe("created");
+    expect((await playerRow(t, out.results[0].playerId!))!.aliases).toHaveLength(MAX_PLAYER_ALIASES);
+    expect(await aliasRows(t)).toHaveLength(MAX_PLAYER_ALIASES);
+  });
+
+  test("an alias longer than the limit is refused; one of exactly the limit lands", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    await fixture(t);
+    const over = MAX_PLAYER_ALIAS_LENGTH + 1;
+    await refused(
+      t,
+      [{ key: "bad", name: "Pat White", birthYear: 1980, aliases: ["a".repeat(over)] }],
+      new RegExp(`An alias for "bad" is ${over} characters; the limit is ${MAX_PLAYER_ALIAS_LENGTH}`),
+    );
+    const out = await load(t, await epoch(), [
+      { key: "ok", name: "Pat White", birthYear: 1980, aliases: ["a".repeat(MAX_PLAYER_ALIAS_LENGTH)] },
+    ]);
+    expect(out.results[0].status).toBe("created");
+  });
+
+  test("101 rows in one call are refused whole; 100 are accepted", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    await fixture(t);
+    const names = uniqueNames(101);
+    const rows = (n: number): RowIn[] =>
+      names.slice(0, n).map((name, i) => ({ key: `k${i}`, name, birthYear: 1950 + (i % 40) }));
+    await refused(t, rows(101), /101 players in one call; the limit is 100/);
+    const out = await load(t, await epoch(), rows(100));
+    expect(out.processed).toBe(100);
+    expect(out.summary.created).toBe(100);
+    expect(await allPlayers(t)).toHaveLength(100);
+  });
+});
+
+describe("the load epoch boundary is inclusive (_creationTime >= loadStartedAt)", () => {
+  test("a row whose creation time EQUALS the epoch counts as created this run", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    const p = await seedPlayer(t, f.sportId, "Chris Young", { birthYear: 1979 });
+    const created = (await playerRow(t, p))!._creationTime;
+    await sleep(5);
+    const out = await load(t, created, [{ key: "a", name: "Chris Young", birthYear: 1979 }]);
+    expect(out.results[0]).toMatchObject({ status: "ambiguous", reason: "created-this-run" });
+    expect(out.results[0].candidates?.[0].createdThisRun).toBe(true);
+    expect(await allPlayers(t)).toHaveLength(1);
+  });
+
+  test("an epoch one millisecond after the row's creation makes it an ordinary candidate", async () => {
+    const t = convexTest(schema, modules);
+    armed();
+    const f = await fixture(t);
+    const p = await seedPlayer(t, f.sportId, "Chris Young", { birthYear: 1979 });
+    const created = (await playerRow(t, p))!._creationTime;
+    await sleep(5);
+    const out = await load(t, Math.floor(created) + 1, [
+      { key: "a", name: "Chris Young", birthYear: 1979 },
+    ]);
+    expect(out.results[0]).toMatchObject({ status: "adopted", playerId: p });
+    expect(out.results[0].reason).toBeUndefined();
+  });
+
+  test("the same boundary holds in the preview", async () => {
+    const t = convexTest(schema, modules);
+    const f = await fixture(t);
+    const p = await seedPlayer(t, f.sportId, "Chris Young", { birthYear: 1979 });
+    const created = (await playerRow(t, p))!._creationTime;
+    await sleep(5);
+    const at = await preview(t, created, [{ key: "a", name: "Chris Young", birthYear: 1979 }]);
+    expect(at.results[0]).toMatchObject({ status: "ambiguous", reason: "created-this-run" });
+    const after = await preview(t, Math.floor(created) + 1, [
+      { key: "a", name: "Chris Young", birthYear: 1979 },
+    ]);
+    expect(after.results[0]).toMatchObject({ status: "would-adopt", playerId: p });
   });
 });
