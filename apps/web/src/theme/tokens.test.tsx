@@ -267,7 +267,17 @@ describe("the danger notice is neon pink, never red or salmon (NEO-606)", () => 
       }
     });
 
-    it(`${mode}: the ink reads 4.5:1 on its own ground over the page and a card; the rule reaches 3:1 on both`, () => {
+    // The CardPairingModal error wells sit on `field`; the CardTitlesStep
+    // short-name refusal sits on `raised-deep`.
+    it(`${mode}: the ink reads 4.5:1 on field and on raised-deep`, () => {
+      const ink = tokenHex("notice-danger-ink", mode);
+      for (const surface of ["field", "raised-deep"] as SurfaceRole[]) {
+        const ratio = contrastRatio(ink, tokenHex(surface, mode));
+        expect({ mode, surface, ok: ratio >= 4.5, ratio }).toEqual({ mode, surface, ok: true, ratio });
+      }
+    });
+
+    it(`${mode}: the ink reads 4.6:1 on its own ground over the page and a card; the rule reaches 3:1 on both`, () => {
       const ink = tokenHex("notice-danger-ink", mode);
       const rule = cssColorToHex(css["notice-danger-rule"]);
       const translucent = css["notice-danger-bg"].startsWith("color-mix");
@@ -275,7 +285,8 @@ describe("the danger notice is neon pink, never red or salmon (NEO-606)", () => 
       for (const surface of ["surface", "raised"] as SurfaceRole[]) {
         const under = tokenHex(surface, mode);
         const ground = translucent ? over(tint, 0.3, under) : tint;
-        expect({ mode, surface, ink: contrastRatio(ink, ground) >= 4.5 }).toEqual({ mode, surface, ink: true });
+        // 4.6, not 4.5: protects the margin (dark over raised measured 4.88).
+        expect({ mode, surface, ink: contrastRatio(ink, ground) >= 4.6 }).toEqual({ mode, surface, ink: true });
         expect({ mode, surface, rule: contrastRatio(rule, under) >= 3 }).toEqual({ mode, surface, rule: true });
       }
     });
