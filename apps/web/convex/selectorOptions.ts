@@ -42,10 +42,12 @@ import {
   assessListingTitle,
   generateListingDescription,
   type ListingCardInputs,
+  type ListingTeamSplit,
 } from "./features/generateListing";
 import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./features/listingLimits";
 import {
   checkTitleAnswer,
+  generatedTitleTruncatedFlag,
   listingInputsForCard,
   mergeCardFeatures,
   type TitleContext,
@@ -338,7 +340,7 @@ import {
 // NEO-236: the team name split. `teamFullName` composes location + nickname
 // for every name that leaves this file; `teamRowFields`/`findTeamByFullName`
 // are the ONE place a team row's identity fields are derived and looked up.
-import { teamFullName } from "../lib/teams/team-name";
+import { teamFullName, teamSplitOf } from "../lib/teams/team-name";
 import {
   findCollidingTeams,
   resolveTeamForSetYear,
@@ -425,8 +427,11 @@ import {
   findAncestorLabels,
   LISTING_SHORT_NAME_LEVELS,
   normalizeListingShortName,
+  pickTitleChainFacts,
   titleChainFacts,
   titleChainFactsFields,
+  titleLevelValidator,
+  type TitleChainFacts,
 } from "./listingShortName";
 export { findAncestorLabels };
 // Re-exported for callers that reached the ceiling through this module before
@@ -2216,7 +2221,10 @@ async function resolveUnknownsAndStartBatch(
     const existing = teamDocByNorm.get(normalized) ?? null;
     if (!existing) unresolvedTeams.push({ normalized, name });
     // NEO-335 — recorded for the title context, under the gate's own key.
-    else args.resolvedNames?.teamNameByNorm.set(normalized, teamFullName(existing));
+    else {
+      args.resolvedNames?.teamNameByNorm.set(normalized, teamFullName(existing));
+      args.resolvedNames?.teamIdByNorm.set(normalized, existing._id);
+    }
   }
   const historyTeams =
     unresolvedTeams.length > 0 && history?.complete && history.teamIds.size > 0
@@ -2235,6 +2243,7 @@ async function resolveUnknownsAndStartBatch(
         origin: "setHistory",
       });
       args.resolvedNames?.teamNameByNorm.set(normalized, team.fullName);
+      args.resolvedNames?.teamIdByNorm.set(normalized, teamId as Id<"teams">);
       continue;
     }
     unresolvedAfterHistory.push({ normalized, name });
@@ -2310,6 +2319,7 @@ async function resolveUnknownsAndStartBatch(
       origin: "careerTeam",
     });
     args.resolvedNames?.teamNameByNorm.set(ask.normalized, teamFullName(team));
+    args.resolvedNames?.teamIdByNorm.set(ask.normalized, team._id);
   });
 
   /**
@@ -6192,7 +6202,7 @@ async function resolveTeamOnCardIdsForWrite(
   selectorOptionId: Id<"selectorOptions">,
   requested: ReadonlyArray<Id<"teams">>,
   noun: TeamWriteNoun = "card",
-): Promise<{ ids: Array<Id<"teams">>; names: string[] }> {
+): Promise<{ ids: Array<Id<"teams">>; names: string[]; splits: ListingTeamSplit[] }> {
   const ids: Array<Id<"teams">> = [];
   const seen = new Set<string>();
   for (const teamId of requested) {
@@ -6203,7 +6213,7 @@ async function resolveTeamOnCardIdsForWrite(
   if (ids.length > MAX_CARD_TEAMS) {
     throw new ConvexError(tooManyTeamsMessage(noun));
   }
-  if (ids.length === 0) return { ids, names: [] };
+  if (ids.length === 0) return { ids, names: [], splits: [] };
 
   // Cheap: one indexed ancestor walk plus one read per team, both already
   // paid for elsewhere on these mutations' write paths
@@ -6212,6 +6222,7 @@ async function resolveTeamOnCardIdsForWrite(
   const sportId = await findSportForSelectorOption(ctx, selectorOptionId);
   const teamRows = await Promise.all(ids.map((teamId) => ctx.db.get(teamId)));
   const names: string[] = [];
+  const splits: ListingTeamSplit[] = [];
   for (let i = 0; i < ids.length; i++) {
     const team = teamRows[i];
     if (!team) {
@@ -6246,8 +6257,12 @@ async function resolveTeamOnCardIdsForWrite(
     // feed the listing title generator, and half of sold comps are searched by
     // city.
     names.push(teamFullName(team));
+    // NEO-606 — and its Location / Name, for the title to give up the
+    // location before the team.
+    const split = teamSplitOf(team);
+    if (split) splits.push(split);
   }
-  return { ids, names };
+  return { ids, names, splits };
 }
 
 /**
@@ -6572,12 +6587,15 @@ export const addCustomCard = mutation({
     // wrong sport, over the cap) leaves no half-created card behind. The
     // returned names are the rows this already read; the listing title below
     // uses them rather than reading the same teams a second time.
-    const { ids: teamOnCardIds, names: linkedTeamNames } =
-      await resolveTeamOnCardIdsForWrite(
-        ctx,
-        args.selectorOptionId,
-        requestedTeamIds,
-      );
+    const {
+      ids: teamOnCardIds,
+      names: linkedTeamNames,
+      splits: linkedTeamSplits,
+    } = await resolveTeamOnCardIdsForWrite(
+      ctx,
+      args.selectorOptionId,
+      requestedTeamIds,
+    );
     const hasLinkedTeams = teamOnCardIds.length > 0;
 
     // A real link is the same statement a typed name was reaching for, so the
@@ -6694,6 +6712,7 @@ export const addCustomCard = mutation({
       {
         playerNames: (hasLinkedPlayers ? linkedPlayerNames : pendingPlayerNames) ?? [],
         teamNames: hasLinkedTeams ? linkedTeamNames : pendingTeamNames,
+        ...(hasLinkedTeams ? { teamSplits: linkedTeamSplits } : {}),
         // NEO-528 — the default cameos it is born with: named in the title
         // while there is room (dropped first), and in the description.
         cameoNames,
@@ -6766,7 +6785,7 @@ export const addCustomCard = mutation({
       // NEO-101: recorded only when the core actually had to be cut — the
       // field is absent, not `false`, on the overwhelming majority of rows
       // that fit fine (mean real title length is 34 characters).
-      ...(listingTitle.coreFits ? {} : { listingTitleTruncated: true }),
+      ...(generatedTitleTruncatedFlag(listingTitle) ? { listingTitleTruncated: true } : {}),
       sportId: insertSportId,
       sortOrder: 0,
       lastUpdated: Date.now(),
@@ -6867,7 +6886,7 @@ async function regeneratedTextWithoutTeams(
       out.listingTitle = after.title;
       // As the commit writes it: flagged only when the core was cut;
       // `undefined` in a patch clears a flag the old title carried.
-      out.listingTitleTruncated = after.coreFits ? undefined : true;
+      out.listingTitleTruncated = generatedTitleTruncatedFlag(after);
     }
   }
   if (sent.description === undefined || sent.description === stored.listingDescription) {
@@ -6951,6 +6970,13 @@ export const updateCard = mutation({
      * sends `listingDescription`.
      */
     regenerateDescription: v.optional(v.literal(true)),
+    /**
+     * NEO-609 — the Tidy Up walker's save: the operator looked at this card's
+     * title and answered, so `listingTitleTruncated` clears whatever the title
+     * is (a Regenerated one that still carries a cut included), exactly as
+     * Keep does in `saveTitleFixes`. Not stored; sent only by `TitleFixer`.
+     */
+    titleReviewed: v.optional(v.literal(true)),
     // NEO-367 — NB's own note about the card. "" clears it, like every other
     // string here; see `normalizeCardNotes`.
     notes: v.optional(v.string()),
@@ -7001,6 +7027,7 @@ export const updateCard = mutation({
       playerNamesOnCard: _printedNames,
       teamNone: teamNoneArg,
       regenerateDescription,
+      titleReviewed,
       leagueId: requestedLeagueId,
       ...updates
     } = args;
@@ -7115,12 +7142,22 @@ export const updateCard = mutation({
       // the generator cut. Same discipline as the `teamNoneConfirmedAt`
       // retirement below, which is likewise conditioned on the write being a
       // real one rather than merely present.
-      const existingTitle = (await loadStoredCard()).listingTitle;
-      if (trimmedTitle !== existingTitle) {
-        filtered.listingTitleTruncated = undefined;
+      const storedCard = await loadStoredCard();
+      if (trimmedTitle !== storedCard.listingTitle) {
+        // NEO-609 — a title the generator writes for the card as it stands
+        // (the drawer's and the walker's Regenerate send exactly that) is
+        // GENERATED, and is stored with the flag its assessment gives it: a
+        // Tidy Up cut still out keeps the card in Tidy Up. Only a title
+        // somebody typed clears it.
+        const generated = await titleForStoredCard(ctx, storedCard);
+        filtered.listingTitleTruncated =
+          trimmedTitle === generated.title ? generatedTitleTruncatedFlag(generated) : undefined;
         titleChanged = true;
       }
     }
+    // NEO-609 — the walker's save is the operator's answer: the flag clears
+    // even when the title is Regenerated and still carries a cut, or unchanged.
+    if (titleReviewed) filtered.listingTitleTruncated = undefined;
 
     // NEO-535 — the description is what a collector's card search reads
     // (`search_listing_description`), so, like the title, it is never stored
@@ -7449,8 +7486,12 @@ export const previewListingTitle = query({
     firstNameLost: v.boolean(),
     // NEO-535 — built from the set's box text ("Set name in titles").
     shortNameUsed: v.optional(v.boolean()),
-    // NEO-535 — false: the card belongs in the Card titles dialog for a first
-    // name or the box (`ListingTitleAssessment.coreFits`).
+    // NEO-609 — a Tidy Up cut (a whole team, the number, SP, RELIC, a first
+    // name, RC, AUTO) is still out (`ListingTitleAssessment.tidyUp`).
+    tidyUp: v.boolean(),
+    // NEO-535 / NEO-609 — false: the card is in Tidy Up (a cut from the line
+    // down is still out) or was built from the box (`ListingTitleAssessment.coreFits`).
+    // An over-cap title is flagged by its length as well as by this.
     coreFits: v.boolean(),
     dropped: v.array(v.string()),
     inputs: v.object({
@@ -7470,6 +7511,9 @@ export const previewListingTitle = query({
       // NEO-335 — the insert's name (already gated on its NB role) and the
       // set's short name for titles, so the TitleFixer can chip them.
       insertName: v.optional(v.string()),
+      // NEO-609 — every level of the chain with its variant type's name, so
+      // the client re-assesses the same title and chips one per level.
+      titleLevels: v.optional(v.array(titleLevelValidator)),
       setShortName: v.optional(v.string()),
       parallelName: v.optional(v.string()),
       // NEO-335 — the leaf's parallel ROLE, which earns the parallel its
@@ -7484,6 +7528,9 @@ export const previewListingTitle = query({
       // NEO-101: always present, possibly empty — same contract as
       // `playerNames`, so the chips can render it without a null check.
       teamNames: v.array(v.string()),
+      // NEO-606 — the teams' Location / Name splits (see `ListingCardInputs`),
+      // so the client re-assesses with the same cuts the server makes.
+      teamSplits: v.optional(v.array(v.object({ location: v.string(), name: v.string() }))),
       sport: v.optional(v.string()),
     }),
   }),
@@ -7493,13 +7540,14 @@ export const previewListingTitle = query({
     if (!card) throw new ConvexError("previewListingTitle: no such card");
     // NEO-358 — the body moved, unchanged, to `storedCardTitle.ts` (for the
     // NEO-358 title backfill, retired in NEO-363).
-    const { title, fits, firstNameLost, shortNameUsed, coreFits, dropped, inputs } =
+    const { title, fits, firstNameLost, shortNameUsed, tidyUp, coreFits, dropped, inputs } =
       await titleForStoredCard(ctx, card);
     return {
       title,
       fits,
       firstNameLost,
       ...(shortNameUsed ? { shortNameUsed: true } : {}),
+      tidyUp,
       coreFits,
       dropped,
       inputs,
@@ -20767,11 +20815,6 @@ type CommitPrelude = {
   setNameValue?: string;
   /** NEO-272 — see the returns validator. */
   manufacturerBrandUnknown?: boolean;
-  /** NEO-335 — see the returns validator (`titleChainFacts`). */
-  insertNameValue?: string;
-  insertIsRole?: boolean;
-  parallelLeafValue?: string;
-  listingShortName?: string;
   existingCustomCardNumbers: string[];
   existingIdByBscRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
   existingIdBySlRef: Array<{ ref: string; id: Id<"cardChecklist"> }>;
@@ -20782,7 +20825,7 @@ type CommitPrelude = {
   }>;
   ambiguousMatchKeys: string[];
   slotBySetId: Array<{ side: MatchSide; setId: string; slot: string }>;
-};
+} & TitleChainFacts; // NEO-335/609 — see the returns validator (`titleChainFactsFields`).
 
 /**
  * One card as the chunk phase sees it: names already resolved to ids by the
@@ -21215,12 +21258,37 @@ export const commitCardChecklistChunk = internalMutation({
     const leafTeamIds = leafDefault.kind === "teams" ? leafDefault.teamIds : undefined;
     const leafNoTeam = leafDefault.kind === "noTeam" ? leafDefault.noTeamDefault : undefined;
     const leafTeamNames: string[] = [];
+    // NEO-606 — the same rows' Location / Name splits, from the same reads.
+    const leafTeamSplits: ListingTeamSplit[] = [];
     if (leafTeamIds) {
       for (const teamId of leafTeamIds) {
         const team = await ctx.db.get(teamId);
-        if (team) leafTeamNames.push(teamFullName(team));
+        if (team) {
+          leafTeamNames.push(teamFullName(team));
+          const split = teamSplitOf(team);
+          if (split) leafTeamSplits.push(split);
+        }
       }
     }
+    // NEO-606 — a card born with teams of its own: each distinct team read
+    // once per chunk (a handful of rows against the chunk's hundreds of
+    // cards), for its split. A card's teams are its row's, so a card whose
+    // names are not these rows' (typed, pending) finds no split to match.
+    const cardTeamSplitCache = new Map<string, ListingTeamSplit | null>();
+    const splitsOfTeamIds = async (
+      ids: ReadonlyArray<Id<"teams">> | undefined,
+    ): Promise<ListingTeamSplit[]> => {
+      const out: ListingTeamSplit[] = [];
+      for (const id of new Set(ids ?? [])) {
+        if (!cardTeamSplitCache.has(id as string)) {
+          const team = await ctx.db.get(id);
+          cardTeamSplitCache.set(id as string, (team && teamSplitOf(team)) ?? null);
+        }
+        const split = cardTeamSplitCache.get(id as string);
+        if (split) out.push(split);
+      }
+      return out;
+    };
 
     // One indexed read for the whole chunk instead of a `db.get` per card:
     // the rows this chunk patches are looked up by id in this map. Skipped
@@ -21672,6 +21740,9 @@ export const commitCardChecklistChunk = internalMutation({
         const insertTeamNames = bornTeams.defaulted
           ? leafTeamNames
           : card.teamNames;
+        const insertTeamSplits = bornTeams.defaulted
+          ? leafTeamSplits
+          : await splitsOfTeamIds(insertTeamOnCardIds);
         // NEO-335 — the operator's pre-save answer, or BSC's fetch-time one.
         // Decided after the leaf default, so a card that inherits the set's
         // team is a card WITH a team: teams win over "No team on this card".
@@ -21782,6 +21853,7 @@ export const commitCardChecklistChunk = internalMutation({
             // card (or the default player's, read once per chunk).
             playerNames: born.playerNames,
             teamNames: insertTeamNames,
+            ...(insertTeamSplits.length > 0 ? { teamSplits: insertTeamSplits } : {}),
             // NEO-335 — written with the row rather than patched after it, so
             // an answered card costs this chunk no extra operation.
             ...(Object.keys(insertCarried).length > 0
@@ -21803,11 +21875,10 @@ export const commitCardChecklistChunk = internalMutation({
             setNameValue: args.setNameValue,
             manufacturerBrandUnknown: args.manufacturerBrandUnknown,
             inheritedFeatures: args.inheritedFeatures,
-            // NEO-335 — the insert role, a parallel leaf, the short name.
-            insertNameValue: args.insertNameValue,
-            insertIsRole: args.insertIsRole,
-            parallelLeafValue: args.parallelLeafValue,
-            listingShortName: args.listingShortName,
+            // NEO-335 — the insert role, a parallel leaf, the short name;
+            // NEO-609 — and every level. Picked by key, so a fact added to
+            // `titleChainFactsFields` travels without a line here.
+            ...pickTitleChainFacts(args),
           },
           // NEO-313 — the new card's player index, kept inside
           // `insertCardRow` with `fresh: true` and this chunk's `cardSport`.
@@ -24875,11 +24946,9 @@ export const commitCardChecklist = action({
             // NEO-272 — see the prelude's returns validator.
             manufacturerBrandUnknown: prelude.manufacturerBrandUnknown,
             inheritedFeatures: prelude.inheritedFeatures,
-            // NEO-335 — the chain's title facts, from the same last page.
-            insertNameValue: prelude.insertNameValue,
-            insertIsRole: prelude.insertIsRole,
-            parallelLeafValue: prelude.parallelLeafValue,
-            listingShortName: prelude.listingShortName,
+            // NEO-335 — the chain's title facts, from the same last page
+            // (NEO-609: picked by key; see `pickTitleChainFacts`).
+            ...pickTitleChainFacts(prelude),
             // NEO-221 — the names this commit settled, so the chunk's update
             // branch retires only what it is entitled to. The same two lists
             // the finalize phase is handed below.

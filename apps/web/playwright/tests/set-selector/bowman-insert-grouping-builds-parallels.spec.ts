@@ -25,9 +25,10 @@
 //     the first name ("Murakami #BA-3"). Rebuilt, BA-3 is the one card the
 //     builder fails on (it would lose "Munetaka") that the hand edit rescues,
 //     so the copy carries the edit at exactly 80 characters and is not in the
-//     dialog; the four whose names are too long to fit even so (BA-12, BA-19,
-//     BA-20, BA-29) are. The checklist's own "Fix card titles" reopens the
-//     dialog after a reload.
+//     dialog; every other card had to leave something out (NEO-609: a team,
+//     the number or a first name), so the other 28 are, the four whose names
+//     are longest (BA-12, BA-19, BA-20, BA-29) among them. The checklist's own
+//     "Fix card titles" reopens the dialog after a reload.
 //   * The dialog's "Set name in titles" box opens holding the full set
 //     description including the parallel's name (never a bare insert name);
 //     typing it past 80 is refused in place and again on Save; Escape after an
@@ -86,10 +87,13 @@ const OWN_TITLE = `${FIX_BOX} Oh #BA-1`;
 /** Anime's third parallel, as BSC names it. */
 const RED = "Anime Red Refractors";
 /**
- * RED renamed: the description is 65 characters. With a player's full name the
- * title is over 80 after every cut except for BA-12, BA-19, BA-20 and BA-29,
- * whose names are the longest and which lose a first name; BA-3 (Munetaka
- * Murakami) would too, and its hand edit below, re-headed, is exactly 80.
+ * RED renamed: the description is 65 characters, so with a player's name and
+ * number no title of it fits whole: every one of the 29 has to give up its
+ * team, its number or a first name (NEO-609: a Tidy Up cut, so it is on the
+ * Card titles dialog). BA-12, BA-19, BA-20 and BA-29, whose names are the
+ * longest, lose a first name; BA-3 (Munetaka Murakami) would too, and its hand
+ * edit below, re-headed, is exactly 80, so it is carried and is the one card
+ * off the dialog: 28 titles.
  */
 const CARRY_PARALLEL = "Anime Red Refractors Hologram Foils Anniversary Prism";
 /** BA-3's title as the operator edits it on Anime: the first name dropped. */
@@ -552,8 +556,9 @@ test(
     });
     await expect(sections).toHaveCount(1);
     await expect(sections).toContainText(CARRY_PARALLEL);
-    // The arithmetic at CARRY_PARALLEL: these four cannot fit; BA-3's hand edit does, so it is carried.
-    await expect(sections).toContainText("4 titles");
+    // The arithmetic at CARRY_PARALLEL: every card had to leave something out
+    // (NEO-609) but BA-3, whose hand edit fits, so it is carried.
+    await expect(sections).toContainText(`${COPIES - 1} titles`);
     // The box holds the full description, the parallel's name in it, said once
     // after "2026 Bowman" (65 characters: it fits, so it is not sitting out).
     expect(descriptionOf(CARRY_PARALLEL)).toHaveLength(65);

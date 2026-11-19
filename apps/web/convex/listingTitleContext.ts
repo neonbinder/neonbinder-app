@@ -35,12 +35,14 @@ import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { teamDefaultOf } from "./lib/selectorTeams";
-import { teamFullName } from "../lib/teams/team-name";
+import { teamFullName, teamSplitOf } from "../lib/teams/team-name";
 import type { TitleContext } from "./features/listingInputs";
+import type { ListingTeamSplit } from "./features/generateListing";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { titleChainFacts, titleChainFactsFields } from "./listingShortName";
 import { effectiveCardPlayerDefaults } from "./cardPlayersBulk";
+import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
 import { mapBounded, settleAll } from "./lib/boundedConcurrency";
 
 /** Player ids read per `playerNamesByIds` call: one transaction's budget. */
@@ -51,6 +53,8 @@ const TITLE_CONTEXT_PAGE_CONCURRENCY = 4;
 
 /** Depth cap on the ancestor walk, as the prelude's sibling walks have. */
 const MAX_ANCESTOR_DEPTH = 16;
+
+const teamSplitValidator = v.object({ location: v.string(), name: v.string() });
 
 const nameMapValidator = v.array(v.object({ printed: v.string(), name: v.string() }));
 
@@ -63,6 +67,10 @@ export const titleContextValidator = v.object({
   // NEO-335 — the insert role, a parallel leaf, the nearest short name.
   ...titleChainFactsFields,
   setTeamNames: v.array(v.string()),
+  // NEO-606 — Location / Name of the teams the context names (the set-level
+  // ones and every resolved printed team) that have a location; the title
+  // matches them to a card's team by whole name.
+  teamSplits: v.optional(v.array(teamSplitValidator)),
   // NEO-528 round 3 — optional on the wire: an older server sends none.
   setPlayerNames: v.optional(v.array(v.string())),
   setPlayerId: v.optional(v.id("players")),
@@ -79,6 +87,7 @@ const setFactsValidator = v.object({
   inheritedFeatures: v.optional(v.record(v.string(), v.string())),
   ...titleChainFactsFields,
   setTeamNames: v.array(v.string()),
+  teamSplits: v.optional(v.array(teamSplitValidator)),
   setPlayerNames: v.optional(v.array(v.string())),
   setPlayerId: v.optional(v.id("players")),
   // NEO-528 + NEO-535 — the default cameos a new card is born with.
@@ -96,9 +105,22 @@ export const titleSetFacts = internalQuery({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-606 — the teams the resolve gate resolved. Their Location / Name
+     * splits ride back in `teamSplits` beside the set-level ones, in this same
+     * read (NEO-592: no round trip of their own).
+     */
+    resolvedTeamIds: v.optional(v.array(v.id("teams"))),
   },
   returns: setFactsValidator,
   handler: async (ctx, args) => {
+    // The gate resolves at most `MAX_CHECKLIST_TEAM_TEXTS` distinct team
+    // names, so no honest caller sends more ids than that.
+    if ((args.resolvedTeamIds?.length ?? 0) > MAX_CHECKLIST_TEAM_TEXTS) {
+      throw new Error(
+        `titleSetFacts: ${args.resolvedTeamIds!.length} resolved team ids exceeds the ${MAX_CHECKLIST_TEAM_TEXTS} the gate resolves`,
+      );
+    }
     const leaf = await ctx.db.get(args.selectorOptionId);
     const inheritedFeatures =
       leaf?.features && Object.keys(leaf.features).length > 0 ? leaf.features : undefined;
@@ -132,11 +154,28 @@ export const titleSetFacts = internalQuery({
     // NEO-556 — a No Team leaf names none: a stamped card's title carries no
     // team, exactly as a teamless one's does.
     const setTeamNames: string[] = [];
+    const setTeamSplits: ListingTeamSplit[] = [];
     const leafDefault = teamDefaultOf(leaf);
     // Not sliced: the chunk reads the whole list, and this must match it.
     for (const teamId of leafDefault.kind === "teams" ? leafDefault.teamIds : []) {
       const team = await ctx.db.get(teamId);
-      if (team) setTeamNames.push(teamFullName(team));
+      if (team) {
+        setTeamNames.push(teamFullName(team));
+        const split = teamSplitOf(team);
+        if (split) setTeamSplits.push(split);
+      }
+    }
+
+    // NEO-606 — and the resolved teams', after the set-level ones. A flat
+    // list: a card's team finds its split by whole name, so a team named
+    // twice is listed once. A team with no location (or gone) adds nothing.
+    const resolvedTeams = await mapBounded(args.resolvedTeamIds ?? [], (id) => ctx.db.get(id));
+    const seenSplits = new Set(setTeamSplits.map((split) => teamFullName(split)));
+    for (const team of resolvedTeams) {
+      const split = team ? teamSplitOf(team) : undefined;
+      if (!split || seenSplits.has(teamFullName(split))) continue;
+      seenSplits.add(teamFullName(split));
+      setTeamSplits.push(split);
     }
 
     // NEO-528 round 3 — "Player on every card": the player a new card with
@@ -165,6 +204,7 @@ export const titleSetFacts = internalQuery({
       ...(inheritedFeatures ? { inheritedFeatures } : {}),
       ...titleChainFacts(titleChain),
       setTeamNames,
+      ...(setTeamSplits.length > 0 ? { teamSplits: setTeamSplits } : {}),
       setPlayerNames,
       ...(setPlayerId ? { setPlayerId } : {}),
       ...(setCameoNames.length > 0 ? { setCameoNames } : {}),
@@ -205,10 +245,15 @@ export const playerNamesByIds = internalQuery({
 export type ResolvedNames = {
   playerIdByNorm: Map<string, Id<"players">>;
   teamNameByNorm: Map<string, string>;
+  /**
+   * NEO-606 — the team row behind each `teamNameByNorm` entry (same key), so
+   * the context can carry the row's Location / Name split.
+   */
+  teamIdByNorm: Map<string, Id<"teams">>;
 };
 
 export function emptyResolvedNames(): ResolvedNames {
-  return { playerIdByNorm: new Map(), teamNameByNorm: new Map() };
+  return { playerIdByNorm: new Map(), teamNameByNorm: new Map(), teamIdByNorm: new Map() };
 }
 
 /**
@@ -242,6 +287,8 @@ export async function buildTitleContext(
     ctx.runQuery(internal.listingTitleContext.titleSetFacts, {
       selectorOptionId: args.selectorOptionId,
       sportId: args.sportId,
+      // NEO-606 — the resolved teams' splits come back with the set facts.
+      resolvedTeamIds: Array.from(new Set(args.resolved.teamIdByNorm.values())),
     }) as Promise<SetFacts>,
     mapBounded(
       pages,

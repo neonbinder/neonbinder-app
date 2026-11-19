@@ -19,8 +19,11 @@ test(
       .getByRole("article")
       .filter({ has: page.getByRole("heading", { level: 3, name: "1996 Playoff Contenders" }) });
     await expect(board).toBeVisible();
-    // The Want List card leads the needs, spoken as such for a reader.
-    const wantedNeed = board.getByRole("link", { name: /^On your Want List: 1996 Playoff Contenders Deion Sanders #13 / });
+    // The Want List card leads the needs, spoken as such for a reader. Its title is the listing
+    // title's (NEO-609: a base card says "Base" after its set while the title has room).
+    const wantedNeed = board.getByRole("link", {
+      name: /^On your Want List: 1996 Playoff Contenders Base Deion Sanders #13 Dallas Cowboys Football\b/,
+    });
     await expect(wantedNeed).toBeVisible();
 
     if (isMobile) {

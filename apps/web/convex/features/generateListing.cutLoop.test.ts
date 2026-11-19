@@ -87,7 +87,7 @@ function golden(inputs: ListingCardInputs, title: string, length: number) {
 }
 
 describe("NEO-535 worked examples", () => {
-  test("1. Leaf Metal, Aiva Arquette: the number goes, nothing else", () => {
+  test("1. Leaf Metal, Aiva Arquette: the number goes, nothing else (Tidy Up since NEO-609)", () => {
     const a = golden(
       { ...leafMetal, cardNumber: "91A-AA1", playerNames: ["Aiva Arquette"] },
       "2026 Leaf Metal 1991 Gold Prospects Autographs Prismatic Silver Aiva Arquette /5",
@@ -96,7 +96,9 @@ describe("NEO-535 worked examples", () => {
     expect(a.fits).toBe(true);
     expect(a.firstNameLost).toBe(false);
     expect(a.dropped).toEqual(["#91A-AA1"]);
-    expect(a.coreFits).toBe(true);
+    // NEO-609: the card number is a Tidy Up cut (row 13).
+    expect(a.tidyUp).toBe(true);
+    expect(a.coreFits).toBe(false);
   });
 
   test("2. Alejandro Rosario, no box: the number then his first name", () => {
@@ -129,22 +131,25 @@ describe("NEO-535 worked examples", () => {
     expect(a.dropped).toEqual(["#91A-AR1"]);
   });
 
-  test("3. 81 rule mid-loop: the sport goes, then the '#' alone at 81", () => {
+  test("3. the sport and the second Rookie go; the '#' rule waits for the Tidy Up line (NEO-609)", () => {
+    // Cutting the sport leaves 81, but the "#"-alone rule is only checked from
+    // the Tidy Up line on, so the quiet second Rookie goes next and the "#"
+    // stays. (Rookie does not fit back: 73 + 7 is 81.)
     const a = golden(
       { ...chromeUpdateSeries, playerNames: ["Colton Cowser"] },
-      "2024 Topps Chrome Update Series Colton Cowser USC150 RC Baltimore Orioles Rookie",
-      80,
+      "2024 Topps Chrome Update Series Colton Cowser #USC150 RC Baltimore Orioles",
+      74,
     );
-    // Removing only the "#" is never reported.
     expect(a.dropped).toEqual([]);
+    expect(a.tidyUp).toBe(false);
   });
 
-  test("3. 81 rule at the first step: a title that starts at 81 loses only its '#'", () => {
+  test("3. the same card with no sport: the second Rookie is the quiet cut", () => {
     const { sport: _sport, ...noSport } = chromeUpdateSeries;
     golden(
       { ...noSport, playerNames: ["Colton Cowser"] },
-      "2024 Topps Chrome Update Series Colton Cowser USC150 RC Baltimore Orioles Rookie",
-      80,
+      "2024 Topps Chrome Update Series Colton Cowser #USC150 RC Baltimore Orioles",
+      74,
     );
   });
 
@@ -334,149 +339,360 @@ function atFullLength(
 
 const ichiro = { year: "2001", cardNumber: "7", playerNames: ["Ichiro"] };
 
-describe("NEO-535 cut rows, one each", () => {
-  test("row 1: AUTO when the title says Autographs goes first (before RELIC)", () => {
-    const t = assessListingTitle(
-      atFullLength({ ...ichiro, setTail: "Autographs", autographed: "On Card", isRelic: true }, 85),
-    ).title;
-    expect(t).not.toMatch(/\bAUTO\b/);
-    expect(t).toMatch(/ RELIC$/);
-    expect(t.length).toBe(80);
-  });
+/**
+ * NEO-609 (Jason, 2026-11-18) — the twenty cut rows, one focused test each.
+ * Each card carries the token of the row under test AND of the row after it
+ * (or, where two rows cannot share a card, a token further down), and its full
+ * title is over the cap by exactly the room the row under test frees. So the
+ * row fires, the one after stays, and nothing earlier is needed. The Tidy Up
+ * line sits between rows 11 and 12.
+ */
+describe("NEO-609 cut rows 1-20, one each", () => {
+  const NY = { location: "New York", name: "Yankees" };
+  const room = (...words: string[]) => words.reduce((sum, w) => sum + w.length + 1, 0);
+  const cut = (inputs: Parameters<typeof atFullLength>[0], tokens: number) =>
+    assessListingTitle(atFullLength(inputs, 80 + tokens));
+  const noNumber = { ...ichiro, cardNumber: "" };
 
-  test("row 2: RC when the title says Rookies; no second Rookie beside a repeat", () => {
-    const inputs = atFullLength({ ...ichiro, setTail: "Rookies", isRookie: true }, 83);
-    const t = assessListingTitle(inputs).title;
-    expect(t).not.toMatch(/\bRC\b/);
-    expect(t.endsWith("Rookies Ichiro #7")).toBe(true);
-    expect(leftOutOfTitle(inputs, t)).toEqual([]);
-  });
-
-  test("row 3: RELIC when the title says Relic", () => {
-    const t = assessListingTitle(
-      atFullLength({ ...ichiro, setTail: "Relic", isRelic: true, isRookie: true }, 80 + 6 + 7 + 3),
-    ).title;
-    // RELIC (3), then the second Rookie (7) to reach 80 — the RC (13) stays.
-    expect(t).not.toMatch(/\bRELIC\b/);
-    expect(t).toMatch(/ RC$/);
-  });
-
-  test("row 4: the Insert label goes before the sport", () => {
-    const t = assessListingTitle(
-      atFullLength({ ...ichiro, insertName: "Gold Rush", sport: "Baseball" }, 87),
-    ).title;
-    expect(t).toMatch(/Gold Rush Ichiro #7 Baseball$/);
-  });
-
-  test("row 5: the Parallel label goes before the sport", () => {
-    const t = assessListingTitle(
-      atFullLength(
-        { ...ichiro, parallelName: "Gold", parallelIsRole: true, sport: "Baseball" },
-        89,
-      ),
-    ).title;
-    expect(t).toMatch(/ Gold Ichiro #7 Baseball$/);
-  });
-
-  test("row 6: the sport goes before the team", () => {
-    const t = assessListingTitle(
-      atFullLength({ ...ichiro, teamNames: ["Seattle Mariners"], sport: "Baseball" }, 89),
-    ).title;
-    expect(t).toMatch(/#7 Seattle Mariners$/);
-  });
-
-  test("row 6: no sport when a team name already says it", () => {
-    const t = assessListingTitle({
-      ...ichiro,
-      setName: "Bowman",
-      teamNames: ["Oregon Ducks baseball"],
-      sport: "Baseball",
-    }).title;
-    expect(t).toBe("2001 Bowman Ichiro #7 Oregon Ducks baseball");
-  });
-
-  test("row 7: the second Rookie goes before the team", () => {
-    const t = assessListingTitle(
-      atFullLength({ ...ichiro, isRookie: true, teamNames: ["Seattle Mariners"] }, 87),
-    ).title;
-    expect(t).toMatch(/#7 RC Seattle Mariners$/);
-  });
-
-  test("row 8: Rookie → RC in the insert's name, before the team, and kept when it is what fits", () => {
-    const inputs = atFullLength(
-      { ...ichiro, insertName: "Rookie Debut", teamNames: ["Seattle Mariners"] },
-      80 + 7 + 4,
+  test("row 1: Base goes first, before a repeated AUTO", () => {
+    const a = cut(
+      {
+        ...ichiro,
+        titleLevels: [{ name: "Base", base: true }],
+        setTail: "Autographs",
+        autographed: "On Card",
+      },
+      room("Base"),
     );
-    const a = assessListingTitle(inputs);
-    expect(a.title).toMatch(/ RC Debut Ichiro #7 Seattle Mariners$/);
+    expect(a.title).not.toMatch(/\bBase\b/);
+    expect(a.title).toMatch(/Autographs Ichiro #7 AUTO$/);
+    expect(a.title.length).toBe(80);
+    // Base is a quiet cut: not a loss, not Tidy Up.
+    expect(a.dropped).toEqual([]);
+    expect(a.tidyUp).toBe(false);
+  });
+
+  test("row 1: a type named Base goes first too, before the next level's type name", () => {
+    const a = cut(
+      {
+        ...ichiro,
+        titleLevels: [{ name: "Gold", typeName: "Base" }],
+        parallelName: undefined,
+      },
+      room("Base"),
+    );
+    expect(a.title).not.toMatch(/\bBase\b/);
+    expect(a.title).toMatch(/ Gold Ichiro #7$/);
+  });
+
+  test("row 2: AUTO goes when the title says Autographs, before a repeated RC", () => {
+    const a = cut(
+      { ...ichiro, setTail: "Autographs Rookies", autographed: "On Card", isRookie: true },
+      room("AUTO"),
+    );
+    expect(a.title).not.toMatch(/\bAUTO\b/);
+    expect(a.title).toMatch(/Ichiro #7 RC$/);
+    expect(a.tidyUp).toBe(false);
+  });
+
+  test("row 3: RC goes when the title says Rookies, before a repeated RELIC", () => {
+    const a = cut(
+      { ...ichiro, setTail: "Rookies Relic", isRookie: true, isRelic: true },
+      room("RC"),
+    );
+    expect(a.title).not.toMatch(/\bRC\b/);
+    expect(a.title).toMatch(/Ichiro #7 RELIC$/);
+    expect(a.tidyUp).toBe(false);
+  });
+
+  test("row 4: RELIC goes when the title says Relic, before the top level's type name", () => {
+    const a = cut(
+      {
+        ...ichiro,
+        setTail: "Relic",
+        isRelic: true,
+        titleLevels: [{ name: "Gold Rush", typeName: "Inserts" }],
+      },
+      room("RELIC"),
+    );
+    expect(a.title).not.toMatch(/\bRELIC\b/);
+    expect(a.title).toMatch(/Gold Rush Insert Ichiro #7$/);
+    expect(a.tidyUp).toBe(false);
+  });
+
+  test("row 5: the top level's type name goes, the next level's stays", () => {
+    const a = cut(
+      {
+        ...ichiro,
+        titleLevels: [
+          { name: "Gold Rush", typeName: "Inserts" },
+          { name: "Silver", typeName: "Parallels" },
+        ],
+      },
+      room("Insert"),
+    );
+    expect(a.title).toMatch(/Gold Rush Silver Parallel Ichiro #7$/);
+    expect(a.dropped).toEqual([]);
+  });
+
+  test("row 6: the next type names go, top level first, before a cameo", () => {
+    const levels = [
+      { name: "Gold Rush", typeName: "Inserts" },
+      { name: "Silver", typeName: "Parallels" },
+      { name: "Wave", typeName: "Proofs" },
+    ];
+    const one = cut({ ...ichiro, titleLevels: levels, cameoNames: ["Ken Griffey Jr."] }, room("Insert", "Parallel"));
+    expect(one.title).toMatch(/Gold Rush Silver Wave Proof Ichiro & Ken Griffey Jr\. #7$/);
+    const all = cut(
+      { ...ichiro, titleLevels: levels, cameoNames: ["Ken Griffey Jr."] },
+      room("Insert", "Parallel", "Proof"),
+    );
+    expect(all.title).toMatch(/Gold Rush Silver Wave Ichiro & Ken Griffey Jr\. #7$/);
+    expect(all.dropped).toEqual([]);
+  });
+
+  test("row 7: cameos go last first, before the sport; a loss, but not Tidy Up", () => {
+    const a = cut(
+      { ...ichiro, cameoNames: ["Ken Griffey Jr.", "Zed Smith"], sport: "Baseball" },
+      3 + "Zed Smith".length,
+    );
+    expect(a.title).toMatch(/Ichiro & Ken Griffey Jr\. #7 Baseball$/);
+    expect(a.dropped).toEqual(["Zed Smith"]);
+    expect(a.tidyUp).toBe(false);
+    expect(a.coreFits).toBe(true);
+  });
+
+  test("row 8: the sport goes, the second Rookie stays", () => {
+    const a = cut({ ...ichiro, isRookie: true, sport: "Baseball" }, room("Baseball"));
+    expect(a.title).toMatch(/Ichiro #7 RC Rookie$/);
+    expect(a.dropped).toEqual([]);
+  });
+
+  test("row 9: the second Rookie goes, before a team gives up its city", () => {
+    const a = cut(
+      { ...ichiro, isRookie: true, teamNames: ["New York Yankees"], teamSplits: [NY] },
+      room("Rookie"),
+    );
+    expect(a.title).toMatch(/Ichiro #7 RC New York Yankees$/);
+    expect(a.dropped).toEqual([]);
+  });
+
+  test("row 10: Rookie becomes RC in a level's name, before a team gives up its city", () => {
+    const a = cut(
+      {
+        ...ichiro,
+        titleLevels: [{ name: "Rookie Debut" }],
+        teamNames: ["New York Yankees"],
+        teamSplits: [NY],
+      },
+      "Rookie".length - "RC".length,
+    );
+    expect(a.title).toMatch(/ RC Debut Ichiro #7 New York Yankees$/);
     expect(a.title.length).toBe(80);
     // An abbreviation is not a loss.
     expect(a.dropped).toEqual([]);
   });
 
-  test("row 9: teams go last first", () => {
-    const a = assessListingTitle(
-      atFullLength({ ...ichiro, teamNames: ["Seattle Mariners", "Orix BlueWave"] }, 94),
+  test("row 11: a team gives up its city, last team first, and that alone is not Tidy Up", () => {
+    const a = cut(
+      {
+        ...ichiro,
+        teamNames: ["Boston Red Sox", "New York Yankees"],
+        teamSplits: [{ location: "Boston", name: "Red Sox" }, NY],
+      },
+      room("New", "York"),
+    );
+    expect(a.title).toMatch(/#7 Boston Red Sox Yankees$/);
+    expect(a.dropped).toEqual([]);
+    expect(a.tidyUp).toBe(false);
+    expect(a.coreFits).toBe(true);
+  });
+
+  test("row 12: a whole team goes once its city is out, and that is Tidy Up", () => {
+    const a = cut(
+      { ...ichiro, teamNames: ["New York Yankees"], teamSplits: [NY] },
+      room("New", "York", "Yankees"),
+    );
+    expect(a.title).toMatch(/Ichiro #7$/);
+    expect(a.dropped).toEqual(["New York Yankees"]);
+    expect(a.tidyUp).toBe(true);
+    expect(a.coreFits).toBe(false);
+  });
+
+  test("row 12: teams go last first, nicknames included, before the card number", () => {
+    const a = cut(
+      { ...ichiro, teamNames: ["Seattle Mariners", "Orix BlueWave"] },
+      room("Orix", "BlueWave"),
     );
     expect(a.title).toMatch(/#7 Seattle Mariners$/);
     expect(a.dropped).toEqual(["Orix BlueWave"]);
+    expect(a.tidyUp).toBe(true);
   });
 
-  test("row 10: the card number goes before a first name", () => {
-    const a = assessListingTitle(
-      atFullLength({ ...ichiro, playerNames: ["Ichiro Suzuki"], cardNumber: "123" }, 85),
-    );
+  test("row 13: the card number goes before a first name, and is Tidy Up", () => {
+    const a = cut({ ...ichiro, playerNames: ["Ichiro Suzuki"], cardNumber: "123" }, room("#123"));
     expect(a.title).toMatch(/ Ichiro Suzuki$/);
     expect(a.dropped).toEqual(["#123"]);
+    expect(a.tidyUp).toBe(true);
   });
 
-  test("row 11: first names go last player first, one per step", () => {
-    const a = assessListingTitle(
-      atFullLength(
-        { ...ichiro, playerNames: ["Ichiro Suzuki", "Ken Griffey Jr."], printRun: 10 },
-        80 + 3 + 4,
-      ),
+  test("row 14: RELIC goes when the title says Memorabilia, before SP", () => {
+    const a = cut(
+      { ...noNumber, setTail: "Memorabilia", isRelic: true, shortPrint: "SP" },
+      room("RELIC"),
+    );
+    expect(a.title).not.toMatch(/\bRELIC\b/);
+    expect(a.title).toMatch(/Ichiro SP$/);
+    expect(a.tidyUp).toBe(true);
+  });
+
+  test("row 15: AUTO goes when the title says Signatures, before SP", () => {
+    const a = cut(
+      { ...noNumber, setTail: "Signatures", autographed: "On Card", shortPrint: "SSP" },
+      room("AUTO"),
+    );
+    expect(a.title).not.toMatch(/\bAUTO\b/);
+    expect(a.title).toMatch(/Ichiro SSP$/);
+    expect(a.tidyUp).toBe(true);
+  });
+
+  test("row 16: SP goes before RELIC", () => {
+    const a = cut({ ...noNumber, shortPrint: "SSP", isRelic: true }, room("SSP"));
+    expect(a.title).toMatch(/Ichiro RELIC$/);
+    expect(a.dropped).toEqual(["SSP"]);
+  });
+
+  test("row 17: RELIC goes before a first name", () => {
+    const a = cut({ ...noNumber, playerNames: ["Ichiro Suzuki"], isRelic: true }, room("RELIC"));
+    expect(a.title).toMatch(/ Ichiro Suzuki$/);
+    expect(a.dropped).toEqual(["RELIC"]);
+  });
+
+  test("row 18: first names go last player first, one per step, before RC", () => {
+    const a = cut(
+      { ...noNumber, playerNames: ["Ichiro Suzuki", "Ken Griffey Jr."], printRun: 10 },
+      room("Ken"),
     );
     expect(a.title).toMatch(/ Ichiro Suzuki & Griffey Jr\. \/10$/);
     expect(a.firstNameLost).toBe(true);
-    expect(a.dropped).toEqual(["#7", "Ken"]);
-  });
-
-  test("row 12: SP goes before RC", () => {
-    const t = assessListingTitle(
-      atFullLength({ ...ichiro, shortPrint: "SP", isRookie: true }, 80 + 3 + 7 + 3),
-    ).title;
-    // Rookie (7), the number (3), SP (3).
-    expect(t).toMatch(/ Ichiro RC$/);
-  });
-
-  test("row 13: RC (not a repeat) goes before RELIC", () => {
-    const t = assessListingTitle(
-      atFullLength({ ...ichiro, isRookie: true, isRelic: true }, 80 + 7 + 3 + 3),
-    ).title;
-    expect(t).toMatch(/ Ichiro RELIC$/);
-  });
-
-  test("row 14: RELIC (not a repeat) goes before the variation", () => {
-    const t = assessListingTitle(
-      atFullLength({ ...ichiro, isRelic: true, cardVariation: "Sliding" }, 80 + 3 + 6),
-    ).title;
-    expect(t).toMatch(/ Ichiro Sliding$/);
-  });
-
-  test("row 15: the variation goes before AUTO", () => {
-    const t = assessListingTitle(
-      atFullLength({ ...ichiro, autographed: "On Card", cardVariation: "Sliding" }, 80 + 3 + 8),
-    ).title;
-    expect(t).toMatch(/ Ichiro AUTO$/);
-  });
-
-  test("row 16: AUTO (not a repeat) is the last cut; /N is never cut", () => {
-    const a = assessListingTitle(
-      atFullLength({ ...ichiro, autographed: "On Card", printRun: 99 }, 80 + 3 + 5),
+    expect(a.dropped).toEqual(["Ken"]);
+    const both = cut(
+      { ...noNumber, playerNames: ["Ichiro Suzuki", "Ken Griffey Jr."], printRun: 10 },
+      room("Ken", "Ichiro"),
     );
+    expect(both.title).toMatch(/ Suzuki & Griffey Jr\. \/10$/);
+    expect(both.dropped).toEqual(["Ken", "Ichiro"]);
+  });
+
+  test("row 19: RC goes (after its second Rookie) before AUTO", () => {
+    const a = cut(
+      { ...noNumber, isRookie: true, autographed: "On Card" },
+      room("Rookie", "RC"),
+    );
+    expect(a.title).toMatch(/Ichiro AUTO$/);
+    expect(a.dropped).toEqual(["RC"]);
+  });
+
+  test("row 20: AUTO is the last cut; /N is never cut", () => {
+    const a = cut({ ...noNumber, autographed: "On Card", printRun: 99 }, room("AUTO"));
     expect(a.title).toMatch(/ Ichiro \/99$/);
-    expect(a.dropped).toEqual(["#7", "AUTO"]);
+    expect(a.dropped).toEqual(["AUTO"]);
+    expect(a.tidyUp).toBe(true);
+  });
+
+  test("never cut, however far over: year, set, level names, /N, surname, variation", () => {
+    const a = assessListingTitle({
+      year: "2026",
+      manufacturer: "Leaf",
+      setName: "Vivid",
+      titleLevels: [{ name: "Animated Autographs Pre-Production Proofs Lazer Red", typeName: "Proof" }],
+      cardNumber: "NNO",
+      playerNames: ["Cole Carlon"],
+      printRun: 1,
+      cardVariation: "Wearing an extraordinarily long throwback uniform",
+      isRookie: true,
+      autographed: "On Card",
+      isRelic: true,
+      shortPrint: "SSP",
+      cameoNames: ["Ken Griffey Jr."],
+      teamNames: ["Arizona State Sun Devils baseball"],
+      sport: "Baseball",
+    });
+    expect(a.fits).toBe(false);
+    for (const kept of [
+      "2026 Leaf Vivid",
+      "Animated Autographs Pre-Production Proofs Lazer Red",
+      "Carlon",
+      "/1",
+      "Wearing an extraordinarily long throwback uniform",
+    ]) {
+      expect(a.title).toContain(kept);
+    }
+  });
+});
+
+describe("NEO-609 the Tidy Up line", () => {
+  const NY = { location: "New York", name: "Yankees" };
+  const ichiro = { year: "2001", cardNumber: "7", playerNames: ["Ichiro"] };
+  const fit = (inputs: Parameters<typeof atFullLength>[0], over: number) =>
+    assessListingTitle(atFullLength(inputs, 80 + over));
+
+  test("cutting only a team's city (row 11) is not Tidy Up", () => {
+    const a = fit({ ...ichiro, teamNames: ["New York Yankees"], teamSplits: [NY] }, 9);
+    expect(a.title).toMatch(/#7 Yankees$/);
+    expect(a.tidyUp).toBe(false);
+    expect(a.coreFits).toBe(true);
+  });
+
+  test("one more character over: the city cut lands on 81 and the '#' alone goes, not the team", () => {
+    const a = fit({ ...ichiro, teamNames: ["New York Yankees"], teamSplits: [NY] }, 10);
+    expect(a.title).toMatch(/Ichiro 7 Yankees$/);
+    expect(a.title.length).toBe(80);
+    expect(a.dropped).toEqual([]);
+    expect(a.tidyUp).toBe(false);
+  });
+
+  test("a character beyond that the whole team goes (row 12): Tidy Up", () => {
+    const a = fit({ ...ichiro, teamNames: ["New York Yankees"], teamSplits: [NY] }, 11);
+    expect(a.title).toMatch(/Ichiro #7$/);
+    expect(a.tidyUp).toBe(true);
+    expect(a.coreFits).toBe(false);
+  });
+
+  test("a '#' dropped on its own at exactly 81 is not Tidy Up", () => {
+    const a = fit(ichiro, 1);
+    expect(a.title).toMatch(/Ichiro 7$/);
+    expect(a.title.length).toBe(80);
+    expect(a.dropped).toEqual([]);
+    expect(a.tidyUp).toBe(false);
+    expect(a.coreFits).toBe(true);
+  });
+
+  test("at 82 the whole number goes: Tidy Up", () => {
+    const a = fit(ichiro, 2);
+    expect(a.title).toMatch(/Ichiro$/);
+    expect(a.dropped).toEqual(["#7"]);
+    expect(a.tidyUp).toBe(true);
+  });
+
+  test("a cut that the refill undoes is not Tidy Up", () => {
+    // The number is cut for room and comes back bare once a first name frees
+    // more: only what is STILL out after the refill counts.
+    const a = fit({ ...ichiro, cardNumber: "12345", playerNames: ["Alexander Ichiro"] }, 11);
+    expect(a.title).toMatch(/ Ichiro 12345$/);
+    expect(a.tidyUp).toBe(true); // the first name is the Tidy Up cut that stays
+    expect(a.dropped).toEqual(["Alexander"]);
+  });
+
+  test("a quiet cut is made before the '#' rule at 81, even with a Tidy Up cut waiting", () => {
+    // 81 in full with a sport and a team on: the sport (row 8) goes, nothing
+    // from the Tidy Up line is touched, the '#' is kept.
+    const a = fit(
+      { ...ichiro, sport: "Baseball", teamNames: ["Seattle Mariners"] },
+      "Baseball".length + 1 - 8,
+    );
+    expect(a.title).toMatch(/#7 Seattle Mariners$/);
+    expect(a.tidyUp).toBe(false);
   });
 });
 
@@ -813,7 +1029,7 @@ describe("NEO-535 checkTitleAnswer", () => {
 });
 
 describe("NEO-535 a token the title already said comes back when what said it is cut", () => {
-  test("a team said by the variation returns once the variation is cut", () => {
+  test("a team said by the variation does not come back: a variation is never cut (NEO-609)", () => {
     const a = assessListingTitle({
       cardNumber: "T-12",
       year: "1999",
@@ -824,9 +1040,14 @@ describe("NEO-535 a token the title already said comes back when what said it is
       teamNames: ["Seattle Mariners"],
       sport: "Baseball",
     });
-    expect(a.title).toBe("1999 Topps Stadium Club Chrome Ken Griffey Jr. #T-12 Seattle Mariners Baseball");
-    expect(a.title.length).toBe(78);
-    expect(a.dropped).toEqual(["Seattle Mariners Turn Ahead The Clock Jersey Variation"]);
+    // Over the cap even with the number and the first name gone: the title is
+    // stored as it stands and flagged by its length, the variation whole.
+    expect(a.title).toBe(
+      "1999 Topps Stadium Club Chrome Griffey Jr. Seattle Mariners Turn Ahead The Clock Jersey Variation",
+    );
+    expect(a.fits).toBe(false);
+    expect(a.tidyUp).toBe(true);
+    expect(a.dropped).toEqual(["#T-12", "Ken"]);
   });
 
   test("while the variation stays in, the team stays latent (said once, not twice)", () => {
@@ -855,22 +1076,16 @@ describe("NEO-535 a token the title already said comes back when what said it is
     expect(a.dropped).toEqual(["Oregon Ducks Baseball Club Of Eugene"]);
   });
 
-  test("a latent team keeps its last-first place: the first team is refilled before a later one", () => {
-    // "Mariners" is said by the variation, so it starts latent. 114 → Orix
-    // (100) → the number (97) → the variation (60). Refill: the number (63),
-    // then the FIRST team, Mariners (72); Orix would need 86. Ranked wrongly,
-    // Orix would refill first (77) and Mariners would not fit.
+  test("a latent team comes back once the team that said it is cut", () => {
+    // "Mariners" is said by "Seattle Mariners", so it starts latent. The first
+    // team is cut whole (row 12); the refill then offers the latent one back,
+    // and its nickname alone fits where the full name did not.
     const a = assessListingTitle(
-      atFullLength(
-        {
-          ...ichiro,
-          cardVariation: "Mariners Turn Ahead The Clock Jersey",
-          teamNames: ["Mariners", "Orix BlueWave"],
-        },
-        114,
-      ),
+      atFullLength({ ...ichiro, teamNames: ["Seattle Mariners", "Mariners"] }, 88),
     );
     expect(a.title).toMatch(/ Ichiro #7 Mariners$/);
+    expect(a.title.length).toBe(80);
+    expect(a.tidyUp).toBe(true);
   });
 });
 
@@ -921,9 +1136,10 @@ describe("NEO-535 an insert's name enters the title on its ROLE, never on its na
     const facts = titleChainFacts([row("Base"), type("Insert"), setRow]);
     expect(facts).toMatchObject({ insertNameValue: "Base", insertIsRole: true });
     const a = assessListingTitle({ ...card, insertName: facts.insertNameValue });
-    // 81 in full, so only the "#" goes (step 2 comes before the label's cut).
-    expect(a.title).toBe(`2024 Topps ${set} Base Insert George Brett 91A-AA1234567 Baseball`);
-    expect(a.title.length).toBe(80);
+    // 81 in full; the "Insert" label is the first quiet cut (row 5, NEO-609)
+    // and frees the room, so the "#" stays.
+    expect(a.title).toBe(`2024 Topps ${set} Base George Brett #91A-AA1234567 Baseball`);
+    expect(a.title.length).toBe(74);
   });
 
   test("the same row under the Base type confers no insert role: no name, no label", () => {
