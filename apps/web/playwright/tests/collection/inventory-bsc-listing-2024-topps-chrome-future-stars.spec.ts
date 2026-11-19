@@ -61,7 +61,10 @@
 //      press (below): a poll that lands between the queue's read and the press
 //      sends the photo itself, and the press then sends nothing.
 //   3c. NEO-555 (D12), a sale: a buyer orders one of the first card on
-//      BuySportsCards. The order is injected on the worker's fake seller (which
+//      BuySportsCards. The order is injected already SHIPPED (still a sale, so
+//      the box goes down, but never on the Pick List, which every later spec on
+//      this worker's account would otherwise find holding it; the pick-list specs
+//      start from "Nothing to pull") on the worker's fake seller (which
 //      lowers its listing, as BuySportsCards does) and the sales poll run at
 //      once (`bscFake.pollNow`); the 15-minute cron poll may store it first, and
 //      the hop then reads nothing new, so the spec asserts the screen, never the
@@ -991,7 +994,8 @@ test(
     // The sold card is named by its printed number; the control resolves it to
     // this worker's own BuySportsCards listing of it.
     const orderNo = `${env.ATTEMPT_TOKEN}b`;
-    await bscFake.addOrder({ orderNo, items: [{ listedCardNumber: a.split(" ")[0].replace(/^#/, ""), quantity: 1 }] });
+    // Already shipped: a sale that never sits on this account's Pick List (header, 3c).
+    await bscFake.addOrder({ orderNo, status: "SHIPPED", items: [{ listedCardNumber: a.split(" ")[0].replace(/^#/, ""), quantity: 1 }] });
     await bscFake.pollNow();
     await tabs.getByRole("link", { name: "Sales", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sales/);

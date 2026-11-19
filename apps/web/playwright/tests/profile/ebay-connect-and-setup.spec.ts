@@ -217,7 +217,10 @@ test(
     const offers = page.getByRole("checkbox", { name: "Take Best Offers", exact: true });
     await expect(page.getByRole("heading", { level: 3, name: "Offers", exact: true })).toBeVisible();
     await expect(offers).toBeChecked();
-    await offers.click();
+    // By keyboard (Space on the focused switch): the switch's visible track sits
+    // over its input, so a pointer click lands on the track, as a mouse user's does.
+    await offers.focus();
+    await page.keyboard.press("Space");
     await expect(offers).not.toBeChecked();
     // A fresh connection reads the default, 1 oz. Enter on 3 oz saves it.
     const weight = page.getByRole("radiogroup", { name: "Weight of a single card", exact: true });

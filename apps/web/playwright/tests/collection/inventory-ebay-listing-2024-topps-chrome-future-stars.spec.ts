@@ -48,7 +48,10 @@
 //      two orders).
 //   5. NEO-555 (D9), a sale: a buyer orders one of the first card on eBay, plus
 //      a card NeonBinder never listed (eBay's own title, no SKU). The order is
-//      injected on the worker's fake seller and the sales poll run at once
+//      injected already shipped (FULFILLED: still a sale, so the box goes down,
+//      but never on the Pick List, which every later spec on this worker's
+//      account would otherwise find holding it; the pick-list specs start from
+//      "Nothing to pull"), on the worker's fake seller, and the sales poll run at once
 //      (`ebayFake.pollNow`); the 15-minute cron poll may store it first, and
 //      the hop then reads nothing new, so the spec asserts the screen, never
 //      the poll's counts. The Sales tab shows the order (`eBay order <id>`):
@@ -691,6 +694,8 @@ test(
     const strangerTitle = `Stranger${env.ATTEMPT_TOKEN}`;
     await ebayFake.addOrder({
       orderId,
+      // Already shipped: a sale that never sits on this account's Pick List (header, step 5).
+      fulfillmentStatus: "FULFILLED",
       lines: [
         { listedCardNumber: a.split(" ")[0].replace(/^#/, ""), quantity: 1 },
         { title: strangerTitle, quantity: 1 },

@@ -147,14 +147,25 @@ export type EbayOrderLine =
 /** An order a buyer places on eBay (`api.testing.addMyEbayOrder`). Paid and not yet shipped by default. */
 export interface EbayOrder {
   orderId?: string;
+  /**
+   * `FULFILLED`: already shipped, so it is a sale (the box goes down) that
+   * never sits on the Pick List. Specs on the worker's main account use it: an
+   * order left to ship stays on that account's Pick List for every later spec.
+   */
+  fulfillmentStatus?: "NOT_STARTED" | "IN_PROGRESS" | "FULFILLED";
   lines: EbayOrderLine[];
 }
 
 const STATUS = /^\[testing-ebay-fake\] /;
 const DONE = /^\[testing-ebay-fake\] (Seller set|Order added|Polled)/;
 const FAILED = /^\[testing-ebay-fake\] (Error:|Give exactly|\?(seller|order|poll)=|Testing mode)/;
-/** The fake's answer to a shipping policy name the seller already holds (`setMyEbaySeller`, `requireFakeEbayDone`). */
-const ALREADY_HELD = /did not set the seller up: http \(409\)$/;
+/**
+ * The fake's answer to a shipping policy name the seller already holds
+ * (`setMyEbaySeller`, `requireFakeEbayDone`). Not anchored at the end: the
+ * Convex client appends the server's stack ("at requireFakeEbayDone ...
+ * Called by client") to the message the hop shows.
+ */
+const ALREADY_HELD = /Fake eBay did not set the seller up: http \(409\)(\s|$)/;
 
 /**
  * The control a spec drives through the `ebayFake` fixture. One per test, bound
