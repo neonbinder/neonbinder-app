@@ -327,7 +327,10 @@ export function healthIsLoading(body: unknown): boolean {
   return typeof wc === "object" && wc !== null && (wc as { loading?: unknown }).loading === true;
 }
 
-/** The most write endpoints a health answer may list; a longer list is unreadable, never cut short. */
+/**
+ * The most write endpoints a health answer may list; a longer list is unreadable, never cut short.
+ * BSC's two plus the eBay writes the fake requires come to fifteen (NEO-555).
+ */
 const MAX_MISSING_CAPTURES = 20;
 
 /**
@@ -342,8 +345,9 @@ export function narrowMissingCaptures(body: unknown): string[] | null {
   const wc = typeof body === "object" && body !== null ? (body as { writeCaptures?: unknown }).writeCaptures : undefined;
   const missing = typeof wc === "object" && wc !== null ? (wc as { missing?: unknown }).missing : undefined;
   if (!Array.isArray(missing) || missing.length > MAX_MISSING_CAPTURES) return null;
+  // An eBay capture may carry a variant after its path (`... /publish #refused`).
   const named = missing.filter(
-    (m): m is string => typeof m === "string" && /^[A-Z]{3,7} [A-Za-z0-9/_.:-]{1,128}$/.test(m),
+    (m): m is string => typeof m === "string" && /^[A-Z]{3,7} [A-Za-z0-9/_.:-]{1,128}( #[a-z0-9_]{1,32})?$/.test(m),
   );
   // One unreadable entry makes the whole list unreadable: dropping it could
   // turn a real "missing" into "none missing".
@@ -368,7 +372,7 @@ export const HEALTH_LOADING_PAUSES_MS: readonly number[] = [1_000, 2_000, 4_000,
 const HEALTH_LOADING_BUDGET_MS = HEALTH_LOADING_PAUSES_MS.reduce((a, b) => a + b, 0);
 
 /**
- * Which BSC write endpoints the fake has no real capture for
+ * Which required write endpoints (BSC's two and the eBay writes) the fake has no real capture for
  * (`/__fake/health` `writeCaptures.missing`; CONTRACT.md, "Write capture"). CI runs
  * it with the preview deploy key before seeding (`npx convex run
  * fakeBsc:writeCaptureStatus`) and fails when `missing` is not empty. Skipped

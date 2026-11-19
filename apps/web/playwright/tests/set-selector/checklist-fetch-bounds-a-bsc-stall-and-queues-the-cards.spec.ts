@@ -88,6 +88,10 @@ const STALL_IDS = ["96f9a87adeb7d02c275e117ef10d569c", "9dba15716322d30fc94e4bd9
 /** How many of them the fake swallows. */
 const STALLED = STALL_IDS.length;
 
+// GUIDE hard rule 5: a breaker spec never retries. Its fault opens the deployment-wide
+// BSC call gate, which the failure reset does not close.
+test.describe.configure({ retries: 0 });
+
 test(
   "Checklist fetch — a BSC stall on some cards ends within one wave: the fetch lands and the unanswered cards wait in the background queue, not in the operator's count (NEO-487)",
   { tag: ["@set-selector", "@bsc-breaker"] },

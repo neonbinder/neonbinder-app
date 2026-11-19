@@ -619,7 +619,7 @@ describe("buildCardRowForInsert — a card committed on a parallel leaf names th
     );
     expect(committed.row.features?.parallelName).toBe("Anime Red Refractors");
     expect(committed.row.listingTitle).toBe(copied.row.listingTitle);
-    expect(committed.row.listingTitle).toContain("2026 Bowman Anime Insert Red Refractors Parallel Murakami");
+    expect(committed.row.listingTitle).toContain("2026 Bowman Anime Red Refractors Parallel Murakami");
   });
 
   test("off a parallel leaf nothing changes: the snapshot's name stands", () => {
@@ -629,5 +629,29 @@ describe("buildCardRowForInsert — a card committed on a parallel leaf names th
       1,
     );
     expect(row.row.features?.parallelName).toBe("Refractor");
+  });
+});
+
+describe("buildCardRowForInsert — a team gives up its location first (NEO-606)", () => {
+  // "<filler> Ken Griffey Jr. #10" is 66 characters with a 46-character set
+  // name: no room for "New York Yankees" (83), room for "Yankees" (74).
+  const set = (): CardRowSetContext => baseSet({ setNameValue: "Q".repeat(46) });
+  const teamed = (teamSplits?: { location: string; name: string }[]) =>
+    buildCardRowForInsert(
+      baseCard({ teamNames: ["New York Yankees"], teamSplits }),
+      set(),
+      1_700_000_000_000,
+    ).row.listingTitle;
+
+  test("a split team is stored under its nickname", () => {
+    const title = teamed([{ location: "New York", name: "Yankees" }]);
+    expect(title.endsWith("#10 Yankees")).toBe(true);
+    expect(title.length).toBeLessThanOrEqual(80);
+  });
+
+  test("the same card without the split drops the team whole", () => {
+    const title = teamed(undefined);
+    expect(title).not.toContain("Yankees");
+    expect(title).not.toContain("New York");
   });
 });

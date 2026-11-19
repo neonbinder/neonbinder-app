@@ -6,6 +6,7 @@
  */
 
 import { brandedSetName, generateListingTitle, type ListingCardInputs } from "@/convex/features/generateListing";
+import { teamSplitOf } from "@/lib/teams/team-name";
 import { printRunLabel, variantLabel } from "@/app/collection/final/data/labels";
 import type { Card, CardId, SetId, SetRef, VariantKind } from "@/app/collection/final/data/types";
 
@@ -96,6 +97,11 @@ function titleInputs(card: Card): ListingCardInputs {
     printRun: card.printRun ?? undefined,
     cardVariation: card.cardVariation ?? undefined,
     teamNames: card.teams.map((t) => (t.location ? `${t.location} ${t.name}` : t.name)),
+    // NEO-606 — the demo's teams carry their Location / Name like NB's rows do.
+    teamSplits: card.teams.flatMap((t) => {
+      const split = teamSplitOf(t);
+      return split ? [split] : [];
+    }),
     sport: card.set.sport.name,
   };
 }

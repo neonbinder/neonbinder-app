@@ -533,9 +533,13 @@ export interface CustomTarget {
   variant?: string;
 }
 
-/** The variant type's own column title: "Insert" -> "Inserts". */
+/**
+ * The variant type's own column title, worded as the set builder words it
+ * (`variantsColumnLabel`): "Insert" -> "Inserts", and a type already named in
+ * the plural keeps its name ("Proofs" -> "Proofs").
+ */
 function variantColumn(variantType: string): Column {
-  return `${variantType}s` as Column;
+  return (variantType.endsWith("s") ? variantType : `${variantType}s`) as Column;
 }
 
 /**

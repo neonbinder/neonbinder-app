@@ -79,6 +79,8 @@ import {
 } from "../lib/entities/normalize-name";
 // NEO-296: the bound on the batch id -> row read, with the op arithmetic.
 import { readManyByIds } from "./lib/batchIdReads";
+// NEO-592: bounded concurrency for independent reads inside one query.
+import { mapBounded } from "./lib/boundedConcurrency";
 import { clampSearchQuery } from "./lib/searchQueryClamp";
 // NEO-535 — a rename reaches the descriptions of the player's cards.
 import { refreshDescriptionsAfterRename } from "./cardDescriptionFanOut";
@@ -330,12 +332,35 @@ export async function sameNamePlayers(
   nameNormalized: string,
   sportId: Id<"selectorOptions">,
 ): Promise<Array<Doc<"players">>> {
-  const byName = await ctx.db
-    .query("players")
-    .withIndex("by_name_normalized_and_sport_id", (q) =>
-      q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
-    )
-    .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
+  /*
+   * NEO-592 — the three index reads are independent (none needs another's
+   * answer), so they are issued together and Convex sends them to storage as
+   * one batch instead of three round trips. The merge below is unchanged: the
+   * primary-name rows first, then the sport-membership rows, then the alias
+   * rows, each de-duplicated and capped exactly as before. Only the `db.get`
+   * each membership/alias row needs stays inside the merge, because whether it
+   * is needed at all depends on `seen` and the cap.
+   */
+  const [byName, memberRows, aliasRows] = await Promise.all([
+    ctx.db
+      .query("players")
+      .withIndex("by_name_normalized_and_sport_id", (q) =>
+        q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
+      )
+      .take(PLAYER_AMBIGUITY_SCAN_LIMIT),
+    ctx.db
+      .query("playerSports")
+      .withIndex("by_name_normalized_and_sport_id", (q) =>
+        q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
+      )
+      .take(PLAYER_AMBIGUITY_SCAN_LIMIT),
+    ctx.db
+      .query("playerAliases")
+      .withIndex("by_alias_normalized_and_sport_id", (q) =>
+        q.eq("aliasNormalized", nameNormalized).eq("sportId", sportId),
+      )
+      .take(PLAYER_AMBIGUITY_SCAN_LIMIT),
+  ]);
 
   const seen = new Set<string>(byName.map((p) => p._id as string));
   const merged = [...byName];
@@ -353,12 +378,6 @@ export async function sameNamePlayers(
    * Same footing as the other two legs: one more candidate in the set whose
    * SIZE is the decision, never a winner on its own.
    */
-  const memberRows = await ctx.db
-    .query("playerSports")
-    .withIndex("by_name_normalized_and_sport_id", (q) =>
-      q.eq("nameNormalized", nameNormalized).eq("sportId", sportId),
-    )
-    .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
   for (const row of memberRows) {
     if (merged.length >= PLAYER_AMBIGUITY_SCAN_LIMIT) break;
     const key = row.playerId as string;
@@ -388,13 +407,7 @@ export async function sameNamePlayers(
    * One indexed read, not a scan: see the `playerAliases` note in schema.ts
    * for why the aliases are stored flat as well as on the row.
    */
-  const aliasRows = await ctx.db
-    .query("playerAliases")
-    .withIndex("by_alias_normalized_and_sport_id", (q) =>
-      q.eq("aliasNormalized", nameNormalized).eq("sportId", sportId),
-    )
-    .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
-
+  // (`aliasRows` was read with the other two legs, above.)
   // Deduped by id: a row whose alias and primary name both normalise to the
   // query is one candidate, not two. (The writer drops an own-name alias, so
   // this is belt and braces against a legacy row rather than the normal path.)
@@ -2279,21 +2292,19 @@ export const resolveNamesForReview = internalQuery({
         message: `resolveNamesForReview answers at most ${RESOLVE_NAMES_FOR_REVIEW_MAX} names per call; got ${args.names.length}.`,
       });
     }
-    const out: ResolveNameForReviewResult[] = [];
-    // One at a time, in order: each name's reads are small, and a sequential
-    // walk keeps the read set (and the answer's order) exactly the single
-    // call's, repeated.
-    for (const entry of args.names) {
-      out.push(
-        await resolveOneNameForReview(ctx, {
-          name: entry.name,
-          sportId: args.sportId,
-          ...(args.cardYear !== undefined ? { cardYear: args.cardYear } : {}),
-          ...(entry.cardTeamNames !== undefined ? { cardTeamNames: entry.cardTeamNames } : {}),
-        }),
-      );
-    }
-    return out;
+    // NEO-592 — the names are independent (each is `resolveOneNameForReview`
+    // with its OWN fresh per-call team cache, so no read budget is shared
+    // between them), so they are answered concurrently and the storage reads of
+    // up to 16 names go out as one batch. The answer is still aligned with
+    // `names` and each element is still exactly the single call's.
+    return await mapBounded(args.names, (entry) =>
+      resolveOneNameForReview(ctx, {
+        name: entry.name,
+        sportId: args.sportId,
+        ...(args.cardYear !== undefined ? { cardYear: args.cardYear } : {}),
+        ...(entry.cardTeamNames !== undefined ? { cardTeamNames: entry.cardTeamNames } : {}),
+      }),
+    );
   },
 });
 

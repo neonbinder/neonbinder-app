@@ -21,13 +21,16 @@ const LOCATION_KEY = "neonbinder-main";
 /** A 1x1 JPEG (the smallest valid baseline JPEG header the magic check accepts). */
 const JPEG = Buffer.from("ffd8ffe000104a46494600010100000100010000ffd9", "hex");
 
+/** The variant of the publish capture the sandbox's refusal is filed under (it names no error id: the id varies). */
+export const REFUSED = "refused";
+
 function templateOf(op: EbayOp): { method: string; template: string } {
   const r = EBAY_ROUTES.find((x) => x.op === op);
   if (!r) throw new Error(`no route for ${op}`);
   return { method: r.method, template: r.template };
 }
 
-/** The capture endpoint name of an op, with an optional variant (`#25002`). */
+/** The capture endpoint name of an op, with an optional variant (`#refused`). */
 export function endpointName(op: EbayOp, variant?: string): string {
   const { method, template } = templateOf(op);
   return `${method} ${template}${variant ? ` #${variant}` : ""}`;
@@ -143,10 +146,12 @@ export function sampleAnswers(): Record<string, EbayAnswer> {
   void _f;
   put("updateOffer", call("updateOffer", { params: { offerId }, body: update }));
 
-  // The publish refusal: an offer naming a payment policy the seller does not hold.
+  // The publish refusal: HTTP 400 with the Inventory error envelope. The
+  // sandbox refused with errorId 25007 (no usable shipping service), so the
+  // sample's offer names a fulfillment policy the seller does not hold.
   call("bulkItems", { body: { requests: [itemBody(SAMPLE_SKU_2)] } });
-  const refused = call("bulkOffers", { body: { requests: [offerBody(SAMPLE_SKU_2, { ...policies, paymentPolicyId: "1" })] } });
-  put("publishOffer", call("publishOffer", { params: { offerId: String(first(refused).offerId) } }), "25002");
+  const refused = call("bulkOffers", { body: { requests: [offerBody(SAMPLE_SKU_2, { ...policies, fulfillmentPolicyId: "1" })] } });
+  put("publishOffer", call("publishOffer", { params: { offerId: String(first(refused).offerId) } }), REFUSED);
 
   put("publishOffer", call("publishOffer", { params: { offerId } }));
   put(

@@ -1,5 +1,7 @@
 import { Request, Response, Router } from "express";
-import { Credentials, SecretsManagerService } from "../services/secrets-manager";
+import { Credentials, SecretsManagerService, isFakeCredentialKey } from "../services/secrets-manager";
+import { fakeBscCallerHeaders } from "../bsc-endpoints";
+import { FAKE_EBAY_CLIENT_ID, FAKE_EBAY_CLIENT_SECRET, FAKE_EBAY_RU_NAME } from "./ebay-probe";
 import {
   EBAY_USER_ID_PATTERN,
   EbayOAuthConfig,
@@ -8,8 +10,10 @@ import {
   exchangeAuthorizationCode,
   EbayIdentity,
   fetchEbayIdentity,
+  FakeEbayRefusal,
   readEbayOAuthConfig,
   refreshAccessToken,
+  resolveFakeEbayTarget,
 } from "../services/ebay-oauth";
 import { EbayNotificationVerifier } from "../services/ebay-notification";
 import { EbayOAuthLine, logEbayOAuthOp } from "../observability";
@@ -20,6 +24,7 @@ import { EbayOAuthLine, logEbayOAuthOp } from "../observability";
  *   POST /oauth/ebay/connect  { key, code, expectEbayUserId? }
  *                           | { key, refreshToken, expectEbayUserId? }  (not in production)
  *     → 200 { username, ebayUserId, environment, expiresAt }
+ *       (`environment` is "fake" for a fake-key session, never "production")
  *   POST /oauth/ebay/refresh  { key }
  *     → 200 { token, expiresAt }
  *   POST /webhooks/ebay/verify  { signatureHeader, body }
@@ -51,6 +56,19 @@ import { EbayOAuthLine, logEbayOAuthOp } from "../observability";
  * that route (and what GET /credentials/:key/token already returns). Error
  * bodies are `{ error_class }` from a closed set and nothing else.
  *
+ * WHICH eBAY (NEO-555)
+ *
+ * The credential key says. A bare key (`ebay-credentials-<userId>`) uses the
+ * process's configured eBay environment, sandbox or production, exactly as
+ * before. A fake key (`ebay-credentials-fake-<slug>-<userId>`) uses the fake
+ * eBay under `<NEONBINDER_FAKE_BSC_URL>/ebay/api|apiz`, the fake's fixed
+ * PUBLIC client id and secret, and the same caller headers the fake BSC gets.
+ * A fake key is honoured only when the process has a valid fake URL AND is not
+ * prod (`resolveEbayConfigForKey`); otherwise it is refused loudly (a
+ * `ebay_fake_key_refused` warning naming the reason, never the key), with no
+ * call made to anything. `/webhooks/ebay/verify` carries no key, so it can
+ * never reach the fake (N3).
+ *
  * Key scope: both routes refuse any key that is not an eBay secret. /connect
  * REPLACES the payload, and pointed at a BSC secret it would wipe that
  * seller's rotating refresh token (the NEO-141 hazard; see routes/credentials.ts).
@@ -59,6 +77,8 @@ import { EbayOAuthLine, logEbayOAuthOp } from "../observability";
 /** Every route here is scoped to eBay secrets. See the header. */
 const EBAY_KEY_PATTERN = /^ebay-credentials-[a-zA-Z0-9_-]+$/;
 const MAX_KEY_LENGTH = 256;
+/** The fake-session form. Anchored at the site; mirrors secrets-manager's FAKE_KEY_PATTERN for eBay. */
+const EBAY_FAKE_KEY_PATTERN = /^ebay-credentials-fake-[a-zA-Z0-9_-]+$/;
 /**
  * eBay's authorization codes and refresh tokens are a few hundred characters.
  * The cap bounds what we forward upstream; it is not a format check.
@@ -82,6 +102,64 @@ export interface EbayCredentialsStore {
   credentialsExist(key: string): Promise<boolean>;
 }
 
+/** Why a fake key was refused. A closed set; logged, never put in a response. */
+export type EbayFakeKeyRefusal = "fake_key_malformed" | FakeEbayRefusal;
+
+/** What a credential key resolves to. `fake` is true for a fake-key config. */
+export type ResolvedEbayConfig =
+  | { kind: "config"; config: EbayOAuthConfig | null; fake: boolean }
+  | { kind: "refused"; reason: EbayFakeKeyRefusal };
+
+/**
+ * NEO-555: the eBay configuration one credential key runs against.
+ *
+ * Not a fake key (including a non-string): the process's configured eBay
+ * environment, `null` when that is not configured, exactly as before.
+ *
+ * A fake key: refused unless it is well formed and `resolveFakeEbayTarget`
+ * allows it (not prod, a valid pinned fake URL, the fake caller key set).
+ * Nothing here reads the request beyond the key.
+ */
+export function resolveEbayConfigForKey(
+  key: unknown,
+  env: NodeJS.ProcessEnv,
+  opts: { mintIdToken?: (audience: string) => Promise<string> } = {},
+): ResolvedEbayConfig {
+  if (typeof key !== "string" || key.length > MAX_KEY_LENGTH || !isFakeCredentialKey(key)) {
+    return { kind: "config", config: readEbayOAuthConfig(env), fake: false };
+  }
+  if (!EBAY_FAKE_KEY_PATTERN.test(key)) return { kind: "refused", reason: "fake_key_malformed" };
+  const target = resolveFakeEbayTarget(env);
+  if (!target.ok) return { kind: "refused", reason: target.reason };
+  const { origin, endpoints } = target;
+  return {
+    kind: "config",
+    fake: true,
+    config: {
+      // A label only: the fake behaves like production eBay (the media API
+      // works, there is no sandbox quirk), and `fake` is what redirects it.
+      environment: "production",
+      clientId: FAKE_EBAY_CLIENT_ID,
+      clientSecret: FAKE_EBAY_CLIENT_SECRET,
+      ruName: FAKE_EBAY_RU_NAME,
+      fake: {
+        hosts: { api: `${origin}/ebay/api`, apiz: `${origin}/ebay/apiz` },
+        callerHeaders: () => fakeBscCallerHeaders(endpoints, { env, mintIdToken: opts.mintIdToken }),
+      },
+    },
+  };
+}
+
+/**
+ * The environment label that leaves the process (connect answer, ebay_oauth_call
+ * log). A fake-key config carries `environment: "production"` internally, as a
+ * behaviour label, but must never SAY production outward: it is "fake".
+ */
+function outwardEnvironment(config: EbayOAuthConfig | null): "sandbox" | "production" | "fake" | undefined {
+  if (!config) return undefined;
+  return config.fake ? "fake" : config.environment;
+}
+
 export interface EbayOAuthRouterDeps {
   /** Built per request, like the other routers, so a bad client cannot poison the process. */
   createStore?: () => EbayCredentialsStore;
@@ -89,6 +167,8 @@ export interface EbayOAuthRouterDeps {
   /** Read per request, so a test can flip configuration without a reload. */
   env?: () => NodeJS.ProcessEnv;
   now?: () => number;
+  /** Test seam for the fake's ID token (https fake only). Default: ADC. */
+  mintIdToken?: (audience: string) => Promise<string>;
 }
 
 type ConnectBody = {
@@ -156,6 +236,32 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
     finish(res, { error_class: errorClass, ...line }, startMs, status, { error_class: errorClass });
   }
 
+  /**
+   * Resolve the config for a request's key. A refusal is answered here
+   * (warning naming the reason only, then 400 or 503) and returns null; the
+   * caller returns. `config` is null when the key's eBay is not configured.
+   */
+  function configFor(
+    key: unknown,
+    operation: "connect" | "refresh",
+    res: Response,
+    startMs: number,
+  ): { config: EbayOAuthConfig | null; fake: boolean } | null {
+    const resolved = resolveEbayConfigForKey(key, readEnv(), { mintIdToken: deps.mintIdToken });
+    if (resolved.kind === "config") return resolved;
+    // Loud: a refused fake key is a mis-wired deployment, not user error.
+    console.warn(JSON.stringify({ msg: "ebay_fake_key_refused", operation, reason: resolved.reason }));
+    const notConfigured = resolved.reason !== "fake_key_in_prod" && resolved.reason !== "fake_key_malformed";
+    fail(
+      res,
+      { operation, target: "fake", error_class: resolved.reason },
+      startMs,
+      notConfigured ? 503 : 400,
+      notConfigured ? "ebay_not_configured" : "bad_request",
+    );
+    return null;
+  }
+
   /** eBay error → log detail. Never the message (fixed anyway) or a body. */
   function ebayDetail(err: EbayOAuthError) {
     return { ebay_status: err.upstreamStatus, ebay_error: err.oauthError };
@@ -165,14 +271,20 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
     "/oauth/ebay/connect",
     async (req: Request<{}, {}, ConnectBody>, res: Response) => {
       const startMs = Date.now();
-      const config: EbayOAuthConfig | null = readEbayOAuthConfig(readEnv());
-      const base = { operation: "connect" as const, environment: config?.environment };
+      const body = (req.body ?? {}) as ConnectBody;
+      const resolved = configFor(body.key, "connect", res, startMs);
+      if (!resolved) return;
+      const config: EbayOAuthConfig | null = resolved.config;
+      const base = {
+        operation: "connect" as const,
+        environment: outwardEnvironment(config),
+        ...(resolved.fake ? { target: "fake" as const } : {}),
+      };
       if (!config) {
         fail(res, base, startMs, 503, "ebay_not_configured");
         return;
       }
 
-      const body = (req.body ?? {}) as ConnectBody;
       const code = grantValue(body.code);
       const refreshToken = grantValue(body.refreshToken);
       const expectEbayUserId = body.expectEbayUserId;
@@ -190,8 +302,9 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
       }
       // The refresh-token form exists for the testing seed only. In production
       // it would let anything holding a seller's refresh token bind that eBay
-      // account to an NB user without that seller's consent on this app.
-      if (refreshToken !== undefined && config.environment === "production") {
+      // account to an NB user without that seller's consent on this app. A
+      // fake config is never production (resolveEbayConfigForKey refuses prod).
+      if (refreshToken !== undefined && config.environment === "production" && !config.fake) {
         fail(res, { ...base, grant: "refresh_token", error_class: "seed_in_production" }, startMs, 400, "bad_request");
         return;
       }
@@ -269,7 +382,7 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
       finish(res, line, startMs, 200, {
         username: identity.username,
         ebayUserId: identity.userId,
-        environment: config.environment,
+        environment: outwardEnvironment(config),
         expiresAt: tokens.expiresAt,
       });
     },
@@ -279,8 +392,14 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
     "/oauth/ebay/refresh",
     async (req: Request<{}, {}, RefreshBody>, res: Response) => {
       const startMs = Date.now();
-      const config = readEbayOAuthConfig(readEnv());
-      const line = { operation: "refresh" as const, environment: config?.environment };
+      const resolved = configFor((req.body ?? {}).key, "refresh", res, startMs);
+      if (!resolved) return;
+      const config = resolved.config;
+      const line = {
+        operation: "refresh" as const,
+        environment: outwardEnvironment(config),
+        ...(resolved.fake ? { target: "fake" as const } : {}),
+      };
       if (!config) {
         fail(res, line, startMs, 503, "ebay_not_configured");
         return;
@@ -387,6 +506,10 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
    * absent). Both are attacker-controlled, so every "this is not eBay's"
    * outcome is a plain `200 {valid:false}`; only failing to reach eBay is an
    * error. See services/ebay-notification.ts for the steps and their source.
+   *
+   * NEO-555 N3: this route takes no key and reads the PROCESS's eBay
+   * environment only (`readEbayOAuthConfig`), never `resolveEbayConfigForKey`,
+   * so a fake config cannot reach it, and the verifier refuses one anyway.
    */
   router.post(
     "/webhooks/ebay/verify",

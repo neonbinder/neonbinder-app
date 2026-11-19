@@ -521,9 +521,11 @@ describe("the drawer's Add form holds photos (NEO-431)", () => {
     await waitFor(() =>
       expect(document.activeElement).toBe(within(drawer).getByRole("button", { name: /^Add another copy of / })),
     );
-    expect(
-      screen.getAllByRole("status").some((s) => /^Added .*, with its front and back photos\.$/.test(s.textContent ?? "")),
-    ).toBe(true);
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("status").some((s) => /^Added .*, with its front and back photos\.$/.test(s.textContent ?? "")),
+      ).toBe(true),
+    );
     // Its photos are on the new line.
     expect(within(drawer).getByRole("img", { name: /^Front of Raw/ })).toBeTruthy();
 

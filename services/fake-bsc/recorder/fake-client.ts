@@ -4,6 +4,7 @@
  * Cloud Run IAM and again in `x-nb-fake-id-token` for the fake's own check,
  * the caller key, and the admin key for uploads.
  */
+import { readFile, stat } from "node:fs/promises";
 import { GoogleAuth, Impersonated } from "google-auth-library";
 
 export interface MissEntry {
@@ -47,6 +48,91 @@ export function adcIdTokenMinter(audience: string, auth: IdTokenAuth = new Googl
     const idClient = await auth.getIdTokenClient(audience);
     return idClient.idTokenProvider.fetchIdToken(audience);
   };
+}
+
+const COMPACT_JWS = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+const MAX_TOKEN_FILE_BYTES = 16 * 1024;
+
+/**
+ * The fake's ID token. When `FAKE_BSC_ID_TOKEN_FILE` is set (even to ""), the
+ * token is read from that file on EVERY call (a watch session outlives a
+ * one-hour token, so whatever refreshes the file is picked up), trimmed, and
+ * checked before any header is built: a regular file under 16 KB; one compact
+ * JWS (a stray CR/LF/NUL would make the HTTP client echo the whole token in
+ * its error); `aud` equal to this fake's audience; `exp` in the future (the
+ * payload is decoded, not verified: the fake verifies the signature). Errors
+ * name the variable and never print the token, the audience or the path's
+ * contents. A file readable by group or others only warns once. Nothing falls
+ * back to ADC once the variable is set. Only an unset variable (`undefined`)
+ * uses the ADC minter, unchanged.
+ */
+export function idTokenSource(
+  audience: string,
+  env: NodeJS.ProcessEnv = process.env,
+  adc: (audience: string) => () => Promise<string> = adcIdTokenMinter,
+  now: () => number = Date.now,
+  warn: (line: string) => void = (l) => process.stderr.write(`${l}\n`),
+): () => Promise<string> {
+  const file = env.FAKE_BSC_ID_TOKEN_FILE;
+  if (file === undefined) return adc(audience);
+  let warned = false;
+  return async () => {
+    if (file === "") throw new Error("FAKE_BSC_ID_TOKEN_FILE is set but empty; unset it to use ADC");
+    let raw: string;
+    let reason = "unreadable";
+    try {
+      const st = await stat(file);
+      if (!st.isFile()) { reason = "not-a-regular-file"; throw new Error(reason); }
+      if (st.size > MAX_TOKEN_FILE_BYTES) { reason = "too-large"; throw new Error(reason); }
+      if (!warned && (st.mode & 0o077) !== 0) {
+        warned = true;
+        warn("warning: FAKE_BSC_ID_TOKEN_FILE is readable by group or others; use mode 600");
+      }
+      raw = await readFile(file, "utf8");
+    } catch {
+      // One public text for every cause (never the path); `reason` is for tests and debugging.
+      throw Object.assign(new Error("FAKE_BSC_ID_TOKEN_FILE is set but is not a readable regular file under 16 KB"), { reason });
+    }
+    const token = raw.trim();
+    if (!token) throw new Error("FAKE_BSC_ID_TOKEN_FILE is set but the file is empty");
+    if (!COMPACT_JWS.test(token)) throw new Error("FAKE_BSC_ID_TOKEN_FILE does not hold a single ID token");
+    let claims: { aud?: unknown; exp?: unknown };
+    try {
+      claims = JSON.parse(Buffer.from(token.split(".")[1], "base64url").toString("utf8"));
+    } catch {
+      throw new Error("FAKE_BSC_ID_TOKEN_FILE does not hold a single ID token");
+    }
+    if (claims === null || typeof claims !== "object" || Array.isArray(claims)) {
+      throw new Error("FAKE_BSC_ID_TOKEN_FILE does not hold a single ID token");
+    }
+    if (claims.aud !== audience) {
+      throw new Error("FAKE_BSC_ID_TOKEN_FILE holds a token for a different audience");
+    }
+    if (typeof claims.exp !== "number" || claims.exp * 1000 <= now()) {
+      throw new Error("FAKE_BSC_ID_TOKEN_FILE holds an expired token");
+    }
+    return token;
+  };
+}
+
+/**
+ * The only https host the recorder will talk to: the fake's own Cloud Run
+ * service, the same rule as the app side (CONTRACT.md "App seams"). Loopback
+ * is allowed for a local fake. Anything else throws.
+ */
+const FAKE_BSC_HOST =
+  /^neonbinder-fake-bsc-(?:[a-z0-9-]{0,42}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.run\.app$/;
+export function assertFakeUrl(raw: string, env: NodeJS.ProcessEnv = process.env): void {
+  let u: URL;
+  try { u = new URL(raw); } catch { throw new Error("--fake is not a URL"); }
+  if (isLoopback(raw)) return;
+  // Optional extra pin (README): when set, only this exact host, whatever the pattern says.
+  if (env.FAKE_BSC_EXPECTED_HOST !== undefined && u.hostname !== env.FAKE_BSC_EXPECTED_HOST) {
+    throw new Error("--fake host is not FAKE_BSC_EXPECTED_HOST");
+  }
+  if (u.protocol !== "https:" || u.username || u.password || u.port || !FAKE_BSC_HOST.test(u.hostname)) {
+    throw new Error("--fake must be the fake's own Cloud Run service (https, neonbinder-fake-bsc-*.run.app) or localhost");
+  }
 }
 
 export function isLoopback(url: string): boolean {

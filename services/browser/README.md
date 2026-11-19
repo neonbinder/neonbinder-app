@@ -282,8 +282,8 @@ token. Plain HTTP, no Chromium. Both routes refuse any key that is not an
 
 | Route | What it does |
 |---|---|
-| `POST /oauth/ebay/connect` `{key, code, expectEbayUserId?}` | Exchange the consent's authorization code (redirect_uri = the RuName), read the seller's identity (Commerce Identity `getUser`; `userId` must match `^[A-Za-z0-9._-]{1,64}$`), store `{username, ebayUserId, token, expiresAt, refreshToken, refreshExpiresAt}`. Returns `{username, ebayUserId, environment, expiresAt}`. With `expectEbayUserId`, a different eBay account is `409 account_mismatch` and nothing is written |
-| `POST /oauth/ebay/connect` `{key, refreshToken, expectEbayUserId?}` | The testing seed: the same, from a refresh token minted out of band. Refused (`400`) when `EBAY_ENVIRONMENT=production` |
+| `POST /oauth/ebay/connect` `{key, code, expectEbayUserId?}` | Exchange the consent's authorization code (redirect_uri = the RuName), read the seller's identity (Commerce Identity `getUser`; `userId` must match `^[A-Za-z0-9._-]{1,64}$`), store `{username, ebayUserId, token, expiresAt, refreshToken, refreshExpiresAt}`. Returns `{username, ebayUserId, environment, expiresAt}`, `environment` being `"sandbox" | "production"`, or `"fake"` for an `ebay-credentials-fake-…` key. With `expectEbayUserId`, a different eBay account is `409 account_mismatch` and nothing is written |
+| `POST /oauth/ebay/connect` `{key, refreshToken, expectEbayUserId?}` | The testing seed: the same, from a refresh token minted out of band. Refused (`400`) when `EBAY_ENVIRONMENT=production`, except for a fake key on a non-prod process |
 | `POST /oauth/ebay/refresh` `{key}` | Mint a new access token from the stored refresh token, store it, return `{token, expiresAt}` |
 | `POST /webhooks/ebay/verify` `{signatureHeader, body}` | Verify an eBay Notification API push (`X-EBAY-SIGNATURE`, ECDSA over SHA-1, key from `getPublicKey` with a cached application token). Returns `{valid}`; a malformed header or unknown key is `valid:false`, failing to reach eBay is `502`. Own rate-limit bucket |
 
@@ -613,7 +613,12 @@ signing in again clears it.
 (NEO-552) is informational: Convex never acts on it, and an older service
 simply omits it (CI's probe verdict reads a missing value as the wrong target).
 `POST /probe/bsc` is new and Convex never calls it. Neither does it call
-`POST /probe/ebay` (NEO-555); CI is its only caller.
+`POST /probe/ebay` (NEO-555); CI is its only caller. `ebayFake` and
+`ebayTarget` on `/health` (NEO-555) are informational too, and Convex does not
+read them: `ebayFake` is true only when this process would honour a fake eBay
+credential key (a valid fake URL and caller key, never in prod), and
+`ebayTarget` is the environment a bare eBay key uses (`production`, `sandbox`,
+or `null` when no eBay app is configured).
 
 ### The mechanical check
 

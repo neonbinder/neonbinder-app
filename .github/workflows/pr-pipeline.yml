@@ -117,6 +117,10 @@ jobs:
           filters: |
             web:
               - 'apps/web/**'
+              # The web-unit lane runs flaky-reporter.test.mjs, which reads the
+              # shared redactor corpus and CLI.
+              - '.github/scripts/redact-corpus.json'
+              - '.github/scripts/redact-cli.mjs'
             browser:
               - 'services/browser/**'
               # NEO-552: browser's bsc-fake-identity-contract test loads these two
@@ -155,6 +159,10 @@ jobs:
               # NEO-555: the fake's tests read the browser probe sources.
               - 'services/browser/src/routes/ebay-probe*.ts'
               - '.github/scripts/ebay-drift-verdict.sh'
+              # NEO-555: ebay-server.test.mjs reads Convex's missing-capture pattern and
+              # its test's list of required names, so a change to either runs the fake's tests.
+              - 'apps/web/convex/fakeBsc.ts'
+              - 'apps/web/convex/fakeBsc.test.ts'
             # NEO-309/NEO-310: node --test coverage for the ops shell scripts
             # (revision GC, image check) plus their test helpers, and for the
             # NEO-310 Discord-notify scripts/action — none of these ship as
@@ -165,6 +173,10 @@ jobs:
               - 'scripts/**'
               - '.github/scripts/**'
               - '.github/actions/notify-discord/**'
+              # redact-ci-log.test.mjs exercises the redactor and reporter that
+              # live under apps/web.
+              - 'apps/web/playwright/support/redact.mjs'
+              - 'apps/web/playwright/support/flaky-reporter.mjs'
               # NEO-555: a script test reads the workflow files (filter parity).
               - '.github/workflows/**'
             # NEO-386: the scanner script runs on a collector's own computer,

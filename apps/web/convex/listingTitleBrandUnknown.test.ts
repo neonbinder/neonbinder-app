@@ -168,7 +168,7 @@ describe("brand-unknown role plumbing (NEO-272)", () => {
 
     const card = await t.run(async (ctx) => ctx.db.get(cardId));
     expect(card!.listingTitle).toBe(
-      "1995 Roanoke Express ECHL Chris Grassie #12 Hockey",
+      "1995 Roanoke Express ECHL Base Chris Grassie #12 Hockey",
     );
     expect(card!.listingTitle).not.toContain("All Brands");
     expect(card!.listingDescription).not.toContain("All Brands");
@@ -237,7 +237,7 @@ describe("brand-unknown role plumbing (NEO-272)", () => {
 
     const card = await t.run(async (ctx) => ctx.db.get(cardId));
     expect(card!.listingTitle).toBe(
-      "1995 Roanoke Express ECHL Chris Grassie #12 Hockey",
+      "1995 Roanoke Express ECHL Base Chris Grassie #12 Hockey",
     );
     expect(card!.listingTitle).not.toContain("Unsorted");
   });
@@ -283,7 +283,7 @@ describe("brand-unknown role plumbing (NEO-272)", () => {
 
     const [card] = await cardsUnder(t, variantTypeId);
     expect(card.listingTitle).toBe(
-      "1995 Roanoke Express ECHL Chris Grassie #7 Hockey",
+      "1995 Roanoke Express ECHL Base Chris Grassie #7 Hockey",
     );
     expect(card.listingTitle).not.toContain("All Brands");
     expect(card.listingDescription).not.toContain("All Brands");

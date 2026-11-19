@@ -39,6 +39,26 @@ export function namesOf(endpoint: EbayCatalogueEndpoint, body: unknown): unknown
   return list.map((x) => (x && typeof x === "object" ? (x as Record<string, unknown>)[field] : undefined));
 }
 
+/**
+ * The paths of row 7 (`get_item_aspects_for_category`) the probe reports, and
+ * so the only ones compared: every parent of the three leaves NB reads
+ * (`localizedAspectName`, `aspectConstraint.aspectRequired`,
+ * `aspectConstraint.aspectMaxLength`, see lib/ebayListing.readCategoryAspects).
+ * The recording keeps all of `aspectConstraint` (SPECS.ebayItemAspects), but
+ * the probe reports only these, so comparing the rest flagged drift on every
+ * run. tests/ebay-drift.test.mjs pins this list to the browser allowlist's
+ * `EBAY_PROBE_SHAPE_PATHS.aspects`.
+ */
+export const EBAY_ASPECT_READ_PATHS: readonly string[] = Object.freeze([
+  "",
+  "aspects",
+  "aspects[]",
+  "aspects[].localizedAspectName",
+  "aspects[].aspectConstraint",
+  "aspects[].aspectConstraint.aspectRequired",
+  "aspects[].aspectConstraint.aspectMaxLength",
+]);
+
 const AMOUNT = (p: string) => [p, `${p}.value`, `${p}.currency`];
 
 /**
@@ -226,7 +246,10 @@ export function compareEbayDrift(input: unknown, catalogue: Catalogue): { ok: tr
         continue;
       }
       const spec = SPECS[catalogueRow.endpoint];
-      const paths = compare(probe, shapeOf(rec.response.body), (p) => specAllowsPath(spec, p));
+      // Row 5 compares every path its recording spec allows; row 7 only the
+      // paths the probe reports (EBAY_ASPECT_READ_PATHS).
+      const allow = catalogueRow.endpoint === "ebayItemAspects" ? (p: string) => EBAY_ASPECT_READ_PATHS.includes(p) : (p: string) => specAllowsPath(spec, p);
+      const paths = compare(probe, shapeOf(rec.response.body), allow);
       results.push({ endpoint: name, verdict: paths.length ? "shape_drift" : "ok", paths });
       const want = hashes[name];
       if (want !== undefined && want !== ebayCatalogueHash(namesOf(catalogueRow.endpoint, rec.response.body))) warnings.push({ endpoint: name, kind: "hash_mismatch" });

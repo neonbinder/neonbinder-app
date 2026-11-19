@@ -3461,6 +3461,18 @@ describe("CardPairingModal — renaming a row that already has a name conflict",
    * editor simply closing over the card's OLD name — nothing told the
    * operator their edit did not take, sighted or not.
    */
+  test("the rename error sits on its own field well, not on the row's tile (NEO-609 contrast)", () => {
+    renderModal({ autoMatched: [conflicted()] });
+    openEditor("#227c Mike Yastrzemski");
+    fireEvent.change(editor(), { target: { value: "A".repeat(121) } });
+    fireEvent.keyDown(editor(), { key: "Enter" });
+
+    const alert = screen.getByRole("alert");
+    expect(alert.id).toMatch(/^name-edit-error-/);
+    expect(alert.className).toContain("bg-field");
+    expect(alert.className).toContain("text-notice-danger-ink");
+  });
+
   test("an over-length rename is refused with an announced error, and the editor stays open", () => {
     renderModal({ autoMatched: [conflicted()] });
     openEditor("#227c Mike Yastrzemski");
@@ -4400,6 +4412,16 @@ describe("CardPairingModal — marketplace player conflicts (NEO-251)", () => {
      * field silently reverted to the row's old roster with the operator's
      * typed text simply gone and nothing announced, sighted or not.
      */
+    test("the roster error sits on its own field well, not on the row's tile (NEO-609 contrast)", () => {
+      renderModal({ autoMatched: [autoPlayersConflict()] });
+      typeRoster("A".repeat(121));
+
+      const alert = screen.getByRole("alert");
+      expect(alert.id).toMatch(/^players-edit-error-/);
+      expect(alert.className).toContain("bg-field");
+      expect(alert.className).toContain("text-notice-danger-ink");
+    });
+
     test("an over-length name announces an error and keeps the typed text", () => {
       renderModal({ autoMatched: [autoPlayersConflict()] });
       const overLong = "A".repeat(121);

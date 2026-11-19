@@ -204,6 +204,9 @@ const WITHOUT_LOWELL = nameFallbackFacts(CHECKLISTS.signatureSeries2026WithoutLo
 const WHOLE = nameFallbackFacts(CHECKLISTS.signatureSeries2026, CHECKLISTS.signatureSeries2026);
 const MIXED = nameFallbackFacts(CHECKLISTS.signatureSeries2026MisspelledLowder, CHECKLISTS.signatureSeries2026);
 
+/** One character past the 120 a card or player name may carry (`MAX_PLAYER_NAME_LENGTH`). */
+const OVER_LONG_NAME = `Rhett ${"Lowder".repeat(20)}x`.slice(0, 121);
+
 test(
   "Published checklist — rows whose numbers match no card pair to the cards by player name, and the card's own player settles the club",
   { tag: ["@set-selector"] },
@@ -359,6 +362,24 @@ test(
     await expect(lowder.getByText("Checklist: #11", { exact: true })).toBeVisible();
     await expect(lowder.getByText(/^Name match [0-9]{2}%$/)).toBeVisible();
     await expectAccessible(page, { within: matchCards, label: "Match Cards dialog, a near-name pair" });
+
+    // NEO-606: a card name past 120 characters is refused where it was typed. The editor stays
+    // open with the text, the field is invalid, and the refusal is an alert on its own field
+    // well (the error pink misses 4.5:1 on the row's tile); axe reads it in both modes while it
+    // shows. Escape abandons the edit, the dialog stays, and the card keeps its name.
+    await lowder.getByRole("button", { name: "Edit name for #SIG-RL Rhett Lowder" }).click();
+    const lowderName = matchCards.getByRole("textbox", { name: "Edit name for #SIG-RL", exact: true });
+    await lowderName.fill(OVER_LONG_NAME);
+    await lowderName.press("Enter");
+    const nameRefusal = matchCards.getByRole("alert").filter({ hasText: "Card names are limited to" });
+    await expect(nameRefusal).toHaveText("Card names are limited to 120 characters — shorten it to save.");
+    await expect(lowderName).toHaveValue(OVER_LONG_NAME);
+    await expect(lowderName).toHaveAttribute("aria-invalid", "true");
+    await expectAccessible(page, { within: matchCards, label: "Match Cards dialog, a card name over 120 refused" });
+    await lowderName.press("Escape");
+    await expect(lowderName).toBeHidden();
+    await expect(nameRefusal).toHaveCount(0);
+    await expect(matchCards.getByRole("button", { name: "Edit name for #SIG-RL Rhett Lowder" })).toBeVisible();
 
     // The operator undoes the near pair and makes it again with the buttons.
     await lowder.getByRole("button", { name: /^Unlink card #SIG-RL Rhett Lowder from checklist row / }).click();

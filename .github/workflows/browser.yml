@@ -64,7 +64,7 @@ env:
   # `gcloud run deploy` of the shared dev browser service happened to carry
   # (browser-deploy.yml's dev lane sets 20) — a tagged no-traffic preview
   # revision does not honour the service-level cap. Capped explicitly at the
-  # dealer-preview scale agreed in NEO-299 (Jason, 2026-09-24: "Fast: ...
+  # dealer-preview scale agreed in NEO-299 (2026-09-24 decision: "Fast: ...
   # Browser preview: 3"), sized so a preview burst can't add to the 400 GiB
   # dev quota alongside the preprocess previews. Not part of
   # apps/web/convex/preprocessCapacity.json (that file is preprocess-only) —
@@ -381,20 +381,15 @@ jobs:
           PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
         run: bash "$GITHUB_WORKSPACE/.github/scripts/bsc-probe.sh" fake
 
-      # NEO-555: fake-mode eBay probe preflight. The preview's browser service
-      # talks to the fake eBay (same standing dev fake as BSC). To run the
-      # probe's ACCOUNT leg too, CI mints a fake refresh token itself: POST
+      # NEO-555: fake-mode eBay probe gate. The preview's browser service talks
+      # to the fake eBay (same standing dev fake as BSC). To run the probe's
+      # ACCOUNT leg too, CI mints a fake refresh token itself: POST
       # /__fake/ebay/consent, then the code grant with the fake's fixed public
-      # client (ebay-fake-token.sh). If the mint fails, the probe runs the app
-      # leg only and says so. Nothing here is a real eBay credential; the
-      # fake never contacts eBay.
-      #
-      # WARNING ONLY for now: the fake's two recorded catalogue rows (shipping
-      # services, item aspects) only exist after `ebay-record` has loaded them,
-      # which happens after this PR merges. Until then the app leg answers 501
-      # and a blocking gate would block the PR that adds it. Drop
-      # continue-on-error (and the report step) once recordings are loaded
-      # (NEO-555 PR B's cutover).
+      # client (ebay-fake-token.sh). A failed mint fails the job (S2): a broken
+      # fake consent or token endpoint must not pass with the account leg
+      # skipped. Nothing here is a real eBay credential;
+      # the fake never contacts eBay. A missing fake URL or caller key fails the
+      # job: a gate that skips itself is not a gate (N2).
       - id: ebay-fake-keys
         name: Read the fake's caller key (eBay preflight)
         env:
@@ -402,23 +397,21 @@ jobs:
         run: |
           set -uo pipefail
           if ! bash "$GITHUB_WORKSPACE/.github/scripts/fake-bsc-url.sh" >/dev/null; then
-            echo "::warning::vars.NEONBINDER_FAKE_BSC_URL must be the fake's own https://neonbinder-fake-bsc-….run.app URL; skipping the eBay probe preflight"
-            echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
+            echo "::error::vars.NEONBINDER_FAKE_BSC_URL must be the fake's own https://neonbinder-fake-bsc-….run.app URL; the eBay probe gate cannot run without it"
+            exit 1
           fi
           if ! caller=$(gcloud secrets versions access latest --secret=fake-bsc-caller-key --project=neonbinder-dev); then
-            echo "::warning::fake-bsc-caller-key unreadable; skipping the eBay probe preflight"
-            echo "ready=false" >> "$GITHUB_OUTPUT"; exit 0
+            echo "::error::fake-bsc-caller-key is not readable by the deployer; the eBay probe gate cannot run without it"
+            exit 1
           fi
           echo "::add-mask::$caller"
           {
-            echo "ready=true"
             echo "caller<<NB_EOF"
             echo "$caller"
             echo "NB_EOF"
           } >> "$GITHUB_OUTPUT"
 
       - id: ebay-fake-token
-        if: steps.ebay-fake-keys.outputs.ready == 'true'
         uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3.0.0
         with:
           workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER_DEV }}
@@ -429,7 +422,6 @@ jobs:
 
       - id: ebay-mint
         name: Mint a fake eBay refresh token (account leg)
-        if: steps.ebay-fake-keys.outputs.ready == 'true'
         env:
           FAKE_URL: ${{ vars.NEONBINDER_FAKE_BSC_URL }}
           FAKE_ID_TOKEN: ${{ steps.ebay-fake-token.outputs.id_token }}
@@ -438,9 +430,7 @@ jobs:
         run: bash "$GITHUB_WORKSPACE/.github/scripts/ebay-fake-token.sh"
 
       - id: ebay-probe
-        name: eBay probe against the preview (fake, warning only)
-        if: steps.ebay-fake-keys.outputs.ready == 'true'
-        continue-on-error: true
+        name: eBay probe against the preview (fake)
         env:
           TARGET_URL: ${{ needs.deploy-preview.outputs.preview_url }}
           PROBE_ID_TOKEN: ${{ steps.probe-token.outputs.id_token }}
@@ -453,15 +443,6 @@ jobs:
             export EBAY_FAKE_REFRESH_TOKEN
           fi
           bash "$GITHUB_WORKSPACE/.github/scripts/ebay-probe.sh" fake
-      - name: Report a failed fake-eBay probe as a warning
-        if: steps.ebay-probe.outcome == 'failure'
-        run: |
-          echo "::warning::The preview fake-eBay probe failed (see the step above). Not blocking yet: the fake's eBay recordings load after this PR merges."
-          {
-            echo "### Preview fake-eBay probe failed (warning only)"
-            echo "Check the probe step, then the fake's eBay recordings and health (services/fake-bsc/README.md)."
-          } >> "$GITHUB_STEP_SUMMARY"
-
       - name: Run SportLots login suite against preview
         env:
           TARGET_URL: ${{ needs.deploy-preview.outputs.preview_url }}

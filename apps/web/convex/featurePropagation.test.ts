@@ -1272,7 +1272,7 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
     );
 
     expect(card.listingTitle).toBe(
-      "2024 Topps Chrome Julio Rodriguez #12 RC Seattle Mariners Rookie Baseball",
+      "2024 Topps Chrome Base Julio Rodriguez #12 RC Seattle Mariners Rookie Baseball",
     );
     // The old generator stopped at 37 characters here. Sold listings average
     // 70; this is the whole point of the change.
@@ -1332,7 +1332,7 @@ describe("commitCardChecklist generates listingTitle/listingDescription (NEO-24/
         .collect(),
     );
     expect(card.listingTitle).toBe(
-      "2024 Topps Chrome Julio Rodriguez #300b Image Variation Baseball",
+      "2024 Topps Chrome Base Julio Rodriguez #300b Image Variation Baseball",
     );
     // Once, not twice: `deriveCardObservedFeatures` also copies cardVariation
     // into `features.parallelName`; a parallel that IS the variation is stated

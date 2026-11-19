@@ -44,6 +44,11 @@ const GAVE_UP = "copy_photo_put_failed";
 const SAVE_TIMING = "copy_photo_save_timing";
 const COLLECTOR_COPY = "That photo didn't upload.";
 
+// NEO-592: a red run attaches the page's console (the upload's own log lines, the
+// retries, the give-up) as `console`, scrubbed of addresses and tokens
+// (support/redact.mjs), so the next red is readable from its artifacts.
+test.use({ captureConsole: true });
+
 test(
   "Collection: a copy's photo upload retries a storage hiccup, and says plainly when it gives up",
   { tag: ["@collection"] },
@@ -240,7 +245,7 @@ test(
     await expect(form).toBeHidden();
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${short}, Raw, Excellent`);
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();
     await expect(checklist.getByRole("button", { name: `Have ${short}`, exact: true, pressed: false })).toBeVisible();

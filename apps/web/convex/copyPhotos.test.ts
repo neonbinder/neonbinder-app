@@ -16,7 +16,7 @@ import { MAX_LINES_PER_CARD } from "./collection";
 import { MAX_COPY_PHOTO_BYTES, MAX_COPY_PHOTO_UPLOADS_PER_HOUR, PHOTO_HOLD_MS, copyPhotoObjectKey } from "./copyPhotos";
 import schema from "./schema";
 import { seedCollectionCatalog } from "../lib/testing/collection-fixture";
-import { cancelScheduled } from "../lib/testing/drain-scheduled";
+import { cancelScheduled, drainScheduled } from "../lib/testing/drain-scheduled";
 import type { Id } from "./_generated/dataModel";
 
 const modules = (import.meta as unknown as {
@@ -26,9 +26,28 @@ const modules = (import.meta as unknown as {
 const ME = { subject: "collector_me_001" };
 const THEM = { subject: "collector_them_002" };
 
+/**
+ * Every convex-test instance a test made. `convex-test` starts a `runAfter(0)`
+ * job (every photo delete schedules `deleteObjects`) in the background the
+ * moment it is scheduled and never waits for it. A job a test left behind could
+ * start late, under load, inside a LATER test that had switched R2 on and
+ * stubbed `fetch` (NEO-466's), and its DELETE landed among that test's
+ * recorded HEADs (NEO-567). So each test settles its own instance before the
+ * next begins.
+ */
+let instances: Array<ReturnType<typeof convexTest>> = [];
+afterEach(async () => {
+  // A test that threw between `useFakeTimers` and `useRealTimers` must not leave its clock behind.
+  vi.useRealTimers();
+  const settle = instances;
+  instances = [];
+  for (const t of settle) await drainScheduled(t);
+});
+
 async function setup() {
   vi.stubEnv("CONVEX_SITE_URL", "https://example.convex.site");
   const t = convexTest(schema, modules);
+  instances.push(t);
   const fx = await seedCollectionCatalog(t);
   return { t, fx, me: t.withIdentity(ME), them: t.withIdentity(THEM) };
 }

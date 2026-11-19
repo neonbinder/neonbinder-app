@@ -11,10 +11,13 @@
 //     description alone is over 80 (the rename lands BEFORE the cards are
 //     fetched, so the automatic build writes titles that cannot fit). The
 //     dialog opens by itself when the build ends, lists THAT parallel only
-//     (the other three parallels fit), and one shorter "Set name in titles"
-//     fixes every title ("Every title fits now."). The ticker's button stays
-//     and finds nothing left; the parallel opens with the box text in its
-//     titles and no attention.
+//     (the other three parallels fit). NEO-581: one card's own title saved
+//     alone lowers the ticker's "Fix N card titles" and its built line's
+//     "N titles need a fix" by one; then one shorter "Set name in titles"
+//     fixes every other title ("Every title fits now."), and the button and
+//     the clause leave the ticker (it used to keep a button that said
+//     "Nothing to fix."). The parallel opens with the box text in its titles,
+//     the card's own title intact, and no attention.
 //   * `Anime Red Refractors` is renamed to a name whose description is 65
 //     characters (the builder says the shared word "Anime" once: the parallel's
 //     name starts with its insert's, so the description reads
@@ -22,9 +25,10 @@
 //     the first name ("Murakami #BA-3"). Rebuilt, BA-3 is the one card the
 //     builder fails on (it would lose "Munetaka") that the hand edit rescues,
 //     so the copy carries the edit at exactly 80 characters and is not in the
-//     dialog; the four whose names are too long to fit even so (BA-12, BA-19,
-//     BA-20, BA-29) are. The checklist's own "Fix card titles" reopens the
-//     dialog after a reload.
+//     dialog; every other card had to leave something out (NEO-609: a team,
+//     the number or a first name), so the other 28 are, the four whose names
+//     are longest (BA-12, BA-19, BA-20, BA-29) among them. The checklist's own
+//     "Fix card titles" reopens the dialog after a reload.
 //   * The dialog's "Set name in titles" box opens holding the full set
 //     description including the parallel's name (never a bare insert name);
 //     typing it past 80 is refused in place and again on Save; Escape after an
@@ -74,13 +78,22 @@ const descriptionOf = (parallel: string) => `2026 Bowman ${parallel}`;
 const FIX_BOX = "2026 Bowman Anime Black";
 /** The cards each parallel holds (the 29 `BA-` rows of the Anime checklist file). */
 const COPIES = 29;
+/**
+ * NEO-581 — BA-1's own title, saved on its own in LONG_PARALLEL's dialog
+ * before the box (the partial fix). 32 characters, so it fits; it starts with
+ * FIX_BOX so PART 5's "every title starts with the box text" holds for it too.
+ */
+const OWN_TITLE = `${FIX_BOX} Oh #BA-1`;
 /** Anime's third parallel, as BSC names it. */
 const RED = "Anime Red Refractors";
 /**
- * RED renamed: the description is 65 characters. With a player's full name the
- * title is over 80 after every cut except for BA-12, BA-19, BA-20 and BA-29,
- * whose names are the longest and which lose a first name; BA-3 (Munetaka
- * Murakami) would too, and its hand edit below, re-headed, is exactly 80.
+ * RED renamed: the description is 65 characters, so with a player's name and
+ * number no title of it fits whole: every one of the 29 has to give up its
+ * team, its number or a first name (NEO-609: a Tidy Up cut, so it is on the
+ * Card titles dialog). BA-12, BA-19, BA-20 and BA-29, whose names are the
+ * longest, lose a first name; BA-3 (Munetaka Murakami) would too, and its hand
+ * edit below, re-headed, is exactly 80, so it is carried and is the one card
+ * off the dialog: 28 titles.
  */
 const CARRY_PARALLEL = "Anime Red Refractors Hologram Foils Anniversary Prism";
 /** BA-3's title as the operator edits it on Anime: the first name dropped. */
@@ -307,6 +320,7 @@ test(
     // the dialog follows the last parallel's write: 7 s plus the seconds BSC is
     // visibly holding it (the marketplace rule, GUIDE).
     const titlesDialog = page.getByRole("dialog", { name: "Card titles" });
+    const titleRow = (number: string) => titlesDialog.getByRole("textbox", { name: new RegExp(`^Title for #${escapeRe(number)} `) });
     await expectAfterMarketplace(page, titlesDialog, {
       platform: "BuySportsCards",
       what: "the Card titles dialog after the Anime parallels build",
@@ -366,7 +380,46 @@ test(
     await expect(titlesDialog).toBeVisible();
     await expect(box).toHaveValue(descriptionOf(LONG_PARALLEL));
 
-    // One shorter box fixes every title: it replaces the description on the cards that need it.
+    // ── NEO-581: the ticker reads the live count, not the one the build stored ──
+    // The parallel's line in the ticker's ledger (a list item of the build
+    // panel), and the clause it carries while titles still fail.
+    const builtLine = page
+      .getByRole("listitem")
+      .filter({ hasText: new RegExp(`^${escapeRe(LONG_PARALLEL)} — Built ${COPIES} cards`) });
+    const fixClause = /titles? needs? a fix/;
+    const fixTitlesNamed = (count: number) =>
+      page.getByRole("button", { name: `Fix ${count} card ${count === 1 ? "title" : "titles"}`, exact: true });
+
+    // A partial fix: BA-1's own title, saved with the box untouched. Every other
+    // row is answered "kept" (still over 80), so the save fixes exactly one.
+    await titleRow("BA-1").fill(OWN_TITLE);
+    await titleRow("BA-1").press("Tab");
+    await titlesDialog.getByRole("button", { name: "Save titles" }).click();
+    await expect(titlesDialog).toBeHidden();
+    const left = COPIES - 1;
+    // The door's line beside it and the ticker's live line (role status, always
+    // on screen to Playwright): exactly one of them a status.
+    await expect(
+      page.getByRole("status").filter({ hasText: `Saved 1 title. ${left} still run long.` }),
+    ).toHaveCount(1);
+    // The button and the built line's clause drop by one; focus is back on the door.
+    await expect(fixTitlesNamed(left)).toBeVisible();
+    await expect(fixTitlesNamed(left)).toBeFocused();
+    await expect(fixTitlesNamed(COPIES)).toHaveCount(0);
+    await expect(builtLine).toBeVisible();
+    await expect(builtLine).toContainText(`, ${left} titles need a fix`);
+    await expect(builtLine).not.toContainText(`${COPIES} titles need a fix`);
+
+    // The door opens on the rest: BA-1 is no longer in it.
+    await fixTitlesNamed(left).click();
+    await expect(titlesDialog).toBeVisible();
+    await expect(sections).toHaveCount(1);
+    await expect(sections).toContainText(`${left} titles`);
+    await expect(titleRow("BA-2")).toBeVisible();
+    await expect(titleRow("BA-1")).toHaveCount(0);
+    await expect(box).toHaveValue(descriptionOf(LONG_PARALLEL));
+
+    // One shorter box fixes every other title: it replaces the description on the cards that need it.
     await box.fill(FIX_BOX);
     await box.press("Tab");
     await expect(titlesDialog.getByRole("status").filter({ hasText: "Every title fits now." })).toBeVisible();
@@ -374,24 +427,26 @@ test(
     await titlesDialog.getByRole("button", { name: "Save titles" }).click();
     await expect(titlesDialog).toBeHidden();
 
-    // The ticker keeps its button, focus is back on it, and it has nothing left to fix.
-    await expect(fixTitles).toBeVisible();
-    await expect(fixTitles).toBeFocused();
-    const fixed = Number(((await fixTitles.textContent()) ?? "").match(/\d+/)?.[0]);
-    expect(fixed).toBe(COPIES);
-    // The saved sentence is said twice, once each: the plain text beside the
-    // door, and the ticker's screen-reader line (role status, always on screen
-    // to Playwright). Two matches in all, exactly one of them a status.
-    const savedLine = `Saved ${fixed} ${fixed === 1 ? "title" : "titles"}.`;
+    // NEO-581: nothing left to fix, so the button leaves with the last title,
+    // and so does the built line's clause. The saved sentence stays, said twice:
+    // the plain text where the door was, and the ticker's live line (exactly
+    // one of them a status). A positive first: a negative passes on a page
+    // that never drew (GUIDE, "negative asserts").
+    const savedLine = `Saved ${left} titles.`;
     await expect(page.getByRole("status").filter({ hasText: savedLine })).toHaveCount(1);
     await expect(page.getByText(savedLine)).toHaveCount(2);
-    await fixTitles.click();
-    // The same pair again: the door's line beside it, and the live line.
-    const nothingToFix = "Every title fits now. Nothing to fix.";
-    await expect(page.getByRole("status").filter({ hasText: nothingToFix })).toHaveCount(1);
-    await expect(page.getByText(nothingToFix)).toHaveCount(2);
-    await expect(titlesDialog).toHaveCount(0);
-    await expectAccessible(page, { label: "Parallel build ticker, nothing left to fix" });
+    await expect(builtLine).toBeVisible();
+    await expect(builtLine).not.toContainText(fixClause);
+    await expect(page.getByRole("button", { name: /^Fix [0-9]+ card titles?$/ })).toHaveCount(0);
+    // Neither the clause nor the end-of-run tail ("N card titles need a fix.")
+    // is anywhere on the page, the live line included.
+    await expect(page.getByText(fixClause)).toHaveCount(0);
+    // The stale button's old answer is never needed: nothing says "Nothing to fix".
+    await expect(page.getByText("Every title fits now. Nothing to fix.")).toHaveCount(0);
+    // The button had focus as it left; focus is parked on the ticker (its
+    // region, named by its heading), never dropped to the page.
+    await expect(page.getByRole("region", { name: /^Anime parallels — [1-9][0-9]* built/ })).toBeFocused();
+    await expectAccessible(page, { label: "Parallel build ticker, every title fixed" });
 
     // Building Kanji's cards fetches its checklist from BSC under the build's wait line: 7 s plus
     // the seconds BSC is visibly holding it (measured 5.4 s at most on the #487 merge-group run (GUIDE)).
@@ -456,8 +511,18 @@ test(
     await expect(page.getByRole("button", { name: /^Edit card .+/ }).first()).toBeVisible();
     await expect(needYou).toBeHidden();
     await expect(fixCardTitles).toBeHidden();
+    // NEO-581, after the reload: no door anywhere offers the fixed titles
+    // again, and nothing says they need a fix.
+    await expect(page.getByRole("button", { name: /^Fix [0-9]+ card titles?$/ })).toHaveCount(0);
+    await expect(page.getByText(/titles? needs? a fix/)).toHaveCount(0);
     await page.getByRole("button", { name: /^Edit card .+/ }).first().click();
     await expect(cardTitle).toHaveValue(new RegExp(`^${escapeRe(FIX_BOX)} `));
+    await doneEditing.click();
+    await expect(cardTitle).toBeHidden();
+    // NEO-581: the partial fix's own title was written, and the box saved after it left it alone.
+    await search.fill("BA-1");
+    await editCardButton(page, "BA-1").click();
+    await expect(cardTitle).toHaveValue(OWN_TITLE);
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
 
@@ -466,6 +531,11 @@ test(
     await searchAnime();
     await columnOption(page, "Inserts", "Anime").click();
     await search.fill("BA-3");
+    // NEO-581: Anime's own page after the reload (where the build ticker stood)
+    // offers no Fix button and no clause either; the row is the positive.
+    await expect(editCardButton(page, "BA-3")).toBeVisible();
+    await expect(page.getByRole("button", { name: /^Fix [0-9]+ card titles?$/ })).toHaveCount(0);
+    await expect(page.getByText(/titles? needs? a fix/)).toHaveCount(0);
     await editCardButton(page, "BA-3").click();
     await cardTitle.fill(HAND_EDIT);
     await cardTitle.press("Tab");
@@ -486,8 +556,9 @@ test(
     });
     await expect(sections).toHaveCount(1);
     await expect(sections).toContainText(CARRY_PARALLEL);
-    // The arithmetic at CARRY_PARALLEL: these four cannot fit; BA-3's hand edit does, so it is carried.
-    await expect(sections).toContainText("4 titles");
+    // The arithmetic at CARRY_PARALLEL: every card had to leave something out
+    // (NEO-609) but BA-3, whose hand edit fits, so it is carried.
+    await expect(sections).toContainText(`${COPIES - 1} titles`);
     // The box holds the full description, the parallel's name in it, said once
     // after "2026 Bowman" (65 characters: it fits, so it is not sitting out).
     expect(descriptionOf(CARRY_PARALLEL)).toHaveLength(65);
@@ -495,7 +566,6 @@ test(
     await expect(titlesDialog.getByRole("textbox", { name: "Set name in titles", exact: true })).toHaveValue(
       descriptionOf(CARRY_PARALLEL),
     );
-    const titleRow = (number: string) => titlesDialog.getByRole("textbox", { name: new RegExp(`^Title for #${escapeRe(number)} `) });
     for (const number of ["BA-12", "BA-19", "BA-20", "BA-29"]) await expect(titleRow(number)).toBeVisible();
     await expect(titleRow("BA-3")).toBeHidden();
     // Not now writes nothing and closes the dialog.

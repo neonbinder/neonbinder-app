@@ -1976,6 +1976,20 @@ describe("marketplace paused (NEO-287)", () => {
     expect(entry?.needsReauth).toBeFalsy();
   });
 
+  test("getSiteToken with no identity throws 'Not authenticated' and reaches nothing (NEO-605: the body is now a plain function the BSC adapter calls)", async () => {
+    const t = convexTest(schema, modules);
+    let fetchCalled = false;
+    stubFetch((async () => {
+      fetchCalled = true;
+      throw new Error("must not reach the browser service without an identity");
+    }) as FetchStub);
+
+    await expect(t.action(internal.credentials.getSiteToken, { site: "buysportscards" })).rejects.toThrow(
+      /Not authenticated/,
+    );
+    expect(fetchCalled).toBe(false);
+  });
+
   test("getSiteToken on a paused site returns null without any fetch", async () => {
     process.env.NEONBINDER_PAUSED_PLATFORMS = "sportlots";
     const t = convexTest(schema, modules);

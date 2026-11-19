@@ -1896,7 +1896,7 @@ describe("SetAttributesPanel — Set name in titles row (NEO-335)", () => {
     });
   });
 
-  it("an empty insert row shows the set's short name it inherits as the placeholder", () => {
+  it("an empty insert row shows the set's short name it inherits, with its own name, as the placeholder", () => {
     currentRow = makeRow({ level: "insert", value: "Hologram" });
     currentChain = [
       ...makeChain("Baseball").map((c) =>
@@ -1905,7 +1905,9 @@ describe("SetAttributesPanel — Set name in titles row (NEO-335)", () => {
       { _id: SELECTOR_OPTION_ID, value: "Hologram", level: "insert" },
     ];
     renderPanel();
-    expect(field().placeholder).toBe("UD Collector's");
+    // NEO-609: a level the box does not cover is the card's own whether or not
+    // a variant type names its kind, so its name is added here too.
+    expect(field().placeholder).toBe("UD Collector's Hologram");
   });
 
   it("NEO-535: an inherited value sitting above an insert gets the insert's name added", () => {

@@ -200,6 +200,7 @@ describe("TitleFixer (NEO-101)", () => {
       expect(mockUpdateCard).toHaveBeenCalledWith({
         id: CARD_ID,
         listingTitle: "2024 Topps Chrome #300b",
+        titleReviewed: true,
       }),
     );
     expect(onSaved).toHaveBeenCalledTimes(1);
@@ -247,9 +248,49 @@ describe("TitleFixer (NEO-101)", () => {
       expect(mockUpdateCard).toHaveBeenCalledWith({
         id: CARD_ID,
         listingTitle: "2024 Topps Chrome Julio Rodriguez #300b",
+        titleReviewed: true,
       }),
     );
     expect(onSaved).toHaveBeenCalledTimes(1);
+  });
+
+  it("NEO-606: over the cap the title box is marked in neon pink with its note, and clears once it fits", () => {
+    renderFixer([overLimit(84)], makeRow({ listingTitle: "z".repeat(84) }));
+    const field = titleField();
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    expect(field.className).toContain("data-[over=true]:ring-neon-pink-text");
+    // Held (busy: readOnly + aria-disabled) keeps the edge and shows the grey fill.
+    expect(field.className).toContain("aria-disabled:data-[over=true]:bg-button-neutral");
+    const note = screen.getByText(TOO_LONG);
+    expect(note.className).toContain("text-neon-pink-text");
+    expect(note.className).not.toContain("notice-danger");
+    expect(field.getAttribute("aria-describedby")).toContain(note.id);
+
+    fireEvent.change(field, { target: { value: "z".repeat(70) } });
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.getAttribute("data-over")).toBeNull();
+    // Fits again: the note turns green, not pink.
+    const fits = screen.getByText(FITS_NOW);
+    expect(fits.className).toContain("text-neon-green-text");
+    expect(fits.className).not.toContain("text-neon-pink-text");
+  });
+
+  it("NEO-606: the variation box is pink while it is past 65, but advisory: never aria-invalid", () => {
+    renderFixer(
+      [aspectOver(70)],
+      makeRow({ listingTitle: "2024 Topps Chrome #300b", cardVariation: "v".repeat(70) }),
+    );
+    const field = screen.getByLabelText("Card variation for #300b");
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    // Its status still describes it.
+    const described = field.getAttribute("aria-describedby")!.split(" ");
+    expect(described.some((id) => document.getElementById(id)?.textContent?.includes("Variation is 70 characters"))).toBe(true);
+    fireEvent.change(field, { target: { value: "x".repeat(65) } });
+    expect(field.getAttribute("data-over")).toBeNull();
   });
 
   it("shows the variation field only when the variation is what is over the limit", () => {
@@ -280,6 +321,7 @@ describe("TitleFixer (NEO-101)", () => {
       expect(mockUpdateCard).toHaveBeenCalledWith({
         id: CARD_ID,
         listingTitle: "2024 Topps Chrome #300b",
+        titleReviewed: true,
         cardVariation: "Image Variation",
       }),
     );
