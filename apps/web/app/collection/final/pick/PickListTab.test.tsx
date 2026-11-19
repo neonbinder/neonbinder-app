@@ -630,6 +630,9 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     // The chip follows the variant chip's line (it sits under it), and the variant chip stays first.
     expect(wide.previousElementSibling?.textContent).toContain("Base");
     expect(phone.previousElementSibling?.textContent).toContain("Base");
+    // The phone's stack keeps the chip its own width (items-start), as the wide cell does.
+    expect(phone.parentElement?.className).toContain("items-start");
+    expect(wide.parentElement?.className).toContain("items-start");
     // Not one of the nowrap marker chips: it carries no whitespace override of its own.
     expect(wide.parentElement?.className).not.toContain("whitespace-nowrap");
     expect(wide.className).not.toContain("whitespace-normal");

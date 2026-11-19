@@ -1984,7 +1984,7 @@ function CondensedRow({
     </span>
   );
   const setText = facts ? (
-    <span className="flex min-w-0 flex-col gap-1">
+    <span className="flex min-w-0 flex-col items-start gap-1">
       {showSet && (
         <span className="flex flex-wrap items-center gap-1.5">
           {showSport && <SportChip code={facts.sportCode} name={facts.sportName} />}

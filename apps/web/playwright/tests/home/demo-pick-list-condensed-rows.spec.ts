@@ -10,8 +10,9 @@
 //     dividers only (no heavier rule where the variant changes), a 24px bordered
 //     checkbox (on a phone too) and, on a wide screen, no Variant column, the
 //     team beside the name, and a row on one line wherever its columns fit
-//     (every demo row at 1920; at 1280 all but the long listing titles and
-//     notes), wrapping where a line cannot fit and never clipping anything; the
+//     (every demo row at 1920 except Nabers, whose chip under the variant makes
+//     it two lines; at 1280 all but the long listing titles and notes),
+//     wrapping where a line cannot fit and never clipping anything; the
 //     marker chips stay inside their cell;
 //   - it uses the same wide page as Spacious at the same width, so more text
 //     fits each line;
@@ -164,6 +165,9 @@ test(
       await page.setViewportSize({ width: 1920, height: viewport.height });
       await expect.poll(regionWidth).toBe(spaciousWide);
       await expectOneLine(ALL_ROWS);
+      // Nabers is two lines by design (the chip sits under the variant chip): 2.55 with the row's
+      // padding, so under 3 means two lines and a third line (3.5 or more) fails.
+      await expect.poll(() => rowLines(pickRow(table, NABERS)), { message: NABERS }).toBeLessThanOrEqual(3);
       await expectCondensed();
       await expectAccessible(page, { label: "Pick List demo, Condensed rows at 1920" });
       await page.setViewportSize(viewport);
