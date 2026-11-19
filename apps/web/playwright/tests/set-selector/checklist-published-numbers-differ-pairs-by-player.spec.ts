@@ -1,5 +1,6 @@
-// NEO-490 (R1): a publisher's checklist whose card numbers match NONE of the
-// marketplace's still reaches its cards, by player name. Panini numbers its
+// NEO-490 (R1), NEO-591 (names first): a publisher's checklist whose card
+// numbers match NONE of the marketplace's still reaches its cards, by player
+// name (workspace CLAUDE.md rule 7: names first, numbers confirm). Panini numbers its
 // 2026 Donruss "Retro 1997 Donruss Signature Series Autographs" 1-17 and BSC
 // numbers the same 14 cards SIG-AM..SIG-RL, so no number meets another. The
 // publisher's checklist is Panini's own (fixtures/checklists, SET-REGISTRY.md):
@@ -10,23 +11,30 @@
 // below opens Match Cards with Keep controls, as two marketplaces always did: a
 // card or row left in a column is discarded unless kept. Four parts, in the order
 // the operator would meet them:
-//   PHASE A, the counts differ (13 rows against 14 cards: Mike Lowell's row is
-//     left out). The fetch applies nothing by itself; the 13 unique name pairs
-//     come pre-linked in Matched. Mike Lowell's card is "BSC only (1)". One pair
+//   PHASE A, 13 rows against 14 cards (Mike Lowell's row is left out). The
+//     fetch pairs the 13 names and applies their teams ("Teams from your
+//     checklist: 13 of 14 cards" while the dialog is open); Mike Lowell's card
+//     has no row and is "BSC only (1)". Every pair's numbers differ (Panini's
+//     digits, BSC's SIG-xx letters), so Frank Thomas's row shows the lowered
+//     90% once, the "Numbers differ" note, and the "Number for #SIG-FT" picker
+//     with BSC's letters preselected (letters over digits). One pair
 //     is unlinked by the Unlink inside its "Checklist #n" chip (the row returns
 //     to "Checklist only", the card waits on the keep shelf) and linked again by
-//     the buttons; Lowell is kept; Confirm takes the 13 teams to the wizard, and
+//     the buttons, which moves the pair back into Matched (NEO-591); Lowell is kept; Confirm takes the 13 teams to the wizard, and
 //     "Cards with no team" lists Mike Lowell ONLY. Back to Match Cards keeps the
 //     links and keeps. Nothing is committed: Cancel, Discard.
-//   PHASE A2, the counts match but one name is misspelled (14 rows, row 11 reads
-//     "Rhett Lowdr"). The fetch pairs all 14 itself, Lowder by a near name with
-//     its percentage chip; every source lines up. The operator unlinks that pair
-//     and makes it again by the buttons, and Confirms; the two spellings
-//     disagree, so the wizard opens on "Checklist says otherwise" and the
+//   PHASE A2, one name is misspelled (14 rows, row 11 reads "Rhett Lowdr").
+//     The fetch pairs all 14, Lowder by a near name: its chip reads the names'
+//     score lowered by the numbers-differ factor (0.9), computed by the
+//     product's own pairing core, not typed here; every source lines up. The two spellings are one
+//     name picker on the row ("Name for #SIG-RL": BSC's preselected, the checklist's "· your
+//     checklist"), counted on the Matched toggle. The operator unlinks that pair
+//     and makes it again by the buttons (one Matched row again, no %, the same picker), and Confirms
+//     with the picker untouched; a preselect is no answer, so the wizard opens on "Checklist says otherwise" and the
 //     operator keeps the card's. No "Cards with no team" follows: all 14 reach
 //     the save. Nothing is committed: Cancel, Discard.
-//   PHASE B, the counts match (14 rows). The fetch pairs every row to its card
-//     by player itself; Match Cards says every card lines up and shows
+//   PHASE B, the whole file (14 rows). The fetch pairs every row to its card
+//     by player; Match Cards says every card lines up and shows
 //     "Teams from your checklist: 14 of 14 cards" while open; no "Cards with no
 //     team" step. Panini writes "Oakland A's" for Jacob Wilson; NB holds no club
 //     of that name (the checklist's claim is never rewritten, rule 8), so the
@@ -64,11 +72,13 @@
 // set; this set is an INSERT reached through the pinned All Brands view like the
 // other one-marketplace real sets, which lists it whatever brand files it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { expectAfterMarketplace, expectStepWithSportLots } from "../../support/marketplace-wait";
 import {
   CHECKLISTS,
-  nameFallbackFacts,
+  checklistFacts,
+  type ChecklistRow,
+  nearNamePair,
   publishersChecklistButton,
   publishersChecklistChip,
   removeSetChecklistUnderAllBrands,
@@ -199,9 +209,37 @@ const CHECKLIST_SOURCES_SUBTITLE =
 /** Match Cards' subtitle when every source lines up (NEO-496). */
 const CHECKLIST_ALL_LINED_UP = "Every card lines up across your sources. Review and confirm — no cards are saved until you do.";
 const CLUB = "Oakland A's";
-const WITHOUT_LOWELL = nameFallbackFacts(CHECKLISTS.signatureSeries2026WithoutLowell, CHECKLISTS.signatureSeries2026);
-const WHOLE = nameFallbackFacts(CHECKLISTS.signatureSeries2026, CHECKLISTS.signatureSeries2026);
-const MIXED = nameFallbackFacts(CHECKLISTS.signatureSeries2026MisspelledLowder, CHECKLISTS.signatureSeries2026);
+/**
+ * BSC's number for one of Panini's rows: "SIG-" and the initials of the player's first two names
+ * (Frank Thomas is SIG-FT, Bobby Witt Jr. SIG-BW), the 14 numbers BSC lists for this insert.
+ */
+const bscNumber = (row: ChecklistRow) =>
+  `SIG-${row.player.split(/\s+/).slice(0, 2).map((word) => word[0]).join("").toUpperCase()}`;
+/** The files matched against BSC's 14 cards by the product's own matcher (support/published-checklist.ts). */
+const AGAINST_BSC = { cardsOf: CHECKLISTS.signatureSeries2026, cardNumber: bscNumber };
+const WITHOUT_LOWELL = checklistFacts(CHECKLISTS.signatureSeries2026WithoutLowell, AGAINST_BSC);
+const WHOLE = checklistFacts(CHECKLISTS.signatureSeries2026, AGAINST_BSC);
+const MIXED = checklistFacts(CHECKLISTS.signatureSeries2026MisspelledLowder, AGAINST_BSC);
+/** "Rhett Lowdr" (#11) against BSC's #SIG-RL Rhett Lowder, as the pairing core scores them: a near name, numbers differ. */
+const LOWDER = nearNamePair({ number: "SIG-RL", player: "Rhett Lowder" }, { number: "11", player: "Rhett Lowdr" });
+/** The % Match Cards prints for a pair (CardPairingModal: `Math.round(confidence * 100)`). */
+const percent = (confidence: number) => `${Math.round(confidence * 100)}%`;
+/**
+ * NEO-591: Lowder's Matched row offers ONE name picker for the two spellings: BSC's "Rhett Lowder"
+ * bare and preselected, the checklist's "Rhett Lowdr" marked "· your checklist". Untouched.
+ */
+async function expectLowderNames(lowder: Locator): Promise<void> {
+  const group = lowder.getByRole("group", { name: "Name conflict on #SIG-RL", exact: true });
+  await expect(
+    group.getByText("Potential names for this card — pick the right one before it is listed.", { exact: true }),
+  ).toBeVisible();
+  const names = group.getByRole("radiogroup", { name: "Name for #SIG-RL", exact: true });
+  await expect(names.getByRole("radio")).toHaveCount(2);
+  await expect(names.getByRole("radio", { name: "Rhett Lowder — use this name for #SIG-RL", exact: true })).toBeChecked();
+  await expect(
+    names.getByRole("radio", { name: "Rhett Lowdr · your checklist — use this name for #SIG-RL", exact: true }),
+  ).not.toBeChecked();
+}
 
 test(
   "Published checklist — rows whose numbers match no card pair to the cards by player name, and the card's own player settles the club",
@@ -240,11 +278,11 @@ test(
     await expect(page.getByText("No cards in this checklist yet.")).toBeVisible();
 
     // ══ PHASE A: 13 rows against 14 cards ══
-    // The file's own arithmetic, not typed here: counts differ, so the fetch applies NOTHING and
-    // suggests every unique name pair.
-    expect(WITHOUT_LOWELL.equalCounts).toBe(false);
-    expect(WITHOUT_LOWELL.matched).toBe(0);
-    expect(WITHOUT_LOWELL.suggested).toBe(WITHOUT_LOWELL.rows);
+    // The file's own arithmetic, from the product's matcher, not typed here: every row pairs its card
+    // by name and answers its team; Lowell's card has no row.
+    expect(WITHOUT_LOWELL.paired).toBe(WITHOUT_LOWELL.rows);
+    expect(WITHOUT_LOWELL.matched).toBe(WITHOUT_LOWELL.rows);
+    expect(WITHOUT_LOWELL.cards).toBe(WITHOUT_LOWELL.rows + 1);
     await usePublishersChecklist(page, CHECKLISTS.signatureSeries2026WithoutLowell);
     await syncChecklistButton(page).click();
 
@@ -266,9 +304,34 @@ test(
     await expect(lowellKeep).toBeVisible();
     await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
     await expect(matchCards.getByRole("heading", { name: "Keeping (0)" })).toBeVisible();
-    // The 13 name pairs sit in the collapsed Matched list, each with its "Checklist #n" chip.
-    await matchCards.getByRole("button", { name: "Expand matched cards" }).click();
-    await expect(matchCards.getByText(`Matched (${WITHOUT_LOWELL.suggested})`)).toBeVisible();
+    // The pairs were applied: their teams are the checklist's, said while the dialog is open.
+    await expect(
+      page.getByText(new RegExp(`Teams from your checklist: ${WITHOUT_LOWELL.matched} of ${WITHOUT_LOWELL.cards} cards`)).first(),
+    ).toBeVisible();
+    // The 13 name pairs sit in the collapsed Matched list, each with its "Checklist #n" chip. Every
+    // pair names its player as BSC does, so the toggle counts no name conflict (NEO-591).
+    await matchCards.getByRole("button", { name: "Expand matched cards", exact: true }).click();
+    await expect(matchCards.getByText(`Matched (${WITHOUT_LOWELL.paired})`)).toBeVisible();
+    // NEO-591: Frank Thomas paired by name while the numbers differ (#1 against #SIG-FT): matched at
+    // the lowered confidence, shown ONCE (the chip keeps it for a screen reader only), with the
+    // state-only note and the picker offering both numbers, BSC's letters preselected.
+    const thomas = matchCards
+      .getByRole("listitem")
+      .filter({ has: page.getByRole("button", { name: "Edit name for #SIG-FT Frank Thomas", exact: true }) });
+    await expect(thomas.getByText("90%", { exact: true })).toHaveCount(1);
+    await expect(thomas.getByText("Name match 90%", { exact: true })).toHaveCount(1);
+    await expect(thomas.getByText("Numbers differ", { exact: true })).toBeVisible();
+    await expect(thomas.getByRole("group", { name: "Number conflict on #SIG-FT", exact: true })).toBeVisible();
+    await expect(
+      thomas.getByText("Sources disagree on the number. We picked one; check the card back.", { exact: true }),
+    ).toBeVisible();
+    const thomasNumber = thomas.getByRole("radiogroup", { name: "Number for #SIG-FT", exact: true });
+    await expect(thomasNumber.getByRole("radio")).toHaveCount(2);
+    await expect(thomasNumber.getByRole("radio", { name: "#SIG-FT — use this number for #SIG-FT", exact: true })).toBeChecked();
+    // Panini's #1 is the checklist's alone, so its option says so; BSC's stays bare.
+    await expect(
+      thomasNumber.getByRole("radio", { name: "#1 · your checklist — use this number for #SIG-FT", exact: true }),
+    ).not.toBeChecked();
     const thomasUnlink = matchCards.getByRole("button", { name: /^Unlink card #SIG-FT Frank Thomas from checklist row / });
     await expect(thomasUnlink).toBeVisible();
     // The Unlink sits inside the chip; on a phone (e2e-mobile, 412 px) it must still be reachable on screen.
@@ -277,11 +340,12 @@ test(
     await expectAccessible(page, { within: matchCards, label: "Match Cards dialog, checklist name pairs linked" });
 
     // Unlink one pair: its row returns to "Checklist only" and the card, BSC's alone now, waits on the
-    // keep shelf; the row is linked to it again by buttons.
+    // keep shelf; the row is linked to it again by buttons, and the pair moves back into Matched
+    // (NEO-591: a hand link sits in Matched like the server's pair, never on the shelf).
     await thomasUnlink.click();
     await expect(matchCards.getByRole("heading", { name: "Checklist only (1)" })).toBeVisible();
     await expect(matchCards.getByRole("heading", { name: "Keeping (1)" })).toBeVisible();
-    await expect(matchCards.getByText(`Matched (${WITHOUT_LOWELL.suggested - 1})`)).toBeVisible();
+    await expect(matchCards.getByText(`Matched (${WITHOUT_LOWELL.paired - 1})`)).toBeVisible();
     const pickRow = matchCards.getByRole("radio", { name: /^Select #1 Frank Thomas/ });
     await expect(pickRow).toHaveAttribute("aria-checked", "false");
     await expectAccessible(page, { within: matchCards, label: "Match Cards dialog, one checklist row unlinked" });
@@ -289,11 +353,13 @@ test(
     await expect(pickRow).toHaveAttribute("aria-checked", "true");
     await matchCards.getByRole("button", { name: "Link selected checklist row to #SIG-FT Frank Thomas" }).click();
     await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
+    await expect(matchCards.getByRole("heading", { name: "Keeping (0)" })).toBeVisible();
+    await expect(matchCards.getByText(`Matched (${WITHOUT_LOWELL.paired})`)).toBeVisible();
     await expect(matchCards.getByRole("button", { name: /^Unlink card #SIG-FT Frank Thomas from checklist row / })).toBeVisible();
     // Keep Mike Lowell's card, so all 14 go on to the wizard.
     await lowellKeep.click();
     await expect(matchCards.getByRole("heading", { name: "BSC only (0)" })).toBeVisible();
-    await expect(matchCards.getByRole("heading", { name: "Keeping (2)" })).toBeVisible();
+    await expect(matchCards.getByRole("heading", { name: "Keeping (1)" })).toBeVisible();
 
     // Confirm: the 13 linked rows' teams reach the wizard. It opens on Oakland A's (NB has no club of
     // that name): the first question about a name.
@@ -335,10 +401,12 @@ test(
     await expect(matchCards).toBeHidden();
 
     // ══ PHASE A2: 14 rows, one misspelled, against 14 cards ══
-    // Equal counts, so the fetch pairs the unique names itself: 13 exactly, and "Rhett Lowdr" to
-    // Rhett Lowder's card by a near name (NEO-496), shown with its percentage.
-    expect(MIXED.equalCounts).toBe(true);
-    expect(MIXED.matched).toBe(MIXED.cards - 1);
+    // The fetch pairs 13 names exactly and "Rhett Lowdr" to Rhett Lowder's card by a near name
+    // (NEO-496), all 14 applied; the near pair's % is the names' score times the numbers-differ
+    // factor, as the product's pairing core computes it (`nearNamePair` throws if it is not a near pair).
+    expect(MIXED.paired).toBe(MIXED.cards);
+    expect(MIXED.matched).toBe(MIXED.cards);
+    expect(LOWDER.numbersAgree).toBe(false);
     await page.getByRole("button", { name: "Remove the official checklist" }).click();
     await expect(publishersChecklistChip(page, WITHOUT_LOWELL.rows)).toBeHidden();
     await expect(publishersChecklistButton(page)).toBeVisible();
@@ -351,12 +419,25 @@ test(
     await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();
     await expect(matchCards.getByText(CHECKLIST_ALL_LINED_UP)).toBeVisible();
     await expect(matchCards.getByText(`Matched (${MIXED.cards})`)).toBeVisible();
+    // Nothing is left in a column, so Matched opens expanded; its toggle counts the one name
+    // difference (NEO-591: a marketplace-against-checklist spelling is a name conflict like any other).
+    await expect(
+      matchCards.getByRole("button", { name: "Collapse matched cards, 1 with a name conflict", exact: true }),
+    ).toBeVisible();
     const lowder = matchCards.getByRole("listitem").filter({ has: page.getByRole("button", { name: "Edit name for #SIG-RL Rhett Lowder" }) });
     await expect(lowder.getByText("Checklist: #11", { exact: true })).toBeVisible();
-    await expect(lowder.getByText(/^Name match [0-9]{2}%$/)).toBeVisible();
+    // One %, read out once: the row prints it, the chip keeps the words for a screen reader.
+    await expect(lowder.getByText(percent(LOWDER.confidence), { exact: true })).toHaveCount(1);
+    await expect(lowder.getByText(`Name match ${percent(LOWDER.confidence)}`, { exact: true })).toHaveCount(1);
+    await expect(lowder.getByText("Numbers differ", { exact: true })).toBeVisible();
+    // NEO-591: the two spellings are ONE name picker: BSC's bare and preselected, the checklist's
+    // marked as the operator's own.
+    await expectLowderNames(lowder);
     await expectAccessible(page, { within: matchCards, label: "Match Cards dialog, a near-name pair" });
 
-    // The operator undoes the near pair and makes it again with the buttons.
+    // The operator undoes the near pair and makes it again with the buttons: the card goes to the keep
+    // shelf, the row to "Checklist only"; linked again, both leave their lists for one Matched row
+    // (NEO-591), which carries the chip's Unlink and no % (a hand link is not scored).
     await lowder.getByRole("button", { name: /^Unlink card #SIG-RL Rhett Lowder from checklist row / }).click();
     await expect(matchCards.getByRole("heading", { name: "Checklist only (1)" })).toBeVisible();
     const leftoverRows = matchCards.getByRole("list", { name: "Leftover checklist rows" }).getByRole("listitem");
@@ -365,13 +446,19 @@ test(
     await matchCards.getByRole("radio", { name: /^Select #11 Rhett Lowdr/ }).click();
     await matchCards.getByRole("button", { name: /^Link selected checklist row to #SIG-RL/ }).click();
     await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
-    await expect(leftoverRows).toContainText("Linked to #SIG-RL Rhett Lowder");
+    await expect(leftoverRows).toHaveCount(0);
+    await expect(matchCards.getByText(`Matched (${MIXED.cards})`)).toBeVisible();
+    await expect(lowder.getByRole("button", { name: /^Unlink card #SIG-RL Rhett Lowder from checklist row #11 Rhett Lowdr\b/ })).toBeVisible();
+    await expect(lowder.getByText(/%$/)).toHaveCount(0);
+    // The hand link offers the same picker, BSC's spelling preselected again.
+    await expectLowderNames(lowder);
     await matchCards.getByRole("button", { name: "Confirm card matches" }).click();
     await expect(matchCards).toBeHidden();
 
-    // The pair reads "Rhett Lowder" on the card and "Rhett Lowdr" on the row, so the wizard opens on
-    // its "Checklist says otherwise" step (a disagreement is asked, never settled silently). The
-    // operator keeps the marketplace's spelling.
+    // The pair reads "Rhett Lowder" on the card and "Rhett Lowdr" on the row. The picker was left
+    // untouched, and a preselect is no answer, so the wizard opens on its "Checklist says otherwise"
+    // step (a disagreement is asked, never settled silently). The operator keeps the marketplace's
+    // spelling.
     await expectChecklistDisagreementFirst(page);
     await pickDisagreementSide(page, "SIG-RL", "Keep the marketplace's");
     await wizard.getByRole("button", { name: "Next (Enter)", exact: true }).click();
@@ -390,12 +477,12 @@ test(
     await page.getByRole("button", { name: "Remove the official checklist" }).click();
     await expect(publishersChecklistChip(page, MIXED.rows)).toBeHidden();
     await expect(publishersChecklistButton(page)).toBeVisible();
-    expect(WHOLE.equalCounts).toBe(true);
+    expect(WHOLE.paired).toBe(WHOLE.cards);
     expect(WHOLE.matched).toBe(WHOLE.cards);
     await usePublishersChecklist(page, CHECKLISTS.signatureSeries2026);
     await syncChecklistButton(page).click();
 
-    // Equal counts: the fetch pairs every row to its card by player. Two sources, so Match Cards
+    // The fetch pairs every row to its card by player. Two sources, so Match Cards
     // still opens (NQ1), with nothing left in any column; the line says what the checklist gave.
     await expectAfterMarketplace(page, matchCards, { platform: "BuySportsCards", what: "Match Cards for the whole checklist" });
     await expect(matchCards.getByRole("button", { name: "Confirm card matches", disabled: false })).toBeVisible();

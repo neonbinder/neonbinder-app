@@ -31,8 +31,11 @@
 //      teams from the checklist and the clubs without their marks. Proved, its
 //      cards and row are deleted there and then.
 //   5. Future Stars' fetch has two sources, so Match Cards opens: FS-9 is
-//      matched by name with its "Checklist #109" chip and a percentage, FS-10
-//      is BSC-only and is kept, no checklist row is left. Confirm reaches the
+//      matched by name with its "Checklist #109" chip and a percentage, and its
+//      two spellings are one name picker (BSC's preselected, the checklist's
+//      "· your checklist"), FS-10
+//      is BSC-only and is kept, no checklist row is left. Confirm, the picker
+//      untouched, reaches the
 //      wizard on "Checklist says otherwise" (Skenns vs Skenes); Cancel (nothing
 //      is decided yet, so it leaves at once) saves nothing.
 //   6. Clean up: Back through the picks to the set, then Remove checklist.
@@ -61,7 +64,7 @@ import {
   VARIANT_TYPES_SYNC,
 } from "../../support/set-builder";
 import { confirmDeleteCardButton, deleteCardButton, editCardButton } from "../../support/cards";
-import { matchCardsDialog, removeSetChecklistUnderAllBrands } from "../../support/published-checklist";
+import { matchCardsDialog, nearNamePair, removeSetChecklistUnderAllBrands } from "../../support/published-checklist";
 import { expectChecklistDisagreementFirst, reviewWizard } from "../../support/wizard";
 import { buildToppsPdf } from "../../fixtures/checklists/build-fixtures.mjs";
 
@@ -85,6 +88,13 @@ const FUTURE_STARS = [
   { number: "109", player: "Paul Skenns", team: "Pittsburgh Pirates®" },
   // BSC's FS-10 Carson Benge is left out: the card BSC alone lists.
 ];
+/**
+ * NEO-591: "Paul Skenns" (#109) against BSC's #FS-9 Paul Skenes, as the product's pairing core
+ * scores them: a near name, lowered by the numbers-differ factor. Match Cards prints
+ * `Math.round(confidence * 100)`; `nearNamePair` throws if the core does not pair them by a near name.
+ */
+const SKENES = nearNamePair({ number: "FS-9", player: "Paul Skenes" }, { number: "109", player: "Paul Skenns" });
+const SKENES_PERCENT = `${Math.round(SKENES.confidence * 100)}%`;
 
 test(
   "Set checklist — a Topps PDF on the set maps the base, reconciles the inserts and pairs an insert's cards",
@@ -307,13 +317,31 @@ test(
       // Every checklist row found its card, FS-9 among them by name.
       await expect(matchCards.getByRole("heading", { name: "Checklist only (0)" })).toBeVisible();
       await expect(matchCards.getByText("Every checklist row found its card.")).toBeVisible();
-      await matchCards.getByRole("button", { name: /^Expand matched cards/ }).click();
+      // NEO-591: the Matched toggle counts the one name difference (Skenns against Skenes); FS-1..FS-8
+      // are spelled as BSC spells them.
+      await matchCards.getByRole("button", { name: "Expand matched cards, 1 with a name conflict", exact: true }).click();
       await expect(matchCards.getByText("Matched (9)")).toBeVisible();
       const skenes = matchCards
         .getByRole("listitem")
         .filter({ has: page.getByRole("button", { name: "Edit name for #FS-9 Paul Skenes" }) });
       await expect(skenes.getByText("Checklist: #109", { exact: true })).toBeVisible();
-      await expect(skenes.getByText(/^Name match [0-9]{2}%$/)).toBeVisible();
+      // The % is the core's own, shown once: printed on the row, kept in the chip for a screen reader only.
+      await expect(skenes.getByText(SKENES_PERCENT, { exact: true })).toHaveCount(1);
+      await expect(skenes.getByText(`Name match ${SKENES_PERCENT}`, { exact: true })).toHaveCount(1);
+      await expect(skenes.getByText("Numbers differ", { exact: true })).toBeVisible();
+      // NEO-591: the two spellings are ONE name picker, BSC's bare and preselected, the checklist's
+      // marked as the operator's own. Left untouched, the preselect answers nothing: the wizard still
+      // asks below.
+      const skenesName = skenes.getByRole("group", { name: "Name conflict on #FS-9", exact: true });
+      await expect(
+        skenesName.getByText("Potential names for this card — pick the right one before it is listed.", { exact: true }),
+      ).toBeVisible();
+      const skenesNames = skenesName.getByRole("radiogroup", { name: "Name for #FS-9", exact: true });
+      await expect(skenesNames.getByRole("radio")).toHaveCount(2);
+      await expect(skenesNames.getByRole("radio", { name: "Paul Skenes — use this name for #FS-9", exact: true })).toBeChecked();
+      await expect(
+        skenesNames.getByRole("radio", { name: "Paul Skenns · your checklist — use this name for #FS-9", exact: true }),
+      ).not.toBeChecked();
       await expectAccessible(page, { within: matchCards, label: "Match Cards with BSC and the set checklist" });
 
       await benge.click();

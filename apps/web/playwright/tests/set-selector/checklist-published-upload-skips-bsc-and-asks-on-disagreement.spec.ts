@@ -2,22 +2,31 @@
 // checklist" gives a fetch its teams without asking BuySportsCards for each
 // card, lists what it could not read, and ASKS the operator where it disagrees
 // with the marketplace instead of settling it silently (rule 7: a number that
-// matches but a player that does not is a likely misread, never settled).
+// matches but a player that does not is a likely misread, never settled). And
+// (NEO-591, names first) where the checklist cannot say which row is the card,
+// it pairs neither and leaves the card to BSC alone.
 //
 // The flow, as the operator lives it, on a small BSC-only set:
 //   1. Paste the checklist in the published line format ("<number> <player> -
 //      <team>"), built from the set's own captured BSC answers
 //      (fixtures/checklists/1995-hockey-oklahoma-city-blazers-chl-base.csv) with
-//      FOUR deliberate changes: two players misspelt (cards #2 and #4), ONE
-//      number written twice with a team nobody else uses (card #6), and one line
-//      that is no card at all. The preview reads "19 rows" (18 cards plus the
-//      repeated number) and lists the junk line under "Skipped lines".
+//      FOUR deliberate changes: two players misspelt (cards #2 and #4), card #6
+//      written twice, the same player and number on both lines, with a team
+//      nobody else uses, and one line that is no card at all. The preview reads
+//      "19 rows" (18 cards plus the repeated line) and lists the junk line under
+//      "Skipped lines".
 //   2. Use it and Sync. BSC and the checklist are two sources, so Match Cards
 //      opens (NEO-496); while it is open the result line reads "Teams from your
 //      checklist: 17 of 18 cards": every card but #6 took its answer from the checklist (#2 and #4
-//      pair by number and only their players disagree), and #6's number is on two
-//      rows, so the checklist cannot say which row is the card (rule 7).
-//   3. The review wizard OPENS on "Checklist says otherwise" (it comes before any
+//      pair by number and only their players disagree). #6 is a TIE: two rows name
+//      its player under its number, so neither row is the card (rule 7: a tie stays
+//      unmatched, never given to the first candidate). In the dialog the card waits
+//      in "BSC only (1)" and both rows in "Checklist only (2)", unlinked, with no
+//      "Number for #6" picker and no Unlink on it. #2 and #4 sit in Matched, each
+//      with one name picker ("Name for #2": BSC's spelling preselected, the
+//      checklist's "· your checklist"), and the Matched toggle counts the two;
+//      they are left untouched. The helper keeps the card and leaves the rows.
+//   3. A preselect is no answer, so the review wizard OPENS on "Checklist says otherwise" (it comes before any
 //      name step): one group per disagreement ("Disagreement on #2", "#4"), each
 //      with "Keep the marketplace's" and "Use the checklist's" radios. Next is held
 //      ("Pick a side on every card first", after a blocked press) until both have a side; the bulk name
@@ -26,12 +35,12 @@
 //      once, then #2 is changed to the checklist's spelling on its own: #2 takes
 //      the checklist's and #4 the marketplace's, so each side lands on a card and
 //      both are read back.
-//   4. D2 (Jason, 2026-11-10): card #6, whose number the checklist could not pin
-//      down, is looked up on BSC for just that card. Proof from the user's side:
+//   4. D2 (Jason, 2026-11-10): card #6, which no row could be pinned to, is
+//      looked up on BSC for just that card. Proof from the user's side:
 //      the "17 of 18" line (the other 17 took the checklist's answer, so BSC was
 //      asked for no card but #6), the invented team on #6's two rows is never
-//      offered as a New Team step, and the saved card #6 carries neither it nor
-//      the other row's player. NOT provable from the screen: that BSC's own team
+//      offered as a New Team step, and the saved card #6 carries its own name and
+//      not that team. NOT provable from the screen: that BSC's own team
 //      then landed on #6. Every name is skipped, so BSC's team (a team NB does
 //      not know) is skipped with them, and the teams step names no marketplace
 //      value for a grouped card; that needs a team created in the wizard, which is
@@ -66,7 +75,7 @@
 // scrolls). Axe runs in light and dark on the dialog's preview and on the
 // disagreement step.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
-import { editCardButton } from "../../support/cards";
+import { editCardButton, escapeRe } from "../../support/cards";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
   CHECKLISTS,
@@ -121,7 +130,7 @@ test(
     const rows = checklistRows(CHECKLISTS.oklahomaCityBlazers);
     expect(rows, "the captured file holds the set's 18 cards").toHaveLength(18);
     const at = (n: number) => rows.find((r) => r.number === String(n))!;
-    const [two, four, six, eight] = [at(2), at(4), at(6), at(8)];
+    const [two, four, six] = [at(2), at(4), at(6)];
     const typoTwo = misspell(two.player);
     const typoFour = misspell(four.player);
     expect(typoTwo, "the misspelling changed the name").not.toBe(two.player);
@@ -134,8 +143,8 @@ test(
       if (r.number === "6") return `${r.number} ${r.player} - ${bogusTeam}`;
       return `${r.number} ${r.player} - ${r.team}`;
     });
-    // Card #6's number again, on another player, with the same invented team.
-    lines.splice(6, 0, `6 ${eight.player} - ${bogusTeam}`);
+    // Card #6's line again, word for word: the same player and number twice, a tie no rule may break.
+    lines.splice(6, 0, `6 ${six.player} - ${bogusTeam}`);
     lines.unshift(JUNK_LINE);
     const rowCount = rows.length + 1;
 
@@ -276,12 +285,45 @@ test(
       what: "Confirm unlocked after the fetch",
     });
     // 17 of 18: every card but #6 took its answer from the checklist. #2 and #4 count
-    // (their numbers pair; only their players disagree), #6 does not (its number is on
-    // two rows, so the checklist cannot say which row is the card: rule 7). Said while
-    // Match Cards is open: once the wizard takes over, only the saved line repeats it.
+    // (their numbers pair; only their players disagree), #6 does not (two rows name its
+    // player under its number, a tie: rule 7). Said while Match Cards is open: once the
+    // wizard takes over, only the saved line repeats it.
     await expect(page.getByText("Teams from your checklist: 17 of 18 cards").first()).toBeVisible();
+    // NEO-591: the tie is left for the operator. Card #6 waits in BSC's column, its two rows in the
+    // checklist's (the same line twice reads ", row N of 19" to tell them apart), and nothing pairs
+    // them: no Unlink on #6, no number picker for it.
+    await expect(matchCards.getByRole("heading", { name: "BSC only (1)", exact: true })).toBeVisible();
+    await expect(matchCards.getByRole("button", { name: `Keep #6 ${six.player} as BSC-only`, exact: true })).toBeVisible();
+    await expect(matchCards.getByRole("heading", { name: "Checklist only (2)", exact: true })).toBeVisible();
+    await expect(
+      matchCards.getByRole("radio", { name: new RegExp(`^Select #6 ${escapeRe(six.player)} · ${bogusTeam}, row [0-9]+ of ${rowCount}$`) }),
+    ).toHaveCount(2);
+    await expect(matchCards.getByRole("button", { name: /^Unlink card #6 / })).toHaveCount(0);
+    await expect(matchCards.getByRole("radiogroup", { name: "Number for #6", exact: true })).toHaveCount(0);
+    // NEO-591: #2 and #4 pair by number while the names differ, so each Matched row offers ONE name
+    // picker: BSC's spelling bare and preselected, the checklist's marked as the operator's own. The
+    // Matched toggle (collapsed: #6 waits in a column) counts the two. Left untouched: a preselect
+    // answers nothing, so the wizard still asks about both (step 3).
+    const expandMatched = matchCards.getByRole("button", { name: "Expand matched cards, 2 with a name conflict", exact: true });
+    await expect(expandMatched).toBeVisible();
+    await expandMatched.click();
+    await expect(
+      matchCards.getByRole("button", { name: "Collapse matched cards, 2 with a name conflict", exact: true }),
+    ).toBeVisible();
+    for (const [n, marketplace, checklist] of [["2", two.player, typoTwo], ["4", four.player, typoFour]] as const) {
+      const group = matchCards.getByRole("group", { name: `Name conflict on #${n}`, exact: true });
+      await expect(
+        group.getByText("Potential names for this card — pick the right one before it is listed.", { exact: true }),
+      ).toBeVisible();
+      const names = group.getByRole("radiogroup", { name: `Name for #${n}`, exact: true });
+      await expect(names.getByRole("radio")).toHaveCount(2);
+      await expect(names.getByRole("radio", { name: `${marketplace} — use this name for #${n}`, exact: true })).toBeChecked();
+      await expect(
+        names.getByRole("radio", { name: `${checklist} · your checklist — use this name for #${n}`, exact: true }),
+      ).not.toBeChecked();
+    }
     await expectAccessible(page, { within: matchCards, label: "Match Cards with BSC and a pasted checklist" });
-    // Keeps any card no row could pin down (#6 among them, if it is BSC-only) and confirms.
+    // Keeps the card no row could be pinned to (#6), leaves its two rows, and confirms.
     await confirmChecklistMatchCards(page, { what: "the Oklahoma City Blazers fetch" });
     const wizard = reviewWizard(page);
     await expect(wizard).toBeVisible();
