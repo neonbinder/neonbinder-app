@@ -119,8 +119,10 @@
    * for errors: the ink IS `neon-pink-text`, so it carries that role's bars
    * (TEXT_NEVER_ON: not on a row, chip or neutral tile in dark). The rule and
    * the tinted ground are the neon pink's own hue (OKLCH 354); the ground is
-   * kept dark enough that the ink still reads 4.5:1 on it over a card. */
-  --notice-danger-bg: color-mix(in oklab, oklch(30% 0.11 354) 30%, transparent);
+   * kept dark enough that the ink reads 4.6:1 or better on it over a card
+   * (4.9:1 on `raised`). Do not raise the wash alpha above 30%: that is what
+   * the 4.6:1 floor was measured at. */
+  --notice-danger-bg: color-mix(in oklab, oklch(26% 0.1 354) 30%, transparent);
   --notice-danger-ink: var(--neon-pink-text);
   --notice-danger-rule: oklch(60% 0.235 354);
   --notice-success-bg: color-mix(in oklab, oklch(39.3% 0.095 152.535) 20%, transparent);

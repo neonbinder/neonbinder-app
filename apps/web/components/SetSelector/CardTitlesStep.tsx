@@ -105,7 +105,7 @@ const VARIATION_LEAD = "Variation's too long to list. Trim it to 65.";
 const TITLE_OVER = "Too long to list as-is.";
 
 /** NEO-535 copy, in the NB voice (no sign-off needed, Jason reviews while testing). */
-const TITLES_LEAD = "These titles had to leave something out. Check what went, then keep 'em or make 'em yours.";
+const TITLES_LEAD = "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.";
 const SHORT_LEAD = "Set name hogging the title? Trim it here and every title below gets it.";
 const SHORT_LABEL = "Set name in titles";
 const stillOverLine = (n: number) =>
@@ -517,9 +517,10 @@ export default function CardTitlesStep({
             {shortStatus}
           </p>
           {shortError && (
-            // a11y: a refusal is its own alert. The danger notice ink, not the
-            // neon pink as text: it clears 4.5:1 on this dialog in both modes
-            // (10:1+ dark, 8.2:1 light), where pink is 4.56:1 on a raised row.
+            // a11y: a refusal is its own alert. `notice-danger-ink` IS
+            // `neon-pink-text` (NEO-606: one pink for errors). On this
+            // dialog's `raised-deep` surface it reads 5.5:1 in dark and 5.9:1
+            // in light; it would miss on a row or chip tile (`TEXT_NEVER_ON`).
             <p id={shortErrorId} role="alert" className="mt-1 text-xs text-notice-danger-ink">
               {shortError}
             </p>

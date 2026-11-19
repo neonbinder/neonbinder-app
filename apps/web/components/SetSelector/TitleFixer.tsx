@@ -344,9 +344,12 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
                 className="rounded-full border border-rule-strong bg-raised/60 px-2 py-0.5 text-xs text-ink-2"
               >
                 {chip.label && (
-                  <span className="mr-1 uppercase tracking-wide text-ink-3">
-                    {chip.label}
-                  </span>
+                  <>
+                    <span className="uppercase tracking-wide text-ink-3">
+                      {chip.label}
+                    </span>
+                    {" "}
+                  </>
                 )}
                 {chip.value}
               </li>

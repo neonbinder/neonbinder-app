@@ -1440,9 +1440,12 @@ export default function CardDetailPanel({
                     className="rounded-full border border-rule-strong bg-raised/60 px-2 py-0.5 text-[10px] text-ink-2"
                   >
                     {chip.label && (
-                      <span className="mr-1 uppercase tracking-wide text-ink-3">
-                        {chip.label}
-                      </span>
+                      <>
+                        <span className="uppercase tracking-wide text-ink-3">
+                          {chip.label}
+                        </span>
+                        {" "}
+                      </>
                     )}
                     {chip.value}
                   </li>
