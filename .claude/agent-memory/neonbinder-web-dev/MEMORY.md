@@ -284,3 +284,4 @@
 - [Testing hop status lines are an API](reference_testing_hop_status_lines_are_an_api.md) — /testing/*-fake status lines feed DONE/FAILED regexes in playwright/support; new op = FAILED-matching refusals, report the DONE prefix
 - [Typecheck gate skips components](typecheck-gate-skips-components.md) — npm run typecheck covers convex/ only; filter the root tsc to your files
 - [Radio pill that opens a picker](radio-pill-that-opens-a-picker.md) — arrows pick only; click/Enter open; Escape returns to the opener
+- [playerLinks pin greps playerIds keys in logs](reference_playerlinks_pin_greps_playerids_keys_in_logs.md) — name log keys differently; mint-after-resolve + prelude excludePlayerCreationRefs; run full convex suite

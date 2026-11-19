@@ -2616,6 +2616,15 @@ export default defineSchema({
       wikidataId: v.optional(v.string()), // e.g. "Q123456"
     })),
     createdByUserId: v.optional(v.string()),
+    /**
+     * NEO-591: the client-minted token of the career check's "New player named
+     * X" answer that created this row (`players.createCareerNewPlayers`). Its
+     * one job is retry safety: a Confirm retried from the same wizard state
+     * carries the same ref, so the commit ADOPTS the row it already made
+     * instead of minting a second. Never read anywhere else, never shown, and
+     * `toPublicPlayer` strips it. Absent on every other player.
+     */
+    creationRef: v.optional(v.string()),
     lastUpdated: v.number(),
   })
     .index("by_name_normalized", ["nameNormalized"])

@@ -227,6 +227,8 @@ const playerDocValidator = v.object({
     wikidataId: v.optional(v.string()),
   })),
   createdByUserId: v.optional(v.string()),
+  // NEO-591: the raw doc reaches `getInternal`'s caller unstripped.
+  creationRef: v.optional(v.string()),
   lastUpdated: v.number(),
 });
 
@@ -245,12 +247,14 @@ function toPublicPlayer<
   T extends {
     createdByUserId?: string;
     alsoSportIds?: ReadonlyArray<Id<"selectorOptions">>;
+    creationRef?: string;
   },
->(doc: T): Omit<T, "createdByUserId" | "alsoSportIds"> {
-  // Destructure to peel both off — `_` slots are discarded, explicitly marked
-  // unused for the linter.
+>(doc: T): Omit<T, "createdByUserId" | "alsoSportIds" | "creationRef"> {
+  // Destructure to peel them off — `_` slots are discarded, explicitly marked
+  // unused for the linter. NEO-591: `creationRef` is a commit-retry token,
+  // never part of a public shape.
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const { createdByUserId: _omit, alsoSportIds: _omitSports, ...rest } = doc;
+  const { createdByUserId: _omit, alsoSportIds: _omitSports, creationRef: _omitRef, ...rest } = doc;
   return rest;
 }
 
@@ -4317,5 +4321,180 @@ export const appendCareerStints = internalMutation({
       }
     }
     return { added, existing, skipped };
+  },
+});
+
+// ===========================================================================
+// NEO-591 — the career check's "New player named X": the commit-side piece
+// that mints the player the operator said a card's printed name really means.
+// ===========================================================================
+
+/** New players one `commitCardChecklist` may mint through the career check. */
+export const MAX_CAREER_NEW_PLAYERS = 50;
+
+/**
+ * NEO-591 — mint the players the operator chose as "New player named X" in the
+ * wizard's career check, each with the career the operator staged, and hand
+ * back ref → id.
+ *
+ * Its own commit phase, AFTER the prelude's resolve walk and BEFORE the career
+ * stints and the chunks. The order is load-bearing: minting earlier would put
+ * a second same-name row in front of `sameNamePlayers`, which would drop every
+ * OTHER card carrying that name to "unreviewed"; and a stint naming a team the
+ * batch just created needs the id the prelude minted.
+ *
+ * ## Retry adoption by `creationRef`
+ *
+ * The client mints `ref` once per new-player answer, so a Confirm retried from
+ * the same wizard state carries the same ref. Before inserting, the same-name
+ * rows (the index `sameNamePlayers` reads) are scanned for one that carries
+ * this ref AND was created by the same operator, and that row is ADOPTED: a
+ * commit that died after this phase never leaves two rows for one answer. The
+ * ref is never read anywhere else and never shown.
+ *
+ * ## What the row is
+ *
+ * name, nameNormalized (`normalizePlayerName`), the set's sport, the operator
+ * as creator, the staged career in the one canonical order (`sortTeamYears`),
+ * and the ref. No birth year, no Wikidata id and NO enrichment is scheduled:
+ * the operator staged this career by hand, and `enqueueEnrichment` is
+ * creation-only for a lookup nobody asked for (Jason, 2026-09-02).
+ *
+ * A stint whose team is gone or belongs to another sport is skipped and
+ * counted, never written. Counts only in the log; ids, never names.
+ *
+ * The caller (`commitCardChecklist`) has already held every name, ref, year
+ * and count to its rules and run the NEO-463 fragment check before any phase
+ * wrote; this re-checks the shape it cannot do without (the sport row, the
+ * team's sport, the career cap).
+ */
+export const createCareerNewPlayers = internalMutation({
+  args: {
+    sportId: v.id("selectorOptions"),
+    userId: v.string(),
+    players: v.array(
+      v.object({
+        ref: v.string(),
+        name: v.string(),
+        stints: v.array(
+          v.object({
+            teamId: v.id("teams"),
+            fromYear: v.number(),
+            toYear: v.optional(v.number()),
+          }),
+        ),
+      }),
+    ),
+  },
+  returns: v.object({
+    players: v.array(
+      v.object({
+        ref: v.string(),
+        id: v.id("players"),
+        name: v.string(),
+        created: v.boolean(),
+      }),
+    ),
+    stintsAdded: v.number(),
+    stintsSkipped: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    if (args.players.length > MAX_CAREER_NEW_PLAYERS) {
+      throw new Error(
+        `createCareerNewPlayers: ${args.players.length} players exceeds the ${MAX_CAREER_NEW_PLAYERS}-player limit`,
+      );
+    }
+    const sportRow = await ctx.db.get(args.sportId);
+    if (!sportRow || sportRow.level !== "sport") {
+      throw new Error("createCareerNewPlayers: a player must be created under a sport.");
+    }
+    const maxYear = maxCareerYear();
+    for (const player of args.players) {
+      if (player.stints.length > MAX_PLAYER_TEAM_YEARS) {
+        throw new Error(
+          `createCareerNewPlayers: a player has ${player.stints.length} career stints; the limit is ${MAX_PLAYER_TEAM_YEARS}.`,
+        );
+      }
+      for (const stint of player.stints) {
+        assertCareerStintYears(stint.fromYear, stint.toYear, maxYear);
+      }
+    }
+    const teamSport = new Map<string, Id<"selectorOptions"> | null>();
+    const sportOfTeam = async (teamId: Id<"teams">) => {
+      let sport = teamSport.get(teamId as string);
+      if (sport === undefined) {
+        sport = (await ctx.db.get(teamId))?.sportId ?? null;
+        teamSport.set(teamId as string, sport);
+      }
+      return sport;
+    };
+
+    const out: Array<{ ref: string; id: Id<"players">; name: string; created: boolean }> = [];
+    let stintsAdded = 0;
+    let stintsSkipped = 0;
+    for (const entry of args.players) {
+      const name = entry.name.trim();
+      const nameNormalized = normalizePlayerName(name);
+      // Bounded, like `sameNamePlayers`: the key is a dedup key, not unique.
+      const sameName = await ctx.db
+        .query("players")
+        .withIndex("by_name_normalized_and_sport_id", (q) =>
+          q.eq("nameNormalized", nameNormalized).eq("sportId", args.sportId),
+        )
+        .take(PLAYER_AMBIGUITY_SCAN_LIMIT);
+      const adopted = sameName.find(
+        (p) => p.creationRef === entry.ref && p.createdByUserId === args.userId,
+      );
+
+      // The stints this call may write: team still there and in this sport,
+      // one per (team, fromYear), within the career cap.
+      const held = adopted?.teamYears ?? [];
+      const seen = new Set(
+        held
+          .filter((s) => s.fromYear !== undefined)
+          .map((s) => `${s.teamId}|${s.fromYear}`),
+      );
+      const next = [...held];
+      for (const stint of entry.stints) {
+        const key = `${stint.teamId}|${stint.fromYear}`;
+        if (seen.has(key)) continue;
+        const sport = await sportOfTeam(stint.teamId);
+        if (sport !== args.sportId || next.length >= MAX_PLAYER_TEAM_YEARS) {
+          stintsSkipped++;
+          continue;
+        }
+        seen.add(key);
+        next.push({
+          teamId: stint.teamId,
+          fromYear: stint.fromYear,
+          ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+        });
+        stintsAdded++;
+      }
+
+      if (adopted) {
+        if (next.length !== held.length) {
+          await ctx.db.patch(adopted._id, {
+            teamYears: sortTeamYears(next),
+            lastUpdated: Date.now(),
+          });
+        }
+        out.push({ ref: entry.ref, id: adopted._id, name: adopted.name, created: false });
+        continue;
+      }
+
+      const id = await ctx.db.insert("players", {
+        name,
+        nameNormalized,
+        sportId: args.sportId,
+        ...(next.length > 0 ? { teamYears: sortTeamYears(next) } : {}),
+        creationRef: entry.ref,
+        createdByUserId: args.userId,
+        lastUpdated: Date.now(),
+      });
+      // NOT enqueued for enrichment — see the note above.
+      out.push({ ref: entry.ref, id, name, created: true });
+    }
+    return { players: out, stintsAdded, stintsSkipped };
   },
 });

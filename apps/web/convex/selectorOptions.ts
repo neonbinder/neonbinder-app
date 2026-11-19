@@ -268,7 +268,9 @@ import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
   addPlayerSport,
   createCardYearTeamCache,
+  MAX_CAREER_NEW_PLAYERS,
   MAX_CAREER_STINT_APPENDS,
+  MAX_PLAYER_TEAM_YEARS,
   narrowSameNamePlayersByCardYear,
   normalizePlayerName,
   playerBelongsToSport,
@@ -4501,6 +4503,8 @@ type CardNameBearing = {
   // NEO-574 — the career check's per-card re-links. Bounded here; the ids are
   // validated against the table by the commit.
   playerIdByName?: ReadonlyArray<{ name: string }>;
+  // NEO-591 — the career check's "New player named X" picks, same bounds.
+  newPlayerByName?: ReadonlyArray<{ name: string; ref: string }>;
   // NEO-335 — BSC's unsplit team value, the commit's hint source.
   rawTeamName?: string;
 };
@@ -4594,6 +4598,21 @@ function assertCardBatchWithinLimits(
       if (relink.name.length > MAX_PLAYER_NAME_LENGTH) {
         throw new Error(
           `${fnName}: ${where} carries a re-linked player name of ${relink.name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+        );
+      }
+    }
+    // NEO-591 — one new-player pick per printed player at most; the ref has its
+    // own format rule in the commit.
+    const newPlayers = card.newPlayerByName ?? [];
+    if (newPlayers.length > MAX_CARD_PLAYERS) {
+      throw new Error(
+        `${fnName}: ${where} carries ${newPlayers.length} new-player picks, above the ${MAX_CARD_PLAYERS}-player limit`,
+      );
+    }
+    for (const pick of newPlayers) {
+      if (pick.name.length > MAX_PLAYER_NAME_LENGTH) {
+        throw new Error(
+          `${fnName}: ${where} carries a new-player pick of ${pick.name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
         );
       }
     }
@@ -16138,6 +16157,18 @@ const previewCardFields = {
   playerIdByName: v.optional(
     v.array(v.object({ name: v.string(), playerId: v.id("players") })),
   ),
+  // NEO-591 — `newPlayerByName` — the career check's "New player named X": this
+  // card's printed `name` belongs to a player that does not exist yet. `ref`
+  // names an entry of the commit's top-level `careerNewPlayers`, which holds the
+  // name and career; the commit mints that player (or adopts the row a retried
+  // commit already made) and points THIS card, and only this card, at it. The
+  // printed name is kept in `playerLinks.nameOnCard`. A card may not carry both
+  // this and `playerIdByName` for one name. Optional, so an older bundle's
+  // payload commits as it always did; the ref and name are held to their rules
+  // before any phase writes.
+  newPlayerByName: v.optional(
+    v.array(v.object({ name: v.string(), ref: v.string() })),
+  ),
   // `teamsAnswered` — this card's `teams` STRINGS are the operator's answer
   // in the wizard (a team staged in this review, or a sibling card's printed
   // team), not what the card printed. The commit resolves them exactly as it
@@ -18954,6 +18985,14 @@ export const commitCardChecklistPrelude = internalMutation({
     /** NEO-296 — how many names of this phase's walk are already done. */
     resume: v.optional(v.object({ offset: v.number() })),
     /**
+     * NEO-591 — the `creationRef`s of the career check's new players. A row
+     * carrying one of them was made by THIS commit's own answer (a retry after
+     * an earlier attempt got as far as minting it), so it is not a namesake to
+     * weigh: the same-name lookups below leave it out, and every OTHER card
+     * with that name resolves exactly as it would have on the first attempt.
+     */
+    excludePlayerCreationRefs: v.optional(v.array(v.string())),
+    /**
      * NEO-296 — narrow this call's page, for a test that needs the boundary in
      * a particular place.
      *
@@ -20879,6 +20918,19 @@ export const commitCardChecklistPrelude = internalMutation({
      * dropped right after, so a second spelling of it reads again.
      */
     const sameNamePrefetch = new Map<string, Array<Doc<"players">>>();
+    // NEO-591 — `sameNamePlayers`, minus a row this commit's own new-player
+    // answer already minted (a retry). Not a namesake; see the arg.
+    const excludedCreationRefs = new Set(args.excludePlayerCreationRefs ?? []);
+    const sameNameForCommit = async (
+      key: string,
+    ): Promise<Array<Doc<"players">>> => {
+      const rows = await sameNamePlayers(ctx, key, args.sportId);
+      return excludedCreationRefs.size === 0
+        ? rows
+        : rows.filter(
+            (p) => p.creationRef === undefined || !excludedCreationRefs.has(p.creationRef),
+          );
+    };
     if (args.phase === "resolve") {
       const start = Math.max(0, walkOffset - teamNameList.length);
       const end = Math.min(playerNameList.length, start + Math.max(0, walkBudget));
@@ -20915,7 +20967,7 @@ export const commitCardChecklistPrelude = internalMutation({
             return [answered];
           }
         }
-        return await sameNamePlayers(ctx, key, args.sportId);
+        return await sameNameForCommit(key);
       };
       for (let i = 0; i < keys.length; i += SAME_NAME_PREFETCH_CONCURRENCY) {
         const chunk = keys.slice(i, i + SAME_NAME_PREFETCH_CONCURRENCY);
@@ -20937,7 +20989,7 @@ export const commitCardChecklistPrelude = internalMutation({
       if (!runResolve) {
         const createDecision = reviewByKey.get(`player:${norm(name)}`)?.decision;
         if (createDecision?.action !== "create") continue;
-        const already = await sameNamePlayers(ctx, norm(name), args.sportId);
+        const already = await sameNameForCommit(norm(name));
         // NEO-424 (D5) — one match is adopted by the resolve phase INSTEAD of
         // creating, unless the operator was shown that very row and answered
         // "somebody new" anyway. See `createRejectedSingleMatch`.
@@ -20984,7 +21036,7 @@ export const commitCardChecklistPrelude = internalMutation({
       // read here would have found only the primary name.
       const existingMatches =
         sameNamePrefetch.get(normalized) ??
-        (await sameNamePlayers(ctx, normalized, args.sportId));
+        (await sameNameForCommit(normalized));
       /*
        * NEO-424 (D5) — the operator's decision is read BEFORE the exactly-one
        * fast path, and a decision beats it.
@@ -24835,6 +24887,46 @@ export const validateOperatorPlayerIds = internalQuery({
   },
 });
 
+/**
+ * NEO-591 — the two facts the commit needs from the table before it lets the
+ * career check's "New player named X" answers write anything:
+ *
+ *  - `sportId`: the set's sport, walked from the row server-side
+ *    (`findSportForSelectorOption`), never taken from the action's own
+ *    client-supplied `sportId`. `null` when the row has no sport above it, and
+ *    the commit refuses.
+ *  - `fragmentCount`: how many of `names` are a single word that is the first
+ *    or last name of a fuller-named player in that sport (NEO-463,
+ *    `nameFragmentMatches`). The wizard has no one-name-player switch for a
+ *    new-player answer, so the commit refuses these up front rather than
+ *    minting "Ramirez" beside "Jose Ramirez" half-way through. A count, never
+ *    the names.
+ */
+export const validateCareerNewPlayers = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    names: v.array(v.string()),
+  },
+  returns: v.object({
+    sportId: v.union(v.id("selectorOptions"), v.null()),
+    fragmentCount: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    if (args.names.length > MAX_CAREER_NEW_PLAYERS) {
+      throw new Error(
+        `validateCareerNewPlayers: ${args.names.length} names exceeds the ${MAX_CAREER_NEW_PLAYERS}-player limit`,
+      );
+    }
+    const sportId = await findSportForSelectorOption(ctx, args.selectorOptionId);
+    if (!sportId) return { sportId: null, fragmentCount: 0 };
+    let fragmentCount = 0;
+    for (const name of args.names) {
+      if ((await nameFragmentMatches(ctx, name, sportId)).length > 0) fragmentCount++;
+    }
+    return { sportId, fragmentCount };
+  },
+});
+
 export const commitCardChecklist = action({
   args: {
     selectorOptionId: v.id("selectorOptions"),
@@ -24885,6 +24977,35 @@ export const commitCardChecklist = action({
           teamName: v.optional(v.string()),
           fromYear: v.number(),
           toYear: v.optional(v.number()),
+        }),
+      ),
+    ),
+    /**
+     * NEO-591 — the players the operator chose as "New player named X" in the
+     * wizard's career check, for the WHOLE batch. `ref` is minted by the client
+     * once per answer (stable across a Confirm retried from the same wizard
+     * state) and is what each card's `newPlayerByName` points at; `name` is the
+     * new player's name as the operator left it; `stints` is the career they
+     * staged, each naming a team by NB id or by the printed string a card in
+     * this commit carries (exactly one). Checked before any phase writes,
+     * minted as its own phase after the prelude's resolve walk and before the
+     * career stints and the chunks (`players.createCareerNewPlayers`). A retry
+     * adopts the row an earlier attempt made, by `ref`. NO enrichment is
+     * scheduled for these players.
+     */
+    careerNewPlayers: v.optional(
+      v.array(
+        v.object({
+          ref: v.string(),
+          name: v.string(),
+          stints: v.array(
+            v.object({
+              teamId: v.optional(v.id("teams")),
+              teamName: v.optional(v.string()),
+              fromYear: v.number(),
+              toYear: v.optional(v.number()),
+            }),
+          ),
         }),
       ),
     ),
@@ -24944,6 +25065,18 @@ export const commitCardChecklist = action({
     careerStints: v.optional(
       v.object({ added: v.number(), existing: v.number(), skipped: v.number() }),
     ),
+    // NEO-591 — what the new-player phase did, present only when the commit
+    // carried `careerNewPlayers`. Counts only: `adopted` is a retry finding the
+    // row an earlier attempt made; `stintsSkipped` is a stint whose team could
+    // not be resolved.
+    careerNewPlayers: v.optional(
+      v.object({
+        created: v.number(),
+        adopted: v.number(),
+        stintsAdded: v.number(),
+        stintsSkipped: v.number(),
+      }),
+    ),
   }),
   handler: async (ctx, args): Promise<{
     success: boolean;
@@ -24965,6 +25098,12 @@ export const commitCardChecklist = action({
     unreviewedNameCount: number;
     droppedPendingNameCount: number;
     careerStints?: { added: number; existing: number; skipped: number };
+    careerNewPlayers?: {
+      created: number;
+      adopted: number;
+      stintsAdded: number;
+      stintsSkipped: number;
+    };
   }> => {
     // Enforced HERE, before any phase runs, so a non-admin call writes
     // nothing at all — the phases below re-check, but this is the boundary.
@@ -25092,6 +25231,126 @@ export const commitCardChecklist = action({
       });
     }
 
+    // NEO-591 — the career check's "New player named X" answers, held to their
+    // shape before ANY phase writes: a refusal costs the operator nothing, and
+    // the wizard never sends one that breaks these (a refusal is a client that
+    // skipped its own checks). Named by position, never by the name: this text
+    // reaches Sentry and the console. The table-side checks (the sport row, the
+    // one-word-name clash) run below with the player ids.
+    const careerNewPlayers = args.careerNewPlayers ?? [];
+    {
+      if (careerNewPlayers.length > MAX_CAREER_NEW_PLAYERS) {
+        throw new ConvexError(
+          `commitCardChecklist: ${careerNewPlayers.length} new players exceeds the ${MAX_CAREER_NEW_PLAYERS} limit for a single commit`,
+        );
+      }
+      const declaredRefs = new Set<string>();
+      const declaredKeys = new Set<string>();
+      const maxYear = maxCareerYear();
+      let nestedStints = 0;
+      careerNewPlayers.forEach((np, i) => {
+        const where = `new player ${i + 1}`;
+        if (!/^[A-Za-z0-9_-]{1,32}$/.test(np.ref)) {
+          throw new ConvexError(`commitCardChecklist: ${where} carries a malformed reference.`);
+        }
+        if (declaredRefs.has(np.ref)) {
+          throw new ConvexError(`commitCardChecklist: ${where} repeats another new player's reference.`);
+        }
+        declaredRefs.add(np.ref);
+        const name = np.name.trim();
+        if (name.length === 0) {
+          throw new ConvexError(`commitCardChecklist: ${where} has no name.`);
+        }
+        if (name.length > MAX_PLAYER_NAME_LENGTH) {
+          throw new ConvexError(
+            `commitCardChecklist: ${where} has a name of ${name.length} characters; the limit is ${MAX_PLAYER_NAME_LENGTH}.`,
+          );
+        }
+        // Cc controls, Cf format/zero-width, Zl/Zp separators — the same
+        // Unicode-property test the short name uses (`normalizeListingShortName`).
+        if (/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u.test(name)) {
+          throw new ConvexError(
+            `commitCardChecklist: ${where} has a name with control or invisible characters.`,
+          );
+        }
+        // One player per folded name per commit: "Jose Ramirez" and "José
+        // Ramírez" are one key, and the client sends them as one entry.
+        const key = normalizePlayerName(name);
+        if (!key) {
+          throw new ConvexError(`commitCardChecklist: ${where} has a name with no letters or digits.`);
+        }
+        if (declaredKeys.has(key)) {
+          throw new ConvexError(`commitCardChecklist: ${where} repeats another new player's name.`);
+        }
+        declaredKeys.add(key);
+        if (np.stints.length > MAX_PLAYER_TEAM_YEARS) {
+          throw new ConvexError(
+            `commitCardChecklist: ${where} has ${np.stints.length} career stints; the limit is ${MAX_PLAYER_TEAM_YEARS}.`,
+          );
+        }
+        nestedStints += np.stints.length;
+        np.stints.forEach((stint, j) => {
+          const hasId = stint.teamId !== undefined;
+          const hasName = (stint.teamName ?? "").trim().length > 0;
+          if (hasId === hasName) {
+            throw new ConvexError(
+              `commitCardChecklist: ${where}, stint ${j + 1} must name exactly one team, by id or by printed name.`,
+            );
+          }
+          if ((stint.teamName ?? "").length > MAX_PLAYER_NAME_LENGTH) {
+            throw new ConvexError(
+              `commitCardChecklist: ${where}, stint ${j + 1} carries a team name over the ${MAX_PLAYER_NAME_LENGTH}-character limit.`,
+            );
+          }
+          try {
+            assertCareerStintYears(stint.fromYear, stint.toYear, maxYear);
+          } catch (error) {
+            throw new ConvexError(
+              `commitCardChecklist: ${where}, stint ${j + 1}: ${
+                error instanceof Error ? error.message : "invalid years."
+              }`,
+            );
+          }
+        });
+      });
+      // The two stint phases share one per-commit budget.
+      if (careerStints.length + nestedStints > MAX_CAREER_STINT_APPENDS) {
+        throw new ConvexError(
+          `commitCardChecklist: ${careerStints.length + nestedStints} career stints exceeds the ${MAX_CAREER_STINT_APPENDS} limit for a single commit`,
+        );
+      }
+      // Every card pick names a declared player, once, for a name the card
+      // prints and has not also re-linked; every declared player is used.
+      const usedRefs = new Set<string>();
+      args.cards.forEach((card, index) => {
+        const picks = card.newPlayerByName ?? [];
+        if (picks.length === 0) return;
+        const where = card.cardNumber ? `card #${card.cardNumber}` : `card at index ${index}`;
+        const printed = new Set((card.players ?? []).map((p) => p.trim()));
+        const relinked = new Set((card.playerIdByName ?? []).map((e) => e.name.trim()));
+        const picked = new Set<string>();
+        for (const pick of picks) {
+          const name = pick.name.trim();
+          if (!declaredRefs.has(pick.ref)) {
+            throw new ConvexError(`commitCardChecklist: ${where} points at a new player the commit does not declare.`);
+          }
+          if (!printed.has(name)) {
+            throw new ConvexError(`commitCardChecklist: ${where} names a new player for a name it does not print.`);
+          }
+          if (relinked.has(name) || picked.has(name)) {
+            throw new ConvexError(`commitCardChecklist: ${where} answers one printed name twice.`);
+          }
+          picked.add(name);
+          usedRefs.add(pick.ref);
+        }
+      });
+      for (const ref of declaredRefs) {
+        if (!usedRefs.has(ref)) {
+          throw new ConvexError("commitCardChecklist: a declared new player is used by no card.");
+        }
+      }
+    }
+
     // Checked before ANY phase writes, so an over-long delete list costs the
     // operator nothing. Finalize re-checks — it is separately callable.
     const operatorDeleteIds = args.operatorDeleteIds ?? [];
@@ -25110,6 +25369,10 @@ export const commitCardChecklist = action({
           ...args.cards.flatMap((c) => c.teamIds ?? []),
           // NEO-574 — a career stint's team, when it names one by id.
           ...careerStints.flatMap((stint) => (stint.teamId ? [stint.teamId] : [])),
+          // NEO-591 — and a new player's staged stints.
+          ...careerNewPlayers.flatMap((np) =>
+            np.stints.flatMap((stint) => (stint.teamId ? [stint.teamId] : [])),
+          ),
         ]),
       );
       let missing = 0;
@@ -25188,6 +25451,29 @@ export const commitCardChecklist = action({
           }),
         );
       }
+    }
+
+    // NEO-591 — the table-side checks on the new players, still before ANY
+    // phase writes: the set's sport (walked from the row, never the client's
+    // `sportId`) and the NEO-463 one-word-name clash.
+    let newPlayerSportId: Id<"selectorOptions"> | null = null;
+    if (careerNewPlayers.length > 0) {
+      const checked: { sportId: Id<"selectorOptions"> | null; fragmentCount: number } =
+        await ctx.runQuery(internal.selectorOptions.validateCareerNewPlayers, {
+          selectorOptionId: args.selectorOptionId,
+          names: careerNewPlayers.map((np) => np.name.trim()),
+        });
+      if (!checked.sportId) {
+        throw new ConvexError(
+          "commitCardChecklist: new players need a set that sits under a sport, and this one does not.",
+        );
+      }
+      if (checked.fragmentCount > 0) {
+        throw new ConvexError(
+          `commitCardChecklist: ${checked.fragmentCount} new player name(s) are a single word that matches a fuller player on file. Give the whole name and save.`,
+        );
+      }
+      newPlayerSportId = checked.sportId;
     }
 
     // Run one phase: retry an optimistic-concurrency conflict a bounded number
@@ -25296,6 +25582,11 @@ export const commitCardChecklist = action({
       ...(listingShortName ? { listingShortName } : {}),
       // NEO-345 — same page, same reason.
       ...(args.autographFormat ? { autographFormat: args.autographFormat } : {}),
+      // NEO-591 — a retry must not weigh the row its own earlier attempt minted
+      // as a namesake; see the prelude arg.
+      ...(careerNewPlayers.length > 0
+        ? { excludePlayerCreationRefs: careerNewPlayers.map((np) => np.ref) }
+        : {}),
     };
     /** Walk one phase to the end, returning every page it produced. */
     const walkPrelude = async (
@@ -25410,6 +25701,81 @@ export const commitCardChecklist = action({
     // prelude's own entry wins where it has one (the same player, same name).
     for (const [id, name] of operatorPlayerNameById) {
       if (!playerNameById.has(id)) playerNameById.set(id, name);
+    }
+    /*
+     * NEO-591 — the career check's "New player named X", minted as its own phase
+     * AFTER the resolve walk and BEFORE the career stints and every chunk.
+     *
+     * The order is load-bearing, not tidy. Minted any earlier, the new row sits
+     * beside its namesake when the resolve walk runs `sameNamePlayers`, and every
+     * OTHER card that prints the name drops to "unreviewed". Minted after the
+     * resolve walk, the walk saw exactly what it saw before this answer existed,
+     * and only the cards that carry `newPlayerByName` are pointed at the new row.
+     * The stints naming a team this commit created need the ids the prelude's
+     * creates phase minted, which is also why this runs here.
+     *
+     * Everything this phase could refuse was refused above, before any phase
+     * wrote; a stint whose team cannot be resolved here is skipped and counted.
+     * A retried commit ADOPTS the row an earlier attempt made (by `creationRef`).
+     * No enrichment is scheduled. Ids and counts only in the log.
+     */
+    const newPlayerIdByRef = new Map<string, Id<"players">>();
+    let careerNewPlayersResult:
+      | { created: number; adopted: number; stintsAdded: number; stintsSkipped: number }
+      | undefined;
+    if (careerNewPlayers.length > 0 && newPlayerSportId) {
+      let unresolved = 0;
+      const toMint = careerNewPlayers.map((np) => {
+        const stints: Array<{ teamId: Id<"teams">; fromYear: number; toYear?: number }> = [];
+        for (const stint of np.stints) {
+          const teamId = stint.teamId
+            ? operatorTeamNameById.has(stint.teamId)
+              ? stint.teamId
+              : undefined
+            : teamIdByName.get((stint.teamName ?? "").trim());
+          if (!teamId) {
+            unresolved++;
+            continue;
+          }
+          stints.push({
+            teamId,
+            fromYear: stint.fromYear,
+            ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+          });
+        }
+        return { ref: np.ref, name: np.name.trim(), stints };
+      });
+      const minted: {
+        players: Array<{ ref: string; id: Id<"players">; name: string; created: boolean }>;
+        stintsAdded: number;
+        stintsSkipped: number;
+      } = await phase("career new players", () =>
+        ctx.runMutation(internal.players.createCareerNewPlayers, {
+          sportId: newPlayerSportId,
+          userId: operatorUserId,
+          players: toMint,
+        }),
+      );
+      for (const p of minted.players) {
+        newPlayerIdByRef.set(p.ref, p.id);
+        // The new player's own spelling, for the card's title.
+        playerNameById.set(p.id as string, p.name);
+      }
+      careerNewPlayersResult = {
+        created: minted.players.filter((p) => p.created).length,
+        adopted: minted.players.filter((p) => !p.created).length,
+        stintsAdded: minted.stintsAdded,
+        stintsSkipped: minted.stintsSkipped + unresolved,
+      };
+      console.log(
+        JSON.stringify({
+          msg: "commit_career_new_players",
+          selectorOptionId: args.selectorOptionId,
+          requested: careerNewPlayers.length,
+          newPlayerIds: minted.players.map((p) => p.id),
+          ...careerNewPlayersResult,
+        }),
+      );
     }
     /*
      * NEO-574 — the career check's stints, appended as their own phase AFTER
@@ -25550,6 +25916,14 @@ export const commitCardChecklist = action({
         if (operatorPlayerNameById.has(e.playerId)) {
           relinkedByName.set(e.name.trim(), e.playerId);
         }
+      }
+      // NEO-591 — "New player named X": the same per-card override, pointing at
+      // the player this commit just minted (or adopted). A ref the phase did not
+      // resolve (cannot happen once validated) leaves the name's ordinary
+      // resolution in place.
+      for (const e of c.newPlayerByName ?? []) {
+        const id = newPlayerIdByRef.get(e.ref);
+        if (id) relinkedByName.set(e.name.trim(), id);
       }
       // A card names a player once. An operator re-link that lands on a player
       // the card already carries (another name's ordinary resolution, or an
@@ -26167,7 +26541,10 @@ export const commitCardChecklist = action({
       // conflict — reporting the payload size instead would claim rows that
       // were deliberately not written.
       count: chunkCards.length,
-      createdPlayerIds: prelude.createdPlayerIds,
+      // NEO-591 — the career check's new players are players this commit made.
+      createdPlayerIds: Array.from(
+        new Set<Id<"players">>([...prelude.createdPlayerIds, ...newPlayerIdByRef.values()]),
+      ),
       createdTeamIds: prelude.createdTeamIds,
       unmatchedExistingCount: unmatchedExistingIds.length,
       conflicts: match.conflicts.map((c) => ({
@@ -26214,6 +26591,7 @@ export const commitCardChecklist = action({
       // user-facing string needs a brand-voice draft and Jason's sign-off.
       droppedPendingNameCount,
       ...(careerStintsResult ? { careerStints: careerStintsResult } : {}),
+      ...(careerNewPlayersResult ? { careerNewPlayers: careerNewPlayersResult } : {}),
     };
   },
 });
