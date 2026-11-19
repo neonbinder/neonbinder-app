@@ -817,12 +817,9 @@ PR. Until recordings exist every probe and E2E BSC call answers 501.
 The same service also fakes eBay. **It never contacts eBay.** It lives in
 `src/ebay/`, shares the fake's auth, store, faults, misses, request key,
 shapes, drift and write captures, and holds its seller state in memory per
-namespace beside the BSC state. Nothing in Convex or the browser service
-points at it yet (that is the cutover, PR B); until then it only answers its
-own tests, the drift job and the recorder.
-
-> **PR B (NEO-555) is the cutover: see "PR B: how Convex and the browser
-> service use it" at the end of this section.**
+namespace beside the BSC state. Every test deployment's Convex and the dev
+browser service point at it (the cutover, PR B): see "PR B: how Convex and the
+browser service use it" at the end of this section.
 
 ### Paths, one per real eBay host
 
