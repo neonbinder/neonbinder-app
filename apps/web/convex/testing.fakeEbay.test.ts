@@ -218,6 +218,27 @@ describe("setMyEbaySeller", () => {
     ).rejects.toThrow(/did not set the seller up: a fulfillment policy with that name already exists \(409\)/);
   });
 
+  // The shape `fakeBsc.ebaySeller` really returns for the fake's 409: the
+  // transport says "http", the fake's own reason rides in `detail`. The
+  // message names the reason, so a spec can tell a held policy name from any
+  // other 409 (support/ebayFake.ts ALREADY_HELD).
+  test("names the fake's own reason (detail) over the transport's word", async () => {
+    useFakeEnv();
+    nextResult = { ok: false, status: 409, error: "http", detail: "a fulfillment policy with that name already exists" };
+    await expect(
+      as(convexTest(schema, modules)).action(api.testing.setMyEbaySeller, { fulfillmentPolicies: policies }),
+    ).rejects.toThrow(/^Fake eBay did not set the seller up: a fulfillment policy with that name already exists \(409\)$/);
+    nextResult = { ok: false, status: 409, error: "http", detail: "too many fulfillment policies" };
+    await expect(
+      as(convexTest(schema, modules)).action(api.testing.setMyEbaySeller, { fulfillmentPolicies: policies }),
+    ).rejects.toThrow(/^Fake eBay did not set the seller up: too many fulfillment policies \(409\)$/);
+    // No detail: the transport's word, as before.
+    nextResult = { ok: false, status: 503, error: "http" };
+    await expect(
+      as(convexTest(schema, modules)).action(api.testing.setMyEbaySeller, { fulfillmentPolicies: policies }),
+    ).rejects.toThrow(/^Fake eBay did not set the seller up: http \(503\)$/);
+  });
+
   const service = { code: "USPSGroundAdvantage" };
   test.each([
     ["an empty list", []],

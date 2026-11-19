@@ -217,9 +217,15 @@ test(
     const offers = page.getByRole("checkbox", { name: "Take Best Offers", exact: true });
     await expect(page.getByRole("heading", { level: 3, name: "Offers", exact: true })).toBeVisible();
     await expect(offers).toBeChecked();
-    // By keyboard (Space on the focused switch): the switch's visible track sits
-    // over its input, so a pointer click lands on the track, as a mouse user's does.
+    // The pointer: a click on the switch's label, "Take Best Offers" (the whole
+    // row is the label). The input itself sits under the switch's drawn track,
+    // so a click aimed at the input lands on the track, as a mouse user's does.
+    await page.getByText("Take Best Offers", { exact: true }).click();
+    await expect(offers).not.toBeChecked();
+    // The keyboard too: Space on the focused switch, on and off again.
     await offers.focus();
+    await page.keyboard.press("Space");
+    await expect(offers).toBeChecked();
     await page.keyboard.press("Space");
     await expect(offers).not.toBeChecked();
     // A fresh connection reads the default, 1 oz. Enter on 3 oz saves it.

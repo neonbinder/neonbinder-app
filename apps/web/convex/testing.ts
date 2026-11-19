@@ -1052,11 +1052,22 @@ export function checkFakeEbayOrder(order: FakeEbayOrder): void {
  * defensively (`fakeBsc` reports failure in its result, it never throws): a
  * failure, or a "skipped" from a module that found no fake to talk to, is a
  * failure here, because the caller already decided this deployment is on it.
+ * The message names the fake's own reason (`detail`: its validation answer,
+ * already bounded and stripped of control characters by `fakeBsc`, never a
+ * key or token) when it sent one, else the transport's `error`: a spec tells
+ * "that policy name is already held" from any other 409 by it.
  */
 function requireFakeEbayDone(result: unknown, what: string): void {
-  const r = (typeof result === "object" && result !== null ? result : {}) as { ok?: unknown; skipped?: unknown; error?: unknown; status?: unknown };
+  const r = (typeof result === "object" && result !== null ? result : {}) as {
+    ok?: unknown;
+    skipped?: unknown;
+    error?: unknown;
+    detail?: unknown;
+    status?: unknown;
+  };
   if (r.ok === false) {
-    throw new Error(`Fake eBay did not ${what}: ${typeof r.error === "string" ? r.error : "no answer"}${typeof r.status === "number" ? ` (${r.status})` : ""}`);
+    const reason = typeof r.detail === "string" && r.detail.length > 0 ? r.detail : typeof r.error === "string" ? r.error : "no answer";
+    throw new Error(`Fake eBay did not ${what}: ${reason}${typeof r.status === "number" ? ` (${r.status})` : ""}`);
   }
   if (r.skipped === true) {
     throw new Error(`Fake eBay did not ${what}: this deployment has no fake eBay to talk to`);

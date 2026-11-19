@@ -160,12 +160,15 @@ const STATUS = /^\[testing-ebay-fake\] /;
 const DONE = /^\[testing-ebay-fake\] (Seller set|Order added|Polled)/;
 const FAILED = /^\[testing-ebay-fake\] (Error:|Give exactly|\?(seller|order|poll)=|Testing mode)/;
 /**
- * The fake's answer to a shipping policy name the seller already holds
- * (`setMyEbaySeller`, `requireFakeEbayDone`). Not anchored at the end: the
- * Convex client appends the server's stack ("at requireFakeEbayDone ...
- * Called by client") to the message the hop shows.
+ * The fake's answer to a shipping policy name the seller already holds, and
+ * nothing else: `requireFakeEbayDone` names the fake's own reason, so any
+ * other 409 (too many policies, a refused list) is still a refusal. Ends at
+ * whitespace or the end, not `$`: the Convex client appends the server's stack
+ * ("at requireFakeEbayDone ... Called by client") to the message the hop shows.
+ * No unit lane covers playwright/support, so the near misses are not pinned:
+ * "(4090)" and "(409): other" fail the `\(409\)(\s|$)` tail by construction.
  */
-const ALREADY_HELD = /Fake eBay did not set the seller up: http \(409\)(\s|$)/;
+const ALREADY_HELD = /Fake eBay did not set the seller up: a fulfillment policy with that name already exists \(409\)(\s|$)/;
 
 /**
  * The control a spec drives through the `ebayFake` fixture. One per test, bound
