@@ -371,14 +371,81 @@ describe("pickCardTeam", () => {
     expect(pick?.via).toBe("players");
   });
 
-  test("a card the players say nothing about, beside one they do: null (never the first candidate)", () => {
-    expect(
-      pickCardTeam([OAK, ATH], {
-        setYear: 1990,
-        aliasOnlyIds: NO_ALIAS,
-        cards: [[[oak(1979, 1984)]], [[]]],
-      }),
-    ).toBeNull();
+  test("a card the players say nothing about abstains: the card that names a row decides", () => {
+    // Was a veto (NEO-602 regression): a recent trade whose NB stints predate
+    // the move left its card silent and sent the whole name to the operator.
+    const pick = pickCardTeam([OAK, ATH], {
+      setYear: 1990,
+      aliasOnlyIds: NO_ALIAS,
+      cards: [[[oak(1979, 1984)]], [[]]],
+    });
+    expect(pick).toEqual({ row: OAK, via: "players", agreesWithYear: true });
+  });
+
+  describe("silent cards abstain (the 2026 Topps Chrome Baltimore Orioles shape)", () => {
+    // Three rows share the name: 1954-present, 1901-1902, 1882-1899.
+    const NOW = { _id: "bal-now", yearsActive: { from: 1954 } };
+    const OLD = { _id: "bal-old", yearsActive: { from: 1901, to: 1902 } };
+    const AA = { _id: "bal-aa", yearsActive: { from: 1882, to: 1899 } };
+    const now = (fromYear: number, toYear?: number) => ({
+      teamId: "bal-now",
+      fromYear,
+      ...(toYear !== undefined ? { toYear } : {}),
+    });
+    const old = (fromYear: number, toYear: number) => ({ teamId: "bal-old", fromYear, toYear });
+    const six = [2018, 2019, 2020, 2021, 2022, 2023].map((y) => [[now(y, y + 1)]]);
+    const four = [[[]], [[]], [[]], [[]]]; // Baz, Alonso, Bassitt, Ward: no stint on any row
+    const base = { setYear: 2026, aliasOnlyIds: NO_ALIAS };
+
+    test("six voters for 1954-, four silent: 1954-, and the year agrees", () => {
+      const pick = pickCardTeam([NOW, OLD, AA], { ...base, cards: [...six, ...four] });
+      expect(pick).toEqual({ row: NOW, via: "players", agreesWithYear: true });
+    });
+
+    test("order does not matter: silent cards first", () => {
+      const pick = pickCardTeam([NOW, OLD, AA], { ...base, cards: [...four, ...six] });
+      expect(pick?.row).toBe(NOW);
+    });
+
+    test("silent cards plus one voter for the OLD era: the old era, and the year disagrees", () => {
+      const pick = pickCardTeam([NOW, OLD, AA], {
+        ...base,
+        cards: [...four, [[old(1901, 1902)]]],
+      });
+      expect(pick).toEqual({ row: OLD, via: "players", agreesWithYear: false });
+    });
+
+    test("two voters that disagree: null, silent cards do not break the tie", () => {
+      expect(
+        pickCardTeam([NOW, OLD, AA], {
+          ...base,
+          cards: [...four, [[now(2020, 2021)]], [[old(1901, 1902)]]],
+        }),
+      ).toBeNull();
+    });
+
+    test("one voter tied across both rows, others silent: null", () => {
+      expect(
+        pickCardTeam([NOW, OLD, AA], {
+          ...base,
+          cards: [...four, [[now(2020, 2021), old(1901, 1902)]]],
+        }),
+      ).toBeNull();
+    });
+
+    test("an undated stint on a row still supports it (retro card of a past player)", () => {
+      const pick = pickCardTeam([NOW, OLD, AA], {
+        ...base,
+        cards: [...four, [[{ teamId: "bal-old" }]]],
+      });
+      expect(pick?.row).toBe(OLD);
+      expect(pick?.via).toBe("players");
+    });
+
+    test("every card silent: the year decides, as before", () => {
+      const pick = pickCardTeam([NOW, OLD, AA], { ...base, cards: four });
+      expect(pick).toEqual({ row: NOW, via: "year", agreesWithYear: true });
+    });
   });
 
   test("a stint dated outside the row's era does not support it", () => {

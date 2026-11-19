@@ -3690,6 +3690,40 @@ export default defineSchema({
     // keyed on creation would delete the session out from under them. This
     // field is the "still alive" signal — see `sweepAbandonedBatches`.
     lastTouchedAt: v.optional(v.number()),
+    /**
+     * NEO-602, team-kind only — what the New Team / Which team step shows the
+     * operator about the name it asks about.
+     *
+     * Jason, 2026-11-19: "On that New Team screen we need to show what
+     * player/card is triggering it because that is the only way a person knows
+     * the right team to link it to." A multi-row name used to look like a
+     * brand-new team. The review gate holds the cards (they are not committed
+     * yet, so nothing else can find them) and writes, once at insert:
+     *
+     *  - `candidateTeamIds` — the team rows the printed name reached when there
+     *    are two or more (empty otherwise). The step offers each as a one-click
+     *    link; the heading stops saying "New Team".
+     *  - `cards` — the first cards that printed the name (number and players as
+     *    printed; a player's NB id when the gate resolved him, so the step can
+     *    read his stints), bounded by the gate's own 16-card / 4-player bounds.
+     *  - `moreCards` — how many further cards printed it, for "+N more".
+     *
+     * Display only: nothing decides from it, no decision reads it, and a stale
+     * id is dropped by the reader. Absent on every row written before this
+     * field, on a league or player row, and on a team the batch staged for a
+     * player's career. Additive and optional.
+     */
+    teamContext: v.optional(v.object({
+      candidateTeamIds: v.array(v.id("teams")),
+      cards: v.array(v.object({
+        number: v.optional(v.string()),
+        players: v.array(v.object({
+          name: v.string(),
+          playerId: v.optional(v.id("players")),
+        })),
+      })),
+      moreCards: v.number(),
+    })),
   })
     .index("by_selector_option", ["selectorOptionId"])
     .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])

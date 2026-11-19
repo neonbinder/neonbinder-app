@@ -1,6 +1,9 @@
 // ONE FEATURE (NEO-602): when the card's player cannot say which of two eras a
 // printed team name means, the review ASKS the operator; nothing links it, and
-// the card gets only the team the operator picks.
+// the card gets only the team the operator picks. The step is "Which team",
+// not "New Team": it shows the card and its player (with the stints we know)
+// that raised it, and offers both existing teams as one-click links, with the
+// search and the New Team form kept below as the fallback.
 //
 // The two-era club, minted as in checklist-team-name-on-two-eras-follows-the-player:
 // `Loc<token> Ath<token>` (1968–2024, the name is its own) and `Ath<token>`
@@ -38,19 +41,47 @@ import { drillToCustom, setBuilderReady, syncChecklistButton } from "../../suppo
 import { advanceToSave, confirmSaveButton, reviewWizard, stepCounter } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
+const escapeRe = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 /**
  * Sync the open (empty) checklist from one pasted row, and prove the review
- * ASKS about `team`: its own team step, nothing linked, not on Save.
+ * ASKS about `team`: its own team step ("Which team", both existing teams
+ * offered, the card and its player shown), nothing linked, not on Save.
+ * `stint` is the player's stint text on the step, or null for a player with
+ * none (the step then says nothing is on file).
  */
-async function syncAndExpectTheTeamAsked(page: Page, row: string, team: string, axeLabel: string) {
+async function syncAndExpectTheTeamAsked(
+  page: Page,
+  row: string,
+  team: string,
+  /** The newer team, the one that holds `team` only as an alias. */
+  newer: string,
+  player: string,
+  stint: string | null,
+  axeLabel: string,
+) {
   const facts = await usePastedChecklist(page, `number,player,team\n${row}`, 1);
   expect(facts.rows).toBe(1);
   await syncChecklistButton(page).click();
   const wizard = reviewWizard(page);
   await expect(wizard).toBeVisible();
-  // Positive: the printed name's own team step, the first and only question.
-  await expect(wizard.getByRole("heading", { level: 3, name: `New Team: ${team}` })).toBeVisible();
+  // Positive: the printed name's own step, the first and only question. Two
+  // rows answer to the name, so it is a choice and not a new team.
+  await expect(wizard.getByRole("heading", { level: 3, name: `Which team: ${team}` })).toBeVisible();
+  await expect(wizard.getByRole("heading", { level: 3, name: /^New Team: / })).toHaveCount(0);
   await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+  // Both existing teams, each by name and era, newest first.
+  const candidates = wizard.getByRole("list", { name: "Teams already filed under this name" });
+  const offered = candidates.getByRole("button");
+  await expect(offered).toHaveCount(2);
+  await expect(offered.nth(0)).toHaveAccessibleName(new RegExp(`^Link to ${escapeRe(newer)} . 2025.present`));
+  await expect(offered.nth(1)).toHaveAccessibleName(new RegExp(`^Link to ${escapeRe(team)} . 1968.2024`));
+  // The card that raised it and its player, with the stints we know.
+  const cards = wizard.getByRole("list", { name: "Cards that print this team name" });
+  await expect(cards).toContainText("#1");
+  await expect(cards).toContainText(player);
+  if (stint) await expect(cards).toContainText(stint);
+  else await expect(cards).toContainText("Nothing on file yet");
   await expect(wizard.getByRole("group", { name: "Link to existing team" })).toBeVisible();
   // Negative, read against the step above: nothing was linked for the operator.
   await expect(page.getByText(/names? (was|were) linked for you/)).toHaveCount(0);
@@ -59,23 +90,41 @@ async function syncAndExpectTheTeamAsked(page: Page, row: string, team: string, 
   return wizard;
 }
 
-/** The operator links the step to the team whose option name starts with `pick`, then saves. */
-async function linkAndSave(page: Page, team: string, pick: string, search: string) {
-  const wizard = reviewWizard(page);
-  // Untick the remember-box first (the link is the claim here, not an alias).
-  const remember = wizard.getByRole("checkbox", { name: `Remember “${team}” as a name for this team` });
+/** Unticks "Remember …", so the link is the claim and no alias is saved. */
+async function untickRemember(page: Page, team: string) {
+  const remember = reviewWizard(page).getByRole("checkbox", {
+    name: `Remember “${team}” as a name for this team`,
+  });
   await remember.uncheck();
   await expect(remember).not.toBeChecked();
-  const combo = wizard.getByRole("combobox", { name: "Search all teams" });
-  await combo.fill(search);
-  await expect(combo).toHaveValue(search);
-  const escaped = pick.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  await page.getByRole("option", { name: new RegExp(`^${escaped}`) }).click();
-  await expect(wizard.getByRole("heading", { level: 3, name: `New Team: ${team}` })).toBeHidden();
+}
+
+/** From the answered step to the saved card. */
+async function saveTheLink(page: Page, team: string, pick: string) {
+  const wizard = reviewWizard(page);
+  await expect(wizard.getByRole("heading", { level: 3, name: `Which team: ${team}` })).toBeHidden();
   await advanceToSave(page);
   await expect(wizard.getByText(`Linked to ${pick}`, { exact: true })).toBeVisible();
   await confirmSaveButton(page).click();
   await expect(page.getByText(/Saved 1 card/).first()).toBeVisible();
+}
+
+/** The operator links by the one-click choice: the button for the team whose label starts `label`. */
+async function linkByChoice(page: Page, team: string, label: RegExp, pick: string) {
+  await untickRemember(page, team);
+  await reviewWizard(page).getByRole("button", { name: label }).click();
+  await saveTheLink(page, team, pick);
+}
+
+/** The operator links by the fallback search, typing `search` and picking the option starting `pick`. */
+async function linkBySearch(page: Page, team: string, pick: string, search: string) {
+  const wizard = reviewWizard(page);
+  await untickRemember(page, team);
+  const combo = wizard.getByRole("combobox", { name: "Search all teams" });
+  await combo.fill(search);
+  await expect(combo).toHaveValue(search);
+  await page.getByRole("option", { name: new RegExp(`^${escapeRe(pick)}`) }).click();
+  await saveTheLink(page, team, pick);
 }
 
 /** The committed card #1 carries `has` and not `hasNot`. */
@@ -185,9 +234,15 @@ test(
       page,
       `1,${NO_STINTS},${OLD}`,
       OLD,
+      NEW,
+      NO_STINTS,
+      null,
       "Entity review wizard, two-era team name asked (player with no stints)",
     );
-    await linkAndSave(page, OLD, OLD, `Loc${T}`);
+    // No player has played for either, so no reason is claimed.
+    await expect(reviewWizard(page).getByText("Players on these cards don't settle which team.")).toHaveCount(0);
+    // The one-click choice: the older team.
+    await linkByChoice(page, OLD, new RegExp(`^Link to ${escapeRe(OLD)} . 1968.2024`), OLD);
     await expectCardTeam(page, OLD, NEW, "Card drawer, the operator's era (no stints)");
 
     // ── PART 4 (b): stints on both eras. Asked; the operator picks the newer era ──
@@ -197,11 +252,17 @@ test(
       page,
       `1,${BOTH_ERAS},${OLD}`,
       OLD,
+      NEW,
+      BOTH_ERAS,
+      // His 1979–1984 stint on the older team, as the step prints a span.
+      "1979–84",
       "Entity review wizard, two-era team name asked (player on both eras)",
     );
-    // The search types the newer team's own name; its option starts with it,
-    // the older team's starts with its location.
-    await linkAndSave(page, OLD, NEW, NEW);
+    // Stints on both teams: the players do not settle it, and the step says so.
+    await expect(reviewWizard(page).getByText("Players on these cards don't settle which team.")).toBeVisible();
+    // The fallback search: it types the newer team's own name; its option
+    // starts with it, the older team's starts with its location.
+    await linkBySearch(page, OLD, NEW, NEW);
     await expectCardTeam(page, NEW, OLD, "Card drawer, the operator's era (both eras)");
   },
 );

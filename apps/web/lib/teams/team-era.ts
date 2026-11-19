@@ -346,11 +346,14 @@ export type CardTeamPickInput = {
  *      show a team's past, never its future.
  *   2. A row is SUPPORTED when a player on a card has a stint on it that
  *      overlaps the row's era (an undated stint counts).
- *   3. If any row is supported, the players decide, strictly: every card must
- *      point at exactly one row, the same row on every card. A tie, a
- *      disagreement, or a card the players say nothing about is `null` — never
- *      the first candidate. A player with stints on BOTH rows is a tie too; the
- *      year does not break it (D6).
+ *   3. If any row is supported, the players decide: a card whose players
+ *      have no stint on any candidate row ABSTAINS (a recent trade the stints
+ *      predate says nothing), and only the cards that name a row vote. Each
+ *      voting card must point at exactly one row, the same row on every voting
+ *      card. A tie or a disagreement is `null` — never the first candidate. A
+ *      player with stints on BOTH rows is a tie too; the year does not break
+ *      it (D6). An UNDATED stint counts as support for its own row, so a retro
+ *      card of a past player still finds its team.
  *   4. If no player supports any row, the set year picks, as before — EXCEPT
  *      when the year's pick matched the name only by alias while another
  *      eligible row holds the name as its OWN primary name: then `null`. An
@@ -391,10 +394,14 @@ export function pickCardTeam<T extends TeamEraRow & { _id: string }>(
     return onCard;
   });
 
-  // 3. Any player evidence at all → the players decide, strictly.
+  // 3. Any player evidence at all → the players decide. A card whose players
+  //    have no stint on any candidate row ABSTAINS (a recent trade the NB
+  //    stints predate says nothing about which franchise); only the cards that
+  //    name a row vote, and those must agree on exactly one.
   if (supportedPerCard.some((onCard) => onCard.size > 0)) {
     let answer: string | null = null;
     for (const onCard of supportedPerCard) {
+      if (onCard.size === 0) continue;
       if (onCard.size !== 1) return null;
       const [only] = onCard;
       if (answer !== null && answer !== only) return null;

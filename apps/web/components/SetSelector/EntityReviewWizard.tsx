@@ -31,6 +31,7 @@ import { CopyButton } from "../primitives/CopyButton";
 // `hasExact` was written for.
 import { NearMatchPanel, type NearMatch } from "../entities/NearMatchPanel";
 import { TeamMatchSearch } from "../entities/TeamMatchSearch";
+import TeamStepContext from "./TeamStepContext";
 import {
   aliasHolderSentence as sharedAliasHolderSentence,
   eraOverlapReason,
@@ -1534,6 +1535,19 @@ export default function EntityReviewWizard({
   const nearMatches: NearMatch[] | undefined =
     current?.kind === "player" ? playerNearMatches : teamNearMatches;
 
+  /**
+   * NEO-602 — a team step whose printed name reaches TWO OR MORE team rows we
+   * hold. Such a step is a choice between those rows (offered by
+   * `TeamStepContext`), not a new team, so the heading asks "Which team", the
+   * lone-exact-match promotion below stands down (the choices are the rows
+   * themselves) and the create action is demoted. The gate wrote the rows on
+   * the queue row; this reads them with the batch.
+   */
+  const teamCandidateCount =
+    current?.kind === "team" && !reviewingDecided
+      ? (current.teamContext?.candidateTeamIds.length ?? 0)
+      : 0;
+  const candidateStep = teamCandidateCount >= 2;
   // NEO-332 — above the early return with what reads it: the a11y focus
   // effects (S1 / S5) need `pickStep` and `sameNameCandidates`.
   const exactRows = (nearMatches ?? []).filter((m) => m.confidence === "exact");
@@ -3204,6 +3218,23 @@ export default function EntityReviewWizard({
   }, [presentedRowId]);
 
   /*
+   * NEO-602 — a step that is a CHOICE between team rows must not arrive with
+   * focus on the create action.
+   *
+   * The footer's primary is one element across steps, so an operator who was
+   * pressing Enter down a run of New Team steps arrives on a "Which team" step
+   * still on "Add as New Team", and one more Enter would mint the team the
+   * step exists to make deliberate. Only from the primary: focus anywhere else
+   * is the operator's own and stays put. The heading names the step.
+   */
+  useEffect(() => {
+    if (!candidateStep || !presentedRowId) return;
+    if (document.activeElement === primaryDecisionRef.current) {
+      stepHeadingRef.current?.focus();
+    }
+  }, [candidateStep, presentedRowId]);
+
+  /*
    * NEO-424 (a11y) — park focus once a Change's clear has landed.
    *
    * The row comes back live in the same render that drops it from the
@@ -3983,7 +4014,8 @@ export default function EntityReviewWizard({
    * relabelled "Link to {name}" there however many exact rows `nearMatches`
    * returns. Pinned by the wizard's NEO-332 tests.
    */
-  const showExactHierarchy = sameNameCandidates.length === 0 && exactRows.length === 1;
+  const showExactHierarchy =
+    !candidateStep && sameNameCandidates.length === 0 && exactRows.length === 1;
   /**
    * NEO-463 — the fragment step: a one-word player name the server says is a
    * piece of a fuller one on file. Never on a pick step (a same-name row is
@@ -4381,6 +4413,8 @@ export default function EntityReviewWizard({
             pickStep ||
             // NEO-463 — the fuller names are the answer; one-name is the exception.
             fragmentStep ||
+            // NEO-602 — the rows we hold are the answer; a new team is the exception.
+            candidateStep ||
             (!showExactHierarchy && !preselectShown && hasCloseOnly)
               ? "secondary"
               : "primary"
@@ -4820,7 +4854,11 @@ export default function EntityReviewWizard({
                       {pickStep
                         ? `Which ${current.name} is this?`
                         : !reviewingDecided && current.kind === "team"
-                          ? `New Team: ${current.name}`
+                          ? // NEO-602 — several rows answer to this name: the
+                            // step is a choice among them, not a new team.
+                            candidateStep
+                            ? `Which team: ${current.name}`
+                            : `New Team: ${current.name}`
                           : !reviewingDecided && current.kind === "league"
                             ? `New League: ${current.name}`
                             : current.name}
@@ -5449,6 +5487,24 @@ export default function EntityReviewWizard({
 
                       Players (and leagues) keep the panel and the link search.
                     */}
+                    {/*
+                      NEO-602 — the cards that print this name, their players
+                      and the stints we know; and, when two or more rows answer
+                      to it, those rows as one-click links ABOVE the search and
+                      the New Team form, which stay below as the fallback. A pick
+                      goes down the SAME `handleLink` path, "Remember …" answer
+                      included. Keyed by row so each step starts fresh.
+                    */}
+                    {current.kind === "team" && !reviewingDecided && (
+                      <TeamStepContext
+                        key={current._id}
+                        reviewRowId={current._id}
+                        disabled={busy}
+                        onLink={(teamId) => {
+                          void handleLink(current._id, "team", teamId, linkOptions);
+                        }}
+                      />
+                    )}
                     {current.kind === "team" ? (
                       <TeamMatchSearch
                         key={current._id}
@@ -5615,6 +5671,12 @@ export default function EntityReviewWizard({
                                     showExactHierarchy &&
                                     exactMatch &&
                                     exactMatch._id === holder.id
+                                  ) &&
+                                  // NEO-602 — a row the step already offers as a
+                                  // choice (above) is not offered a second time.
+                                  !(
+                                    candidateStep &&
+                                    current.teamContext?.candidateTeamIds.includes(holder.id)
                                   ),
                               )
                               .map((holder) => (

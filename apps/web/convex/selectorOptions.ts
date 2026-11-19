@@ -1380,19 +1380,54 @@ function addCardTeamNames(
  * never asked about (the helper would refuse it anyway); the list stops
  * growing there, so the map is small whatever the batch size.
  */
-type CardPlayersByTeam = Map<string, { cards: string[][]; overflow: boolean }>;
+type CardPlayersByTeam = Map<
+  string,
+  {
+    cards: string[][];
+    overflow: boolean;
+    /**
+     * NEO-602 — the same cards as the operator sees them on the team's review
+     * step: number and players as printed, the first
+     * `CARD_PLAYER_TEAM_MAX_CARDS` of them, and a count of every card that
+     * printed the name. Kept OUTSIDE the overflow rule above: that rule stops
+     * the card rule asking about a name too common to sample, whereas the
+     * operator still needs to see what the name was printed on. Display only;
+     * nothing decides from it.
+     */
+    shown: Array<{ number?: string; players: string[] }>;
+    total: number;
+    /** `number|players` of every card counted, so a card filed twice (the marketplace's side and the checklist's) is one. */
+    seen: Set<string>;
+  }
+>;
 
 function addCardPlayerNames(
   target: CardPlayersByTeam,
   teamName: string,
   playersOnCard: ReadonlyArray<string>,
+  cardNumber?: string,
 ): void {
   const key = normalizeTeamName(teamName.trim());
   if (!key) return;
   let entry = target.get(key);
   if (!entry) {
-    entry = { cards: [], overflow: false };
+    entry = { cards: [], overflow: false, shown: [], total: 0, seen: new Set() };
     target.set(key, entry);
+  }
+  // The display list is the review gate's; the commit prelude passes no
+  // number and keeps none of it.
+  const shownNumber = cardNumber?.trim();
+  const shownPlayers = playersOnCard.map((p) => p.trim()).filter(Boolean);
+  const seenKey = `${shownNumber ?? ""}\u0000${shownPlayers.join("\u0000")}`;
+  if (cardNumber !== undefined && !entry.seen.has(seenKey)) {
+    entry.seen.add(seenKey);
+    entry.total += 1;
+    if (entry.shown.length < CARD_PLAYER_TEAM_MAX_CARDS) {
+      entry.shown.push({
+        ...(shownNumber ? { number: shownNumber } : {}),
+        players: shownPlayers.slice(0, CARD_PLAYER_TEAM_MAX_PLAYERS_PER_CARD),
+      });
+    }
   }
   if (entry.overflow) return;
   const players = playersOnCard.map((p) => p.trim()).filter(Boolean);
@@ -1499,6 +1534,13 @@ export const resolveGateTeamName = internalQuery({
      * lone row sits outside the year, where set history may still help.
      */
     ambiguous: v.boolean(),
+    /**
+     * NEO-602 — every row the name reached when there are two or more, newest
+     * era first by the caller's reading; empty for none or one. The review
+     * step offers them as choices, so the operator picks a row instead of
+     * facing what looks like a brand-new team.
+     */
+    candidateTeamIds: v.array(v.id("teams")),
   }),
   handler: async (ctx, args) => {
     const pick = await resolveCardTeamName(
@@ -1509,10 +1551,12 @@ export const resolveGateTeamName = internalQuery({
       args.cardPlayerIds ? { cardPlayerIds: args.cardPlayerIds } : {},
     );
     const ambiguous = pick.candidates.length > 1;
+    const candidateTeamIds =
+      pick.candidates.length > 1 ? pick.candidates.map((candidate) => candidate._id) : [];
     const row = pick.teamId
       ? pick.candidates.find((candidate) => candidate._id === pick.teamId)
       : undefined;
-    if (!row || !pick.via) return { answer: null, ambiguous };
+    if (!row || !pick.via) return { answer: null, ambiguous, candidateTeamIds };
     return {
       answer: {
         teamId: row._id,
@@ -1522,6 +1566,7 @@ export const resolveGateTeamName = internalQuery({
         agreesWithYear: pick.agreesWithYear,
       },
       ambiguous: false,
+      candidateTeamIds,
     };
   },
 });
@@ -2082,6 +2127,8 @@ async function resolveUnknownsAndStartBatch(
     origin: "setHistory" | "careerTeam";
   }> = [];
   const unresolvedTeams: Array<{ normalized: string; name: string }> = [];
+  /** NEO-602 — the rows each printed team name reached, when there are two or more. */
+  const candidateTeamIdsByNorm = new Map<string, Array<Id<"teams">>>();
   const teamsToAsk: Array<{ normalized: string; name: string }> = [];
   for (const [normalized, name] of teamByNorm) {
     if (skippedKeys.has(`team:${normalized}`)) continue;
@@ -2093,7 +2140,10 @@ async function resolveUnknownsAndStartBatch(
       group.map((ask) => resolveGateTeamNameFor(ask.name, ask.normalized)),
     );
     group.forEach((ask, k) => {
-      const { answer, ambiguous } = answers[k];
+      const { answer, ambiguous, candidateTeamIds } = answers[k];
+      if (candidateTeamIds.length > 0) {
+        candidateTeamIdsByNorm.set(ask.normalized, candidateTeamIds);
+      }
       if (!answer) {
         // Several rows and no answer (a tie, disagreeing cards, an alias-only
         // year pick): the operator's, never set history's. Invariant 8.
@@ -2359,6 +2409,47 @@ async function resolveUnknownsAndStartBatch(
     queuedPlayerNames.length > 0 ||
     unknownTeams.length > 0 ||
     historyCandidates.length > 0;
+  /**
+   * NEO-602 — for each team step the operator will see (`unknownTeams`, and a
+   * team the batch linked, which a Change turns back into a step), the cards
+   * that printed the name and the rows it reached. The step shows them
+   * because the cards and their players are the only way a person knows which
+   * team the name means (Jason, 2026-11-19). The players carry their NB id
+   * when they resolved at this gate, so the step can read their stints; the
+   * name as printed is what the operator sees. Bounded by the gate's own
+   * card and player bounds, and carries ids and printed text only.
+   */
+  const teamContexts: Array<{
+    name: string;
+    candidateTeamIds: Array<Id<"teams">>;
+    cards: Array<{
+      number?: string;
+      players: Array<{ name: string; playerId?: Id<"players"> }>;
+    }>;
+    moreCards: number;
+  }> = [];
+  // The names the operator will be asked about, and the ones the batch linked
+  // for them: a Change on a linked row turns it back into a team step, which
+  // needs the cards and rows as much as a fresh one does.
+  for (const name of [...unknownTeams, ...teamAutoLinks.map((link) => link.name)]) {
+    const normalized = normalizeTeamName(name);
+    const entry = args.cardPlayerNamesByTeam?.get(normalized);
+    const candidateTeamIds = candidateTeamIdsByNorm.get(normalized) ?? [];
+    if ((!entry || entry.shown.length === 0) && candidateTeamIds.length === 0) continue;
+    const cards = (entry?.shown ?? []).map((card) => ({
+      ...(card.number ? { number: card.number } : {}),
+      players: card.players.map((player) => {
+        const playerId = gatePlayerIdByNorm.get(normalizePlayerName(player));
+        return { name: player, ...(playerId ? { playerId } : {}) };
+      }),
+    }));
+    teamContexts.push({
+      name,
+      candidateTeamIds,
+      cards,
+      moreCards: entry ? Math.max(0, entry.total - cards.length) : 0,
+    });
+  }
   // NEO-424 (D4) — an auto-link alone opens a batch too: it is a decided row
   // the operator must be able to see and Change before the commit.
   const opensBatch = hasUnknowns || autoLinks.length > 0;
@@ -2388,6 +2479,9 @@ async function resolveUnknownsAndStartBatch(
       ...(autoLinks.length > 0 ? { autoLinks } : {}),
       ...(historyCandidates.length > 0 ? { historyCandidates } : {}),
       ...(preselects.length > 0 ? { preselects } : {}),
+      // NEO-602 — what each team step shows the operator: the cards that
+      // printed the name, their players, and the rows the name reached.
+      ...(teamContexts.length > 0 ? { teamContexts } : {}),
     });
   }
 
@@ -17454,7 +17548,7 @@ export const resolveChecklistEntities = action({
       }
       for (const t of teamsOnCard) {
         additionalTeamNames.push(t);
-        addCardPlayerNames(cardPlayerNamesByTeam, t, c.players ?? []);
+        addCardPlayerNames(cardPlayerNamesByTeam, t, c.players ?? [], c.cardNumber);
       }
       // PR 451 (NEO-478) — an unsettled checklist disagreement: the card
       // carries the marketplace's side (resolved above), and the operator may
@@ -17487,7 +17581,7 @@ export const resolveChecklistEntities = action({
           const playersForChecklist =
             checklistPlayers.length > 0 ? checklistPlayers : (c.players ?? []);
           for (const t of teamsForChecklistPlayers) {
-            addCardPlayerNames(cardPlayerNamesByTeam, t, playersForChecklist);
+            addCardPlayerNames(cardPlayerNamesByTeam, t, playersForChecklist, c.cardNumber);
           }
         }
       }

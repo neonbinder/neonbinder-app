@@ -477,7 +477,10 @@ describe("the gate: a name that is one row's own name and another's alias (NEO-6
       fullName: "Oakland Athletics",
     });
     // No players: the alias-only year pick is refused, and flagged ambiguous.
-    expect(await ask(undefined)).toEqual({ answer: null, ambiguous: true });
+    // (NEO-602: and the two rows it reached, for the team step to offer.)
+    const noPlayers = await ask(undefined);
+    expect(noPlayers).toMatchObject({ answer: null, ambiguous: true });
+    expect([...noPlayers.candidateTeamIds].sort()).toEqual([s.oakland, s.athletics].sort());
     // A 2000 set: the year lands on Oakland, which owns the name.
     const byYear = await ask(undefined, 2000);
     expect(byYear.answer).toMatchObject({ teamId: s.oakland, via: "year", agreesWithYear: true });
@@ -488,7 +491,7 @@ describe("the gate: a name that is one row's own name and another's alias (NEO-6
         name: "Nowhere Nobodies",
         setYear: 2025,
       }),
-    ).toEqual({ answer: null, ambiguous: false });
+    ).toEqual({ answer: null, ambiguous: false, candidateTeamIds: [] });
   });
 
   test("resolveGateTeamName: a LONE row that begins after the set year is no answer, but not ambiguous (set history may still help)", async () => {
@@ -501,6 +504,6 @@ describe("the gate: a name that is one row's own name and another's alias (NEO-6
       name: "Athletics",
       setYear: 1990,
     });
-    expect(answer).toEqual({ answer: null, ambiguous: false });
+    expect(answer).toEqual({ answer: null, ambiguous: false, candidateTeamIds: [] });
   });
 });
