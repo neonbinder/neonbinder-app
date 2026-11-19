@@ -169,9 +169,11 @@ test(
     // card. The row leads with the card (the order's first card, not its first line), so "A sale with no
     // title" (the lead of an order with no card at all) never shows here; eBay counts items, and the opened
     // list names the untitled line "An item with no title". The card link is the positive beside each
-    // absence (R2).
+    // absence (R2). NEO-609: a base card says "Base" after its set.
     const untitled = orders.getByRole("article", { name: "eBay order #12-34567-89123", exact: true });
-    await expect(untitled.getByRole("link", { name: /^1989 Score Troy Aikman #270 / })).toBeVisible();
+    await expect(
+      untitled.getByRole("link", { name: "1989 Score Base Troy Aikman #270 RC Dallas Cowboys Rookie Football", exact: true }),
+    ).toBeVisible();
     await expect(untitled.getByText("2 items. Sold yesterday.", { exact: true })).toBeVisible();
     await expect(untitled.getByText("A sale with no title", { exact: true })).toHaveCount(0);
     await untitled.getByRole("button", { name: "Show all 2 items in eBay order 12-34567-89123", exact: true }).click();
