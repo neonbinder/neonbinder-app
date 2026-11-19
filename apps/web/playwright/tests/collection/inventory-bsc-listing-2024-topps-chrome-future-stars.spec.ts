@@ -57,9 +57,10 @@
 //      refresh, so the next Sync sends the new file over the seller photo BSC
 //      already shows: Sync status queues the one card, the press's run holds
 //      "Upload photos, done", the card leaves the queue and nothing is held
-//      back (a refresh BSC refused would be). The same two orders as every
-//      press (below): a poll that lands between the queue's read and the press
-//      sends the photo itself, and the press then sends nothing.
+//      back (a refresh BSC refused would be). The same three outcomes as every
+//      later press (below): a poll that lands between the queue's read and the
+//      press sends the photo itself, and the press then sends nothing or is
+//      turned away.
 //   3c. NEO-555 (D12), a sale: a buyer orders one of the first card on
 //      BuySportsCards. The order is injected already SHIPPED (still a sale, so
 //      the box goes down, but never on the Pick List, which every later spec on
@@ -117,12 +118,12 @@
 // screen that reads "Seller account in use", or one of the two gave-up sentences
 // (still hasn't confirmed / isn't set up to sell), is thrown by name, never waited out.
 //
-// Two triggers (NEO-433). A set's sync is set going by the press of the
-// checklist's Sync and by the 15-minute sales poll, and the poll can list a
-// stocked box before the press lands. Both orders are real product behaviour,
-// so the spec neither forces the press to win nor turns the poll off; it keeps
-// the slow axe checks out of the window between its last write and the press,
-// and holds either order to a hard end state:
+// Three outcomes of a press (NEO-433, NEO-555). A set's sync is set going by
+// the press of the checklist's Sync and by the 15-minute sales poll, and the
+// poll can list a stocked box before the press lands. Every order is real
+// product behaviour, so the spec neither forces the press to win nor turns the
+// poll off; it keeps the slow axe checks out of the window between its last
+// write and the press, and holds each outcome to a hard end state:
 //   - press first: the cards are queued until the press, the press sends them
 //     (the ledger holds a read, the send, a double-check), the row reads
 //     "2 listed, 2 updated" (or "2 listed" when BSC already showed them);
@@ -131,20 +132,33 @@
 //     the row reads "2 listed" and the ledger is exactly "Gathering data" then
 //     "Nothing new to send" (a run that sends nothing still holds a check step,
 //     "Compare with your boxes", which the finished row folds into the first).
+//   - turned away (NEO-555): inside a minute of the set's last press, with
+//     nothing left queued because the poll's drain already sent it, the press
+//     runs nothing and toasts "<title> is already in the works. Give it a
+//     minute, then Sync again." (`syncToast`; `pressSync` reads which toast
+//     answered). On the fake BSC the steps between presses are quick, so the
+//     later presses (3b's photo refresh, the in-person press) can land inside
+//     that minute. The poll's run is then held to the press's own end state,
+//     its send step done and its line ("1 taken to 0" in person), never to
+//     "Nothing new to send".
 // A run that sent nothing is told apart by the absence of the send step, and
-// asserted as such; a missing ledger is red in either order. The in-person
-// press has the same two orders (a poll that takes the cards off first).
+// asserted as such; a missing ledger is red in all three. The in-person press
+// has the same outcomes (a poll that takes the cards off first). The first
+// press has no press before it, so it is never turned away.
 //
-// A press is proven to have RUN before either order is read. The row a poll
-// leaves behind looks like a press's own, and the page says "Nothing syncing
-// right now." between two runs, so neither the row nor the idle line is evidence.
+// A press is proven to have RUN (or the poll's run to have done its work)
+// before any outcome is read. The row a poll leaves behind looks like a press's
+// own, and the page says "Nothing syncing right now." between two runs, so
+// neither the row nor the idle line is evidence.
 // The press's queued cards are: the press writes them (its toast comes after),
 // and a run's finish clears them in the same write that records its result, but
 // only if the run claimed them (a run under way when the press landed leaves
 // them, and the set goes round again). So the spec walks step by step until the
 // queue holds no card of the set and the platform is idle (`followRunToRest`),
-// and only then reads the row and picks the order: a press whose run never
-// claims leaves its cards queued and goes red in both orders.
+// and only then reads the row and picks the outcome: a press whose run never
+// claims leaves its cards queued and goes red in every outcome; so does a
+// press turned away while its cards are still queued (nothing runs them until
+// the cron).
 //
 // The ledger's steps (convex/listingDrain.ts `bscSheetSteps`; labels in
 // inventory/listing/copy.ts): one "Read <conditions>" per BSC sheet, "Send
@@ -190,7 +204,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Locator, Page } from "@playwright/test";
-import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, expectRunOrSellerWait, followRunToRest, goViaShell, intakeDropzone, inventoryTabs, nameOf, ordinaryBaseRows, pickIntakeSet, putOtherBoxesInPerson, quantityField, queueSettled, shortNameOf, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
+import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, expectRunOrSellerWait, followRunToRest, goViaShell, intakeDropzone, inventoryTabs, nameOf, ordinaryBaseRows, pickIntakeSet, pressSync, putOtherBoxesInPerson, quantityField, queueSettled, shortNameOf, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
 import { BSC_PATH, bscFault } from "../../support/bscFake";
 import { removeBscSignIn, saveBscSignIn } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -868,7 +882,7 @@ test(
     // each assert it. The wait line, when up, is checked for accessibility first.
     await expectRunOrSellerWait(platform, run, settled, { marketplace: BSC, label: "Inventory Sync status, waiting on BuySportsCards for the seller account" });
     await followRunToRest(platform, run, settled, {}, BSC);
-    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
+    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in every outcome.
     await expect(run.last).toBeVisible();
     await expect(run.gathered()).toBeVisible();
     await expect(listedLine).toBeVisible();
@@ -959,8 +973,9 @@ test(
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    await sync.click();
-    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    // Taken (the queued row is newer than the last drain), or turned away only
+    // because the poll's drain sent it first (header, "Three outcomes").
+    const refreshPress = await pressSync(page, sync, TITLE);
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     const refresh = syncRun(platform, SET_LABEL, BSC);
@@ -975,7 +990,12 @@ test(
     await expect(row.getByText(/held back/)).toHaveCount(0);
     await expect(refreshQueued).toHaveCount(0);
     const photoSent = await refresh.last.getByRole("listitem", { name: "Upload photos, done", exact: true }).isVisible();
-    if (photoSent) {
+    if (refreshPress === "throttled") {
+      // Turned away: the poll's run sent the photo, so the last run is that sending
+      // one (no "nothing sent" fallback: the press ran nothing of its own).
+      await expect(refresh.last.getByRole("listitem")).toContainText([/^Gathering data, done$/, /^Upload photos, done$/]);
+      await expect(refresh.nothingNew()).toHaveCount(0);
+    } else if (photoSent) {
       // Press first: the refresh is this run's own photos step, before its send.
       await expect(refresh.last.getByRole("listitem")).toContainText([/^Gathering data, done$/, /^Upload photos, done$/]);
       await expect(refresh.nothingNew()).toHaveCount(0);
@@ -1043,8 +1063,7 @@ test(
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await drillToCollectorChecklist(page, FUTURE_STARS);
-    await sync.click();
-    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    const takeDownPress = await pressSync(page, sync, TITLE);
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // The live BSC round trip, step by step. The set was 2 listed a minute ago,
@@ -1057,12 +1076,12 @@ test(
     // The second card only: the sale already took the first to 0 on both sides, so nothing is sent for it.
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 1 taken to 0$/);
     await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL), {}, BSC);
-    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
+    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in every outcome.
     await expect(takeDown.last).toBeVisible();
     await expect(takeDown.gathered()).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
     // Press first: the run sent the two zeros (the send step is in the finished
-    // ledger). Poll first (the header's two orders): the poll already took the
+    // ledger). Poll first (the header's three outcomes): the poll already took the
     // cards off, and the press, a full read, sent nothing. Each side is asserted
     // hard: a send needs its double-check and folded ledger (and no "Nothing new
     // to send"), a run that sent nothing is "Gathering data" then "Nothing new to
@@ -1073,7 +1092,16 @@ test(
     // count, so it says "1 taken to 0" only when this run sent it; a full read
     // that found nothing to zero reads "0 listed".
     const tookDown = await takeDown.last.getByRole("listitem", { name: `${SEND}, done`, exact: true }).isVisible();
-    if (tookDown) {
+    if (takeDownPress === "throttled") {
+      // Turned away (inside a minute of 3b's press, the poll's drain having taken
+      // the card off first): the poll's run sent the zero, asserted as hard as a
+      // press's own send, with no "nothing sent" fallback.
+      await expect(takeDown.last.getByRole("listitem", { name: `${SEND}, done`, exact: true })).toBeVisible();
+      await expect(takenLine).toBeVisible();
+      await expect(takeDown.readLanded()).toBeVisible();
+      await expect(takeDown.confirmLanded()).toBeVisible();
+      await expectFoldedLastRun(takeDown);
+    } else if (tookDown) {
       await expect(takenLine).toBeVisible();
       await expect(takeDown.readLanded()).toBeVisible();
       await expect(takeDown.confirmLanded()).toBeVisible();

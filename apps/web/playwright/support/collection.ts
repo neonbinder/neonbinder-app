@@ -897,6 +897,28 @@ export async function followRunToRest(
 }
 
 /**
+ * NEO-555: press a checklist's Sync and say which of its two toasts answered.
+ * A press has three outcomes: it sends what is queued, it is a full read that
+ * sends nothing (the poll sent it first), or, inside a minute of the set's last
+ * press with nothing left queued (the poll's drain took the queued rows), it
+ * is turned away with "<title> is already in the works. Give it a minute, then
+ * Sync again." (`syncToast`, SyncButton.tsx) and runs nothing. The first two
+ * toast "Syncing <title> now."; the spec reads the run behind either. On
+ * "throttled" the caller must prove HARD that the poll's run did the press's
+ * work (its step done, the set's count line), never fall back to "nothing sent".
+ * "See what's syncing" shows only while a run is under way, so a throttled
+ * press goes to Sync status by the tab.
+ */
+export async function pressSync(page: Page, sync: Locator, title: string): Promise<"ran" | "throttled"> {
+  const said = (text: string) => page.getByRole("status").filter({ hasText: text });
+  const ran = said(`Syncing ${title} now. Watch it on Sync status.`);
+  const throttled = said(`${title} is already in the works. Give it a minute, then Sync again.`);
+  await sync.click();
+  await expect(ran.or(throttled).first()).toBeVisible();
+  return (await ran.first().isVisible()) ? "ran" : "throttled";
+}
+
+/**
  * NEO-433: a finished run that sent and changed nothing (the sales poll got
  * there first, so the press was a full read) shows exactly two folded lines, in
  * this order: "Gathering data, done", then "Nothing new to send". That pair is

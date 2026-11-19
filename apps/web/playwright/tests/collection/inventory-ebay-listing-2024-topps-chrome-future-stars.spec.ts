@@ -44,8 +44,8 @@
 //      ("All set. Your edited photo is in."), Sync status queues that card
 //      again, and a Sync re-sends it, the card leaves the queue, and the one
 //      held-back card is still only the third. A poll between the queue's read
-//      and the press sends it instead, and the press then sends nothing (the
-//      two orders).
+//      and the press sends it instead, and the press then sends nothing or is
+//      turned away (the three outcomes).
 //   5. NEO-555 (D9), a sale: a buyer orders one of the first card on eBay, plus
 //      a card NeonBinder never listed (eBay's own title, no SKU). The order is
 //      injected already shipped (FULFILLED: still a sale, so the box goes down,
@@ -73,9 +73,13 @@
 //      step 6's, meets a recent press depends on whether the cron had already
 //      made the set's sync record before step 4's press (a press stamps only an
 //      existing record), so ONE of the two always does. The old code answered
-//      "just synced. Give it a minute" to that press and ran nothing, so either
-//      toast goes red on it. The unit tests pin the branch itself
-//      (`listingSync.test.ts`); this proves it live, in what a collector reads.
+//      "just synced. Give it a minute" to that press and ran nothing, and the
+//      card stayed queued, so the walk to an empty queue goes red on it. The
+//      press is turned away correctly only when the poll's drain took the card
+//      first (the three outcomes, below): then the queue is already empty, and
+//      the set reads 0 listed with nothing held back either way. The unit tests
+//      pin the branch itself (`listingSync.test.ts`); this proves it live, in
+//      what a collector reads.
 //   7. They tidy up (cards out of the box: 6b took the third by its quantity;
 //      the first card's scanned line and the second card's line go through the
 //      card drawer's Remove, which also carries the drawer's axe states; the
@@ -112,12 +116,13 @@
 // (`LAUNCH_GATE`), the scan pair's crop and read (`PAIR_PROCESSING`, the
 // placeholder pipeline's own exception) and the photo edit's render (`EDIT_LANDS`).
 //
-// Two triggers (NEO-433). A set's sync is set going by the press of the
-// checklist's Sync and by the 15-minute sales poll, and the poll can list a
-// stocked box before the press lands. Both orders are real product behaviour,
-// so the spec neither forces the press to win nor turns the poll off; it presses
-// as soon as its last write is in (the slow axe check waits until after the
-// Sync assertions) and holds either order to a hard end state:
+// Three outcomes of a press (NEO-433, NEO-555). A set's sync is set going by
+// the press of the checklist's Sync and by the 15-minute sales poll, and the
+// poll can list a stocked box before the press lands. Every order is real
+// product behaviour, so the spec neither forces the press to win nor turns the
+// poll off; it presses as soon as its last write is in (the slow axe check
+// waits until after the Sync assertions), reads which toast answered
+// (`pressSync`) and holds each outcome to a hard end state:
 //   - press first: the press sends the cards. The row reads "2 listed, 2
 //     updated, 1 skipped" and its ledger holds "Gathering data" (the run's
 //     check, folded) then Upload photos, List the cards, Set prices and Go
@@ -126,24 +131,36 @@
 //     that sends nothing. The row reads "2 listed, 1 skipped" with no
 //     "updated", and the ledger is exactly "Gathering data, done" then "Nothing
 //     new to send" (the positive proof the press sent nothing).
-// The line says which order it was, and each order's ledger is asserted hard, so
-// a run whose ledger never shows goes red in either. The in-person press at
-// step 6 has the same two orders (a poll that takes the cards down first), and
-// so does the sale (the hop's poll or the cron's stores it; the screen is the same).
+//   - turned away: inside a minute of the set's last press, with nothing left
+//     queued because the poll's drain already sent it, the press runs nothing
+//     and toasts "<title> is already in the works. Give it a minute, then Sync
+//     again." (`syncToast`). On the fake eBay steps 4 to 6 take about 24 s, so
+//     the later presses (4a, 6, 6b) can all land inside that minute. The poll's
+//     run is then held to the press's own end state, its sending step and its
+//     line ("2 taken to 0" at step 6), never to "Nothing new to send".
+// The toast and the line say which outcome it was, and each outcome's ledger
+// is asserted hard, so a run whose ledger never shows goes red in all three.
+// The in-person press at step 6 has the same outcomes (a poll that takes the
+// cards down first), and so does the sale (the hop's poll or the cron's stores
+// it; the screen is the same).
 //
-// A press is proven to have RUN before either order is read. The row a poll
-// leaves behind looks like a press's own, and the page says "Nothing syncing
-// right now." between two runs, so neither the row nor the idle line is evidence.
-// The press's queued cards are: the press writes them (its toast comes after),
-// and a run's finish clears them in the same write that records its result, but
-// only if the run claimed them (a run under way when the press landed leaves
-// them, and the set goes round again). So the spec walks step by step until the
-// queue holds no card of the set and the platform is idle (`followRunToRest`),
-// and only then reads the row: a press whose run never claims leaves its cards
-// queued and goes red in both orders.
+// A press is proven to have RUN (or the poll's run to have done its work)
+// before any outcome is read. The row a poll leaves behind looks like a press's
+// own, and the page says "Nothing syncing right now." between two runs, so
+// neither the row nor the idle line is evidence. The press's queued cards are:
+// the press writes them (its toast comes after), and a run's finish clears them
+// in the same write that records its result, but only if the run claimed them
+// (a run under way when the press landed leaves them, and the set goes round
+// again). So the spec walks step by step until the queue holds no card of the
+// set and the platform is idle (`followRunToRest`), and only then reads the row:
+// a press whose run never claims leaves its cards queued and goes red in every
+// outcome; so does a press turned away while its cards are still queued
+// (nothing runs them until the cron).
 //
 // Sync's toast. A press that sets a run going toasts "Syncing <title> now.
-// Watch it on Sync status."; every press asserts it before reading the result.
+// Watch it on Sync status."; a press turned away toasts "already in the works".
+// The first press (step 4) has no press before it, so only the later ones can be
+// turned away; every press asserts one of the two before reading the result.
 //
 // The scanned pair (NEO-427). The two scans are the placeholder pipeline's own
 // scanner-bed cards (`public/placeholder-fixtures/01-vorkle-*.jpg`), which the fast
@@ -174,7 +191,7 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
-import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, followRunToEnd, followRunToRest, inventoryTabs, nameOf, pickIntakeSet, putOtherBoxesInPerson, quantityField, queueSettled, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
+import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, followRunToEnd, followRunToRest, inventoryTabs, nameOf, pickIntakeSet, pressSync, putOtherBoxesInPerson, quantityField, queueSettled, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
 import { connectEbayAndFinishSetup, EBAY_TEST_MODE_LINE, expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { EDIT_LANDED, EDIT_LANDS, photoViewer } from "../../support/photo-viewer";
@@ -612,7 +629,7 @@ test(
       // up); the press read and sent nothing, so the ledger is "Gathering data" then "Nothing new to send".
       await expectNothingSent(run);
     }
-    // The ledger is showing (either order), so the axe check has it.
+    // The ledger is showing (either outcome), so the axe check has it.
     await expectAccessible(page, { label: "Inventory Sync status, eBay 2 listed, the run's steps done and a card held back for no photo" });
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
@@ -656,9 +673,10 @@ test(
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    // A press inside the minute is still taken: the queued row is newer than the last drain.
-    await sync.click();
-    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    // A press inside the minute is still taken: the queued row is newer than the
+    // last drain. Unless the poll's drain sent it first: then nothing is queued and
+    // the press is turned away (header, "Three outcomes").
+    const relistPress = await pressSync(page, sync, TITLE);
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     const relist = syncRun(platform, SET_LABEL, EBAY);
@@ -672,7 +690,12 @@ test(
     await expect(heldBack).toContainText(c.split(" ")[0]);
     await expect(relistQueued).toHaveCount(0);
     const relisted = await relist.last.getByRole("listitem", { name: "List the cards, done", exact: true }).isVisible();
-    if (relisted) {
+    if (relistPress === "throttled") {
+      // Turned away: the poll's run sent the card, so the last run is a sending one.
+      // No "nothing sent" fallback here: a press turned away ran nothing of its own.
+      await expect(relist.last.getByRole("listitem")).toContainText([/^Upload photos, done$/, /^List the cards, done$/]);
+      await expect(relist.nothingNew()).toHaveCount(0);
+    } else if (relisted) {
       // Press first: the new photo went up, then the item again with it.
       await expect(relist.last.getByRole("listitem")).toContainText([/^Upload photos, done$/, /^List the cards, done$/]);
       await expect(relist.nothingNew()).toHaveCount(0);
@@ -777,8 +800,7 @@ test(
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await drillToCollectorChecklist(page, FUTURE_STARS);
-    await sync.click();
-    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    const takeDownPress = await pressSync(page, sync, TITLE);
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // The live eBay round trip, step by step: the set was 2 listed a minute ago,
@@ -786,17 +808,24 @@ test(
     // the set: the walk ends only when the press's queued cards are gone and the
     // platform is idle, so the row read next is a run that started after the
     // press. The poll can take the cards down before the press does (the
-    // header's two orders): the press is then a full read that sends nothing.
+    // header's three outcomes): a press that still runs is then a full read that
+    // sends nothing, and one inside the minute of step 4a's press is turned away.
     const takeDown = syncRun(platform, SET_LABEL, EBAY);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
     await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL));
     await expect(row.getByText(/^Synced /)).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
-    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
+    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in every outcome.
     await expect(takeDown.last).toBeVisible();
     await expect(takeDown.gathered()).toBeVisible();
     const takeDownStep = takeDown.last.getByRole("listitem", { name: "Take down cards at 0, done", exact: true });
-    if (await takeDownStep.isVisible()) {
+    if (takeDownPress === "throttled") {
+      // Turned away: the poll's run took the two cards down, so its ledger and line are
+      // the takedown's, asserted hard (no "nothing sent" fallback: the press ran nothing).
+      await expect(takeDownStep).toBeVisible();
+      await expect(takenLine).toBeVisible();
+      await expect(takeDown.nothingNew()).toHaveCount(0);
+    } else if (await takeDownStep.isVisible()) {
       // Press first: the press withdrew the cards.
       await expect(takenLine).toBeVisible();
       await expect(takeDown.last.getByRole("listitem")).toContainText([/^Gathering data, done$/, /^Take down cards at 0, done$/]);
@@ -825,20 +854,33 @@ test(
     const queuedCards = queuedList.getByRole("listitem");
     await expect(queuedCards.filter({ hasText: new RegExp(`^${escapeRegExp(c.split(" ")[0])} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
     await expectAccessible(page, { within: queuedList, label: "Inventory Sync status, eBay a card queued" });
-    // The press: taken, not told to wait (the old code said "Give it a minute"
-    // whenever the set's record held a press from the last minute).
+    // The press: taken while the card is queued (the old code said "Give it a
+    // minute" whenever the set's record held a press from the last minute). It
+    // is turned away only when the poll's drain took the row first; a refusal
+    // with the row still queued leaves it queued until the cron, so the walk
+    // below goes red on it.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    await sync.click();
-    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
-    await expect(seeSyncing).toBeVisible();
-    await seeSyncing.click();
+    // Taken, or turned away only because the poll's drain already took the card:
+    // "See what's syncing" shows only while a run is under way, so a turned-away
+    // press goes by the tab.
+    if ((await pressSync(page, sync, TITLE)) === "ran") {
+      await expect(seeSyncing).toBeVisible();
+      await seeSyncing.click();
+    } else {
+      await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
+    }
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // The queue empties, and only then is nothing under way: the run that took
     // the rows is over before step 7 goes on (its writes and the disconnect
     // would otherwise land in the middle of it).
     await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL));
+    // Either way the card's row is gone and the set reads 0 listed with nothing held
+    // back: the third card was never live on eBay, so taking it to 0 withdraws nothing.
+    await expect(queuedCards.filter({ hasText: new RegExp(`^${escapeRegExp(c.split(" ")[0])} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(0);
+    await expect(row.getByText(/^0 listed$/)).toBeVisible();
+    await expect(row.getByText(/held back/)).toHaveCount(0);
 
     // --- 7. Tidy up through the product: the box's cards, the price, the box, eBay --------
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
