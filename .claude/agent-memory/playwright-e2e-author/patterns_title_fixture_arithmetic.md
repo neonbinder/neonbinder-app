@@ -61,6 +61,25 @@ A custom sport's name ("E2E Test Sport <w>") varies by a digit: make sure the
 sport is cut and never fits back. Examples: `card-title-uses-short-name-for-titles`,
 `card-title-level-type-name-cut-quietly-tidy-up-cuts-listed`.
 
+**Random tails flip "N need you" counts.** Since NEO-609 a card whose title
+gives up a whole team or its number is a Tidy Up card ("auto-generated title
+was cut short"), and the header pill counts it. A spec that mints card numbers
+as `<n>-${ATTEMPT_ID}` on a minted set with a team linked can sit right at 80:
+whether it crosses is the attempt's random tail, so the pill reads N+1 on some
+runs (checklist-attention-badge-and-filter: green on desktop, red on mobile in
+the same CI run, no project difference involved). Sweep every spec that pins a
+pill count or asserts "no marks": run the generator over every worker 0-11, d/m,
+attempt 1-2, tail 1 and 99999; a card number does not need the attempt in it
+on the attempt's own set (use a bare "703").
+
+**Demo titles move with the generator.** The dashboard demo builds titles
+through `dash-card.ts` -> `generateListingTitle`; a generator change renames
+every demo card ("1989 Score Base Barry Sanders #257 ..."). Diff the whole set:
+esbuild a tiny script that walks `getDashboard()` for `title`s (alias `@` to
+apps/web, empty loaders for images/css) at HEAD and at origin/main
+(`git archive` into scratch, symlink node_modules), then grep playwright/ for
+each main title's first 4-5 words.
+
 **Stored vs regenerated:** a print run (drawer `spinbutton` "Print run") does
 not move the stored title; Regenerate writes through `updateCard`, which CLEARS
 `listingTitleTruncated`, so a Tidy Up proof reads the title the card was BORN
