@@ -260,7 +260,7 @@ async function removeBinderLine(checklist: Locator, short: string, line: Awaited
   await expect(form).toBeHidden();
   await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
   await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-  await confirmRemoved(drawer);
+  await confirmRemoved(drawer, `Removed ${short}, Raw, Excellent`);
   await drawer.getByRole("button", { name: "Close card detail" }).click();
   await expect(drawer).toBeHidden();
 }

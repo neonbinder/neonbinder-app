@@ -246,7 +246,7 @@ jobs:
           # erroring.
           name="${cloud#https://}"; name="${name%.convex.cloud}"
           if [ -z "$name" ] || [[ ! "$name" =~ ^[a-z-]+-[0-9]+$ ]]; then
-            echo "::error::Could not derive a Convex preview deployment name from '$cloud'"
+            echo "::error::Could not derive a Convex preview deployment name from the preview's Convex URL"
             exit 1
           fi
           # The slug shape above also matches production's. Refuse it: the
@@ -261,7 +261,9 @@ jobs:
             echo "::error::Refusing: the preview resolves to the PRODUCTION Convex deployment"
             exit 1
           fi
-          echo "Convex deployment: $name"
+          # The name is not echoed: this log is public on a public repo, and a
+          # masked value would be dropped from the job output below.
+          echo "Convex preview deployment resolved."
           echo "convex_name=$name" >> "$GITHUB_OUTPUT"
 
   timings:
@@ -792,7 +794,7 @@ jobs:
           ./e2e-seed-reset.sh || rc=$?
           if [ "$rc" -eq 75 ]; then
             echo "degraded=true" >> "$GITHUB_OUTPUT"
-            echo "::error::Convex preview $CONVEX_NAME is degraded: the reset or reference import ran past its limit (desktop pass; see the step log). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
+            echo "::error::The Convex preview is degraded: the reset or reference import ran past its limit (desktop pass; see the step log). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
             echo "- Preview degraded: reset or reference import past its limit; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -809,6 +811,8 @@ jobs:
       - name: Stop Convex latency probe (desktop seed)
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_PROBE_PID:-}" ]; then
@@ -818,7 +822,15 @@ jobs:
           OUT="${RUNNER_TEMP}/convex-probe-seed-desktop.jsonl"
           if [ -s "$OUT" ]; then
             node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
-            gzip -c "$OUT" > "convex-probe-seed-desktop.jsonl.gz" || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-seed-desktop.jsonl.gz" || true
+            else
+              rm -f "convex-probe-seed-desktop.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
           else
             echo "No latency probe data for this seed."
           fi
@@ -845,9 +857,9 @@ jobs:
 
       - name: Mark the preview degraded (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
-        env:
-          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-        run: printf '%s\n' "$CONVEX_NAME" > "$RUNNER_TEMP/preview-degraded.txt"
+        # recreate-degraded-preview.yml only counts artifacts by name; the file
+        # holds a fixed string, never the (public-artifact) deployment name.
+        run: printf 'degraded\n' > "$RUNNER_TEMP/preview-degraded.txt"
 
       - name: Upload the degraded marker (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
@@ -929,6 +941,8 @@ jobs:
       - name: Stop Convex log capture (seed)
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_SEED_PID:-}" ]; then
@@ -960,7 +974,10 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for the seed job."
           else
@@ -1137,6 +1154,17 @@ jobs:
           echo "Shard ${SHARD} ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
           exit "${code:-0}"
 
+      # NEO-592: this shard's retried specs (failed once, passed on retry) in the
+      # job summary. The flaky reporter writes flaky.json beside the blob report
+      # (PW_REPORT_DIR); the e2e job prints the combined table for the run.
+      # Informational only: it says "no retried specs" for an empty list and "not
+      # written" for a missing file, and never fails the job.
+      - name: Retried specs (desktop shard ${{ matrix.shard }})
+        if: always()
+        working-directory: apps/web
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/retry-summary.sh" shard playwright/report/flaky.json "desktop shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY" || true
+
       # NEO-301: stop the background capture and filter before upload — same
       # filter and same reasoning as "Stop Convex log capture (seed)" above
       # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
@@ -1144,6 +1172,8 @@ jobs:
       - name: Stop Convex log capture (desktop shard ${{ matrix.shard }})
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_DESKTOP1_PID:-}" ]; then
@@ -1175,7 +1205,10 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-desktop-${{ matrix.shard }}-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for desktop shard ${{ matrix.shard }}."
           else
@@ -1185,6 +1218,8 @@ jobs:
       - name: Stop Convex latency probe (desktop shard ${{ matrix.shard }})
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_PROBE_PID:-}" ]; then
@@ -1194,7 +1229,15 @@ jobs:
           OUT="${RUNNER_TEMP}/convex-probe-desktop-${{ matrix.shard }}.jsonl"
           if [ -s "$OUT" ]; then
             node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
-            gzip -c "$OUT" > "convex-probe-desktop-${{ matrix.shard }}.jsonl.gz" || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-desktop-${{ matrix.shard }}.jsonl.gz" || true
+            else
+              rm -f "convex-probe-desktop-${{ matrix.shard }}.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
           else
             echo "No latency probe data for this shard."
           fi
@@ -1391,6 +1434,8 @@ jobs:
 
       - name: Stop Convex log capture (seller desktop)
         if: ${{ always() && steps.sellers.outputs.any == 'true' }}
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_SELLER_PID:-}" ]; then
@@ -1421,7 +1466,10 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-desktop-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-desktop-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
           else
             echo "No Convex logs captured for the seller desktop job."
@@ -1535,6 +1583,8 @@ jobs:
 
       - name: Stop Convex log capture (breaker desktop)
         if: always()
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_BREAKER_PID:-}" ]; then
@@ -1565,7 +1615,10 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-desktop-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-desktop-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
           else
             echo "No Convex logs captured for the breaker desktop job."
@@ -1916,7 +1969,7 @@ jobs:
           ./e2e-seed-reset.sh || rc=$?
           if [ "$rc" -eq 75 ]; then
             echo "degraded=true" >> "$GITHUB_OUTPUT"
-            echo "::error::Convex preview $CONVEX_NAME is degraded: the reset or reference import ran past its limit (mobile pass; see the step log). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
+            echo "::error::The Convex preview is degraded: the reset or reference import ran past its limit (mobile pass; see the step log). No specs ran, so this says nothing about the PR. The next step deletes the preview, and the whole workflow re-runs on its own with a fresh one (NEO-392)."
             echo "- Preview degraded: reset or reference import past its limit; deleting it for a fresh one (NEO-392)" >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
@@ -1931,6 +1984,8 @@ jobs:
       - name: Stop Convex latency probe (mobile seed)
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_PROBE_PID:-}" ]; then
@@ -1940,7 +1995,15 @@ jobs:
           OUT="${RUNNER_TEMP}/convex-probe-seed-mobile.jsonl"
           if [ -s "$OUT" ]; then
             node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
-            gzip -c "$OUT" > "convex-probe-seed-mobile.jsonl.gz" || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-seed-mobile.jsonl.gz" || true
+            else
+              rm -f "convex-probe-seed-mobile.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
           else
             echo "No latency probe data for this seed."
           fi
@@ -1967,9 +2030,9 @@ jobs:
 
       - name: Mark the preview degraded (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
-        env:
-          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
-        run: printf '%s\n' "$CONVEX_NAME" > "$RUNNER_TEMP/preview-degraded.txt"
+        # recreate-degraded-preview.yml only counts artifacts by name; the file
+        # holds a fixed string, never the (public-artifact) deployment name.
+        run: printf 'degraded\n' > "$RUNNER_TEMP/preview-degraded.txt"
 
       - name: Upload the degraded marker (NEO-392)
         if: failure() && steps.delete_degraded.outputs.deleted == 'true'
@@ -2016,6 +2079,8 @@ jobs:
       - name: Stop Convex log capture (seed-mobile)
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_SEED_MOBILE_PID:-}" ]; then
@@ -2047,7 +2112,10 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-mobile-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seed-mobile-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for the seed-mobile job."
           else
@@ -2224,6 +2292,17 @@ jobs:
           echo "Shard ${SHARD} ($PROJECT): exit ${code:-0}, $(( $(date +%s) - start ))s"
           exit "${code:-0}"
 
+      # NEO-592: this shard's retried specs (failed once, passed on retry) in the
+      # job summary. The flaky reporter writes flaky.json beside the blob report
+      # (PW_REPORT_DIR); the e2e job prints the combined table for the run.
+      # Informational only: it says "no retried specs" for an empty list and "not
+      # written" for a missing file, and never fails the job.
+      - name: Retried specs (mobile shard ${{ matrix.shard }})
+        if: always()
+        working-directory: apps/web
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/retry-summary.sh" shard playwright/report/flaky.json "mobile shard ${{ matrix.shard }}" >> "$GITHUB_STEP_SUMMARY" || true
+
       # NEO-301: stop the background capture and filter before upload — same
       # filter and same reasoning as "Stop Convex log capture (seed)" above
       # (keep ERROR/WARN + our structured `{"msg": …}` lines, drop plain
@@ -2231,6 +2310,8 @@ jobs:
       - name: Stop Convex log capture (mobile shard ${{ matrix.shard }})
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_MOBILE1_PID:-}" ]; then
@@ -2262,7 +2343,10 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-mobile-${{ matrix.shard }}-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
             echo "Wrote $(du -h "${OUT_FILE}.gz" 2>/dev/null | cut -f1) of filtered Convex logs for mobile shard ${{ matrix.shard }}."
           else
@@ -2272,6 +2356,8 @@ jobs:
       - name: Stop Convex latency probe (mobile shard ${{ matrix.shard }})
         if: always()
         working-directory: apps/web
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_PROBE_PID:-}" ]; then
@@ -2281,7 +2367,15 @@ jobs:
           OUT="${RUNNER_TEMP}/convex-probe-mobile-${{ matrix.shard }}.jsonl"
           if [ -s "$OUT" ]; then
             node scripts/convex-probe.mjs --summary "$OUT" --stall-ms 2000 || true
-            gzip -c "$OUT" > "convex-probe-mobile-${{ matrix.shard }}.jsonl.gz" || true
+            # Public artifact: through the one redactor first (it carries
+            # this run's Convex deployment name); dropped if that fails.
+            if REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" < "$OUT" > "$OUT.safe"; then
+              gzip -c "$OUT.safe" > "convex-probe-mobile-${{ matrix.shard }}.jsonl.gz" || true
+            else
+              rm -f "convex-probe-mobile-${{ matrix.shard }}.jsonl.gz"
+              echo "::warning::Probe redaction failed; the latency probe artifact was not written."
+            fi
+            rm -f "$OUT.safe"
           else
             echo "No latency probe data for this shard."
           fi
@@ -2477,6 +2571,8 @@ jobs:
 
       - name: Stop Convex log capture (seller mobile)
         if: ${{ always() && steps.sellers.outputs.any == 'true' }}
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_SELLER_PID:-}" ]; then
@@ -2507,7 +2603,10 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-mobile-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-seller-mobile-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
           else
             echo "No Convex logs captured for the seller mobile job."
@@ -2621,6 +2720,8 @@ jobs:
 
       - name: Stop Convex log capture (breaker mobile)
         if: always()
+        env:
+          CONVEX_NAME: ${{ needs.setup.outputs.convex_name }}
         run: |
           set -uo pipefail
           if [ -n "${CONVEX_LOGS_BREAKER_PID:-}" ]; then
@@ -2651,7 +2752,10 @@ jobs:
                     select((.error != null) or ($keep | length) > 0)
                     | {identifier, udfType, timestamp, requestId, executionId, kind, error, logLines: $keep}
                   end
-              ' "$RAW_LOG_FILE" > "$OUT_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-mobile-jq.stderr.log" || true
+              ' "$RAW_LOG_FILE" 2>"${RUNNER_TEMP}/convex-logs-breaker-mobile-jq.stderr.log" \
+                | REDACT_LITERALS="${CONVEX_NAME:-}" "$GITHUB_WORKSPACE/.github/scripts/redact-ci-log.sh" > "$OUT_FILE"
+              # Never publish an unredacted log: drop it if the redaction pass failed.
+              if [ "${PIPESTATUS[1]}" != "0" ]; then rm -f "$OUT_FILE"; echo "::warning::Log redaction failed; the Convex log artifact was not written."; fi
             gzip -f "$OUT_FILE" || true
           else
             echo "No Convex logs captured for the breaker mobile job."
@@ -2763,6 +2867,15 @@ jobs:
           PLAYWRIGHT_HTML_OUTPUT_DIR=pw-merged/html \
           PLAYWRIGHT_HTML_OPEN=never \
             npx playwright merge-reports --reporter=json,junit,html pw-blobs
+
+      # NEO-592: one table of every spec that failed once and passed on retry,
+      # read from the merged report. This is the same data as the per-shard
+      # tables, joined across both passes. Informational: the verdict is the
+      # "Verify results" step below, which counts a pass-on-retry as a pass.
+      - name: Retried specs (whole run)
+        if: always()
+        run: |
+          "$GITHUB_WORKSPACE/.github/scripts/retry-summary.sh" combined pw-merged/results.json >> "$GITHUB_STEP_SUMMARY" || true
 
       # Screenshots and reports only (see the header). The merged HTML report
       # embeds attachments, which in CI are failure screenshots.
@@ -3016,8 +3129,8 @@ jobs:
             if [ "$count" = "0" ]; then
               echo "None: every catalogue read was recorded."
             else
-              echo "${count} unrecorded request(s), stored under the namespace prefix \`${CONVEX_NAME}-\` (this preview's Convex deployment name plus \"-\")."
-              echo "They persist in the fake's bucket for 30 days: record them later with the local recorder, \`--prefix ${CONVEX_NAME}-\`, or \`--all\` once this preview is gone."
+              echo "${count} unrecorded request(s), stored under this preview's namespace prefix (its Convex deployment name plus \"-\", left out here because this summary is public; the Convex dashboard lists it)."
+              echo "They persist in the fake's bucket for 30 days: record them later with the local recorder, \`--prefix <that prefix>\`, or \`--all\` once this preview is gone."
               echo
               echo '```json'
               jq -c '.misses[]' "$out" 2>/dev/null | head -n 100

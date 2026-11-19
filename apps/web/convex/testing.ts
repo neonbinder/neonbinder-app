@@ -1798,7 +1798,13 @@ export const seedMyTestCredentials = action({
         userId,
         apiKey: easypostKey,
       });
-      seeded.push({ site: "easypost", stored: result.success });
+      // NEO-604: carry the store's reason through on a failure, like the
+      // marketplace loop above (the message holds an HTTP status, never the key).
+      seeded.push({
+        site: "easypost",
+        stored: result.success,
+        ...(result.success ? {} : { reason: result.message }),
+      });
     }
 
     return { seeded };

@@ -305,7 +305,7 @@ test(
         // Clean up the copy (R7).
         await yourCopies.getByRole("button", { name: /^Remove #160\b/ }).click();
         await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-        await confirmRemoved(drawer);
+        await confirmRemoved(drawer, "Removed #160, ");
         copyLeft = false;
         await drawer.getByRole("button", { name: "Close card detail" }).click();
         await expect(drawer).toBeHidden();
@@ -338,7 +338,7 @@ test(
           const { drawer, yourCopies } = await openDrawer();
           await yourCopies.getByRole("button", { name: /^Remove #160\b/ }).click();
           await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-          await confirmRemoved(drawer);
+          await confirmRemoved(drawer, "Removed #160, ");
         });
       }
       if (left.length > 0) {

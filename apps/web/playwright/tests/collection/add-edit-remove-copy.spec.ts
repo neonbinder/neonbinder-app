@@ -329,10 +329,10 @@ test(
     // Remove every copy: the card needs again.
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Very Good ×2`, exact: true }).click();
     await expect(yourCopies.getByRole("heading", { name: "Your copies (1 line)" })).toBeVisible();
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${short}, Raw, Very Good ×2`);
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${short}, Raw, Excellent`);
     await expect(drawer.getByText("Need it")).toBeVisible();
 
     await drawer.getByRole("button", { name: "Close card detail" }).click();

@@ -78,3 +78,6 @@
 - [Fake code deploys only from main](fake-service-code-deploys-only-from-main.md) — fake capability merges before the PR whose E2E calls it; browser-facing steps go on a /testing SPA route
 - [Set team default: copy-down vs lookup](set-team-default-copy-down-vs-lookup.md) — teamIds copied down + cascaded; NEO-528 defaults looked up; never mix for one attribute
 - [Title chain facts are hand-passed](title-chain-facts-are-hand-passed-at-the-commit-chunk.md) — new chain fact: 2 explicit commit passes + 2 inputs validators; Tidy Up = coreFits except parallel-copy short-circuit
+- [Runner region sets the probe p50](runner-region-sets-the-probe-p50.md) — shard probe spread is the runner's region; compare load with server-side ping, loop:loop buckets, OCC
+- [Admin close settles a whole report group](admin-close-settles-a-whole-report-group.md) — group-wide admin writes cross workers; give each report-filing spec its own variant + platform
+- [Suite red rate is a long tail](suite-red-rate-is-a-long-tail.md) — 470 executions at zero retries: 0.3% per execution is 75% red; plan by family and policy; first red on a worker is the cause

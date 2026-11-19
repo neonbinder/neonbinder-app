@@ -175,7 +175,7 @@ describe("the inventory's checklist", () => {
     fireEvent.change(a, { target: { value: "" } });
     fireEvent.blur(a);
     await flush();
-    expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true);
+    await waitFor(() => expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true));
   });
 
   it("after Dismiss, the same blank blur is allowed to speak", async () => {
@@ -189,7 +189,7 @@ describe("the inventory's checklist", () => {
     fireEvent.change(b, { target: { value: "" } });
     fireEvent.blur(b);
     await flush();
-    expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true);
+    await waitFor(() => expect(says(/^Nothing changed\. Type 0 to clear it\.$/)).toBe(true));
   });
 
   it("a collection copy never counts: nothing held in a binder lights a field", () => {
