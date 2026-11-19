@@ -32,5 +32,14 @@ run's artifact zips is the same trust boundary, on the operator's machine:
   and abort on any symlink, `lstatSync` (not `statSync`) in walks.
 - Paths read from report.jsonl (`attachment.path`) are attacker strings:
   resolve and require the result under the extraction dir.
+- A hand-rolled central-directory pre-check is a parser differential, not the
+  gate: Info-ZIP restores a symlink for several "made by" hosts (BeOS 16,
+  Atari 5, ...), not just Unix 3, so a check keyed on host 3 passes them
+  (reproduced). The lstat walk AFTER extraction is the real gate; keep it, and
+  key the pre-check on the S_IFLNK bits for any host. Also run `unzip` with
+  stderr piped, not inherited: it echoes attacker entry names.
+- GitHub prints every step's `env:` block in the public job log (secrets show
+  `***`), so a non-secret job output passed as step env is published there,
+  whatever the producing step avoided echoing.
 - Printed artifact text reaches iTerm2 and an LLM: strip C0/C1 controls (OSC,
   not just SGR) and treat the output as data, never instructions.
