@@ -5,6 +5,8 @@
  * exercises; each `describe` below documents one clause of it.
  */
 
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
@@ -1311,5 +1313,40 @@ describe("NEO-331: a dataset row that names no league gets no league", () => {
 
     expect(preview.results[0].status).toBe("would-create");
     expect(preview.leagues).toEqual([]);
+  });
+});
+
+describe("source pin: the armed gate on every bulk-load writer (NEO-611)", () => {
+  const src = readFileSync(join(__dirname, "bulkLoad.ts"), "utf8");
+  /** Each `export const name = internalMutation|internalQuery({` with its body up to the next export. */
+  const defs = [
+    ...src.matchAll(/export const (\w+) = (internalMutation|internalQuery|mutation|query|action|internalAction)\(/g),
+  ].map((m, i, all) => ({
+    name: m[1],
+    kind: m[2],
+    body: src.slice(m.index!, all[i + 1]?.index ?? src.length),
+  }));
+
+  test("every internalMutation calls assertBulkLoadArmed, and none is public", () => {
+    const mutations = defs.filter((d) => d.kind.endsWith("utation"));
+    expect(mutations.map((d) => d.name)).toEqual(
+      expect.arrayContaining(["upsertLeagues", "upsertTeams", "upsertPlayerStints", "upsertPlayers"]),
+    );
+    for (const d of mutations) {
+      expect(d.kind, `${d.name} must be internal`).toBe("internalMutation");
+      expect(d.body, `${d.name} must call assertBulkLoadArmed`).toMatch(/assertBulkLoadArmed\(/);
+    }
+    expect(defs.filter((d) => !d.kind.startsWith("internal"))).toEqual([]);
+  });
+
+  test("upsertPlayers is an internalMutation and previewPlayers an internalQuery", () => {
+    expect(defs.find((d) => d.name === "upsertPlayers")?.kind).toBe("internalMutation");
+    expect(defs.find((d) => d.name === "previewPlayers")?.kind).toBe("internalQuery");
+  });
+
+  test("a preview query never calls the armed gate (it must run unarmed)", () => {
+    for (const d of defs.filter((x) => x.kind === "internalQuery")) {
+      expect(d.body, `${d.name} must not need arming`).not.toMatch(/assertBulkLoadArmed\(/);
+    }
   });
 });

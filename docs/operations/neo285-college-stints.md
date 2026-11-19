@@ -43,7 +43,10 @@ The widening is additive: every existing row validates unchanged.
   for NEO-284. `previewPlayerStints` (a query) needs only the confirm literal
   and can be pointed at an unarmed deployment, including prod.
 - **Adopt-only.** It never creates a player. Players are matched by name +
-  sport (+ birth year to separate same-name players), the NEO-254 key.
+  sport (+ birth year to separate same-name players), the NEO-254 key. A
+  roster load that must also create players uses `upsertPlayers`, a separate
+  armed function with its own twin and held-adopt rules; see
+  `neo611-roster-players.md`.
 - **Never guesses.** An ambiguous player, or a school that matches several
   teams, is reported and nothing is written for it.
 - **The sport filter holds.** A `teamId` in another sport (Wikidata files
