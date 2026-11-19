@@ -5,8 +5,8 @@ import { useCallback, useSyncExternalStore } from "react";
  * from across the room, the default) or "condensed" (the denser pre-NEO-522
  * screen). A device preference, not a filter: it lives in this browser's
  * storage, never in the URL, so the card-room monitor and a laptop can differ,
- * and "Back to default" leaves it alone. The page frame reads it too: only a
- * spacious Pick List opens to the wide page.
+ * and "Back to default" leaves it alone. The page frame does not read it: every
+ * Pick List opens to the wide page, Condensed too (NEO-598), so more text fits a line.
  */
 export type PickDensity = "spacious" | "condensed";
 
@@ -35,7 +35,7 @@ function emit() {
   for (const listener of listeners) listener();
 }
 
-/** Switch every Pick List and page frame on this device; kept for this visit even when storage refuses it. */
+/** Switch every Pick List on this device; kept for this visit even when storage refuses it. */
 export function setPickDensity(next: PickDensity): void {
   current = next;
   try {
@@ -76,10 +76,4 @@ export function usePickDensity(): [PickDensity, (next: PickDensity) => void] {
 /** The Pick List's own pages, signed in and in the demo: `/inventory?tab=pick`, `/demo/inventory?tab=pick`. */
 export function isPickListPage(pathname: string, search: string): boolean {
   return (pathname === "/inventory" || pathname === "/demo/inventory") && new URLSearchParams(search).get("tab") === "pick";
-}
-
-/** Whether the page frame opens to the wide page: a spacious Pick List only. */
-export function useWidePickPage(pathname: string, search: string): boolean {
-  const [density] = usePickDensity();
-  return density === "spacious" && isPickListPage(pathname, search);
 }
