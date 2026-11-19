@@ -5,12 +5,15 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createVerify } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { ADMIN_KEY, CALLER, LOADER, setLogSink, startFake } from "./helpers.mjs";
 
 const require = createRequire(import.meta.url);
 const { FAKE_EBAY_CLIENT_ID, FAKE_EBAY_CLIENT_SECRET } = require("../dist/src/ebay/tokens.js");
 const { FAKE_EBAY_PUBLIC_KEY_ID } = require("../dist/src/ebay/notificationKey.js");
-const { EBAY_CAPTURE_ENDPOINTS } = require("../dist/src/ebay/captures.js");
+const { EBAY_CAPTURE_ENDPOINTS, EBAY_REQUIRED_CAPTURES } = require("../dist/src/ebay/captures.js");
 const { planMisses } = require("../dist/recorder/record.js");
 const { replayRefusal } = require("../dist/src/replayAllowlist.js");
 
@@ -668,7 +671,7 @@ describe("fake eBay: captures", () => {
   before(async () => (fake = await startFake()));
   after(() => fake.close());
 
-  it("accepts every eBay capture name, checks it against the fake's answer, and never makes one required", async () => {
+  it("accepts every eBay capture name, checks it against the fake's answer, and then has none of the eBay names missing", async () => {
     const synth = require("../dist/src/ebay/captures.js").ebaySynthesisedCapture;
     for (const endpoint of EBAY_CAPTURE_ENDPOINTS) {
       const s = synth(endpoint);
@@ -678,6 +681,62 @@ describe("fake eBay: captures", () => {
     }
     const health = await fake.call("GET", "/__fake/health");
     assert.deepEqual(health.body.writeCaptures.missing, ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"]);
+  });
+
+  it("reports the required eBay captures on /__fake/health until each is stored, by name, like the BSC two", async () => {
+    const fresh = await startFake();
+    try {
+      const bsc = ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"];
+      const first = (await fresh.call("GET", "/__fake/health")).body.writeCaptures;
+      assert.deepEqual(first, { missing: [...bsc, ...EBAY_REQUIRED_CAPTURES] });
+      assert.ok(first.missing.includes("POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused"), "the sandbox's publish refusal is required");
+      assert.ok(first.missing.includes("POST ebay/api/sell/inventory/v1/offer/:offerId/publish"), "so is the production publish");
+
+      const synth = require("../dist/src/ebay/captures.js").ebaySynthesisedCapture;
+      const store = async (endpoint) => {
+        const s = synth(endpoint);
+        const r = await fresh.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint, status: s.status, shape: s.shape } });
+        assert.equal(r.status, 200, endpoint);
+      };
+      const refused = "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused";
+      await store(refused);
+      const after = (await fresh.call("GET", "/__fake/health")).body.writeCaptures.missing;
+      assert.deepEqual(after, [...bsc, ...EBAY_REQUIRED_CAPTURES.filter((e) => e !== refused)]);
+
+      // A read capture (not a write) does not satisfy a required write.
+      await store("GET ebay/api/sell/inventory/v1/offer");
+      assert.deepEqual((await fresh.call("GET", "/__fake/health")).body.writeCaptures.missing, after);
+    } finally {
+      await fresh.close();
+    }
+  });
+
+  it("keeps every required name readable by Convex's narrowMissingCaptures (its pattern read from source), the list inside its cap, and the Convex test's list equal to the fake's", () => {
+    const convex = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../apps/web/convex");
+    const source = readFileSync(path.join(convex, "fakeBsc.ts"), "utf8");
+    // The pattern a missing name must match, and the cap, exactly as the Convex action holds them.
+    const pattern = /typeof m === "string" && \/(.+)\/\.test\(m\)/.exec(source);
+    assert.ok(pattern, "narrowMissingCaptures no longer filters names with an inline pattern: update this pin");
+    const readable = new RegExp(pattern[1]);
+    const cap = /const MAX_MISSING_CAPTURES = (\d+);/.exec(source);
+    assert.ok(cap, "MAX_MISSING_CAPTURES not found in fakeBsc.ts");
+
+    const { WRITE_ENDPOINTS } = require("../dist/src/paths.js");
+    const required = [...Object.keys(WRITE_ENDPOINTS), ...EBAY_REQUIRED_CAPTURES];
+    for (const e of required) assert.match(e, readable, `${e}: Convex would read the whole health answer as unreadable`);
+    assert.equal(new Set(required).size, required.length, "no name twice");
+    assert.ok(required.length <= Number(cap[1]), `${required.length} required names, Convex reads at most ${cap[1]}`);
+    for (const e of EBAY_REQUIRED_CAPTURES) assert.ok(EBAY_CAPTURE_ENDPOINTS.includes(e), `${e} is a capture name the fake accepts`);
+
+    // The pattern still refuses what it should (a changed pattern that accepts anything would pass the loop above).
+    for (const bad of ["not an endpoint", "PUT a{b}", "POST ebay/api/x #Re fused", "POST ebay/api/x # "]) assert.doesNotMatch(bad, readable, bad);
+
+    // The list the Convex test holds is the fake's list.
+    const test = readFileSync(path.join(convex, "fakeBsc.test.ts"), "utf8");
+    const block = /const REQUIRED_CAPTURE_NAMES = \[([^\]]*)\];/.exec(test);
+    assert.ok(block, "REQUIRED_CAPTURE_NAMES not found in fakeBsc.test.ts");
+    const held = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual([...held].sort(), [...required].sort(), "apps/web/convex/fakeBsc.test.ts REQUIRED_CAPTURE_NAMES differs from the fake's required list");
   });
 
   it("flags a capture whose shape lacks a path the fake answers with", async () => {

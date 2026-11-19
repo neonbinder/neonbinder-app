@@ -5,7 +5,7 @@
  *
  *   Sandbox: the reads and the writes the sandbox accepts, on objects named
  *     NBCAPTURE-SBX-<yyyymmdd>, all removed at the end.
- *   Production (`--prod`, Jason only): ONE real listing to capture what the
+ *   Production (`--prod`, manual, the account owner only): ONE real listing to capture what the
  *     sandbox refuses (media, publish, price update, withdraw). Pre-checks
  *     before any write; exactly the seven writes the dry run prints; a
  *     `finally` that withdraws and deletes whatever the run made, at most

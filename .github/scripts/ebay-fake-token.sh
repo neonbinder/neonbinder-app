@@ -12,9 +12,10 @@
 #   FAKE_NS         namespace (default ebay-probe-ci)
 #   OUT_DIR         the refresh token is written to $OUT_DIR/refresh-token (mode 600)
 #
-# Never fails the job: on any problem it writes `minted=false` to $GITHUB_OUTPUT
-# and exits 0, and the caller runs the app leg only (the account leg then
-# reports skipped_not_connected, which is a warning, not a failure).
+# A failed mint FAILS the job (S2): it writes `minted=false` to $GITHUB_OUTPUT,
+# prints an ::error:: naming only the step that broke, and exits 1. A broken
+# fake consent or token endpoint must not pass green with the account leg
+# skipped.
 set -uo pipefail
 
 : "${FAKE_URL:?FAKE_URL}"; : "${FAKE_ID_TOKEN:?FAKE_ID_TOKEN}"; : "${FAKE_CALLER_KEY:?FAKE_CALLER_KEY}"
@@ -31,7 +32,7 @@ client_secret="PRD-0fake0000000-fake-ebay-client-secret"
 ru_name="nb-fake-ebay-ru-name"
 
 echo "::add-mask::${FAKE_ID_TOKEN}"; echo "::add-mask::${FAKE_CALLER_KEY}"
-giveup() { echo "::warning::fake eBay token not minted ($1); the preview eBay probe runs its app leg only"; [ -z "${GITHUB_OUTPUT:-}" ] || echo "minted=false" >> "$GITHUB_OUTPUT"; exit 0; }
+giveup() { echo "::error::fake eBay token not minted ($1); check the fake's /__fake/ebay/consent and token endpoints (services/fake-bsc/README.md)"; [ -z "${GITHUB_OUTPUT:-}" ] || echo "minted=false" >> "$GITHUB_OUTPUT"; exit 1; }
 
 hdrs=(-H "X-Serverless-Authorization: Bearer ${FAKE_ID_TOKEN}" -H "x-nb-fake-id-token: ${FAKE_ID_TOKEN}" -H "x-nb-fake-bsc-key: ${FAKE_CALLER_KEY}")
 

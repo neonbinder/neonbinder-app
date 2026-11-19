@@ -84,6 +84,18 @@ test("account_warning passes with a warning when the app leg is sound", () => {
   assert.match(r.err, /::warning::/);
 });
 
+test("account_warning fails in fake mode with a fixed error, and still warns in real mode", () => {
+  const body = (t) => ({ ...OK_PROBE(t), outcome: "account_warning", accountLeg: { ok: false, outcome: "refresh_failed", scopes: null, detail: "x-secret" } });
+  const fake = verdict("fake", body("fake"));
+  assert.equal(fake.outcome, "account_warning");
+  assert.equal(fake.status, 1);
+  assert.match(fake.err, /::error::eBay probe \(fake\): account_warning/);
+  assert.ok(!fake.err.includes("x-secret") && !fake.err.includes("refresh_failed"));
+  const real = verdict("real", body("real"));
+  assert.equal(real.status, 0);
+  assert.match(real.err, /::warning::/);
+});
+
 test("account_warning with a broken app leg is inconsistent and fails", () => {
   const r = verdict("real", { ...OK_PROBE("real"), outcome: "account_warning", appLeg: { ok: false, outcome: "x" } });
   assert.equal(r.status, 1);
@@ -265,15 +277,16 @@ test("ebay-fake-token.sh: consent then code grant with the fake's public client"
   assert.match(r.seen[1].headers.authorization, /^Basic /);
 });
 
-test("ebay-fake-token.sh: any failure degrades to minted=false and exits 0", async () => {
+test("ebay-fake-token.sh: any failure fails the job with minted=false (S2)", async () => {
   const consent404 = await runMint((_u, res) => json(res, 404, {}));
-  assert.equal(consent404.code, 0);
+  assert.equal(consent404.code, 1);
   assert.match(consent404.ghOutput, /minted=false/);
   assert.equal(consent404.token, null);
   const grant400 = await runMint((url, res) =>
     url === "/__fake/ebay/consent" ? json(res, 200, { code: "x" }) : json(res, 400, { error: "invalid_grant" }));
-  assert.equal(grant400.code, 0);
+  assert.equal(grant400.code, 1);
   assert.match(grant400.ghOutput, /minted=false/);
+  assert.equal(grant400.token, null);
 });
 
 // --- N4: free-form `detail` text never reaches a log --------------------------
@@ -448,4 +461,50 @@ test("every job that runs a .github/scripts file checks out before it", () => {
       );
     }
   }
+});
+
+// --- browser.yml: the fake-eBay probe is a hard gate (N2, S2) -------------------
+
+function browserSteps() {
+  const yml = readFileSync(join(SCRIPTS, "..", "workflows", "browser.yml"), "utf8");
+  const lines = yml.split("\n");
+  const start = lines.findIndex((l) => l.trim() === "- id: ebay-fake-keys");
+  assert.ok(start > 0, "ebay-fake-keys step present");
+  const end = lines.findIndex((l, i) => i > start && l.trim() === "- name: Run SportLots login suite against preview");
+  assert.ok(end > start, "the eBay steps end before the SportLots suite");
+  const steps = [];
+  for (const l of lines.slice(start, end)) {
+    if (/^      - /.test(l)) steps.push([]);
+    if (steps.length) steps[steps.length - 1].push(l);
+  }
+  return steps.map((s) => s.join("\n"));
+}
+
+test("browser.yml: the eBay probe step is blocking", () => {
+  const steps = browserSteps();
+  const probe = steps.find((s) => /^\s+- id: ebay-probe$/m.test(s));
+  assert.ok(probe, "ebay-probe step present");
+  assert.ok(!/continue-on-error/.test(steps.join("\n")), "no eBay step may continue-on-error");
+  assert.ok(!/warning only/i.test(probe));
+});
+
+test("browser.yml: the fake-keys step has no skip branch and both failures exit 1", () => {
+  const keys = browserSteps().find((s) => /^\s+- id: ebay-fake-keys$/m.test(s));
+  assert.ok(keys);
+  assert.ok(!/ready=false/.test(keys), "no ready=false skip");
+  assert.ok(!/exit 0/.test(keys), "no exit 0 skip");
+  assert.equal((keys.match(/::error::/g) ?? []).length, 2);
+  assert.equal((keys.match(/exit 1/g) ?? []).length, 2);
+});
+
+test("browser.yml: no later eBay step is conditioned on a ready flag", () => {
+  for (const s of browserSteps()) assert.ok(!/^\s+if:.*ready/m.test(s), s.split("\n")[0]);
+});
+
+test("ebay-fake-token.sh exits 1 on a failed mint (the gate does not skip the account leg)", () => {
+  const sh = readFileSync(join(SCRIPTS, "ebay-fake-token.sh"), "utf8");
+  const line = sh.split("\n").find((l) => l.startsWith("giveup()"));
+  assert.ok(line, "giveup defined");
+  assert.match(line, /exit 1; \}$/);
+  assert.ok(!/exit 0/.test(line));
 });

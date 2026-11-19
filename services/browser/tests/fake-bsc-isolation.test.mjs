@@ -331,19 +331,20 @@ describe("fake-key refusal (NEO-552)", () => {
     assert.equal(logged.some((l) => l.includes(FAKE_KEY)), false);
   });
 
-  it("refuses the fake form on any site but buysportscards, even on the fake", async () => {
+  it("refuses the fake form on any site but buysportscards and ebay, even on the fake", async () => {
     fakeMode();
     for (const key of [
       "sportlots-credentials-fake-happy-otter-123-user_x",
-      "ebay-credentials-fake-happy-otter-123-user_x",
       "bsc-credentials-fake-happy-otter-123-user_x",
       "buysportscards-credentials-user_x-credentials-fake-y",
+      // NEO-555: eBay has a fake now, but only in its own anchored form.
+      "ebay-credentials-user_x-credentials-fake-y",
     ]) {
       activeClient = tripwireClient();
       await assert.rejects(new SecretsManagerService().getCredentials(key), /Invalid credential key format/, key);
       assert.deepEqual(activeClient.calls, [], key);
     }
-    assert.ok(logged.some((l) => l.includes("fake_key_not_bsc")));
+    assert.ok(logged.some((l) => l.includes("fake_key_unsupported_site")));
   });
 
   it("accepts a fake key on the fake, and real keys in both modes", async () => {
