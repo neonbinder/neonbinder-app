@@ -1828,28 +1828,35 @@ function VariantWordChip({ word }: { word: string }) {
   );
 }
 
-function CondensedMarkers({ row, salesLink }: { row: PickRow; salesLink: boolean }) {
-  const noBox = row.boxUnrecorded && !row.spot;
-  // A sale filed with its set by the listing's words alone: NB has no card
-  // for it, and the chip says so (the dashed edge echoes the "?" picture).
-  // Can't find it never shows it: its heading already says as much.
-  // A row filed by its title alone is Can't find it's kin, not a listing with a place: no chip.
-  const notInNb = !row.card && cardFacts(row) !== null;
-  if (!row.lastOnes && !row.short && !row.isNew && !noBox && !notInNb) return null;
+/**
+ * A sale filed with its set by the listing's words alone: NB has no card for it, and the chip
+ * says so (the dashed edge echoes the "?" picture). It sits under the variant chip in the Set
+ * cell, where the row's place is read; the chip is the whole message, so the row carries no note.
+ * Can't find it never shows it: its heading already says as much. A row filed by its title
+ * alone is Can't find it's kin, not a listing with a place: no chip.
+ */
+function isNotInNb(row: PickRow): boolean {
+  return !row.card && cardFacts(row) !== null;
+}
+
+function NotInNbChip({ salesLink }: { salesLink: boolean }) {
   const why = salesLink ? COPY.notInNbWhyLinked : COPY.notInNbWhy;
-  // "Not in Neon Binder" is the longest marker, so it alone may break between its words when
-  // the Player column is squeezed (whitespace-normal); the other chips stay whole.
+  return (
+    <span
+      title={why}
+      className="nb-pick-chip rounded border border-dashed border-notice-warn-rule bg-notice-warn-bg px-1.5 text-xs font-semibold leading-5 text-notice-warn-ink"
+    >
+      <span>{NOT_IN_NB}</span>
+      <span className="sr-only">. {why}</span>
+    </span>
+  );
+}
+
+function CondensedMarkers({ row }: { row: PickRow }) {
+  const noBox = row.boxUnrecorded && !row.spot;
+  if (!row.lastOnes && !row.short && !row.isNew && !noBox) return null;
   return (
     <span className="flex flex-wrap gap-1 whitespace-nowrap">
-      {notInNb && (
-        <span
-          title={why}
-          className="nb-pick-chip whitespace-normal rounded border border-dashed border-notice-warn-rule bg-notice-warn-bg px-1.5 text-xs font-semibold leading-5 text-notice-warn-ink"
-        >
-          <span>{NOT_IN_NB}</span>
-          <span className="sr-only">. {why}</span>
-        </span>
-      )}
       {row.isNew && <span className="nb-pick-chip rounded bg-neon-blue px-1.5 text-xs font-bold leading-5 text-on-neon-blue">New</span>}
       {row.lastOnes && (
         <span className="nb-pick-chip rounded border border-notice-info-rule bg-notice-info-bg px-1.5 text-xs font-semibold leading-5 text-notice-info-ink">
@@ -1948,24 +1955,27 @@ function CondensedRow({
     </span>
   ) : null;
 
-  // A sale NB has no card for keeps its next step (check the sales platform) under the variant.
-  const problem = !c && row.problem ? <span className="text-xs text-notice-warn-ink">{row.problem}</span> : null;
+  // A sale NB has no card for wears the Not in Neon Binder chip under the variant: the chip is
+  // the whole message, so no note repeats it (a row with no facts keeps its problem line below).
+  const notInNb = isNotInNb(row) ? <NotInNbChip salesLink={salesLink} /> : null;
   // Wide screens: the set cell's words on one line where it fits; the pieces wrap onto the next
   // line only when it does not. A chip, the serial and the number never break inside.
   const setLine = facts ? (
-    <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-      {showSet && showSport && <SportChip code={facts.sportCode} name={facts.sportName} />}
-      {showSet && <span className="text-ink">{facts.setTitle}</span>}
-      {role && <VariantChip role={role} />}
-      {vWord && <VariantWordChip word={vWord} />}
-      {vName && <span className="text-ink-2">{vName}</span>}
-      {row.serial && (
-        <span className="whitespace-nowrap text-ink-2">
-          {vName && "· "}
-          <span className="font-semibold tabular-nums text-ink">{row.serial}</span>
-        </span>
-      )}
-      {!c && row.problem && <span className="text-xs text-notice-warn-ink">{row.problem}</span>}
+    <span className="flex flex-col items-start gap-0.5">
+      <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
+        {showSet && showSport && <SportChip code={facts.sportCode} name={facts.sportName} />}
+        {showSet && <span className="text-ink">{facts.setTitle}</span>}
+        {role && <VariantChip role={role} />}
+        {vWord && <VariantWordChip word={vWord} />}
+        {vName && <span className="text-ink-2">{vName}</span>}
+        {row.serial && (
+          <span className="whitespace-nowrap text-ink-2">
+            {vName && "· "}
+            <span className="font-semibold tabular-nums text-ink">{row.serial}</span>
+          </span>
+        )}
+      </span>
+      {notInNb}
     </span>
   ) : (
     <span className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
@@ -1982,7 +1992,7 @@ function CondensedRow({
         </span>
       )}
       {variantLine}
-      {problem}
+      {notInNb}
     </span>
   ) : (
     <span className="flex min-w-0 flex-col items-start gap-1">
@@ -2047,13 +2057,14 @@ function CondensedRow({
 
   const who = c ? playerNames(c) : facts?.players || row.listingTitle;
   const team = c?.teams.map((t) => t.name).join(" / ");
-  // The player cell's whole line (wide screens): the name, the team after it, the marker chips.
+  // The player cell's whole line (wide screens): the name, the team after it, the marker chips
+  // (Not in Neon Binder is not one: it rides the Set cell, under the variant).
   // The team and the chips drop to the next line before the name breaks, and none breaks inside.
   const whoLine = (
     <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
       <span className={`wrap-anywhere ${facts ? "font-semibold text-ink" : "text-ink"}`}>{who}</span>
       {team && <span className="whitespace-nowrap text-xs text-ink-3">{team}</span>}
-      <CondensedMarkers row={row} salesLink={salesLink} />
+      <CondensedMarkers row={row} />
     </span>
   );
 
@@ -2135,7 +2146,7 @@ function CondensedRow({
             {condition}
             {orders}
           </span>
-          <CondensedMarkers row={row} salesLink={salesLink} />
+          <CondensedMarkers row={row} />
         </span>
       </td>
     </tr>

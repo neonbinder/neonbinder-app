@@ -493,7 +493,7 @@ describe("NEO-522: Spacious or Condensed rows", () => {
       .map((td) => td.textContent)
       .join(" ");
 
-  it("opens Spacious; Condensed brings back the old rows: the team line, the kind chip and variant name in the Set column, the couldn't-match note", async () => {
+  it("opens Spacious; Condensed brings back the old rows: the team line, the kind chip and variant name in the Set column, the Not in Neon Binder chip under the variant", async () => {
     renderPick();
     const table = await screen.findByRole("table", { name: "Cards to pull" });
     expect(option("Spacious").getAttribute("aria-checked")).toBe("true");
@@ -521,9 +521,10 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect(within(ohtani).getAllByText("8 Bit Ballers", { exact: true }).length).toBeGreaterThan(0);
     const schlittler = await rowOf(/^Pulled #111 Cam Schlittler/);
     expect(within(schlittler).getAllByText("Parallel", { exact: true }).length).toBeGreaterThan(0);
-    // A sale filed with its set keeps the old note under its variant.
+    // A sale filed with its set wears the chip under its variant, and no note repeats it.
     const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
-    expect(within(nabers).getAllByText("Neon Binder couldn't match this line. Check the sales platform.").length).toBeGreaterThan(0);
+    expect(within(nabers).getAllByText("Not in Neon Binder", { exact: true }).length).toBeGreaterThan(0);
+    expect(within(nabers).queryByText("Neon Binder couldn't match this line. Check the sales platform.")).toBeNull();
     // The bordered button is the box, 24px on every screen (NEO-598), with a larger invisible hit area.
     const tick = within(trout).getByRole("button", { name: /^Pulled #27 Mike Trout/ });
     expect(tick.className).toContain("size-6");
@@ -611,22 +612,36 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect(heads.map((th) => th.textContent?.replace(/\s+/g, " ").trim()).sort()).toEqual(expect.arrayContaining(["Condition", "No.", "Order"]));
   });
 
-  it("lets only the Not in Neon Binder chip break between words on a Condensed row; the other marker chips stay whole under the nowrap wrapper (NEO-598)", async () => {
+  it("puts the Not in Neon Binder chip under the variant chip in the Set cell on a Condensed row, not in the Player cell, with no note (NEO-590)", async () => {
     renderPick();
     await screen.findByRole("table", { name: "Cards to pull" });
     fireEvent.click(option("Condensed"));
     const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
-    const notInNb = [...nabers.querySelectorAll(".nb-pick-chip")].find((el) => el.textContent?.startsWith("Not in Neon Binder"))!;
-    expect(notInNb.className).toContain("whitespace-normal");
-    // The wrapper keeps nowrap, so whitespace-normal on this one chip is the only way it breaks.
-    const wrapper = notInNb.parentElement!;
-    expect(wrapper.className).toContain("whitespace-nowrap");
-    // Every other marker chip in the table (Last ones, Short, New, No box) sits in a wrapper like this one.
+    const chips = [...nabers.querySelectorAll(".nb-pick-chip")].filter((el) => el.textContent?.startsWith("Not in Neon Binder"));
+    // One in the wide Set cell and one in the phone's single cell (the other is hidden by CSS).
+    expect(chips).toHaveLength(2);
+    const [wide, phone] = chips;
+    // Wide: the Set cell, which also holds the variant chip; the Player cell does not.
+    const setCell = wide.closest("td")!;
+    expect(within(setCell).getByText("Base", { exact: true })).toBeTruthy();
+    const playerCell = within(nabers).getAllByText("Malik Nabers")[0].closest("td")!;
+    expect(playerCell).not.toBe(setCell);
+    expect(playerCell.textContent).not.toContain("Not in Neon Binder");
+    // The chip follows the variant chip's line (it sits under it), and the variant chip stays first.
+    expect(wide.previousElementSibling?.textContent).toContain("Base");
+    expect(phone.previousElementSibling?.textContent).toContain("Base");
+    // Not one of the nowrap marker chips: it carries no whitespace override of its own.
+    expect(wide.parentElement?.className).not.toContain("whitespace-nowrap");
+    expect(wide.className).not.toContain("whitespace-normal");
+    // The chip is the whole message: no note, and the explanation stays on the chip.
+    expect(within(nabers).queryByText("Neon Binder couldn't match this line. Check the sales platform.")).toBeNull();
+    expect(wide.getAttribute("title")).toBe("No copy here. Go by the listing.");
+    expect(wide.textContent).toBe("Not in Neon Binder. No copy here. Go by the listing.");
+    // The other marker chips stay in the Player cell under the nowrap wrapper.
     const others = [...document.querySelectorAll(".nb-pick-chip")].filter(
       (el) => !el.textContent?.startsWith("Not in Neon Binder") && el.parentElement?.className.includes("flex-wrap") && el.parentElement.className.includes("whitespace-nowrap"),
     );
     expect(others.length).toBeGreaterThan(0);
-    for (const chip of others) expect(chip.className).not.toContain("whitespace-normal");
   });
 
   it("keeps a slab's grade and cert together, and joins up to two orders with a comma on a wide Condensed row (NEO-598)", async () => {

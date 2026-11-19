@@ -368,14 +368,20 @@ test(
         await expect.poll(regionWidth).toBe(spaciousWidth);
         await page.setViewportSize(viewport);
       }
-      /** The old rows: the kind chip beside the variant's name, and the described line's note. */
+      /** The old rows: the kind chip beside the variant's name, and the described line's chip under its variant. */
       const expectCondensed = async () => {
         await expect(seen(pickRow(table, CARD_I.short).getByText("Insert", { exact: true }))).toBeVisible();
         await expect(seen(pickRow(table, CARD_I.short).getByText("Future Stars", { exact: true }))).toBeVisible();
         await expect(seen(rowA.getByText("Base", { exact: true }))).toBeVisible();
-        await expect(
-          seen(pickRow(table, listedTitle).getByText("Neon Binder couldn't match this line. Check the sales platform.", { exact: true })),
-        ).toBeVisible();
+        // The described line wears the chip under its variant chip, in the same cell, and no note repeats it (NEO-590).
+        const listedRow = pickRow(table, listedTitle);
+        const listedVariant = seen(listedRow.getByText("Base", { exact: true }));
+        const listedChip = seen(listedRow.getByText("Not in Neon Binder", { exact: true }));
+        await expect(listedChip).toBeVisible();
+        await expect(listedRow.getByText("Neon Binder couldn't match this line. Check the sales platform.")).toHaveCount(0);
+        await expect(seen(listedRow.getByRole("cell").filter({ has: page.getByText("Base", { exact: true }) })).getByText("Not in Neon Binder", { exact: true })).toBeVisible();
+        const variantBox = (await listedVariant.boundingBox())!;
+        expect((await listedChip.boundingBox())!.y).toBeGreaterThanOrEqual(variantBox.y + variantBox.height - 1);
         // No heavier rule where the run turns from Base to the insert.
         await expect(ruleUnder(rowB)).toHaveCSS("border-bottom-width", "1px");
         if (!isMobile) await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toHaveCount(0);
@@ -383,7 +389,7 @@ test(
       await expectCondensed();
       if (!isMobile) {
         // NEO-598: a Condensed row wraps where a line cannot fit and never clips: no cut text,
-        // no sideways scroll, the described line's note included. (Line counts live in the demo
+        // no sideways scroll, the described line's chip included. (Line counts live in the demo
         // spec, whose rows are fixed; these rows carry the seed's own titles.)
         await expectNothingClipped(table, region);
       }

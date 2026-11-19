@@ -5,14 +5,14 @@
 //     it (a radio group: one Tab stop, the choice in aria-checked);
 //   - Condensed is the old screen's content, dense (NEO-598): the kind chip
 //     ("Insert", "Parallel") beside the variant's name in the Set column, the
-//     "couldn't match" note beside a sale filed with its set (Nabers), thin
+//     Not in Neon Binder chip under the variant chip of a sale filed with its
+//     set (Nabers), in the Set column and with no note repeating it, thin
 //     dividers only (no heavier rule where the variant changes), a 24px bordered
 //     checkbox (on a phone too) and, on a wide screen, no Variant column, the
 //     team beside the name, and a row on one line wherever its columns fit
 //     (every demo row at 1920; at 1280 all but the long listing titles and
 //     notes), wrapping where a line cannot fit and never clipping anything; the
-//     marker chips stay inside their cell, the Not in Neon Binder chip breaking
-//     between its words where the Player column is narrow;
+//     marker chips stay inside their cell;
 //   - it uses the same wide page as Spacious at the same width, so more text
 //     fits each line;
 //   - it passes axe in light and dark;
@@ -39,7 +39,7 @@ const WITT = "2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr. #CCR
 // Slabs: the grade and the cert share the line.
 const OHTANI_SLAB = "#US1 Shohei Ohtani, 2018 Topps Update";
 const SANDERS_SLAB = "#257 Barry Sanders, 1989 Score";
-// Markers beside the name: Last ones, Short 1 (on a two-copy line), New, and the Not in Neon Binder chip on Nabers.
+// Markers beside the name: Last ones, Short 1 (on a two-copy line) and New.
 const JUDGE = "#8B-12 Aaron Judge, 2026 Topps Series 1 8 Bit Ballers Red";
 const FIELDS = "#330 Malachi Fields, 2026 Topps";
 const FLAGG = "#1 Cooper Flagg, 2025-26 Topps Chrome";
@@ -87,9 +87,10 @@ test(
         await expect.poll(() => rowLines(pickRow(table, row)), { message: row }).toBeLessThanOrEqual(1.5);
       }
     };
-    const ALL_ROWS = [TROUT, SKENES, SCHLITTLER, OHTANI_INSERT, NABERS, WITT, OHTANI_SLAB, SANDERS_SLAB, JUDGE, FIELDS, FLAGG];
+    // NABERS is left out: its Not in Neon Binder chip sits under the variant chip, so it is two lines at any width.
+    const ALL_ROWS = [TROUT, SKENES, SCHLITTLER, OHTANI_INSERT, WITT, OHTANI_SLAB, SANDERS_SLAB, JUDGE, FIELDS, FLAGG];
     // At 1280 the page's side nav leaves 1062px, which every column but the longest listing
-    // titles and notes (WITT, NABERS, JUDGE's serial, FLAGG) fits.
+    // titles (WITT, JUDGE's serial, FLAGG) fits.
     const ROWS_AT_1280 = [TROUT, SKENES, SCHLITTLER, OHTANI_INSERT, OHTANI_SLAB, SANDERS_SLAB, FIELDS];
 
     const expectCondensed = async () => {
@@ -97,8 +98,21 @@ test(
       await expect(seen(pickRow(table, OHTANI_INSERT).getByText("Insert", { exact: true }))).toBeVisible();
       await expect(seen(pickRow(table, OHTANI_INSERT).getByText("8 Bit Ballers", { exact: true }))).toBeVisible();
       await expect(seen(pickRow(table, SCHLITTLER).getByText("Parallel", { exact: true }))).toBeVisible();
-      // The note under a sale filed with its set.
-      await expect(seen(pickRow(table, NABERS).getByText(NOTE, { exact: true }))).toBeVisible();
+      // A sale filed with its set wears the Not in Neon Binder chip under its variant chip, in
+      // the same cell (the Set column, or a phone's one cell), and no note repeats it.
+      await expect(pickRow(table, NABERS).getByText(NOTE)).toHaveCount(0);
+      const nabersRow = pickRow(table, NABERS);
+      const variant = seen(nabersRow.getByText("Base", { exact: true }));
+      const notInNb = seen(nabersRow.getByText("Not in Neon Binder", { exact: true }));
+      await expect(variant).toBeVisible();
+      await expect(notInNb).toBeVisible();
+      await expect(seen(nabersRow.getByRole("cell").filter({ has: page.getByText("Base", { exact: true }) })).getByText("Not in Neon Binder", { exact: true })).toBeVisible();
+      const variantBox = (await variant.boundingBox())!;
+      const chipBox = (await notInNb.boundingBox())!;
+      expect(chipBox.y).toBeGreaterThanOrEqual(variantBox.y + variantBox.height - 1);
+      await expectWithinCell(notInNb);
+      // On a wide screen the Player cell no longer carries it.
+      if (!isMobile) await expect(nameCell(nabersRow, "Malik Nabers", "Base #302")).not.toContainText("Not in Neon Binder");
       // The old thin dividers: no heavier rule where the variant changes.
       await expect(ruleUnder(SKENES)).toHaveCSS("border-bottom-width", "1px");
       // The bordered checkbox: the button is the box. 24px (the WCAG 2.2 target floor) on every
@@ -124,14 +138,13 @@ test(
       await expect(seen(pickRow(table, SANDERS_SLAB).getByText("Cert 4021337", { exact: true }))).toBeVisible();
       await expect(seen(pickRow(table, SKENES).getByText("BSC 88213", { exact: true }))).toBeVisible();
       await expect(seen(pickRow(table, SKENES).getByText("eBay 12-3456", { exact: true }))).toBeVisible();
-      // The marker chips (JUDGE, FIELDS, FLAGG, NABERS) stay inside their cell, wherever the row
+      // The marker chips (JUDGE, FIELDS, FLAGG) stay inside their cell, wherever the row
       // wraps: beside the name in the Player column on a wide screen, on their own line in a
-      // phone's one cell. Only "Not in Neon Binder" may break between its words to do so.
+      // phone's one cell.
       for (const [row, chip] of [
         [JUDGE, "Last ones"],
         [FIELDS, "Short 1"],
         [FLAGG, "New"],
-        [NABERS, "Not in Neon Binder"],
       ] as const) {
         const marker = seen(pickRow(table, row).getByText(chip, { exact: true }));
         await expect(marker).toBeVisible();
