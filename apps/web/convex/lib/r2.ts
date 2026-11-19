@@ -107,33 +107,48 @@ export async function signedGetUrl(config: R2Config, key: string, expiresSeconds
 }
 
 /**
- * NEO-592 — how long one HEAD or DELETE may take before it is given up on, and
- * how many times it is tried. A collector waits on `finishUpload`'s HEADs
- * inside a 7 s "Saving..." budget, and a request that hangs has no limit of
- * its own: one hung for 30 s in CI. Two tries of 2.5 s keep the worst case at
- * about 5 s, leaving room for the rest of the call.
+ * NEO-592 — how long one HEAD, DELETE or GET may take before it is given up
+ * on, and how many times it is tried. A collector waits on `finishUpload`'s
+ * HEADs inside a 7 s "Saving..." budget, and a request that hangs has no limit
+ * of its own: one hung for 30 s in CI, and a photo GET in a listing drain sat
+ * 12 s. Two tries of 2.5 s keep the worst case at about 5 s, leaving room for
+ * the rest of the call.
  */
 export const R2_CALL_TIMEOUT_MS = 2_500;
 export const R2_CALL_ATTEMPTS = 2;
 
+/** What `boundedRequest` came back with: an answer (and what `readBody` made of it), or no answer in time. */
+type Tried<T> = { kind: "answered"; res: Response; body: T | undefined } | { kind: "timeout" };
+
 /**
- * One signed HEAD or DELETE with a time limit, tried again once when an
- * attempt times out or R2 answers with a server fault (5xx, 429).
+ * One signed request with a time limit, tried again once when an attempt times
+ * out or R2 answers with a server fault (5xx, 429).
  *
  * Signs and sends here instead of through `client.fetch`: aws4fetch's own
  * retry (ten tries, sleeping up to 25 s between them, on a sleep a signal can't
  * cut short) would break the bound. Anything else that goes wrong (a refusal,
- * a network error) is the caller's to see at once, as before. The last answer
- * is returned when the tries run out, so the caller's status handling and its
- * `R2 <method> failed: <status>` message are unchanged; a try that never
- * answered fails as `R2 <method> failed: timed out`.
+ * a network error) is the caller's to see at once: it throws from here. The
+ * last answer is returned when the tries run out; a try that never answered
+ * comes back as `timeout`.
+ *
+ * `readBody` runs on an answer worth keeping (anything but a server fault),
+ * INSIDE the try's timer, so a body that stalls mid-stream is cut off and
+ * tried again like a request that never answered. `progress.attempts` is the
+ * number of tries begun, kept up to date for a caller that logs a throw.
  *
  * The timer of every try is cleared when the try ends, so none outlives the call.
  */
-async function boundedFetch(config: R2Config, key: string, method: "HEAD" | "DELETE"): Promise<Response> {
+async function boundedRequest<T>(
+  config: R2Config,
+  key: string,
+  method: "HEAD" | "DELETE" | "GET",
+  readBody: (res: Response) => Promise<T>,
+  progress: { attempts: number } = { attempts: 0 },
+): Promise<Tried<T>> {
   const url = `${config.base}/${key.split("/").map(encodeURIComponent).join("/")}`;
   let last: Response | null = null;
   for (let attempt = 1; attempt <= R2_CALL_ATTEMPTS; attempt++) {
+    progress.attempts = attempt;
     const controller = new AbortController();
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -142,7 +157,7 @@ async function boundedFetch(config: R2Config, key: string, method: "HEAD" | "DEL
     }, R2_CALL_TIMEOUT_MS);
     try {
       const res = await fetch(await config.client.sign(url, { method, signal: controller.signal }));
-      if (res.status < 500 && res.status !== 429) return res;
+      if (res.status < 500 && res.status !== 429) return { kind: "answered", res, body: await readBody(res) };
       // Tried again below: the answer we won't use gives its connection back.
       if (attempt < R2_CALL_ATTEMPTS) void res.body?.cancel().catch(() => {});
       last = res;
@@ -153,8 +168,103 @@ async function boundedFetch(config: R2Config, key: string, method: "HEAD" | "DEL
       clearTimeout(timer);
     }
   }
-  if (last) return last;
-  throw new Error(`R2 ${method} failed: timed out`);
+  return last ? { kind: "answered", res: last, body: undefined } : { kind: "timeout" };
+}
+
+/**
+ * A HEAD or DELETE, bounded. The last answer is returned when the tries run
+ * out, so the caller's status handling and its `R2 <method> failed: <status>`
+ * message are unchanged; a try that never answered fails as
+ * `R2 <method> failed: timed out`.
+ */
+async function boundedFetch(config: R2Config, key: string, method: "HEAD" | "DELETE"): Promise<Response> {
+  const tried = await boundedRequest(config, key, method, async () => undefined);
+  if (tried.kind === "timeout") throw new Error(`R2 ${method} failed: timed out`);
+  return tried.res;
+}
+
+/**
+ * The most a `getObjectBytes` read holds in memory when its caller names no
+ * limit of its own. Card photos are capped at 3 MiB (`MAX_COPY_PHOTO_BYTES`);
+ * this only stops a stray large object from filling an action's memory.
+ */
+export const R2_GET_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * What `getObjectBytes` found. Never a throw: the caller picks what each means.
+ * `missing` is a 404; `timeout` is every try going unanswered; `tooLarge` is
+ * an object over the limit; `error` is any other answer (`status` set: a
+ * refusal, or a server fault on the last try) or a network failure (`status`
+ * null).
+ */
+export type R2GetResult =
+  | { kind: "ok"; bytes: ArrayBuffer }
+  | { kind: "missing" }
+  | { kind: "timeout" }
+  | { kind: "tooLarge" }
+  | { kind: "error"; status: number | null };
+
+/**
+ * Read one object's bytes from here, bounded: each try has `R2_CALL_TIMEOUT_MS`
+ * for the request AND the body, and a timeout or server fault is tried once
+ * more (see `boundedRequest`). Worst case is `R2_CALL_ATTEMPTS` x the limit,
+ * about 5 s.
+ *
+ * One structured line per call, whatever the outcome. It carries no key, URL
+ * or bucket name.
+ */
+export async function getObjectBytes(
+  config: R2Config,
+  key: string,
+  opts: { maxBytes?: number } = {},
+): Promise<R2GetResult> {
+  const maxBytes = opts.maxBytes ?? R2_GET_MAX_BYTES;
+  const startedAt = Date.now();
+  const progress = { attempts: 0 };
+  let status: number | null = null;
+  const result = await (async (): Promise<R2GetResult> => {
+    try {
+      const tried = await boundedRequest<R2GetResult>(
+        config,
+        key,
+        "GET",
+        async (res) => {
+          status = res.status;
+          if (!res.ok) {
+            void res.body?.cancel().catch(() => {});
+            return res.status === 404 ? { kind: "missing" } : { kind: "error", status: res.status };
+          }
+          // R2 states the length up front: an object over the limit is never read.
+          const declared = Number(res.headers.get("content-length") ?? "-1");
+          if (declared > maxBytes) {
+            void res.body?.cancel().catch(() => {});
+            return { kind: "tooLarge" };
+          }
+          const bytes = await res.arrayBuffer();
+          return bytes.byteLength > maxBytes ? { kind: "tooLarge" } : { kind: "ok", bytes };
+        },
+        progress,
+      );
+      if (tried.kind === "timeout") return { kind: "timeout" };
+      if (tried.body) return tried.body;
+      // The tries ran out on a server fault.
+      status = tried.res.status;
+      void tried.res.body?.cancel().catch(() => {});
+      return { kind: "error", status: tried.res.status };
+    } catch {
+      return { kind: "error", status };
+    }
+  })();
+  console.log(
+    JSON.stringify({
+      msg: "r2_get",
+      attempts: progress.attempts,
+      status,
+      durationMs: Date.now() - startedAt,
+      outcome: result.kind,
+    }),
+  );
+  return result;
 }
 
 /** An object's size and type, or null when it isn't there. */

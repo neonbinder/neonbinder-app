@@ -4,11 +4,13 @@
  * those bytes.
  */
 
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   R2_CALL_ATTEMPTS,
   R2_CALL_TIMEOUT_MS,
+  R2_GET_MAX_BYTES,
   deleteObject,
+  getObjectBytes,
   headObject,
   putObject,
   r2Config,
@@ -250,5 +252,187 @@ describe("a HEAD or DELETE has a time limit (NEO-592)", () => {
     await expect(headObject(config, KEY)).rejects.toThrow(/^R2 HEAD failed: 500$/);
     expect(faults).toEqual(["HEAD", "HEAD"]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe("a GET has a time limit, body included (NEO-592)", () => {
+  const KEY = "copy-photos/abc/image.jpg";
+  let logs: string[] = [];
+  beforeEach(() => {
+    logs = [];
+    stalls = 0;
+    cut = 0;
+    vi.spyOn(console, "log").mockImplementation((line: unknown) => {
+      logs.push(String(line));
+    });
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+  const configured = () => {
+    for (const [k, val] of Object.entries(ENV)) vi.stubEnv(k, val);
+    vi.useFakeTimers();
+    return r2Config()!;
+  };
+  /** A fetch that never answers; it only ends when its request is aborted. */
+  const hang = (request: Request) =>
+    new Promise<Response>((_, reject) => {
+      const abort = () => reject(request.signal.reason ?? new Error("aborted"));
+      if (request.signal.aborted) abort();
+      else request.signal.addEventListener("abort", abort);
+    });
+  /** How many stalled bodies have been handed out (the headers have arrived; the limit has not yet passed). */
+  let stalls = 0;
+  /** How many of them the limit has already cut off. */
+  let cut = 0;
+  /** Headers arrive at once; the body then stalls until the request is aborted. */
+  const stalledBody = async (request: Request) => {
+    stalls += 1;
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          request.signal.addEventListener("abort", () => controller.error(request.signal.reason ?? new Error("aborted")));
+        },
+      }),
+      { status: 200, headers: { "content-length": "3" } },
+    );
+  };
+  const tries = (...behaviours: Array<(request: Request) => Promise<Response>>) => {
+    const seen: string[] = [];
+    vi.stubGlobal("fetch", (async (request: Request) => {
+      seen.push(request.method);
+      const behave = behaviours[seen.length - 1];
+      if (!behave) throw new Error("more tries than expected");
+      return await behave(request);
+    }) as unknown as typeof fetch);
+    return seen;
+  };
+  const limitPasses = async () => {
+    await vi.waitFor(() => expect(vi.getTimerCount()).toBe(1));
+    await vi.advanceTimersByTimeAsync(R2_CALL_TIMEOUT_MS);
+  };
+  /** The next stalled body is in hand, so the limit that passes now cuts the BODY read, not the request. */
+  const limitPassesOnBody = async () => {
+    await vi.waitFor(() => expect(stalls).toBeGreaterThan(cut));
+    cut += 1;
+    await limitPasses();
+  };
+  const bytesOf = (...n: number[]) => async () => new Response(new Uint8Array(n), { status: 200 });
+  const logged = () => logs.map((l) => JSON.parse(l) as Record<string, unknown>).filter((l) => l.msg === "r2_get");
+
+  test("an answer inside the limit is the bytes, with one log line and no timer left", async () => {
+    const config = configured();
+    const seen = tries(bytesOf(1, 2, 3));
+    const got = await getObjectBytes(config, KEY);
+    expect(got.kind).toBe("ok");
+    expect(new Uint8Array((got as { bytes: ArrayBuffer }).bytes)).toEqual(new Uint8Array([1, 2, 3]));
+    expect(seen).toEqual(["GET"]);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(logged()).toEqual([{ msg: "r2_get", attempts: 1, status: 200, durationMs: expect.any(Number), outcome: "ok" }]);
+  });
+
+  test("a GET that hangs is cut off and tried again; the second try's bytes are the answer", async () => {
+    const config = configured();
+    const seen = tries(hang, bytesOf(9));
+    const result = getObjectBytes(config, KEY);
+    await limitPasses();
+    await expect(result).resolves.toMatchObject({ kind: "ok" });
+    expect(seen).toEqual(["GET", "GET"]);
+    expect(logged()).toMatchObject([{ attempts: 2, status: 200, outcome: "ok" }]);
+  });
+
+  test("two hangs end as a timeout inside tries x limit, and no timer is left", async () => {
+    const config = configured();
+    const seen = tries(hang, hang);
+    const result = getObjectBytes(config, KEY);
+    await limitPasses();
+    await limitPasses();
+    await expect(result).resolves.toEqual({ kind: "timeout" });
+    expect(seen).toEqual(["GET", "GET"]);
+    expect(R2_CALL_TIMEOUT_MS * R2_CALL_ATTEMPTS).toBeLessThanOrEqual(5_000);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(logged()).toEqual([
+      { msg: "r2_get", attempts: 2, status: null, durationMs: expect.any(Number), outcome: "timeout" },
+    ]);
+    // Two limits' worth of waiting (the poll between them adds a little fake time).
+    expect(logged()[0].durationMs as number).toBeGreaterThanOrEqual(R2_CALL_TIMEOUT_MS * 2);
+  });
+
+  test("a body that stalls after the headers counts against the same limit", async () => {
+    const config = configured();
+    const seen = tries(stalledBody, bytesOf(5, 6));
+    const result = getObjectBytes(config, KEY);
+    await limitPassesOnBody();
+    const got = await result;
+    expect(got.kind).toBe("ok");
+    expect(seen).toEqual(["GET", "GET"]);
+
+    const stalled = tries(stalledBody, stalledBody);
+    const twice = getObjectBytes(config, KEY);
+    await limitPassesOnBody();
+    await limitPassesOnBody();
+    await expect(twice).resolves.toEqual({ kind: "timeout" });
+    expect(stalled).toEqual(["GET", "GET"]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("a server fault is tried once more; two in a row end as an error with the status", async () => {
+    const config = configured();
+    const seen = tries(async () => new Response(null, { status: 503 }), bytesOf(7));
+    await expect(getObjectBytes(config, KEY)).resolves.toMatchObject({ kind: "ok" });
+    expect(seen).toEqual(["GET", "GET"]);
+
+    const faults = tries(async () => new Response(null, { status: 503 }), async () => new Response(null, { status: 429 }));
+    await expect(getObjectBytes(config, KEY)).resolves.toEqual({ kind: "error", status: 429 });
+    expect(faults).toEqual(["GET", "GET"]);
+    expect(logged().at(-1)).toMatchObject({ attempts: 2, status: 429, outcome: "error" });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  test("a missing object is not tried again", async () => {
+    const config = configured();
+    const seen = tries(async () => new Response(null, { status: 404 }));
+    await expect(getObjectBytes(config, KEY)).resolves.toEqual({ kind: "missing" });
+    expect(seen).toEqual(["GET"]);
+    expect(logged()).toMatchObject([{ attempts: 1, status: 404, outcome: "missing" }]);
+  });
+
+  test("a refusal and a network error are final at once", async () => {
+    const config = configured();
+    const refused = tries(async () => new Response(null, { status: 403 }));
+    await expect(getObjectBytes(config, KEY)).resolves.toEqual({ kind: "error", status: 403 });
+    expect(refused).toEqual(["GET"]);
+
+    const broken = tries(async () => {
+      throw new TypeError("fetch failed");
+    });
+    await expect(getObjectBytes(config, KEY)).resolves.toEqual({ kind: "error", status: null });
+    expect(broken).toEqual(["GET"]);
+  });
+
+  test("an object over the limit is too large, by its declared length or by its bytes", async () => {
+    const config = configured();
+    tries(async () => new Response(new Uint8Array(4), { status: 200, headers: { "content-length": "4" } }));
+    await expect(getObjectBytes(config, KEY, { maxBytes: 3 })).resolves.toEqual({ kind: "tooLarge" });
+    tries(async () => new Response(new Uint8Array(4), { status: 200 }));
+    await expect(getObjectBytes(config, KEY, { maxBytes: 3 })).resolves.toEqual({ kind: "tooLarge" });
+    tries(bytesOf(1, 2, 3));
+    await expect(getObjectBytes(config, KEY, { maxBytes: 3 })).resolves.toMatchObject({ kind: "ok" });
+    expect(R2_GET_MAX_BYTES).toBeGreaterThanOrEqual(3 * 1024 * 1024);
+  });
+
+  test("aws4fetch's own retry is not used, and the log line names no key, URL or bucket", async () => {
+    const config = configured();
+    const viaClient = vi.spyOn(config.client, "fetch");
+    const seen = tries(async () => new Response(null, { status: 503 }), async () => new Response(null, { status: 503 }));
+    await getObjectBytes(config, KEY);
+    // aws4fetch would have sent eleven.
+    expect(seen).toHaveLength(2);
+    expect(viaClient).not.toHaveBeenCalled();
+    expect(logs).toHaveLength(1);
+    for (const needle of [KEY, "photos", "acct", "r2.cloudflarestorage.com", "https://"]) {
+      expect(logs[0]).not.toContain(needle);
+    }
+    expect(Object.keys(JSON.parse(logs[0])).sort()).toEqual(["attempts", "durationMs", "msg", "outcome", "status"]);
   });
 });
