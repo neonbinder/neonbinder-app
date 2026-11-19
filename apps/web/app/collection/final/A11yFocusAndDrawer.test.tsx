@@ -339,7 +339,7 @@ describe("NEO-377: a row click on a card you own", () => {
     const drawer = await screen.findByRole("dialog");
     expect(within(drawer).getByRole("form", { name: /^Edit / })).toBeTruthy();
     await frames();
-    expect(within(drawer).getByRole("form", { name: /^Edit / }).contains(document.activeElement)).toBe(true);
+    await waitFor(() => expect(within(drawer).getByRole("form", { name: /^Edit / }).contains(document.activeElement)).toBe(true));
   });
 
   it("Details opens the same card with its line closed", () => {

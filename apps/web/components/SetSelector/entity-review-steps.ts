@@ -10,6 +10,11 @@
  *                                       New player / "Which player is this?",
  *                                       staged career New Team/League steps
  *                                       included — they are rows too)
+ *       + 1 career step                (NEO-574: a card's team that its
+ *                                       player's career does not show, FIRST
+ *                                       after the names: it can change a
+ *                                       card's player or team, which the
+ *                                       steps below read)
  *       + 1 teams step                 (if any card would save teamless)
  *       + 1 autograph step             (NEO-345: a NEW card carries AU and the
  *                                       leaf has no autograph format yet)
@@ -54,6 +59,7 @@ export type WizardStepKind =
   | "player"
   | "pick"
   | "checklist"
+  | "career"
   | "teams"
   | "autograph"
   | "titles"
@@ -69,6 +75,7 @@ export const STEP_SUBTITLE: Readonly<Record<WizardStepKind, string>> = {
   player: "New player",
   pick: "Which player is this?",
   checklist: "Checklist disagreements",
+  career: "Career check",
   teams: "Cards with no team",
   autograph: "Autographed cards",
   titles: "Card titles",
@@ -85,7 +92,13 @@ export const STEP_SUBTITLE: Readonly<Record<WizardStepKind, string>> = {
  * from the walk instead of being asked about (`orphanedReviewRowIds`). The
  * wizard puts it on screen itself until it is settled.
  */
-export type PostReviewStep = "checklist" | "teams" | "autograph" | "titles" | "save";
+export type PostReviewStep =
+  | "checklist"
+  | "career"
+  | "teams"
+  | "autograph"
+  | "titles"
+  | "save";
 
 /** Which post-review steps have anything in them right now. */
 export type PostReviewLive = {
@@ -94,6 +107,12 @@ export type PostReviewLive = {
    * by the post-review helpers: the checklist step comes before the names.
    */
   checklist?: boolean;
+  /**
+   * NEO-574 — absent reads as false (a host with no career check). First of
+   * the steps after the names: its answers can re-team or relink a card, and
+   * every step below reads the cards as they are after it.
+   */
+  career?: boolean;
   teams: boolean;
   /** NEO-345 — absent reads as false (a host with no autograph step). */
   autograph?: boolean;
@@ -101,6 +120,7 @@ export type PostReviewLive = {
 };
 
 const POST_REVIEW_ORDER: readonly PostReviewStep[] = [
+  "career",
   "teams",
   "autograph",
   "titles",
@@ -180,6 +200,8 @@ export interface StepPlanInput {
   reviewRows: number;
   /** NEO-478 — does any card disagree with the published checklist? Absent = no. */
   checklistStep?: boolean;
+  /** NEO-574 — is any card's team missing from its player's career? Absent = no. */
+  careerStep?: boolean;
   /** Would any card save teamless? See `cardsForTeamsStep`. */
   teamsStep: boolean;
   /** NEO-345 — does the autograph format question apply? Absent = no. */
@@ -197,6 +219,8 @@ export interface StepCount {
    * count with no checklist step is exactly the shape it was before.
    */
   checklistStep?: boolean;
+  /** NEO-574 — the career step, once counted. Present only when true. */
+  careerStep?: boolean;
   teamsStep: boolean;
   /** NEO-345 — the autograph step, once counted. */
   autographStep: boolean;
@@ -210,6 +234,7 @@ export function plannedTotal(input: StepPlanInput): number {
   return (
     Math.max(0, input.reviewRows) +
     (input.checklistStep ? 1 : 0) +
+    (input.careerStep ? 1 : 0) +
     (input.teamsStep ? 1 : 0) +
     (input.autographStep ? 1 : 0) +
     (input.titlesStep ? 1 : 0) +
@@ -224,6 +249,7 @@ export function initialStepCount(input: StepPlanInput, onSave = false): StepCoun
     total: plannedTotal({ ...input, reviewRows }),
     reviewRows,
     ...(input.checklistStep ? { checklistStep: true } : {}),
+    ...(input.careerStep ? { careerStep: true } : {}),
     teamsStep: input.teamsStep,
     autographStep: input.autographStep === true,
     titlesStep: input.titlesStep,
@@ -251,13 +277,22 @@ export function advanceStepCount(
   // growth like any other.
   const reviewRows = Math.max(prev.reviewRows, input.reviewRows);
   const checklistStep = prev.checklistStep === true || input.checklistStep === true;
+  const careerStep = prev.careerStep === true || input.careerStep === true;
   const teamsStep = prev.teamsStep || input.teamsStep;
   const autographStep = prev.autographStep || input.autographStep === true;
   const titlesStep = prev.titlesStep || input.titlesStep;
-  const total = plannedTotal({ reviewRows, checklistStep, teamsStep, autographStep, titlesStep });
+  const total = plannedTotal({
+    reviewRows,
+    checklistStep,
+    careerStep,
+    teamsStep,
+    autographStep,
+    titlesStep,
+  });
   if (
     reviewRows === prev.reviewRows &&
     checklistStep === (prev.checklistStep === true) &&
+    careerStep === (prev.careerStep === true) &&
     teamsStep === prev.teamsStep &&
     autographStep === prev.autographStep &&
     titlesStep === prev.titlesStep
@@ -271,6 +306,7 @@ export function advanceStepCount(
       total,
       reviewRows,
       ...(checklistStep ? { checklistStep: true } : {}),
+      ...(careerStep ? { careerStep: true } : {}),
       teamsStep,
       autographStep,
       titlesStep,
@@ -284,6 +320,7 @@ export function advanceStepCount(
 function postReviewSteps(count: StepCount): number {
   return (
     1 +
+    (count.careerStep ? 1 : 0) +
     (count.teamsStep ? 1 : 0) +
     (count.autographStep ? 1 : 0) +
     (count.titlesStep ? 1 : 0)
@@ -305,6 +342,16 @@ export function stepNumber(count: StepCount, position: StepPosition): number {
     case "teams":
       return (
         count.total - 1 - (count.titlesStep ? 1 : 0) - (count.autographStep ? 1 : 0)
+      );
+    case "career":
+      // NEO-574 — first of the steps after the names, so counted back from
+      // the end like its siblings.
+      return (
+        count.total -
+        1 -
+        (count.titlesStep ? 1 : 0) -
+        (count.autographStep ? 1 : 0) -
+        (count.teamsStep ? 1 : 0)
       );
     case "checklist":
       // NEO-478 — the first step of the sitting.
@@ -480,6 +527,7 @@ function listJoin(names: readonly string[]): string {
  *
  * - staged career New Team steps → "teams for {player}" (Jason-approved)
  * - a league staged for a team   → "league for {team}"
+ * - the career step              → "career check" (NEO-574)
  * - the teams step               → "cards with no team"
  * - the autograph step           → "autographed cards" (NEO-345, placeholder)
  * - the titles step              → "card titles"
@@ -494,6 +542,8 @@ export function growthReasons(input: {
   titlesStepAdded: boolean;
   /** NEO-478 — absent reads as false. */
   checklistStepAdded?: boolean;
+  /** NEO-574 — absent reads as false. */
+  careerStepAdded?: boolean;
 }): string[] {
   const nameById = new Map(input.allRows.map((r) => [r._id, r.name ?? ""]));
   const players: string[] = [];
@@ -518,11 +568,15 @@ export function growthReasons(input: {
   if (teams.length > 0) reasons.push(`league for ${listJoin(teams)}`);
   if (other) reasons.push("more names");
   if (input.checklistStepAdded) reasons.push(CHECKLIST_GROWTH_REASON);
+  if (input.careerStepAdded) reasons.push(CAREER_GROWTH_REASON);
   if (input.teamsStepAdded) reasons.push("cards with no team");
   if (input.autographStepAdded) reasons.push(AUTOGRAPH_GROWTH_REASON);
   if (input.titlesStepAdded) reasons.push("card titles");
   return reasons;
 }
+
+/** NEO-574 — the growth line's words for the career step. */
+export const CAREER_GROWTH_REASON = "career check";
 
 /** NEO-345 — the growth line's words for the autograph step. */
 export const AUTOGRAPH_GROWTH_REASON = "autographed cards";
@@ -550,17 +604,41 @@ export interface TrackStepsInput {
   rows: readonly StepRow[];
   /** NEO-478 — absent reads as false. */
   checklistStep?: boolean;
+  /** NEO-574 — absent reads as false. */
+  careerStep?: boolean;
   teamsStep: boolean;
   /** NEO-345 — absent reads as false. */
   autographStep?: boolean;
   titlesStep: boolean;
   onSave: boolean;
+  /**
+   * Where the operator is. The growth line only counts and names steps AFTER
+   * it: a step that turns up while the operator is standing on it (the career
+   * check goes live as the last name is decided and lands them on it) or
+   * behind them is not "more steps" to come. Absent = no filtering.
+   */
+  position?: StepPosition;
 }
+
+/**
+ * Where each screen sits in the walk, for "is this step still ahead?".
+ * Review rows share one slot: a row staged mid-review is always ahead.
+ */
+const WALK_RANK: Readonly<Record<StepPosition["kind"], number>> = {
+  checklist: 0,
+  review: 1,
+  career: 2,
+  teams: 3,
+  autograph: 4,
+  titles: 5,
+  save: 6,
+};
 
 export function trackSteps(prev: StepTracker | null, input: TrackStepsInput): StepTracker {
   const plan: StepPlanInput = {
     reviewRows: input.rows.length,
     checklistStep: input.checklistStep === true,
+    careerStep: input.careerStep === true,
     teamsStep: input.teamsStep,
     autographStep: input.autographStep === true,
     titlesStep: input.titlesStep,
@@ -581,19 +659,43 @@ export function trackSteps(prev: StepTracker | null, input: TrackStepsInput): St
   const addedRows = count.frozen
     ? []
     : input.rows.filter((r) => !prev.knownRowIds.has(r._id));
+  const knownRowIds = new Set(prev.knownRowIds);
+  for (const row of input.rows) knownRowIds.add(row._id);
+  // A step is announced only while it is still ahead of the operator.
+  const ahead = (step: StepPosition["kind"]): boolean =>
+    input.position === undefined || WALK_RANK[step] > WALK_RANK[input.position.kind];
+  const checklistGrew = count.checklistStep === true && prev.count.checklistStep !== true;
+  const careerGrew = count.careerStep === true && prev.count.careerStep !== true;
+  const teamsGrew = count.teamsStep && !prev.count.teamsStep;
+  const autographGrew = count.autographStep && !prev.count.autographStep;
+  const titlesGrew = count.titlesStep && !prev.count.titlesStep;
+  const checklistStepAdded = checklistGrew && ahead("checklist");
+  const careerStepAdded = careerGrew && ahead("career");
+  const teamsStepAdded = teamsGrew && ahead("teams");
+  const autographStepAdded = autographGrew && ahead("autograph");
+  const titlesStepAdded = titlesGrew && ahead("titles");
+  const behind =
+    (checklistGrew && !checklistStepAdded ? 1 : 0) +
+    (careerGrew && !careerStepAdded ? 1 : 0) +
+    (teamsGrew && !teamsStepAdded ? 1 : 0) +
+    (autographGrew && !autographStepAdded ? 1 : 0) +
+    (titlesGrew && !titlesStepAdded ? 1 : 0);
+  const announced = added - behind;
+  // Nothing ahead grew: the count moves, the line says nothing and the last
+  // one stands.
+  if (announced <= 0) return { ...prev, count, knownRowIds };
   const reasons = growthReasons({
     addedRows,
     allRows: input.rows,
-    teamsStepAdded: count.teamsStep && !prev.count.teamsStep,
-    checklistStepAdded: count.checklistStep === true && prev.count.checklistStep !== true,
-    autographStepAdded: count.autographStep && !prev.count.autographStep,
-    titlesStepAdded: count.titlesStep && !prev.count.titlesStep,
+    teamsStepAdded,
+    checklistStepAdded,
+    careerStepAdded,
+    autographStepAdded,
+    titlesStepAdded,
   });
-  const knownRowIds = new Set(prev.knownRowIds);
-  for (const row of input.rows) knownRowIds.add(row._id);
   return {
     count,
     knownRowIds,
-    growth: { seq: (prev.growth?.seq ?? 0) + 1, text: growthLine(added, reasons) },
+    growth: { seq: (prev.growth?.seq ?? 0) + 1, text: growthLine(announced, reasons) },
   };
 }

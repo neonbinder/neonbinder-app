@@ -9,6 +9,7 @@ import {
   advanceStepCount,
   asAutographFormat,
   AUTOGRAPH_GROWTH_REASON,
+  CAREER_GROWTH_REASON,
   autographCardIndexes,
   carriesAutograph,
   cardsForTeamsStep,
@@ -169,6 +170,8 @@ describe("subtitles", () => {
       player: "New player",
       pick: "Which player is this?",
       checklist: "Checklist disagreements",
+      // NEO-574 — placeholder, awaiting Jason's wording.
+      career: "Career check",
       teams: "Cards with no team",
       // NEO-345 — placeholder, awaiting Jason's wording.
       autograph: "Autographed cards",
@@ -504,5 +507,181 @@ describe("autograph step — the walk", () => {
   it("an unanswered step that is not live holds nothing back", () => {
     const none = { teams: false, autograph: false, titles: true };
     expect(resolvePostReviewStep("save", none, "autograph")).toBe("save");
+  });
+});
+
+describe("career step (NEO-574) — counting and position", () => {
+  const withCareer = (reviewRows: number, teamsStep: boolean, titlesStep: boolean) => ({
+    reviewRows,
+    teamsStep,
+    careerStep: true,
+    titlesStep,
+  });
+
+  it("is one more step, first after the names", () => {
+    expect(plannedTotal(withCareer(0, false, false))).toBe(2);
+    const count = initialStepCount({ ...withCareer(2, true, true), autographStep: true });
+    expect(count.total).toBe(7);
+    expect(stepNumber(count, { kind: "review", index: 1 })).toBe(2);
+    expect(stepNumber(count, { kind: "career" })).toBe(3);
+    expect(stepNumber(count, { kind: "teams" })).toBe(4);
+    expect(stepNumber(count, { kind: "autograph" })).toBe(5);
+    expect(stepNumber(count, { kind: "titles" })).toBe(6);
+    expect(stepNumber(count, { kind: "save" })).toBe(7);
+  });
+
+  it("alone it is step 1, then Save", () => {
+    const count = initialStepCount(withCareer(0, false, false));
+    expect(stepNumber(count, { kind: "career" })).toBe(1);
+    expect(stepNumber(count, { kind: "save" })).toBe(2);
+  });
+
+  it("an absent flag is no step, so older callers count as before", () => {
+    expect(plannedTotal(plan(3, true, true))).toBe(6);
+    expect(initialStepCount(plan(3)).careerStep).toBeUndefined();
+  });
+
+  it("is a high-water mark like the others", () => {
+    const first = initialStepCount(withCareer(1, false, false));
+    const { count, added } = advanceStepCount(first, plan(1), false);
+    expect(count).toBe(first);
+    expect(added).toBe(0);
+    expect(count.careerStep).toBe(true);
+  });
+
+  it("is announced when it turns up mid-sitting", () => {
+    const row: StepRow = { _id: "p", kind: "player", name: "Mike Trout" };
+    const first = trackSteps(null, { rows: [row], teamsStep: false, titlesStep: false, onSave: false });
+    const grown = trackSteps(first, {
+      rows: [row],
+      careerStep: true,
+      teamsStep: false,
+      titlesStep: false,
+      onSave: false,
+    });
+    expect(grown.growth?.text).toBe(`1 more step: ${CAREER_GROWTH_REASON}`);
+    expect(grown.count.total).toBe(3);
+  });
+
+  it("adds nothing once on Save", () => {
+    const first = initialStepCount(plan(0), true);
+    const { count, added } = advanceStepCount(first, withCareer(0, false, false), true);
+    expect(added).toBe(0);
+    expect(count.careerStep).toBeUndefined();
+  });
+});
+
+describe("growth line counts only steps AHEAD of the operator (NEO-574)", () => {
+  const row: StepRow = { _id: "p", kind: "player", name: "Mike Trout" };
+  const base = { rows: [row], teamsStep: false, titlesStep: false, onSave: false };
+
+  it("says nothing when the career step turns up under the operator's feet", () => {
+    const first = trackSteps(null, { ...base, position: { kind: "review", index: 0 } });
+    const grown = trackSteps(first, {
+      ...base,
+      careerStep: true,
+      position: { kind: "career" },
+    });
+    // y still grows (the header's "Step 1 of 3"), but nothing is "more to come".
+    expect(grown.count.total).toBe(3);
+    expect(grown.count.careerStep).toBe(true);
+    expect(grown.growth).toBeNull();
+  });
+
+  it("still announces it from a review row, where it is ahead", () => {
+    const first = trackSteps(null, { ...base, position: { kind: "review", index: 0 } });
+    const grown = trackSteps(first, {
+      ...base,
+      careerStep: true,
+      position: { kind: "review", index: 0 },
+    });
+    expect(grown.growth?.text).toBe(`1 more step: ${CAREER_GROWTH_REASON}`);
+  });
+
+  it("on the career step, announces teams and titles that turn up AFTER it", () => {
+    const first = trackSteps(null, { ...base, careerStep: true, position: { kind: "career" } });
+    const grown = trackSteps(first, {
+      ...base,
+      careerStep: true,
+      teamsStep: true,
+      titlesStep: true,
+      position: { kind: "career" },
+    });
+    expect(grown.growth?.text).toBe("2 more steps: cards with no team, card titles");
+  });
+
+  it("counts only the ahead steps when ahead and current grow together", () => {
+    const first = trackSteps(null, { ...base, position: { kind: "review", index: 0 } });
+    const grown = trackSteps(first, {
+      ...base,
+      careerStep: true,
+      teamsStep: true,
+      position: { kind: "career" },
+    });
+    expect(grown.count.total).toBe(4);
+    expect(grown.growth?.text).toBe("1 more step: cards with no team");
+  });
+
+  it("does not name a step the operator has already passed", () => {
+    const first = trackSteps(null, { ...base, teamsStep: true, position: { kind: "teams" } });
+    const grown = trackSteps(first, {
+      ...base,
+      careerStep: true,
+      teamsStep: true,
+      position: { kind: "teams" },
+    });
+    expect(grown.count.careerStep).toBe(true);
+    expect(grown.growth).toBeNull();
+  });
+
+  it("keeps the last line standing, with its seq, when a later growth is all behind", () => {
+    const first = trackSteps(null, { ...base, position: { kind: "review", index: 0 } });
+    const teams = trackSteps(first, {
+      ...base,
+      teamsStep: true,
+      position: { kind: "review", index: 0 },
+    });
+    const career = trackSteps(teams, {
+      ...base,
+      teamsStep: true,
+      careerStep: true,
+      position: { kind: "career" },
+    });
+    expect(career.growth).toEqual(teams.growth);
+  });
+
+  it("an absent position filters nothing, as before", () => {
+    const first = trackSteps(null, base);
+    const grown = trackSteps(first, { ...base, careerStep: true });
+    expect(grown.growth?.text).toBe(`1 more step: ${CAREER_GROWTH_REASON}`);
+  });
+});
+
+describe("career step (NEO-574) — the walk", () => {
+  const all = { career: true, teams: true, autograph: true, titles: true };
+
+  it("is the first step after the names", () => {
+    expect(resolvePostReviewStep(null, all)).toBe("career");
+  });
+
+  it("is passed over when it has nothing in it", () => {
+    expect(resolvePostReviewStep(null, { teams: true, titles: false })).toBe("teams");
+    expect(resolvePostReviewStep("career", { career: false, teams: false, titles: false })).toBe("save");
+  });
+
+  it("Next walks career → teams → autograph → titles → save", () => {
+    expect(nextPostReviewStep("career", all)).toBe("teams");
+    expect(nextPostReviewStep("career", { career: true, teams: false, titles: false })).toBe("save");
+  });
+
+  it("Back from teams returns to career, and from career leaves for the names", () => {
+    expect(previousPostReviewStep("teams", all)).toBe("career");
+    expect(previousPostReviewStep("career", all)).toBeNull();
+    expect(previousPostReviewStep("save", { career: true, teams: false, titles: false })).toBe("career");
+  });
+
+  it("an unanswered autograph step still holds back what follows it, not career", () => {
+    expect(resolvePostReviewStep(null, all, "autograph")).toBe("career");
+    expect(resolvePostReviewStep("titles", all, "autograph")).toBe("autograph");
   });
 });

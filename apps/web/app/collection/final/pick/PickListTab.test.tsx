@@ -2,7 +2,7 @@
  * NEO-500 — the Pick List in the public demo: reachable logged out, rows that
  * mark pulled with Undo, sort on the URL by replace, By the Box as Back steps.
  */
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router";
 import { Theme } from "@radix-ui/themes";
@@ -1203,12 +1203,26 @@ describe("the signed-in Pick List's ways out", () => {
 // runs here on the real component. jsdom paints nothing, so contrast (and so
 // light vs dark) is the one thing this cannot check: those two notices reuse
 // the info and plain-ink roles that the E2E specs' axe passes already cover.
-describe("the Pick List's rare states pass axe", () => {
+//
+// Axe and the component graph are heavy on a loaded runner, so they are loaded
+// once in beforeAll (its own 60 s budget, not the first test's 5 s), and these
+// tests get a scoped 30 s. axe-core refuses a second run while one is going,
+// so a run that outlives a timed-out test is awaited before the next starts.
+describe("the Pick List's rare states pass axe", { timeout: 30_000 }, () => {
+  let lastAxeRun: Promise<unknown> = Promise.resolve();
+  beforeAll(async () => {
+    await import("axe-core");
+    await import("./demoPickStore");
+    await import("./PickListTab");
+    await import("../mode");
+  }, 60_000);
+
   async function violationsFor(data: Partial<import("./types").PickListData>, url: string) {
     const axe = (await import("axe-core")).default;
     const { DemoPickListProvider, DEMO_PICK_DATA } = await import("./demoPickStore");
     const { default: PickListTab } = await import("./PickListTab");
     const { CollectionModeProvider } = await import("../mode");
+    await lastAxeRun.catch(() => {});
     const { container } = render(
       <Theme>
         <MemoryRouter initialEntries={[url]}>
@@ -1221,10 +1235,12 @@ describe("the Pick List's rare states pass axe", () => {
       </Theme>,
     );
     const region = screen.getByRole("region", { name: "Pick List" });
-    const results = await axe.run(container, {
+    const run = axe.run(container, {
       runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa", "wcag22aa"] },
       rules: { "color-contrast": { enabled: false } },
     });
+    lastAxeRun = run;
+    const results = await run;
     return { region, violations: results.violations.map((v) => `${v.id}: ${v.nodes.length}`) };
   }
 
