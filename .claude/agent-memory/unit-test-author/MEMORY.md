@@ -1,6 +1,7 @@
 # Unit Test Author — Agent Memory Index
 
 - [Feedback adversarial pass patterns](feedback_adversarial_pass_patterns.md) — What an adversarial unit-test pass on an already-well-tested NeonBinder feature (NEO-101) actually found — where the real gaps hide when the author already wrote thoro…
+- [NEO-611 roster players tests](reference_neo611_roster_players_tests.md) — epoch helper, budget fixture, held asserts, source pin, boundary + twinOfKey quirks
 - [Feedback batch mutation same row staleness](feedback_batch_mutation_same_row_staleness.md) — A batch mutation that OCC-checks baseVersion per decision, using a workingVersion map it updates after each write, will falsely mark every decision after the first on…
 - [Feedback concurrent agent commit scoping](feedback_concurrent_agent_commit_scoping.md) — When another agent shares this worktree, `git commit -m` after `git add <paths>` still commits their pre-staged files too — use `git commit -F <msgfile> -- <paths>` in…
 - [Project convex test patterns](project_convex_test_patterns.md) — convex-test patterns confirmed working in this repo — calling internal functions directly, spying on structured console.log lines, and simulating stale/concurrent stat…
@@ -48,5 +49,6 @@
 - [NEO-555 probe/capture adversarial](reference_neo555_probe_capture_adversarial.md) — shallow-freeze trap, signal guard, body-read leak, break-check by revert
 - [NEO-556 No Team adversarial patterns](reference_neo556_no_team_adversarial_patterns.md) — oracle cartesian, ?raw source pins, client-vs-server commit agreement
 - [LiveLine effect lag](feedback_live_line_effect_lag.md) — wait on the role=status node itself, not the visible span; forced-lag proof recipe
+- [NEO-609 title levels tests](reference_neo609_title_levels_test_patterns.md) — atFullLength padding, refill hides city cuts, Proof parity fixture, tsx probe loop
 - [NEO-581 countSeq + busy window](reference_neo581_countseq_and_busy_window.md) — which door seq checks bite; busy-at-zero label window is unobservable
 - [NEO-592 gate parity patterns](reference_neo592_gate_parity_patterns.md) — origin/main differential via sibling copy, db probe, outside-in call counting, mutant runner

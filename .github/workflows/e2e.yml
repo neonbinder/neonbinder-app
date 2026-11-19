@@ -689,7 +689,8 @@ jobs:
           fi
           missing=$(jq -r '.missing | join(", ")' "$out")
           if [ -n "$missing" ]; then
-            echo "::error::The fake BSC has no stored write capture for: ${missing}. Run 'recorder capture-write' for each (services/fake-bsc/README.md) before pushing, so its synthesised answers are checked against the real ones."
+            echo "::error::The fake BSC has no stored write capture for: ${missing}. Capture each before pushing (services/fake-bsc/README.md), so its synthesised answers are checked against the real ones."
+            bash "$GITHUB_WORKSPACE/.github/scripts/fake-capture-hints.sh" "$out"
             exit 1
           fi
           echo "Fake BSC holds a write capture for every write endpoint."

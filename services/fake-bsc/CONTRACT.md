@@ -252,7 +252,7 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
 
 ## Recorder (`services/fake-bsc/recorder/`)
 
-- Jason runs it. Credentials come from Bitwarden at run time and are never
+- The account owner runs it. Credentials come from Bitwarden at run time and are never
   written anywhere. Tokens stay in process memory.
 - Sign-in uses `bscPasswordSignIn()` from `services/browser`.
 - To-do list: `GET /__fake/misses?prefix=` as the loader SA. Only the three
@@ -304,10 +304,10 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
   answers 409 `catalogue full` ("Storage layout", entry cap).
 - `--watch --prefix` long-polls the miss list during a local E2E run.
 
-### Write capture (Jason, 2026-11-14)
+### Write capture (decision of 2026-11-14)
 
 Seller writes get no real test before prod. Instead, whenever a PR adds or
-changes a BSC write (listing PUT, photo upload, any new write), Jason performs
+changes a BSC write (listing PUT, photo upload, any new write), the account owner performs
 that write once locally against real BSC and the recorder captures it:
 `recorder capture-write`. It sends exactly one write request (a listing PUT
 is built as NB builds it, from one seller-profile read and two seller-sheet
@@ -390,7 +390,7 @@ As built (`apps/web/convex/bscCallGate.ts`, policy in
 `convex/lib/bscCallGatePolicy.ts`, one `marketplaceCallGates` row):
 
 - Bucket: 60 a minute, burst 10 against BuySportsCards. **None against the
-  fake** (Jason): no wait and no `throttled` refusal, ever, and a healthy
+  fake**: no wait and no `throttled` refusal, ever, and a healthy
   grant writes nothing; only the breaker below applies. A wave (the
   fetch-time team lookup) acquires once per wave of up to 10; every other
   call acquires one. Against BuySportsCards a wait over 15 s is refused
@@ -639,10 +639,12 @@ host itself. It never bundles or copies the browser source.
 - `/__fake/health` needs the ID token and caller key like the rest (Cloud Run's
   default TCP startup probe needs no route). It answers `{ok, loading,
   instanceId, revision, manifestVersion, allowlistVersion, recordings, writeCaptures:
-  {missing: [<write endpoint>, ...]}}`. `missing` lists the write endpoints
-  (`PUT seller/bulk-upload`, the photo-upload POST) that have no stored
-  capture; the boot also logs `write_captures_missing`. The E2E seed fails on
-  a non-empty list (see "Convex internal action for CI"). While `loading` is
+  {missing: [<write endpoint>, ...]}}`. `missing` lists the required write
+  endpoints that have no stored capture: BSC's two (`PUT seller/bulk-upload`,
+  the photo-upload POST) and the eBay writes in `EBAY_REQUIRED_CAPTURES`
+  ("Write and read captures (eBay)"), each by its capture name; the boot also
+  logs `write_captures_missing`. The E2E seed fails on a non-empty list (see
+  "Convex internal action for CI"). While `loading` is
   true the captures are not in yet, so health answers `writeCaptures:
   {loading: true}` with no `missing` field: a cold start never names an
   endpoint as missing, and a reader that ignores `loading` finds no list and
@@ -784,7 +786,7 @@ CI calls it with the preview deploy key so no admin key is on the runner.
 
 `fakeBsc:writeCaptureStatus` (internal action, no args) reads the fake's
 `/__fake/health` (caller auth only) and returns `{ok: true, skipped, missing:
-[<write endpoint>]}` (`skipped: true` outside fake mode), or `{ok: false,
+[<required write endpoint>]}` (`skipped: true` outside fake mode), or `{ok: false,
 status?, error}`, which includes a health answer with no `writeCaptures` field
 (an older fake: never read as "none missing"). While the health answer
 says `loading: true` (or `writeCaptures.loading: true`), the action asks
@@ -1066,9 +1068,39 @@ return-policy `categoryTypes[].default`, an offer's `listing` (published offers
 only), and on the first inventory item `conditionDescriptors`,
 `packageWeightAndSize.packageType` and the `product.aspects` names
 (`isOptionalCapturePath` in `src/ebay/captures.ts`). If the capture has one of
-them its types are still compared. **No eBay
-endpoint is on the required list** (`writeCaptures.missing` and Convex's
-`writeCaptureStatus` read only the BSC two); that is PR B.
+them its types are still compared. **The eBay
+writes the recorder stores are on the required list** (NEO-555 PR B1):
+`/__fake/health` `writeCaptures.missing` names each one that has no stored
+capture, after BSC's two, and Convex's `writeCaptureStatus` and the E2E seed
+read the list unchanged. `EBAY_REQUIRED_CAPTURES` in `src/ebay/captures.ts`:
+
+```
+Both runs:      POST .../bulk_create_or_replace_inventory_item
+                POST .../bulk_create_offer
+                DELETE .../inventory_item/:sku
+Sandbox only:   POST .../location/:merchantLocationKey
+                POST .../location/:merchantLocationKey/update_location_details
+                POST .../location/:merchantLocationKey/enable
+                PUT  .../offer/:offerId
+                POST .../offer/:offerId/publish #refused      (the sandbox's refusal)
+Production only (`ebay-capture --prod`, manual, the account owner only):
+                POST .../commerce/media/v1_beta/image/create_image_from_file
+                GET  .../commerce/media/v1_beta/image/:imageId
+                POST .../offer/:offerId/publish               (the real listing)
+                POST .../bulk_update_price_quantity
+                POST .../offer/:offerId/withdraw
+```
+
+(The full names carry the `ebay/api` or `ebay/apim` prefix.) Thirteen names, so
+the list is at most fifteen with BSC's two, under Convex's cap of twenty
+(`MAX_MISSING_CAPTURES`). Not required: reads and the token endpoint, and the
+writes the sandbox stores only when eBay accepts them
+(`EBAY_CONDITIONAL_WRITE_CAPTURES`: the opt-in in either answer, 200 or 409
+by account state, and the payment and return policy creates, which the first
+sandbox capture did not store). A unit test runs both captures against stubs and fails when a
+required name is not stored by either run, or when a stored write is neither
+required nor conditional, so a renamed capture goes red. A name may carry a
+` #variant` after the path; Convex's `narrowMissingCaptures` reads it.
 
 ### Drift: `POST /__fake/drift-compare {marketplace: "ebay", ...}` (admin)
 
@@ -1179,7 +1211,7 @@ access token per run, plus one app token where row 16 needs it.
   captured). Dry run unless `--yes`.
 - **`ebay-capture --prod --fake <url> --client-id <id> --cert-secret <name>
   --session-secret <name> --project <id> [--picture <file>] [--yes]`**
-  (Jason only): see "Production capture".
+  (manual, the account owner only): see "Production capture".
 - **`ebay-undo (--sandbox [--creds-file <path>] | --prod <the four
   credential flags>) --sku NBCAPTURE-... [--yes]`**: withdraws the SKU's
   live offer and deletes the item, then checks. Refuses any SKU outside its
@@ -1187,22 +1219,22 @@ access token per run, plus one app token where row 16 needs it.
 
 #### Production capture (`ebay-capture --prod`)
 
-One real listing on Jason's production account, to capture the writes the
-sandbox cannot (publish, price update, withdraw, media). Credentials: his NB
-production session's refresh token and the production Cert ID, read with his
-own gcloud (`gcloud secrets versions access` run by the recorder, stdout kept
+One real listing on the account owner's production account, to capture the writes the
+sandbox cannot (publish, price update, withdraw, media). Credentials: the owner's NB
+production session's refresh token and the production Cert ID, read with the
+owner's own gcloud (`gcloud secrets versions access` run by the recorder, stdout kept
 in memory; secret names and project come from flags the private wrapper
 passes), plus the production client id. Refresh grant only.
 
 - SKU fixed to `NBCAPTURE-PRD-<yyyymmdd>` (UTC); any other value is refused.
 - Pre-checks, before anything is written: `GET inventory_item/<sku>` is 404,
-  `GET offer?sku=` has none, his payment, return and fulfillment policies and
-  his `neonbinder-main` location exist (read only; nothing is created and
+  `GET offer?sku=` has none, the owner's payment, return and fulfillment policies and
+  the owner's `neonbinder-main` location exist (read only; nothing is created and
   there is no opt-in). Any other answer to the item or offer read (a 401, a
   5xx) is a refusal naming the status, with nothing written.
 - Default is a dry run that prints exactly the **7 requests that change the
   account**: (1) image upload, (2) bulk item (one, qty 1), (3) bulk offer
-  (one, $999.99, his first payment, return and fulfillment policies), (4)
+  (one, $999.99, the owner's first payment, return and fulfillment policies), (4)
   publish, (5) bulk price update (price only, to $999.98), (6) withdraw, (7)
   DELETE inventory item. Reads (the pre-checks, `GET image`, the final
   verification) are listed on one line, unnumbered. Writes only with `--yes`

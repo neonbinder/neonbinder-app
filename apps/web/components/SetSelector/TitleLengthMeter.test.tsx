@@ -17,6 +17,8 @@ import { describe, expect, it } from "vitest";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
+  OVER_FIELD_CLASS,
+  overFieldProps,
   TitleFieldNote,
   TitleLengthAlert,
   TitleLengthMeter,
@@ -219,5 +221,45 @@ describe("TitleFieldNote", () => {
     expect(
       screen.getByText("Auto title was cut short — rewrite it"),
     ).toBeTruthy();
+  });
+});
+
+describe("NEO-606 — the over-cap look is neon pink, on the text and on the field", () => {
+  it("paints the counter and the alert in the pink text role itself, not through the danger notice role", () => {
+    render(
+      <>
+        <TitleLengthMeter length={81} />
+        <TitleLengthAlert id="a" length={81} />
+      </>,
+    );
+    expect(screen.getByText("81/80").parentElement?.className).toContain("text-neon-pink-text");
+    expect(screen.getByRole("alert").className).toContain("text-neon-pink-text");
+    expect(screen.getByRole("alert").className).not.toContain("notice-danger");
+  });
+
+  it("OVER_FIELD_CLASS is keyed on data-over, never aria-invalid: edge, ring and tint in the pink roles", () => {
+    const classes = OVER_FIELD_CLASS.split(" ");
+    expect(classes).toEqual(expect.arrayContaining([
+      "data-[over=true]:border-neon-pink-text",
+      "data-[over=true]:ring-1",
+      "data-[over=true]:ring-neon-pink-text",
+      "data-[over=true]:bg-neon-pink/10",
+    ]));
+    // A refused save sets aria-invalid; that error keeps its own look.
+    expect(OVER_FIELD_CLASS).not.toContain("aria-invalid");
+  });
+
+  it("OVER_FIELD_CLASS lets the grey held fill win over the tint, edge and ring staying", () => {
+    const classes = OVER_FIELD_CLASS.split(" ");
+    // Three attributes of specificity (held + over) against the tint's two.
+    expect(classes).toContain("aria-disabled:data-[over=true]:bg-button-neutral");
+    expect(classes).toContain("disabled:data-[over=true]:bg-button-neutral");
+    // Nothing held ever drops the edge or the ring.
+    expect(classes.filter((c) => /^(aria-disabled|disabled):.*(border|ring)/.test(c))).toEqual([]);
+  });
+
+  it("overFieldProps sets the length-only hook when over and nothing when not", () => {
+    expect(overFieldProps(true)).toEqual({ "data-over": "true" });
+    expect(overFieldProps(false)).toEqual({});
   });
 });

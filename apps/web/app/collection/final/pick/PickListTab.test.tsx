@@ -524,9 +524,11 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     // A sale filed with its set keeps the old note under its variant.
     const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
     expect(within(nabers).getAllByText("Neon Binder couldn't match this line. Check the sales platform.").length).toBeGreaterThan(0);
-    // The old 40px checkbox: the bordered button is the box.
+    // The bordered button is the box, 24px on every screen (NEO-598), with a larger invisible hit area.
     const tick = within(trout).getByRole("button", { name: /^Pulled #27 Mike Trout/ });
-    expect(tick.className).toContain("size-11");
+    expect(tick.className).toContain("size-6");
+    expect(tick.className).not.toMatch(/size-(8|11)/);
+    expect(tick.className).toContain("after:absolute");
     expect(tick.className).toContain("border-2");
     // The old thin dividers: no heavier variant rule inside a set.
     expect(table.querySelector("td[class*='border-b-[3px]']")).toBeNull();
@@ -568,15 +570,62 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect([...pageUrl().keys()].some((k) => /dens|rows/i.test(k))).toBe(false);
   });
 
-  it("keeps the demo's page at the 6xl column when Condensed, and widens it on Spacious", async () => {
+  it("keeps the demo's page at the wide column in both row sizes (NEO-598)", async () => {
     renderPick();
     const table = await screen.findByRole("table", { name: "Cards to pull" });
     const frame = () => table.closest<HTMLElement>("[class*='max-w-[1600px]'], [class*='max-w-6xl']")!;
     expect(frame().className).toContain("max-w-[1600px]");
     fireEvent.click(option("Condensed"));
-    expect(frame().className).toContain("max-w-6xl");
+    expect(frame().className).toContain("max-w-[1600px]");
     fireEvent.click(option("Spacious"));
     expect(frame().className).toContain("max-w-[1600px]");
+  });
+
+  it("draws a wide Condensed row for one line, sized to its content and never clipped: dense cells, the team after the name, atomic pieces nowrap (NEO-598)", async () => {
+    renderPick();
+    const table = await screen.findByRole("table", { name: "Cards to pull" });
+    fireEvent.click(option("Condensed"));
+    // Columns size to their content (auto layout), and nothing clips: no ellipsis, no hidden overflow.
+    expect(table.className).not.toContain("table-fixed");
+    // (The picture's cell is the card art's own markup, which clips its tiny type by design.)
+    const words = [...table.querySelectorAll("td:not(.nb-pick-pic)")].map((td) => td.innerHTML).join("");
+    expect(words).not.toMatch(/truncate|text-ellipsis|overflow-hidden|line-clamp/);
+    const trout = await rowOf(/^Pulled #27 Mike Trout/);
+    const cells = [...trout.querySelectorAll("td")];
+    // Dense cells: the 24px controls set the row's height, and the cells add only py-0.5.
+    expect(cells[0].className).toContain("md:py-0.5");
+    expect(cells[2].className).toContain("md:py-0.5");
+    // The picture: one text line tall, 5:7, on a phone too, with a larger invisible hit area.
+    const thumb = within(trout).getByRole("button", { name: /^Bigger picture of #27 Mike Trout/ });
+    expect(thumb.className).toContain("w-[1.07rem]");
+    expect(thumb.className).not.toContain("w-8");
+    expect(thumb.className).toContain("after:absolute");
+    // The team sits right after the name, in the same flex-wrap line, and never breaks inside.
+    const team = within(trout).getAllByText("Angels").find((el) => el.className.includes("whitespace-nowrap") && el.className.includes("text-xs"))!;
+    expect(team.previousElementSibling?.textContent).toBe("Mike Trout");
+    expect(team.parentElement?.className).toContain("flex-wrap");
+    // The card number never breaks.
+    expect(cells.some((td) => td.className.includes("whitespace-nowrap") && td.textContent === "#27")).toBe(true);
+    // The wide columns that hold a number, a condition and an order shrink to their content.
+    const heads = [...table.querySelectorAll("thead th")].filter((th) => th.className.includes("md:w-1"));
+    expect(heads.map((th) => th.textContent?.replace(/\s+/g, " ").trim()).sort()).toEqual(expect.arrayContaining(["Condition", "No.", "Order"]));
+  });
+
+  it("keeps a slab's grade and cert together, and joins up to two orders with a comma on a wide Condensed row (NEO-598)", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    fireEvent.click(option("Condensed"));
+    const slab = [...document.querySelectorAll("tr")].find((tr) => /Cert /.test(tr.textContent ?? ""))!;
+    const grade = [...slab.querySelectorAll("span")].find((el) => /^Cert /.test(el.textContent ?? ""))!;
+    // Inline beside the grade on a wide screen, stacked under it on a phone, never apart.
+    expect(grade.className).toContain("md:ml-1.5");
+    expect(grade.parentElement?.className).toContain("md:whitespace-nowrap");
+    expect(grade.parentElement?.className).toContain("max-md:flex-col");
+    // Two orders (Skenes: BSC and eBay) read "BSC 88213, eBay 12-3456" on one nowrap line.
+    const skenes = await rowOf(/^Pulled #150 Paul Skenes/);
+    const orderCell = [...skenes.querySelectorAll("td")].find((td) => td.textContent?.includes("eBay 12-3456") && !td.className.split(/\s+/).includes("md:hidden"))!;
+    expect(orderCell.textContent).toMatch(/BSC 88213,\s*eBay 12-3456/);
+    expect(orderCell.firstElementChild?.className).toContain("md:whitespace-nowrap");
   });
 
   it("is one Tab stop: the checked option; the arrow keys, Home and End move and pick", async () => {
@@ -942,12 +991,15 @@ describe("the signed-in Pick List's ways out", () => {
       problem: "Neon Binder didn't list this one. Check the sales platform.",
     };
     const region = await show({ lines: [...DEMO_PICK_DATA.lines, extra] }, true);
-    for (const size of ["Spacious", "Condensed"] as const) {
-      fireEvent.click(within(region).getByRole("radio", { name: size }));
-      const cells = within(region).getAllByText(title);
-      expect(cells).toHaveLength(2);
-      for (const cell of cells) expect(cell.className).toContain("wrap-anywhere");
-    }
+    fireEvent.click(within(region).getByRole("radio", { name: "Spacious" }));
+    const cells = within(region).getAllByText(title);
+    expect(cells).toHaveLength(2);
+    for (const cell of cells) expect(cell.className).toContain("wrap-anywhere");
+    // NEO-598: Condensed wraps it too (nothing is clipped), on a wide screen and a phone.
+    fireEvent.click(within(region).getByRole("radio", { name: "Condensed" }));
+    const condensed = within(region).getAllByText(title);
+    expect(condensed).toHaveLength(2);
+    for (const cell of condensed) expect(cell.className).toContain("wrap-anywhere");
   });
 
   it("NEO-520: grouped by order, an order holding a line NB didn't list counts items, and an all-card order counts cards", async () => {
@@ -1164,5 +1216,73 @@ describe("the Pick List's rare states pass axe", () => {
     expect(within(region).getByRole("heading", { level: 3, name: /^Box not recorded · \d+ to pull$/ })).toBeTruthy();
     expect(within(region).getByText("These sold before Neon Binder kept track of boxes. Look wherever you keep the set.")).toBeTruthy();
     expect(violations).toEqual([]);
+  });
+});
+
+// NEO-598: Condensed's wide screen is a fixed-layout table, where a heading that spans more
+// columns than there are adds an empty one and takes a share of the width. So every group
+// heading spans exactly the columns the wide screen draws, with Qty and Slot on or off.
+// (A By the Box stop with slots is one flat run with no group heading, so Slot is checked on
+// the columns a row draws against the header; the headings are checked where they exist.)
+describe("NEO-598: Condensed headings span the wide screen's columns", () => {
+  type Line = import("./types").SaleLine;
+  const wide = (el: Element) => !el.className.split(/\s+/).includes("md:hidden");
+  // Qty shows where a row holds two or more: one line per card keeps it off; two copies put it on.
+  const one = (lines: Line[]) => lines.filter((l, i) => !l.card || lines.findIndex((m) => m.card?.id === l.card?.id) === i).map((l) => ({ ...l, quantity: 1 }));
+  const two = (lines: Line[]) => lines.map((l) => ({ ...l, quantity: 2 }));
+
+  async function tablesFor(shape: (lines: Line[]) => Line[], url: string) {
+    const { DemoPickListProvider, DEMO_PICK_DATA } = await import("./demoPickStore");
+    const { default: PickListTab } = await import("./PickListTab");
+    const { CollectionModeProvider } = await import("../mode");
+    window.localStorage.setItem(PICK_DENSITY_KEY, "condensed");
+    resetPickDensityForTests();
+    render(
+      <Theme>
+        <MemoryRouter initialEntries={[url]}>
+          <CollectionModeProvider mode="app" surface="inventory">
+            <DemoPickListProvider data={{ ...DEMO_PICK_DATA, lines: shape([...DEMO_PICK_DATA.lines]) }}>
+              <PickListTab />
+            </DemoPickListProvider>
+          </CollectionModeProvider>
+        </MemoryRouter>
+      </Theme>,
+    );
+    const region = await screen.findByRole("region", { name: "Pick List" });
+    return within(region).getAllByRole("table");
+  }
+
+  const cases = [
+    { qty: false, slot: false, url: "/inventory?tab=pick", shape: one },
+    { qty: true, slot: false, url: "/inventory?tab=pick", shape: two },
+    { qty: false, slot: true, url: "/inventory?tab=pick&pv=box", shape: one },
+    { qty: true, slot: true, url: "/inventory?tab=pick&pv=box", shape: two },
+  ];
+
+  it.each(cases)("Qty $qty, Slot $slot: a row draws 7 + Qty + Slot columns, and a group heading spans as many", async ({ qty, slot, url, shape }) => {
+    const tables = await tablesFor(shape, url);
+    let met = 0;
+    let headings = 0;
+    for (const table of tables) {
+      const headers = [...table.querySelectorAll("thead th")].filter(wide);
+      const hasQty = headers.some((th) => th.textContent?.includes("Qty"));
+      const hasSlot = headers.some((th) => th.textContent?.trim() === "Slot");
+      if (hasQty !== qty || hasSlot !== slot) continue;
+      const expected = 7 + (qty ? 1 : 0) + (slot ? 1 : 0);
+      expect(headers).toHaveLength(expected);
+      // Every data row draws as many wide columns (a listing with no number spans two of them).
+      for (const row of table.querySelectorAll("tr.nb-pick-row")) {
+        const drawn = [...row.querySelectorAll<HTMLTableCellElement>("td")].filter(wide).reduce((n, td) => n + td.colSpan, 0);
+        expect(drawn).toBe(expected);
+      }
+      for (const head of table.querySelectorAll<HTMLTableCellElement>("th[scope='rowgroup']")) {
+        expect(head.colSpan).toBe(expected);
+        headings += 1;
+      }
+      met += 1;
+    }
+    // The case really met a table with these columns, and (off a flat box run) a heading to check.
+    expect(met).toBeGreaterThan(0);
+    if (!slot) expect(headings).toBeGreaterThan(0);
   });
 });

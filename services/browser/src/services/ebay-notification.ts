@@ -281,6 +281,12 @@ export class EbayNotificationVerifier {
    * throws (`EbayOAuthError`, kind unavailable or malformed).
    */
   async verify(config: EbayOAuthConfig, signatureHeader: string, body: string): Promise<boolean> {
+    // NEO-555 N3: the Marketplace Account Deletion push comes from real eBay
+    // and is checked against real eBay's key. A fake-key config (which the
+    // verify route never builds) is refused outright: nothing here resolves,
+    // reads or fetches anything from the fake, and the hosts below stay
+    // EBAY_HOSTS whatever the config carries.
+    if (config.fake) throw new EbayOAuthError("client");
     if (body.length > MAX_NOTIFICATION_BODY_LENGTH) return false;
     const parsed = parseSignatureHeader(signatureHeader);
     if (!parsed) return false;

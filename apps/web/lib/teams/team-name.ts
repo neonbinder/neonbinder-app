@@ -73,6 +73,19 @@ export function teamShortName(row: TeamNameParts): string {
   return row.name.trim();
 }
 
+/**
+ * NEO-606 — the row's Location / Name pair, trimmed, or `undefined` when the
+ * row has no location to give up ("Athletics", "Liverpool", an unsplit
+ * legacy row). What a listing title reads to shorten "New York Yankees" to
+ * "Yankees": NB's own split of the row, never a guess at where a location
+ * ends in a full name.
+ */
+export function teamSplitOf(row: TeamNameParts): { location: string; name: string } | undefined {
+  const location = row.location?.trim() ?? "";
+  const name = row.name.trim();
+  return location && name ? { location, name } : undefined;
+}
+
 /** Collapse runs of whitespace so comparisons are not defeated by typing. */
 function collapse(value: string): string {
   return value.trim().replace(/\s+/g, " ");

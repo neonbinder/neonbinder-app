@@ -62,6 +62,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { requireAdmin } from "./auth";
 import { MAX_CARD_PLAYERS } from "./features/cardAttention";
 import { generateListingDescription } from "./features/generateListing";
+import { generatedTitleTruncatedFlag } from "./features/listingInputs";
 import { variantTypeKind } from "./variantRole";
 import { syncCardPlayerLinks } from "./cardPlayerLinks";
 import { playerBelongsToSport } from "./players";
@@ -873,7 +874,7 @@ async function putPlayerOnCard(
       text.listingTitle = after.title;
       // As the commit writes it: flagged only when the generator had to cut
       // the core; undefined in a patch clears a flag the old title carried.
-      text.listingTitleTruncated = after.coreFits ? undefined : true;
+      text.listingTitleTruncated = generatedTitleTruncatedFlag(after);
     }
     if (descriptionUntouched) {
       text.listingDescription = generateListingDescription(after.inputs, {

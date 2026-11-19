@@ -61,7 +61,8 @@ export function pickList(page: Page) {
     backToDefault: region.getByRole("button", { name: "Back to default", exact: true }),
     /**
      * NEO-522: the "Row size" switch, a radio group: Spacious (the default) or
-     * Condensed (the pre-NEO-522 rows), the choice in `aria-checked`. One Tab
+     * Condensed (the dense rows, one line each on a wide screen since NEO-598),
+     * the choice in `aria-checked`. One Tab
      * stop; the arrow keys move and pick. This device keeps the choice; Back to
      * default leaves it alone.
      */
@@ -84,6 +85,55 @@ export function pickList(page: Page) {
  */
 export function pulledToggle(scope: Locator, row: string): Locator {
   return scope.getByRole("button", { name: escapeRegex(`Pulled ${row}`) });
+}
+
+/**
+ * NEO-598: how many text lines tall a table row stands: its height over its own
+ * line-height, so a row on one line reads about 1 (a Condensed row on a wide
+ * screen) and one that wrapped reads 2 or more. Poll it: `expect.poll(() =>
+ * rowLines(row)).toBeLessThanOrEqual(1.5)`.
+ */
+export async function rowLines(row: Locator): Promise<number> {
+  const box = await row.boundingBox();
+  if (!box) throw new Error("rowLines: the row has no box on screen");
+  const lineHeight = await row.evaluate((tr) => parseFloat(getComputedStyle(tr).lineHeight));
+  return box.height / lineHeight;
+}
+
+/**
+ * NEO-598: a chip or text sits whole inside its cell, not cut at the cell's edge.
+ */
+export async function expectWithinCell(inner: Locator): Promise<void> {
+  const box = (await inner.boundingBox())!;
+  const cell = await inner.evaluate((el) => {
+    const r = el.closest("td")!.getBoundingClientRect();
+    return { x: r.x, width: r.width };
+  });
+  expect(box.x).toBeGreaterThanOrEqual(cell.x - 0.5);
+  expect(box.x + box.width).toBeLessThanOrEqual(cell.x + cell.width + 0.5);
+}
+
+/**
+ * NEO-598: nothing in the table is clipped or pushed past the page. A Condensed row
+ * wraps its words where a line cannot fit; it never cuts them with an ellipsis or
+ * hidden overflow, and it never makes the list scroll sideways. So no element in a
+ * text cell holds more than its box shows (`scrollWidth <= clientWidth`), and the
+ * table is no wider than its region. The toggle and picture cells are left out: their
+ * invisible hit areas are meant to reach past the cell.
+ */
+export async function expectNothingClipped(table: Locator, region: Locator): Promise<void> {
+  const tableWidth = (await table.boundingBox())!.width;
+  const regionWidth = (await region.boundingBox())!.width;
+  expect(tableWidth).toBeLessThanOrEqual(regionWidth + 1);
+  const clipped = await table.evaluate((t) =>
+    [...t.querySelectorAll("td")]
+      .filter((td) => !td.querySelector("button"))
+      .flatMap((td) => [td, ...td.querySelectorAll("*")])
+      // (an sr-only span is 1px wide by design)
+      .filter((el) => el.clientWidth > 1 && el.scrollWidth > el.clientWidth + 1)
+      .map((el) => (el.textContent ?? "").trim().slice(0, 50)),
+  );
+  expect(clipped, "elements with clipped text").toEqual([]);
 }
 
 /** The table row that carries `row`'s Pulled toggle. */

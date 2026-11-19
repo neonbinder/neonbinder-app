@@ -17,7 +17,7 @@ import { formatCareerLine } from "../../lib/players/player-description";
 // lib/players/wikidata-id.ts.
 import { wikidataUrl, wikipediaUrl } from "../../lib/players/wikidata-id";
 // NEO-236: the team name split. Pure, no Convex — see lib/teams/team-name.ts.
-import { teamFullName } from "../../lib/teams/team-name";
+import { teamFullName, teamSplitOf } from "../../lib/teams/team-name";
 import { isEditableTarget } from "../../lib/dom/is-editable-target";
 import { useFieldTestClass } from "../../src/hooks/useFieldTestClass";
 import NeonButton from "../modules/NeonButton";
@@ -3262,7 +3262,13 @@ export default function EntityReviewWizard({
     const byId = teamIdNamesFromRefs(
       (linkedTeams ?? []).map((t) => ({ teamId: t._id, label: teamFullName(t) })),
     );
-    return { rows: rows ?? [], linkedTeamNameById: byId, teamNameById: byId };
+    // NEO-606 — and their Location / Name, so the preview shortens a team as
+    // the commit's title will.
+    const teamSplits = (linkedTeams ?? []).flatMap((t) => {
+      const split = teamSplitOf(t);
+      return split ? [split] : [];
+    });
+    return { rows: rows ?? [], linkedTeamNameById: byId, teamNameById: byId, teamSplits };
   }, [rows, linkedTeams]);
   /** The cards the titles step would ask about, recomputed from the team answers. */
   const titleIndexes = useMemo(

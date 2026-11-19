@@ -9,7 +9,12 @@
 
 import { describe, expect, test } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
-import { assessNewCardListing, type TitleContext } from "../../convex/features/listingInputs";
+import {
+  assessNewCardListing,
+  listingInputsForCard,
+  type TitleContext,
+} from "../../convex/features/listingInputs";
+import { assessListingTitle } from "../../convex/features/generateListing";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "../../convex/features/listingLimits";
 import {
   buildTitleGroups,
@@ -50,6 +55,8 @@ function context(overrides: Partial<TitleContext> = {}): TitleContext {
 }
 
 const SHORT = context({ setNameValue: "Chrome" });
+/** A set so short that a 66-character variation is the ONLY thing wrong with a title (NEO-609: it is never cut). */
+const VARIATION_ONLY = context({ setNameValue: "X", inheritedFeatures: {} });
 const OVER = context({ setNameValue: OVER_SET });
 
 function card(n: string, extra: Partial<PreviewCardForTitles> = {}): PreviewCardForTitles {
@@ -303,37 +310,39 @@ describe("NEO-535 — 'Left out to fit' is read from the text in each field", ()
 
 describe("NEO-535 — grouping", () => {
   test("cards whose titles left out the same things share one line; each card's own names sit on its row", () => {
+    // NEO-609: a variation is never cut, so the shared thing is a RELIC
+    // (row 17, before any first name goes).
     const cards = [
-      card("1", { cardVariation: "Throwback" }),
-      card("2", { players: ["Doc Gooden"], cardVariation: "Throwback" }),
-      card("3", { cardVariation: "Sapphire Gold" }),
+      card("1", { isRelic: true }),
+      card("2", { players: ["Doc Gooden"], isRelic: true }),
+      card("3", { isRookie: true }),
     ];
     const { titleGroups } = buildTitleGroups(cards, context());
     expect(titleGroups.map((g) => g.cards.map((c) => c.cardNumber))).toEqual([["1", "2"], ["3"]]);
     // What every card on the line is missing.
-    expect(titleGroups[0].leftOut).toEqual(["Throwback"]);
+    expect(titleGroups[0].leftOut).toEqual(["RELIC"]);
     // The rest, row by row.
     expect(titleGroups[0].cards.map((c) => c.leftOut)).toEqual([["Shohei"], ["Dwight"]]);
     // A one-card group has no line: its row says it all.
     expect(titleGroups[1].leftOut).toEqual([]);
-    expect(titleGroups[1].cards[0].leftOut).toEqual(["Shohei", "Sapphire Gold"]);
+    expect(titleGroups[1].cards[0].leftOut).toEqual(["#3", "Shohei"]);
   });
 
   test("groups hold still while typing: a retyped word moves from the line to the other rows", () => {
     const cards = [
-      card("1", { cardVariation: "Throwback" }),
-      card("2", { players: ["Doc Gooden"], cardVariation: "Throwback" }),
+      card("1", { isRelic: true }),
+      card("2", { players: ["Doc Gooden"], isRelic: true }),
     ];
     const before = buildTitleGroups(cards, context()).titleGroups;
     const title1 = before[0].cards[0].title;
     const after = buildTitleGroups(cards, context(), undefined, {
-      answers: [{ listingTitle: `${title1} Throwback` }, undefined],
+      answers: [{ listingTitle: `${title1} RELIC` }, undefined],
     }).titleGroups;
     expect(after.map((g) => g.key)).toEqual(before.map((g) => g.key));
     expect(after[0].cards.map((c) => c.index)).toEqual([0, 1]);
-    // Only card 2 still lacks the variation, so the line no longer says it.
+    // Only card 2 still lacks the RELIC, so the line no longer says it.
     expect(after[0].leftOut).toEqual([]);
-    expect(after[0].cards[1].leftOut).toEqual(["Dwight", "Throwback"]);
+    expect(after[0].cards[1].leftOut).toEqual(["Dwight", "RELIC"]);
   });
 
   test("a card's own number is its row's business, never a line of its own", () => {
@@ -400,12 +409,27 @@ describe("titleAnswersForCommit — never blocks, never invents", () => {
     const cards = [card("2", { cardVariation: LONG_VARIATION })];
     expect(
       titleAnswersForCommit(cards, SHORT, undefined, { answers: [{ cardVariation: "Throwback " }] }),
-    ).toEqual([{ cardVariation: "Throwback", cardVariationAnswered: true }]);
+    ).toEqual([
+      {
+        cardVariation: "Throwback",
+        cardVariationAnswered: true,
+        // The card is on the step for its ORIGINAL variation (a variation is
+        // never cut, NEO-609, so that title ran over the cap), and the step
+        // showed the title the answer gives it: kept as shown.
+        listingTitleKept: "2026 Topps Chrome Shohei Ohtani #2 Throwback Baseball",
+      },
+    ]);
     expect(
       titleAnswersForCommit(cards, SHORT, undefined, {
         answers: [{ cardVariation: "v".repeat(ASPECT_VALUE_MAX + 1) }],
       }),
-    ).toEqual([undefined]);
+      // No variation answer counts, so the card keeps its own variation and
+      // the over-cap title the step showed for it (kept, not invented).
+    ).toEqual([
+      {
+        listingTitleKept: rowsOf(buildTitleGroups(cards, SHORT).titleGroups)[0].title,
+      },
+    ]);
   });
 
   test("withTitleAnswer: no answer is the same object; an answer replaces the variation", () => {
@@ -431,10 +455,19 @@ describe("NEO-535 — Set name in titles on the step", () => {
     );
     // Nothing listed: no box.
     expect(shortNameFieldApplies(cards, SHORT)).toBe(false);
-    // Only a variation over 65 on the step: no box (it would not help).
+    // Only a variation over 65 on the step: no box (it would not help). The
+    // title must fit by itself for that to hold: a variation is never cut
+    // (NEO-609), so beside a real description it would run the title over.
+    expect(
+      shortNameFieldApplies(
+        [card("3", { players: [], cardVariation: "v".repeat(ASPECT_VALUE_MAX + 1) })],
+        VARIATION_ONLY,
+      ),
+    ).toBe(false);
+    // Beside a real description a long variation puts the TITLE on the step too.
     expect(
       shortNameFieldApplies([card("3", { cardVariation: LONG_VARIATION })], SHORT),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   test("a stored value over-cap cards still need keeps them on the step", () => {
@@ -510,5 +543,105 @@ describe("NEO-535 — Set name in titles on the step", () => {
     expect(validShortName("x".repeat(80))).toBe("x".repeat(80));
     expect(validShortName("x".repeat(81))).toBeUndefined();
     expect(validShortName("Topps\tSapphire")).toBeUndefined();
+  });
+});
+
+/**
+ * NEO-606 — a team whose row is split gives up its location before it goes,
+ * and the step's title is the one the commit and Regenerate will write. The
+ * split reaches the preview from the server's context (`teamSplits`), from the
+ * teams the operator picked or linked in the wizard (`names.teamSplits`), and
+ * from a team created in the Names phase (its Location / Name).
+ */
+describe("a split team in the preview (NEO-606)", () => {
+  const NY = { location: "New York", name: "Yankees" };
+  /**
+   * A 50-character "Set name in titles" box: "<box> Shohei Ohtani #1" is 66,
+   * "New York Yankees" would make 83, "Yankees" 74. The card is on the step
+   * because its own description lost a first name and the box did not.
+   */
+  const BOX = "B".repeat(50);
+  const boxed = (extra: Partial<TitleContext> = {}) =>
+    context({
+      setNameValue: "C".repeat(62),
+      listingShortName: BOX,
+      teams: [{ printed: "NY", name: "New York Yankees" }],
+      ...extra,
+    });
+  const teamCard = card("1", { teams: ["NY"] });
+
+  /** What Regenerate / the commit title: the same inputs, from the server's builder. */
+  const stored = (ctx: TitleContext, teamSplits?: Array<{ location: string; name: string }>) =>
+    assessListingTitle(
+      listingInputsForCard({ cardNumber: "1" }, ctx, {
+        playerNames: ["Shohei Ohtani"],
+        teamNames: ["New York Yankees"],
+        teamSplits,
+      }),
+    );
+
+  test("the preview says 'Yankees' from the server context, exactly as the stored title does", () => {
+    const ctx = boxed({ teamSplits: [NY] });
+    const [row] = rowsOf(buildTitleGroups([teamCard], ctx).titleGroups);
+    const written = stored(ctx, [NY]);
+    expect(row.title).toBe(`${BOX} Shohei Ohtani #1 Yankees`);
+    expect(row.title).toBe(written.title);
+    expect(row.leftOut).toEqual(written.dropped);
+    expect(row.leftOut).toEqual([]);
+  });
+
+  test("without the split the team is dropped whole, in the preview and the stored title alike", () => {
+    const ctx = boxed();
+    const [row] = rowsOf(buildTitleGroups([teamCard], ctx).titleGroups);
+    const written = stored(ctx);
+    // The sport the team's room had cost comes back in its place.
+    expect(row.title).toBe(`${BOX} Shohei Ohtani #1 Baseball`);
+    expect(row.title).toBe(written.title);
+    expect(row.leftOut).toEqual(["New York Yankees"]);
+    expect(row.leftOut).toEqual(written.dropped);
+  });
+
+  test("a team the operator picked or linked carries its split from the wizard's sources", () => {
+    const id = "t-ny" as Id<"teams">;
+    const names = {
+      teamNameById: new Map([[id, "New York Yankees"]]),
+      teamSplits: [NY],
+    };
+    const ctx = boxed();
+    const [row] = rowsOf(
+      buildTitleGroups([card("1")], ctx, [{ teamIds: [id] }], { names }).titleGroups,
+    );
+    expect(row.title).toBe(stored(ctx, [NY]).title);
+    expect(row.title.endsWith("#1 Yankees")).toBe(true);
+  });
+
+  test("a team created in the Names phase carries the Location / Name it was created with", () => {
+    const rows: TitleReviewRow[] = [
+      {
+        kind: "team",
+        name: "NYY",
+        decision: { action: "create", create: { location: "New York", name: "Yankees" } },
+      },
+    ];
+    const ctx = boxed({ teams: [] });
+    const [row] = rowsOf(
+      buildTitleGroups([card("1", { teams: ["NYY"] })], ctx, undefined, { names: { rows } })
+        .titleGroups,
+    );
+    expect(row.title).toBe(stored(ctx, [NY]).title);
+    expect(row.title.endsWith("#1 Yankees")).toBe(true);
+  });
+
+  test("a team with no location (no split) is dropped whole", () => {
+    const rows: TitleReviewRow[] = [
+      { kind: "team", name: "NYY", decision: { action: "create", create: { name: "New York Yankees" } } },
+    ];
+    const [row] = rowsOf(
+      buildTitleGroups([card("1", { teams: ["NYY"] })], boxed({ teams: [] }), undefined, {
+        names: { rows },
+      }).titleGroups,
+    );
+    expect(row.title).toBe(`${BOX} Shohei Ohtani #1 Baseball`);
+    expect(row.leftOut).toEqual(["New York Yankees"]);
   });
 });

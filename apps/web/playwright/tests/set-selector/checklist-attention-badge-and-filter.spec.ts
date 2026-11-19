@@ -16,6 +16,16 @@
 // a marketplace fetch flags a card only if its team string resolves to no NB
 // team. The search control itself is checklist-search-narrows-and-clears'.
 // Searching is client-side and writes nothing.
+//
+// Card 3's number is a bare "703" (NEO-609). Its title names its linked player
+// and team, and since NEO-609 a title that has to give up a whole team is a
+// Tidy Up card ("auto-generated title was cut short"), which the pill counts
+// too. With "703-<ATTEMPT_ID>" the number alone ran the title past 80 whenever
+// the attempt's random tail was long (a coin toss per run, not a project
+// difference), so card 3 joined the count. The set is this attempt's own, so
+// the bare number is unique; the title keeps "2024 Topps <set> Base <player>
+// #703 <team>" whole for every worker, at most 80 characters (computed with the
+// real generator; only the quiet cuts, the sport and the "Insert" type name, go).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { setBuilderReady, drillToCustom } from "../../support/set-builder";
 import { addCardViaForm, editCardButton, escapeRe } from "../../support/cards";
@@ -50,8 +60,13 @@ test(
   async ({ page, signIn, env }) => {
     const id = env.ATTEMPT_ID;
     const token = env.ATTEMPT_TOKEN;
-    const badge = (n: string) =>
-      page.getByRole("img", { name: new RegExp(`^Card ${n}-${id}(, .*)? needs attention: no team on this card yet$`) });
+    const n701 = `701-${id}`;
+    const n702 = `702-${id}`;
+    const n703 = "703";
+    const badge = (number: string) =>
+      page.getByRole("img", { name: new RegExp(`^Card ${escapeRe(number)}(, .*)? needs attention: no team on this card yet$`) });
+    /** This attempt's three cards, by number. */
+    const ours = `(?:${escapeRe(n701)}|${escapeRe(n702)}|${n703})`;
     const teamB = `CNAB${token}`;
     const teamA = `CNAA${token}`;
     // A REAL person whose Baseball lookup the enrichment recording holds as a
@@ -74,10 +89,10 @@ test(
     });
 
     // Two cards with no team, one with a team.
-    await addCardViaForm(page, { cardNumber: `701-${id}`, playerName: `AttnAlpha${token}` });
-    await addCardViaForm(page, { cardNumber: `702-${id}`, playerName: `AttnBravo${token}` });
+    await addCardViaForm(page, { cardNumber: n701, playerName: `AttnAlpha${token}` });
+    await addCardViaForm(page, { cardNumber: n702, playerName: `AttnBravo${token}` });
     await addCardViaForm(page, {
-      cardNumber: `703-${id}`,
+      cardNumber: n703,
       playerName: `AttnCharlie${token}`,
       beforeSubmit: async () => {
         await expectAccessible(page, { label: "Add card form" });
@@ -103,16 +118,17 @@ test(
     await expect(page.getByText(teamB).first()).toBeVisible();
 
     // Only the team-less cards are badged, and the header counts them.
-    await expect(badge("703")).toBeHidden();
-    await expect(badge("701")).toBeVisible();
-    await expect(badge("702")).toBeVisible();
+    await expect(badge(n701)).toBeVisible();
+    await expect(badge(n702)).toBeVisible();
     await expect(pill("2 need you")).toBeVisible();
+    // Card 3 carries no mark of any kind: no team question and no title one.
+    await expect(page.getByRole("img", { name: new RegExp(`^Card ${n703}(, .*)? needs attention: `) })).toHaveCount(0);
     await expectAccessible(page, { label: "Checklist with attention badges and count" });
 
     // The player was STORED, read where only the stored row can put it: the row
     // prints no player and an unbadged card says nothing either way, so the
     // drawer's picker chip (off the live query) is the read-back.
-    await editCardButton(page, `703-${id}`).click();
+    await editCardButton(page, n703).click();
     const born = page.getByRole("dialog", { name: /^Card #/ });
     await expect(born.getByRole("button", { name: `Remove player ${player}` })).toBeVisible();
     await born.getByRole("button", { name: "Done editing card" }).click();
@@ -127,8 +143,8 @@ test(
     await expect(page.getByText(/Saved Teams/)).toBeVisible();
     await cardName.click();
     await page.getByRole("button", { name: "Done editing card" }).click();
-    await expect(badge("702")).toBeHidden();
-    await expect(badge("701")).toBeVisible();
+    await expect(badge(n702)).toBeHidden();
+    await expect(badge(n701)).toBeVisible();
     await expect(pill("1 needs you")).toBeVisible();
     await expect(page.getByText(teamA).first()).toBeVisible();
 
@@ -136,17 +152,17 @@ test(
     // the pill counts, out of the set's three, and every row it lists carries
     // the attention mark. Rows and marks are scoped to this attempt's cards.
     const search = page.getByRole("searchbox", { name: "Search cards" });
-    const rows = page.getByRole("button", { name: new RegExp(`^Edit card [0-9]+-${escapeRe(id)}(, .*)?$`) });
-    const marks = page.getByRole("img", { name: new RegExp(`^Card [0-9]+-${escapeRe(id)}(, .*)? needs attention: `) });
+    const rows = page.getByRole("button", { name: new RegExp(`^Edit card ${ours}(, .*)?$`) });
+    const marks = page.getByRole("img", { name: new RegExp(`^Card ${ours}(, .*)? needs attention: `) });
     await search.fill("attention");
     await expect(page.getByText("1 of 3 cards", { exact: true })).toBeVisible();
-    await expect(editCardButton(page, `701-${id}`)).toBeVisible();
+    await expect(editCardButton(page, n701)).toBeVisible();
     await expect(rows).toHaveCount(1);
-    await expect(badge("701")).toBeVisible();
+    await expect(badge(n701)).toBeVisible();
     await expect(marks).toHaveCount(1);
     // A keyword ANDs with the other terms: flagged AND #702 is nothing.
-    await search.fill(`attention 702-${id}`);
-    await expect(page.getByText(`No cards match "attention 702-${id}".`)).toBeVisible();
+    await search.fill(`attention ${n702}`);
+    await expect(page.getByText(`No cards match "attention ${n702}".`)).toBeVisible();
     await expect(page.getByText("0 of 3 cards", { exact: true })).toBeVisible();
     await expect(rows).toHaveCount(0);
     // Escape clears it: all three rows are back.
@@ -162,13 +178,13 @@ test(
     await pill("1 needs you").click();
     const walker = page.getByRole("dialog", { name: TIDY_UP_NAME });
     await expect(walker).toBeVisible();
-    await expect(walker.getByRole("button", { name: `Skip for now, card 701-${id}` })).toBeVisible();
+    await expect(walker.getByRole("button", { name: `Skip for now, card ${n701}` })).toBeVisible();
     await expect(walker.getByText("Step 1 of 1", { exact: true })).toBeVisible();
     await expectAccessible(page, { within: walker, label: "Attention walker opened from the need-you pill" });
     await walker.getByRole("button", { name: "Close (Esc)" }).click();
     await expect(walker).toBeHidden();
     // Closing deferred: #701 is still the one flagged card.
     await expect(pill("1 needs you")).toBeVisible();
-    await expect(badge("701")).toBeVisible();
+    await expect(badge(n701)).toBeVisible();
   },
 );

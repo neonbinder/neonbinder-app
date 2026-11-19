@@ -31,8 +31,8 @@
 //     a pull back (the described line's too);
 //   - NEO-522: Row size opens Spacious; Condensed brings back the old rows (the
 //     kind chip beside the variant's name, the described line's "couldn't match"
-//     note, no Variant column, no insert rule) and, at 1920, a narrower page
-//     than Spacious; it survives a reload, and Spacious brings the tags back;
+//     note, no Variant column, no insert rule) and, at 1920, the same wide page
+//     as Spacious (NEO-598); it survives a reload, and Spacious brings the tags back;
 //   - an order that lands while the page is open shows at the bottom, New,
 //     and "Pull these 2" (with its confirm) pulls it under an Order filter;
 //   - shipping the first order takes its lines off the list.
@@ -85,6 +85,7 @@ import {
   pickRow,
   pictureButton,
   pulledToggle,
+  expectNothingClipped,
   seedPickOrder,
   seen,
   shipPickOrder,
@@ -347,7 +348,7 @@ test(
 
       // --- NEO-522: Row size, Spacious (the default) or Condensed (the rows as they were) ---------
       // A device setting, not a filter: it keeps the Order filter, survives a reload, and the
-      // page frame follows it (only Spacious opens to the wide page).
+      // page frame does not (NEO-598: Condensed opens to the same wide page as Spacious).
       const { rowSize } = pick;
       await expect(rowSize.spacious).toHaveAttribute("aria-checked", "true");
       await expect(rowSize.condensed).toHaveAttribute("aria-checked", "false");
@@ -363,8 +364,8 @@ test(
       await rowSize.condensed.click();
       await expect(rowSize.condensed).toHaveAttribute("aria-checked", "true");
       if (!isMobile) {
-        // The old 6xl page: the same screen, a narrower list.
-        await expect.poll(regionWidth).toBeLessThan(spaciousWidth);
+        // The same wide page as Spacious, so more text fits each line.
+        await expect.poll(regionWidth).toBe(spaciousWidth);
         await page.setViewportSize(viewport);
       }
       /** The old rows: the kind chip beside the variant's name, and the described line's note. */
@@ -380,6 +381,13 @@ test(
         if (!isMobile) await expect(table.getByRole("columnheader", { name: "Variant", exact: true })).toHaveCount(0);
       };
       await expectCondensed();
+      if (!isMobile) {
+        // NEO-598: a Condensed row wraps where a line cannot fit and never clips: no cut text,
+        // no sideways scroll, the described line's note included. (Line counts live in the demo
+        // spec, whose rows are fixed; these rows carry the seed's own titles.)
+        await expectNothingClipped(table, region);
+      }
+      await expectAccessible(page, { label: "Pick List, Condensed rows" });
       await expect(pick.matches).toHaveText("6 match.");
       // This device remembers it: a reload (a full page load: the launch gate) opens Condensed.
       await page.reload();

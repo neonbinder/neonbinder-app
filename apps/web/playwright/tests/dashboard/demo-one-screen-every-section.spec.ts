@@ -55,7 +55,10 @@ test(
     await expect(cheered.getByRole("link").first()).toBeVisible();
     // Today's pulls hold the card that closed it, and it is on the Want List (graded): the dashed pull.
     const freshPulls = page.getByRole("region", { name: "Fresh Pulls" });
-    await expect(freshPulls.getByRole("link", { name: /^1989 Score Barry Sanders #257 .*On your Want List$/ })).toBeVisible();
+    // Its title is the listing title's (NEO-609: a base card says "Base" after its set while it fits).
+    await expect(
+      freshPulls.getByRole("link", { name: /^1989 Score Base Barry Sanders #257 RC Detroit Lions Rookie Football\b.*On your Want List$/ }),
+    ).toBeVisible();
     // The demo's box lines carry their prices; a few wait on a price.
     const newListings = page.getByRole("region", { name: "New Listings" });
     await expect(newListings.getByRole("link").filter({ hasText: /\$\d+\.\d{2}/ }).first()).toBeVisible();
@@ -103,7 +106,7 @@ test(
     await expect(pickups.getByText(wantFlag)).toBeVisible();
     await expect(shoebox.getByText(wantFlag)).toHaveCount(0);
     // Each run's guesses are a list of their own, named for the run and its screen.
-    const wantedTitle = "1996 Playoff Contenders Deion Sanders #13 Dallas Cowboys Football";
+    const wantedTitle = "1996 Playoff Contenders Base Deion Sanders #13 Dallas Cowboys Football";
     const pickupGuesses = pickups.getByRole("list", { name: "Best guesses for Show pickups on Inventory", exact: true });
     const wantedGuess = pickupGuesses.getByRole("link", { name: `${wantedTitle}, on your Want List`, exact: true });
     await expect(wantedGuess).toBeVisible();

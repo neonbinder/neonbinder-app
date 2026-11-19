@@ -11,6 +11,8 @@ import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
   TitleFieldNote,
+  OVER_FIELD_CLASS,
+  overFieldProps,
   TitleLengthAlert,
   TitleLengthMeter,
   titleLengthState,
@@ -157,6 +159,9 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
       await updateCard({
         id: row._id,
         listingTitle: title.trim(),
+        // Saving here is the operator's answer, whatever the title: the card
+        // leaves Tidy Up even when a Regenerated title still carries a cut.
+        titleReviewed: true,
         ...(fixesVariation ? { cardVariation: variation.trim() } : {}),
       });
       onSaved();
@@ -262,12 +267,13 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           // fixable. See the same note in CardDetailPanel.
           // The held look (readOnly + aria-disabled while busy) is the
           // Textarea primitive's own; no fade here.
-          className="block w-full resize-none p-1.5 text-sm [field-sizing:content]"
+          className={`block w-full resize-none p-1.5 text-sm [field-sizing:content] ${OVER_FIELD_CLASS}`}
           // Anchored to the card number so it cannot collide with the drawer's
           // own "Card title" field in a selector — Maestro's `id:` matcher
           // takes a regex, so `Card title for #.*` still targets it.
           aria-label={`Card title for #${row.cardNumber}`}
           aria-invalid={titleState.over || undefined}
+          {...overFieldProps(titleState.over)}
           // The save hint says Enter saves: a wrapping field reads as one
           // where Enter makes a new line.
           aria-describedby={[titleState.over ? titleAlertId : null, saveHintId]
@@ -295,7 +301,7 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
           id={titleAlertId}
           role={titleState.over && overByKeystroke ? "alert" : "status"}
           aria-atomic="true"
-          className={`mt-1 text-xs empty:hidden ${titleState.over ? "text-notice-danger-ink" : "text-neon-green-text"}`}
+          className={`mt-1 text-xs empty:hidden ${titleState.over ? "text-neon-pink-text" : "text-neon-green-text"}`}
         >
           {titleState.over ? TOO_LONG : fitsNow ? FITS_NOW : ""}
         </p>
@@ -340,9 +346,14 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
                 key={`${chip.label}-${chip.value}-${idx}`}
                 className="rounded-full border border-rule-strong bg-raised/60 px-2 py-0.5 text-xs text-ink-2"
               >
-                <span className="mr-1 uppercase tracking-wide text-ink-3">
-                  {chip.label}
-                </span>
+                {chip.label && (
+                  <>
+                    <span className="uppercase tracking-wide text-ink-3">
+                      {chip.label}
+                    </span>
+                    {" "}
+                  </>
+                )}
                 {chip.value}
               </li>
             ))}
@@ -372,8 +383,10 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
               e.preventDefault();
               void save();
             }}
-            className="w-full p-1.5 text-sm"
+            className={`w-full p-1.5 text-sm ${OVER_FIELD_CLASS}`}
             aria-label={`Card variation for #${row.cardNumber}`}
+            // Advisory: it still saves, so no `aria-invalid`; the status below is its description.
+            {...overFieldProps(variation.length > ASPECT_VALUE_MAX)}
             aria-describedby={[
               variation.length > ASPECT_VALUE_MAX ? variationAlertId : null,
               saveHintId,

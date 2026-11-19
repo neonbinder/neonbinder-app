@@ -2196,18 +2196,23 @@ export default defineSchema({
     // backfill (`backfillListingDescriptions`) has not reached may lack it,
     // and such a row is not found by the search until it is filled.
     listingDescription: v.optional(v.string()),
-    // NEO-101: the auto-generated title's CORE (year / manufacturer / set /
-    // players) did not fit inside eBay's 80-character cap at creation time, so
-    // the generator cut it at a word boundary to keep room for the card number.
+    // NEO-101 / NEO-609: the card is in Tidy Up. The auto-generated title fit
+    // eBay's 80-character cap only by a cut from the Tidy Up line down (a
+    // whole team, the card number, SP, RELIC, a first name, RC or AUTO; the
+    // "#" alone is not one), or it was built from the set's box text.
     // The title is valid and listable — it is just missing identifying words a
-    // human should put back, which is why this drives a "needs attention" item
+    // human may want to decide differently, which is why this drives a "needs attention" item
     // (`features/cardAttention.ts` → `titleTruncated`) rather than an error.
     //
-    // Set ONLY at insert, from `assessListingTitle(...).coreFits === false`,
-    // and omitted entirely otherwise. CLEARED (patched to `undefined`) by any
-    // operator write of `listingTitle` through `updateCard`: once a human has
-    // authored the title, whether the machine's attempt fit is no longer a
-    // question anyone is asking.
+    // Written with every GENERATED title (insert, Regenerate, a player link,
+    // a team removal), from `assessListingTitle(...).coreFits === false`
+    // (`generatedTitleTruncatedFlag`), and omitted entirely otherwise.
+    // CLEARED (patched to `undefined`) by an operator's own typed title
+    // through `updateCard`: once a human has authored the title, whether the
+    // machine's attempt fit is no longer a question anyone is asking. A title
+    // `updateCard` is handed that is exactly what the generator builds for the
+    // card as it stands (Regenerate) is generated, not typed, and takes the
+    // flag its assessment gives it.
     //
     // WHY IT IS STORED AT ALL, when nothing else about the write-once
     // generation is: a stored row does not carry the player names or the set

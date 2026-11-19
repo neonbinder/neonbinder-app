@@ -1,6 +1,7 @@
 /**
  * NEO-284 — the armed bulk upsert, brought back slim for the NCAA D1 / ABL
- * team preload. Two internal mutations, one read-only preview, no dataset.
+ * team preload. Armed internal mutations, each with a read-only preview, and no
+ * dataset.
  *
  * ## What this is
  *
@@ -16,6 +17,10 @@
  * leagues + teams half only, re-cut around the alias model NEO-284 adds.
  * NEO-285 brought back the players leg ADOPT-ONLY, as `upsertPlayerStints`:
  * college stints onto players NB already holds — see its section below.
+ * NEO-611 adds the roster leg, `upsertPlayers`, which may also CREATE a player
+ * (never on a guess: see its section) and shares the stint engine with
+ * NEO-285. Creating people is opt-in by function name, so `upsertPlayerStints`
+ * stays adopt-only.
  *
  * ## Product invariant
  *
@@ -204,13 +209,36 @@ import {
   teamRowFields,
 } from "./lib/teamRow";
 import { erasOverlap } from "../lib/teams/team-era";
-import { longestToken, nameTokens, rankTeamCandidates } from "./lib/entityNearMatch";
+import {
+  longestToken,
+  nameTokens,
+  rankPlayerCandidates,
+  rankTeamCandidates,
+} from "./lib/entityNearMatch";
 import { teamFullName } from "../lib/teams/team-name";
 import { isWikidataQid } from "../lib/players/wikidata-id";
 // NEO-285 — the stints leg reads players the way the editor keys them and
 // orders a career the one way every career writer does.
-import { MAX_PLAYER_TEAM_YEARS, normalizePlayerName } from "./players";
+//
+// NEO-611 — the roster leg reads candidates the way the New Player form and the
+// review commit do (`sameNamePlayers`: name, alias and sport membership) and
+// writes aliases through the one index writer.
+import {
+  MAX_PLAYER_ALIAS_LENGTH,
+  MAX_PLAYER_ALIASES,
+  MAX_PLAYER_TEAM_YEARS,
+  PLAYER_AMBIGUITY_SCAN_LIMIT,
+  matchedAliasFor,
+  nameFragmentScan,
+  normalizePlayerAliasList,
+  normalizePlayerName,
+  playerBelongsToSport,
+  sameNamePlayers,
+  syncPlayerAliases,
+} from "./players";
 import { sortTeamYears } from "../lib/players/team-tenure";
+import { MIN_BIRTH_YEAR, maxBirthYear } from "../lib/players/career-years";
+import { nameFragmentTokens } from "../lib/players/name-fragment";
 
 // ---------------------------------------------------------------------------
 // Bounds
@@ -1522,8 +1550,10 @@ export const previewTeams = internalQuery({
  * 1. **Armed, twice** — the same gate as every writer in this file.
  * 2. **Adopt-only. Never creates a player.** A key that matches no player is
  *    `no-match` and nothing is written; a college load inventing pros is
- *    out of scope by the ticket and wrong by the invariant (a player row is
- *    created from a card, not from a roster).
+ *    out of scope by the ticket. Roster loads that DO create players go
+ *    through `upsertPlayers` (NEO-611), a separate armed function with its own
+ *    identity, twin and held-adopt rules; this leg stays adopt-only so a
+ *    college script can never mint a row.
  * 3. **Never guesses the player.** Same identity rule as NEO-254: one
  *    candidate adopts unless the birth years CONTRADICT (positive evidence of
  *    two people — that is `no-match`, not a merge); several adopt the one
@@ -1750,6 +1780,211 @@ function stintTeamCandidate(team: Doc<"teams">): StintTeamCandidate {
   };
 }
 
+// ---------------------------------------------------------------------------
+// The stint engine, shared by both player legs
+//
+// NEO-611 — `upsertPlayerStints` (adopt-only, college) and `upsertPlayers`
+// (roster loads, below) write the same thing onto a player: dated or undated
+// stints on teams NB already holds, gap-filled and never removed. The two legs
+// differ in who they may touch (an existing player vs. one they may create) and
+// in how a stint names its team (a school string is college-only). Everything
+// that is the SAME lives here, so there is one place that says what "the same
+// stint" means and one place that counts what a load did.
+// ---------------------------------------------------------------------------
+
+/** A stint as a caller sends it, before validation. */
+type StintInput = {
+  teamId?: Id<"teams">;
+  school?: string;
+  fromYear?: number;
+  toYear?: number;
+};
+
+/** What a load did to stints, summed across the rows of one call. */
+type StintTally = { added: number; present: number; wrongSport: number };
+
+/** One entry of a result row's `stints`. */
+type StintEntry = PlayerStintResult["stints"][number];
+
+/** A stint whose team could not be used. */
+type TeamRefusalEntry = {
+  outcome: "missing-team" | "wrong-sport";
+  teamId: Id<"teams">;
+};
+
+/** A stint that reached the gap-fill. */
+type GapFillEntry = {
+  outcome: "added" | "would-add" | "present" | "cap-reached";
+  teamId: Id<"teams">;
+  school?: string;
+};
+
+/** A birth year is a whole year inside the leg's own window, or the call is refused. */
+function assertRowBirthYear(
+  birthYear: number | undefined,
+  key: string,
+  min: number,
+  max: number,
+): void {
+  if (
+    birthYear !== undefined &&
+    (!Number.isInteger(birthYear) || birthYear < min || birthYear > max)
+  ) {
+    throw new ConvexError(
+      `The birth year for "${key}" is out of range; expected a whole year between ${min} and ${max}.`,
+    );
+  }
+}
+
+/** The row's player name, bounded, and the dedup key it answers to. */
+function rowPlayerName(
+  raw: string,
+  key: string,
+): { name: string; nameNormalized: string } {
+  const name = boundedName(raw, "A player name", key);
+  const nameNormalized = normalizePlayerName(name);
+  if (!nameNormalized) {
+    throw new ConvexError(`The player name for "${key}" has no letters or digits in it.`);
+  }
+  return { name, nameNormalized };
+}
+
+/**
+ * Validate a row's stints before anything is read for them: the count, that
+ * each names exactly one of `teamId` / `school`, and that the years are whole,
+ * in range and not an end without a start. Pure.
+ */
+function cleanStints(
+  raw: ReadonlyArray<StintInput>,
+  key: string,
+  maxStints: number,
+): Array<{ teamId?: Id<"teams">; school?: string; fromYear?: number; toYear?: number }> {
+  if (raw.length > maxStints) {
+    throw new ConvexError(`"${key}" has ${raw.length} stints; the limit is ${maxStints}.`);
+  }
+  return raw.map((stint) => {
+    const hasTeam = stint.teamId !== undefined;
+    const school = stint.school?.trim().replace(/\s+/g, " ") || undefined;
+    if (hasTeam === (school !== undefined)) {
+      throw new ConvexError(
+        `A stint for "${key}" must name exactly one of teamId or school.`,
+      );
+    }
+    if (school !== undefined) boundedName(school, "A school", key);
+    if (stint.fromYear !== undefined) {
+      assertYears(
+        { from: stint.fromYear, ...(stint.toYear !== undefined ? { to: stint.toYear } : {}) },
+        "A stint",
+        key,
+      );
+    } else if (stint.toYear !== undefined) {
+      throw new ConvexError(`A stint for "${key}" has an end year and no start year.`);
+    }
+    return {
+      teamId: stint.teamId,
+      school,
+      fromYear: stint.fromYear,
+      toYear: stint.toYear,
+    };
+  });
+}
+
+/**
+ * The id path of a stint: the team must exist and be in the sport being
+ * loaded. A miss is reported per stint (`missing-team`, `wrong-sport`) and the
+ * rest of the row lands.
+ */
+async function resolveStintTeamId(
+  readTeam: (id: Id<"teams">) => Promise<Doc<"teams"> | null>,
+  sportId: Id<"selectorOptions">,
+  teamId: Id<"teams">,
+  tally: StintTally,
+): Promise<{ team: Doc<"teams"> } | { entry: TeamRefusalEntry }> {
+  const team = await readTeam(teamId);
+  if (!team) return { entry: { outcome: "missing-team", teamId } };
+  if (team.sportId !== sportId) {
+    tally.wrongSport += 1;
+    return { entry: { outcome: "wrong-sport", teamId } };
+  }
+  return { team };
+}
+
+/**
+ * Gap-fill one resolved stint into `career` (mutated): `present` when it could
+ * be a stint the player already has, `cap-reached` when the career is full,
+ * otherwise appended. Nothing already in `career` is removed or re-dated.
+ */
+function gapFillStint(
+  career: StoredStint[],
+  team: Doc<"teams">,
+  stint: { fromYear?: number; toYear?: number },
+  via: { school?: string },
+  write: boolean,
+  tally: StintTally,
+): GapFillEntry {
+  const entry: StoredStint = {
+    teamId: team._id,
+    ...(stint.fromYear !== undefined ? { fromYear: stint.fromYear } : {}),
+    ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+  };
+  if (stintAlreadyPresent(career, entry)) {
+    tally.present += 1;
+    return { outcome: "present", teamId: team._id, ...via };
+  }
+  if (career.length >= MAX_PLAYER_TEAM_YEARS) {
+    return { outcome: "cap-reached", teamId: team._id, ...via };
+  }
+  career.push(entry);
+  tally.added += 1;
+  return { outcome: write ? "added" : "would-add", teamId: team._id, ...via };
+}
+
+/**
+ * Write what an adopt gained back onto the player: the grown career (in the
+ * one order every career writer uses; null leaves it alone) and, for the
+ * roster leg, a filled birth year or a widened alias list.
+ */
+async function writeCareer(
+  ctx: MutationCtx,
+  playerId: Id<"players">,
+  career: StoredStint[] | null,
+  extra: { birthYear?: number; aliases?: string[] } = {},
+): Promise<void> {
+  await ctx.db.patch(playerId, {
+    ...(career ? { teamYears: sortTeamYears(career) } : {}),
+    ...extra,
+    lastUpdated: Date.now(),
+  });
+}
+
+/** `db.get` on teams, once per id across a whole call. */
+function cachedTeamReader(
+  ctx: QueryCtx | MutationCtx,
+  cache: Map<string, Doc<"teams"> | null>,
+  onRead: () => void,
+): (id: Id<"teams">) => Promise<Doc<"teams"> | null> {
+  return async (id) => {
+    if (!cache.has(id)) {
+      cache.set(id, await ctx.db.get(id));
+      onRead();
+    }
+    return cache.get(id) ?? null;
+  };
+}
+
+/** A player as an `ambiguous` result lists it for the operator. */
+function playerCandidateOf(p: Doc<"players">): {
+  id: Id<"players">;
+  name: string;
+  birthYear?: number;
+} {
+  return {
+    id: p._id,
+    name: p.name,
+    ...(p.birthYear !== undefined ? { birthYear: p.birthYear } : {}),
+  };
+}
+
 async function loadPlayerStints(
   ctx: QueryCtx | MutationCtx,
   args: { sport: string; players: PlayerStintRowInput[] },
@@ -1765,13 +2000,9 @@ async function loadPlayerStints(
   // One read per distinct team, league and school across the whole chunk: a
   // hundred players from one draft class share a few dozen schools.
   const teamCache = new Map<string, Doc<"teams"> | null>();
-  const readTeam = async (id: Id<"teams">): Promise<Doc<"teams"> | null> => {
-    if (!teamCache.has(id)) {
-      teamCache.set(id, await ctx.db.get(id));
-      ops += 1;
-    }
-    return teamCache.get(id) ?? null;
-  };
+  const readTeam = cachedTeamReader(ctx, teamCache, () => {
+    ops += 1;
+  });
   const leagueIsCollege = new Map<string, boolean>();
   /**
    * Rule 4 — may a SCHOOL string land on this team? Not when its league is
@@ -1860,9 +2091,7 @@ async function loadPlayerStints(
     string,
     { school: string; count: number; candidates: StintTeamCandidate[] }
   >();
-  let stintsAdded = 0;
-  let stintsPresent = 0;
-  let wrongSport = 0;
+  const tally: StintTally = { added: 0, present: 0, wrongSport: 0 };
 
   let processed = 0;
   let nextKey: string | null = null;
@@ -1875,51 +2104,11 @@ async function loadPlayerStints(
     const row = args.players[rowIndex];
     processed = rowIndex + 1;
     const key = boundedKey(row.key);
-    const name = boundedName(row.name, "A player name", key);
-    const nameNormalized = normalizePlayerName(name);
-    if (!nameNormalized) {
-      throw new ConvexError(`The player name for "${key}" has no letters or digits in it.`);
-    }
-    if (
-      row.birthYear !== undefined &&
-      (!Number.isInteger(row.birthYear) || row.birthYear < MIN_YEAR || row.birthYear > maxYear)
-    ) {
-      throw new ConvexError(
-        `The birth year for "${key}" is ${row.birthYear}; expected a whole year between ${MIN_YEAR} and ${maxYear}.`,
-      );
-    }
+    const { nameNormalized } = rowPlayerName(row.name, key);
+    assertRowBirthYear(row.birthYear, key, MIN_YEAR, maxYear);
 
     // ---- validate the stints before anything is read for them ------------
-    if (row.stints.length > MAX_STINTS_PER_ROW) {
-      throw new ConvexError(
-        `"${key}" has ${row.stints.length} stints; the limit is ${MAX_STINTS_PER_ROW}.`,
-      );
-    }
-    const stints = row.stints.map((stint) => {
-      const hasTeam = stint.teamId !== undefined;
-      const school = stint.school?.trim().replace(/\s+/g, " ") || undefined;
-      if (hasTeam === (school !== undefined)) {
-        throw new ConvexError(
-          `A stint for "${key}" must name exactly one of teamId or school.`,
-        );
-      }
-      if (school !== undefined) boundedName(school, "A school", key);
-      if (stint.fromYear !== undefined) {
-        assertYears(
-          { from: stint.fromYear, ...(stint.toYear !== undefined ? { to: stint.toYear } : {}) },
-          "A stint",
-          key,
-        );
-      } else if (stint.toYear !== undefined) {
-        throw new ConvexError(`A stint for "${key}" has an end year and no start year.`);
-      }
-      return {
-        teamId: stint.teamId,
-        school,
-        fromYear: stint.fromYear,
-        toYear: stint.toYear,
-      };
-    });
+    const stints = cleanStints(row.stints, key, MAX_STINTS_PER_ROW);
 
     // ---- the player: adopt-only ------------------------------------------
     let player: Doc<"players"> | null = null;
@@ -1981,11 +2170,7 @@ async function loadPlayerStints(
             key,
             playerId: null,
             status: "ambiguous",
-            candidates: candidates.map((p) => ({
-              id: p._id,
-              name: p.name,
-              ...(p.birthYear !== undefined ? { birthYear: p.birthYear } : {}),
-            })),
+            candidates: candidates.map(playerCandidateOf),
             stints: [],
           });
           continue;
@@ -2000,16 +2185,12 @@ async function loadPlayerStints(
     for (const stint of stints) {
       let team: Doc<"teams"> | null = null;
       if (stint.teamId !== undefined) {
-        team = await readTeam(stint.teamId);
-        if (!team) {
-          outcomes.push({ outcome: "missing-team", teamId: stint.teamId });
+        const resolved = await resolveStintTeamId(readTeam, sportId, stint.teamId, tally);
+        if ("entry" in resolved) {
+          outcomes.push(resolved.entry);
           continue;
         }
-        if (team.sportId !== sportId) {
-          wrongSport += 1;
-          outcomes.push({ outcome: "wrong-sport", teamId: stint.teamId });
-          continue;
-        }
+        team = resolved.team;
       } else {
         const school = stint.school!;
         let matches = await lookupSchool(school);
@@ -2042,31 +2223,12 @@ async function loadPlayerStints(
       }
       if (!team) continue;
 
-      const entry: StoredStint = {
-        teamId: team._id,
-        ...(stint.fromYear !== undefined ? { fromYear: stint.fromYear } : {}),
-        ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
-      };
       const via = stint.school !== undefined ? { school: stint.school } : {};
-      if (stintAlreadyPresent(career, entry)) {
-        stintsPresent += 1;
-        outcomes.push({ outcome: "present", teamId: team._id, ...via });
-        continue;
-      }
-      if (career.length >= MAX_PLAYER_TEAM_YEARS) {
-        outcomes.push({ outcome: "cap-reached", teamId: team._id, ...via });
-        continue;
-      }
-      career.push(entry);
-      stintsAdded += 1;
-      outcomes.push({ outcome: write ? "added" : "would-add", teamId: team._id, ...via });
+      outcomes.push(gapFillStint(career, team, stint, via, write, tally));
     }
 
     if (mutationCtx && career.length > startLength) {
-      await mutationCtx.db.patch(player._id, {
-        teamYears: sortTeamYears(career),
-        lastUpdated: Date.now(),
-      });
+      await writeCareer(mutationCtx, player._id, career);
       ops += 1;
     }
     results.push({
@@ -2097,11 +2259,11 @@ async function loadPlayerStints(
     results,
     summary: {
       adopted,
-      stintsAdded,
-      stintsPresent,
+      stintsAdded: tally.added,
+      stintsPresent: tally.present,
       noMatch: results.filter((r) => r.status === "no-match").length,
       ambiguous: results.filter((r) => r.status === "ambiguous").length,
-      wrongSport,
+      wrongSport: tally.wrongSport,
       unresolvedSchools: [...unresolved.values()],
       ambiguousSchools: [...ambiguousSchools.values()],
     },
@@ -2147,5 +2309,729 @@ export const previewPlayerStints = internalQuery({
       throw new ConvexError("Bulk load preview requires confirm: \"BULK_LOAD\".");
     }
     return await loadPlayerStints(ctx, args, false);
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Roster players (NEO-611)
+// ---------------------------------------------------------------------------
+
+/**
+ * NEO-611 — the roster leg: adopt or CREATE NB players from a roster dataset
+ * and add their stints on teams NB already holds. One key per row, resumable,
+ * armed twice, no UI. Its sibling `upsertPlayerStints` stays adopt-only; the
+ * function NAME is the opt-in to creating people (a flag on the adopt-only
+ * function would let one typo in a script mint a few thousand rows).
+ *
+ * ## The identity rule (NEO-285's, extended with a create branch)
+ *
+ * The same rule `adoptOrForkOnCreate` (players.ts) applies to the admin form
+ * and NEO-285 applies to a college load, over the players that ANSWER to the
+ * incoming name — `sameNamePlayers`: the primary name, an alias, or membership
+ * of the sport. NEO-285's bare name-index read misses alias holders, and a
+ * duplicate of a man NB holds under another name has no delete or merge path.
+ *
+ * | candidates | birth years                                | outcome            |
+ * |------------|--------------------------------------------|--------------------|
+ * | none       | any                                        | create             |
+ * | one        | agree, or either side has none             | adopt              |
+ * | one        | both dated and different                   | create             |
+ * | several    | exactly one equals the incoming year       | adopt that one     |
+ * | several    | incoming and EVERY candidate dated, none equal | create, `forked` |
+ * | anything else |                                         | `ambiguous`        |
+ *
+ * A scan that came back full (`PLAYER_AMBIGUITY_SCAN_LIMIT` rows) may be
+ * hiding the man, so it is always `ambiguous` and never forks.
+ *
+ * ## Twins: two keys that are one person
+ *
+ * A roster can list one man twice (a transfer, a spelling variant). The second
+ * key finds the first key's freshly created row and, by the rule above, would
+ * silently fold into it. Nothing stored distinguishes "a row this load made"
+ * from "a row NB already held", so the CALLER supplies the boundary:
+ * `loadStartedAt`, one timestamp for the whole load, reused on every call,
+ * resume and rerun. When the row the rule would adopt has
+ * `_creationTime >= loadStartedAt` and no `decision` named it, the result is
+ * `ambiguous` with `reason: "created-this-run"` and that candidate carries
+ * `createdThisRun`. An epoch in the future is refused. The driver must record
+ * every `created` id and replay the key as `{ adopt: id }`.
+ *
+ * ## An adopt that nothing confirms is HELD
+ *
+ * Every adopt reports `birthYearCheck`: `match` (both dated and equal),
+ * `candidate-undated`, `incoming-undated`, or `decision` (an operator's
+ * answer). When either side has no birth year the name is all that agrees, and
+ * writing a career onto the wrong undated man is the one mistake this loader
+ * cannot take back. Such a row is `held`: NOTHING is written, `playerId` is
+ * null, and `candidates` names the one player found, with `candidateBirthYear`,
+ * so the driver can show it. A decision never overrides a contradiction: if both
+ * the row and the chosen player are dated and differ, the call is refused. It adopts
+ * once the answers file carries `{ adopt: id }`. The birth year is filled only
+ * on a decision adopt of an undated row; aliases are unioned only on a
+ * `match` or `decision` adopt.
+ *
+ * ## What a create writes, and what it does not
+ *
+ * `name`, `nameNormalized`, `sportId`, and when present `birthYear`, `aliases`
+ * (through the one index writer) and `teamYears` (in the one career order),
+ * plus `lastUpdated`. No `createdByUserId` (a CLI run has no user). It adds no
+ * sport membership row and schedules nothing: no enrichment, for the reason
+ * NEO-254 states for the team loader. A one-word name that is the first or
+ * last name of a fuller-named player is `ambiguous` (`reason:
+ * "name-fragment"`) unless the row carries `decision: { create: true }`, which
+ * counts as the operator's confirmation. Each create also reports up to three
+ * `nearExisting` players, advisory only.
+ *
+ * ## Stints
+ *
+ * Teams are named by `teamId` only (the roster driver already holds NB ids);
+ * there is no `school` path, whose college-only eligibility rules must not
+ * apply to a pro roster. Gap-fill, `present`, `cap-reached` and the per-stint
+ * `wrong-sport` / `missing-team` refusals are `upsertPlayerStints`'s, through
+ * the shared engine above. A key repeated within one call is refused: splitting
+ * one key across rows is unsafe. A create with no valid stint still creates.
+ *
+ * ## Budget
+ *
+ * `BULK_LOAD_PLAYER_OP_BUDGET`, checked between rows, with the same
+ * `processed` / `hasMore` / `nextKey` / `opsSpent` resume contract as the team
+ * loader. A typical row costs 5-10 operations (three identity reads, one
+ * write, and an alias sync when it carries aliases); the worst create is about
+ * 115 and the worst adopt about 240, so the ceiling is the budget plus one such
+ * row. `decision: { create: true }` is not idempotent (see the team loader);
+ * replay the created id as an adopt.
+ */
+export const BULK_LOAD_PLAYER_OP_BUDGET = 900;
+
+/** The most stints a row may carry: the most a player may store. */
+const MAX_ROSTER_STINTS_PER_ROW = MAX_PLAYER_TEAM_YEARS;
+
+/** How many `nearExisting` players a create reports. */
+const NEAR_EXISTING_PLAYER_LIMIT = 3;
+
+const rosterStintValidator = v.object({
+  teamId: v.id("teams"),
+  fromYear: v.optional(v.number()),
+  toYear: v.optional(v.number()),
+});
+
+/** Two shapes, as for teams: "this one" and "none of those" are different answers. */
+const rosterDecisionValidator = v.union(
+  v.object({ adopt: v.id("players") }),
+  v.object({ create: v.literal(true) }),
+);
+
+const rosterPlayerRowValidator = v.object({
+  key: v.string(),
+  name: v.string(),
+  birthYear: v.optional(v.number()),
+  aliases: v.optional(v.array(v.string())),
+  stints: v.array(rosterStintValidator),
+  decision: v.optional(rosterDecisionValidator),
+});
+
+const rosterStintResultValidator = v.object({
+  outcome: v.union(
+    v.literal("added"),
+    v.literal("would-add"),
+    v.literal("present"),
+    v.literal("wrong-sport"),
+    v.literal("missing-team"),
+    v.literal("cap-reached"),
+  ),
+  teamId: v.optional(v.id("teams")),
+});
+
+const rosterBirthYearCheckValidator = v.union(
+  v.literal("match"),
+  v.literal("candidate-undated"),
+  v.literal("incoming-undated"),
+  v.literal("decision"),
+);
+
+const rosterPlayerResultValidator = v.object({
+  key: v.string(),
+  /**
+   * The player written or found. Null whenever nothing was written to or
+   * for a player: `held` (the candidate is in `candidates`), `ambiguous`, and a
+   * preview `would-create`.
+   */
+  playerId: v.union(v.id("players"), v.null()),
+  status: v.union(
+    v.literal("created"),
+    v.literal("adopted"),
+    v.literal("would-create"),
+    v.literal("would-adopt"),
+    v.literal("held"),
+    v.literal("ambiguous"),
+  ),
+  /** How an adopt found its player. `decision` is a replayed answer. */
+  matchedBy: v.optional(
+    v.union(v.literal("name"), v.literal("alias"), v.literal("decision")),
+  ),
+  /** Adopt and `held`: what, if anything, confirmed the player by birth year. */
+  birthYearCheck: v.optional(rosterBirthYearCheckValidator),
+  /** Adopt and `held`: the candidate's birth year, absent when it has none. */
+  candidateBirthYear: v.optional(v.number()),
+  /** `ambiguous` only, when the cause is not simply "several candidates". */
+  reason: v.optional(v.union(v.literal("created-this-run"), v.literal("name-fragment"))),
+  /**
+   * Preview only, with `reason: "created-this-run"`: the earlier row of this
+   * call that would create the player this row would fold into.
+   */
+  twinOfKey: v.optional(v.string()),
+  /** Create: the rule forked because every dated candidate had another birth year. */
+  forked: v.optional(v.boolean()),
+  /** `ambiguous` and `held`: the players the operator chooses between (`held`: the one found). */
+  candidates: v.optional(
+    v.array(
+      v.object({
+        id: v.id("players"),
+        name: v.string(),
+        birthYear: v.optional(v.number()),
+        /** The row was created by this load (its `_creationTime` >= the epoch). */
+        createdThisRun: v.optional(v.boolean()),
+      }),
+    ),
+  ),
+  /** `name-fragment`: the read filled its cap, so `candidates` is not the whole list. */
+  candidatesTruncated: v.optional(v.boolean()),
+  /** Create: up to three players in the sport that look like this one. Advisory. */
+  nearExisting: v.optional(
+    v.array(
+      v.object({
+        id: v.id("players"),
+        name: v.string(),
+        birthYear: v.optional(v.number()),
+        confidence: v.union(v.literal("exact"), v.literal("close")),
+      }),
+    ),
+  ),
+  /** Adopt: aliases added to the row (unioned, never removed). */
+  aliasesAdded: v.optional(v.number()),
+  /** Adopt: incoming aliases left off because the row is at its alias cap. */
+  aliasesSkipped: v.optional(v.number()),
+  /** One entry per incoming stint, in order. Empty unless a player was written or found. */
+  stints: v.array(rosterStintResultValidator),
+});
+
+const rosterPlayersResultValidator = v.object({
+  results: v.array(rosterPlayerResultValidator),
+  summary: v.object({
+    /** Created — or, on a preview, would be. */
+    created: v.number(),
+    /** Created because the rule forked (a subset of `created`). */
+    forked: v.number(),
+    adopted: v.number(),
+    held: v.number(),
+    ambiguous: v.number(),
+    stintsAdded: v.number(),
+    stintsPresent: v.number(),
+    wrongSport: v.number(),
+  }),
+  processed: v.number(),
+  hasMore: v.boolean(),
+  nextKey: v.union(v.string(), v.null()),
+  opsSpent: v.number(),
+});
+
+type RosterPlayerRow = Infer<typeof rosterPlayerRowValidator>;
+type RosterPlayerResult = Infer<typeof rosterPlayerResultValidator>;
+type RosterBirthYearCheck = Infer<typeof rosterBirthYearCheckValidator>;
+
+/**
+ * A player the incoming name answers to. `player` is null for a row the
+ * PREVIEW would create earlier in the same call: it cannot be inserted, so it
+ * is kept in memory to let the preview see the same twins the write would.
+ */
+type RosterCandidate = {
+  player: Doc<"players"> | null;
+  /** The key of the earlier row that would create it (simulated candidates only). */
+  twinOfKey?: string;
+  name: string;
+  birthYear?: number;
+  createdThisRun: boolean;
+  viaAlias: boolean;
+};
+
+type RosterIdentity =
+  | { kind: "create"; forked: boolean }
+  | { kind: "adopt"; candidate: RosterCandidate }
+  | { kind: "ambiguous" };
+
+/** The identity table in the section note, as a pure function. */
+function decideRosterIdentity(
+  candidates: ReadonlyArray<RosterCandidate>,
+  birthYear: number | undefined,
+  scanFull: boolean,
+): RosterIdentity {
+  if (candidates.length === 0) return { kind: "create", forked: false };
+  // A full scan may be hiding the man; only a human can rule on that.
+  if (scanFull) return { kind: "ambiguous" };
+  if (candidates.length === 1) {
+    const only = candidates[0];
+    if (
+      only.birthYear !== undefined &&
+      birthYear !== undefined &&
+      only.birthYear !== birthYear
+    ) {
+      // Positive evidence of two people.
+      return { kind: "create", forked: false };
+    }
+    return { kind: "adopt", candidate: only };
+  }
+  if (birthYear !== undefined) {
+    const hits = candidates.filter((c) => c.birthYear === birthYear);
+    if (hits.length === 1) return { kind: "adopt", candidate: hits[0] };
+    // Every rival is dated and none is this year, so none of them is this man.
+    // Anything undated could be, and is not ours to rule out.
+    if (hits.length === 0 && candidates.every((c) => c.birthYear !== undefined)) {
+      return { kind: "create", forked: true };
+    }
+  }
+  return { kind: "ambiguous" };
+}
+
+/** What the birth years say about an adopt the rule chose. */
+function rosterBirthYearCheck(
+  incoming: number | undefined,
+  candidate: number | undefined,
+): "match" | "candidate-undated" | "incoming-undated" {
+  if (incoming === undefined) return "incoming-undated";
+  if (candidate === undefined) return "candidate-undated";
+  return "match";
+}
+
+/** Refuse an alias list the player writers would refuse, naming the row, not the value. */
+function boundedAliasList(raw: ReadonlyArray<string> | undefined, key: string): string[] {
+  const list = raw ?? [];
+  if (list.length > MAX_PLAYER_ALIASES) {
+    throw new ConvexError(
+      `"${key}" has ${list.length} aliases; the limit is ${MAX_PLAYER_ALIASES}.`,
+    );
+  }
+  for (const alias of list) {
+    if (alias.trim().length > MAX_PLAYER_ALIAS_LENGTH) {
+      throw new ConvexError(
+        `An alias for "${key}" is ${alias.trim().length} characters; the limit is ${MAX_PLAYER_ALIAS_LENGTH}.`,
+      );
+    }
+  }
+  return [...list];
+}
+
+/**
+ * The adopted player's aliases with the incoming ones unioned in. Never removes
+ * or reorders one that is there; stops at the alias cap and says how many it
+ * left off. Null when nothing changes.
+ */
+function unionPlayerAliases(
+  player: Doc<"players">,
+  incoming: ReadonlyArray<string>,
+): { next: string[]; added: number; skipped: number } | null {
+  const existing = player.aliases ?? [];
+  const known = new Set(existing.map((a) => normalizePlayerName(a)));
+  const fresh = normalizePlayerAliasList(incoming, player.name).filter(
+    (a) => !known.has(normalizePlayerName(a)),
+  );
+  if (fresh.length === 0) return null;
+  const room = Math.max(0, MAX_PLAYER_ALIASES - existing.length);
+  const take = fresh.slice(0, room);
+  if (take.length === 0) return { next: existing, added: 0, skipped: fresh.length };
+  return { next: [...existing, ...take], added: take.length, skipped: fresh.length - take.length };
+}
+
+/**
+ * Up to `NEAR_EXISTING_PLAYER_LIMIT` players in the sport that look like the
+ * one about to be created: one `search_name` read, ranked by the same ladder
+ * the New Player form uses. Read BEFORE the insert so the new row is not its
+ * own neighbour.
+ */
+async function nearExistingPlayers(
+  ctx: QueryCtx | MutationCtx,
+  name: string,
+  sportId: Id<"selectorOptions">,
+): Promise<NonNullable<RosterPlayerResult["nearExisting"]>> {
+  const hits = await ctx.db
+    .query("players")
+    .withSearchIndex("search_name", (q) => q.search("name", name).eq("sportId", sportId))
+    .take(NEAR_EXISTING_SEARCH_CANDIDATES);
+  return rankPlayerCandidates(name, hits)
+    .slice(0, NEAR_EXISTING_PLAYER_LIMIT)
+    .map(({ index, confidence }) => {
+      const hit = hits[index];
+      return {
+        id: hit._id,
+        name: hit.name,
+        ...(hit.birthYear !== undefined ? { birthYear: hit.birthYear } : {}),
+        confidence,
+      };
+    });
+}
+
+async function loadRosterPlayers(
+  ctx: QueryCtx | MutationCtx,
+  args: { sport: string; loadStartedAt: number; players: RosterPlayerRow[] },
+  write: boolean,
+): Promise<Infer<typeof rosterPlayersResultValidator>> {
+  assertChunkSize(args.players.length, MAX_PLAYER_ROWS_PER_CALL, "players");
+  if (!Number.isFinite(args.loadStartedAt) || args.loadStartedAt <= 0) {
+    throw new ConvexError("loadStartedAt must be a millisecond timestamp.");
+  }
+  if (args.loadStartedAt > Date.now()) {
+    // A future epoch would make every existing player look like a twin and
+    // hide that the driver's clock is wrong. Refuse it rather than load on it.
+    throw new ConvexError(
+      "loadStartedAt is in the future. Take it once, before the first call of the load.",
+    );
+  }
+  // Refused up front, for every row sent: splitting one key across rows (or
+  // sending it twice) would make the second row a twin of the first.
+  const keysSeen = new Set<string>();
+  for (const row of args.players) {
+    const key = boundedKey(row.key);
+    if (keysSeen.has(key)) {
+      throw new ConvexError(`The key "${key}" appears more than once in this call.`);
+    }
+    keysSeen.add(key);
+  }
+
+  let ops = 0;
+  const sportId = await requireSportId(ctx, args.sport);
+  ops += 1;
+  const mutationCtx = write ? (ctx as MutationCtx) : null;
+  const maxBirth = maxBirthYear();
+
+  const teamCache = new Map<string, Doc<"teams"> | null>();
+  const readTeam = cachedTeamReader(ctx, teamCache, () => {
+    ops += 1;
+  });
+  const tally: StintTally = { added: 0, present: 0, wrongSport: 0 };
+  // Preview only: the players this call WOULD have created so far.
+  const wouldCreate: Array<RosterCandidate & { answersTo: Set<string> }> = [];
+
+  const results: RosterPlayerResult[] = [];
+  let processed = 0;
+  let nextKey: string | null = null;
+
+  for (let rowIndex = 0; rowIndex < args.players.length; rowIndex++) {
+    if (rowIndex > 0 && ops >= BULK_LOAD_PLAYER_OP_BUDGET) {
+      nextKey = boundedKey(args.players[rowIndex].key);
+      break;
+    }
+    const row = args.players[rowIndex];
+    processed = rowIndex + 1;
+    const key = boundedKey(row.key);
+    const { name, nameNormalized } = rowPlayerName(row.name, key);
+    assertRowBirthYear(row.birthYear, key, MIN_BIRTH_YEAR, maxBirth);
+    const stints = cleanStints(row.stints, key, MAX_ROSTER_STINTS_PER_ROW);
+    const aliasesIn = boundedAliasList(row.aliases, key);
+    const decision = row.decision;
+    const candidateOf = (c: RosterCandidate) =>
+      c.player
+        ? [
+            {
+              ...playerCandidateOf(c.player),
+              ...(c.createdThisRun ? { createdThisRun: true } : {}),
+            },
+          ]
+        : [];
+
+    // ---- who is this row? --------------------------------------------------
+    let player: Doc<"players"> | null = null;
+    let matchedBy: "name" | "alias" | "decision" = "name";
+    let birthYearCheck: RosterBirthYearCheck = "match";
+    let forked = false;
+
+    if (decision && "adopt" in decision) {
+      const chosen = await ctx.db.get(decision.adopt);
+      ops += 1;
+      if (chosen && chosen.sportId !== sportId) ops += 1;
+      if (!chosen || !(await playerBelongsToSport(ctx, chosen, sportId))) {
+        throw new ConvexError(`The player chosen for "${key}" is not a player in this sport.`);
+      }
+      if (
+        chosen.nameNormalized !== nameNormalized &&
+        matchedAliasFor(chosen, nameNormalized) === undefined
+      ) {
+        throw new ConvexError(
+          `The player chosen for "${key}" is a different person. A decision ` +
+            `can only pick between players that answer to the name being loaded.`,
+        );
+      }
+      if (
+        chosen.birthYear !== undefined &&
+        row.birthYear !== undefined &&
+        chosen.birthYear !== row.birthYear
+      ) {
+        // An answer cannot override a contradiction: the operator named a
+        // person the dataset says was born in another year. Neither year is
+        // echoed (the message reaches logs and Sentry).
+        throw new ConvexError(
+          `The birth year of the player chosen for "${key}" contradicts the row; ` +
+            `correct the player or drop the row's birth year.`,
+        );
+      }
+      player = chosen;
+      matchedBy = "decision";
+      birthYearCheck = "decision";
+    } else if (!decision) {
+      const found = await sameNamePlayers(ctx, nameNormalized, sportId);
+      ops += 3 + found.length;
+      const candidates: RosterCandidate[] = found.map((p) => ({
+        player: p,
+        name: p.name,
+        ...(p.birthYear !== undefined ? { birthYear: p.birthYear } : {}),
+        createdThisRun: p._creationTime >= args.loadStartedAt,
+        viaAlias: matchedAliasFor(p, nameNormalized) !== undefined,
+      }));
+      for (const sim of wouldCreate) {
+        if (sim.answersTo.has(nameNormalized)) candidates.push(sim);
+      }
+      const verdict = decideRosterIdentity(
+        candidates,
+        row.birthYear,
+        found.length >= PLAYER_AMBIGUITY_SCAN_LIMIT,
+      );
+
+      if (verdict.kind === "ambiguous") {
+        results.push({
+          key,
+          playerId: null,
+          status: "ambiguous",
+          candidates: candidates.flatMap(candidateOf),
+          stints: [],
+        });
+        continue;
+      }
+      if (verdict.kind === "adopt") {
+        const c = verdict.candidate;
+        if (c.createdThisRun) {
+          // The rule would fold this key into a player THIS load made — a twin,
+          // or a rerun that lost its answers. Never silently.
+          results.push({
+            key,
+            playerId: null,
+            status: "ambiguous",
+            reason: "created-this-run",
+            ...(c.twinOfKey !== undefined ? { twinOfKey: c.twinOfKey } : {}),
+            candidates: candidateOf(c),
+            stints: [],
+          });
+          continue;
+        }
+        const check = rosterBirthYearCheck(row.birthYear, c.birthYear);
+        if (check !== "match") {
+          results.push({
+            key,
+            playerId: null,
+            status: "held",
+            birthYearCheck: check,
+            ...(c.birthYear !== undefined ? { candidateBirthYear: c.birthYear } : {}),
+            candidates: candidateOf(c),
+            stints: [],
+          });
+          continue;
+        }
+        player = c.player!;
+        matchedBy = c.viaAlias ? "alias" : "name";
+        birthYearCheck = "match";
+      } else {
+        forked = verdict.forked;
+      }
+    }
+
+    // ---- the stints: resolve, then gap-fill -------------------------------
+    const career: StoredStint[] = [...(player?.teamYears ?? [])];
+    const startLength = career.length;
+    const outcomes: RosterPlayerResult["stints"] = [];
+    for (const stint of stints) {
+      const resolved = await resolveStintTeamId(readTeam, sportId, stint.teamId!, tally);
+      if ("entry" in resolved) {
+        outcomes.push(resolved.entry);
+        continue;
+      }
+      outcomes.push(gapFillStint(career, resolved.team, stint, {}, write, tally));
+    }
+
+    // ---- adopt: write what the row gains ----------------------------------
+    if (player) {
+      const candidateBirthYear = player.birthYear;
+      const fillBirthYear =
+        birthYearCheck === "decision" &&
+        player.birthYear === undefined &&
+        row.birthYear !== undefined;
+      const merged = unionPlayerAliases(player, aliasesIn);
+      const aliasesChanged = merged !== null && merged.added > 0;
+      const careerGrew = career.length > startLength;
+      if (mutationCtx && (careerGrew || fillBirthYear || aliasesChanged)) {
+        await writeCareer(mutationCtx, player._id, careerGrew ? career : null, {
+          ...(fillBirthYear ? { birthYear: row.birthYear } : {}),
+          ...(aliasesChanged ? { aliases: merged.next } : {}),
+        });
+        ops += 1;
+        if (aliasesChanged) {
+          await syncPlayerAliases(mutationCtx, { playerId: player._id, aliases: merged.next });
+          ops += 3 + merged.added;
+        }
+      }
+      results.push({
+        key,
+        playerId: player._id,
+        status: write ? "adopted" : "would-adopt",
+        matchedBy,
+        birthYearCheck,
+        ...(candidateBirthYear !== undefined ? { candidateBirthYear } : {}),
+        ...(merged && merged.added > 0 ? { aliasesAdded: merged.added } : {}),
+        ...(merged && merged.skipped > 0 ? { aliasesSkipped: merged.skipped } : {}),
+        stints: outcomes,
+      });
+      continue;
+    }
+
+    // ---- create -------------------------------------------------------------
+    if (decision === undefined) {
+      // NEO-463 — a one-word name that is a piece of a fuller-named player.
+      // `{ create: true }` is the operator saying it is a one-name player.
+      if (nameFragmentTokens(name).length === 1) {
+        const scan = await nameFragmentScan(ctx, name, sportId);
+        ops += 2;
+        if (scan.matches.length > 0) {
+          results.push({
+            key,
+            playerId: null,
+            status: "ambiguous",
+            reason: "name-fragment",
+            candidates: scan.matches
+              .slice(0, PLAYER_AMBIGUITY_SCAN_LIMIT)
+              .map((m) => ({
+                id: m._id,
+                name: m.name,
+                ...(m.birthYear !== undefined ? { birthYear: m.birthYear } : {}),
+              })),
+            ...(scan.truncated || scan.matches.length > PLAYER_AMBIGUITY_SCAN_LIMIT
+              ? { candidatesTruncated: true }
+              : {}),
+            stints: [],
+          });
+          continue;
+        }
+      }
+    }
+    const nearExisting = await nearExistingPlayers(ctx, name, sportId);
+    ops += 1;
+    const aliases = normalizePlayerAliasList(aliasesIn, name);
+
+    let createdId: Id<"players"> | null = null;
+    if (mutationCtx) {
+      createdId = await mutationCtx.db.insert("players", {
+        name,
+        nameNormalized,
+        sportId,
+        ...(row.birthYear !== undefined ? { birthYear: row.birthYear } : {}),
+        ...(aliases.length ? { aliases } : {}),
+        ...(career.length ? { teamYears: sortTeamYears(career) } : {}),
+        lastUpdated: Date.now(),
+      });
+      ops += 1;
+      if (aliases.length) {
+        await syncPlayerAliases(mutationCtx, { playerId: createdId, aliases });
+        ops += 3 + aliases.length;
+      }
+    } else {
+      wouldCreate.push({
+        player: null,
+        twinOfKey: key,
+        name,
+        ...(row.birthYear !== undefined ? { birthYear: row.birthYear } : {}),
+        createdThisRun: true,
+        viaAlias: false,
+        answersTo: new Set([nameNormalized, ...aliases.map((a) => normalizePlayerName(a))]),
+      });
+    }
+    results.push({
+      key,
+      playerId: createdId,
+      status: write ? "created" : "would-create",
+      ...(forked ? { forked: true } : {}),
+      ...(nearExisting.length > 0 ? { nearExisting } : {}),
+      stints: outcomes,
+    });
+  }
+
+  const hasMore = processed < args.players.length;
+  if (hasMore) {
+    console.warn(
+      JSON.stringify({
+        msg: "bulk_load_players_truncated",
+        fn: write ? "upsertPlayers" : "previewPlayers",
+        rowsSent: args.players.length,
+        processed,
+        opsSpent: ops,
+        budget: BULK_LOAD_PLAYER_OP_BUDGET,
+      }),
+    );
+  }
+
+  const count = (status: RosterPlayerResult["status"][]) =>
+    results.filter((r) => status.includes(r.status)).length;
+  return {
+    results,
+    summary: {
+      created: count(["created", "would-create"]),
+      forked: results.filter((r) => r.forked === true).length,
+      adopted: count(["adopted", "would-adopt"]),
+      held: count(["held"]),
+      ambiguous: count(["ambiguous"]),
+      stintsAdded: tally.added,
+      stintsPresent: tally.present,
+      wrongSport: tally.wrongSport,
+    },
+    processed,
+    hasMore,
+    nextKey,
+    opsSpent: ops,
+  };
+}
+
+/**
+ * NEO-611 — adopt or create players from a roster dataset, with their stints.
+ * The protocol is in the section note above; this is the armed entry point.
+ * `loadStartedAt` is one timestamp for the whole load: take it once, before the
+ * first call, and send the same value on every call, resume and rerun.
+ */
+export const upsertPlayers = internalMutation({
+  args: {
+    confirm: confirmValidator,
+    sport: v.string(),
+    loadStartedAt: v.number(),
+    players: v.array(rosterPlayerRowValidator),
+  },
+  returns: rosterPlayersResultValidator,
+  handler: async (ctx, args) => {
+    assertBulkLoadArmed(args.confirm);
+    return await loadRosterPlayers(ctx, args, true);
+  },
+});
+
+/**
+ * The same protocol with no writes, as a query: runnable against an unarmed
+ * deployment, and the first thing to run on a new one. It models the twins its
+ * own would-create rows would cause; it does not model a one-word name
+ * clashing with a player it would itself create.
+ */
+export const previewPlayers = internalQuery({
+  args: {
+    confirm: confirmValidator,
+    sport: v.string(),
+    loadStartedAt: v.number(),
+    players: v.array(rosterPlayerRowValidator),
+  },
+  returns: rosterPlayersResultValidator,
+  handler: async (ctx, args) => {
+    if (args.confirm !== "BULK_LOAD") {
+      throw new ConvexError("Bulk load preview requires confirm: \"BULK_LOAD\".");
+    }
+    return await loadRosterPlayers(ctx, args, false);
   },
 });

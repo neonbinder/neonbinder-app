@@ -159,6 +159,10 @@ jobs:
               # NEO-555: the fake's tests read the browser probe sources.
               - 'services/browser/src/routes/ebay-probe*.ts'
               - '.github/scripts/ebay-drift-verdict.sh'
+              # NEO-555: ebay-server.test.mjs reads Convex's missing-capture pattern and
+              # its test's list of required names, so a change to either runs the fake's tests.
+              - 'apps/web/convex/fakeBsc.ts'
+              - 'apps/web/convex/fakeBsc.test.ts'
             # NEO-309/NEO-310: node --test coverage for the ops shell scripts
             # (revision GC, image check) plus their test helpers, and for the
             # NEO-310 Discord-notify scripts/action — none of these ship as

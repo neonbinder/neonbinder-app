@@ -164,7 +164,9 @@ export interface EbayOAuthLine {
   operation: "connect" | "refresh" | "verify";
   /** "code" or "refresh_token" on connect; omitted on refresh. */
   grant?: "code" | "refresh_token";
-  environment?: "sandbox" | "production";
+  environment?: "sandbox" | "production" | "fake";
+  /** NEO-555: "fake" when the credential key was a fake-session key. Absent otherwise. */
+  target?: "fake";
   duration_ms: number;
   success: boolean;
   status_code: number;
@@ -186,6 +188,7 @@ export function logEbayOAuthOp(props: EbayOAuthLine): void {
         operation: props.operation,
         grant: props.grant,
         environment: props.environment,
+        target: props.target,
         duration_ms: props.duration_ms,
         success: props.success,
         status_code: props.status_code,
