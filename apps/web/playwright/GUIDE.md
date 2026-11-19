@@ -13,7 +13,7 @@ Layout:
 | `support/` | shared helpers (see "Support") |
 | `SET-REGISTRY.md` | every real set the suite touches, who provisions it, who may write |
 | `shard-plan.mjs`, `timings.json` | how CI splits files across shards |
-| `../playwright.config.ts` | projects `setup`, `bootstrap`, `e2e` (desktop), `e2e-mobile` (phone); 7 s budget; no retries |
+| `../playwright.config.ts` | projects `setup`, `bootstrap`, `e2e` (desktop), `e2e-mobile` (phone); 7 s budget; one retry in CI, none locally (hard rule 5) |
 
 Reference specs that show the patterns below:
 
@@ -85,8 +85,26 @@ Reference specs that show the patterns below:
    `toHaveValue`, `toHaveAttribute`, `toHaveCount`, `toBeInViewport`) and let
    actions auto-wait. Do not branch or wait on something that synchronises
    nothing.
-5. **`retries: 0`, one worker per shard.** Each shard owns one test account
-   (`TEST_EMAIL_<WORKER_INDEX>`). Tests must not depend on order.
+5. **CI retries a failed spec once; local runs keep `retries: 0`** (Jason,
+   2026-11-18, NEO-592). The `bootstrap` project takes the same one retry in
+   CI: it is idempotent (it begins by resetting its account, then seeds it) and
+   touches only its own worker's account, so a second run repeats the first.
+   Of the projects, only the seed (`setup`) never retries. A retried pass is
+   a red that got lucky: the gate counts it as passed, the run summary lists
+   it with its first error (`support/flaky-reporter.mjs`), and it gets a
+   `ci-fail` ticket.
+   A spec retried in 3 of 20 runs is fixed before new feature work joins the
+   queue. One worker per shard, each owning one test account
+   (`TEST_EMAIL_<WORKER_INDEX>`); tests must not depend on order. After any red
+   spec the harness resets that account (see "The failure reset").
+   **`@marketplace-seller` and `@bsc-breaker` specs never retry.** A seller
+   spec's retry writes to the one eBay sandbox (or SportLots) seller every PR
+   shares, and a breaker spec's opens the deployment-wide BSC call gate again;
+   the failure reset undoes neither. Each such file says
+   `test.describe.configure({ retries: 0 })` (it beats the config and
+   `--retries`): `shard-plan.mjs` refuses to plan while a tagged file lacks
+   it, and the `noRetryOnSharedAccounts` fixture still refuses the retry of a
+   tagged spec that slipped past, before its body runs.
 6. **Public repo.** No secrets, account ids, internal URLs or deployment
    slugs in any file, comment, log line or artifact. Never `git add -A`,
    never `git stash` in a shared worktree.
@@ -132,7 +150,8 @@ E2E coverage without a replacement is eliminating tests.
 `signIn("/route")` opens `/testing/sign-in?redirect=<route>&worker=<n>`, the
 per-test Clerk handshake, then the spec gates on the destination (below).
 Banned is any in-test re-login, credential setup or re-seed: specs rely on
-the `bootstrap` project. Public `home/*` specs enter signed out with
+the `bootstrap` project. The one exception is the harness's own failure reset
+(see "The failure reset"), which no spec calls. Public `home/*` specs enter signed out with
 `page.goto("/")`.
 
 **Gate every sign-in on the destination.** After `signIn`, the first
@@ -145,7 +164,9 @@ restoring them, never delete or overwrite shared data, never wipe. The global
 reset is not a test step: it is the scripted `./e2e-baseline.sh reset` the CI
 seed job (and `npm run test:e2e:seed`) runs before the `setup` project. A
 spec that leaves a worker's state degraded poisons every later spec that
-worker runs.
+worker runs. The only reset outside the seed and the bootstrap is the
+harness's failure reset, and it runs only after a red spec, on that worker's
+own account.
 
 **R7a - Sets that carry marketplace ids are read-only and sole-writer;
 writes go to a per-worker hand-made set.** `SET-REGISTRY.md` is the
@@ -186,7 +207,7 @@ typed into "+ Custom" (the form refuses the name) and never searched for.
   a card; the row survives), so nothing a spec creates is removed within the
   run that created it, and shards share one preview: every minted team is
   visible to every other spec for the whole run. `ATTEMPT_ID` is spelled
-  `pw<worker><d|m>-a1-<random>` (`d` desktop, `m` mobile; see "Desktop and
+  `pw<worker><d|m>-a<attempt>-<random>` (`a1`, or `a2` on CI's retry; `d` desktop, `m` mobile; see "Desktop and
   mobile") and `ATTEMPT_TOKEN` is that with hyphens stripped; anything that
   reconstructs a prefix from `WORKER_INDEX` by hand is wrong.
 - **Committing specs are sole writers and self-cleaning.** A spec that
@@ -244,7 +265,23 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `/testing/sign-in?redirect=<redirect>[&account=<a>]&worker=<n>` (a nested
   `?` stays literal and a nested `&` is written `%26`). `LAUNCH_GATE` (45 s).
   `expectAccessible(page, { within?, label? })`, the axe check, run in light
-  AND dark (see "Accessibility checks").
+  AND dark (see "Accessibility checks"). Two harness fixtures (NEO-592):
+  `resetAfterFailure` (automatic, see "The failure reset") and the
+  `captureConsole` option (`test.use({ captureConsole: true })`: a red result
+  carries the page's console as the `console` attachment, scrubbed by
+  `support/redact.mjs`; never attach raw console or network text yourself).
+- `support/worker-reset.ts`: the worker account's reset chain
+  (`WORKER_RESET_REDIRECT`, `expectWorkerReset`), shared by the bootstrap and the
+  failure reset.
+- `support/redact.mjs`: the one scrubber for text the suite and CI publish (URL
+  queries, tokens, JWTs, secret-named pairs, Convex hosts, storage hosts and
+  buckets, `*.vercel.app` and `*.run.app` hosts, deployment ids, emails, long
+  opaque runs, and any literals the caller passes). CI runs the same scrubber on
+  its logs and summary tables through `.github/scripts/redact-cli.mjs`, and both
+  sides are tested against one shared corpus,
+  `.github/scripts/redact-corpus.json`: add a new rule's case there.
+  `support/flaky-reporter.mjs`: CI's reporter of retried-then-passed specs
+  (`<PW_REPORT_DIR>/flaky.json`, `[{file, title, project, firstError}]`).
 - `support/a11y.ts`: what `expectAccessible` runs: the WCAG tags, the one
   list of excluded third-party regions (each with its reason), the failure
   summary and the attachment. Specs never import it directly.
@@ -478,7 +515,8 @@ Idioms:
 - **Fresh-only specs** (wikidata live proof, the committing wizard flows, the
   specs that persist a name from `support/recorded-names.ts`) pass
   once per seed. A second local run fails at its "nothing exists yet"
-  precondition; that is correct, not flaky. Re-seed: your own deployment is
+  precondition; that is correct, not flaky. So does CI's retry of one: read the
+  FIRST attempt's error, which is the real one. Re-seed: your own deployment is
   yours to reset. On shared dev, nothing re-seeds for you, so run the spec
   against the PR's preview instead, or announce a dev reset first.
 
@@ -679,6 +717,43 @@ spec does with five.
 
 The bootstrap's optional BSC warm-up (a sign-in through the browser service) runs on
 worker 0 only.
+
+### The failure reset (NEO-592)
+
+After a test on `e2e` or `e2e-mobile` ends red (failed or timed out), the
+`resetAfterFailure` fixture resets that worker's MAIN account by the bootstrap's
+own route (`support/worker-reset.ts`: sign-in, `/testing/reset`, then
+`/testing/seed-credentials`), on a page of its own, before the worker's next test
+or CI's retry.
+
+- **CI by default, locally on opt-in.** It runs when `CI` is set
+  (`PW_FAILURE_RESET=0` turns it off) and locally only with `PW_FAILURE_RESET=1`:
+  a local worker may be a user others share (shared dev, or a worker with its own
+  `TEST_EMAIL_<n>` that CI signs in as), and the reset wipes that user's rows and
+  re-saves its Clerk-user-keyed marketplace sign-ins. Opt in on your own
+  deployment only.
+
+- **Harness only.** No spec calls it; it never runs for `setup` or `bootstrap`,
+  after a pass, or after an interrupted run.
+- **What it clears** is what `resetMyTestState` clears: the account's own rows
+  (copies and their photos, boxes and binders, wants, common prices, listing
+  outbox, sync records and states, sales, sync reports, card requests, public
+  profile, settings) and its fake BuySportsCards namespace; the seed then puts
+  the marketplace sign-ins back. It touches no catalogue row, no other worker and
+  no sole-writer set, and it does not clear what that reset does not (intake and
+  placeholder runs, review batches, label purchases, anything on the
+  `new-profile` or admin accounts).
+- **It runs last**: after the spec's own `afterEach`, every other fixture's
+  teardown and the red page's context close. Its page is left blank before its
+  own context closes (hard rule 7: it shows the credentials page).
+- **Bounded, and never the error that counts.** Its waits are the bootstrap's
+  (14 s paused, 90 s with SportLots live, the sign-in hop the launch gate, three
+  7 s closing checks). It gives itself up at their sum (`WORKER_RESET_CAP_MS`),
+  then blanks and closes its page; the fixture's timeout is that cap plus the
+  teardown plus 30 s, so the blank page is always reached first. The report shows a `failure-reset`
+  annotation with the seconds it took; when it fails, the annotation says so, a
+  `failure-reset` attachment carries the scrubbed reason, and the spec's own
+  error is still the one the report shows.
 
 ### BuySportsCards is the fake (NEO-552)
 
@@ -1316,7 +1391,11 @@ otherwise). Locally run them alone, on your own deployment.
    broken preview: only a new commit forces fresh ones.
 Published artifacts are failure screenshots plus the blob/HTML report, which
 embeds each failure's `error-context.md` (an ARIA snapshot, input values in
-plaintext) and the sanitised axe JSON. That is accepted: real marketplace
+plaintext) and the sanitised axe JSON. A spec CI passed only on its retry is in
+the job summary's retried table (from `flaky.json`); its first attempt's
+screenshot and error are in the report under that test's first result. The
+report carries no git author name or email (`captureGitInfo` off in the config;
+the commit SHA stays in its CI block). That is accepted: real marketplace
 passwords never reach the browser. **Never traces**: a trace records network
 traffic including Clerk testing tokens, and artifacts on a public repo are
 public. Traces are only on locally (`retain-on-failure`).

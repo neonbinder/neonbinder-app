@@ -733,7 +733,7 @@ test(
       const yourCopies = copyDrawer.getByRole("region", { name: `Your copies of ${c.short}`, exact: true });
       await yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRegExp(c.short)}, `) }).click();
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-      await confirmRemoved(copyDrawer);
+      await confirmRemoved(copyDrawer, `Removed ${c.short}, ${c === card ? "PSA 10" : "Raw, Excellent"}`);
       await copyDrawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(copyDrawer).toBeHidden();
     }

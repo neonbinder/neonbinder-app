@@ -25,6 +25,7 @@
 import { appendFileSync, readFileSync } from "node:fs";
 import { ConvexHttpClient } from "convex/browser";
 import { anyApi } from "convex/server";
+import { redact, redactLiterals } from "../playwright/support/redact.mjs";
 
 const MAX_IN_FLIGHT = 60;
 const CALL_TIMEOUT_MS = 60_000;
@@ -37,6 +38,14 @@ function arg(name, fallback) {
 function percentile(sorted, p) {
   if (sorted.length === 0) return null;
   return sorted[Math.min(sorted.length - 1, Math.floor((sorted.length * p) / 100))];
+}
+
+// Redact in full first (a host straddling the cut once survived half-masked), then
+// mask this run's deployment name, and only then cut to 120 characters.
+function safeError(error) {
+  const name = process.env.CONVEX_NAME;
+  const masked = redact(String(error ?? ""));
+  return (name ? redactLiterals(masked, [name]) : masked).slice(0, 120);
 }
 
 function summarize(file, stallMs) {
@@ -59,7 +68,7 @@ function summarize(file, stallMs) {
   const slow = lines.filter((r) => r.ms >= stallMs || !r.ok);
   console.log(`probe calls at or over ${stallMs}ms, or failed: ${slow.length}`);
   for (const r of slow.slice(0, 200)) {
-    console.log(`  ${r.t} ${r.kind} ${r.ms}ms${r.ok ? "" : ` FAILED ${r.error}`}`);
+    console.log(`  ${r.t} ${r.kind} ${r.ms}ms${r.ok ? "" : ` FAILED ${safeError(r.error)}`}`);
   }
 }
 
@@ -100,7 +109,7 @@ async function probe(url, out, intervalMs, mutationEvery, writeEvery) {
     Promise.race([p, timeout])
       .then(
         () => ({ ok: true }),
-        (e) => ({ ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 120) }),
+        (e) => ({ ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 4000) }),
       )
       .then((res) => {
         clearTimeout(timer);

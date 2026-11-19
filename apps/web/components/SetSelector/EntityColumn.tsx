@@ -384,7 +384,18 @@ export default function EntityColumn({
   // save in flight still reports back. The pill is the focus return target.
   const [showSlReview, setShowSlReview] = useState(false);
   const slReviewBtnRef = useRef<HTMLButtonElement | null>(null);
+  // One timer for the column's one toast, whichever message put it up: a
+  // later toast restarts it, so an earlier message's timer never takes down
+  // a newer one (the sync report and the review's result share the box).
   const slReviewToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const showToast = (text: string) => {
+    if (slReviewToastTimerRef.current) clearTimeout(slReviewToastTimerRef.current);
+    setToast(text);
+    slReviewToastTimerRef.current = setTimeout(() => {
+      slReviewToastTimerRef.current = null;
+      setToast(null);
+    }, 6000);
+  };
   // NEO-71-74 follow-up: always start false, regardless of this column's
   // isVisible prop at mount. Columns 6/7 (Variant / Variant of Variant) are
   // conditionally MOUNTED (not just conditionally rendered null like columns
@@ -781,13 +792,11 @@ export default function EntityColumn({
     if (prev === "done" || syncStatus?.status !== "done") return;
     if (doneUnlinked.length === 0) return;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- announces a completed background sync; there is no event to hang it off
-    setToast(
+    showToast(
       unlinkNoticeText(doneUnlinked, level, {
         maxNames: UNLINKED_NAME_LIMIT_TOAST,
       }),
     );
-    const id = setTimeout(() => setToast(null), 6000);
-    return () => clearTimeout(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- fires on the status transition only; doneUnlinked is derived from the same row
   }, [syncStatus?.status, level]);
 
@@ -1674,15 +1683,6 @@ export default function EntityColumn({
   const slReviewScope =
     level === "setName" && parentId && !hideCustom ? parentId : undefined;
 
-  const showSlReviewToast = (text: string) => {
-    if (slReviewToastTimerRef.current) clearTimeout(slReviewToastTimerRef.current);
-    setToast(text);
-    slReviewToastTimerRef.current = setTimeout(() => {
-      slReviewToastTimerRef.current = null;
-      setToast(null);
-    }, 6000);
-  };
-
   // Sync and "+ Custom" get the same marker-class + explicit-Enter treatment as
   // the form's own buttons: they are identically-classed NeonButton siblings
   // too, and they are the gate a keyboard-only pass through the cascade has to
@@ -1919,7 +1919,7 @@ export default function EntityColumn({
           onClose={() => setShowSlReview(false)}
           onSaved={(text) => {
             setShowSlReview(false);
-            showSlReviewToast(text);
+            showToast(text);
           }}
         />
       )}

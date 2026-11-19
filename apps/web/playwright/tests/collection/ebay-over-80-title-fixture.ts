@@ -611,7 +611,7 @@ export async function runOver80Flow({ page, signIn, env, isMobile }: Args, throu
       await expect(editForm).toBeHidden();
       await yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRe(short)}, Raw, `) }).click();
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-      await confirmRemoved(cardDrawer);
+      await confirmRemoved(cardDrawer, `Removed ${short}, Raw, `);
       await cardDrawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(cardDrawer).toBeHidden();
       await expect(quantityField(tidyChecklist.getByRole("list", { name: `Quantities in ${boxName}` }), short, boxName)).toHaveValue("0");

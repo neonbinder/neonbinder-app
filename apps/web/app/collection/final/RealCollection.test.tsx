@@ -1041,9 +1041,12 @@ describe("the card drawer on the real collection", () => {
       expect(alertText.match(/Couldn't reach the photo store\./g)).toHaveLength(1);
       // Neither attempt was skipped because the other failed.
       expect(photos.addPhoto).toHaveBeenCalledTimes(2);
-      expect(
-        within(drawer).getAllByRole("status").some((s) => /\. Its front and back photos didn't save\. Try again under Edit\.$/.test(s.textContent ?? "")),
-      ).toBe(true);
+      // The line's live region is written a frame after the notice lands (`useLiveWords`).
+      await waitFor(() =>
+        expect(
+          within(drawer).getAllByRole("status").some((s) => /\. Its front and back photos didn't save\. Try again under Edit\.$/.test(s.textContent ?? "")),
+        ).toBe(true),
+      );
     });
 
     describe("a held photo starts its resize when picked (NEO-466)", () => {
@@ -1271,7 +1274,7 @@ describe("the card drawer on the real collection", () => {
       await waitFor(() => expect(photos.addPhoto).toHaveBeenCalledTimes(1));
       fireEvent.click(within(drawer).getByRole("button", { name: "Close card detail" }));
       await act(async () => fail(new Error("Gone.")));
-      expect(screen.getAllByRole("status").some((s) => /front photo didn't save/.test(s.textContent ?? ""))).toBe(true);
+      await waitFor(() => expect(screen.getAllByRole("status").some((s) => /front photo didn't save/.test(s.textContent ?? ""))).toBe(true));
     });
 
     it("the line-limit refusal keeps both held files, Add is ready, and a retry that succeeds uploads exactly those two files", async () => {

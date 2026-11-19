@@ -57,6 +57,35 @@ export const EBAY_TIMEOUTS_MS = {
   token: 20_000,
 } as const;
 
+/**
+ * The policy-list read path (NEO-592): the account's programs, then its three
+ * policy lists, read when the eBay panel opens and held to the page's 7 s UX
+ * budget. Each try waits at most `attemptMs`; a try that times out is tried
+ * once more; and both stages of the path (programs, then the lists) share one
+ * `budgetMs` wall clock, so the whole read answers inside the budget even when
+ * eBay is slow on both. A timeout stays a timeout (`kind: "timeout"`): it is
+ * never read as "the account has no such policy".
+ */
+export const EBAY_POLICY_READ_MS = {
+  attemptMs: 3_000,
+  budgetMs: 5_500,
+  /** Below this much of the budget left, a retry is not started (it could not finish). */
+  minRetryMs: 500,
+} as const;
+
+/** The read path's shared clock: when it must have answered by, and whether a slow try is tried again. */
+export interface EbayReadBudget {
+  /** Epoch ms the whole read must be done by. */
+  deadline: number;
+  /** Try a timed-out call once more (default true). The optional shipping-metadata read says false. */
+  retry?: boolean;
+}
+
+/** A budget for a read path that starts now. */
+export function startPolicyReadBudget(now: number = Date.now()): EbayReadBudget {
+  return { deadline: now + EBAY_POLICY_READ_MS.budgetMs };
+}
+
 export const EBAY_MAX_BYTES = {
   small: 256 * 1024,
   bulk: 2 * 1024 * 1024,
@@ -476,20 +505,60 @@ async function send(ctx: SessionCtx, session: EbaySellerSession, opts: SendOptio
   return { ok: true, value: { status: res.status, body, location: res.headers.get("location") } };
 }
 
+/**
+ * `send` for a call on the policy-read path: each try waits at most
+ * `EBAY_POLICY_READ_MS.attemptMs` and never past the path's deadline; a try
+ * that times out is tried once more while at least `minRetryMs` of the budget
+ * is left. Only a timeout is retried (the call is a GET, so repeating it is
+ * safe); an answer, a refusal, a sign-out or a network failure ends it. With
+ * no budget the call is the plain `read` call, unchanged. The retry's log
+ * lines carry `attempt: 2`.
+ */
+async function sendRead(
+  ctx: SessionCtx,
+  session: EbaySellerSession,
+  opts: Omit<SendOptions, "timeoutMs">,
+  budget: EbayReadBudget | undefined,
+): Promise<EbayResult<SendValue>> {
+  if (!budget) return await send(ctx, session, { ...opts, timeoutMs: EBAY_TIMEOUTS_MS.read });
+  const { attemptMs, minRetryMs } = EBAY_POLICY_READ_MS;
+  const tryOnce = async (attempt: number): Promise<EbayResult<SendValue>> => {
+    const left = budget.deadline - Date.now();
+    return await send(ctx, session, {
+      ...opts,
+      // A first try always gets a real wait, even on a budget already spent.
+      timeoutMs: Math.min(attemptMs, Math.max(left, minRetryMs)),
+      ...(attempt > 1 ? { attempt } : {}),
+    });
+  };
+  const first = await tryOnce(1);
+  if (first.ok || first.failure.kind !== "timeout" || budget.retry === false) return first;
+  if (budget.deadline - Date.now() < minRetryMs) return first;
+  return await tryOnce(2);
+}
+
 // ── Account: programs and business policies ─────────────────────────────────
 
 /** The program a seller must be in to use business policies. */
 export const SELLING_POLICY_MANAGEMENT = "SELLING_POLICY_MANAGEMENT";
 
 /** `GET /sell/account/v1/program/get_opted_in_programs` → program types. */
-export async function getOptedInPrograms(ctx: SessionCtx, session: EbaySellerSession): Promise<EbayResult<string[]>> {
-  const r = await send(ctx, session, {
-    operation: "getOptedInPrograms",
-    method: "GET",
-    path: "/sell/account/v1/program/get_opted_in_programs",
-    timeoutMs: EBAY_TIMEOUTS_MS.read,
-    maxBytes: EBAY_MAX_BYTES.small,
-  });
+export async function getOptedInPrograms(
+  ctx: SessionCtx,
+  session: EbaySellerSession,
+  budget?: EbayReadBudget,
+): Promise<EbayResult<string[]>> {
+  const r = await sendRead(
+    ctx,
+    session,
+    {
+      operation: "getOptedInPrograms",
+      method: "GET",
+      path: "/sell/account/v1/program/get_opted_in_programs",
+      maxBytes: EBAY_MAX_BYTES.small,
+    },
+    budget,
+  );
   if (!r.ok) return r;
   const programs = isRecord(r.value.body) && Array.isArray(r.value.body.programs) ? r.value.body.programs : [];
   return {
@@ -518,15 +587,24 @@ export async function optInToProgram(ctx: SessionCtx, session: EbaySellerSession
 type PolicyKind = "fulfillment_policy" | "payment_policy" | "return_policy";
 
 /** `GET /sell/account/v1/<kind>?marketplace_id=EBAY_US` → the raw body (narrowed by `lib/ebayListing`). */
-export async function getPolicies(ctx: SessionCtx, session: EbaySellerSession, kind: PolicyKind): Promise<EbayResult<unknown>> {
-  const r = await send(ctx, session, {
-    operation: `get_${kind}`,
-    method: "GET",
-    path: `/sell/account/v1/${kind}`,
-    query: { marketplace_id: EBAY_MARKETPLACE_ID },
-    timeoutMs: EBAY_TIMEOUTS_MS.read,
-    maxBytes: EBAY_MAX_BYTES.policies,
-  });
+export async function getPolicies(
+  ctx: SessionCtx,
+  session: EbaySellerSession,
+  kind: PolicyKind,
+  budget?: EbayReadBudget,
+): Promise<EbayResult<unknown>> {
+  const r = await sendRead(
+    ctx,
+    session,
+    {
+      operation: `get_${kind}`,
+      method: "GET",
+      path: `/sell/account/v1/${kind}`,
+      query: { marketplace_id: EBAY_MARKETPLACE_ID },
+      maxBytes: EBAY_MAX_BYTES.policies,
+    },
+    budget,
+  );
   return r.ok ? { ok: true, value: r.value.body } : r;
 }
 
@@ -620,14 +698,22 @@ export interface EbayShippingServiceInfo {
 }
 
 /** `GET /sell/metadata/v1/shipping/marketplace/EBAY_US/get_shipping_services`, narrowed. */
-export async function getShippingServices(ctx: SessionCtx, session: EbaySellerSession): Promise<EbayResult<EbayShippingServiceInfo[]>> {
-  const r = await send(ctx, session, {
-    operation: "getShippingServices",
-    method: "GET",
-    path: `/sell/metadata/v1/shipping/marketplace/${EBAY_MARKETPLACE_ID}/get_shipping_services`,
-    timeoutMs: EBAY_TIMEOUTS_MS.read,
-    maxBytes: EBAY_MAX_BYTES.shipping,
-  });
+export async function getShippingServices(
+  ctx: SessionCtx,
+  session: EbaySellerSession,
+  budget?: EbayReadBudget,
+): Promise<EbayResult<EbayShippingServiceInfo[]>> {
+  const r = await sendRead(
+    ctx,
+    session,
+    {
+      operation: "getShippingServices",
+      method: "GET",
+      path: `/sell/metadata/v1/shipping/marketplace/${EBAY_MARKETPLACE_ID}/get_shipping_services`,
+      maxBytes: EBAY_MAX_BYTES.shipping,
+    },
+    budget,
+  );
   if (!r.ok) return r;
   const list = isRecord(r.value.body) && Array.isArray(r.value.body.shippingServices) ? r.value.body.shippingServices : [];
   const out: EbayShippingServiceInfo[] = [];
