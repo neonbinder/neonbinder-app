@@ -24,3 +24,4 @@
 - [Cross-service source-read tests vs path filters](cross-service-source-read-tests-vs-path-filters.md) — parity tests reading a sibling service only run if its lane's filter lists those paths, both ways
 - [Inline workflow logic untested](inline-workflow-logic-untested-and-mirrored-regex.md) — yml gate/jq edits need a script test or yml-pin; hand-mirrored regexes drift
 - [Stored count replaced by live count](host-stored-count-replaced-by-live-count-stales-old-spec.md) — old spec asserting the button survives the fix goes stale; race token untested
+- [Merge-resolution copy audit](merge-resolution-copy-conflict-audit.md) — diff vs the other parent's removed expects; grep losing wording incl. support helpers; planted break for CSS-only fixes

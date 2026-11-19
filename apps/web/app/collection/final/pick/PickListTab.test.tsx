@@ -611,6 +611,24 @@ describe("NEO-522: Spacious or Condensed rows", () => {
     expect(heads.map((th) => th.textContent?.replace(/\s+/g, " ").trim()).sort()).toEqual(expect.arrayContaining(["Condition", "No.", "Order"]));
   });
 
+  it("lets only the Not in Neon Binder chip break between words on a Condensed row; the other marker chips stay whole under the nowrap wrapper (NEO-598)", async () => {
+    renderPick();
+    await screen.findByRole("table", { name: "Cards to pull" });
+    fireEvent.click(option("Condensed"));
+    const nabers = await rowOf(/^Pulled 2024 Score #302, Malik Nabers/);
+    const notInNb = [...nabers.querySelectorAll(".nb-pick-chip")].find((el) => el.textContent?.startsWith("Not in Neon Binder"))!;
+    expect(notInNb.className).toContain("whitespace-normal");
+    // The wrapper keeps nowrap, so whitespace-normal on this one chip is the only way it breaks.
+    const wrapper = notInNb.parentElement!;
+    expect(wrapper.className).toContain("whitespace-nowrap");
+    // Every other marker chip in the table (Last ones, Short, New, No box) sits in a wrapper like this one.
+    const others = [...document.querySelectorAll(".nb-pick-chip")].filter(
+      (el) => !el.textContent?.startsWith("Not in Neon Binder") && el.parentElement?.className.includes("flex-wrap") && el.parentElement.className.includes("whitespace-nowrap"),
+    );
+    expect(others.length).toBeGreaterThan(0);
+    for (const chip of others) expect(chip.className).not.toContain("whitespace-normal");
+  });
+
   it("keeps a slab's grade and cert together, and joins up to two orders with a comma on a wide Condensed row (NEO-598)", async () => {
     renderPick();
     await screen.findByRole("table", { name: "Cards to pull" });

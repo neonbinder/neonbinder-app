@@ -10,7 +10,9 @@
 //     checkbox (on a phone too) and, on a wide screen, no Variant column, the
 //     team beside the name, and a row on one line wherever its columns fit
 //     (every demo row at 1920; at 1280 all but the long listing titles and
-//     notes), wrapping where a line cannot fit and never clipping anything;
+//     notes), wrapping where a line cannot fit and never clipping anything; the
+//     marker chips stay inside their cell, the Not in Neon Binder chip breaking
+//     between its words where the Player column is narrow;
 //   - it uses the same wide page as Spacious at the same width, so more text
 //     fits each line;
 //   - it passes axe in light and dark;
@@ -37,7 +39,7 @@ const WITT = "2026 Topps Heritage Clubhouse Collection Relic Bobby Witt Jr. #CCR
 // Slabs: the grade and the cert share the line.
 const OHTANI_SLAB = "#US1 Shohei Ohtani, 2018 Topps Update";
 const SANDERS_SLAB = "#257 Barry Sanders, 1989 Score";
-// Markers beside the name: Last ones, Short 1 (on a two-copy line), New, and the Not in NB chip on Nabers.
+// Markers beside the name: Last ones, Short 1 (on a two-copy line), New, and the Not in Neon Binder chip on Nabers.
 const JUDGE = "#8B-12 Aaron Judge, 2026 Topps Series 1 8 Bit Ballers Red";
 const FIELDS = "#330 Malachi Fields, 2026 Topps";
 const FLAGG = "#1 Cooper Flagg, 2025-26 Topps Chrome";
@@ -116,21 +118,24 @@ test(
         const pic = (await pictureButton(table, TROUT).boundingBox())!;
         expect(pic.height).toBeLessThanOrEqual(25);
         expect(pic.width / pic.height).toBeCloseTo(5 / 7, 1);
-        // The marker chips (JUDGE, FIELDS, FLAGG, NABERS) stay whole inside their cell, wherever
-        // the row wraps; SKENES has two orders (BSC and eBay), joined by a comma.
-        await expect(seen(pickRow(table, SANDERS_SLAB).getByText("Cert 4021337", { exact: true }))).toBeVisible();
-        await expect(seen(pickRow(table, SKENES).getByText("BSC 88213", { exact: true }))).toBeVisible();
-        await expect(seen(pickRow(table, SKENES).getByText("eBay 12-3456", { exact: true }))).toBeVisible();
-        for (const [row, chip] of [
-          [JUDGE, "Last ones"],
-          [FIELDS, "Short 1"],
-          [FLAGG, "New"],
-          [NABERS, "Not in Neon Binder"],
-        ] as const) {
-          const marker = seen(pickRow(table, row).getByText(chip, { exact: true }));
-          await expect(marker).toBeVisible();
-          await expectWithinCell(marker);
-        }
+      }
+      // A slab's cert, and SKENES's two orders (BSC and eBay) joined by a comma: in the Condition
+      // and Order columns on a wide screen, under the set in a phone's one cell.
+      await expect(seen(pickRow(table, SANDERS_SLAB).getByText("Cert 4021337", { exact: true }))).toBeVisible();
+      await expect(seen(pickRow(table, SKENES).getByText("BSC 88213", { exact: true }))).toBeVisible();
+      await expect(seen(pickRow(table, SKENES).getByText("eBay 12-3456", { exact: true }))).toBeVisible();
+      // The marker chips (JUDGE, FIELDS, FLAGG, NABERS) stay inside their cell, wherever the row
+      // wraps: beside the name in the Player column on a wide screen, on their own line in a
+      // phone's one cell. Only "Not in Neon Binder" may break between its words to do so.
+      for (const [row, chip] of [
+        [JUDGE, "Last ones"],
+        [FIELDS, "Short 1"],
+        [FLAGG, "New"],
+        [NABERS, "Not in Neon Binder"],
+      ] as const) {
+        const marker = seen(pickRow(table, row).getByText(chip, { exact: true }));
+        await expect(marker).toBeVisible();
+        await expectWithinCell(marker);
       }
     };
     await expectCondensed();
