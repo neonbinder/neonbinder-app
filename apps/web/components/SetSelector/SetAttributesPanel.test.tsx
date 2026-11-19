@@ -109,7 +109,7 @@ vi.mock("../../convex/_generated/api", () => ({
       getParallelPromotionPreview: "spc.getParallelPromotionPreview",
       promoteParallelToSet: "spc.promoteParallelToSet",
     },
-    // NEO-426 — the sport row's "No teams in this sport" switch, bound at
+    // NEO-426 — the sport row's "No teams in this sport" toggle, bound at
     // render on every level.
     sportTeamless: {
       setTeamlessSport: "sportTeamless.setTeamlessSport",
@@ -487,6 +487,8 @@ function makeRow(overrides: Partial<{
   teamCascadeStartedAt: number;
   /** NEO-556 — the row's Team is No Team. */
   noTeamDefault: { setAt: number; setByUserId: string };
+  /** NEO-426 — a sport row flagged "No teams in this sport". */
+  teamlessSport: { setAt: number; setByUserId: string };
 }> = {}) {
   return {
     _id: SELECTOR_OPTION_ID,
@@ -5360,5 +5362,114 @@ describe("SetAttributesPanel — held open by a rename or a delete (NEO-569)", (
         screen.getByRole("button", { name: "Hide attributes" }).hasAttribute("aria-describedby"),
       ).toBe(false);
     });
+  });
+});
+
+// NEO-426 — the sport row's "No teams in this sport" pressed toggle.
+describe("SetAttributesPanel — No teams in this sport (NEO-426)", () => {
+  const FLAG = { setAt: 1, setByUserId: "user-1" };
+  const NAME = "No teams in this sport";
+
+  beforeEach(() => {
+    mockSetTeamlessSport.mockReset();
+    mockSetTeamlessSport.mockResolvedValue(null);
+  });
+
+  it("is a pressed button inside a 'Set feature No teams in this sport' cell, off until the sport is flagged", () => {
+    currentRow = makeRow({ level: "sport", value: "Pokemon" });
+    currentChain = [];
+    renderPanel();
+    expect(screen.getByLabelText("Set feature No teams in this sport")).toBeTruthy();
+    const toggle = screen.getByRole("button", { name: NAME });
+    expect(toggle.getAttribute("aria-pressed")).toBe("false");
+    // Not a switch, and the cell never reads like the team default's.
+    expect(screen.queryByRole("switch")).toBeNull();
+    expect(screen.queryByLabelText("Set feature Team")).toBeNull();
+  });
+
+  it("reads pressed when the sport row carries the flag", () => {
+    currentRow = makeRow({ level: "sport", value: "Pokemon", teamlessSport: FLAG });
+    currentChain = [];
+    renderPanel();
+    expect(screen.getByRole("button", { name: NAME }).getAttribute("aria-pressed")).toBe("true");
+  });
+
+  it.each(["year", "manufacturer", "setName", "variantType", "insert", "parallel"])(
+    "is not on a %s row",
+    (level) => {
+      currentRow = makeRow({ level, value: "x", teamlessSport: FLAG });
+      currentChain = makeChain("Baseball");
+      renderPanel();
+      expect(screen.queryByRole("button", { name: NAME })).toBeNull();
+      expect(screen.queryByLabelText("Set feature No teams in this sport")).toBeNull();
+    },
+  );
+
+  it("pressing it on calls setTeamlessSport({ sportId, teamless: true }) and says so once the server answers", async () => {
+    currentRow = makeRow({ level: "sport", value: "Pokemon" });
+    currentChain = [];
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: NAME }));
+    });
+    await waitFor(() => {
+      expect(mockSetTeamlessSport).toHaveBeenCalledWith({
+        sportId: SELECTOR_OPTION_ID,
+        teamless: true,
+      });
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText("Marked — this sport's players save with No team now"),
+      ).toBeTruthy();
+    });
+  });
+
+  it("pressing it off calls setTeamlessSport({ teamless: false })", async () => {
+    currentRow = makeRow({ level: "sport", value: "Pokemon", teamlessSport: FLAG });
+    currentChain = [];
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: NAME }));
+    });
+    await waitFor(() => {
+      expect(mockSetTeamlessSport).toHaveBeenCalledWith({
+        sportId: SELECTOR_OPTION_ID,
+        teamless: false,
+      });
+    });
+    await waitFor(() => {
+      expect(
+        screen.getByText("Cleared — this sport's cards ask for a team again"),
+      ).toBeTruthy();
+    });
+  });
+
+  it("Enter presses it from the keyboard", async () => {
+    currentRow = makeRow({ level: "sport", value: "Pokemon" });
+    currentChain = [];
+    renderPanel();
+    const toggle = screen.getByRole("button", { name: NAME });
+    toggle.focus();
+    await act(async () => {
+      fireEvent.keyDown(toggle, { key: "Enter" });
+    });
+    await waitFor(() => {
+      expect(mockSetTeamlessSport).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("a refused write shows the failure toast and leaves the toggle where it was", async () => {
+    mockSetTeamlessSport.mockRejectedValue(new Error("nope"));
+    currentRow = makeRow({ level: "sport", value: "Pokemon" });
+    currentChain = [];
+    renderPanel();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: NAME }));
+    });
+    await waitFor(() => {
+      expect(screen.getByText(/Could not change No teams in this sport|nope/)).toBeTruthy();
+    });
+    expect(screen.getByRole("button", { name: NAME }).getAttribute("aria-pressed")).toBe("false");
   });
 });

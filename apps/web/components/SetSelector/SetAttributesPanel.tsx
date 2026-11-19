@@ -330,7 +330,7 @@ export default function SetAttributesPanel({
   const setManufacturerSlViaAllBrands = useMutation(
     api.brandView.setManufacturerSlViaAllBrands,
   );
-  // NEO-426 — the sport row's "No teams in this sport" switch.
+  // NEO-426 — the sport row's "No teams in this sport" toggle.
   const setTeamlessSport = useMutation(api.sportTeamless.setTeamlessSport);
 
   // The row's level decides the default (NEO-496: open at the set level). The
@@ -828,7 +828,7 @@ export default function SetAttributesPanel({
   };
 
   /**
-   * NEO-426 — the sport row's "No teams in this sport" switch. The toast
+   * NEO-426 — the sport row's "No teams in this sport" toggle. The toast
    * waits for the server, like the SportLots link's: the flag changes how
    * every later save of this sport's cards defaults, so the toast should mean
    * it happened. Cards already saved keep whatever team (or No team) they
@@ -1309,7 +1309,7 @@ export default function SetAttributesPanel({
                 unless something names one. Never a block: a picked team still
                 wins. */}
             {leafLevel === "sport" && (
-              <SportNoTeamsSwitch
+              <SportNoTeamsToggle
                 key={`sport-no-teams-${selectorOptionId}`}
                 on={isTeamlessSport(row)}
                 onToggle={handleToggleTeamlessSport}
@@ -1779,17 +1779,19 @@ function SlViaAllBrandsToggle({
   );
 }
 
-/** NEO-426 — the switch's visible words. */
+/** NEO-426 — the control's visible words. */
 export const SPORT_NO_TEAMS_TEXT = "No teams in this sport";
 /**
- * NEO-426 — its accessible name: the cell label every Attributes row wears
- * (`Set feature …`), with the visible words inside it (SC 2.5.3).
+ * NEO-426 — its cell's name: the `Set feature …` label every Attributes cell
+ * wears. Distinct from "Set feature Team" (the team default's cell).
  */
 export const SPORT_NO_TEAMS_LABEL = `Set feature ${SPORT_NO_TEAMS_TEXT}`;
 
 /**
- * NEO-426 — "No teams in this sport", a switch in a sport row's Attributes
- * grid. Label only: the words say what it does, and nothing sits under it.
+ * NEO-426 — "No teams in this sport", a pressed toggle in a sport row's
+ * Attributes grid, in the same face as `SlViaAllBrandsToggle` (a box that
+ * fills when on, `aria-pressed`, the column's other yes/no decisions). Label
+ * only: the words say what it does, and nothing sits under it.
  *
  * The flag is NB's own fact about the sport row (read through
  * `isTeamlessSport`, never the sport's name). It moves a default and nothing
@@ -1797,13 +1799,11 @@ export const SPORT_NO_TEAMS_LABEL = `Set feature ${SPORT_NO_TEAMS_TEXT}`;
  * sport home, and the commit files them as No team. A team the operator
  * picks, now or later, is kept.
  *
- * `SlViaAllBrandsToggle`'s face (a box that fills when on, in the grid's cell
- * chrome) under the `switch` role, since the control is a setting that is on
- * or off rather than a pressed filter. While the write is in flight it stays
- * in the tab order (`aria-disabled`, never native `disabled`) and the box
- * shows the value that was asked for, so it never flickers back and forth.
+ * While the write is in flight it stays in the tab order (`aria-disabled`,
+ * never native `disabled`) and the box shows the value that was asked for, so
+ * it never flickers back and forth.
  */
-function SportNoTeamsSwitch({
+function SportNoTeamsToggle({
   on,
   onToggle,
 }: {
@@ -1825,18 +1825,19 @@ function SportNoTeamsSwitch({
   };
 
   return (
-    <div className="flex flex-col p-2 rounded border text-xs border-rule-strong bg-raised-deep/30">
+    <div
+      className="flex flex-col p-2 rounded border text-xs border-rule-strong bg-raised-deep/30"
+      aria-label={SPORT_NO_TEAMS_LABEL}
+    >
       <button
         type="button"
-        role="switch"
-        aria-checked={shown}
-        aria-label={SPORT_NO_TEAMS_LABEL}
-        aria-disabled={pending !== null || undefined}
-        className={`${fieldClass("sport-no-teams")} w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-outline ${
+        className={`${fieldClass("btn-sport-no-teams")} w-full text-left flex items-start gap-2 p-2 rounded-md border text-xs transition-colors focus-outline ${
           shown
             ? "border-neon-green-text bg-neon-green/10 text-ink"
             : "border-control text-ink-2 hover:border-neon-green-text"
         } ${pending !== null ? "opacity-60 cursor-not-allowed hover:border-control" : ""}`}
+        aria-pressed={shown}
+        aria-disabled={pending !== null || undefined}
         onClick={() => void toggle()}
         onKeyDown={(e) => activateOnEnter(e, () => void toggle(), pending !== null)}
       >
