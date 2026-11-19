@@ -326,6 +326,30 @@ describe("pollMySalesNow", () => {
     });
   });
 
+  test("waits out a poll already running for the caller, then polls and releases (never overlaps the cron's)", async () => {
+    useFakeEnv();
+    const t = convexTest(schema, modules);
+    await t.run(async (ctx) => {
+      await ctx.db.insert("marketplaceListingStates", {
+        ownerId: USER_A,
+        platform: "ebay",
+        listingStartedAt: Date.now(),
+        lastUpdated: Date.now(),
+        pollLeaseToken: "cron",
+        pollLeaseExpiresAt: Date.now() + 1_200,
+      });
+    });
+    const started = Date.now();
+    expect(await as(t).action(api.testing.pollMySalesNow, { platform: "ebay" })).toEqual({
+      ordersRead: 0,
+      ordersStored: 0,
+      linesApplied: 0,
+    });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_000);
+    const lease = await t.run(async (ctx) => (await ctx.db.query("marketplaceListingStates").first())?.pollLeaseToken);
+    expect(lease ?? null).toBeNull();
+  });
+
   test("takes no owner: the poll is the caller's, whatever the arguments say", async () => {
     useFakeEnv();
     await expect(

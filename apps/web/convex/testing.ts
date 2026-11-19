@@ -51,7 +51,7 @@ import type { ActionCtx } from "./_generated/server";
 import {
   applySaleLinesCore,
   eraOfVariant,
-  pollOwnerImpl,
+  pollOwnerGuarded,
   projectEbayOrderForRecord,
   recordOrderCore,
   SALE_ITEMS_PER_APPLY,
@@ -938,11 +938,15 @@ export const addMyEbayOrder = action({
 /**
  * Run the caller's sales poll now, for one marketplace, and answer when it has
  * finished, so a spec does not wait out the 15-minute cron. It is the cron's
- * own poll for the caller alone (`pollOwnerImpl`); when the cron's poll lands
- * first the orders are already stored and this reads none new. A poll that
+ * own poll for the caller alone (`pollOwnerGuarded`, under the owner's poll
+ * lease: a poll already running is waited out for up to 30 s, then this
+ * throws "already running"); when the cron's poll lands first the orders are
+ * already stored and this reads none new. A poll that
  * ended in an error throws, so the hop prints a failure rather than a count.
  * Refuses a deployment on the real marketplace it names.
  */
+const POLL_NOW_WAIT_MS = 30_000;
+
 export const pollMySalesNow = action({
   args: { platform: listingPlatformValidator },
   returns: v.object({ ordersRead: v.number(), ordersStored: v.number(), linesApplied: v.number() }),
@@ -961,7 +965,14 @@ export const pollMySalesNow = action({
           : "This deployment talks to the real BuySportsCards, so it takes no poll on demand",
       );
     }
-    const report = await pollOwnerImpl(ctx, { ownerId: userId, platform: args.platform });
+    // The cron's poll for the same owner may be running: wait for it (its
+    // orders are then stored and this reads none new) rather than overlap it.
+    const report = await pollOwnerGuarded(
+      ctx,
+      { ownerId: userId, platform: args.platform },
+      { waitMs: POLL_NOW_WAIT_MS },
+    );
+    if (report === null) throw new Error("A sales check is already running; press again in a moment");
     if (report.error !== null) throw new Error(`The sales check failed: ${report.error}`);
     return { ordersRead: report.ordersRead, ordersStored: report.ordersStored, linesApplied: report.linesApplied };
   },
@@ -998,7 +1009,7 @@ export const resetFakeBscForDeploymentFromCli = internalAction({
 export const FAKE_BSC_CLEANUP_MAX_USERS = 200;
 
 /**
- * NEO-552 — the users whose fake BSC sessions `credentials.deleteFakeBscSessionsFromCli`
+ * NEO-552 — the users whose fake BSC sessions `credentials.deleteFakeSessionsFromCli`
  * deletes: every `userProfiles` row on this deployment, with or without a
  * saved BSC flag (a per-user reset can drop the flag while the session
  * stays). Only ids leave this query. Bounded; `truncated` says more exist.
