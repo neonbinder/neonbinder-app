@@ -246,13 +246,39 @@ const stint = (teamId: string, fromYear: number, toYear?: number, label = teamId
 
 describe("the stints a line stages", () => {
   it("opens with the card's team from the set's year, already staged", () => {
-    expect(preAddedStints({ teamId: tid("t-padres"), label: "San Diego Padres" }, 2022)).toEqual([
-      { teamId: "t-padres", label: "San Diego Padres", fromYear: 2022 },
-    ]);
+    // A past set is that one year.
+    expect(
+      preAddedStints({ teamId: tid("t-padres"), label: "San Diego Padres" }, 2022, 2026),
+    ).toEqual([{ teamId: "t-padres", label: "San Diego Padres", fromYear: 2022, toYear: 2022 }]);
     // A team the batch creates is named by its printed string.
-    expect(preAddedStints({ teamName: "Padres", label: "San Diego Padres" }, 2022)).toEqual([
-      { teamName: "Padres", label: "San Diego Padres", fromYear: 2022 },
+    expect(
+      preAddedStints({ teamName: "Padres", label: "San Diego Padres" }, 2022, 2026),
+    ).toEqual([{ teamName: "Padres", label: "San Diego Padres", fromYear: 2022, toYear: 2022 }]);
+  });
+  it("stays open-ended ('to present') for a set from this year or later", () => {
+    const team = { teamId: tid("t-angels"), label: "Los Angeles Angels" };
+    expect(preAddedStints(team, 2026, 2026)).toEqual([
+      { teamId: "t-angels", label: "Los Angeles Angels", fromYear: 2026 },
     ]);
+    expect(preAddedStints(team, 2027, 2026)).toEqual([
+      { teamId: "t-angels", label: "Los Angeles Angels", fromYear: 2027 },
+    ]);
+    expect(stintChipText(preAddedStints(team, 2026, 2026)[0])).toBe(
+      "Los Angeles Angels (2026–present)",
+    );
+  });
+  it("closes the stint the year before this one, and for any earlier year", () => {
+    const team = { teamId: tid("t-angels"), label: "Los Angeles Angels" };
+    expect(preAddedStints(team, 2025, 2026)[0]).toMatchObject({ fromYear: 2025, toYear: 2025 });
+    expect(stintChipText(preAddedStints(team, 1990, 2026)[0])).toBe(
+      "Los Angeles Angels (1990–1990)",
+    );
+  });
+  it("reads the calendar year when none is given", () => {
+    const team = { teamId: tid("t-angels"), label: "Los Angeles Angels" };
+    const thisYear = new Date().getFullYear();
+    expect(preAddedStints(team, thisYear)[0].toYear).toBeUndefined();
+    expect(preAddedStints(team, thisYear - 1)[0].toYear).toBe(thisYear - 1);
   });
   it("has nothing to stage without a team or a year", () => {
     expect(preAddedStints({ label: "this team" }, 2022)).toEqual([]);

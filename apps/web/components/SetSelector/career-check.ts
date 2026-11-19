@@ -350,16 +350,27 @@ export type CareerAnswers = Readonly<Record<string, CareerAnswer>>;
 export const LEAVE_FOLLOW_UP: CareerFollowUp = { kind: "leave" };
 
 /**
- * The stints an "Add to career" opens with: the card's team from the set's
- * year, on, already staged. (None when the team cannot be named.)
+ * The stints an "Add to career" opens with: the card's team, already staged.
+ * (None when the team cannot be named.)
+ *
+ * The years follow the set's year. A set from this year or later is the
+ * player's current team, so the stint stays open ("2026–present"). Any earlier
+ * set is a season that ended: the stint is that one year ("1990–1990"), and the
+ * operator widens it if the player stayed. `currentYear` is injectable so the
+ * rule can be tested on any date.
  */
-export function preAddedStints(team: StintTeamRef | undefined, setYear: number | undefined): StagedStint[] {
+export function preAddedStints(
+  team: StintTeamRef | undefined,
+  setYear: number | undefined,
+  currentYear: number = new Date().getFullYear(),
+): StagedStint[] {
   if (!team || setYear === undefined || (!team.teamId && !team.teamName)) return [];
   return [
     {
       ...(team.teamId ? { teamId: team.teamId } : { teamName: team.teamName }),
       label: team.label,
       fromYear: setYear,
+      ...(setYear < currentYear ? { toYear: setYear } : {}),
     },
   ];
 }

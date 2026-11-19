@@ -1,4 +1,12 @@
-import { useEffect, useId, useRef, useState, type KeyboardEvent, type Ref } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ComponentProps,
+  type KeyboardEvent,
+  type Ref,
+} from "react";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import { nameSearchKey } from "../../lib/entities/name-search";
@@ -454,7 +462,6 @@ function CareerLineRow({
               <StintsPanel
                 subject={playerName}
                 playerId={line.playerId}
-                team={lineTeam}
                 stints={answer.stints}
                 onChange={(stints) => onAnswer({ kind: "add", stints })}
                 env={stintEnv}
@@ -526,29 +533,25 @@ function CareerLineRow({
 // The add widget: the New Player step's stints widget
 // ---------------------------------------------------------------------------
 
-/** The same team: by id, or by the printed string of a team the batch creates. */
-function sameTeam(a: StintTeamRef | StagedStint, b: StintTeamRef | StagedStint): boolean {
-  if (a.teamId || b.teamId) return a.teamId === b.teamId;
-  return nameSearchKey(a.teamName ?? "") === nameSearchKey(b.teamName ?? "") && !!a.teamName;
-}
-
 /**
  * NEO-591 — "Add to career". It is the stints widget the New Player step
  * uses (its chips and `CareerTeamEntry`), not a copy of it:
  *
  *   On file:  [Padres (2019–2021)] [Reds (2022–present)]      (read-only)
- *   Adding:   [San Diego Padres (2022–present) ×]
+ *   Adding:   [San Diego Padres (2022–2022) ×]
  *   [ team name … ] [ From year ] [ To year ] [ + Add ]
  *
- * The card's team from the set's year is already staged. Removing it puts it
- * back in the form (changed years are a remove and an add, as on New Player).
- * Stints are valid by construction (the form holds the years) and name a team
- * that exists (`knownTeamsOnly`), so nothing staged can fail at Confirm & Save.
+ * The card's team is already staged, from the set's year: to the same year for
+ * a past set, to "present" for this year's or later (`preAddedStints`). A chip's
+ * label is a button: pressing it takes that stint out of the list and loads its
+ * team and both years into the form, so changing a stint is edit, then + Add.
+ * The × only removes. Stints are valid by construction (the form holds the
+ * years) and name a team that exists (`knownTeamsOnly`), so nothing staged can
+ * fail at Confirm & Save.
  */
 function StintsPanel({
   subject,
   playerId,
-  team,
   stints,
   onChange,
   env,
@@ -558,8 +561,6 @@ function StintsPanel({
   /** Whose career: names each control, so two lines never read alike. */
   subject: string;
   playerId: string;
-  /** The card's team, which the form offers again once its stint is removed. */
-  team: StintTeamRef;
   stints: readonly StagedStint[];
   onChange: (stints: StagedStint[]) => void;
   env: StintEnv;
@@ -568,8 +569,8 @@ function StintsPanel({
   disabled: boolean;
 }) {
   const existing = env.existingStintsOf?.(playerId) ?? [];
-  const teamStaged = stints.some((s) => sameTeam(s, team));
-  const prefilled = !teamStaged && (team.teamId !== undefined || !!team.teamName);
+  /** The stint being edited, handed to the form; a new token each press. */
+  const [edit, setEdit] = useState<ComponentProps<typeof CareerTeamEntry>["load"]>(undefined);
   const onAdd = (entry: CareerTeamAdded) => {
     const years = {
       fromYear: entry.fromYear,
@@ -610,7 +611,25 @@ function StintsPanel({
             {stints.map((stint, idx) => (
               <li key={`${stint.teamId ?? stint.teamName}-${stint.fromYear}`}>
                 <span className="inline-flex items-center gap-1 rounded-full border border-rule-strong bg-raised px-2 py-0.5 text-xs text-ink-2">
-                  {stintChipText(stint)}
+                  <button
+                    type="button"
+                    aria-label={`Edit ${stintChipText(stint)} for ${subject}`}
+                    aria-disabled={disabled || undefined}
+                    onClick={() => {
+                      if (disabled) return;
+                      setEdit({
+                        token: (edit?.token ?? 0) + 1,
+                        name: stint.label,
+                        ...(stint.teamId ? { teamId: stint.teamId } : {}),
+                        fromYear: stint.fromYear,
+                        ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+                      });
+                      onChange(stints.filter((_, i) => i !== idx));
+                    }}
+                    className="hit-area-24 rounded text-left hover:text-ink focus-outline"
+                  >
+                    {stintChipText(stint)}
+                  </button>
                   <button
                     type="button"
                     aria-label={`Remove ${stintChipText(stint)} for ${subject}`}
@@ -638,8 +657,7 @@ function StintsPanel({
         disabled={disabled}
         onAdd={onAdd}
         onDone={onDone}
-        initialTeam={prefilled ? team.label : undefined}
-        initialFromYear={prefilled ? env.setYear : undefined}
+        load={edit}
       />
     </div>
   );
@@ -782,7 +800,6 @@ function FollowUp({
             <StintsPanel
               subject={subject}
               playerId={subjectId}
-              team={stintTeam}
               stints={then.stints}
               onChange={(stints) => setThen({ kind: "add", stints })}
               env={stintEnv}

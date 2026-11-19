@@ -1464,6 +1464,104 @@ describe("CareerTeamEntry — prefill and quick picks (NEO-574)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// NEO-591 — "edit this stint": a load request fills the form
+// ---------------------------------------------------------------------------
+
+describe("CareerTeamEntry — loading a stint to edit (NEO-591)", () => {
+  const PADRES = makeTeam("San Diego Padres", "t-padres");
+  const nameBox = () => screen.getByLabelText("Career team name") as HTMLInputElement;
+  const fromBox = () => screen.getByLabelText("From year") as HTMLInputElement;
+  const toBox = () => screen.getByLabelText("To year (optional)") as HTMLInputElement;
+  const load = (token: number, rest: Partial<NonNullable<Parameters<typeof CareerTeamEntry>[0]["load"]>> = {}) => ({
+    token,
+    name: "San Diego Padres",
+    teamId: PADRES._id,
+    fromYear: 2019,
+    toYear: 2021,
+    ...rest,
+  });
+  const entry = (props: Partial<Parameters<typeof CareerTeamEntry>[0]>, onAdd = vi.fn()) => (
+    <CareerTeamEntry sportId={SPORT_ID} stagedNames={[]} onAdd={onAdd} {...props} />
+  );
+
+  it("fills the team, From year and To year, and focuses From year", () => {
+    const { rerender } = render(entry({}));
+    rerender(entry({ load: load(1) }));
+    expect(nameBox().value).toBe("San Diego Padres");
+    expect(fromBox().value).toBe("2019");
+    expect(toBox().value).toBe("2021");
+    expect(document.activeElement).toBe(fromBox());
+  });
+
+  it("leaves To year empty for an open-ended stint", () => {
+    const { rerender } = render(entry({}));
+    rerender(entry({ load: load(1, { toYear: undefined }) }));
+    expect(toBox().value).toBe("");
+  });
+
+  it("replaces what the form holds, a prefill or typed text alike", () => {
+    const { rerender } = render(entry({ initialTeam: "Chicago Cubs", initialFromYear: 2022 }));
+    fireEvent.change(toBox(), { target: { value: "2023" } });
+    rerender(entry({ initialTeam: "Chicago Cubs", initialFromYear: 2022, load: load(1) }));
+    expect(nameBox().value).toBe("San Diego Padres");
+    expect(fromBox().value).toBe("2019");
+    expect(toBox().value).toBe("2021");
+  });
+
+  it("loads again for the same stint when the token changes, and not when it does not", () => {
+    const { rerender } = render(entry({ load: load(1) }));
+    fireEvent.change(fromBox(), { target: { value: "2015" } });
+    // Same token: a re-render never undoes the operator's change.
+    rerender(entry({ load: load(1) }));
+    expect(fromBox().value).toBe("2015");
+    rerender(entry({ load: load(2) }));
+    expect(fromBox().value).toBe("2019");
+  });
+
+  it("+ Add re-stages the loaded stint with the changed years, and reports its saved team", () => {
+    const onAdd = vi.fn();
+    const { rerender } = render(entry({ knownTeamsOnly: true }, onAdd));
+    rerender(entry({ knownTeamsOnly: true, load: load(1) }, onAdd));
+    fireEvent.change(fromBox(), { target: { value: "2018" } });
+    fireEvent.change(toBox(), { target: { value: "2022" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+    expect(onAdd).toHaveBeenCalledWith({
+      name: "San Diego Padres",
+      fromYear: 2018,
+      toYear: 2022,
+      teamId: PADRES._id,
+    });
+  });
+
+  it("re-adds a team the batch is creating by name, with no saved team behind it", () => {
+    const onAdd = vi.fn();
+    const staged = ["Memphis RiverKings"];
+    const { rerender } = render(entry({ knownTeamsOnly: true, stagedNames: staged }, onAdd));
+    rerender(
+      entry(
+        {
+          knownTeamsOnly: true,
+          stagedNames: staged,
+          load: { token: 1, name: "Memphis RiverKings", fromYear: 2018, toYear: 2019 },
+        },
+        onAdd,
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+    expect(onAdd).toHaveBeenCalledWith({ name: "Memphis RiverKings", fromYear: 2018, toYear: 2019 });
+  });
+
+  it("changes nothing for a caller that passes no load (the New Player step)", () => {
+    const { onAdd } = renderEntry({ initialTeam: "San Diego Padres", initialFromYear: 2022 });
+    expect(nameBox().value).toBe("San Diego Padres");
+    expect(fromBox().value).toBe("2022");
+    expect(toBox().value).toBe("");
+    fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+    expect(onAdd).toHaveBeenCalledWith({ name: "San Diego Padres", fromYear: 2022 });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // NEO-591 — the Career check step's use of the same form
 // ---------------------------------------------------------------------------
 

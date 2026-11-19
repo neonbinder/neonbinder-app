@@ -126,6 +126,7 @@ export default function CareerTeamEntry({
   onDirtyChange,
   initialTeam,
   initialFromYear,
+  load,
   quickPicks,
   label,
   disabled = false,
@@ -167,6 +168,22 @@ export default function CareerTeamEntry({
    */
   initialTeam?: string;
   initialFromYear?: number;
+  /**
+   * NEO-591 — "edit this stint": load a team, From year and To year into the
+   * form and move focus to From year. Unlike the prefill above it REPLACES
+   * whatever the form holds (the operator asked for it by pressing edit on a
+   * chip), and it fires once per `token`, so asking for the same stint twice
+   * loads twice. `teamId` is the saved team the stint names, so + Add reports
+   * the same team without a search having to find it again; a team the batch
+   * creates has none and is matched by name, as when typed.
+   */
+  load?: {
+    token: number;
+    name: string;
+    teamId?: Id<"teams">;
+    fromYear: number;
+    toYear?: number;
+  };
   /**
    * NEO-574 — other teams the cards print for this player, as one-press
    * fills for the team and From year. Parent-filtered: a team already
@@ -231,6 +248,18 @@ export default function CareerTeamEntry({
   /** ArrowDown was pressed since the last keystroke: show the list even when
    *  the box already holds a known team (see `exactMatch`). */
   const [browsing, setBrowsing] = useState(false);
+  /* NEO-591 — an edit request (render-phase, after the prefill, so it wins). */
+  const [appliedLoad, setAppliedLoad] = useState<number | undefined>(undefined);
+  if (load && load.token !== appliedLoad) {
+    setAppliedLoad(load.token);
+    setName(load.name);
+    setDebouncedName(load.name);
+    setFromYear(String(load.fromYear));
+    setToYear(load.toYear === undefined ? "" : String(load.toYear));
+    setPickedTeamId(load.teamId ?? null);
+    setSuggestionsOpen(false);
+    setBrowsing(false);
+  }
   const nameInputRef = useRef<HTMLInputElement>(null);
   /** Where focus goes after a suggestion is taken — the next thing to fill in. */
   const fromYearRef = useRef<HTMLInputElement>(null);
@@ -508,6 +537,11 @@ export default function CareerTeamEntry({
     // note on `pickSuggestion`.
     nameInputRef.current?.focus();
   };
+
+  /* NEO-591 — the chip that was pressed is gone, so focus goes to the years. */
+  useEffect(() => {
+    if (appliedLoad !== undefined) fromYearRef.current?.focus();
+  }, [appliedLoad]);
 
   /*
    * NEO-574 — if the parent answered the add with the NEXT prefill (the next

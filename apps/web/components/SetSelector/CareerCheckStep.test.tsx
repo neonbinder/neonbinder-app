@@ -76,6 +76,7 @@ type EntryProps = {
   disabled?: boolean;
   initialTeam?: string;
   initialFromYear?: number;
+  load?: { token: number; name: string; teamId?: string; fromYear: number; toYear?: number };
   onAdd: (entry: { name: string; fromYear: number; toYear?: number; teamId?: string }) => void;
   onDone?: () => void;
 };
@@ -189,6 +190,8 @@ function Harness(props: {
   /** The full team name a line shows, for lines that name a team by its printed text. */
   teamNameOverride?: string;
   disabled?: boolean;
+  /** The set's year; 2022 unless a test is about this year. */
+  setYear?: number;
 }) {
   const [answers, setAnswers] = useState<CareerAnswers>({});
   useEffect(() => {
@@ -197,7 +200,7 @@ function Harness(props: {
   return (
     <CareerCheckStep
       lines={props.empty ? [] : (props.linesOverride ?? LINES)}
-      setYear={2022}
+      setYear={props.setYear ?? 2022}
       selectorOptionId={SET}
       sportId={SPORT}
       answers={answers}
@@ -413,7 +416,7 @@ describe("the lines", () => {
 });
 
 describe("Add to career", () => {
-  const PADRES_CHIP = "San Diego Padres (2022–present)";
+  const PADRES_CHIP = "San Diego Padres (2022–2022)";
   const stintsList = (player: string) => screen.getByRole("list", { name: `Stints to add for ${player}` });
   const form = (player: string) => screen.getByRole("group", { name: `Stints form for ${player}` });
 
@@ -423,7 +426,7 @@ describe("Add to career", () => {
     expect(within(stintsList("Fernando Tatis Jr.")).getByText(PADRES_CHIP)).toBeTruthy();
     expect(answersSeen[keyOf("p-tatis")]).toEqual({
       kind: "add",
-      stints: [{ teamId: "t-padres", label: "San Diego Padres", fromYear: 2022 }],
+      stints: [{ teamId: "t-padres", label: "San Diego Padres", fromYear: 2022, toYear: 2022 }],
     });
   });
 
@@ -440,7 +443,7 @@ describe("Add to career", () => {
     );
     expect(answersSeen[lines[0].key]).toEqual({
       kind: "add",
-      stints: [{ teamName: "Padres", label: "San Diego Padres", fromYear: 2022 }],
+      stints: [{ teamName: "Padres", label: "San Diego Padres", fromYear: 2022, toYear: 2022 }],
     });
   });
 
@@ -478,20 +481,149 @@ describe("Add to career", () => {
     expect(screen.queryByRole("list", { name: "Career on file for Mike Trout" })).toBeNull();
   });
 
-  it("opens the form on the card's team and year only once that stint is removed", () => {
+  it("× only removes a chip: the form is not prefilled with it", () => {
     render(<Harness />);
     fireEvent.click(radio(tatis(), "Add to career"));
     const props = () => entryProps["Fernando Tatis Jr."];
-    // Staged already: nothing to prefill.
-    expect(props().initialTeam).toBeUndefined();
-    expect(props().initialFromYear).toBeUndefined();
     fireEvent.click(
       screen.getByRole("button", { name: `Remove ${PADRES_CHIP} for Fernando Tatis Jr.` }),
     );
     expect(answersSeen[keyOf("p-tatis")]).toEqual({ kind: "add", stints: [] });
-    expect(props().initialTeam).toBe("San Diego Padres");
-    expect(props().initialFromYear).toBe(2022);
+    expect(props().initialTeam).toBeUndefined();
+    expect(props().initialFromYear).toBeUndefined();
+    expect(props().load).toBeUndefined();
     expect(screen.queryByRole("list", { name: "Stints to add for Fernando Tatis Jr." })).toBeNull();
+  });
+
+  it("stays open-ended for a set from this year or later, and closes an earlier year", () => {
+    const thisYear = new Date().getFullYear();
+    render(<Harness setYear={thisYear} />);
+    fireEvent.click(radio(tatis(), "Add to career"));
+    expect(answersSeen[keyOf("p-tatis")]).toEqual({
+      kind: "add",
+      stints: [{ teamId: "t-padres", label: "San Diego Padres", fromYear: thisYear }],
+    });
+    expect(
+      within(stintsList("Fernando Tatis Jr.")).getByText(`San Diego Padres (${thisYear}–present)`),
+    ).toBeTruthy();
+    cleanup();
+    render(<Harness setYear={thisYear - 1} />);
+    fireEvent.click(radio(tatis(), "Add to career"));
+    expect(answersSeen[keyOf("p-tatis")]).toEqual({
+      kind: "add",
+      stints: [{ teamId: "t-padres", label: "San Diego Padres", fromYear: thisYear - 1, toYear: thisYear - 1 }],
+    });
+  });
+
+  describe("pressing a chip to edit it", () => {
+    const edit = (chip: string, player = "Fernando Tatis Jr.") =>
+      screen.getByRole("button", { name: `Edit ${chip} for ${player}` });
+
+    it("is a button named for the stint and the player", () => {
+      render(<Harness />);
+      fireEvent.click(radio(tatis(), "Add to career"));
+      fireEvent.click(radio(trout(), "Add to career"));
+      expect(edit(PADRES_CHIP).textContent).toBe(PADRES_CHIP);
+      expect(edit("Los Angeles Angels (2022–2022)", "Mike Trout")).toBeTruthy();
+    });
+
+    it("takes the stint off the list and loads its team and both years into the form", () => {
+      render(<Harness />);
+      fireEvent.click(radio(tatis(), "Add to career"));
+      expect(entryProps["Fernando Tatis Jr."].load).toBeUndefined();
+      fireEvent.click(edit(PADRES_CHIP));
+      expect(screen.queryByRole("list", { name: "Stints to add for Fernando Tatis Jr." })).toBeNull();
+      expect(answersSeen[keyOf("p-tatis")]).toEqual({ kind: "add", stints: [] });
+      expect(entryProps["Fernando Tatis Jr."].load).toEqual({
+        token: 1,
+        name: "San Diego Padres",
+        teamId: "t-padres",
+        fromYear: 2022,
+        toYear: 2022,
+      });
+    });
+
+    it("loads an open-ended stint with no To year", () => {
+      render(<Harness setYear={new Date().getFullYear()} />);
+      fireEvent.click(radio(tatis(), "Add to career"));
+      nextEntry = { name: "Cincinnati Reds", fromYear: 2019, teamId: "t-reds" };
+      fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      fireEvent.click(edit("Cincinnati Reds (2019–present)"));
+      expect(entryProps["Fernando Tatis Jr."].load).toEqual({
+        token: 1,
+        name: "Cincinnati Reds",
+        teamId: "t-reds",
+        fromYear: 2019,
+      });
+    });
+
+    it("works on any staged stint, and leaves the others where they are", () => {
+      render(<Harness />);
+      fireEvent.click(radio(tatis(), "Add to career"));
+      nextEntry = { name: "Cincinnati Reds", fromYear: 2019, toYear: 2021, teamId: "t-reds" };
+      fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      fireEvent.click(edit("Cincinnati Reds (2019–2021)"));
+      expect(
+        within(stintsList("Fernando Tatis Jr.")).getAllByRole("listitem").map((li) => li.textContent),
+      ).toEqual([`${PADRES_CHIP}×`]);
+      expect(entryProps["Fernando Tatis Jr."].load).toMatchObject({
+        name: "Cincinnati Reds",
+        fromYear: 2019,
+        toYear: 2021,
+      });
+    });
+
+    it("re-stages with the new years when + Add is pressed", () => {
+      render(<Harness />);
+      fireEvent.click(radio(tatis(), "Add to career"));
+      fireEvent.click(edit(PADRES_CHIP));
+      // The operator widens the years in the form; the form reports the add.
+      nextEntry = { name: "San Diego Padres", fromYear: 2020, toYear: 2023, teamId: "t-padres" };
+      fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      expect(answersSeen[keyOf("p-tatis")]).toEqual({
+        kind: "add",
+        stints: [{ teamId: "t-padres", label: "San Diego Padres", fromYear: 2020, toYear: 2023 }],
+      });
+      expect(
+        within(stintsList("Fernando Tatis Jr.")).getAllByRole("listitem").map((li) => li.textContent),
+      ).toEqual(["San Diego Padres (2020–2023)×"]);
+    });
+
+    it("asks the form to load again each time the same chip is pressed", () => {
+      render(<Harness />);
+      fireEvent.click(radio(tatis(), "Add to career"));
+      fireEvent.click(edit(PADRES_CHIP));
+      expect(entryProps["Fernando Tatis Jr."].load?.token).toBe(1);
+      nextEntry = { name: "San Diego Padres", fromYear: 2022, toYear: 2022, teamId: "t-padres" };
+      fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      fireEvent.click(edit(PADRES_CHIP));
+      expect(entryProps["Fernando Tatis Jr."].load?.token).toBe(2);
+    });
+
+    it("re-adds a batch team's stint to the same batch team", () => {
+      batch = [{ label: "Memphis RiverKings", teamName: "RiverKings" }];
+      render(<Harness />);
+      fireEvent.click(radio(tatis(), "Add to career"));
+      nextEntry = { name: "Memphis RiverKings", fromYear: 2018, toYear: 2019 };
+      fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      fireEvent.click(edit("Memphis RiverKings (2018–2019)"));
+      // No saved team behind it: the form is given the name only, which is a staged name.
+      expect(entryProps["Fernando Tatis Jr."].load).toEqual({
+        token: 1,
+        name: "Memphis RiverKings",
+        fromYear: 2018,
+        toYear: 2019,
+      });
+      expect(entryProps["Fernando Tatis Jr."].stagedNames).toContain("Memphis RiverKings");
+      nextEntry = { name: "Memphis RiverKings", fromYear: 2017, toYear: 2019 };
+      fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      expect((answersSeen[keyOf("p-tatis")] as { stints: unknown[] }).stints).toContainEqual({
+        teamName: "RiverKings",
+        label: "Memphis RiverKings",
+        fromYear: 2017,
+        toYear: 2019,
+      });
+    });
   });
 
   it("adds a stint for any saved team by its id, and any number of them", () => {
@@ -509,7 +641,7 @@ describe("Add to career", () => {
       "St. Louis Cardinals (2015–present)×",
     ]);
     expect((answersSeen[keyOf("p-tatis")] as { stints: unknown[] }).stints).toEqual([
-      { teamId: "t-padres", label: "San Diego Padres", fromYear: 2022 },
+      { teamId: "t-padres", label: "San Diego Padres", fromYear: 2022, toYear: 2022 },
       { teamId: "t-reds", label: "Cincinnati Reds", fromYear: 2019, toYear: 2021 },
       { teamId: "t-cards", label: "St. Louis Cardinals", fromYear: 2015 },
     ]);
@@ -550,7 +682,7 @@ describe("Add to career", () => {
     fireEvent.click(radio(tatis(), "Add to career"));
     fireEvent.click(radio(trout(), "Add to career"));
     expect(form("Fernando Tatis Jr.")).not.toBe(form("Mike Trout"));
-    expect(within(stintsList("Mike Trout")).getByText("Los Angeles Angels (2022–present)")).toBeTruthy();
+    expect(within(stintsList("Mike Trout")).getByText("Los Angeles Angels (2022–2022)")).toBeTruthy();
     expect(within(stintsList("Fernando Tatis Jr.")).queryByText(/Angels/)).toBeNull();
     nextEntry = { name: "Cincinnati Reds", fromYear: 2019, teamId: "t-reds" };
     fireEvent.click(screen.getByRole("button", { name: "Add stint for Mike Trout" }));
@@ -610,7 +742,10 @@ describe("Add to career", () => {
   });
 
   it("the chip reads as the New Player step's does", () => {
-    expect(stintChipText({ label: "San Diego Padres", fromYear: 2022 })).toBe(PADRES_CHIP);
+    expect(stintChipText({ label: "San Diego Padres", fromYear: 2022, toYear: 2022 })).toBe(PADRES_CHIP);
+    expect(stintChipText({ label: "San Diego Padres", fromYear: 2022 })).toBe(
+      "San Diego Padres (2022–present)",
+    );
   });
 });
 
@@ -804,14 +939,14 @@ describe("Wrong player", () => {
     // The same widget, on the new player, with the card's team already staged.
     expect(
       within(screen.getByRole("list", { name: "Stints to add for Fernando Tatis Sr." })).getByText(
-        "San Diego Padres (2022–present)",
+        "San Diego Padres (2022–2022)",
       ),
     ).toBeTruthy();
     expect(screen.getByRole("group", { name: "Stints form for Fernando Tatis Sr." })).toBeTruthy();
     expect(answersSeen[keyOf("p-tatis")]).toMatchObject({
       then: {
         kind: "add",
-        stints: [{ teamId: "t-padres", label: "San Diego Padres", fromYear: 2022 }],
+        stints: [{ teamId: "t-padres", label: "San Diego Padres", fromYear: 2022, toYear: 2022 }],
       },
     });
   });
@@ -1031,11 +1166,11 @@ describe("Fix card’s team", () => {
     // The widget stages the PICKED team, by id, from the set's year.
     expect(
       within(screen.getByRole("list", { name: "Stints to add for Mike Trout" })).getByText(
-        "Picked team (2022–present)",
+        "Picked team (2022–2022)",
       ),
     ).toBeTruthy();
     expect(answersSeen[keyOf("p-trout")]).toMatchObject({
-      then: { kind: "add", stints: [{ teamId: "picked-team", fromYear: 2022 }] },
+      then: { kind: "add", stints: [{ teamId: "picked-team", fromYear: 2022, toYear: 2022 }] },
     });
   });
 

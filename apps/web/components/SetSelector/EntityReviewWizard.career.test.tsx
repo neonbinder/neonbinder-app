@@ -263,7 +263,7 @@ describe("answers", () => {
     const group = screen.getAllByRole("radiogroup")[0];
     fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
     const fields = onCareerChange.mock.calls.at(-1)?.[0];
-    expect(fields?.stints).toEqual([{ playerId: "p-tatis", teamId: "t-padres", fromYear: 2022 }]);
+    expect(fields?.stints).toEqual([{ playerId: "p-tatis", teamId: "t-padres", fromYear: 2022, toYear: 2022 }]);
   });
 
   it("shows the card's team staged on the line, named, from the set's year", () => {
@@ -273,7 +273,7 @@ describe("answers", () => {
     fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
     const staged = screen.getByRole("list", { name: "Stints to add for Fernando Tatis Jr." });
     expect(within(staged).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
-      "San Diego Padres (2022–present)×",
+      "San Diego Padres (2022–2022)×",
     ]);
     // And the form for more, named for the player.
     expect(screen.getByLabelText("Career team name for Fernando Tatis Jr.")).toBeTruthy();
@@ -288,6 +288,34 @@ describe("answers", () => {
     fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
     const onFile = screen.getByRole("list", { name: "Career on file for Fernando Tatis Jr." });
     expect(within(onFile).getByText("Cincinnati Reds (2019–2021)")).toBeTruthy();
+  });
+
+  it("pressing a staged chip loads it into the real form, and + Add stages it again with the new years", () => {
+    teamRows = [{ _id: "t-padres", name: "Padres", location: "San Diego" }];
+    const onCareerChange = vi.fn();
+    render(wizard({ onCareerChange }));
+    const group = screen.getAllByRole("radiogroup")[0];
+    fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Edit San Diego Padres (2022–2022) for Fernando Tatis Jr.",
+      }),
+    );
+    expect(screen.queryByRole("list", { name: "Stints to add for Fernando Tatis Jr." })).toBeNull();
+    const name = screen.getByLabelText("Career team name for Fernando Tatis Jr.") as HTMLInputElement;
+    const from = screen.getByLabelText("From year for Fernando Tatis Jr.") as HTMLInputElement;
+    const to = screen.getByLabelText("To year (optional) for Fernando Tatis Jr.") as HTMLInputElement;
+    expect([name.value, from.value, to.value]).toEqual(["San Diego Padres", "2022", "2022"]);
+    expect(document.activeElement).toBe(from);
+    fireEvent.change(to, { target: { value: "2024" } });
+    fireEvent.click(screen.getByRole("button", { name: "Add career team for Fernando Tatis Jr." }));
+    const staged = screen.getByRole("list", { name: "Stints to add for Fernando Tatis Jr." });
+    expect(within(staged).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "San Diego Padres (2022–2024)×",
+    ]);
+    expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toEqual([
+      { playerId: "p-tatis", teamId: "t-padres", fromYear: 2022, toYear: 2024 },
+    ]);
   });
 
   it("reports EVERY stint added on the line, and only while the line is on Add to career", () => {
@@ -313,12 +341,12 @@ describe("answers", () => {
       });
       fireEvent.click(screen.getByRole("button", { name: "Add career team for Fernando Tatis Jr." }));
       expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toEqual([
-        { playerId: "p-tatis", teamId: "t-padres", fromYear: 2022 },
+        { playerId: "p-tatis", teamId: "t-padres", fromYear: 2022, toYear: 2022 },
         { playerId: "p-tatis", teamId: "t-reds", fromYear: 2019, toYear: 2021 },
       ]);
       // Remove the card's own team: only the one added by hand is sent.
       fireEvent.click(
-        screen.getByRole("button", { name: /^Remove .*2022–present.* for Fernando Tatis Jr\.$/ }),
+        screen.getByRole("button", { name: /^Remove .*2022–2022.* for Fernando Tatis Jr\.$/ }),
       );
       expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toEqual([
         { playerId: "p-tatis", teamId: "t-reds", fromYear: 2019, toYear: 2021 },
