@@ -15,6 +15,7 @@ import { internalAction } from "./_generated/server";
 import schema from "./schema";
 import { __resetContractCache } from "./credentials";
 import { bscConditionFor } from "./lib/bscConditions";
+import * as testing from "./testing";
 import { fakeBscNamespaceFor } from "./testing";
 
 /** convex-test ids carry no Convex checksum (see listingSales.test.ts). */
@@ -440,6 +441,102 @@ describe("addMyBscOrder with listedCardNumber", () => {
       as(t).action(api.testing.addMyBscOrder, { order: { items: [{ listedCardNumber: "", quantity: 1 }] } }),
     ).rejects.toThrow(/listedCardNumber is blank/);
     expect(calls).toEqual([]);
+  });
+});
+
+describe("a bad order costs no listing read", () => {
+  type Handler = (ctx: unknown, args: unknown) => Promise<unknown>;
+  const spyOnReads = () =>
+    vi.spyOn(testing.listedCardForOrder as unknown as { _handler: Handler }, "_handler");
+
+  test.each([
+    ["a quantity of 0", { listedCardNumber: "FS-2", quantity: 0 }],
+    ["a fractional quantity", { listedCardNumber: "FS-2", quantity: 1.5 }],
+    ["a quantity over 1000", { listedCardNumber: "FS-2", quantity: 1001 }],
+    ["a negative price", { listedCardNumber: "FS-2", quantity: 1, priceCents: -1 }],
+  ])("eBay: %s is refused with zero reads", async (_name, line) => {
+    const t = convexTest(schema, modules);
+    const c = await seedCatalog(t);
+    await seedLink(t, ME, c.fs2);
+    const reads = spyOnReads();
+    await expect(as(t).action(api.testing.addMyEbayOrder, { order: { lines: [line] } })).rejects.toThrow(/lines\[0\]\.(quantity|priceCents)/);
+    expect(reads).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  test("eBay: a bad pass-through line AFTER a good number line is refused before the number is read", async () => {
+    const t = convexTest(schema, modules);
+    const c = await seedCatalog(t);
+    await seedLink(t, ME, c.fs2);
+    const reads = spyOnReads();
+    await expect(
+      as(t).action(api.testing.addMyEbayOrder, {
+        order: { lines: [{ listedCardNumber: "FS-2", quantity: 1 }, { sku: "NB2-x-NM", listingId: "12ab", quantity: 1 }] },
+      }),
+    ).rejects.toThrow(/lines\[1\]\.listingId must be digits/);
+    expect(reads).not.toHaveBeenCalled();
+  });
+
+  test("eBay: a bad orderId is refused with zero reads", async () => {
+    const t = convexTest(schema, modules);
+    const c = await seedCatalog(t);
+    await seedLink(t, ME, c.fs2);
+    const reads = spyOnReads();
+    await expect(
+      as(t).action(api.testing.addMyEbayOrder, { order: { orderId: "a/b", lines: [{ listedCardNumber: "FS-2", quantity: 1 }] } }),
+    ).rejects.toThrow(/orderId/);
+    expect(reads).not.toHaveBeenCalled();
+  });
+
+  test.each([
+    ["a quantity of 0", { listedCardNumber: "FS-2", quantity: 0 }],
+    ["a fractional price", { listedCardNumber: "FS-2", quantity: 1, priceCents: 1.5 }],
+  ])("BSC: %s is refused with zero reads", async (_name, item) => {
+    const t = convexTest(schema, modules);
+    const c = await seedCatalog(t);
+    await seedCopy(t, c, ME, c.fs2, await seedBox(t, ME));
+    const reads = spyOnReads();
+    await expect(as(t).action(api.testing.addMyBscOrder, { order: { items: [item] } })).rejects.toThrow(/An item's (quantity|priceCents)/);
+    expect(reads).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  test("BSC: a bad pass-through item and a bad orderNo are refused with zero reads", async () => {
+    const t = convexTest(schema, modules);
+    const c = await seedCatalog(t);
+    await seedCopy(t, c, ME, c.fs2, await seedBox(t, ME));
+    const reads = spyOnReads();
+    await expect(
+      as(t).action(api.testing.addMyBscOrder, {
+        order: { items: [{ listedCardNumber: "FS-2", quantity: 1 }, { cardId: "bad id!", condition: "nm", quantity: 1 }] },
+      }),
+    ).rejects.toThrow(/cardId must be a BSC card id/);
+    await expect(
+      as(t).action(api.testing.addMyBscOrder, { order: { orderNo: " ", items: [{ listedCardNumber: "FS-2", quantity: 1 }] } }),
+    ).rejects.toThrow(/orderNo/);
+    expect(reads).not.toHaveBeenCalled();
+  });
+
+  test("control: a good order does read, once per number", async () => {
+    const t = convexTest(schema, modules);
+    const c = await seedCatalog(t);
+    await seedLink(t, ME, c.fs2);
+    const reads = spyOnReads();
+    await as(t).action(api.testing.addMyEbayOrder, { order: { lines: [{ listedCardNumber: "FS-2", quantity: 1 }] } });
+    expect(reads).toHaveBeenCalledTimes(1);
+  });
+
+  test("a refusal never carries a resolved id or SKU", async () => {
+    const t = convexTest(schema, modules);
+    const c = await seedCatalog(t);
+    await seedLink(t, ME, c.fs1);
+    await seedLink(t, ME, c.fs1Twin);
+    const message = await as(t)
+      .action(api.testing.addMyEbayOrder, { order: { lines: [{ listedCardNumber: "FS-1", quantity: 1 }] } })
+      .catch((e: unknown) => String(e));
+    expect(message).not.toContain(c.fs1);
+    expect(message).not.toContain(c.fs1Twin);
+    expect(message).not.toMatch(/NB2-|11000000000/);
   });
 });
 

@@ -828,6 +828,27 @@ export const addMyBscOrder = action({
     if (request.items.length === 0 || request.items.length > MAX_FAKE_BSC_ORDER_ITEMS) {
       throw new Error(`An order carries between 1 and ${MAX_FAKE_BSC_ORDER_ITEMS} items`);
     }
+    // Everything a spec could get wrong without a lookup is checked FIRST, so
+    // a bad order costs no read: the same checks the resolved order gets, with
+    // a stand-in for each item that names a number.
+    checkFakeBscOrder({
+      ...(request.orderNo !== undefined ? { orderNo: request.orderNo } : {}),
+      ...(request.status !== undefined ? { status: request.status } : {}),
+      ...(request.orderDateMs !== undefined ? { orderDateMs: request.orderDateMs } : {}),
+      items: request.items.map((item) =>
+        "listedCardNumber" in item
+          ? {
+              cardId: "x",
+              condition: "x",
+              quantity: item.quantity,
+              ...(item.priceCents !== undefined ? { priceCents: item.priceCents } : {}),
+            }
+          : item,
+      ),
+    });
+    for (const [i, item] of request.items.entries()) {
+      if ("listedCardNumber" in item) checkListedCardNumber(item.listedCardNumber, `items[${i}]`);
+    }
     // callerFakeBscNamespace passed, so the caller is signed in.
     const userId = (await getCurrentUserId(ctx)) as string;
     const items: FakeBscOrder["items"] = [];
@@ -837,7 +858,6 @@ export const addMyBscOrder = action({
         continue;
       }
       const where = `items[${i}]`;
-      checkListedCardNumber(item.listedCardNumber, where);
       const found = await ctx.runQuery(internal.testing.listedCardForOrder, {
         ownerId: userId,
         platform: "bsc",
@@ -1124,12 +1144,22 @@ export const addMyEbayOrder = action({
   args: { seller: v.optional(fakeEbaySellerValidator), order: fakeEbayOrderRequestValidator },
   returns: v.object({ lines: v.number() }),
   handler: async (ctx, args): Promise<{ lines: number }> => {
-    const { ns } = await callerFakeEbayNamespace(ctx);
+    const { ns, userId } = await callerFakeEbayNamespace(ctx);
     const request: FakeEbayOrderRequest = args.order;
-    if (request.lines.length < 1 || request.lines.length > MAX_FAKE_EBAY_ORDER_LINES) {
-      throw new Error(`An order carries between 1 and ${MAX_FAKE_EBAY_ORDER_LINES} lines`);
+    // Everything a spec could get wrong without a lookup is checked FIRST, so
+    // a bad order costs no read: the same checks the resolved order gets, with
+    // a stand-in for each line that names a number.
+    checkFakeEbayOrder({
+      ...request,
+      lines: request.lines.map((line) =>
+        "listedCardNumber" in line
+          ? { title: "x", quantity: line.quantity, ...(line.priceCents !== undefined ? { priceCents: line.priceCents } : {}) }
+          : line,
+      ),
+    });
+    for (const [i, line] of request.lines.entries()) {
+      if ("listedCardNumber" in line) checkListedCardNumber(line.listedCardNumber, `lines[${i}]`);
     }
-    const userId = (await getCurrentUserId(ctx)) as string;
     const lines: FakeEbayOrder["lines"] = [];
     for (const [i, line] of request.lines.entries()) {
       if (!("listedCardNumber" in line)) {
@@ -1137,7 +1167,6 @@ export const addMyEbayOrder = action({
         continue;
       }
       const where = `lines[${i}]`;
-      checkListedCardNumber(line.listedCardNumber, where);
       const found = await ctx.runQuery(internal.testing.listedCardForOrder, {
         ownerId: userId,
         platform: "ebay",

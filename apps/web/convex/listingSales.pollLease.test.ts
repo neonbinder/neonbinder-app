@@ -72,6 +72,24 @@ describe("claimPoll / releasePoll", () => {
     expect((await lease(t)).expiresAt).toBeGreaterThan(Date.now() + POLL_LEASE_MS - 5_000);
   });
 
+  test("a lease that expires at exactly now is replaceable (the held test is strictly later than now)", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const t = convexTest(schema, modules);
+    await seed(t, { token: "edge", expiresAt: NOW });
+    expect(await claim(t, "b")).toBe(true);
+    expect((await lease(t)).token).toBe("b");
+  });
+
+  test("a lease one millisecond from running out is still held", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+    const t = convexTest(schema, modules);
+    await seed(t, { token: "held", expiresAt: NOW + 1 });
+    expect(await claim(t, "b")).toBe(false);
+    expect((await lease(t)).token).toBe("held");
+  });
+
   test("release frees it for the holder only", async () => {
     const t = convexTest(schema, modules);
     await seed(t);
