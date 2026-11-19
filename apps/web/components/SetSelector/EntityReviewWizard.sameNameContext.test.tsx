@@ -177,20 +177,21 @@ afterEach(() => {
 });
 
 describe("EntityReviewWizard — the same-name player pick step shows its card (NEO-602)", () => {
-  it("lists the card number and printed team, and each candidate's stints", () => {
+  it("lists the card number and printed team, and each candidate's stints", async () => {
     const row = castilloRow();
     currentRows = [row];
     contextAnswer = CASTILLO_CONTEXT;
     render(wizard());
 
     expect(screen.getByRole("heading", { name: /Which Luis Castillo is this/ })).toBeTruthy();
-    const cards = screen.getByRole("list", { name: "Cards that print this name" });
+    const cards = screen.getByRole("list", { name: "Printed on 1 card" });
     expect(cards.textContent).toContain("#62");
     expect(cards.textContent).toContain("Seattle Mariners");
-    const stints = screen.getByRole("list", { name: "Known teams for each player on file" });
-    expect(within(stints).getAllByText("printed team")).toHaveLength(2);
+    const stints = screen.getByRole("list", { name: "Teams we know for each player" });
+    expect(within(stints).getAllByText("(printed team)")).toHaveLength(2);
+    // The status is filled one tick after the step mounts.
     expect(
-      screen.getByText(
+      await screen.findByText(
         "The printed team doesn't settle it: 2 of these players have a stint with it.",
       ),
     ).toBeTruthy();
@@ -211,7 +212,7 @@ describe("EntityReviewWizard — the same-name player pick step shows its card (
       .map((b) => b.getAttribute("aria-label"));
     expect(new Set(names).size).toBe(2);
     names.forEach((n) => expect(n).toMatch(/b\. 199|born 199/));
-    const cards = screen.getByRole("list", { name: "Cards that print this name" });
+    const cards = screen.getByRole("list", { name: "Printed on 1 card" });
     expect(
       candidates.compareDocumentPosition(cards) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
@@ -226,6 +227,6 @@ describe("EntityReviewWizard — the same-name player pick step shows its card (
     render(wizard());
 
     expect(queryCalls.some((c) => c.ref === "entityReviewQueue.playerStepContext")).toBe(false);
-    expect(screen.queryByRole("list", { name: "Cards that print this name" })).toBeNull();
+    expect(screen.queryByRole("list", { name: "Printed on 1 card" })).toBeNull();
   });
 });

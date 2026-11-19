@@ -3210,6 +3210,19 @@ export const getBatch = query({
 const TEAM_STEP_MAX_STINTS_PER_PLAYER = 12;
 
 /**
+ * NEO-602 (security review) — the most stints `playerStepContext` READS per
+ * player. `players.teamYears` is the operator's own data, but the step reads a
+ * team row for each stint it scans, for up to `PLAYER_AMBIGUITY_SCAN_LIMIT`
+ * candidates, in a query the wizard subscribes to; a career with hundreds of
+ * stints must not turn one subscription into hundreds of reads. Oldest first,
+ * so a printed team in a stint past the bound is not seen: `hasPrintedTeam` is
+ * then false, which the step's sentences already say as "no stint on file with
+ * the printed team" (never a claim that the player did not play for it). A
+ * real career is well under this (a player has a dozen stints at the extreme).
+ */
+export const PLAYER_STEP_MAX_STINTS_SCANNED = 64;
+
+/**
  * NEO-602 — what a TEAM review step shows beside its question: the existing
  * team rows the printed name reached, and the cards that printed it with each
  * player's known stints.
@@ -3493,7 +3506,9 @@ export const playerStepContext = query({
       );
       let hasPrintedTeam = false;
       const listed = [];
-      for (const [index, stint] of stints.entries()) {
+      // Only the first `PLAYER_STEP_MAX_STINTS_SCANNED` are read (see there):
+      // the rest are counted in `moreStints` and never looked up.
+      for (const [index, stint] of stints.slice(0, PLAYER_STEP_MAX_STINTS_SCANNED).entries()) {
         const team = await teamOf(stint.teamId);
         const onPrintedTeam = onPrinted(team);
         if (onPrintedTeam) hasPrintedTeam = true;

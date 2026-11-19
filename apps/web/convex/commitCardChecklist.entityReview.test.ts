@@ -35,6 +35,7 @@ import schema from "./schema";
 import { Id } from "./_generated/dataModel";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "./features/cardAttention";
 import {
+  MAX_CARD_NUMBER_LENGTH,
   PRELUDE_NAMES_PER_PAGE,
   SKIPPED_NAME_LOOKUP_PAGE,
 } from "./selectorOptions";
@@ -3254,6 +3255,47 @@ describe("commitCardChecklist: pending-name bounds (NEO-246, NEO-251)", () => {
     expect(err.message).not.toContain(essay);
 
     expect(await readCards(t, variantTypeId)).toHaveLength(0);
+  });
+
+  test("an over-long card NUMBER is REFUSED by position, and the message does not echo it (NEO-602)", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { variantTypeId, sportId } = await seedVariantTypeUnderChromeSet(t);
+
+    // The number is stored on a same-name pick step's review row and named in
+    // the other bounds' messages, so it is held to its own cap.
+    const longNumber = "9".repeat(MAX_CARD_NUMBER_LENGTH + 1);
+
+    const err = await asAdmin
+      .action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: longNumber, players: ["Real Unknown"] })],
+        batchId: "batch-1",
+      })
+      .then(
+        () => {
+          throw new Error("expected the commit to refuse the over-long number");
+        },
+        (e: unknown) => e as Error,
+      );
+
+    expect(err.message).toContain(
+      `card at index 0 carries a card number of ${MAX_CARD_NUMBER_LENGTH + 1} characters; the limit is ${MAX_CARD_NUMBER_LENGTH}.`,
+    );
+    expect(err.message).not.toContain(longNumber);
+    expect(await readCards(t, variantTypeId)).toHaveLength(0);
+
+    // At the cap exactly, the number is accepted by the boundary: the refusal
+    // above is the length and nothing else.
+    await expect(
+      asAdmin.action(api.selectorOptions.commitCardChecklist, {
+        selectorOptionId: variantTypeId,
+        sportId,
+        cards: [makeCard({ cardNumber: "9".repeat(MAX_CARD_NUMBER_LENGTH), players: [] })],
+        batchId: "batch-2",
+      }),
+    ).resolves.not.toThrow();
   });
 
   test("the TEAM side is refused by its own, narrower cap", async () => {

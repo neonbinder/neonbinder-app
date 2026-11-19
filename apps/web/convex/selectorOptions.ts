@@ -4434,6 +4434,16 @@ const MAX_LABEL_LENGTH = 200;
 const MAX_CARDS_PER_COMMIT = 5000;
 
 /**
+ * NEO-602 (security review) — the longest card number a batch may carry. The
+ * number is a client-supplied string that is echoed into error messages
+ * (`card #...`) and stored on the same-name pick step's review row
+ * (`playerContext.cards[].number`), so it is bounded at the boundary like
+ * every name beside it. The longest real number is a handful of characters
+ * ("RP36", "CHR-123a", "BDC-172"); 32 is far above any of them.
+ */
+export const MAX_CARD_NUMBER_LENGTH = 32;
+
+/**
  * NEO-251 (security review) — the shape this bound needs to see.
  *
  * Deliberately structural rather than `previewCardValidator`'s type: the three
@@ -4491,6 +4501,13 @@ function assertCardBatchWithinLimits(
     );
   }
   cards.forEach((card, index) => {
+    // Bounded FIRST, and reported by position: an over-long number is the one
+    // value that must not be echoed through `where` below.
+    if (card.cardNumber !== undefined && card.cardNumber.length > MAX_CARD_NUMBER_LENGTH) {
+      throw new Error(
+        `${fnName}: card at index ${index} carries a card number of ${card.cardNumber.length} characters; the limit is ${MAX_CARD_NUMBER_LENGTH}.`,
+      );
+    }
     // The card NUMBER is NB's own value and safe to name; a card without one
     // is identified by position rather than by any marketplace string.
     const where = card.cardNumber

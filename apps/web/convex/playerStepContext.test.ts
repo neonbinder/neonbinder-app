@@ -20,12 +20,13 @@
 
 import { convexTest } from "convex-test";
 import { afterEach, describe, expect, test } from "vitest";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { cancelScheduled } from "../lib/testing/drain-scheduled";
+import { PLAYER_STEP_MAX_STINTS_SCANNED } from "./entityReviewQueue";
 
 const modules = (import.meta as unknown as {
   glob: (pattern: string) => Record<string, () => Promise<unknown>>;
@@ -252,6 +253,73 @@ describe("the gate: both Mariners rows were on the roster, so the printed team s
     expect(row.playerContext?.moreCards).toBe(0);
   });
 
+  test("a name the CHECKLIST supplies (its players, the card's own team) carries the card's number and printed team", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await castillos(t, s);
+
+    // The marketplace says "Somebody Else"; the publisher's checklist says
+    // Luis Castillo. Only the checklist side names him, so only the
+    // checklist-players branch of the gate can file his card.
+    const result = await gate(t, s, [
+      {
+        ...card(["Somebody Else"], 62),
+        checklistConflict: {
+          players: { marketplace: ["Somebody Else"], checklist: [NAME] },
+        },
+      },
+    ]);
+
+    expect(result.ambiguousPlayers).toEqual([NAME]);
+    const rows = await playerRows(t, result.batchId);
+    const row = rows.find((r) => r.name === NAME);
+    expect(row?.decision).toBeUndefined();
+    expect(row?.playerContext).toEqual({
+      cards: [{ number: "62", teams: [MARINERS] }],
+      moreCards: 0,
+    });
+    // The marketplace's name is not a same-name choice and carries none.
+    expect(rows.find((r) => r.name === "Somebody Else")?.playerContext).toBeUndefined();
+  });
+
+  test("when the checklist also disagrees on the team, its players sit on the CHECKLIST's team, not the marketplace's", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await castillos(t, s);
+
+    const result = await gate(t, s, [
+      {
+        ...card(["Somebody Else"], 62, [MARINERS]),
+        checklistConflict: {
+          players: { marketplace: ["Somebody Else"], checklist: [NAME] },
+          teams: { marketplace: [MARINERS], checklist: ["Detroit Tigers"] },
+        },
+      },
+    ]);
+
+    const row = (await playerRows(t, result.batchId)).find((r) => r.name === NAME);
+    expect(row?.playerContext?.cards).toEqual([{ number: "62", teams: ["Detroit Tigers"] }]);
+  });
+
+  test("a checklist that says 'No Team' files its players on a card with no team", async () => {
+    const t = newT();
+    const s = await setup(t);
+    await castillos(t, s);
+
+    const result = await gate(t, s, [
+      {
+        ...card(["Somebody Else"], 62, [MARINERS]),
+        checklistConflict: {
+          players: { marketplace: ["Somebody Else"], checklist: [NAME] },
+          teams: { marketplace: [MARINERS], checklist: [] },
+        },
+      },
+    ]);
+
+    const row = (await playerRows(t, result.batchId)).find((r) => r.name === NAME);
+    expect(row?.playerContext?.cards).toEqual([{ number: "62", teams: [] }]);
+  });
+
   test("a second fetch (the resume path) writes the context on the name it adds", async () => {
     const t = newT();
     const s = await setup(t);
@@ -389,6 +457,61 @@ describe("entityReviewQueue.playerStepContext", () => {
     expect(pitcher?.hasPrintedTeam).toBe(true);
   });
 
+  test("stints past the scan bound are counted but never read, so a printed team past it is not seen", async () => {
+    const t = newT();
+    const s = await setup(t);
+    const ids = await castillos(t, s);
+    // PLAYER_STEP_MAX_STINTS_SCANNED earlier stints, then the Mariners: the
+    // printed team is the one stint past the scan.
+    await t.run((ctx) =>
+      ctx.db.patch(ids.pitcher, {
+        teamYears: [
+          ...Array.from({ length: PLAYER_STEP_MAX_STINTS_SCANNED }, (_, i) => ({
+            teamId: s.reds,
+            fromYear: 1900 + i,
+            toYear: 1900 + i,
+          })),
+          { teamId: s.mariners, fromYear: 2022 },
+        ],
+      }),
+    );
+    const result = await gate(t, s, [card([NAME], 62)]);
+    const [row] = await playerRows(t, result.batchId);
+    const ctx = await t
+      .withIdentity(ADMIN)
+      .query(api.entityReviewQueue.playerStepContext, { reviewRowId: row._id });
+    const pitcher = ctx?.players.find((p) => p.playerId === ids.pitcher);
+    expect(pitcher?.stints).toHaveLength(12);
+    expect(pitcher?.stints.some((st) => st.onPrintedTeam)).toBe(false);
+    expect(pitcher?.moreStints).toBe(PLAYER_STEP_MAX_STINTS_SCANNED + 1 - 12);
+    // Unknown, reported as no stint on file: never a claim he did not play there.
+    expect(pitcher?.hasPrintedTeam).toBe(false);
+  });
+
+  test("a printed team in the LAST scanned stint is still seen", async () => {
+    const t = newT();
+    const s = await setup(t);
+    const ids = await castillos(t, s);
+    await t.run((ctx) =>
+      ctx.db.patch(ids.pitcher, {
+        teamYears: [
+          ...Array.from({ length: PLAYER_STEP_MAX_STINTS_SCANNED - 1 }, (_, i) => ({
+            teamId: s.reds,
+            fromYear: 1900 + i,
+            toYear: 1900 + i,
+          })),
+          { teamId: s.mariners, fromYear: 2022 },
+        ],
+      }),
+    );
+    const result = await gate(t, s, [card([NAME], 62)]);
+    const [row] = await playerRows(t, result.batchId);
+    const ctx = await t
+      .withIdentity(ADMIN)
+      .query(api.entityReviewQueue.playerStepContext, { reviewRowId: row._id });
+    expect(ctx?.players.find((p) => p.playerId === ids.pitcher)?.hasPrintedTeam).toBe(true);
+  });
+
   test("a team row, and a player row with no context, answer null", async () => {
     const t = newT();
     const s = await setup(t);
@@ -420,5 +543,81 @@ describe("entityReviewQueue.playerStepContext", () => {
         .withIdentity(OTHER_ADMIN)
         .query(api.entityReviewQueue.playerStepContext, { reviewRowId: row._id }),
     ).rejects.toThrow(/different review session/);
+  });
+});
+
+describe("startBatch: an auto-linked name that a Change turns back into a pick step (NEO-602)", () => {
+  test("carries the player context on the decided row, and the step query answers for it", async () => {
+    const t = newT();
+    const s = await setup(t);
+    const ids = await castillos(t, s);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId: s.insert,
+      createdByUserId: ADMIN.subject,
+      sportId: s.sportId,
+      playerNames: [],
+      teamNames: [],
+      // The set's history linked the pitcher; the second Mariners row is the
+      // rival, so the batch holds two candidates and a Change opens the pick.
+      autoLinks: [
+        {
+          kind: "player",
+          name: NAME,
+          playerId: ids.pitcher,
+          rowSportId: s.sportId,
+          origin: "setHistory",
+          candidatePlayerIds: [ids.pitcher, ids.second],
+        },
+      ],
+      playerContexts: [
+        { name: NAME, cards: [{ number: "62", teams: [MARINERS] }], moreCards: 0 },
+      ],
+    } as never);
+
+    const [row] = await playerRows(t, batchId);
+    // Decided by the fact, not asked.
+    expect(row.decision).toMatchObject({ action: "link", linkedPlayerId: ids.pitcher });
+    expect(row.enrichment?.existingCandidates).toHaveLength(2);
+    // The context landed on the inserted row...
+    expect(row.playerContext).toEqual({
+      cards: [{ number: "62", teams: [MARINERS] }],
+      moreCards: 0,
+    });
+    // ...so the step that a Change turns this row back into has its evidence.
+    const ctx = await t
+      .withIdentity(ADMIN)
+      .query(api.entityReviewQueue.playerStepContext, { reviewRowId: row._id });
+    expect(ctx?.cards).toEqual([{ number: "62", teams: [MARINERS] }]);
+    expect(ctx?.players.map((p) => p.playerId).sort()).toEqual([ids.pitcher, ids.second].sort());
+    expect(ctx?.players.every((p) => p.hasPrintedTeam)).toBe(true);
+  });
+
+  test("a context for another name lands on no row", async () => {
+    const t = newT();
+    const s = await setup(t);
+    const ids = await castillos(t, s);
+
+    const batchId = await t.mutation(internal.entityReviewQueue.startBatch, {
+      selectorOptionId: s.insert,
+      createdByUserId: ADMIN.subject,
+      sportId: s.sportId,
+      playerNames: [],
+      teamNames: [],
+      autoLinks: [
+        {
+          kind: "player",
+          name: NAME,
+          playerId: ids.pitcher,
+          rowSportId: s.sportId,
+          origin: "setHistory",
+          candidatePlayerIds: [ids.pitcher, ids.second],
+        },
+      ],
+      playerContexts: [{ name: "Somebody Else", cards: [{ number: "1", teams: [] }], moreCards: 0 }],
+    } as never);
+
+    const [row] = await playerRows(t, batchId);
+    expect(row.playerContext).toBeUndefined();
   });
 });

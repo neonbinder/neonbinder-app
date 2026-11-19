@@ -9,7 +9,7 @@
  * in `EntityReviewWizard.sameNameContext.test.tsx`.
  */
 
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -24,6 +24,8 @@ vi.mock("convex/react", () => ({
 }));
 
 import PlayerStepContext, {
+  PLAYER_STINTS_HEADING,
+  STATUS_ANNOUNCE_DELAY_MS,
   printedTeamLine,
   type PlayerStepCard,
   type PlayerStepPlayer,
@@ -79,6 +81,19 @@ describe("printedTeamLine", () => {
     ).toBe("None of these players has a stint on file with a printed team.");
   });
 
+  it("tells namesakes with no birth year apart by position, the pick step's own wording", () => {
+    const first = who("a", { hasPrintedTeam: false });
+    const middle = who("b", { hasPrintedTeam: true });
+    const last = who("c", { hasPrintedTeam: false });
+    expect(printedTeamLine([MARINERS], [first, middle, last])).toBe(
+      "Only Luis Castillo (option 2 of 3) has a stint on file with the printed team.",
+    );
+    // A birth year still wins over the position when we hold one.
+    expect(printedTeamLine([MARINERS], [first, who("b", { birthYear: 1995, hasPrintedTeam: true })])).toBe(
+      "Only Luis Castillo (b. 1995) has a stint on file with the printed team.",
+    );
+  });
+
   it("is silent when no card names a team", () => {
     expect(printedTeamLine([{ number: "62", teams: [] }], [pitcher, second])).toBe("");
     expect(printedTeamLine([], [pitcher])).toBe("");
@@ -111,6 +126,11 @@ describe("PlayerStepContext", () => {
   // A FRESH element per render: a rerender of the same element bails out and
   // never re-reads the module-state mock.
   const panel = () => <PlayerStepContext reviewRowId={reviewRowId} />;
+  /** The status is filled one tick after the answer lands (`STATUS_ANNOUNCE_DELAY_MS`). */
+  const statusText = async (text: string) =>
+    waitFor(() => expect(screen.getByRole("status").textContent).toBe(text), {
+      timeout: STATUS_ANNOUNCE_DELAY_MS * 10,
+    });
 
   beforeEach(() => {
     answer = undefined;
@@ -120,7 +140,7 @@ describe("PlayerStepContext", () => {
     answer = context();
     render(panel());
     expect(screen.getByText("Printed on 1 card")).toBeTruthy();
-    const cards = screen.getByRole("list", { name: "Cards that print this name" });
+    const cards = screen.getByRole("list", { name: "Printed on 1 card" });
     const card = within(cards).getByRole("listitem");
     expect(card.textContent).toContain("#62");
     expect(card.textContent).toContain("Seattle Mariners");
@@ -129,7 +149,7 @@ describe("PlayerStepContext", () => {
   it("says 'No team printed' for a card with none, and 'No number' for one without", () => {
     answer = context({ cards: [{ teams: [] }], moreCards: 0 });
     render(panel());
-    const card = within(screen.getByRole("list", { name: "Cards that print this name" })).getByRole(
+    const card = within(screen.getByRole("list", { name: "Printed on 1 card" })).getByRole(
       "listitem",
     );
     expect(card.textContent).toContain("No number");
@@ -146,16 +166,76 @@ describe("PlayerStepContext", () => {
   it("lists each candidate's stints with years and marks the printed team", () => {
     answer = context();
     render(panel());
-    const players = screen.getByRole("list", { name: "Known teams for each player on file" });
+    const players = screen.getByRole("list", { name: PLAYER_STINTS_HEADING });
     const [first, second, bare] = within(players)
       .getAllByRole("listitem")
       .filter((li) => li.parentElement === players);
     expect(first.textContent).toContain("Luis Castillo, b. 1992");
     expect(first.textContent).toContain("2017–22 Cincinnati Reds");
-    expect(first.textContent).toContain("2022–present Seattle Mariners printed team");
-    expect(first.textContent).not.toContain("2017–22 Cincinnati Reds printed team");
+    // A qualifier in parentheses, so it never runs into the team's name.
+    expect(first.textContent).toContain("2022–present Seattle Mariners (printed team)");
+    expect(first.textContent).not.toContain("2017–22 Cincinnati Reds (printed team)");
     expect(second.textContent).toContain("b. 1995");
     expect(bare.textContent).toContain("Nothing on file yet");
+  });
+
+  it("tells candidates with no birth year apart in the list by position, in the pick step's order", () => {
+    answer = context({
+      players: [
+        who("a", { stints: [] }),
+        who("b", { stints: [] }),
+        who("c", { birthYear: 1992, stints: [] }),
+      ],
+    });
+    render(panel());
+    const players = screen.getByRole("list", { name: PLAYER_STINTS_HEADING });
+    const [first, second, third] = within(players)
+      .getAllByRole("listitem")
+      .filter((li) => li.parentElement === players);
+    expect(first.textContent).toContain("Luis Castillo, option 1 of 3");
+    expect(second.textContent).toContain("Luis Castillo, option 2 of 3");
+    expect(third.textContent).toContain("Luis Castillo, b. 1992");
+    expect(third.textContent).not.toContain("option");
+  });
+
+  it("reads the same position in the status line as in the list entry", async () => {
+    answer = context({
+      cards: [MARINERS],
+      players: [
+        who("a", { stints: [] }),
+        who("b", { stints: [stint("Seattle Mariners", "2025–present", true)], hasPrintedTeam: true }),
+        who("c", { stints: [] }),
+      ],
+    });
+    render(panel());
+    await statusText("Only Luis Castillo (option 2 of 3) has a stint on file with the printed team.");
+    const players = screen.getByRole("list", { name: PLAYER_STINTS_HEADING });
+    const entries = within(players)
+      .getAllByRole("listitem")
+      .filter((li) => li.parentElement === players);
+    expect(entries[1].textContent).toContain("Luis Castillo, option 2 of 3");
+  });
+
+  it("marks the printed team as a parenthesised qualifier, never run into the name", () => {
+    answer = context();
+    render(panel());
+    const marked = screen.getAllByText("(printed team)");
+    expect(marked).toHaveLength(2);
+    // Separate text, so a reader pauses between the team and the qualifier.
+    expect(marked[0].previousSibling?.textContent).toBe(" ");
+  });
+
+  it("names each list by its visible lead-in (aria-labelledby), not by a separate label", () => {
+    answer = context();
+    render(panel());
+    const cards = screen.getByRole("list", { name: "Printed on 1 card" });
+    const players = screen.getByRole("list", { name: PLAYER_STINTS_HEADING });
+    for (const list of [cards, players]) {
+      expect(list.getAttribute("aria-label")).toBeNull();
+      const lead = document.getElementById(list.getAttribute("aria-labelledby") ?? "");
+      expect(lead?.tagName).toBe("P");
+      expect(lead?.textContent).toBeTruthy();
+    }
   });
 
   it("says 'years not on file' for an undated stint, and counts stints past the bound", () => {
@@ -176,12 +256,12 @@ describe("PlayerStepContext", () => {
   it("gives both lists an explicit list role", () => {
     answer = context();
     render(panel());
-    for (const name of ["Cards that print this name", "Known teams for each player on file"]) {
+    for (const name of ["Printed on 1 card", PLAYER_STINTS_HEADING]) {
       expect(screen.getByRole("list", { name }).getAttribute("role")).toBe("list");
     }
   });
 
-  it("keeps ONE polite status mounted, empty until the answer lands, then carrying the line", () => {
+  it("keeps ONE polite status mounted, empty until the answer lands, then carrying the line", async () => {
     const { rerender } = render(panel());
     const before = screen.getByRole("status");
     expect(before.textContent).toBe("");
@@ -192,9 +272,32 @@ describe("PlayerStepContext", () => {
 
     // The very element that was mounted empty: that is what is announced.
     expect(screen.getByRole("status")).toBe(before);
-    expect(before.textContent).toBe(
-      "The printed team doesn't settle it: 2 of these players have a stint with it.",
-    );
+    await statusText("The printed team doesn't settle it: 2 of these players have a stint with it.");
+    expect(screen.getByRole("status")).toBe(before);
+  });
+
+  it("mounts the status EMPTY even when the answer is already in hand, and fills it a tick later", async () => {
+    // A cached answer: the first render already has the data, as a revisited
+    // step does. A live region born holding its text may not be announced, so
+    // the text must land after the element exists.
+    answer = context();
+    render(panel());
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("");
+    await statusText("The printed team doesn't settle it: 2 of these players have a stint with it.");
+    expect(screen.getByRole("status")).toBe(status);
+  });
+
+  it("owns no space while empty, and a gap below only once it carries text", async () => {
+    answer = context();
+    render(panel());
+    const status = screen.getByRole("status");
+    expect(status.className).not.toContain("mb-3");
+    await statusText("The printed team doesn't settle it: 2 of these players have a stint with it.");
+    expect(status.className).toContain("mb-3");
+    // The stack below it is its own block, so an empty status adds no gap to it.
+    expect(status.nextElementSibling?.className).toContain("space-y-3");
+    expect(status.parentElement?.className ?? "").not.toContain("space-y-3");
   });
 
   it("renders nothing but the empty status for a row with no context", () => {
@@ -204,13 +307,14 @@ describe("PlayerStepContext", () => {
     expect(screen.queryByRole("list")).toBeNull();
   });
 
-  it("moves no focus when the answer lands", () => {
+  it("moves no focus when the answer lands, status text included", async () => {
     const { rerender } = render(<div>{panel()}</div>);
     const outside = document.createElement("button");
     document.body.appendChild(outside);
     outside.focus();
     answer = context();
     rerender(<div>{panel()}</div>);
+    await statusText("The printed team doesn't settle it: 2 of these players have a stint with it.");
     expect(document.activeElement).toBe(outside);
     outside.remove();
   });

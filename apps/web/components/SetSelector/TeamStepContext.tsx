@@ -32,6 +32,7 @@
  * and the era is what tells two rows apart.
  */
 
+import { useEffect, useId, useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
@@ -54,11 +55,9 @@ export function candidatesIntro(count: number): string {
 /** Shown only when the players' stints exist and still do not settle it. */
 export const PLAYERS_DONT_SETTLE_LINE = "Players on these cards don't settle which team.";
 
-/** The candidate list's accessible name. */
-export const CANDIDATES_LIST_LABEL = "Teams already filed under this name";
-
-/** The cards list's accessible name. */
-export const CARDS_LIST_LABEL = "Cards that print this team name";
+// The two lists are named by their visible lead-in (`aria-labelledby`): the
+// candidates by the intro line above them, the cards by "Printed on N cards".
+// The words on screen and the name a screen reader gives the list are one.
 
 /** A stint with no years on file. */
 export const YEARS_NOT_ON_FILE = "years not on file";
@@ -98,6 +97,30 @@ export function candidateLinkLabels(candidates: readonly TeamStepCandidate[]): s
   });
 }
 
+/**
+ * How long a status waits before it carries its sentence. The status is
+ * mounted empty and filled one tick later, so that a step whose answer is
+ * already cached (the wizard keys these components by row, so a revisited step
+ * mounts with data in hand) still changes the text of a live region that is
+ * already in the page, which is what a screen reader announces. A region that
+ * is born holding its text may not be. Shared with `PlayerStepContext`.
+ */
+export const STATUS_ANNOUNCE_DELAY_MS = 100;
+
+/**
+ * `text`, once it has been the answer for one tick; "" before that, and at
+ * once when it is empty. See `STATUS_ANNOUNCE_DELAY_MS`.
+ */
+export function useAnnouncedText(text: string): string {
+  const [settled, setSettled] = useState("");
+  useEffect(() => {
+    if (!text) return;
+    const timer = setTimeout(() => setSettled(text), STATUS_ANNOUNCE_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [text]);
+  return text && settled === text ? text : "";
+}
+
 /** "Printed on 1 card" / "Printed on 12 cards". */
 export function printedOnLabel(total: number): string {
   return `Printed on ${total} ${total === 1 ? "card" : "cards"}`;
@@ -130,13 +153,18 @@ export default function TeamStepContext({
   const total = cards.length + moreCards;
   const hasCandidates = candidates.length >= 2;
   const linkLabels = candidateLinkLabels(hasCandidates ? candidates : []);
+  const intro = useAnnouncedText(hasCandidates ? candidatesIntro(candidates.length) : "");
+  const introId = useId();
+  const cardsHeadingId = useId();
 
   return (
     <div className="space-y-3">
       {/* The panel wrapper is ONE element for the whole life of the step, so the
           intro inside it (the house `role="status"` live region, implied
-          polite) is already mounted, empty, when the query answers and its
-          text is announced. `contents` drops the wrapper's box until there are
+          polite) is already mounted, empty, when the query answers; its text
+          lands one tick later (`useAnnouncedText`), so it is announced even
+          from a cached answer. It is also the candidates list's
+          `aria-labelledby` target. `contents` drops the wrapper's box until there are
           candidates, so an empty region adds no gap. No focus moves: the
           wizard has already put focus on the step's heading. */}
       <div
@@ -146,8 +174,8 @@ export default function TeamStepContext({
             : "contents"
         }
       >
-        <p role="status" className="text-sm text-ink-2">
-          {hasCandidates ? candidatesIntro(candidates.length) : ""}
+        <p id={introId} role="status" className="text-sm text-ink-2">
+          {intro}
         </p>
         {hasCandidates && (
           <>
@@ -157,7 +185,7 @@ export default function TeamStepContext({
             {/* role="list": Safari drops list semantics under list-style:none. */}
             <ul
               role="list"
-              aria-label={CANDIDATES_LIST_LABEL}
+              aria-labelledby={introId}
               className="flex flex-col items-start gap-1.5"
             >
               {candidates.map((candidate, index) => (
@@ -187,8 +215,10 @@ export default function TeamStepContext({
 
       {cards.length > 0 && (
         <div className="space-y-1.5">
-          <p className="text-sm text-ink-2">{printedOnLabel(total)}</p>
-          <ul role="list" aria-label={CARDS_LIST_LABEL} className="space-y-2">
+          <p id={cardsHeadingId} className="text-sm text-ink-2">
+            {printedOnLabel(total)}
+          </p>
+          <ul role="list" aria-labelledby={cardsHeadingId} className="space-y-2">
             {cards.map((card, cardIndex) => (
               <li key={`${card.number ?? "none"}-${cardIndex}`} className="flex gap-3">
                 {/* A fixed column, so the players of every card line up; a

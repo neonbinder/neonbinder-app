@@ -71,13 +71,13 @@ async function syncAndExpectTheTeamAsked(
   await expect(wizard.getByRole("heading", { level: 3, name: /^New Team: / })).toHaveCount(0);
   await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
   // Both existing teams, each by name and era, newest first.
-  const candidates = wizard.getByRole("list", { name: "Teams already filed under this name" });
+  const candidates = wizard.getByRole("list", { name: /^We've got [0-9]+ teams by that name/ });
   const offered = candidates.getByRole("button");
   await expect(offered).toHaveCount(2);
   await expect(offered.nth(0)).toHaveAccessibleName(new RegExp(`^Link to ${escapeRe(newer)} . 2025.present`));
   await expect(offered.nth(1)).toHaveAccessibleName(new RegExp(`^Link to ${escapeRe(team)} . 1968.2024`));
   // The card that raised it and its player, with the stints we know.
-  const cards = wizard.getByRole("list", { name: "Cards that print this team name" });
+  const cards = wizard.getByRole("list", { name: /^Printed on [0-9]+ cards?$/ });
   await expect(cards).toContainText("#1");
   await expect(cards).toContainText(player);
   if (stint) await expect(cards).toContainText(stint);

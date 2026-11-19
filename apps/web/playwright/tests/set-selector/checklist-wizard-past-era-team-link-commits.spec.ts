@@ -102,7 +102,7 @@ test(
     await expect(step).toBeVisible({ timeout: 20_000 });
     await expect(wizard.getByRole("button", { name: /^Skip .* — not a team$/ })).toBeVisible();
     // The cards behind the question (#34 and #35 print the club) and their player.
-    const cards = wizard.getByRole("list", { name: "Cards that print this team name" });
+    const cards = wizard.getByRole("list", { name: /^Printed on [0-9]+ cards?$/ });
     await expect(cards).toContainText("#34");
     await expect(cards).toContainText("#35");
     await expect(cards).toContainText("Jimmie Foxx");
@@ -116,7 +116,7 @@ test(
     // Every era of the catalogue's rows of this exact name is offered by its
     // label, newest first - none covers 2025 - R2(c). Picked by LABEL, never by
     // position.
-    const choices = wizard.getByRole("list", { name: "Teams already filed under this name" });
+    const choices = wizard.getByRole("list", { name: /^We've got [0-9]+ teams by that name/ });
     const era = (years: RegExp) => choices.getByRole("button", { name: new RegExp(`^Link to ${CLUB} . ${years.source}`) });
     await expect(era(/1871.1875/)).toBeVisible();
     await expect(era(/1876.1876/)).toBeVisible();

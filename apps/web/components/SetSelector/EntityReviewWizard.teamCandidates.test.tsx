@@ -182,12 +182,13 @@ describe("EntityReviewWizard — a team name that reaches several rows (NEO-602)
     expect(screen.queryByRole("heading", { name: /^New Team/ })).toBeNull();
   });
 
-  it("offers each row as a link, newest era first, with its era and league in the name", () => {
+  it("offers each row as a link, newest era first, with its era and league in the name", async () => {
     currentRows = [orioleRow()];
     contextAnswer = ORIOLES_CONTEXT;
     render(wizard());
 
-    const list = screen.getByRole("list", { name: "Teams already filed under this name" });
+    // The intro names the list, and lands one tick after the step mounts.
+    const list = await screen.findByRole("list", { name: /^We've got [0-9]+ teams by that name/ });
     const names = within(list)
       .getAllByRole("button")
       .map((b) => b.textContent);
@@ -198,7 +199,7 @@ describe("EntityReviewWizard — a team name that reaches several rows (NEO-602)
     ]);
     // Distinct accessible names: nothing to disambiguate by position.
     expect(new Set(names).size).toBe(3);
-    expect(screen.getByText("We've got 3 teams by that name. Pick the one on these cards.")).toBeTruthy();
+    expect(await screen.findByText("We've got 3 teams by that name. Pick the one on these cards.")).toBeTruthy();
   });
 
   it("clicking a row records the same link every team link path records, 'Remember …' ticked", async () => {
@@ -244,7 +245,7 @@ describe("EntityReviewWizard — a team name that reaches several rows (NEO-602)
     );
   });
 
-  it("keeps the search and the New Team form below as the fallback", () => {
+  it("keeps the search and the New Team form below as the fallback", async () => {
     currentRows = [orioleRow()];
     contextAnswer = ORIOLES_CONTEXT;
     render(wizard());
@@ -252,7 +253,8 @@ describe("EntityReviewWizard — a team name that reaches several rows (NEO-602)
     expect(screen.getByRole("combobox", { name: "Search all teams" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Add as New Team" })).toBeTruthy();
     // The rows come first in the document, ahead of the search.
-    const list = screen.getByRole("list", { name: "Teams already filed under this name" });
+    // The intro names the list, and lands one tick after the step mounts.
+    const list = await screen.findByRole("list", { name: /^We've got [0-9]+ teams by that name/ });
     const search = screen.getByRole("combobox", { name: "Search all teams" });
     expect(
       list.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -344,7 +346,7 @@ describe("EntityReviewWizard — the cards behind a team step (NEO-602)", () => 
     contextAnswer = ORIOLES_CONTEXT;
     render(wizard());
 
-    const cards = screen.getByRole("list", { name: "Cards that print this team name" });
+    const cards = screen.getByRole("list", { name: /^Printed on [0-9]+ cards?$/ });
     expect(within(cards).getByText("#7")).toBeTruthy();
     expect(within(cards).getByText("Recent Oriole")).toBeTruthy();
     expect(within(cards).getByText("2020–23")).toBeTruthy();
@@ -376,7 +378,7 @@ describe("EntityReviewWizard — the cards behind a team step (NEO-602)", () => 
     render(wizard());
 
     expect(screen.getByRole("heading", { name: "New Team: Nowhere Nobodies" })).toBeTruthy();
-    expect(screen.queryByRole("list", { name: "Teams already filed under this name" })).toBeNull();
+    expect(screen.queryByRole("list", { name: /^We've got [0-9]+ teams by that name/ })).toBeNull();
     expect(screen.getByText("Printed on 1 card")).toBeTruthy();
     expect(screen.getByText("Somebody New")).toBeTruthy();
     expect(screen.queryByText("+0 more cards")).toBeNull();
@@ -388,7 +390,7 @@ describe("EntityReviewWizard — the cards behind a team step (NEO-602)", () => 
     render(wizard());
 
     expect(screen.getByRole("heading", { name: "New Team: Plain FC" })).toBeTruthy();
-    expect(screen.queryByRole("list", { name: "Cards that print this team name" })).toBeNull();
+    expect(screen.queryByRole("list", { name: /^Printed on [0-9]+ cards?$/ })).toBeNull();
   });
 
   it("asks the server only for a team step", () => {
