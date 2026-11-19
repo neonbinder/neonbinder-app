@@ -15696,6 +15696,12 @@ interface ReconciledCard {
   teamLookup?: "checklist";
   /** NEO-591 — the checklist's Prospect claim (born as the Prospect Card attribute). */
   isProspect?: boolean;
+  /**
+   * NEO-591 — a checklist-only Prospect row's team cell as printed, set only
+   * when it differs from `teams` read as one Prospect claim ("Cincinnati Reds
+   * / Prospect (Frisco)"). Display only.
+   */
+  teamCell?: string;
   /** NEO-335 — the "Listed as:" hint. */
   rawTeamName?: string;
 }
@@ -15826,8 +15832,27 @@ export function checklistOnlyCard(
       ? { teams: applied.teams, teamLookup: "checklist" as const }
       : {}),
     ...(applied.isProspect ? { isProspect: true } : {}),
+    ...printedTeamCell(row, applied.teams ?? [], applied.isProspect === true),
     platformData: {},
   };
+}
+
+/**
+ * NEO-591 — the row's team cell as printed, as `{ teamCell }`, for a MIXED
+ * Prospect row ("Cincinnati Reds / Prospect (Frisco)": some teams inside the
+ * parens, some not) whose resolved `teams` would read as one Prospect claim.
+ * Nothing for any other row, which reads from its `teams` as it always did.
+ */
+function printedTeamCell(
+  row: PublishedChecklistStoredRow,
+  teams: readonly string[],
+  isProspect: boolean,
+): { teamCell?: string } {
+  if (!isProspect || row.prospectClaimedTeams === undefined) return {};
+  const printed = checklistClaimText(row);
+  return printed && printed !== checklistClaimText({ teams, prospect: true })
+    ? { teamCell: printed }
+    : {};
 }
 
 /**
@@ -17946,6 +17971,7 @@ export const fetchCardChecklist = action({
         isRelic: card.isRelic,
         // NEO-591 — the streamed path is the only path.
         ...(card.isProspect ? { isProspect: true } : {}),
+        ...(card.teamCell ? { teamCell: card.teamCell } : {}),
         ...(card.rawTeamName ? { rawTeamName: card.rawTeamName } : {}),
         printRun: card.printRun,
         autographType: card.autographType,

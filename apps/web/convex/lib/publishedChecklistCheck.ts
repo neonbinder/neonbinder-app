@@ -15,6 +15,7 @@ import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { rowHasNoNumber } from "../../lib/checklists/match-published-checklist";
 import { isNoClaimTeamText, isNoTeamText } from "../../lib/checklists/no-team";
 import { readProspectCell } from "../../lib/checklists/prospect";
+import { mixedProspectClaim } from "../../lib/checklists/prospect-team-text";
 import { MAX_VARIATION_NAME } from "../../lib/checklists/parse-published-checklist";
 import { normalizeEntityName } from "../../lib/entities/normalize-name";
 import { MAX_CARD_PLAYERS, MAX_CARD_TEAMS } from "../features/cardAttention";
@@ -50,6 +51,10 @@ export const publishedChecklistRowValidator = v.object({
   // below also reads a prospect cell from a lone team string, so a row sent
   // either way reads the same.
   prospect: v.optional(v.boolean()),
+  // NEO-591 — which of `teams` sat inside the Prospect parens (display only; see
+  // `publishedChecklistStoredRowValidator`). The re-check keeps it only on a
+  // Prospect row, only as a strict subset of `teams`, and within the team caps.
+  prospectClaimedTeams: v.optional(v.array(v.string())),
   // NEO-591 (variations) — the checklist's note for a variation row ("photo
   // variation"). Control characters are stripped and a name over
   // `MAX_VARIATION_NAME` is refused by the re-check below.
@@ -105,7 +110,9 @@ const PUBLISHED_CHECKLIST_NUMBER_CHARS = /^[#A-Za-z0-9. -]*$/;
  * printed team: it joins `teams` after the others, deduped, within a card's
  * team cap. A bare Prospect (no X, no other team) is a No Team row
  * (`noTeam: true`); a No Team row that names an X contradicts itself and
- * refuses the whole checklist.
+ * refuses the whole checklist. `prospectClaimedTeams` (display only) is kept
+ * only on a Prospect row, only when some but not all of `teams` were inside
+ * the parens, and never names a team the row does not (`mixedProspectClaim`).
  */
 export function checkPublishedChecklist(
   published: PublishedChecklist | undefined,
@@ -201,6 +208,16 @@ export function checkPublishedChecklist(
         `${where} names ${teams.length} teams; the limit is ${MAX_CARD_TEAMS}.`,
       );
     }
+    // Display only: the teams inside the Prospect parens, when only some were.
+    // The X of each prospect cell sent as a string, plus the list the client
+    // sent (held to the same caps as teams), narrowed to `teams` by
+    // `mixedProspectClaim`; a row that is not a Prospect row keeps none.
+    const sentClaimed = clean(row.prospectClaimedTeams ?? [], MAX_CARD_TEAMS, "prospect team");
+    // A row that says nothing about it (the client sent no list and no cell
+    // string was a prospect cell) keeps none: every team was inside.
+    const claimKnown = row.prospectClaimedTeams !== undefined || prospectCells.some((cell) => cell !== null);
+    const prospectClaimedTeams =
+      prospect && claimKnown ? mixedProspectClaim(teams, [...claimedX, ...sentClaimed]) : undefined;
     // A bare "Prospect" is the No Team claim, unless the row names a team.
     const bareProspect = prospect && teams.length === 0;
     const noTeam = row.noTeam === true || plainTeams.length < named.length || bareProspect;
@@ -214,6 +231,7 @@ export function checkPublishedChecklist(
       ...(rowHasNoNumber({ number, noNumber: row.noNumber }) ? { noNumber: true } : {}),
       ...(noTeam ? { noTeam: true } : {}),
       ...(prospect ? { prospect: true } : {}),
+      ...(prospectClaimedTeams ? { prospectClaimedTeams } : {}),
       ...(variationName ? { variationName } : {}),
     };
   });

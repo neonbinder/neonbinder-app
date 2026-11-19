@@ -71,6 +71,8 @@ function rowBytes(row: ChecklistSectionRow): number {
     noTeam: true,
     // NEO-591: the server stores a prospect claim beside the rest.
     ...(row.prospect ? { prospect: true as const } : {}),
+    // Display-only: which teams sat inside the Prospect parens, stored too.
+    ...(row.prospectClaimedTeams ? { prospectClaimedTeams: row.prospectClaimedTeams } : {}),
     // NEO-591 (variations): the checklist's note for a variation row is stored
     // too, so it counts toward the call's byte limit.
     ...(row.variationName ? { variationName: row.variationName } : {}),

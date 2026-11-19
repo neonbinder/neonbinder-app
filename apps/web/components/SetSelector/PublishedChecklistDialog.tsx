@@ -191,6 +191,8 @@ export function checklistRowLine(row: {
   noTeam?: true;
   /** NEO-591 — the row is a Prospect row (a bare one also sets `noTeam`). */
   prospect?: boolean;
+  /** The teams inside the Prospect parens, when only some were (`prospect-team-text.ts`). */
+  prospectClaimedTeams?: readonly string[];
   /** The row's team cell as printed, when the server sent one. */
   claim?: string;
 }): string {
@@ -209,6 +211,7 @@ export function checklistTeamCell(row: {
   teams: readonly string[];
   noTeam?: boolean;
   prospect?: boolean;
+  prospectClaimedTeams?: readonly string[];
   claim?: string;
 }): string {
   if (row.claim) return row.claim;

@@ -45,6 +45,7 @@ export function committable<C extends PairingCard>(card: C): C {
   if (
     card.checklistLink === undefined &&
     card.checklistRowId === undefined &&
+    card.teamCell === undefined &&
     card.sourceNumbers === undefined &&
     card.preKept === undefined
   ) {
@@ -53,6 +54,8 @@ export function committable<C extends PairingCard>(card: C): C {
   const out: C = { ...card };
   delete out.checklistLink;
   delete out.checklistRowId;
+  // NEO-591: a checklist-only row's printed team cell is for its row line only.
+  delete out.teamCell;
   // NEO-591: the numbers each source printed are for the dialog's note only;
   // the commit's validators refuse a field they do not know and save the one
   // number the card carries.
@@ -458,6 +461,8 @@ export function pairedRowCard(row: ServerPairedRow, rowId: string): PairingCard 
     ...(row.players.length > 0 ? { players: [...row.players] } : {}),
     ...(claimsTeam ? { teams: [...row.teams], teamLookup: "checklist" as const } : {}),
     ...(row.prospect ? { isProspect: true } : {}),
+    // The row line keeps reading as the checklist printed it after an Unlink.
+    ...(row.prospect && row.claim ? { teamCell: row.claim } : {}),
     platformData: {},
     checklistRowId: rowId,
   };

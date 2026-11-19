@@ -538,8 +538,8 @@ describe("PublishedChecklistDialog — No Team (NEO-489)", () => {
       within(rows.find((r) => within(r).queryByText(n))!).getAllByRole("cell")[2];
     expect(cellOf("Cord Rager").textContent).toBe("Prospect (Oklahoma)");
     expect(cellOf("Pat Smith").textContent).toBe("Prospect");
-    // X is one of the row's teams, so a mixed row reads as one prospect form.
-    expect(cellOf("Lee Jones").textContent).toBe("Prospect (Cincinnati Reds / Frisco)");
+    // Only X sat inside the parens, so the plain team reads outside them, as printed.
+    expect(cellOf("Lee Jones").textContent).toBe("Cincinnati Reds / Prospect (Frisco)");
     // A claim, so it reads at a team's strength, not as the muted lookup.
     expect(cellOf("Cord Rager").querySelector(".text-ink-3")).toBeNull();
   });

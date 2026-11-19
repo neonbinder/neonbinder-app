@@ -153,6 +153,13 @@ export type PairingCard = {
    * about the card; its X is a team like any other. Rides through the dialog.
    */
   isProspect?: boolean;
+  /**
+   * NEO-591 — a checklist-only Prospect row's team cell as printed ("Cincinnati
+   * Reds / Prospect (Frisco)"), present only when `teams` read as one Prospect
+   * claim would say otherwise. Display only: the row line prints it, and the
+   * commit never sees it (`committable` takes it off).
+   */
+  teamCell?: string;
   printRun?: number;
   autographType?: string;
   cardVariation?: string;
@@ -1354,6 +1361,7 @@ export function checklistRowOf(card: PairingCard): ChecklistLinkRow {
     // NEO-591: the Prospect claim travels with the row, so an operator link
     // sends it to the server and the claim is not lost.
     ...(card.isProspect ? { prospect: true as const } : {}),
+    ...(card.teamCell ? { claim: card.teamCell } : {}),
   };
 }
 

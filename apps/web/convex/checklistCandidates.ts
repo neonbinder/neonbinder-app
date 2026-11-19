@@ -158,6 +158,8 @@ const candidateInputValidator = v.object({
   isRelic: v.optional(v.boolean()),
   // NEO-591 — the checklist's Prospect claim (see the schema note).
   isProspect: v.optional(v.boolean()),
+  // NEO-591 — the row's team cell as printed, display only (see the schema note).
+  teamCell: v.optional(v.string()),
   rawTeamName: v.optional(v.string()),
   printRun: v.optional(v.number()),
   autographType: v.optional(v.string()),
@@ -1247,6 +1249,7 @@ export const getReadyCandidates = query({
         isRelic: v.optional(v.boolean()),
         // NEO-591 — see the schema note.
         isProspect: v.optional(v.boolean()),
+        teamCell: v.optional(v.string()),
         printRun: v.optional(v.number()),
         autographType: v.optional(v.string()),
         cardVariation: v.optional(v.string()),
@@ -1311,6 +1314,7 @@ export const getReadyCandidates = query({
         isRookie: r.isRookie,
         isRelic: r.isRelic,
         isProspect: r.isProspect,
+        teamCell: r.teamCell,
         printRun: r.printRun,
         autographType: r.autographType,
         cardVariation: r.cardVariation,

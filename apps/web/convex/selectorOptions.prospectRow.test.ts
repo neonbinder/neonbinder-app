@@ -75,3 +75,27 @@ describe("checklistPairedRow — Prospect", () => {
     expect(paired.claim).toBeUndefined();
   });
 });
+
+describe("a mixed Prospect row reads as printed", () => {
+  const mixed = row({
+    prospect: true,
+    teams: ["Cincinnati Reds", "Frisco"],
+    prospectClaimedTeams: ["Frisco"],
+  });
+  const resolve = (t: string): string[] | null => (t === "Cincinnati Reds" ? ["Cincinnati Reds"] : null);
+
+  test("the paired row's printed claim keeps the plain team outside the parens", () => {
+    expect(checklistPairedRow(mixed, resolve).claim).toBe("Cincinnati Reds / Prospect (Frisco)");
+  });
+
+  test("a checklist-only card carries the printed cell for Match Cards", () => {
+    const card = checklistOnlyCard(mixed, resolve);
+    expect(card).toMatchObject({ teams: ["Cincinnati Reds", "Frisco"], isProspect: true });
+    expect(card.teamCell).toBe("Cincinnati Reds / Prospect (Frisco)");
+  });
+
+  test("an all-prospect row and a row stored before the field carry no printed cell", () => {
+    expect(checklistOnlyCard(row({ prospect: true, teams: ["Cincinnati Reds", "Frisco"] }), resolve).teamCell).toBeUndefined();
+    expect(checklistOnlyCard(row({ prospect: true, teams: ["Oklahoma"] }), () => null, sooners).teamCell).toBeUndefined();
+  });
+});

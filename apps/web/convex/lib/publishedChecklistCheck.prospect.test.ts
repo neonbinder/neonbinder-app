@@ -19,6 +19,7 @@ type Sent = {
   teams?: string[];
   noTeam?: boolean;
   prospect?: boolean;
+  prospectClaimedTeams?: string[];
 };
 const one = (sent: Sent) => ({ number: "1", players: ["Cord Rager"], teams: [] as string[], ...sent });
 const checked = (sent: Sent) => checkPublishedChecklist({ rows: [one(sent)] })!.rows[0];
@@ -94,7 +95,9 @@ describe("checkPublishedChecklist — Prospect", () => {
   test("takes the first bracket as X and drops the notes after it, as the parser does", () => {
     for (const cell of ["Prospect (Oklahoma) (RC)", "Prospect (Oklahoma) (Future Stars)", "Prospect (Oklahoma) [SP] (x)"]) {
       expect(checked({ teams: [cell] })).toEqual(checked({ prospect: true, teams: ["Oklahoma"] }));
-      expect(checked({ teams: ["Mets", cell] })).toEqual(checked({ teams: ["Mets", "Oklahoma"], prospect: true }));
+      expect(checked({ teams: ["Mets", cell] })).toEqual(
+        checked({ teams: ["Mets", "Oklahoma"], prospect: true, prospectClaimedTeams: ["Oklahoma"] }),
+      );
     }
   });
 
@@ -163,5 +166,66 @@ describe("checkPublishedChecklist — Prospect contradictions and caps", () => {
         { label: "section “Autos”" },
       ),
     ).toThrow("Row 1 of section “Autos” says No Team and names a team.");
+  });
+});
+
+describe("checkPublishedChecklist — prospectClaimedTeams (display only)", () => {
+  test("keeps the parser's list on a mixed row, as the row spells the teams", () => {
+    const parsed = parsePublishedChecklist(
+      'Card #,Player,Team\n1,Cord Rager,"Cincinnati Reds / Prospect (Frisco)"\n',
+    ).rows[0];
+    const { subset: _subset, ...sent } = parsed;
+    expect(sent.prospectClaimedTeams).toEqual(["Frisco"]);
+    expect(checked(sent)).toEqual({
+      number: "1",
+      players: ["Cord Rager"],
+      teams: ["Cincinnati Reds", "Frisco"],
+      prospect: true,
+      prospectClaimedTeams: ["Frisco"],
+    });
+  });
+
+  test("reads the same list from a raw cell sent as strings", () => {
+    expect(checked({ teams: ["Cincinnati Reds", "Prospect (Frisco)"] })).toEqual(
+      checked({ prospect: true, teams: ["Cincinnati Reds", "Frisco"], prospectClaimedTeams: ["Frisco"] }),
+    );
+  });
+
+  test("a Prospect beside a plain team keeps an empty list", () => {
+    expect(checked({ teams: ["Cincinnati Reds", "Prospect"] })).toMatchObject({
+      teams: ["Cincinnati Reds"],
+      prospect: true,
+      prospectClaimedTeams: [],
+    });
+  });
+
+  test("an all-prospect row stores no list, whatever was sent", () => {
+    expect(checked({ prospect: true, teams: ["Frisco", "Dallas Baptist"], prospectClaimedTeams: ["Frisco", "Dallas Baptist"] })).not.toHaveProperty(
+      "prospectClaimedTeams",
+    );
+  });
+
+  test("a row that is not a prospect drops the list", () => {
+    expect(checked({ teams: ["Reds", "Frisco"], prospectClaimedTeams: ["Frisco"] })).not.toHaveProperty(
+      "prospectClaimedTeams",
+    );
+  });
+
+  test("never names a team the row does not: an unknown text is dropped", () => {
+    expect(checked({ prospect: true, teams: ["Reds", "Frisco"], prospectClaimedTeams: ["Frisco", "Mars"] }).prospectClaimedTeams).toEqual([
+      "Frisco",
+    ]);
+  });
+
+  test("is held to the team cap and the name length before it is read", () => {
+    const many = Array.from({ length: MAX_CARD_TEAMS + 1 }, (_, i) => `Team ${i}`);
+    expect(() =>
+      checkPublishedChecklist({ rows: [one({ prospect: true, teams: ["Reds"], prospectClaimedTeams: many })] }),
+    ).toThrow(`Row 1 of the official checklist names ${MAX_CARD_TEAMS + 1} prospect teams; the limit is ${MAX_CARD_TEAMS}.`);
+    expect(() =>
+      checkPublishedChecklist({
+        rows: [one({ prospect: true, teams: ["Reds"], prospectClaimedTeams: ["x".repeat(MAX_PLAYER_NAME_LENGTH + 1)] })],
+      }),
+    ).toThrow(new RegExp(`over ${MAX_PLAYER_NAME_LENGTH} characters`));
   });
 });

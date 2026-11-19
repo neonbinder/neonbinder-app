@@ -476,6 +476,23 @@ describe("NEO-496 — undoing the server's checklist pair", () => {
     expect(pairedRowOf(pairedRow)).not.toHaveProperty("claim");
   });
 
+  test("NEO-591: an Unlink keeps a mixed Prospect row's printed cell for its row line, and the commit never sees it", () => {
+    const card = pairedRowCard(
+      {
+        ...pairedRow,
+        teams: ["Cincinnati Reds", "Frisco"],
+        prospect: true,
+        claim: "Cincinnati Reds / Prospect (Frisco)",
+      },
+      "x",
+    );
+    expect(card.teamCell).toBe("Cincinnati Reds / Prospect (Frisco)");
+    expect(committable(card)).not.toHaveProperty("teamCell");
+    expect(pairedRowCard({ ...pairedRow, teams: ["Dallas Baptist"], prospect: true }, "x")).not.toHaveProperty(
+      "teamCell",
+    );
+  });
+
   test("a No Team row claims no team; a row naming no team claims nothing", () => {
     const noTeam = pairedRowCard({ ...pairedRow, teams: [], noTeam: true }, "x");
     expect(noTeam.teams).toEqual([]);

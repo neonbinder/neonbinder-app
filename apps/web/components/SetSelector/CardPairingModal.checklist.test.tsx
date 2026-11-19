@@ -33,6 +33,7 @@ import {
 import CardPairingModal, {
   CHECKLIST_COLUMN_SUBTITLE,
   CHECKLIST_LINKS_FAILED,
+  checklistRowOf,
   type PairingCard,
 } from "./CardPairingModal";
 import type {
@@ -1310,6 +1311,31 @@ describe("checklistRowLine (NEO-490)", () => {
     expect(
       checklistRowLine({ number: "4", players: ["Cord Rager"], teams: ["Oklahoma Sooners"], prospect: true, claim: "Prospect (Oklahoma)" }),
     ).toBe("#4 Cord Rager · Prospect (Oklahoma)");
+  });
+
+  test("a mixed Prospect row keeps its plain team outside the parens, from the teams or from the printed cell (NEO-591)", () => {
+    expect(
+      checklistRowLine({
+        number: "4",
+        players: ["Cord Rager"],
+        teams: ["Cincinnati Reds", "Frisco"],
+        prospect: true,
+        prospectClaimedTeams: ["Frisco"],
+      }),
+    ).toBe("#4 Cord Rager · Cincinnati Reds / Prospect (Frisco)");
+    // A checklist-only card carries the cell as printed; the row prints that.
+    expect(
+      checklistRowOf({
+        cardNumber: "4",
+        cardName: "Cord Rager",
+        players: ["Cord Rager"],
+        teams: ["Cincinnati Reds", "Frisco RoughRiders"],
+        teamLookup: "checklist",
+        isProspect: true,
+        teamCell: "Cincinnati Reds / Prospect (Frisco)",
+        platformData: {},
+      }),
+    ).toMatchObject({ prospect: true, claim: "Cincinnati Reds / Prospect (Frisco)" });
   });
 
   test("without the noNumber flag a number is a number, even one spelled NNO", () => {

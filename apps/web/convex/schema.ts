@@ -1304,6 +1304,15 @@ export const publishedChecklistStoredRowValidator = v.object({
   prospect: v.optional(v.boolean()),
   /** DEPRECATED (NEO-591): never written; see the note above. */
   prospectTeams: v.optional(v.array(v.string())),
+  // NEO-591 — which of `teams` sat INSIDE the Prospect parens when only some
+  // did ("Cincinnati Reds / Prospect (Frisco)": ["Frisco"]; `[]` for a
+  // "Prospect" beside plain teams). Display only, so the row reads as printed:
+  // `teams` and `prospect` keep their meaning and nothing reads this back as
+  // data. Set by `checkPublishedChecklist` only for such a mixed row, always a
+  // subset of `teams` (so at most a card's team cap, each within the name cap);
+  // a row without it (an all-prospect cell, or stored before the field) reads
+  // every team as inside. Not the DEPRECATED `prospectTeams` above.
+  prospectClaimedTeams: v.optional(v.array(v.string())),
   // NEO-591 (variations) — the checklist's own note for a variation row
   // ("photo variation"), at most `MAX_VARIATION_NAME` characters with no
   // control characters (`checkPublishedChecklist`). Becomes the variation
@@ -3924,6 +3933,11 @@ export default defineSchema({
     // "Prospect (X)": the card is born with the Prospect Card attribute
     // (`features.isProspect`). Follows `isRookie`'s route to NEW cards only.
     isProspect: v.optional(v.boolean()),
+    // NEO-591 — a checklist-only row's team cell AS PRINTED ("Cincinnati Reds /
+    // Prospect (Frisco)"), for display only: Match Cards prints it on the row.
+    // Present only when the printed cell differs from `teams` read as one
+    // Prospect claim (a mixed Prospect row); nothing reads it back as data.
+    teamCell: v.optional(v.string()),
     // DEPRECATED (NEO-591): an earlier build held the X of a "Prospect (X)"
     // cell here, apart from `teams`. Nothing writes or reads either field now
     // (the X is one of `teams`); kept optional so a stored candidate row still

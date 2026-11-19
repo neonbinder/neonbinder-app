@@ -115,17 +115,29 @@ describe("Prospect in the line format (number player - team)", () => {
 
   it("reads Mets, Prospect (Oklahoma) (RC) as the team and the claim", () => {
     const [row] = parse("15 Mike Trout - Mets, Prospect (Oklahoma) (RC)").rows;
-    expect(row).toEqual({ number: "15", players: ["Mike Trout"], teams: ["Mets", "Oklahoma"], prospect: true });
+    expect(row).toEqual({ number: "15", players: ["Mike Trout"], teams: ["Mets", "Oklahoma"], prospect: true, prospectClaimedTeams: ["Oklahoma"] });
   });
 
   it("reads a Prospect (X) beside another team in the team part: both are teams, and the claim", () => {
     const [row] = parse("10 Mike Trout - Mets, Prospect (Oklahoma)").rows;
-    expect(row).toEqual({ number: "10", players: ["Mike Trout"], teams: ["Mets", "Oklahoma"], prospect: true });
+    expect(row).toEqual({
+      number: "10",
+      players: ["Mike Trout"],
+      teams: ["Mets", "Oklahoma"],
+      prospect: true,
+      prospectClaimedTeams: ["Oklahoma"],
+    });
   });
 
   it("reads Mets / Prospect (bare) beside a team as a prospect without No Team", () => {
     const [row] = parse("11 Mike Trout - Mets / Prospect").rows;
-    expect(row).toEqual({ number: "11", players: ["Mike Trout"], teams: ["Mets"], prospect: true });
+    expect(row).toEqual({
+      number: "11",
+      players: ["Mike Trout"],
+      teams: ["Mets"],
+      prospect: true,
+      prospectClaimedTeams: [],
+    });
   });
 
   it("reads two Prospect segments as one prospect with both X as teams, never as 'Prospect , Prospect'", () => {
@@ -197,7 +209,13 @@ describe("Prospect in a delimited file", () => {
 
   it("reads Mets / Prospect as a team and a bare prospect, with no No Team", () => {
     const out = parsePublishedChecklist('Card #,Player,Team\n1,Mike Trout,"Mets / Prospect"\n', {});
-    expect(out.rows[0]).toEqual({ number: "1", players: ["Mike Trout"], teams: ["Mets"], prospect: true });
+    expect(out.rows[0]).toEqual({
+      number: "1",
+      players: ["Mike Trout"],
+      teams: ["Mets"],
+      prospect: true,
+      prospectClaimedTeams: [],
+    });
   });
 
   it("reads two Prospect cells across two team columns as one prospect, no 'Prospect' team", () => {
