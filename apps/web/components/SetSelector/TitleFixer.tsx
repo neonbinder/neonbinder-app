@@ -159,6 +159,9 @@ export default function TitleFixer({ row, items, onSaved }: AttentionFixerProps)
       await updateCard({
         id: row._id,
         listingTitle: title.trim(),
+        // Saving here is the operator's answer, whatever the title: the card
+        // leaves Tidy Up even when a Regenerated title still carries a cut.
+        titleReviewed: true,
         ...(fixesVariation ? { cardVariation: variation.trim() } : {}),
       });
       onSaved();

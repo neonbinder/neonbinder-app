@@ -246,6 +246,28 @@ describe("previewListingTitle (NEO-101)", () => {
       expect(await flagOf(t, cardId)).toBeNull();
     });
 
+    test("the Tidy Up walker's save (titleReviewed) clears the flag on a generated title still carrying a cut", async () => {
+      const { t, asAdmin, cardId } = await seedTidyUpCard();
+      const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
+      expect(preview.tidyUp).toBe(true);
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: preview.title,
+        titleReviewed: true,
+      });
+      expect(await flagOf(t, cardId)).toBeNull();
+    });
+
+    test("the walker's save of a title already stored clears the flag too", async () => {
+      const { t, asAdmin, cardId } = await seedTidyUpCard();
+      await asAdmin.mutation(api.selectorOptions.updateCard, {
+        id: cardId,
+        listingTitle: "Something an earlier build wrote",
+        titleReviewed: true,
+      });
+      expect(await flagOf(t, cardId)).toBeNull();
+    });
+
     test("a title the operator typed clears the flag", async () => {
       const { t, asAdmin, cardId } = await seedTidyUpCard();
       await asAdmin.mutation(api.selectorOptions.updateCard, {

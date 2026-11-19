@@ -200,6 +200,7 @@ describe("TitleFixer (NEO-101)", () => {
       expect(mockUpdateCard).toHaveBeenCalledWith({
         id: CARD_ID,
         listingTitle: "2024 Topps Chrome #300b",
+        titleReviewed: true,
       }),
     );
     expect(onSaved).toHaveBeenCalledTimes(1);
@@ -247,6 +248,7 @@ describe("TitleFixer (NEO-101)", () => {
       expect(mockUpdateCard).toHaveBeenCalledWith({
         id: CARD_ID,
         listingTitle: "2024 Topps Chrome Julio Rodriguez #300b",
+        titleReviewed: true,
       }),
     );
     expect(onSaved).toHaveBeenCalledTimes(1);
@@ -319,6 +321,7 @@ describe("TitleFixer (NEO-101)", () => {
       expect(mockUpdateCard).toHaveBeenCalledWith({
         id: CARD_ID,
         listingTitle: "2024 Topps Chrome #300b",
+        titleReviewed: true,
         cardVariation: "Image Variation",
       }),
     );

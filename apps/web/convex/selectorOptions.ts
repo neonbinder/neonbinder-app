@@ -6694,6 +6694,13 @@ export const updateCard = mutation({
      * sends `listingDescription`.
      */
     regenerateDescription: v.optional(v.literal(true)),
+    /**
+     * NEO-609 — the Tidy Up walker's save: the operator looked at this card's
+     * title and answered, so `listingTitleTruncated` clears whatever the title
+     * is (a Regenerated one that still carries a cut included), exactly as
+     * Keep does in `saveTitleFixes`. Not stored; sent only by `TitleFixer`.
+     */
+    titleReviewed: v.optional(v.literal(true)),
     // NEO-367 — NB's own note about the card. "" clears it, like every other
     // string here; see `normalizeCardNotes`.
     notes: v.optional(v.string()),
@@ -6744,6 +6751,7 @@ export const updateCard = mutation({
       playerNamesOnCard: _printedNames,
       teamNone: teamNoneArg,
       regenerateDescription,
+      titleReviewed,
       leagueId: requestedLeagueId,
       ...updates
     } = args;
@@ -6871,6 +6879,9 @@ export const updateCard = mutation({
         titleChanged = true;
       }
     }
+    // NEO-609 — the walker's save is the operator's answer: the flag clears
+    // even when the title is Regenerated and still carries a cut, or unchanged.
+    if (titleReviewed) filtered.listingTitleTruncated = undefined;
 
     // NEO-535 — the description is what a collector's card search reads
     // (`search_listing_description`), so, like the title, it is never stored
