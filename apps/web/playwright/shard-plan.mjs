@@ -9,11 +9,8 @@
 //                                                        rewrite timings.json from one or more
 //                                                        (merged) Playwright JSON reports, each
 //                                                        spec's median over the reports
-//   node playwright/shard-plan.mjs --seller   the marketplace-seller specs (NEO-415), which
-//                                                        no shard runs: e2e.yml's seller-desktop /
-//                                                        seller-mobile jobs do, one PR at a time
 //   node playwright/shard-plan.mjs --breaker  the BSC breaker specs (NEO-552), which no
-//                                                        shard runs either: e2e.yml's breaker-desktop /
+//                                                        shard runs: e2e.yml's breaker-desktop /
 //                                                        breaker-mobile jobs do, alone, after every shard
 //   node playwright/shard-plan.mjs --projects  the spec projects, one per line
 //                                                        (e2e.yml's gate reads it)
@@ -51,7 +48,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { BREAKER_SPECS, BREAKER_TAG, ignoredSpecs, SELLER_SPECS, SELLER_TAG } from "./project-scope.mjs";
+import { BREAKER_SPECS, BREAKER_TAG, ignoredSpecs } from "./project-scope.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB = path.resolve(HERE, "..");
@@ -74,9 +71,10 @@ function allSpecs() {
     .sort();
 }
 
-// NEO-415 / NEO-552: the seller specs and the BSC breaker specs (project-scope.mjs)
-// are planned in no shard, and each tag and its list must name the same files.
-// Checked on every plan.
+// NEO-552: the BSC breaker specs (project-scope.mjs) are planned in no shard, and
+// the tag and the list must name the same files. Checked on every plan. (NEO-555
+// retired the seller-spec list and its tag: eBay is the fake too, one account per test
+// user, so its listing specs run in the ordinary shards.)
 function checkTaggedList(specs, { list, tag, listName }) {
   const tagged = specs.filter((s) => hasTag(fs.readFileSync(path.join(TESTS, s), "utf8"), tag));
   const missing = list.filter((s) => !specs.includes(s));
@@ -89,10 +87,10 @@ function checkTaggedList(specs, { list, tag, listName }) {
   ];
 }
 
-// GUIDE hard rule 5: a seller or breaker spec never retries (a retry writes to the
-// one shared seller again, or reopens the deployment-wide BSC gate). The runtime
-// backstop (`noRetryOnSharedAccounts`) refuses a retry only after a failure; this
-// refuses a tagged spec without `describe.configure({ retries: 0 })` before CI runs.
+// GUIDE hard rule 5: a breaker spec never retries (a retry reopens the
+// deployment-wide BSC gate). The runtime backstop (`noRetryOnSharedAccounts`)
+// refuses a retry only after a failure; this refuses a tagged spec without
+// `describe.configure({ retries: 0 })` before CI runs.
 // Comments are stripped first, so a configure call quoted in a comment does not count.
 const RETRIES_ZERO = /\b(?:test\.)?describe\.configure\(\s*\{[^}]*\bretries\s*:\s*0\b[^}]*\}\s*\)/;
 // A tag in any quote style ("@x", '@x', `@x`).
@@ -107,7 +105,7 @@ const stripComments = (source) => source.replace(/\/\*[\s\S]*?\*\//g, "").replac
  * @param {string[]} [tags]
  * @returns {string[]}
  */
-export function checkNoRetryTagged(specs, read, tags = [SELLER_TAG, BREAKER_TAG]) {
+export function checkNoRetryTagged(specs, read, tags = [BREAKER_TAG]) {
   const problems = [];
   for (const spec of specs) {
     const source = read(spec);
@@ -119,33 +117,25 @@ export function checkNoRetryTagged(specs, read, tags = [SELLER_TAG, BREAKER_TAG]
   return problems;
 }
 
-function checkSellerTags(specs) {
+function checkBreakerTags(specs) {
   const problems = [
-    ...checkTaggedList(specs, { list: SELLER_SPECS, tag: SELLER_TAG, listName: "SELLER_SPECS" }),
     ...checkTaggedList(specs, { list: BREAKER_SPECS, tag: BREAKER_TAG, listName: "BREAKER_SPECS" }),
     ...checkNoRetryTagged(specs, (s) => fs.readFileSync(path.join(TESTS, s), "utf8")),
-    ...SELLER_SPECS.filter((s) => BREAKER_SPECS.includes(s)).map((s) => `${s} is in both SELLER_SPECS and BREAKER_SPECS`),
   ];
-  if (problems.length) throw new Error(`seller/breaker specs fail the planning checks (lists, tags, retries):\n  ${problems.join("\n  ")}`);
+  if (problems.length) throw new Error(`breaker specs fail the planning checks (list, tag, retries):\n  ${problems.join("\n  ")}`);
 }
 
-/** The specs a shard may be handed on `project`: everything but the ignored, the seller and the breaker specs. */
+/** The specs a shard may be handed on `project`: everything but the ignored and the breaker specs. */
 function listSpecs(project) {
   const specs = allSpecs();
-  checkSellerTags(specs);
-  const ignored = new Set([...ignoredSpecs(project), ...SELLER_SPECS, ...BREAKER_SPECS]);
+  checkBreakerTags(specs);
+  const ignored = new Set([...ignoredSpecs(project), ...BREAKER_SPECS]);
   return specs.filter((p) => !ignored.has(p));
-}
-
-/** The seller specs `seller-<pass>` runs on `project` (all of them; none is project-ignored). */
-function listSellerSpecs() {
-  checkSellerTags(allSpecs());
-  return [...SELLER_SPECS].sort();
 }
 
 /** The breaker specs `breaker-<pass>` runs, alone after every shard (none is project-ignored). */
 function listBreakerSpecs() {
-  checkSellerTags(allSpecs());
+  checkBreakerTags(allSpecs());
   return [...BREAKER_SPECS].sort();
 }
 
@@ -276,10 +266,7 @@ function main(argv) {
     if (!PROJECTS.includes(project)) throw new Error(`--project must be one of ${PROJECTS.join(", ")}, got '${project}'`);
     args.splice(pIdx, 2);
   }
-  if (args[0] === "--seller") {
-    const rel = toPosix(path.relative(WEB, TESTS));
-    for (const spec of listSellerSpecs()) console.log(`${rel}/${spec}`);
-  } else if (args[0] === "--breaker") {
+  if (args[0] === "--breaker") {
     const rel = toPosix(path.relative(WEB, TESTS));
     for (const spec of listBreakerSpecs()) console.log(`${rel}/${spec}`);
   } else if (args[0] === "--projects") {
@@ -292,7 +279,7 @@ function main(argv) {
     const i = args[1] === undefined ? undefined : Number(args[1]);
     if (!Number.isInteger(n) || n < 1 || (i !== undefined && (!Number.isInteger(i) || i < 1 || i > n))) {
       throw new Error(
-        "usage: shard-plan.mjs <N> [<i> in 1..N] [--project <p>] | --from-results <results.json>... | --projects",
+        "usage: shard-plan.mjs <N> [<i> in 1..N] [--project <p>] | --breaker | --from-results <results.json>... | --projects",
       );
     }
     const shards = plan(n, project);

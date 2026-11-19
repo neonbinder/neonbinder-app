@@ -5,7 +5,8 @@ metadata:
   type: project
 ---
 
-The two `@marketplace-seller` specs assume "no cron path", but the preview's
+The two marketplace listing specs (then tagged for the shared-seller jobs,
+which NEO-555 retired) assumed "no cron path", but the preview's
 cron runs. `listingSales.finishPoll` kicks a drain whenever outbox rows exist,
 so the window between any queueing write (price, quantity, box "Listed" flip)
 and the spec's Sync press is a race. `listingSync.syncOnePlatform` drops a

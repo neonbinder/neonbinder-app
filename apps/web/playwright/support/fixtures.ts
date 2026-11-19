@@ -14,12 +14,16 @@
  *            asserts the destination's heading (the launch gate).
  *
  *   bscFake — the worker's fake BuySportsCards account (NEO-552, ./bscFake.ts):
- *            `setFaults` / `addOrder` / `clear`. Teardown clears the rules (and
- *            the deployment's BSC call gate when a rule could have opened it).
+ *            `setFaults` / `addOrder` / `pollNow` / `clear`. Teardown clears the
+ *            rules, both sites' (and the deployment's BSC call gate when a rule
+ *            could have opened it).
+ *   ebayFake — the worker's fake eBay seller (NEO-555, ./ebayFake.ts):
+ *            `holdShippingPolicy` / `addOrder` / `pollNow` / `setFaults`. Its
+ *            faults share `bscFake`'s list (one per worker) and its teardown.
  *
  * Harness fixtures no spec names (NEO-592):
- *   noRetryOnSharedAccounts — automatic. Refuses a retry of a `@marketplace-seller`
- *            or `@bsc-breaker` spec (GUIDE hard rule 5): each such file says
+ *   noRetryOnSharedAccounts — automatic. Refuses a retry of a `@bsc-breaker`
+ *            spec (GUIDE hard rule 5): each such file says
  *            `test.describe.configure({ retries: 0 })`; this catches one that forgot.
  *   resetAfterFailure — automatic. After a test on `e2e` or `e2e-mobile` ends
  *            red, resets the worker's main account by the bootstrap's own route
@@ -43,9 +47,10 @@
  *   });
  */
 import { test as base, expect, type Browser, type BrowserContext, type Page, type TestInfo } from "@playwright/test";
-import { BREAKER_TAG, SELLER_TAG } from "../project-scope.mjs";
+import { BREAKER_TAG } from "../project-scope.mjs";
 import { checkAccessibility, type AccessibleOptions } from "./a11y";
 import { BscFake } from "./bscFake";
+import { EbayFake } from "./ebayFake";
 import { makeEnv, type FlowEnv } from "./env";
 import { redact, redactLiterals } from "./redact.mjs";
 import { attachWireOnFailure, recordWire, runLiterals } from "./wire-log";
@@ -79,8 +84,8 @@ export function signInUrl(redirect: string, worker: string, account?: string): s
  */
 const FAILURE_RESET_ON = process.env.PW_FAILURE_RESET ? process.env.PW_FAILURE_RESET === "1" : !!process.env.CI;
 
-/** The tags whose specs never retry (hard rule 5): shared seller accounts, the BSC call gate. */
-const NO_RETRY_TAGS: ReadonlySet<string> = new Set([SELLER_TAG, BREAKER_TAG]);
+/** The tags whose specs never retry (hard rule 5): the deployment-wide BSC call gate. */
+const NO_RETRY_TAGS: ReadonlySet<string> = new Set([BREAKER_TAG]);
 
 /** The reset's teardown: the page sent to about:blank, then its context closed (one UX budget each). */
 const RESET_STEP_MS = 7_000;
@@ -92,6 +97,7 @@ export const test = base.extend<{
   env: FlowEnv;
   signIn: SignIn;
   bscFake: BscFake;
+  ebayFake: EbayFake;
   captureConsole: boolean;
   consoleOnFailure: void;
   noRetryOnSharedAccounts: void;
@@ -148,12 +154,21 @@ export const test = base.extend<{
     await use(fake);
     await fake.teardown();
   },
-  // NEO-592, GUIDE hard rule 5: a `@marketplace-seller` spec writes to a seller account
-  // every PR shares (eBay sandbox, SportLots) and a `@bsc-breaker` spec opens the
-  // deployment-wide BSC call gate; neither is undone by the failure reset, so neither
-  // retries. Each such file says `test.describe.configure({ retries: 0 })`; this refuses
-  // the retry of one that forgot, before its body writes anything. Registered before
-  // `resetAfterFailure`, so a refused retry is not followed by a second reset.
+  // NEO-555: the worker's own fake eBay seller (./ebayFake.ts). Its fault rules
+  // live on `bscFake`'s list (the fake keeps one per worker for both sites), so
+  // `bscFake`'s teardown drops them; this fixture has no teardown of its own.
+  // Seller state (policies, listings, orders) stays on the fake until the
+  // pass's reset: see ./ebayFake.ts.
+  ebayFake: async ({ context, bscFake }, use) => {
+    await use(new EbayFake(context, bscFake, LAUNCH_GATE));
+  },
+  // NEO-592, GUIDE hard rule 5: a `@bsc-breaker` spec opens the deployment-wide BSC
+  // call gate, which the failure reset does not undo, so it never retries. (NEO-555
+  // retired the other no-retry tag with the shared eBay sandbox seller: eBay is the
+  // fake, one seller per test user.) Each such file says
+  // `test.describe.configure({ retries: 0 })`; this refuses the retry of one that
+  // forgot, before its body writes anything. Registered before `resetAfterFailure`,
+  // so a refused retry is not followed by a second reset.
   noRetryOnSharedAccounts: [
     async ({}, use, testInfo) => {
       const tag = testInfo.tags.find((t) => NO_RETRY_TAGS.has(t));

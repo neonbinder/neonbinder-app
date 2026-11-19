@@ -1,63 +1,29 @@
-// NEO-415 (R1): a collector's boxes reach eBay when they Sync, and a box set to
-// in-person takes them down again. The flow, as the user lives it, on eBay's
-// SANDBOX (the deployment's eBay wiring is the sandbox's; step 1 refuses to go
-// on if it is not):
+// NEO-415 (R1), moved to the stand-in eBay by NEO-555: a collector's boxes reach
+// eBay when they Sync, a buyer's order lowers the box, and a box set to in-person
+// takes the cards down again. Every test deployment's eBay is the fake
+// (services/fake-bsc, one seller per test user), so this runs in any shard, on
+// both projects, and nothing reaches the real eBay; step 1 refuses to go on
+// unless the page says so. Connecting through eBay's consent screen and each
+// setup step are proven in full by `profile/ebay-connect-and-setup`; here the
+// connection and setup are the means (`connectEbayAndFinishSetup`). The flow, as
+// the user lives it:
 //   0. Not wired / paused: a deployment with no eBay wiring FAILS this spec
 //      loudly, naming the setup it lacks (never a skip, GUIDE hard rule 1). A
 //      deployment with eBay paused (`NEONBINDER_PAUSED_PLATFORMS` names ebay,
 //      the runner's `PAUSED_PLATFORMS` too) takes the paused branch instead:
 //      Profile and Sync status say eBay is on a break and the seed hop
 //      connects nothing. Both branches end in hard asserts (R2).
-//   1. Profile -> Credentials -> eBay, not connected: the consent warning before Connect, and
-//      the sandbox line (the safety assert: nothing here lists for real).
+//   1. Profile -> Credentials -> eBay, not connected: the test-mode line (the
+//      safety assert: nothing here lists for real).
 //   2. They make their box and set every OTHER box they have to in-person
 //      (a connection that lists walks every card in a listed box), then Sync
 //      status says eBay is not connected, with the way to connect (Back
 //      returns).
-//   3. Connect. eBay's consent screen is a third party's page that no spec can
-//      drive, so the connection is made the way the bootstrap saves the other
-//      marketplaces: the seed hop (`/testing/seed-credentials?sites=ebay`,
-//      `listing=on`), which connects the sandbox seller with the deployment's
-//      refresh token. Connected IS listing, but the page says setup is not
-//      done (5 to go) and Sync status says "Setup unfinished", with the way
-//      back to the page (Back returns).
-//   4. Setup: the weight of a single card set to 3 oz (Enter saves; a reload
-//      still shows it), Ships from, "Set me up" where the seller's account has
-//      no payment or returns policy (it makes NeonBinder's standard ones on
-//      eBay; it never makes shipping policies, NEO-423), then a pick in each of
-//      Cards under $20 and $20 and up from the seller's OWN shipping policies
-//      (see "Sandbox seller precondition" below), Payment and Returns; the
-//      checklist reads "You're all set". The weight stays 3 oz for the listing run.
-//
-// Sandbox seller precondition (also in SET-REGISTRY.md). NeonBinder no longer
-// makes shipping policies (eBay's sandbox refuses every create holding
-// Standard Envelope; NEO-423 tracks making them later), so the sandbox seller
-// account MUST already hold the fulfillment policy "NB Tracked (USPS Ground
-// Advantage)" and "NB Free Shipping" (both left there by earlier runs, when
-// Set me up still made them). The spec picks NB Free Shipping for cards under
-// $20, the price it lists at: eBay's sandbox cannot rate CALCULATED shipping,
-// so a publish against the calculated NB Tracked policy fails 25007 every
-// time, while the flat free policy publishes (production sellers use
-// calculated shipping). For $20 and up it picks NB Free Shipping and then NB
-// Tracked, to prove a changed pick saves (no card here lists at $20 or more,
-// so that calculated pick is never published). If either is missing the spec
-// fails naming it; add it on the sandbox seller by hand (eBay's business
-// policies), never in code.
-//
-// What this spec cannot prove, and where it is proven instead. Because the
-// sandbox seller must hold shipping policies for the listing to go up, the
-// page's no-shipping-policies state (the "Make a shipping policy on eBay"
-// link and "Check eBay again", with its focus and live line) never shows here;
-// it, and "Set me up never makes a shipping policy", are proven by the
-// component tests (app/profile/credentials/ebay/*.test.tsx) and the
-// createStandardPolicies unit tests (convex/ebayConnect.test.ts) only. The
-// sandbox seller already holds payment and returns too, so on CI Set me up is
-// not offered and its offered arm below does not run (the not-offered arm
-// asserts that, by name). Likewise the 3 oz card weight reaching the package
-// eBay prices is unit-only (convex/listingDrainEbay.test.ts, the item's
-// packageWeightAndSize): the sandbox does not show the item body back, so
-// the spec proves the weight is saved and kept (step 4), not what eBay got.
-//   5. They set a common price, then put copies of the first three 2024 Topps
+//   3. Connect and finish the setup: the seed hop connects the worker's main
+//      fake seller with listing on, and the setup is done (the seller's own
+//      shipping policies, which the spec seeds on the fake, ships-from, Set me up
+//      where offered, a pick in each slot): "You're all set".
+//   4. They set a common price, then put copies of the first three 2024 Topps
 //      Chrome Future Stars cards (Insert › Future Stars) in the box, with a
 //      photo on two of them only (eBay listings need one): the FIRST has a plain quick-count copy and then a second line
 //      from a scanned pair (NEO-427: the oldest copy WITH photos feeds the
@@ -70,105 +36,131 @@
 //      card reads 2 (plain + scanned), the second 1 and the third 1. They press
 //      Sync, follow "See what's syncing" (Back returns), and Sync status reads
 //      the eBay section's set with 2 listed and 1 skipped: the third card is
-//      held back, named, with eBay's no-photo reason. This is the proof the
-//      scanner's photos reach eBay: the first card lists on the photos the save
-//      put on it.
-//   5a. NEO-481, re-list after an edit: they open the second card's photo in
+//      held back, named, with eBay's no-photo reason. A press that sends uploads
+//      the photos first (the fake has eBay's picture upload, which the sandbox
+//      lacked: "Upload photos, done" then List the cards, Set prices, Go live).
+//   4a. NEO-481, re-list after an edit: they open the second card's photo in
 //      the card photo viewer, Turn right and Save. Once the new file lands
 //      ("All set. Your edited photo is in."), Sync status queues that card
-//      again, and a Sync re-sends its item (the listing's content follows the
-//      photo: "List the cards, done"), the card leaves the queue, and the one
-//      held-back card is still only the third. (The sandbox has no picture
-//      upload, see below, so no "Upload photos" step: the new photo's key is
-//      what changes the item.) A poll between the queue's read and the press
-//      sends it instead, and the press then sends nothing (the two orders).
+//      again, and a Sync re-sends it, the card leaves the queue, and the one
+//      held-back card is still only the third. A poll between the queue's read
+//      and the press sends it instead, and the press then sends nothing or is
+//      turned away (the three outcomes).
+//   5. NEO-555 (D9), a sale: a buyer orders one of the first card on eBay, plus
+//      a card NeonBinder never listed (eBay's own title, no SKU). The order is
+//      injected already shipped (FULFILLED: still a sale, so the box goes down,
+//      but never on the Pick List, which every later spec on this worker's
+//      account would otherwise find holding it; the pick-list specs start from
+//      "Nothing to pull"), on the worker's fake seller, and the sales poll run at once
+//      (`ebayFake.pollNow`); the 15-minute cron poll may store it first, and
+//      the hop then reads nothing new, so the spec asserts the screen, never
+//      the poll's counts. The Sales tab shows the order (`eBay order <id>`):
+//      the first card's line by its NB name and nothing wrong with it, the
+//      other under eBay's title with "NeonBinder didn't list this one. Boxes
+//      untouched. Pull it by hand." eBay's orders page is one link away, Back
+//      returns to Sync status, and the first card's quick count reads 1 (the
+//      sale lowered its oldest line, the plain copy; the scanned line stays).
 //   6. They turn the box's "Listed on marketplaces" off. NEO-433: Sync status,
 //      left open, shows a run the platform killed read as running, then flip by
 //      itself to the set's last result with the step it was on failed (a seed
 //      hop in a second tab makes the kill; no spec can make the platform do it).
-//      They Sync again, and the
-//      set reads 0 listed, with the two cards taken to 0 and nothing held back.
-//      The Sales tab names eBay (its orders link and its empty state; Back
-//      returns).
+//      They Sync again, and the set reads 0 listed, with the two cards taken to
+//      0 and nothing held back.
 //   6b. NEO-432: a Sync pressed soon after another still runs the changes
 //      queued since (the cron is 15 minutes away). They take the third card to 0
-//      and the first card's plain copy out by a lower from 2 to 1 in the in-person
-//      box (Sync status queues both cards), press
-//      Sync, and the press answers "Syncing ... now" and the queue empties.
-//      Whether this press, or step 6's, meets a recent press depends on whether
-//      the cron had already made the set's sync record before step 5's press
-//      (a press stamps only an existing record), so ONE of the two always
-//      does: step 6 when step 5's press stamped and the flip came within the
-//      minute, this one (the take-down's press stamped, and the writes came
-//      within the minute) when it did not. The old code answered "just
-//      synced. Give it a minute" to that press and ran nothing, so either
-//      toast goes red on it. The unit tests pin the branch itself
-//      (`listingSync.test.ts`); this proves it live, in what a collector reads.
-//   7. They tidy up (cards out of the box: 6b's writes already took the third
-//      by its quantity and the first card's plain copy by a lower, since a lower
-//      takes the photoless line before one with photos and the scanned line
-//      stays; the two lines with a photo then go through
-//      the card drawer's Remove, which also carries the drawer's axe states;
-//      the scan run closed with "Done adding photos" (the box is in-person by
-//      now, so closing it lists nothing); the common price cleared, the box
-//      deleted) and Disconnect eBay (the confirm dialog),
-//      which takes down anything NeonBinder put up on eBay and leaves the
-//      account not connected. The afterEach does the same on a failure.
+//      in the in-person box (Sync status queues it), press Sync, and the press
+//      answers "Syncing ... now" and the queue empties. Whether this press, or
+//      step 6's, meets a recent press depends on whether the cron had already
+//      made the set's sync record before step 4's press (a press stamps only an
+//      existing record), so ONE of the two always does. The old code answered
+//      "just synced. Give it a minute" to that press and ran nothing, and the
+//      card stayed queued, so the walk to an empty queue goes red on it. The
+//      press is turned away correctly only when the poll's drain took the card
+//      first (the three outcomes, below): then the queue is already empty, and
+//      the set reads 0 listed with nothing held back either way. The unit tests
+//      pin the branch itself (`listingSync.test.ts`); this proves it live, in
+//      what a collector reads.
+//   7. They tidy up (cards out of the box: 6b took the third by its quantity;
+//      the first card's scanned line and the second card's line go through the
+//      card drawer's Remove, which also carries the drawer's axe states; the
+//      scan run closed with "Done adding photos" (the box is in-person by now,
+//      so closing it lists nothing); the common price cleared, the box deleted)
+//      and Disconnect eBay (the confirm dialog), which takes down anything
+//      NeonBinder put up on eBay and leaves the account not connected. The
+//      afterEach does the same on a failure.
+//
+// Step 5 names the sold card by its printed number (`listedCardNumber`): the
+// testing control resolves it to this worker's own eBay listing of that card
+// (exactly one, else it refuses), since NB's SKU embeds an id no screen shows.
+// Sales' empty state is not asserted here: this account may already hold sales
+// from other specs on the worker (the BuySportsCards listing, unmatched-sale and
+// pick-list specs), so `profile/ebay-connect-and-setup` proves it on the
+// isolated `new-profile` account instead.
 //
 // What "2 listed" proves about eBay. The drain reads the seller's inventory,
-// creates the inventory items and offers, PUBLISHES them and reads the result;
-// a card eBay would not take becomes a held-back card with a reason (no photo,
-// a missing item detail, a rejection). It uploads no photo here: eBay's
-// sandbox has no picture upload (its Media API reference: "This method is not
-// supported in Sandbox environment."), so on the sandbox the drain sends each
-// item with NB's fixed sandbox test picture instead, as the sandbox refuses an
-// item with none (errorId 25717; `EBAY_SANDBOX_TEST_PICTURE_URL`). NB still
-// requires the photo: a card without one is held back on both. So the end
-// state of a sync is two things together: the set's "N listed" count line and
-// the "held back" list (here exactly the one card left without a photo; at the
-// end, none). The spec never calls eBay itself and shows no eBay
-// listing of its own (a product gap if a collector should see one).
+// uploads the photos, creates the inventory items and offers, PUBLISHES them
+// and reads the result; a card eBay would not take becomes a held-back card
+// with a reason (no photo, a missing item detail, a rejection;
+// `profile/ebay-refusals-and-sign-out` makes the fake refuse). So the end state
+// of a sync is two things together: the set's "N listed" count line and the
+// "held back" list (here exactly the one card left without a photo; at the
+// end, none). The spec never calls eBay itself and shows no eBay listing of its
+// own (a product gap if a collector should see one).
 //
-// Waits. Every step gets the standard 7 s budget (GUIDE hard rule 3), the
-// eBay calls included: reading the seller's policies, "Set me up", saving a
-// pick or the ships-from address, the Sync results and the disconnect's
-// takedown, and (NEO-427) "Photos are in!" on the scanned save's tile, where
-// the server derives both sizes of each side from the scan and files them on
-// the copy. A step that needs longer is a finding to report, never a number to
-// raise. The longer waits are the seed hop's one full page load (`LAUNCH_GATE`),
-// the scan pair's crop and read (`PAIR_PROCESSING`, the placeholder pipeline's own
-// exception) and the signed-off "Go live" ceiling at its call.
+// Waits. Every step gets the standard 7 s budget (GUIDE hard rule 3), the eBay
+// calls included: the setup's reads and saves, every Sync step (going live
+// too: NEO-555 voided the sandbox-measured "Go live" ceiling), the sale's
+// arrival and the disconnect's takedown, and (NEO-427) "Photos are in!" on
+// the scanned save's tile. A step that needs longer is a finding to report,
+// never a number to raise. The longer waits are the hops' full page loads
+// (`LAUNCH_GATE`), the scan pair's crop and read (`PAIR_PROCESSING`, the
+// placeholder pipeline's own exception) and the photo edit's render (`EDIT_LANDS`).
 //
-// Two triggers (NEO-433). A set's sync is set going by the press of the
-// checklist's Sync and by the 15-minute sales poll, and the poll can list a
-// stocked box before the press lands. Both orders are real product behaviour,
-// so the spec neither forces the press to win nor turns the poll off; it presses
-// as soon as its last write is in (the slow axe check waits until after the
-// Sync assertions) and holds either order to a hard end state:
+// Three outcomes of a press (NEO-433, NEO-555). A set's sync is set going by
+// the press of the checklist's Sync and by the 15-minute sales poll, and the
+// poll can list a stocked box before the press lands. Every order is real
+// product behaviour, so the spec neither forces the press to win nor turns the
+// poll off; it presses as soon as its last write is in (the slow axe check
+// waits until after the Sync assertions), reads which toast answered
+// (`pressSync`) and holds each outcome to a hard end state:
 //   - press first: the press sends the cards. The row reads "2 listed, 2
 //     updated, 1 skipped" and its ledger holds "Gathering data" (the run's
-//     check, folded) then List the cards, Set prices and Go live, all done;
+//     check, folded) then Upload photos, List the cards, Set prices and Go
+//     live, all done;
 //   - poll first: the poll already listed them, and the press is a full read
 //     that sends nothing. The row reads "2 listed, 1 skipped" with no
 //     "updated", and the ledger is exactly "Gathering data, done" then "Nothing
 //     new to send" (the positive proof the press sent nothing).
-// The line says which order it was, and each order's ledger is asserted hard, so
-// a run whose ledger never shows goes red in either. The in-person press at
-// step 6 has the same two orders (a poll that takes the cards down first).
+//   - turned away: inside a minute of the set's last press, with nothing left
+//     queued because the poll's drain already sent it, the press runs nothing
+//     and toasts "<title> is already in the works. Give it a minute, then Sync
+//     again." (`syncToast`). On the fake eBay steps 4 to 6 take about 24 s, so
+//     the later presses (4a, 6, 6b) can all land inside that minute. The poll's
+//     run is then held to the press's own end state, its sending step and its
+//     line ("2 taken to 0" at step 6), never to "Nothing new to send".
+// The toast and the line say which outcome it was, and each outcome's ledger
+// is asserted hard, so a run whose ledger never shows goes red in all three.
+// The in-person press at step 6 has the same outcomes (a poll that takes the
+// cards down first), and so does the sale (the hop's poll or the cron's stores
+// it; the screen is the same).
 //
-// A press is proven to have RUN before either order is read. The row a poll
-// leaves behind looks like a press's own, and the page says "Nothing syncing
-// right now." between two runs, so neither the row nor the idle line is evidence.
-// The press's queued cards are: the press writes them (its toast comes after),
-// and a run's finish clears them in the same write that records its result, but
-// only if the run claimed them (a run under way when the press landed leaves
-// them, and the set goes round again). So the spec walks step by step until the
-// queue holds no card of the set and the platform is idle (`followRunToRest`),
-// and only then reads the row: a press whose run never claims leaves its cards
-// queued and goes red in both orders.
+// A press is proven to have RUN (or the poll's run to have done its work)
+// before any outcome is read. The row a poll leaves behind looks like a press's
+// own, and the page says "Nothing syncing right now." between two runs, so
+// neither the row nor the idle line is evidence. The press's queued cards are:
+// the press writes them (its toast comes after), and a run's finish clears them
+// in the same write that records its result, but only if the run claimed them
+// (a run under way when the press landed leaves them, and the set goes round
+// again). So the spec walks step by step until the queue holds no card of the
+// set and the platform is idle (`followRunToRest`), and only then reads the row:
+// a press whose run never claims leaves its cards queued and goes red in every
+// outcome; so does a press turned away while its cards are still queued
+// (nothing runs them until the cron).
 //
 // Sync's toast. A press that sets a run going toasts "Syncing <title> now.
-// Watch it on Sync status."; both presses assert it before reading the result.
+// Watch it on Sync status."; a press turned away toasts "already in the works".
+// The first press (step 4) has no press before it, so only the later ones can be
+// turned away; every press asserts one of the two before reading the result.
 //
 // The scanned pair (NEO-427). The two scans are the placeholder pipeline's own
 // scanner-bed cards (`public/placeholder-fixtures/01-vorkle-*.jpg`), which the fast
@@ -182,24 +174,25 @@
 //
 // R7/R7a. 2024 Topps Chrome › Insert › Future Stars is a registered real set
 // (SET-REGISTRY.md, provisioned by the seed): this spec is the SOLE writer of
-// the sandbox seller account's listings and writes no card, player, team or
-// variant of the set (NEO-475: moved here from 1988 Topps Base with the
-// BuySportsCards spec). Its NB writes are the signed-in
-// user's own rows (the eBay connection and setup, a minted box, copies of three cards
-// in a box (a photo on two, one of them from a scan run), an intake run, the common price,
-// and every other box set to in-person, which is left that way). It makes NeonBinder's standard payment and returns
-// policies on the sandbox seller's eBay account where it has none ("Set me
-// up"); those stay on eBay and are found again by the next run. It makes no
-// shipping policy. The listings end taken down and the
-// connection ends removed, on a pass by the steps and on a failure by the hook
-// on a second page (so the failure screenshot keeps the page that failed).
+// its eBay listings on the worker's fake seller and writes no card, player,
+// team or variant of the set. Its NB writes are the signed-in user's own rows
+// (the eBay connection and setup, a minted box, copies of three cards in a box
+// (a photo on two, one of them from a scan run), an intake run, the common
+// price, a sale (order `<token>s`, its lines kept as history), and every other
+// box set to in-person, which is left that way). On the fake seller it holds
+// the fixed shipping policies, makes NeonBinder's standard payment and returns
+// policies where it has none ("Set me up"), and leaves one order in its history
+// (no per-order delete; the pass's reset clears it). The listings end taken
+// down and the connection ends removed, on a pass by the steps and on a failure
+// by the hook on a second page (so the failure screenshot keeps the page that
+// failed).
 //
-// Minted box name: a single token from `env.ATTEMPT_TOKEN`.
+// Minted box name and order id: single tokens from `env.ATTEMPT_TOKEN`.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Locator, Page } from "@playwright/test";
-import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, followRunToEnd, followRunToRest, inventoryTabs, nameOf, pickIntakeSet, putOtherBoxesInPerson, quantityField, queueSettled, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
-import { expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
+import type { Page } from "@playwright/test";
+import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, followRunToEnd, followRunToRest, inventoryTabs, nameOf, pickIntakeSet, pressSync, putOtherBoxesInPerson, quantityField, queueSettled, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
+import { connectEbayAndFinishSetup, EBAY_TEST_MODE_LINE, expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { EDIT_LANDED, EDIT_LANDS, photoViewer } from "../../support/photo-viewer";
 
@@ -231,61 +224,15 @@ const SCAN_PAIR = ["01-vorkle-front.jpg", "02-vorkle-back.jpg"] as const;
  */
 const PAIR_PROCESSING = 60_000;
 
-/**
- * The sandbox seller's own shipping policies the spec picks (made by hand or
- * by an earlier NB that still made shipping policies; NB makes none now).
- */
-const TRACKED_POLICY = "NB Tracked (USPS Ground Advantage)";
-const FREE_POLICY = "NB Free Shipping";
-/** Why a missing shipping policy fails the run: a sandbox-account precondition, not a product bug. */
-const mustHoldPolicy = (name: string, slot: string) =>
-  `the eBay sandbox seller must already hold the shipping policy "${name}" (offered under ${slot}). ` +
-  "NeonBinder no longer makes shipping policies (NEO-423), so add it on the sandbox seller's eBay account by hand " +
-  "(see the spec header and SET-REGISTRY.md)";
-
-/**
- * A seller policy is on screen, or the failure says which of two things it is.
- * The page reads the seller's policies from eBay live; when eBay does not
- * answer in time (the sandbox is sometimes slow) the Shipping section shows
- * eBay's "took too long" line and a "Try eBay again" button, and no policy is
- * offered. That is a slow sandbox, NOT a missing policy, so `mustHoldPolicy`
- * is said only once eBay has answered and the policy is not in its answer.
- */
-async function expectPolicyOffered(page: Page, offered: Locator, name: string, slot: string): Promise<void> {
-  const readFailed = page.getByRole("button", { name: `Try ${EBAY} again`, exact: true });
-  await expect(
-    offered.or(readFailed).first(),
-    `the eBay sandbox never answered the policy read (neither "${name}" nor "Try ${EBAY} again" showed): a slow or stuck sandbox, not a missing policy`,
-  ).toBeVisible();
-  await expect(
-    readFailed,
-    `the eBay sandbox did not answer the policy read in time ("Try ${EBAY} again" is showing, with eBay's "took too long" line): ` +
-      `a slow sandbox, not a missing policy. Run the spec again; NeonBinder already waited 3 s and tried twice`,
-  ).toBeHidden();
-  await expect(offered, mustHoldPolicy(name, slot)).toBeVisible();
-}
-
-/**
- * At or above eBay's $0.99 floor, and under $20 (the Cards under $20 slot).
- * NEO-475: NOT the $900 the BuySportsCards spec lists at. eBay's sandbox has no
- * buyers, and $20 and up is the calculated NB Tracked slot, which the sandbox
- * cannot rate (publish fails 25007; see the header): the cards must take the
- * flat NB Free Shipping slot to go up at all.
- */
+/** At or above eBay's $0.99 floor, and under $20 (the Cards under $20 slot, NB Free Shipping). */
 const COMMON_PRICE = "1.00";
-/** A US address, the page's own example ZIP. */
-const SHIPS_FROM = { zip: "53703", city: "Madison", state: "WI" };
 
-// The words the eBay screens say (lib/marketplace/listing-copy.ts, ebay/page.tsx, SyncStatusView).
+// The words the eBay screens say (lib/marketplace/listing-copy.ts, ebay/page.tsx, SyncStatusView, SalesTab).
 const CONSENT_HEADING = "Heads up: connecting starts listing";
-const SANDBOX_LINE = "Test mode: this NeonBinder talks to eBay's sandbox, so nothing lists for real.";
 const PAUSED_LINE = "eBay is on a break. Your changes wait here and go up when it's back.";
 const NOT_CONNECTED_NOTE = "eBay isn't connected, so nothing lists there.";
-const SETUP_NOTE = "Your eBay setup isn't finished, so nothing goes up there yet.";
-const NOT_CONNECTED_MISSING_SETUP =
-  "eBay did not connect after the seed hop. Either DEV_EBAY_REFRESH_TOKEN (a sandbox seller's refresh token) " +
-  "is unset on this deployment, or eBay is paused here (NEONBINDER_PAUSED_PLATFORMS) while this runner's " +
-  "PAUSED_PLATFORMS does not name ebay. This spec never skips for missing setup.";
+/** A sale line NeonBinder did not list (SalesTab, `saleItemProblem`). */
+const WHY_SALES = "NeonBinder didn't list this one. Boxes untouched. Pull it by hand.";
 
 /** What the failing run needs undone, filled as the flow goes. */
 const written: { connected?: boolean; disconnected?: boolean; priced?: boolean; runUrl?: string } = {};
@@ -344,15 +291,10 @@ test.afterEach(async ({ context }, testInfo) => {
   }
 });
 
-// GUIDE hard rule 5: a seller spec never retries. A retry would write to the one
-// shared eBay sandbox seller again, and the failure reset cannot undo that.
-test.describe.configure({ retries: 0 });
-
 test(
-  "Inventory: connecting eBay and finishing its setup lists a box's 2024 Topps Chrome Future Stars cards on the eBay sandbox, and an in-person box takes them down",
-  // NEO-453, TEMPORARY: out of the suite (project-scope.mjs). Put @marketplace-seller back with it.
+  "Inventory: eBay lists a box's 2024 Topps Chrome Future Stars cards when they Sync, a buyer's order lowers the box and shows on Sales, and an in-person box takes them down",
   { tag: ["@collection"] },
-  async ({ page, context, signIn, env, isMobile }) => {
+  async ({ page, context, signIn, env, isMobile, ebayFake }) => {
     // The hook's record of how far this run got starts empty.
     written.connected = false;
     written.disconnected = false;
@@ -367,10 +309,8 @@ test(
     const connectButton = page.getByRole("button", { name: "Connect eBay", exact: true });
     const disconnectButton = page.getByRole("button", { name: "Disconnect eBay", exact: true });
     const connectedLine = page.getByText(/^Rockin' on eBay as .+ since .+\.$/);
-    const checklistSteps = page.getByRole("status").filter({ hasText: /to go\. Nothing lists on eBay until they're done\.$/ });
-    const allSet = page.getByRole("heading", { level: 3, name: "You're all set", exact: true });
 
-    // --- 1. Profile -> Credentials -> eBay, before anything: wired, sandbox, not connected -------------
+    // --- 1. Profile -> Credentials -> eBay, before anything: wired, the stand-in, not connected ---------
     await signIn("/profile/ebay");
     await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
     // Fails loudly, naming the setup, when this deployment has no eBay wiring.
@@ -397,19 +337,13 @@ test(
       return;
     }
 
-    // The safety assert: this deployment talks to eBay's sandbox, never the real thing.
+    // The safety assert: this deployment talks to the stand-in eBay, never the real thing.
     await expect(
-      page.getByText(SANDBOX_LINE, { exact: true }),
-      "the eBay listing spec lists real cards; it runs only on a deployment wired to eBay's SANDBOX (EBAY_ENVIRONMENT=sandbox)",
+      page.getByText(EBAY_TEST_MODE_LINE, { exact: true }),
+      "the eBay listing spec lists cards; it runs only on a deployment wired to the fake eBay (EBAY_ENVIRONMENT=fake)",
     ).toBeVisible();
-    await expect(page.getByText("Sandbox", { exact: true })).toBeVisible();
-    // Not connected: the consent warning that describes Connect, said before it is pressed.
     await expect(connectedLine).toBeHidden();
-    await expect(page.getByText("Connect your eBay seller account.", { exact: true })).toBeVisible();
-    await expect(page.getByText(CONSENT_HEADING, { exact: true })).toBeVisible();
-    await expect(page.getByText(/Connecting lists every raw card in your boxes on eBay at your box counts, once your setup is done/)).toBeVisible();
-    await expect(connectButton).toHaveAccessibleDescription(new RegExp(`^${escapeRegExp(CONSENT_HEADING)}`));
-    await expectAccessible(page, { label: "Profile, eBay not connected, listing consent" });
+    await expect(connectButton).toBeVisible();
 
     // --- 2. A box to stock, every other box in-person BEFORE connecting -----------------
     // A full page load, so the launch gate (cold app + Clerk handshake) applies.
@@ -438,207 +372,13 @@ test(
     await expect(page).toHaveURL(/[?&]tab=sync/);
     await expect(before.getByText("Not connected", { exact: true })).toBeVisible();
 
-    // --- 3. Connect: the seed hop makes the connection eBay's consent screen would ------
-    // Starts listing as a collector's own Connect does (`listing=on`). Recorded
-    // BEFORE the hop: the hop may connect and still fail on the way back.
+    // --- 3. Connect and finish the setup (the seed hop; the means here, not the subject) --------
+    // Recorded BEFORE the hop: the hop may connect and still fail on the way back.
     written.connected = true;
-    await saveEbayConnection(page, { listing: true, gate: LAUNCH_GATE });
-    await expect(connectedLine, NOT_CONNECTED_MISSING_SETUP).toBeVisible();
-    await expect(page.getByText(SANDBOX_LINE, { exact: true })).toBeVisible();
+    await connectEbayAndFinishSetup(page, ebayFake, { gate: LAUNCH_GATE });
     await expect(disconnectButton).toBeVisible();
-    // Connected IS listing, but nothing goes up until the setup is done.
-    await expect(
-      page.getByText("Nothing goes up until your setup below is done. Then every raw card in a listed box lists at its box count."),
-    ).toBeVisible();
-    await expect(page.getByRole("heading", { level: 3, name: "Finish these and your boxes go up", exact: true })).toBeVisible();
-    await expect(checklistSteps).toHaveText("5 to go. Nothing lists on eBay until they're done.");
-    await expect(allSet).toBeHidden();
 
-    // Sync status agrees, and links back to the page. Back steps to Sync status.
-    // (A full page load, so the launch gate applies.)
-    await page.goto("/inventory?tab=sync");
-    await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-    const unfinished = syncStatus(page).platform;
-    await expect(unfinished.getByText("Setup unfinished", { exact: true })).toBeVisible();
-    await expect(unfinished.getByText(SETUP_NOTE)).toBeVisible();
-    await expect(unfinished.getByText("Not connected", { exact: true })).toBeHidden();
-    await expectAccessible(page, { label: "Inventory Sync status, eBay setup unfinished" });
-    const finishSetup = unfinished.getByRole("link", { name: "Finish your eBay setup", exact: true });
-    await finishSetup.click();
-    await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/);
-    await expect(connectedLine).toBeVisible();
-    await page.goBack();
-    await expect(page).toHaveURL(/[?&]tab=sync/);
-    await expect(unfinished.getByText("Setup unfinished", { exact: true })).toBeVisible();
-    await finishSetup.click();
-    await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/);
-
-    // --- 4. Setup: card weight, ships from, shipping, payment, returns ------------------
-    // The weight of a single card, packed: eBay's calculated shipping charges
-    // the buyer by it. A fresh connection reads the default, 1 oz (a
-    // disconnect clears the setup, and step 3 already proved this one starts
-    // from nothing: "5 to go"). Enter on 3 oz saves it, the way a collector
-    // whose envelopes always weigh 3 oz would; it stays 3 for the listings.
-    const weight = page.getByRole("radiogroup", { name: "Weight of a single card", exact: true });
-    const oneOz = weight.getByRole("radio", { name: "1 oz", exact: true });
-    const threeOz = weight.getByRole("radio", { name: "3 oz", exact: true });
-    await expect(page.getByRole("heading", { level: 3, name: "Packing", exact: true })).toBeVisible();
-    await expect(oneOz).toBeChecked();
-    await expect(weight.getByRole("radio", { checked: true })).toHaveCount(1);
-    await threeOz.focus();
-    await page.keyboard.press("Enter");
-    await expect(said("Saved. Each card weighs in at 3 oz.")).toBeVisible();
-    await expect(threeOz).toBeChecked();
-    await expect(threeOz).toBeFocused();
-    await expect(weight.getByRole("radio", { checked: true })).toHaveCount(1);
-    await expectAccessible(page, { label: "Profile, eBay connected, card weight saved" });
-    // Saved for real: a reload (a full page load, so the launch gate applies) still reads 3 oz.
-    await page.reload();
-    await expect(connectedLine).toBeVisible({ timeout: LAUNCH_GATE });
-    await expect(threeOz).toBeChecked();
-    await expect(weight.getByRole("radio", { checked: true })).toHaveCount(1);
-
-    // The seller's policies are read from eBay when the page opens (a live round
-    // trip). The read has finished when the first of the seller's own policies
-    // for Cards under $20 is on screen. The sandbox seller always has shipping
-    // policies (the precondition above), so the read landing IS that radio;
-    // "Set me up" renders in the same paint, so its presence is settled then.
-    const underTwenty = page.getByRole("radiogroup", { name: "Cards under $20", exact: true });
-    const setMeUp = page.getByRole("button", { name: "Set me up", exact: true });
-    await expectPolicyOffered(page, underTwenty.getByRole("radio").first(), FREE_POLICY, "Cards under $20");
-    await expect(page.getByRole("heading", { level: 3, name: "Ships from", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 3, name: "Shipping", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 3, name: "Payment and returns", exact: true })).toBeVisible();
-    await expect(page.getByRole("heading", { level: 3, name: "Offers", exact: true })).toBeVisible();
-    await expect(page.getByRole("checkbox", { name: "Take Best Offers", exact: true })).toBeChecked();
-    // Shipping is the seller's own pick: the page says so, and offers nothing that makes one.
-    await expect(
-      page.getByText(`Pick two of your own ${EBAY} shipping policies: one for cards under $20, one for $20 and up.`, { exact: true }),
-    ).toBeVisible();
-
-    // Ships from comes first on the page. "Set me up" (offered only while the
-    // account has no payment or returns policy) waits for nothing: it makes no
-    // shipping policy, so it needs no ship-from address.
-    const setMeUpOffered = await setMeUp.isVisible();
-    await expect(page.getByRole("button", { name: "Save location", exact: true })).toBeVisible();
-    await page.getByRole("textbox", { name: "ZIP code", exact: true }).fill(SHIPS_FROM.zip);
-    await page.getByRole("textbox", { name: "City", exact: true }).fill(SHIPS_FROM.city);
-    const stateField = page.getByRole("textbox", { name: "State", exact: true });
-    await stateField.fill(SHIPS_FROM.state);
-    // Enter in the last field saves (the form is a form).
-    await page.keyboard.press("Enter");
-    // Saving the address makes the seller's inventory location on eBay (a live round trip).
-    await expect(said("Saved. Your cards ship from here.")).toBeVisible();
-    // The location is done; the four policy slots are still to do.
-    await expect(checklistSteps).toHaveText("4 to go. Nothing lists on eBay until they're done.");
-    await expect(allSet).toBeHidden();
-    // The form stays mounted through the save and the query catching up: the
-    // keyboard is still in the field it saved from, and the line is still said.
-    await expect(stateField).toBeFocused();
-    await expect(said("Saved. Your cards ship from here.")).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "ZIP code", exact: true })).toHaveValue(SHIPS_FROM.zip);
-    await expectAccessible(page, { label: "Profile, eBay connected, location saved, policies still to pick" });
-
-    // "Set me up" is offered only where the seller's account has no payment or
-    // no returns policy: it makes NeonBinder's standard ones on eBay (never a
-    // shipping policy); once they exist (an earlier run made them) it is gone.
-    if (setMeUpOffered) {
-      await expect(setMeUp).toBeEnabled();
-      await setMeUp.click();
-      // A live round trip to eBay per policy (each create takes seconds), so
-      // the page ticks each step off as eBay answers: "Set me up, step by
-      // step", the account check first, then payment and returns in run order.
-      // Each wait below covers exactly ONE step landing, within the standard
-      // budget (the sync ledger's pattern, `followRunToEnd`). The ledger is
-      // this press's own run: the page never shows an earlier run's.
-      const ledger = page.getByRole("list", { name: "Set me up, step by step", exact: true });
-      await expect(ledger).toBeVisible();
-      const steps = ledger.getByRole("listitem");
-      // The answer: "Made N on your eBay account …", or "You already had
-      // everything" on a re-run. Both are the success status line, never the error.
-      const answer = said(/^(Made \d+ on your eBay account|You already had everything)/);
-      // Walked in run order (`nth` is the step's place in the run, which never
-      // changes; the steps after the account check appear once it lands). One
-      // pass per step, at most three (the check, payment, returns); a step
-      // already settled (done, or already on eBay) passes at once.
-      for (let i = 0; i < 4; i++) {
-        const step = steps.nth(i);
-        // Either this step is on the ledger, or every step has landed and the run has answered.
-        await expect(step.or(answer).first()).toBeVisible();
-        if (await answer.isVisible()) break;
-        if (i === 1) {
-          // The running ledger (the check landed, a policy under way), checked once.
-          await expectAccessible(page, { within: ledger, label: "Profile, eBay Set me up running" });
-        }
-        // That one step lands: done, eBay said no (the run stops there), or nothing to do.
-        await expect(step).toHaveAccessibleName(/, (done|eBay said no|already on eBay|not made)$/);
-      }
-      await expect(answer).toBeVisible();
-      // Every step is made now or was already there, and none of them is shipping.
-      await expect(ledger.getByRole("listitem", { name: /, eBay said no$/ })).toHaveCount(0);
-      await expect(ledger.getByRole("listitem", { name: /, (working|waiting|not made)$/ })).toHaveCount(0);
-      await expect(ledger.getByRole("listitem", { name: new RegExp(`^(${escapeRegExp(TRACKED_POLICY)}|${escapeRegExp(FREE_POLICY)}),`) })).toHaveCount(0);
-    } else {
-      // The arm CI takes: the sandbox seller already holds payment and returns
-      // policies, so nothing is offered to make, and shipping is still theirs
-      // to pick. Asserted, not assumed: Set me up is gone, both of the seller's
-      // own payment and returns policies are offered, and the page still says
-      // shipping is the seller's pick.
-      await expect(setMeUp).toBeHidden();
-      for (const group of ["Payment", "Returns"]) {
-        await expect(page.getByRole("radiogroup", { name: group, exact: true }).getByRole("radio").first()).toBeVisible();
-      }
-      await expect(
-        page.getByText(`Pick two of your own ${EBAY} shipping policies: one for cards under $20, one for $20 and up.`, { exact: true }),
-      ).toBeVisible();
-    }
-    // $20 and up: a tracked policy, picked BY NAME from the seller's own
-    // (Standard Envelope only covers cards under $20, so the picker offers no
-    // envelope-only policy). Free shipping first, then tracked: a pick that
-    // CHANGES the saved one saves, says "Saved.", and the second pick leaves
-    // tracked chosen.
-    const twentyPlus = page.getByRole("radiogroup", { name: "$20 and up", exact: true });
-    const free = twentyPlus.getByRole("radio", { name: FREE_POLICY, exact: true });
-    const tracked = twentyPlus.getByRole("radio", { name: TRACKED_POLICY, exact: true });
-    await expectPolicyOffered(page, free, FREE_POLICY, "$20 and up");
-    await free.click();
-    await expect(free).toBeChecked();
-    // Saving a pick re-reads the seller's policies on eBay (a live round trip).
-    await expect(said(/^Saved\.$/)).toBeVisible();
-    await expectPolicyOffered(page, tracked, TRACKED_POLICY, "$20 and up");
-    await tracked.click();
-    await expect(tracked).toBeChecked();
-    await expect(twentyPlus.getByRole("radio", { checked: true })).toHaveCount(1);
-    // Cards under $20 (the price this spec lists at): the seller's flat NB
-    // Free Shipping policy, picked BY NAME. eBay's sandbox cannot rate
-    // CALCULATED shipping, so publishing against the calculated NB Tracked
-    // policy fails 25007 every time; production sellers use calculated
-    // shipping. Every run starts from an empty setup (a disconnect clears
-    // it), so this pick always saves.
-    const underTwentyFree = underTwenty.getByRole("radio", { name: FREE_POLICY, exact: true });
-    await expectPolicyOffered(page, underTwentyFree, FREE_POLICY, "Cards under $20");
-    await underTwentyFree.click();
-    await expect(underTwentyFree).toBeChecked();
-    await expect(underTwenty.getByRole("radio", { checked: true })).toHaveCount(1);
-    // The other two slots: the first of the seller's own policies, where
-    // "Set me up" has not already picked one (a click on the picked one changes nothing).
-    for (const group of ["Payment", "Returns"]) {
-      const radios = page.getByRole("radiogroup", { name: group, exact: true }).getByRole("radio");
-      await expect(radios.first()).toBeVisible();
-      await radios.first().click();
-      await expect(page.getByRole("radiogroup", { name: group, exact: true }).getByRole("radio", { checked: true })).toHaveCount(1);
-    }
-    // The last pick finishes the setup: the checklist folds to "You're all set".
-    await expect(allSet).toBeVisible();
-    await expect(checklistSteps).toBeHidden();
-    await expect(page.getByRole("heading", { level: 3, name: "Finish these and your boxes go up", exact: true })).toBeHidden();
-    await expect(page.getByText("Everything in a listed box lists on eBay at your count.", { exact: true })).toBeVisible();
-    await expect(
-      page.getByText("Every raw card in a listed box goes up at its box count, and sales land in Inventory, under Sales. Disconnecting stops both."),
-    ).toBeVisible();
-    await expectAccessible(page, { label: "Profile, eBay connected and set up" });
-
-    // --- 5. Stock the box: a price, a scanned pair, one copy each of two more cards, a photo on two ---
+    // --- 4. Stock the box: a price, a scanned pair, one copy each of two more cards, a photo on two ---
     // A full page load, so the launch gate applies.
     await page.goto("/inventory?tab=checklists");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
@@ -783,8 +523,7 @@ test(
     await expect(said(new RegExp(`^Boxed 1 more of ${escapeRegExp(c)}\\.`))).toBeVisible();
 
     // A photo on the second copy by hand (the first has the scan's): NB lists on eBay
-    // only with one (on the sandbox the photo stays in NB; eBay gets none, see the
-    // header). The third copy gets none, on purpose: a card without a photo must be held back, with
+    // only with one, and uploads it with the listing. The third copy gets none, on purpose: a card without a photo must be held back, with
     // its reason, on the very Sync that lists the other two. (Why a third card,
     // not a photo added to the held one for a second Sync: a press within a
     // minute of the last stamped press is throttled, and the second press would
@@ -838,7 +577,9 @@ test(
     // --- Sync: eBay takes the two with photos and holds the third back ---------------------------------
     // Pressed the moment the last write (the photo above) is in: nothing slow sits
     // between them, so the 15-minute poll has the narrowest window to list the
-    // box first (the header's two orders; the poll may still win it).
+    // box first (the poll may still win it). Of the header's three outcomes only
+    // two apply here: this is the set's first press, with no press in the minute
+    // before it, so it is never turned away and asserts "Syncing ... now" alone.
     await sync.click();
     await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
     // After the press, a link to the result sits under Sync. It lands on Sync
@@ -850,25 +591,21 @@ test(
     const { platform, row } = syncStatus(page);
     await expect(platform.getByRole("heading", { level: 2, name: EBAY, exact: true })).toBeVisible();
     await expect(platform.getByText("Listing", { exact: true })).toBeVisible();
-    // The live eBay round trip, step by step (the run's ledger on Sync status),
-    // each within the standard budget except going live (below): the new run is
-    // in view (its ledger under Running now), then the walk waits for the step
-    // the run is on to land, again and again, until the press's queued cards are
-    // gone and the platform is idle (header: a press proven to have run). A press that sends walks
-    // (the check,) the items, the offers and going live (no photo uploads: the
-    // sandbox has no picture upload, see the header); a press that lands after
-    // the poll listed the box walks the check alone. The line is the drain's own
-    // count: the two cards with a photo are listed, the third is the one skipped.
+    // The eBay round trip, step by step (the run's ledger on Sync status), each
+    // within the standard budget: the new run is in view (its ledger under
+    // Running now), then the walk waits for the step the run is on to land,
+    // again and again, until the press's queued cards are gone and the platform
+    // is idle (header: a press proven to have run). A press that sends walks (the
+    // check,) the photo uploads, the items, the offers and going live; a press
+    // that lands after the poll listed the box walks the check alone. The line is
+    // the drain's own count: the two cards with a photo are listed, the third is
+    // the one skipped.
     const run = syncRun(platform, SET_LABEL, EBAY);
     const settled = queueSettled(platform, SET_LABEL);
     const listedLine = row.getByText(/^2 listed(, 2 updated)?, 1 skipped$/);
-    // Going live is the one step with a longer budget, a ceiling Jason signed
-    // off on 2026-11-03 (GUIDE hard rule 3). The step is one eBay publishOffer
-    // call per offer, all in parallel, so it lasts as long as the slowest call.
-    // Measured on the sandbox: 5.1, 9.0, 9.1 and 10.9 s in CI, 6.1 s on dev;
-    // our own work in the step is well under a second. Void it if the step
-    // gains any work of ours, or if offers stop publishing in parallel.
-    await followRunToRest(platform, run, settled, { "Go live": 15_000 });
+    // NEO-555: no step has a longer budget. The sandbox-measured "Go live" ceiling
+    // (signed off 2026-11-03 for the sandbox's publish calls) is void: the fake answers at once.
+    await followRunToRest(platform, run, settled);
     await expect(listedLine).toBeVisible();
     await expect(row.getByText(/^Synced /)).toBeVisible();
     // Held back is exactly that one card, with the reason a collector can act on
@@ -885,15 +622,16 @@ test(
     await expect(run.gathered()).toBeVisible();
     const pressSent = / \d+ updated\b/.test((await listedLine.textContent()) ?? "");
     if (pressSent) {
-      // Press first: the press sent the cards, so the ledger holds the sending steps, in run order.
-      await expect(run.last.getByRole("listitem")).toContainText([/^List the cards, done$/, /^Set prices, done$/, /^Go live, done$/]);
+      // Press first: the press sent the cards, so the ledger holds the sending steps, in run order:
+      // the two photos uploaded first (the fake has eBay's picture upload), then the items, offers and publish.
+      await expect(run.last.getByRole("listitem")).toContainText([/^Upload photos, done$/, /^List the cards, done$/, /^Set prices, done$/, /^Go live, done$/]);
       await expect(run.nothingNew()).toHaveCount(0);
     } else {
       // Poll first: the poll listed the cards (the line's "2 listed" is the proof they are
       // up); the press read and sent nothing, so the ledger is "Gathering data" then "Nothing new to send".
       await expectNothingSent(run);
     }
-    // The ledger is showing (either order), so the axe check has it.
+    // The ledger is showing (either outcome), so the axe check has it.
     await expectAccessible(page, { label: "Inventory Sync status, eBay 2 listed, the run's steps done and a card held back for no photo" });
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
@@ -937,14 +675,14 @@ test(
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    // A press inside the minute is still taken: the queued row is newer than the last drain.
-    await sync.click();
-    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    // A press inside the minute is still taken: the queued row is newer than the
+    // last drain. Unless the poll's drain sent it first: then nothing is queued and
+    // the press is turned away (header, "Three outcomes").
+    const relistPress = await pressSync(page, sync, TITLE);
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     const relist = syncRun(platform, SET_LABEL, EBAY);
-    // Going live keeps its signed-off ceiling (step 5).
-    await followRunToRest(platform, relist, queueSettled(platform, SET_LABEL), { "Go live": 15_000 });
+    await followRunToRest(platform, relist, queueSettled(platform, SET_LABEL));
     // Positives first (R2): the ledger, the line, the one card still held back.
     await expect(relist.last).toBeVisible();
     await expect(relist.gathered()).toBeVisible();
@@ -954,8 +692,17 @@ test(
     await expect(heldBack).toContainText(c.split(" ")[0]);
     await expect(relistQueued).toHaveCount(0);
     const relisted = await relist.last.getByRole("listitem", { name: "List the cards, done", exact: true }).isVisible();
-    if (relisted) {
-      // Press first: the item went again with the new photo's key.
+    if (relistPress === "throttled") {
+      // Turned away: the poll's run sent the card, so the last run is a sending one.
+      // No "nothing sent" fallback here: a press turned away ran nothing of its own.
+      // The ledger alone does not prove a run newer than the edit (step 4's run also
+      // uploaded and listed): the proof is the edit's queued row gone (`relistQueued`
+      // at 0, above) after the `queueSettled` walk. Never drop that assert.
+      await expect(relist.last.getByRole("listitem")).toContainText([/^Upload photos, done$/, /^List the cards, done$/]);
+      await expect(relist.nothingNew()).toHaveCount(0);
+    } else if (relisted) {
+      // Press first: the new photo went up, then the item again with it.
+      await expect(relist.last.getByRole("listitem")).toContainText([/^Upload photos, done$/, /^List the cards, done$/]);
       await expect(relist.nothingNew()).toHaveCount(0);
     } else {
       // Poll first (between the queue's read and the press): the press read and sent nothing.
@@ -963,12 +710,71 @@ test(
     }
     await expectAccessible(page, { label: "Inventory Sync status, eBay re-listed a card after its photo was edited" });
 
+    // --- 5. NEO-555 (D9): a buyer's order lowers the box and shows on Sales ---------------------
+    // One of the first card (listed at 2: its plain and scanned copies), and a
+    // card NeonBinder never listed (eBay's own title, no SKU). Injected on the
+    // worker's fake seller, then the sales poll run now; the cron's poll may have
+    // stored it first, and the hop then reads nothing new: the screen below is
+    // the same either way, so the counts are never asserted.
+    // The sold card is named by its printed number; the control resolves it to
+    // this worker's own eBay listing of it.
+    const orderId = `${env.ATTEMPT_TOKEN}s`;
+    const strangerTitle = `Stranger${env.ATTEMPT_TOKEN}`;
+    await ebayFake.addOrder({
+      orderId,
+      // Already shipped: a sale that never sits on this account's Pick List (header, step 5).
+      fulfillmentStatus: "FULFILLED",
+      lines: [
+        { listedCardNumber: a.split(" ")[0].replace(/^#/, ""), quantity: 1 },
+        { title: strangerTitle, quantity: 1 },
+      ],
+    });
+    await ebayFake.pollNow();
+    await tabs.getByRole("link", { name: "Sales", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sales/);
+    await expect(page.getByRole("heading", { level: 2, name: "What sold" })).toBeVisible();
+    const sale = page.getByRole("article", { name: `eBay order ${orderId}`, exact: true });
+    await expect(sale).toBeVisible();
+    // The first card's line: NB's own name for the card, one sold, at the listing's
+    // price, and nothing said under it (a refused or oversold line carries a note
+    // after the price, so the line ends at the price).
+    const soldName = `${SET_LABEL} ${a}`;
+    const soldLine = sale.getByRole("listitem").filter({ hasText: soldName });
+    await expect(soldLine).toHaveCount(1);
+    await expect(soldLine).toHaveText(new RegExp(`^1× ${escapeRegExp(soldName)}.*${escapeRegExp(`$${COMMON_PRICE} each`)}$`));
+    await expect(soldLine.getByText(WHY_SALES, { exact: true })).toHaveCount(0);
+    // The other line: eBay's title, and NeonBinder says it did not list it and left the boxes alone.
+    const strangerLine = sale.getByRole("listitem").filter({ hasText: strangerTitle });
+    await expect(strangerLine).toHaveCount(1);
+    await expect(strangerLine).toContainText(`1× ${strangerTitle}`);
+    await expect(strangerLine.getByText(WHY_SALES, { exact: true })).toBeVisible();
+    // eBay's orders page is one link away. A test deployment's page links the
+    // real eBay's orders page, as production does (`ordersUrl`; only the sandbox had its own).
+    const ordersLink = page.getByRole("list", { name: "Orders pages" }).getByRole("link", { name: /^Open eBay orders/ });
+    await expect(ordersLink).toHaveAttribute("href", "https://www.ebay.com/sh/ord");
+    await expectAccessible(page, { label: "Inventory Sales, an eBay order with a listed card and one NeonBinder did not list" });
+    // Back steps to Sync status, where the press above was followed.
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    await expect(row.getByText(/^2 listed(, \d+ updated)?, 1 skipped$/)).toBeVisible();
+    // The box: the sale lowered the first card's oldest line (the plain copy), so
+    // its quick count reads 1 and the scanned line, with its photos, stays. The
+    // other two are untouched (the stranger's line touches no box).
+    await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=checklists/);
+    await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
+    await adding.selectOption({ label: boxName });
+    await expect(fieldA).toHaveValue("1");
+    await expect(fieldB).toHaveValue("1");
+    await expect(fieldC).toHaveValue("1");
+
+
     // --- 6. The box goes in-person: Sync takes both down ----------------------------------
     await page.goto("/inventory?tab=boxes");
     await expect(page.getByRole("heading", { level: 1, name: "Inventory" })).toBeVisible({ timeout: LAUNCH_GATE });
-    // Four copies for sale: the first card's plain and scanned copies, the second's and the third's.
-    await expect(boxSpine(4)).toBeVisible();
-    await boxSpine(4).click();
+    // Three copies for sale: the first card's scanned copy (the sale took the plain one), the second's and the third's.
+    await expect(boxSpine(3)).toBeVisible();
+    await boxSpine(3).click();
     await expect(page.getByRole("heading", { level: 2, name: boxName, exact: true })).toBeVisible();
     const listed = page.getByRole("checkbox", { name: "Listed on marketplaces", exact: true });
     // On by default.
@@ -977,7 +783,7 @@ test(
     await expect(said(`${boxName} is in-person only now.`)).toBeVisible();
     await expect(listed).not.toBeChecked();
 
-    // --- 5b. NEO-433: a run the platform killed lets go by itself ---------------------------
+    // --- 6a. NEO-433: a run the platform killed lets go by itself ---------------------------
     // No spec can make the platform kill a run, so a second tab's seed hop makes
     // the state one leaves (/testing/killed-drain: a held lease and a running
     // record, linked to a scheduled function that really fails, with the real
@@ -999,8 +805,7 @@ test(
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await drillToCollectorChecklist(page, FUTURE_STARS);
-    await sync.click();
-    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
+    const takeDownPress = await pressSync(page, sync, TITLE);
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // The live eBay round trip, step by step: the set was 2 listed a minute ago,
@@ -1008,17 +813,24 @@ test(
     // the set: the walk ends only when the press's queued cards are gone and the
     // platform is idle, so the row read next is a run that started after the
     // press. The poll can take the cards down before the press does (the
-    // header's two orders): the press is then a full read that sends nothing.
+    // header's three outcomes): a press that still runs is then a full read that
+    // sends nothing, and one inside the minute of step 4a's press is turned away.
     const takeDown = syncRun(platform, SET_LABEL, EBAY);
     const takenLine = row.getByText(/^0 listed(, \d+ updated)?, 2 taken to 0$/);
     await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL));
     await expect(row.getByText(/^Synced /)).toBeVisible();
     await expect(row.getByText(/held back/)).toHaveCount(0);
-    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in either order.
+    // The ledger is asserted BEFORE the branch (R2), so a row with none is red in every outcome.
     await expect(takeDown.last).toBeVisible();
     await expect(takeDown.gathered()).toBeVisible();
     const takeDownStep = takeDown.last.getByRole("listitem", { name: "Take down cards at 0, done", exact: true });
-    if (await takeDownStep.isVisible()) {
+    if (takeDownPress === "throttled") {
+      // Turned away: the poll's run took the two cards down, so its ledger and line are
+      // the takedown's, asserted hard (no "nothing sent" fallback: the press ran nothing).
+      await expect(takeDownStep).toBeVisible();
+      await expect(takenLine).toBeVisible();
+      await expect(takeDown.nothingNew()).toHaveCount(0);
+    } else if (await takeDownStep.isVisible()) {
       // Press first: the press withdrew the cards.
       await expect(takenLine).toBeVisible();
       await expect(takeDown.last.getByRole("listitem")).toContainText([/^Gathering data, done$/, /^Take down cards at 0, done$/]);
@@ -1031,78 +843,56 @@ test(
       await expectNothingSent(takeDown);
     }
 
-    // The Sales tab names eBay: its orders page is one link away. (No order has
-    // come in: the poll is a timer this spec does not wait for.) Back steps to Sync status.
-    await tabs.getByRole("link", { name: "Sales", exact: true }).click();
-    await expect(page).toHaveURL(/[?&]tab=sales/);
-    await expect(page.getByRole("heading", { level: 2, name: "What sold" })).toBeVisible();
-    const ordersLink = page.getByRole("list", { name: "Orders pages" }).getByRole("link", { name: /^Open eBay orders/ });
-    await expect(ordersLink).toBeVisible();
-    // The sandbox's own orders page, never the real one.
-    await expect(ordersLink).toHaveAttribute("href", "https://www.sandbox.ebay.com/sh/ord");
-    // This spec creates no sale (the 15-minute poll is a timer it does not wait
-    // for), so the empty state is the branch: it names eBay. How an eBay ORDER
-    // renders (platform label, status words, the Seller Hub link, its lines) is
-    // covered by SalesTab.test.tsx.
-    await expect(
-      page.getByText(/^No sales yet\. When a card sells on .*eBay.*, the order shows up here within about 15 minutes\.$/),
-    ).toBeVisible();
-    await expect(page.getByRole("list", { name: "Orders, newest first" })).toHaveCount(0);
-    await expectAccessible(page, { label: "Inventory Sales, eBay named" });
-    await page.goBack();
-    await expect(page).toHaveURL(/[?&]tab=sync/);
-    await expect(row.getByText(/^0 listed(, \d+ updated)?(, 2 taken to 0)?$/)).toBeVisible();
-
-    // --- 7. Tidy up through the product: the box's cards, the price, the box, eBay --------
-    // Zero before deleting, so no copy falls into the Unsorted box. Same page
-    // since the drill above: the tab link reopens Future Stars.
+    // --- 6b. NEO-432: a Sync soon after the last one still runs the queued changes ----------------
+    // Zero before the box is deleted (step 7), so no copy falls into the Unsorted
+    // box. Same page since the drill above: the tab link reopens Future Stars.
+    // The card with no photo goes by a quick count to 0. That write lands after
+    // step 6's drain finished (its result line was read), so it is a change
+    // newer than the last finished drain: Sync status queues the card (the proof
+    // a row waits; the box is in-person, and any box write queues its card).
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
-    // The card with no photo: a quick count to 0.
     await emptyBoxCards(page, FUTURE_STARS, boxName, [c], isMobile, "reopened");
-    // The first card holds two lines, its plain copy and the scanned one. A
-    // lower takes the photoless line first (NEO-431), so a quick count from 2 to
-    // 1 pulls the plain copy and leaves the scanned line, with its photos, as the
-    // card's only one. The status line says no photos went with it.
-    await fieldA.fill("1");
-    await page.keyboard.press(leaveKey(isMobile));
-    await expect(fieldA).toHaveValue("1");
-    await expect(said(new RegExp(`^Pulled 1 of ${escapeRegExp(a)} from ${escapeRegExp(boxName)}\\. 1 left\\.`))).toBeVisible();
-    await expect(fieldA).not.toHaveAccessibleDescription(/also here/);
-
-    // --- 6b. NEO-432: a Sync soon after the last one still runs the queued changes ----------------
-    // The two writes above landed after step 6's drain finished (its result
-    // line was read), so they are changes newer than the last finished drain:
-    // Sync status queues both cards (the proof a row waits; the box is
-    // in-person, and any box write queues its card).
     await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     const queuedList = platform.getByRole("list", { name: /^Queued for the next sync/ });
     const queuedCards = queuedList.getByRole("listitem");
-    for (const short of [a, c]) {
-      const number = escapeRegExp(short.split(" ")[0]);
-      await expect(queuedCards.filter({ hasText: new RegExp(`^${number} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
-    }
-    await expectAccessible(page, { within: queuedList, label: "Inventory Sync status, eBay two cards queued" });
-    // The press: taken, not told to wait (the old code said "Give it a minute"
-    // whenever the set's record held a press from the last minute).
+    await expect(queuedCards.filter({ hasText: new RegExp(`^${escapeRegExp(c.split(" ")[0])} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(1);
+    await expectAccessible(page, { within: queuedList, label: "Inventory Sync status, eBay a card queued" });
+    // The press: taken while the card is queued (the old code said "Give it a
+    // minute" whenever the set's record held a press from the last minute). It
+    // is turned away only when the poll's drain took the row first; a refusal
+    // with the row still queued leaves it queued until the cron, so the walk
+    // below goes red on it.
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    await sync.click();
-    await expect(said(`Syncing ${TITLE} now. Watch it on Sync status.`)).toBeVisible();
-    await expect(seeSyncing).toBeVisible();
-    await seeSyncing.click();
+    // Taken, or turned away only because the poll's drain already took the card:
+    // "See what's syncing" shows only while a run is under way, so a turned-away
+    // press goes by the tab.
+    if ((await pressSync(page, sync, TITLE)) === "ran") {
+      await expect(seeSyncing).toBeVisible();
+      await seeSyncing.click();
+    } else {
+      await tabs.getByRole("link", { name: "Sync status", exact: true }).click();
+    }
     await expect(page).toHaveURL(/[?&]tab=sync/);
     // The queue empties, and only then is nothing under way: the run that took
     // the rows is over before step 7 goes on (its writes and the disconnect
     // would otherwise land in the middle of it).
     await followRunToRest(platform, takeDown, queueSettled(platform, SET_LABEL));
+    // Either way the card's row is gone and the set reads 0 listed with nothing held
+    // back: the third card was never live on eBay, so taking it to 0 withdraws nothing.
+    await expect(queuedCards.filter({ hasText: new RegExp(`^${escapeRegExp(c.split(" ")[0])} .* in ${escapeRegExp(SET_LABEL)}`) })).toHaveCount(0);
+    await expect(row.getByText(/^0 listed$/)).toBeVisible();
+    await expect(row.getByText(/held back/)).toHaveCount(0);
+
+    // --- 7. Tidy up through the product: the box's cards, the price, the box, eBay --------
     await tabs.getByRole("link", { name: "Checklists", exact: true }).click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     await expect(checklist.getByRole("heading", { level: 3, name: TITLE })).toBeVisible();
-    // The two cards' photo lines: each goes the way a collector removes a copy
-    // they photographed, from the card's drawer (the same drawer that added the
+    // The two cards' photo lines (the first card's is its scanned line, the one the
+    // sale left): each goes the way a collector removes a copy they photographed, from the card's drawer (the same drawer that added the
     // second's photo), which keeps the drawer's editing and removed states under axe.
     await removeOnlyCopy(a, true);
     await removeOnlyCopy(b);
