@@ -26,6 +26,16 @@ the 2.5 s timer and by bucket objects being signed-length PUTs. A streamed
 reader that cancels past maxBytes closes it if the bucket ever takes
 unsigned-length writes.
 
+Closed by the follow-up: the no/NaN-length path now streams via a reader and
+cancels once the running total passes maxBytes. Re-check on any change:
+- `boundedRequest` must test `timedOut` BEFORE `instanceof BodyReadError`; an
+  abort mid-body surfaces as a wrapped read error. The "two stalled bodies end as
+  timeout" test is what pins that order.
+- Chunks are per-invocation locals, so a broken first try cannot leak bytes into
+  the second; the retry test asserts the exact second-try bytes.
+- Residual notes: `status` is not reset between tries (log may show 200 with
+  outcome timeout); peak memory is ~2x maxBytes (chunks + concat).
+
 Caller semantics: `defaultFetchPhoto` maps every non-ok kind to null; BSC
 re-queues only refresh cards (`later()`), non-refresh sides are re-wanted by the
 state-derived `rowNeedsSellerPhoto` next run; eBay sets `complete = false`.

@@ -455,6 +455,20 @@ describe("a GET has a time limit, body included (NEO-592)", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  test("the log line carries the last try's status: a try-1 200 that broke does not label a try-2 timeout", async () => {
+    const config = configured();
+    const seen = tries(brokenBody, hang);
+    const result = getObjectBytes(config, KEY);
+    // Try 1 has ended on its broken body before the limit passes, so the limit cuts try 2.
+    await vi.waitFor(() => expect(seen).toHaveLength(2));
+    await limitPasses();
+    await expect(result).resolves.toEqual({ kind: "timeout" });
+    expect(seen).toEqual(["GET", "GET"]);
+    expect(logged()).toEqual([
+      { msg: "r2_get", attempts: 2, status: null, durationMs: expect.any(Number), outcome: "timeout" },
+    ]);
+  });
+
   test.each([
     ["no content-length", undefined],
     ["a non-numeric content-length", "lots"],

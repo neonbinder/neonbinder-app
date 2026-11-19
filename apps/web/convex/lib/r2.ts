@@ -241,7 +241,11 @@ export async function getObjectBytes(
   const maxBytes = opts.maxBytes ?? R2_GET_MAX_BYTES;
   const startedAt = Date.now();
   const progress = { attempts: 0 };
+  // The last try's status only: a 200 whose body broke on try 1 must not
+  // label a try-2 timeout in the log line.
   let status: number | null = null;
+  let statusAttempt = 0;
+  const lastStatus = () => (statusAttempt === progress.attempts ? status : null);
   const result = await (async (): Promise<R2GetResult> => {
     try {
       const tried = await boundedRequest<R2GetResult>(
@@ -250,6 +254,7 @@ export async function getObjectBytes(
         "GET",
         async (res) => {
           status = res.status;
+          statusAttempt = progress.attempts;
           if (!res.ok) {
             void res.body?.cancel().catch(() => {});
             return res.status === 404 ? { kind: "missing" } : { kind: "error", status: res.status };
@@ -294,17 +299,18 @@ export async function getObjectBytes(
       if (tried.body) return tried.body;
       // The tries ran out on a server fault.
       status = tried.res.status;
+      statusAttempt = progress.attempts;
       void tried.res.body?.cancel().catch(() => {});
       return { kind: "error", status: tried.res.status };
     } catch {
-      return { kind: "error", status };
+      return { kind: "error", status: lastStatus() };
     }
   })();
   console.log(
     JSON.stringify({
       msg: "r2_get",
       attempts: progress.attempts,
-      status,
+      status: lastStatus(),
       durationMs: Date.now() - startedAt,
       outcome: result.kind,
     }),
