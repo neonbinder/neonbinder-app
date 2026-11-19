@@ -1188,13 +1188,28 @@ export const getSiteToken = internalAction({
     v.null(),
   ),
   handler: async (ctx, args): Promise<{ token: string; expiresAt?: number } | null> => {
-    const userId = await getCurrentUserId(ctx);
-    if (!userId) {
-      throw new Error("Not authenticated");
-    }
-    return await siteTokenFor(ctx, userId, args.site);
+    return await siteTokenForCurrentUser(ctx, args.site);
   },
 });
+
+/**
+ * The body of `getSiteToken` as a plain function, for a caller that is
+ * already an action and would otherwise spend two action hops (and the
+ * scheduler's wait between them) to reach it. The identity is the one on
+ * `ctx.auth`, exactly what `ctx.runAction(getSiteToken)` propagates; no
+ * identity throws "Not authenticated", exactly as the action does. The token
+ * goes back to the caller and nowhere else: this logs nothing.
+ */
+export async function siteTokenForCurrentUser(
+  ctx: ActionCtx,
+  site: string,
+): Promise<{ token: string; expiresAt?: number } | null> {
+  const userId = await getCurrentUserId(ctx);
+  if (!userId) {
+    throw new Error("Not authenticated");
+  }
+  return await siteTokenFor(ctx, userId, site);
+}
 
 /**
  * NEO-370 — the user an identity-less entry acts for. `explicitUserId` is the

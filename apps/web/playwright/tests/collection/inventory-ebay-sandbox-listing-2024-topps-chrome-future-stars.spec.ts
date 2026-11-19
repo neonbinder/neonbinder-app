@@ -197,7 +197,7 @@
 // Minted box name: a single token from `env.ATTEMPT_TOKEN`.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Page } from "@playwright/test";
+import type { Locator, Page } from "@playwright/test";
 import { backToBoxes, cardsWord, checklistTitle, clearChecklistCommonPrice, confirmRemoved, createBox, deleteOpenBox, drillToCollectorChecklist, emptyBoxCards, expectNothingSent, followRunToEnd, followRunToRest, inventoryTabs, nameOf, pickIntakeSet, putOtherBoxesInPerson, quantityField, queueSettled, syncRun, TOPPS_CHROME_2024_FUTURE_STARS, walkForCleanup } from "../../support/collection";
 import { expectEbayHookedUp, removeEbayConnection, saveEbayConnection } from "../../support/credentials";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -242,6 +242,28 @@ const mustHoldPolicy = (name: string, slot: string) =>
   `the eBay sandbox seller must already hold the shipping policy "${name}" (offered under ${slot}). ` +
   "NeonBinder no longer makes shipping policies (NEO-423), so add it on the sandbox seller's eBay account by hand " +
   "(see the spec header and SET-REGISTRY.md)";
+
+/**
+ * A seller policy is on screen, or the failure says which of two things it is.
+ * The page reads the seller's policies from eBay live; when eBay does not
+ * answer in time (the sandbox is sometimes slow) the Shipping section shows
+ * eBay's "took too long" line and a "Try eBay again" button, and no policy is
+ * offered. That is a slow sandbox, NOT a missing policy, so `mustHoldPolicy`
+ * is said only once eBay has answered and the policy is not in its answer.
+ */
+async function expectPolicyOffered(page: Page, offered: Locator, name: string, slot: string): Promise<void> {
+  const readFailed = page.getByRole("button", { name: `Try ${EBAY} again`, exact: true });
+  await expect(
+    offered.or(readFailed).first(),
+    `the eBay sandbox never answered the policy read (neither "${name}" nor "Try ${EBAY} again" showed): a slow or stuck sandbox, not a missing policy`,
+  ).toBeVisible();
+  await expect(
+    readFailed,
+    `the eBay sandbox did not answer the policy read in time ("Try ${EBAY} again" is showing, with eBay's "took too long" line): ` +
+      `a slow sandbox, not a missing policy. Run the spec again; NeonBinder already waited 3 s and tried twice`,
+  ).toBeHidden();
+  await expect(offered, mustHoldPolicy(name, slot)).toBeVisible();
+}
 
 /**
  * At or above eBay's $0.99 floor, and under $20 (the Cards under $20 slot).
@@ -321,6 +343,10 @@ test.afterEach(async ({ context }, testInfo) => {
     await clean.close();
   }
 });
+
+// GUIDE hard rule 5: a seller spec never retries. A retry would write to the one
+// shared eBay sandbox seller again, and the failure reset cannot undo that.
+test.describe.configure({ retries: 0 });
 
 test(
   "Inventory: connecting eBay and finishing its setup lists a box's 2024 Topps Chrome Future Stars cards on the eBay sandbox, and an in-person box takes them down",
@@ -479,7 +505,7 @@ test(
     // "Set me up" renders in the same paint, so its presence is settled then.
     const underTwenty = page.getByRole("radiogroup", { name: "Cards under $20", exact: true });
     const setMeUp = page.getByRole("button", { name: "Set me up", exact: true });
-    await expect(underTwenty.getByRole("radio").first(), mustHoldPolicy(FREE_POLICY, "Cards under $20")).toBeVisible();
+    await expectPolicyOffered(page, underTwenty.getByRole("radio").first(), FREE_POLICY, "Cards under $20");
     await expect(page.getByRole("heading", { level: 3, name: "Ships from", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 3, name: "Shipping", exact: true })).toBeVisible();
     await expect(page.getByRole("heading", { level: 3, name: "Payment and returns", exact: true })).toBeVisible();
@@ -574,12 +600,12 @@ test(
     const twentyPlus = page.getByRole("radiogroup", { name: "$20 and up", exact: true });
     const free = twentyPlus.getByRole("radio", { name: FREE_POLICY, exact: true });
     const tracked = twentyPlus.getByRole("radio", { name: TRACKED_POLICY, exact: true });
-    await expect(free, mustHoldPolicy(FREE_POLICY, "$20 and up")).toBeVisible();
+    await expectPolicyOffered(page, free, FREE_POLICY, "$20 and up");
     await free.click();
     await expect(free).toBeChecked();
     // Saving a pick re-reads the seller's policies on eBay (a live round trip).
     await expect(said(/^Saved\.$/)).toBeVisible();
-    await expect(tracked, mustHoldPolicy(TRACKED_POLICY, "$20 and up")).toBeVisible();
+    await expectPolicyOffered(page, tracked, TRACKED_POLICY, "$20 and up");
     await tracked.click();
     await expect(tracked).toBeChecked();
     await expect(twentyPlus.getByRole("radio", { checked: true })).toHaveCount(1);
@@ -590,7 +616,7 @@ test(
     // shipping. Every run starts from an empty setup (a disconnect clears
     // it), so this pick always saves.
     const underTwentyFree = underTwenty.getByRole("radio", { name: FREE_POLICY, exact: true });
-    await expect(underTwentyFree, mustHoldPolicy(FREE_POLICY, "Cards under $20")).toBeVisible();
+    await expectPolicyOffered(page, underTwentyFree, FREE_POLICY, "Cards under $20");
     await underTwentyFree.click();
     await expect(underTwentyFree).toBeChecked();
     await expect(underTwenty.getByRole("radio", { checked: true })).toHaveCount(1);
@@ -798,7 +824,7 @@ test(
       await expect(editForm).toBeHidden();
       await yourCopies.getByRole("button", { name: new RegExp(`^Remove ${escapeRegExp(short)}, Raw, `) }).click();
       await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
-      await confirmRemoved(drawer);
+      await confirmRemoved(drawer, `Removed ${short}, Raw, `);
       if (axe) await expectAccessible(page, { within: drawer, label: "Card drawer, its only copy removed" });
       await drawer.getByRole("button", { name: "Close card detail" }).click();
       await expect(drawer).toBeHidden();

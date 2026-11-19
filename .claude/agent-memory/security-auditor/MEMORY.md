@@ -118,6 +118,10 @@
 - [Live-account probe and capture](patterns_live_account_probe_and_capture.md) — wrap transport; signal guard; stderr EPIPE/EIO kills it; scripts need checkout
 - [Neo569 league ids](patterns_neo569_league_ids.md) — registry fixture the body refuses = vacuous gate test; new hold reason freezes live qty/price
 - [Neo590 title catalog probe](patterns_neo590_title_catalog_probe.md) — text-to-catalog query: compare to players.search; fan-out per call; derived answer stays client-side
+- [Neo592 concurrent reads](patterns_neo592_concurrent_reads.md) — batching drops early-exit caps (level BFS); moved checks need own test
+- [Neo592 CI redactors](patterns_neo592_ci_redactors.md) — one rule list now; redact before slicing; secret-pair residual gaps; blank+close pages
+- [Neo592 bounded R2 GET](patterns_neo592_bounded_r2_get.md) — hand-signed GET keeps signal; pinned log keys; absent CL reads whole body pre-cap
+- [Neo604 retried secret add](patterns_neo604_retried_secret_add.md) — UNAVAILABLE retry on add; N-2 prune safe: destroys only below created ordinal
 - [Feedback reviewing a live worktree](feedback_reviewing_a_live_worktree.md) — When auditing a monorepo worktree, another agent may be editing it concurrently — never temporarily overwrite a file to test something, and re-run lint/tests before re…
 - [Patterns ar cleanup serving image](patterns_ar_cleanup_serving_image.md) — Availability invariant for the Artifact Registry cleanup policies in terraform main.tf — when a KEEP rank guard actually protects the live serving image and when it si…
 - [Patterns attention flag suppression](patterns_attention_flag_suppression.md) — Review rule for NeonBinder "needs attention" flags — a stored flag cleared by any write of its field is silently clearable by an unrelated save; check the client's mut…

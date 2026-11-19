@@ -61,6 +61,9 @@ vi.mock("./credentials", async (importOriginal) => {
       returns: v.any(),
       handler: async () => ({ token: "test-token" }),
     }),
+    // NEO-605: the BSC adapter reads the token by calling this directly,
+    // not through `runAction(getSiteToken)`; the same stub answers both.
+    siteTokenForCurrentUser: async () => ({ token: "test-token" }),
     authenticateBsc: internalAction({
       args: { userId: v.optional(v.string()), tokenRefused: v.optional(v.boolean()) },
       returns: v.any(),
@@ -253,6 +256,8 @@ describe("fetchRawOptions — one side resolvable", () => {
     expect(res.success).toBe(true);
     expect(res.skippedSides).toEqual(["sportlots"]);
     expect(res.errors.some((e) => e.platform === "sportlots")).toBe(false);
+    // BSC was really asked (with the stubbed token), not failed at the token read.
+    expect(res.errors.some((e) => e.platform === "bsc")).toBe(false);
   });
 
   test("a side that FAILED is an error and is NOT in skippedSides", async () => {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router";
 import { useDocumentTitle } from "@/src/hooks/useDocumentTitle";
 import PrototypeBanner from "../_shared/PrototypeBanner";
@@ -52,17 +52,22 @@ function CollectionPrototype1Page() {
 
   // --- Notices -------------------------------------------------------------
   const [notice, setNotice] = useState<Notice | null>(null);
+  // Monotonic for the page's life: an id never comes round again after a
+  // dismiss, so a timer that outlived its notice can never match a new one.
+  const lastId = useRef(0);
   const notify = useCallback((message: string, undo?: () => void) => {
-    setNotice((prev) => ({ id: (prev?.id ?? 0) + 1, message, undo }));
+    setNotice({ id: ++lastId.current, message, undo });
   }, []);
   useEffect(() => {
     if (!notice) return;
-    const t = setTimeout(() => setNotice(null), NOTICE_MS);
+    // Takes down its own notice only: a newer one it raced with stays.
+    const { id } = notice;
+    const t = setTimeout(() => setNotice((prev) => (prev?.id === id ? null : prev)), NOTICE_MS);
     return () => clearTimeout(t);
   }, [notice]);
   const undo = () => {
     notice?.undo?.();
-    setNotice((prev) => (prev ? { id: prev.id + 1, message: "Undone." } : null));
+    setNotice((prev) => (prev ? { id: ++lastId.current, message: "Undone." } : null));
   };
 
   // --- Quick Have toggle (rows everywhere) -----------------------------------

@@ -484,6 +484,34 @@ describe("the line's timer", () => {
     expect(result.current.notice).toBeNull();
   });
 
+  it("an older notice's timer never takes down a newer notice (the stale-timer race)", () => {
+    // The race: the old timer fires after the newer notice has committed but
+    // before React ran the old effect's cleanup. Hand the test that timer.
+    const spy = vi.spyOn(globalThis, "setTimeout");
+    const { result } = renderHook(() => useStatusLine());
+    act(() => result.current.notify("Saved."));
+    const staleTimer = spy.mock.calls.filter(([, ms]) => ms === NOTICE_MS).at(-1)![0] as () => void;
+    act(() => result.current.notify("Removed.", () => {}));
+    act(() => staleTimer());
+    expect(result.current.notice).toMatchObject({ message: "Removed." });
+    expect(result.current.notice?.undo).toBeTypeOf("function");
+    spy.mockRestore();
+  });
+
+  it("a newer notice keeps its own full NOTICE_MS, counted from when it came up", () => {
+    const { result } = renderHook(() => useStatusLine());
+    act(() => result.current.notify("Saved."));
+    act(() => void vi.advanceTimersByTime(NOTICE_MS - 1_000));
+    act(() => result.current.notify("Removed.", () => {}));
+    // The first notice's timer would have fired here.
+    act(() => void vi.advanceTimersByTime(1_000));
+    expect(result.current.notice?.message).toBe("Removed.");
+    act(() => void vi.advanceTimersByTime(NOTICE_MS - 1_001));
+    expect(result.current.notice?.message).toBe("Removed.");
+    act(() => void vi.advanceTimersByTime(1));
+    expect(result.current.notice).toBeNull();
+  });
+
   it("a running undo keeps its line up past NOTICE_MS until it answers", async () => {
     let finish!: () => void;
     const undo = () => new Promise<void>((r) => (finish = r));

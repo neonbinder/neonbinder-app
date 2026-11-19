@@ -36,12 +36,22 @@ test(
       await expectNoFlash(page, "light");
       await expectPageLook(page, "light");
     } finally {
-      // R7: back to System, whatever happened above.
+      // R7: back to System, whatever happened above. Settle on the group (one
+      // radio checked), then write only when System is not the pick: a pick of
+      // the current value saves nothing and says nothing. The radio flips
+      // before the save, so the server's "Saved." is the proof the write landed
+      // before the test ends; "Saving…" gone would also pass on a failed save
+      // or a dead page. The pick on load is the device's copy until the
+      // profile arrives; they agree after every confirmed save above, and a red
+      // body's account is reset by the harness in CI. NEO-603.
       await page.goto("/profile/settings");
       await expect(appearance).toBeVisible({ timeout: LAUNCH_GATE });
-      await system.click();
+      await expect(theme.getByRole("radio", { checked: true })).toHaveCount(1);
+      if (!(await system.isChecked())) {
+        await system.click();
+        await expect(page.getByRole("main").getByRole("status").filter({ hasText: "Saved." })).toBeVisible();
+      }
       await expect(system).toBeChecked();
-      await expect(page.getByText("Saving…")).toHaveCount(0);
     }
   },
 );

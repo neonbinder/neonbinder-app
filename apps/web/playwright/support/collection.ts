@@ -949,9 +949,15 @@ export async function expectPhotoServed(page: Page, shown: Locator, attribute: "
  * (a press lost to the notice reflow would then pass unseen). Call it after
  * EVERY Remove, the last one included, before pressing the next Remove or
  * leaving the drawer.
+ *
+ * `text` pins which line went: the notice must begin with it, e.g.
+ * `Removed ${short}, Raw, Excellent` (the drawer may add the line's home after
+ * it). Pass it wherever the spec knows the line it removed; without it any
+ * "Removed ..." notice answers.
  */
-export async function confirmRemoved(drawer: Locator): Promise<void> {
-  const removed = drawer.getByRole("status").filter({ hasText: /^Removed / });
+export async function confirmRemoved(drawer: Locator, text?: string): Promise<void> {
+  const notice = text === undefined ? /^Removed / : new RegExp(`^${text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`);
+  const removed = drawer.getByRole("status").filter({ hasText: notice });
   await expect(removed).toBeVisible();
   await drawer.getByRole("button", { name: "Dismiss message", exact: true }).click();
   await expect(removed).toHaveCount(0);

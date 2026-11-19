@@ -37,6 +37,10 @@ import { installOver80Cleanup, runOver80Flow } from "./ebay-over-80-title-fixtur
 
 installOver80Cleanup();
 
+// GUIDE hard rule 5: a seller spec never retries. A retry would write to the one
+// shared eBay sandbox seller again, and the failure reset cannot undo that.
+test.describe.configure({ retries: 0 });
+
 test(
   "Inventory: an eBay card whose title is over 80 characters is held back whole with its reason, never chopped, and is queued again when the title is shortened in the set builder",
   // @marketplace-seller: writes to the eBay sandbox seller account shared by every PR's CI
