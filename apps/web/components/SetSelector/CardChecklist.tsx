@@ -2494,6 +2494,11 @@ export default function CardChecklist({
         ...(preview.careerFields?.stints.length
           ? { careerStints: preview.careerFields.stints }
           : {}),
+        // NEO-591: and the players the career check creates (each card that
+        // points at one carries `newPlayerByName`, put on it above).
+        ...(preview.careerFields?.newPlayers?.length
+          ? { careerNewPlayers: preview.careerFields.newPlayers }
+          : {}),
       });
       // NEO-195: the candidates have been promoted into cardChecklist, so the
       // staging rows have done their job. Dropping them here rather than

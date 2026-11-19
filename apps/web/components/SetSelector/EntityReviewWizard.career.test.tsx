@@ -114,6 +114,7 @@ import {
   CAREER_RETRY_LABEL,
   CAREER_CHECKING,
   CAREER_NAMES_WAIT_MS,
+  CAREER_NEW_PLAYER_UNNAMED,
   careerHeading,
   CAREER_TEAM_NOT_NEEDED,
   type CareerContext,
@@ -760,5 +761,79 @@ describe("a relinked player reaches the titles step (NEO-574)", () => {
     fireEvent.click(within(group).getByRole("radio", { name: "Wrong player" }));
     fireEvent.click(screen.getByRole("button", { name: "Search result player" }));
     expect(playerIdReads.at(-1)).toContain("picked-player");
+  });
+});
+
+describe("Wrong player → New player (NEO-591)", () => {
+  function pickNew(props: Record<string, unknown> = {}) {
+    render(wizard(props));
+    const group = screen.getAllByRole("radiogroup")[0];
+    fireEvent.click(within(group).getByRole("radio", { name: "Wrong player" }));
+    fireEvent.click(screen.getByRole("radio", { name: /New player named/ }));
+  }
+  const nameBox = () => screen.getByRole("textbox", { name: /^New player’s name for / });
+
+  it("reports the new player, its stints and the card pointing at its ref", () => {
+    const onCareerChange = vi.fn();
+    pickNew({ onCareerChange });
+    const fields = onCareerChange.mock.calls.at(-1)?.[0];
+    const ref = fields?.newPlayers?.[0]?.ref;
+    expect(ref).toMatch(/^[A-Za-z0-9_-]{1,32}$/);
+    expect(fields?.newPlayers).toEqual([
+      {
+        ref,
+        name: "Fernando Tatis Jr.",
+        stints: [{ teamId: "t-padres", fromYear: 2022, toYear: 2022 }],
+      },
+    ]);
+    expect(fields?.cardEdits[0]).toEqual({
+      newPlayerByName: [{ name: "Fernando Tatis Jr.", ref }],
+    });
+    expect(fields?.stints).toEqual([]);
+  });
+
+  it("sends the same ref after the name is edited", () => {
+    const onCareerChange = vi.fn();
+    pickNew({ onCareerChange });
+    const ref = onCareerChange.mock.calls.at(-1)?.[0]?.newPlayers?.[0]?.ref;
+    fireEvent.change(nameBox(), { target: { value: "Luis Rodriguez" } });
+    const fields = onCareerChange.mock.calls.at(-1)?.[0];
+    expect(fields?.newPlayers?.[0]).toMatchObject({ ref, name: "Luis Rodriguez" });
+    expect(fields?.cardEdits[0]?.newPlayerByName).toEqual([{ name: "Fernando Tatis Jr.", ref }]);
+  });
+
+  it("holds Next while the name is empty, says why on the status line, and lands in the box", () => {
+    pickNew();
+    fireEvent.change(nameBox(), { target: { value: "   " } });
+    expect(next().getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText(CAREER_NEW_PLAYER_UNNAMED)).toBeTruthy();
+    // Nothing is sent for a player with no name.
+    act(() => (document.activeElement as HTMLElement | null)?.blur());
+    fireEvent.click(next());
+    expect(screen.getByRole("heading", { name: careerHeading(1) })).toBeTruthy();
+    expect(document.activeElement).toBe(nameBox());
+    // A name releases it.
+    fireEvent.change(nameBox(), { target: { value: "Luis Rodriguez" } });
+    expect(next().getAttribute("aria-disabled")).toBeNull();
+    expect(screen.queryByText(CAREER_NEW_PLAYER_UNNAMED)).toBeNull();
+  });
+
+  it("holds Next for a name with no letter or digit, too", () => {
+    pickNew();
+    fireEvent.change(nameBox(), { target: { value: "- . -" } });
+    expect(next().getAttribute("aria-disabled")).toBe("true");
+    expect(screen.getByText(CAREER_NEW_PLAYER_UNNAMED)).toBeTruthy();
+  });
+
+  it("does not hold Next for an answer that is not a new player", () => {
+    render(wizard());
+    expect(next().getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("counts the new player on the save step's summary", () => {
+    pickNew();
+    fireEvent.click(next());
+    const label = screen.getByText("New players and teams");
+    expect(label.parentElement?.textContent).toBe("New players and teams1");
   });
 });

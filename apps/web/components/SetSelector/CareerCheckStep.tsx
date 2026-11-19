@@ -9,6 +9,8 @@ import {
 } from "react";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
+import { Input } from "../primitives/Input";
+import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { nameSearchKey } from "../../lib/entities/name-search";
 import { NOTHING_ON_FILE, formatPlayerDescription } from "../../lib/players/player-description";
 import CareerTeamEntry, { type CareerTeamAdded } from "./CareerTeamEntry";
@@ -21,9 +23,13 @@ import {
   NO_CAREER_TEXT,
   careerFollowUpFailed,
   careerHeading,
+  cleanNewPlayerName,
   coverageAskOf,
   coveredText,
   followUpPair,
+  isNewPlayerPick,
+  newPlayerAnswer,
+  newPlayerNameReady,
   preAddedStints,
   sortCareerLines,
   noStintText,
@@ -37,6 +43,8 @@ import {
   type CareerFollowUp,
   type CareerLine,
   type CoverageAsk,
+  type ExistingPlayerPick,
+  type NewPlayerPick,
   type ExistingStint,
   type StagedStint,
   type StintTeamRef,
@@ -63,6 +71,10 @@ import {
  *    number more. Every stint staged here is sent at Confirm & Save.
  *  - **Wrong player**: the same-name players on file, those whose career
  *    covers the team first, and a search of existing players, open at once.
+ *    The group ends with "New player named X" (always there, even with no
+ *    namesake on file): the printed person is somebody NB has not got. It
+ *    opens a name box (the printed name, editable) and the stints widget with
+ *    the card's team staged. Nothing is written until Confirm & Save.
  *  - **Fix card's team**: a search of existing teams, open at once.
  *
  * A different player or team asks the coverage read about the NEW pair; if
@@ -481,6 +493,7 @@ function CareerLineRow({
                 failed={failed}
                 requestCoverage={requestCoverage}
                 playerName={playerName}
+                lineLabel={groupLabel}
                 teamName={shortTeamName ?? ""}
                 lineTeam={lineTeam}
                 stintEnv={stintEnv}
@@ -836,6 +849,7 @@ function PlayerPanel({
   failed,
   requestCoverage,
   playerName,
+  lineLabel,
   teamName,
   lineTeam,
   stintEnv,
@@ -857,6 +871,8 @@ function PlayerPanel({
   failed: Readonly<Record<string, boolean>>;
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   playerName: string;
+  /** The line's radio group name: tells this line's name box from another's. */
+  lineLabel: string;
   /** The short team name, for "Played for …". */
   teamName: string;
   /** The card's team as a stint for the picked player names it. */
@@ -879,6 +895,12 @@ function PlayerPanel({
     excludePlayerId: line.playerId as Id<"players">,
   });
   const elseRef = useRef<HTMLButtonElement>(null);
+  const nameRef = useRef<HTMLInputElement>(null);
+  const stintsRef = useRef<HTMLDivElement>(null);
+  const picked = answer.pick;
+  const pickedNew: NewPlayerPick | undefined = isNewPlayerPick(picked) ? picked : undefined;
+  const pickedExisting: ExistingPlayerPick | undefined =
+    picked && !isNewPlayerPick(picked) ? picked : undefined;
   const pick = (playerId: Id<"players">, name: string) => {
     const next: CareerAnswer = { kind: "player", pick: { playerId, name }, then: LEAVE_FOLLOW_UP };
     onAnswer(next);
@@ -890,16 +912,31 @@ function PlayerPanel({
       setTimeout(() => elseRef.current?.focus(), 0);
     }
   };
+  /**
+   * "New player named X". The ref is minted here, once, and lives in the answer;
+   * picking the option again keeps the answer (and so the ref) as it is. An
+   * arrow only picks; a click, Space or Enter also steps into the name box.
+   */
+  const pickNew = (via: "arrow" | "press") => {
+    if (disabled) return;
+    if (!pickedNew) {
+      onAnswer(newPlayerAnswer({ printedName: line.printedPlayer, team: lineTeam, setYear }));
+    }
+    if (searchOpen) setSearchOpen(false);
+    if (via === "arrow") return;
+    setTimeout(() => nameRef.current?.focus(), 0);
+  };
   /** Leaving the search without a pick: focus goes back to what opened it. */
   const cancelSearch = () => {
     setSearchOpen(false);
     setTimeout(() => (searchFromPill ? focusPill() : elseRef.current?.focus()), 0);
   };
-  const picked = answer.pick;
   // A pick made with "Someone else…" is not among the candidates: it joins
   // the list so the choice stays visible.
   const extra =
-    picked && !read.candidates.some((c) => c.playerId === picked.playerId) ? picked : null;
+    pickedExisting && !read.candidates.some((c) => c.playerId === pickedExisting.playerId)
+      ? pickedExisting
+      : null;
   const choices: Candidate[] = [
     ...(extra ? [{ playerId: extra.playerId, name: extra.name, detail: "" }] : []),
     ...read.candidates.map((c) => ({
@@ -912,6 +949,9 @@ function PlayerPanel({
       covers: c.covers,
     })),
   ];
+  const newName = pickedNew ? cleanNewPlayerName(pickedNew.name) : "";
+  const newNameReady = pickedNew ? newPlayerNameReady(pickedNew.name) : false;
+  const newStints = answer.then.kind === "add" ? answer.then.stints : [];
 
   return (
     <div className="space-y-2">
@@ -920,16 +960,20 @@ function PlayerPanel({
           Looking for players…
         </p>
       )}
-      {choices.length > 0 && (
-        <PlayerChoices
-          label={`Which ${line.printedPlayer}?`}
-          choices={choices}
-          team={teamName}
-          pickedId={picked?.playerId}
-          disabled={disabled}
-          onPick={pick}
-        />
-      )}
+      <PlayerChoices
+        label={`Which ${line.printedPlayer}?`}
+        choices={choices}
+        team={teamName}
+        pickedId={pickedExisting?.playerId}
+        newOption={{
+          name: newName || line.printedPlayer.trim(),
+          picked: pickedNew !== undefined,
+        }}
+        disabled={disabled}
+        onPick={pick}
+        onPickNew={pickNew}
+        onEnterNew={() => nameRef.current?.focus()}
+      />
       {searchOpen ? (
         <EntityLinkSearch
           kind="player"
@@ -954,18 +998,56 @@ function PlayerPanel({
           Someone else…
         </NeonButton>
       )}
-      {picked && (
+      {pickedNew && (
+        <div className="space-y-1.5">
+          <Input
+            bare
+            ref={nameRef}
+            type="text"
+            value={pickedNew.name}
+            maxLength={MAX_PLAYER_NAME_LENGTH}
+            aria-label={`New player’s name for ${lineLabel}`}
+            aria-invalid={!newNameReady || undefined}
+            data-career-new-name={newNameReady ? "named" : "blank"}
+            disabled={disabled}
+            onChange={(e) =>
+              onAnswer({ ...answer, pick: { ...pickedNew, name: e.target.value } })
+            }
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              // Never the wizard's own Enter. A named player: on to the team box.
+              e.preventDefault();
+              e.stopPropagation();
+              if (e.repeat || !newNameReady) return;
+              stintsRef.current?.querySelector<HTMLElement>("input")?.focus();
+            }}
+            className="w-full p-1.5 text-sm"
+          />
+          <div ref={stintsRef}>
+            <StintsPanel
+              subject={newName || line.printedPlayer.trim()}
+              playerId=""
+              stints={newStints}
+              onChange={(stints) => onAnswer({ ...answer, then: { kind: "add", stints } })}
+              env={stintEnv}
+              onDone={onWalk}
+              disabled={disabled}
+            />
+          </div>
+        </div>
+      )}
+      {pickedExisting && (
         <FollowUp
           line={line}
           setYear={setYear}
           stintEnv={stintEnv}
           stintTeam={lineTeam}
-          subjectId={picked.playerId}
+          subjectId={pickedExisting.playerId}
           answer={answer}
           onAnswer={onAnswer}
           coverage={coverage}
           failed={failed}
-          subject={picked.name}
+          subject={pickedExisting.name}
           team={teamName}
           disabled={disabled}
           onWalk={onWalk}
@@ -976,28 +1058,43 @@ function PlayerPanel({
 }
 
 /**
- * The namesakes, one radio group with one tab stop: arrows move and pick,
- * Space or a click picks, Enter picks. "Someone else…" is a button outside it.
+ * The namesakes, then "New player named X": one radio group with one tab stop.
+ * Arrows move and pick (never a focus jump off the rows), Space or a click
+ * picks, Enter picks. "New player" also steps into its name box on a click,
+ * Space or Enter. "Someone else…" is a button outside the group.
  */
 function PlayerChoices({
   label,
   choices,
   team,
   pickedId,
+  newOption,
   disabled,
   onPick,
+  onPickNew,
+  onEnterNew,
 }: {
   label: string;
   choices: readonly Candidate[];
   team: string;
   pickedId?: Id<"players">;
+  /** The last row: the printed person is nobody NB has. */
+  newOption: { name: string; picked: boolean };
   disabled: boolean;
   onPick: (playerId: Id<"players">, name: string) => void;
+  onPickNew: (via: "arrow" | "press") => void;
+  /** Enter on the New player row that is already the pick. */
+  onEnterNew: () => void;
 }) {
-  const pickedAt = choices.findIndex((c) => c.playerId === pickedId);
+  // The rows: each namesake by player id, then the new-player row.
+  const NEW = "__new";
+  const rowIds = [...choices.map((c) => c.playerId as string), NEW];
+  const pickedAt = newOption.picked
+    ? rowIds.length - 1
+    : choices.findIndex((c) => c.playerId === pickedId);
   const stop = pickedAt >= 0 ? pickedAt : 0;
   // After an arrow pick the rows may be re-ordered by the re-render (a pick
-  // joins the list as an extra row), so focus follows the player, by id,
+  // joins the list as an extra row), so focus follows the row, by id,
   // once the new rows are in: never a position read before the render.
   const optionRefs = useRef(new Map<string, HTMLButtonElement>());
   const focusAfterRender = useRef<string | null>(null);
@@ -1009,18 +1106,25 @@ function PlayerChoices({
   });
   return (
     <div role="radiogroup" aria-label={label} className="space-y-1">
-      {choices.map((c, i) => {
+      {rowIds.map((rowId, i) => {
+        const isNew = rowId === NEW;
+        const c = isNew ? undefined : choices[i];
         const picked = i === pickedAt;
-        const choose = () => {
-          if (disabled || picked) return;
+        const choose = (via: "arrow" | "press") => {
+          if (disabled) return;
+          if (isNew) {
+            onPickNew(via);
+            return;
+          }
+          if (picked || !c) return;
           onPick(c.playerId, c.name);
         };
         return (
           <NeonButton
-            key={c.playerId}
+            key={rowId}
             ref={(el) => {
-              if (el) optionRefs.current.set(c.playerId, el);
-              else optionRefs.current.delete(c.playerId);
+              if (el) optionRefs.current.set(rowId, el);
+              else optionRefs.current.delete(rowId);
             }}
             variant="secondary"
             outline={!picked}
@@ -1029,7 +1133,7 @@ function PlayerChoices({
             aria-checked={picked}
             aria-disabled={disabled || undefined}
             tabIndex={i === stop ? 0 : -1}
-            onClick={choose}
+            onClick={() => choose("press")}
             onKeyDown={(event) => {
               const step =
                 event.key === "ArrowDown" || event.key === "ArrowRight"
@@ -1040,18 +1144,21 @@ function PlayerChoices({
               if (step !== 0) {
                 event.preventDefault();
                 if (disabled) return;
-                const to = (i + step + choices.length) % choices.length;
+                const to = (i + step + rowIds.length) % rowIds.length;
                 if (to === pickedAt) {
                   // Already the pick: re-picking would reset what was typed under it.
-                  optionRefs.current.get(choices[to].playerId)?.focus();
+                  optionRefs.current.get(rowIds[to])?.focus();
                   return;
                 }
-                focusAfterRender.current = choices[to].playerId;
-                onPick(choices[to].playerId, choices[to].name);
+                focusAfterRender.current = rowIds[to];
+                if (rowIds[to] === NEW) onPickNew("arrow");
+                else onPick(choices[to].playerId, choices[to].name);
               } else if (event.key === "Enter") {
                 event.preventDefault();
                 event.stopPropagation();
-                if (!event.repeat) choose();
+                if (event.repeat || disabled) return;
+                if (isNew && picked) onEnterNew();
+                else choose("press");
               }
             }}
             // Up to three lines in one button: the name, the detail and the
@@ -1065,10 +1172,10 @@ function PlayerChoices({
                   ✓
                 </span>
               )}
-              {c.name}
+              {isNew ? `New player named ${newOption.name}` : c?.name}
             </span>
-            {c.detail && <span className="text-xs font-normal">{c.detail}</span>}
-            {c.covers && team && <span className="text-xs font-normal">{playedForText(team)}</span>}
+            {c?.detail && <span className="text-xs font-normal">{c.detail}</span>}
+            {c?.covers && team && <span className="text-xs font-normal">{playedForText(team)}</span>}
           </NeonButton>
         );
       })}

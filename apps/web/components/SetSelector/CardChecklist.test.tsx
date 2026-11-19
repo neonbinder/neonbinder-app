@@ -333,6 +333,26 @@ vi.mock("./EntityReviewWizard", () => ({
         </button>
       )}
       {onCareerChange && (
+        <button
+          type="button"
+          onClick={() =>
+            onCareerChange({
+              stints: [],
+              cardEdits: [{ newPlayerByName: [{ name: "Solo Player", ref: "np-one" }] }, undefined],
+              newPlayers: [
+                {
+                  ref: "np-one",
+                  name: "Other Person",
+                  stints: [{ teamId: "t-solo", fromYear: 2022, toYear: 2022 }],
+                },
+              ],
+            })
+          }
+        >
+          Report a new player
+        </button>
+      )}
+      {onCareerChange && (
         <button type="button" onClick={() => onCareerChange(undefined)}>
           Report no career answers
         </button>
@@ -1685,6 +1705,29 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(args.cards[1].teams).toEqual(["Solo Team"]);
     });
 
+    it("NEO-591: sends the new players at the top level and the ref on the card", async () => {
+      state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
+      const { rerender } = renderChecklist();
+      await syncPlayers(rerender, careerContext);
+      await screen.findByText("Wizard opened teams-only");
+      fireEvent.click(screen.getByText("Report a new player"));
+      await act(async () => {
+        fireEvent.click(screen.getByText("Confirm entity review"));
+      });
+      await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+      const args = mockCommitChecklist.mock.calls[0][0];
+      expect(args.careerNewPlayers).toEqual([
+        {
+          ref: "np-one",
+          name: "Other Person",
+          stints: [{ teamId: "t-solo", fromYear: 2022, toYear: 2022 }],
+        },
+      ]);
+      expect(args.cards[0].newPlayerByName).toEqual([{ name: "Solo Player", ref: "np-one" }]);
+      expect(args.cards[1]).not.toHaveProperty("newPlayerByName");
+      expect(args).not.toHaveProperty("careerStints");
+    });
+
     it("an answer withdrawn sends no stints", async () => {
       state.variantRow = { value: "Test Set", features: { autographFormat: "On Card" } };
       const { rerender } = renderChecklist();
@@ -1698,6 +1741,7 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
       const args = mockCommitChecklist.mock.calls[0][0];
       expect(args).not.toHaveProperty("careerStints");
+      expect(args).not.toHaveProperty("careerNewPlayers");
       expect(args.cards[1].teams).toEqual(["Solo Team"]);
     });
   });

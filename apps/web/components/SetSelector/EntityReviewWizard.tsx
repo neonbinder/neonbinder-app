@@ -89,12 +89,15 @@ import {
   applyCareerCardEdit,
   cardTeamStrings,
   careerCommitFields,
+  isNewPlayerPick,
+  newPlayerNameReady,
   classifyPairs,
   coverageAskOf,
   deriveSittingPairs,
   gateJudgedKeys,
   CAREER_CHECKING,
   CAREER_NAMES_WAIT_MS,
+  CAREER_NEW_PLAYER_UNNAMED,
   CAREER_READ_FAILED,
   CAREER_TEAM_NOT_NEEDED,
   followUpPair,
@@ -1585,6 +1588,14 @@ export default function EntityReviewWizard({
         : undefined,
     [careerEnabled, checklistedCards, careerLines, careerAnswers],
   );
+  /**
+   * NEO-591 — a "New player named …" line whose name box is empty: Next waits
+   * (the commit cannot create nobody). Only lines on the step count.
+   */
+  const careerUnnamed = careerLines.some((line) => {
+    const a = careerAnswers[line.key];
+    return a?.kind === "player" && isNewPlayerPick(a.pick) && !newPlayerNameReady(a.pick.name);
+  });
   /**
    * The cards every step AFTER the career step reads: with the operator's
    * career edits on them (a replaced team string gone, a picked team on, a
@@ -3659,6 +3670,9 @@ export default function EntityReviewWizard({
     // NEO-574 — the players a career-step relink picked, so a title can name them.
     const playerNameById = new Map<string, string>();
     for (const p of linkedPlayers ?? []) playerNameById.set(p._id, p.name);
+    // NEO-591 — and the players the career step creates, by the ref the cards carry.
+    const newPlayerNameByRef = new Map<string, string>();
+    for (const p of careerFields?.newPlayers ?? []) newPlayerNameByRef.set(p.ref, p.name);
     // NEO-606 — and the teams' Location / Name, so the preview shortens a team
     // as the commit's title will.
     const teamSplits = (linkedTeams ?? []).flatMap((t) => {
@@ -3670,9 +3684,10 @@ export default function EntityReviewWizard({
       linkedTeamNameById: byId,
       teamNameById: byId,
       playerNameById,
+      newPlayerNameByRef,
       teamSplits,
     };
-  }, [rows, linkedTeams, linkedPlayers]);
+  }, [rows, linkedTeams, linkedPlayers, careerFields]);
   /** The cards the titles step would ask about, recomputed from the team answers. */
   const titleIndexes = useMemo(
     () =>
@@ -4505,7 +4520,7 @@ export default function EntityReviewWizard({
     saving ||
     (postStep === "autograph" && autographUnanswered) ||
     (postStep === "checklist" && checklistUnanswered) ||
-    (postStep === "career" && careerChecking);
+    (postStep === "career" && (careerChecking || careerUnnamed));
   /**
    * NEO-345 (a11y) — a press (click, Enter or Space) on Next while the
    * autograph step is unanswered: say why in the step's status line and move
@@ -4523,6 +4538,11 @@ export default function EntityReviewWizard({
           .querySelector<HTMLButtonElement>(`[data-checklist-conflict="${firstOpen.index}"] button`)
           ?.focus();
       }
+      return;
+    }
+    // NEO-591 — a new player with no name: say so, and land in the empty box.
+    if (postStep === "career" && careerUnnamed) {
+      document.querySelector<HTMLInputElement>('input[data-career-new-name="blank"]')?.focus();
       return;
     }
     if (postStep !== "autograph" || !autographUnanswered) return;
@@ -4673,7 +4693,9 @@ export default function EntityReviewWizard({
         ? CAREER_CHECKING
         : careerReadFailed
           ? CAREER_READ_FAILED
-          : null;
+          : careerUnnamed
+            ? CAREER_NEW_PLAYER_UNNAMED
+            : null;
   const footerLine: string | null =
     careerLine ??
     (!expired &&
@@ -4729,7 +4751,10 @@ export default function EntityReviewWizard({
     ["Cards to save", summary.cardCount],
     ["Cards to delete", summary.deleteCount],
     ["Cards with field updates", summary.reviewDecisionCount],
-    ["New players and teams", Math.max(0, outcome.created - droppedNewTeams)],
+    [
+      "New players and teams",
+      Math.max(0, outcome.created - droppedNewTeams) + (careerFields?.newPlayers?.length ?? 0),
+    ],
     ["Linked to existing", outcome.linked],
     ["Skipped as not a name", outcome.skipped],
   ];
@@ -6899,7 +6924,7 @@ export default function EntityReviewWizard({
                         postStep === "checklist"
                           ? `${checklistLeadId} ${checklistHintId}`
                           : postStep === "career"
-                            ? careerChecking
+                            ? careerChecking || careerUnnamed
                               ? `${careerLeadId} ${footerStatusId}`
                               : careerLeadId
                           : postStep === "teams"

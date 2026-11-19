@@ -1640,3 +1640,58 @@ describe("a Prospect (X) card, X is the printed team (NEO-591)", () => {
     expect(groups[0]).not.toHaveProperty("prospectHeld");
   });
 });
+
+describe("a name the career step pointed at another person (NEO-574 / NEO-591)", () => {
+  const OTHER = "player_other" as Id<"players">;
+  const relinked = (cardNumber: string): PreviewCardForTeams => ({
+    ...card(cardNumber, ["Luis Rodriguez"]),
+    playerIdByName: [{ name: "Luis Rodriguez", playerId: OTHER }],
+  });
+  const fresh = (cardNumber: string, ref = "np-one"): PreviewCardForTeams => ({
+    ...card(cardNumber, ["Luis Rodriguez"]),
+    newPlayerByName: [{ name: "Luis Rodriguez", ref }],
+  });
+
+  test("a relinked card is asked about its new player by id, not the printed name's", () => {
+    const cards = [relinked("1"), card("2", ["Luis Rodriguez"])];
+    expect(evidenceRequests(cards, [])).toEqual([
+      { key: `id:${OTHER}`, playerId: OTHER },
+      { key: "name:luis rodriguez", name: "Luis Rodriguez" },
+    ]);
+    // Two people, two lines, though both cards print one name.
+    expect(build(cards, [], {})).toHaveLength(2);
+  });
+
+  test("a namesake's sibling card is not 'same player in this set' evidence for the relinked one", () => {
+    // Card 2 prints the same name, has a team, and sits on the first player.
+    const cards = [relinked("1"), card("2", ["Luis Rodriguez"], ["Reds"])];
+    const groups = build(cards, [], { [`id:${OTHER}`]: unsure([YANKEES, "New York Yankees"]) });
+    expect(groups).toHaveLength(1);
+    expect(groups[0].suggestion).toBeNull();
+    expect(labels(groups[0])).toEqual(["New York Yankees"]);
+  });
+
+  test("a new player is asked nothing and has no career to suggest from", () => {
+    const cards = [fresh("1")];
+    expect(evidenceRequests(cards, [])).toEqual([]);
+    const groups = build(cards, [], {});
+    expect(groups).toHaveLength(1);
+    expect(groups[0].players).toEqual(["Luis Rodriguez"]);
+    expect(groups[0].loading).toBe(false);
+    expect(groups[0].suggestion).toBeNull();
+    expect(defaultChoice(groups[0])).toEqual({ kind: "later" });
+  });
+
+  test("a new player's sibling card with a team is not evidence for it; two cards of one ref share a line", () => {
+    const cards = [fresh("1"), fresh("2"), card("3", ["Luis Rodriguez"], ["Reds"])];
+    const groups = build(cards, [], {});
+    expect(groups).toHaveLength(1);
+    expect(groups[0].cards.map((c) => c.cardNumber)).toEqual(["1", "2"]);
+    expect(groups[0].suggestion).toBeNull();
+  });
+
+  test("two different new players with one printed name are two lines", () => {
+    const groups = build([fresh("1", "np-a"), fresh("2", "np-b")], [], {});
+    expect(groups).toHaveLength(2);
+  });
+});

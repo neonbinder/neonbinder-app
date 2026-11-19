@@ -127,6 +127,14 @@ export interface PreviewCardForTeams {
   teams?: string[];
   players?: string[];
   /**
+   * NEO-574 / NEO-591 — a printed name the career step pointed at another
+   * person: an existing player (`playerIdByName`) or a new one the commit
+   * creates (`newPlayerByName`, by ref). That person is who the card has for
+   * the teams step, not whoever the printed name matched.
+   */
+  playerIdByName?: ReadonlyArray<{ name: string; playerId: string }>;
+  newPlayerByName?: ReadonlyArray<{ name: string; ref: string }>;
+  /**
    * How the fetch-time team lookup for this card ended. "failed" means the
    * listing's answer never arrived, so no rule may guess a team for it
    * (invariant 8): the operator picks. NEO-478 "checklist" means the
@@ -624,7 +632,9 @@ function teamStringResolves(raw: string, view: NamesView): boolean {
 
 type CardPlayer =
   | { kind: "created"; key: string; display: string; row: TeamsReviewRow }
-  | { kind: "server"; key: string; display: string; request: EvidenceRequest };
+  | { kind: "server"; key: string; display: string; request: EvidenceRequest }
+  /** NEO-591 — a player the career step creates: no career on file, and nothing to ask the server. */
+  | { kind: "new"; key: string; display: string };
 
 /**
  * The people on a card (at preview position `index`), deduped. A name skipped
@@ -641,6 +651,25 @@ function cardPlayers(card: PreviewCardForTeams, index: number, view: NamesView):
     const key = norm(display);
     if (!key || seen.has(key)) continue;
     seen.add(key);
+    // NEO-574 / NEO-591 — a name the career step pointed at another person is
+    // THAT person's, keyed by who they are: a namesake's sibling card (same
+    // printed name, still on the first player) is not evidence for it.
+    const fresh = card.newPlayerByName?.find((r) => norm(r.name) === key);
+    if (fresh) {
+      out.push({ kind: "new", key: `new:${fresh.ref}`, display });
+      continue;
+    }
+    const relinked = card.playerIdByName?.find((r) => norm(r.name) === key);
+    if (relinked) {
+      const playerId = relinked.playerId as Id<"players">;
+      out.push({
+        kind: "server",
+        key: `id:${playerId}`,
+        display,
+        request: { key: `id:${playerId}`, playerId },
+      });
+      continue;
+    }
     const row = view.playerRowByKey.get(key);
     const action = row?.decision?.action;
     if (row && action === "skip") continue;
@@ -1080,7 +1109,10 @@ export function buildTeamsGroups(input: {
       const verdicts = players.map((p) =>
         p.kind === "created"
           ? createdPlayerVerdict(p.row, linkedTeamNameById, setYear, currentYear, rankCtx)
-          : serverPlayerVerdict(serverEvidence.get(p.request.key)),
+          : p.kind === "new"
+            ? // A new player has no career yet: no evidence, nothing loading.
+              { answer: null, candidates: [], loading: false }
+            : serverPlayerVerdict(serverEvidence.get(p.request.key)),
       );
       loading = verdicts.some((v) => v.loading);
       const union = dedupeRefs(verdicts.flatMap((v) => v.answer ?? []));

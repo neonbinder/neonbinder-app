@@ -6,8 +6,9 @@
  * counts toward the set's year for the card's team (`careerCoversCardTeam`),
  * the pair (player, team) is listed ONCE on the step, with its card numbers.
  * The operator can leave it, add the stint, link the cards to a different
- * existing player, or give the cards a different team. Every line defaults to
- * "Leave it", so one Next passes the screen.
+ * existing player (or to a NEW player named on the spot), or give the cards a
+ * different team. Every line defaults to "Leave it", so one Next passes the
+ * screen.
  *
  * Nothing here is stored. The answers are wizard state like the teams and
  * autograph answers: `careerCommitFields` turns them into the commit's
@@ -43,6 +44,7 @@ import {
 } from "../../convex/lib/careerCoverage";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
+import { MAX_PLAYER_NAME_LENGTH } from "../../lib/players/name-limits";
 import { ignoredPlayerKeys } from "./career-prefill";
 
 export const CAREER_STEP_HEADING = "Career check";
@@ -335,6 +337,24 @@ export type StintTeamRef = { teamId?: Id<"teams">; teamName?: string; label: str
 /** What happens after a re-check says the NEW pair is uncovered too. */
 export type CareerFollowUp = { kind: "leave" } | { kind: "add"; stints: StagedStint[] };
 
+/** An existing NB player the cards are pointed at. */
+export type ExistingPlayerPick = { playerId: Id<"players">; name: string };
+
+/**
+ * NEO-591 — a player the commit will create. `ref` is minted ONCE, when the
+ * option is picked, and lives in the answer: a Confirm that is retried from the
+ * same wizard state sends the same ref, which is what lets the server adopt the
+ * player it already made instead of making a second. `name` is what the
+ * operator has typed so far (raw; `cleanNewPlayerName` is what is sent).
+ */
+export type NewPlayerPick = { new: true; ref: string; name: string };
+
+export type PlayerPick = ExistingPlayerPick | NewPlayerPick;
+
+export function isNewPlayerPick(pick: PlayerPick | undefined): pick is NewPlayerPick {
+  return pick !== undefined && "new" in pick;
+}
+
 /**
  * One line's answer. Absent = "Keep as is". A "player" or "team" answer with no
  * pick yet is the picker being open: it does nothing until a pick lands.
@@ -342,7 +362,7 @@ export type CareerFollowUp = { kind: "leave" } | { kind: "add"; stints: StagedSt
 export type CareerAnswer =
   | { kind: "leave" }
   | { kind: "add"; stints: StagedStint[] }
-  | { kind: "player"; pick?: { playerId: Id<"players">; name: string }; then: CareerFollowUp }
+  | { kind: "player"; pick?: PlayerPick; then: CareerFollowUp }
   | { kind: "team"; pick?: { teamId: Id<"teams">; name: string }; then: CareerFollowUp };
 
 export type CareerAnswers = Readonly<Record<string, CareerAnswer>>;
@@ -373,6 +393,66 @@ export function preAddedStints(
       ...(setYear < currentYear ? { toYear: setYear } : {}),
     },
   ];
+}
+
+/**
+ * A fresh id for a new-player answer: the wire's `[A-Za-z0-9_-]{1,32}`.
+ * Unique enough within one wizard sitting, which is all the server asks.
+ */
+export function newPlayerRef(): string {
+  const bytes = new Uint8Array(16);
+  if (typeof crypto !== "undefined" && typeof crypto.getRandomValues === "function") {
+    crypto.getRandomValues(bytes);
+  } else {
+    for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  return `np-${Array.from(bytes, (b) => (b % 36).toString(36)).join("")}`;
+}
+
+/**
+ * The name as it is sent: runs of white space folded to one space, control and
+ * invisible characters gone, trimmed, within the player-name bound. Empty
+ * means "not named yet" (Next waits for it).
+ */
+export function cleanNewPlayerName(raw: string): string {
+  return raw
+    .replace(/\s+/g, " ")
+    .replace(/[\p{Cc}\p{Cf}]/gu, "")
+    .trim()
+    .slice(0, MAX_PLAYER_NAME_LENGTH)
+    .trim();
+}
+
+/**
+ * The name can go to the server: something is left after cleaning, and it
+ * holds a letter or a digit (the server refuses a name made of punctuation).
+ * Next waits until every new player's name passes.
+ */
+export function newPlayerNameReady(raw: string): boolean {
+  return /[\p{L}\p{N}]/u.test(cleanNewPlayerName(raw));
+}
+
+/**
+ * "New player named X" is picked: the name opens as the printed one, and the
+ * card's team is already staged for it, as "Add to career" stages it. `ref`
+ * is kept when the answer already holds one, so picking the option again does
+ * not change what a retried Confirm sends.
+ */
+export function newPlayerAnswer(input: {
+  printedName: string;
+  team: StintTeamRef | undefined;
+  setYear: number | undefined;
+  ref?: string;
+  currentYear?: number;
+}): CareerAnswer {
+  return {
+    kind: "player",
+    pick: { new: true, ref: input.ref ?? newPlayerRef(), name: input.printedName.trim() },
+    then: {
+      kind: "add",
+      stints: preAddedStints(input.team, input.setYear, input.currentYear),
+    },
+  };
 }
 
 /** Two stints are the same one: same team, same From year (what the server dedupes on). */
@@ -439,14 +519,18 @@ export function followUpPair(
   answer: CareerAnswer | undefined,
 ): { key: string; ask: CoverageAsk } | null {
   if (!answer || (answer.kind !== "player" && answer.kind !== "team") || !answer.pick) return null;
-  const ask: CoverageAsk =
-    answer.kind === "player"
-      ? {
-          playerId: answer.pick.playerId,
-          ...(line.teamId ? { teamId: line.teamId as Id<"teams"> } : {}),
-          ...(line.teamName ? { teamName: line.teamName } : {}),
-        }
-      : { playerId: line.playerId as Id<"players">, teamId: answer.pick.teamId };
+  let ask: CoverageAsk;
+  if (answer.kind === "player") {
+    // A player created in this wizard has a career being built right now: no re-check.
+    if (isNewPlayerPick(answer.pick)) return null;
+    ask = {
+      playerId: answer.pick.playerId,
+      ...(line.teamId ? { teamId: line.teamId as Id<"teams"> } : {}),
+      ...(line.teamName ? { teamName: line.teamName } : {}),
+    };
+  } else {
+    ask = { playerId: line.playerId as Id<"players">, teamId: answer.pick.teamId };
+  }
   return { key: pairKey(ask), ask };
 }
 
@@ -458,6 +542,12 @@ export function followUpPair(
 export type CareerCardEdit = {
   /** The printed player string → the existing player the card now links to. */
   playerIdByName?: Array<{ name: string; playerId: Id<"players"> }>;
+  /**
+   * NEO-591 — the printed player string → the NEW player the commit creates,
+   * by the ref `CareerNewPlayerArg` declares. `name` is the printed spelling
+   * this card carries, as for `playerIdByName`.
+   */
+  newPlayerByName?: Array<{ name: string; ref: string }>;
   /** Printed team strings the operator replaced. */
   dropTeams?: string[];
   /**
@@ -479,24 +569,40 @@ export type CareerStintArg = {
   toYear?: number;
 };
 
-/** MAX the commit accepts. */
+/** MAX the commit accepts, new players' stints included. */
 export const CAREER_STINTS_MAX = 200;
+
+/** One stint of a player the commit creates (`CareerStintArg` without the id it does not have yet). */
+export type CareerNewPlayerStintArg = Omit<CareerStintArg, "playerId">;
+
+/** `commitCardChecklist`' `careerNewPlayers` entry. */
+export type CareerNewPlayerArg = {
+  ref: string;
+  name: string;
+  stints: CareerNewPlayerStintArg[];
+};
 
 export type CareerCommitFields = {
   stints: CareerStintArg[];
   /** Aligned with the preview cards. */
   cardEdits: Array<CareerCardEdit | undefined>;
+  /** NEO-591 — players to create. Absent when there are none, so the wire is as it was. */
+  newPlayers?: CareerNewPlayerArg[];
 };
 
-function stintArg(playerId: string, stint: StagedStint, maxYear: number): CareerStintArg | null {
+function stintFields(stint: StagedStint, maxYear: number): CareerNewPlayerStintArg | null {
   if (!isValidStint(stint, maxYear)) return null;
   if (!stint.teamId && !(stint.teamName ?? "").trim()) return null;
   return {
-    playerId: playerId as Id<"players">,
     ...(stint.teamId ? { teamId: stint.teamId } : { teamName: stint.teamName }),
     fromYear: stint.fromYear,
     ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
   };
+}
+
+function stintArg(playerId: string, stint: StagedStint, maxYear: number): CareerStintArg | null {
+  const fields = stintFields(stint, maxYear);
+  return fields ? { playerId: playerId as Id<"players">, ...fields } : null;
 }
 
 /**
@@ -540,6 +646,9 @@ export function careerCommitFields(input: {
   };
   const edits: Array<CareerCardEdit | undefined> = input.cards.map(() => undefined);
   const edit = (index: number): CareerCardEdit => (edits[index] ??= {});
+  // NEO-591 — one new player per folded name: two lines that name the same
+  // person share the first line's ref, and both lines' stints.
+  const created = new Map<string, CareerNewPlayerArg>();
 
   for (const line of input.lines) {
     const answer = input.answers[line.key];
@@ -549,8 +658,38 @@ export function careerCommitFields(input: {
       continue;
     }
     if (!answer.pick) continue;
+    if (answer.kind === "player" && isNewPlayerPick(answer.pick)) {
+      // Not named yet: nothing to create (the wizard holds Next for it).
+      if (!newPlayerNameReady(answer.pick.name)) continue;
+      const name = cleanNewPlayerName(answer.pick.name);
+      const key = fold(name);
+      const player = created.get(key) ?? { ref: answer.pick.ref, name, stints: [] };
+      created.set(key, player);
+      for (const index of line.cardIndexes) {
+        const e = edit(index);
+        const printed = spellingOn(input.cards[index], line.printedPlayer);
+        e.newPlayerByName = [
+          ...(e.newPlayerByName ?? []).filter((x) => fold(x.name) !== fold(printed)),
+          { name: printed, ref: player.ref },
+        ];
+      }
+      if (answer.then.kind === "add") {
+        for (const stint of answer.then.stints) {
+          const fields = stintFields(stint, maxYear);
+          if (!fields) continue;
+          const stintKey = `${fields.teamId ?? `~${fold(fields.teamName ?? "")}`}|${fields.fromYear}`;
+          const dupe = player.stints.some(
+            (s) => `${s.teamId ?? `~${fold(s.teamName ?? "")}`}|${s.fromYear}` === stintKey,
+          );
+          if (!dupe) player.stints.push(fields);
+        }
+      }
+      continue;
+    }
     if (answer.kind === "player") {
-      const { playerId } = answer.pick;
+      const { pick } = answer;
+      if (isNewPlayerPick(pick)) continue; // handled above
+      const { playerId } = pick;
       for (const index of line.cardIndexes) {
         const e = edit(index);
         const name = spellingOn(input.cards[index], line.printedPlayer);
@@ -588,9 +727,25 @@ export function careerCommitFields(input: {
     const dropped = new Set((edits[i]?.dropTeams ?? []).map(fold));
     for (const t of cardTeamStrings(card)) if (!dropped.has(fold(t))) carried.add(fold(t));
   });
-  const kept = stints.filter((s) => s.teamId !== undefined || carried.has(fold(s.teamName ?? "")));
-  if (kept.length === 0 && edits.every((e) => e === undefined)) return undefined;
-  return { stints: kept.slice(0, CAREER_STINTS_MAX), cardEdits: edits };
+  const isCarried = (s: { teamId?: Id<"teams">; teamName?: string }) =>
+    s.teamId !== undefined || carried.has(fold(s.teamName ?? ""));
+  const kept = stints.filter(isCarried).slice(0, CAREER_STINTS_MAX);
+  // The new players' stints share the commit's stint budget.
+  let room = CAREER_STINTS_MAX - kept.length;
+  const newPlayers: CareerNewPlayerArg[] = [];
+  for (const player of created.values()) {
+    const own = player.stints.filter(isCarried).slice(0, Math.max(0, room));
+    room -= own.length;
+    newPlayers.push({ ref: player.ref, name: player.name, stints: own });
+  }
+  if (kept.length === 0 && newPlayers.length === 0 && edits.every((e) => e === undefined)) {
+    return undefined;
+  }
+  return {
+    stints: kept,
+    cardEdits: edits,
+    ...(newPlayers.length > 0 ? { newPlayers } : {}),
+  };
 }
 
 /** Two commit-field bundles say the same thing (so the host is not re-rendered for nothing). */
@@ -607,6 +762,7 @@ type EditableCard = {
   teams?: string[];
   teamIds?: Array<Id<"teams">>;
   playerIdByName?: ReadonlyArray<{ name: string; playerId: string }>;
+  newPlayerByName?: ReadonlyArray<{ name: string; ref: string }>;
 };
 
 /**
@@ -624,6 +780,7 @@ export function applyCareerCardEdit<T extends EditableCard>(
   if (!edit) return card;
   const next: T = { ...card };
   if (edit.playerIdByName?.length) next.playerIdByName = edit.playerIdByName;
+  if (edit.newPlayerByName?.length) next.newPlayerByName = edit.newPlayerByName;
   if (edit.dropTeams?.length) {
     const dropped = new Set(edit.dropTeams.map(fold));
     const kept = (card.teams ?? []).filter((t) => !dropped.has(fold(t)));
@@ -744,6 +901,8 @@ export const CAREER_CHECKING = "Checking careers…";
 export const CAREER_READ_FAILED = "Couldn’t check careers. Retry, or Next saves without it.";
 /** A New Team row the career step made unnecessary, in the Decided list. */
 export const CAREER_TEAM_NOT_NEEDED = "Not needed — card’s team changed";
+/** A new player with no name yet: Next waits, and says why on the status line. */
+export const CAREER_NEW_PLAYER_UNNAMED = "Give the new player a name to keep going.";
 export const CAREER_RETRY_LABEL = "Retry career check";
 /** A relinked player or re-teamed pair whose re-check failed. */
 export const careerFollowUpFailed = (subject: string): string =>

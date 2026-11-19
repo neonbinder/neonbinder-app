@@ -14,6 +14,11 @@ import {
   applyCareerCardEdit,
   careerCommitFields,
   careerHeading,
+  cleanNewPlayerName,
+  isNewPlayerPick,
+  newPlayerAnswer,
+  newPlayerNameReady,
+  newPlayerRef,
   noStintText,
   coveredText,
   playedForText,
@@ -752,5 +757,220 @@ describe("a card settled from the uploaded checklist is checked like any other",
   it("had no pair at all when the gate left the checklist's names out of the context", () => {
     const withoutChecklistNames: CareerContext = { ...CONTEXT, players: [], teams: [], gaps: [] };
     expect(deriveSittingPairs({ cards: settled, rows: [], context: withoutChecklistNames })).toEqual([]);
+  });
+});
+
+describe("a new player (NEO-591)", () => {
+  const lines = toLines(deriveSittingPairs({ cards: CARDS, rows: [], context: CONTEXT }));
+  const tatis = lines.find((l) => l.playerId === "p-tatis")!;
+  const trout = lines.find((l) => l.playerId === "p-trout")!;
+  const teamRef = { teamId: tid("t-padres"), label: "San Diego Padres" };
+
+  const answerOf = (name: string, ref = "np-one", stints?: StagedStint[]) =>
+    ({
+      kind: "player",
+      pick: { new: true, ref, name },
+      then: { kind: "add", stints: stints ?? preAddedStints(teamRef, 2022, 2026) },
+    }) as const;
+
+  it("mints a ref the wire accepts, and a different one each time", () => {
+    const a = newPlayerRef();
+    expect(a).toMatch(/^[A-Za-z0-9_-]{1,32}$/);
+    expect(newPlayerRef()).not.toBe(a);
+  });
+
+  it("opens as the printed name with the card's team staged, keeping a ref it already has", () => {
+    const answer = newPlayerAnswer({
+      printedName: "  Fernando Tatis Jr. ",
+      team: teamRef,
+      setYear: 2022,
+      currentYear: 2026,
+    });
+    expect(answer).toMatchObject({
+      kind: "player",
+      pick: { new: true, name: "Fernando Tatis Jr." },
+      then: { kind: "add", stints: [{ teamId: "t-padres", fromYear: 2022, toYear: 2022 }] },
+    });
+    const kept = newPlayerAnswer({ printedName: "X", team: teamRef, setYear: 2022, ref: "np-keep" });
+    expect(kept.kind === "player" && kept.pick && isNewPlayerPick(kept.pick) && kept.pick.ref).toBe(
+      "np-keep",
+    );
+  });
+
+  it("cleans a name for the wire: white space folded, invisible characters gone, bounded", () => {
+    expect(cleanNewPlayerName("  Luis \t Rodriguez\n")).toBe("Luis Rodriguez");
+    expect(cleanNewPlayerName("Lu\u200Bis\u0007 Rodriguez")).toBe("Luis Rodriguez");
+    expect(cleanNewPlayerName(" \u200B ")).toBe("");
+    expect(cleanNewPlayerName("x".repeat(500))).toHaveLength(120);
+  });
+
+  it("sends the player once, with the line's stints, and points the line's cards at its ref", () => {
+    const out = careerCommitFields({
+      lines,
+      answers: { [tatis.key]: answerOf("Luis Rodriguez") },
+      cards: CARDS,
+      maxYear: 2030,
+    });
+    expect(out?.newPlayers).toEqual([
+      {
+        ref: "np-one",
+        name: "Luis Rodriguez",
+        stints: [{ teamId: "t-padres", fromYear: 2022, toYear: 2022 }],
+      },
+    ]);
+    // Only the line's cards; the printed spelling is the card's own.
+    expect(out?.cardEdits[0]).toEqual({
+      newPlayerByName: [{ name: "Fernando Tatis Jr.", ref: "np-one" }],
+    });
+    expect(out?.cardEdits[1]).toEqual({
+      newPlayerByName: [{ name: "Fernando Tatis Jr.", ref: "np-one" }],
+    });
+    expect(out?.cardEdits[2]).toBeUndefined();
+    // Not an existing-player stint, and no relink.
+    expect(out?.stints).toEqual([]);
+    expect(out?.cardEdits.some((e) => e?.playerIdByName)).toBe(false);
+  });
+
+  it("sends a player who has no stints at all", () => {
+    const out = careerCommitFields({
+      lines,
+      answers: { [tatis.key]: answerOf("Luis Rodriguez", "np-one", []) },
+      cards: CARDS,
+      maxYear: 2030,
+    });
+    expect(out?.newPlayers).toEqual([{ ref: "np-one", name: "Luis Rodriguez", stints: [] }]);
+  });
+
+  it("sends nothing for a new player with no name yet", () => {
+    expect(
+      careerCommitFields({
+        lines,
+        answers: { [tatis.key]: answerOf("   ") },
+        cards: CARDS,
+        maxYear: 2030,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("treats a name with no letter or digit as not named", () => {
+    expect(newPlayerNameReady("Luis Rodriguez")).toBe(true);
+    expect(newPlayerNameReady("J.")).toBe(true);
+    expect(newPlayerNameReady("... -")).toBe(false);
+    expect(newPlayerNameReady("")).toBe(false);
+    expect(
+      careerCommitFields({
+        lines,
+        answers: { [tatis.key]: answerOf("?!") },
+        cards: CARDS,
+        maxYear: 2030,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("folds two lines that name the same person into one player: the first line's ref, both lines' stints", () => {
+    const stintFor = (team: string, year: number): StagedStint => ({
+      teamId: tid(team),
+      label: team,
+      fromYear: year,
+    });
+    // Lines are sorted by team: Angels (Trout) first.
+    const out = careerCommitFields({
+      lines,
+      answers: {
+        [trout.key]: answerOf("Luis  Rodriguez", "np-first", [stintFor("t-angels", 2022)]),
+        [tatis.key]: answerOf("luis rodriguez", "np-second", [
+          stintFor("t-padres", 2022),
+          stintFor("t-angels", 2022),
+        ]),
+      },
+      cards: CARDS,
+      maxYear: 2030,
+    });
+    expect(out?.newPlayers).toHaveLength(1);
+    expect(out?.newPlayers?.[0]).toMatchObject({ ref: "np-first", name: "Luis Rodriguez" });
+    expect(out?.newPlayers?.[0].stints).toEqual([
+      { teamId: "t-angels", fromYear: 2022 },
+      { teamId: "t-padres", fromYear: 2022 },
+    ]);
+    // Every card of both lines carries the one ref.
+    const refs = out?.cardEdits.flatMap((e) => (e?.newPlayerByName ?? []).map((x) => x.ref));
+    expect(new Set(refs)).toEqual(new Set(["np-first"]));
+  });
+
+  it("keeps two differently-named new players apart", () => {
+    const out = careerCommitFields({
+      lines,
+      answers: {
+        [trout.key]: answerOf("Luis Rodriguez", "np-a", []),
+        [tatis.key]: answerOf("Luis Rodriguez Jr.", "np-b", []),
+      },
+      cards: CARDS,
+      maxYear: 2030,
+    });
+    expect(out?.newPlayers?.map((p) => p.ref).sort()).toEqual(["np-a", "np-b"]);
+  });
+
+  it("drops a stint that names a team by a printed string no card carries any more", () => {
+    const named: StagedStint = { teamName: "Gone Team", label: "Gone Team", fromYear: 2022 };
+    const out = careerCommitFields({
+      lines,
+      answers: { [tatis.key]: answerOf("Luis Rodriguez", "np-one", [named, stint("t-reds", 2022)]) },
+      cards: CARDS,
+      maxYear: 2030,
+    });
+    expect(out?.newPlayers?.[0].stints).toEqual([{ teamId: "t-reds", fromYear: 2022 }]);
+  });
+
+  it("names a batch-created team by the string a card still prints", () => {
+    const named: StagedStint = { teamName: "Padres", label: "San Diego Padres", fromYear: 2022 };
+    const out = careerCommitFields({
+      lines,
+      answers: { [tatis.key]: answerOf("Luis Rodriguez", "np-one", [named]) },
+      cards: CARDS,
+      maxYear: 2030,
+    });
+    expect(out?.newPlayers?.[0].stints).toEqual([{ teamName: "Padres", fromYear: 2022 }]);
+  });
+
+  it("leaves the existing-player wire exactly as it was (no newPlayers key)", () => {
+    const out = careerCommitFields({
+      lines,
+      answers: { [tatis.key]: { kind: "add", stints: [stint("t-padres", 2022)] } },
+      cards: CARDS,
+      maxYear: 2030,
+    });
+    expect(out).not.toHaveProperty("newPlayers");
+  });
+
+  it("asks no coverage question about a new player", () => {
+    expect(followUpPair(tatis, answerOf("Luis Rodriguez"))).toBeNull();
+  });
+
+  it("stintsOf reads the new player's staged stints", () => {
+    expect(stintsOf(answerOf("Luis Rodriguez"))).toHaveLength(1);
+  });
+
+  it("puts newPlayerByName on the card, without touching its printed players", () => {
+    const card = { players: ["A"], teams: ["T"] } as { players: string[]; teams: string[] };
+    const out = applyCareerCardEdit(card, {
+      newPlayerByName: [{ name: "A", ref: "np-one" }],
+    }) as typeof card & { newPlayerByName?: unknown };
+    expect(out.players).toEqual(["A"]);
+    expect(out.newPlayerByName).toEqual([{ name: "A", ref: "np-one" }]);
+  });
+
+  it("shares the stint budget with the existing players' stints", () => {
+    const many: StagedStint[] = Array.from({ length: CAREER_STINTS_MAX + 20 }, (_, i) => ({
+      teamId: tid(`t-${i}`),
+      label: `T${i}`,
+      fromYear: 1990,
+    }));
+    const out = careerCommitFields({
+      lines,
+      answers: { [tatis.key]: answerOf("Luis Rodriguez", "np-one", many) },
+      cards: CARDS,
+      maxYear: 2030,
+    });
+    expect(out?.newPlayers?.[0].stints).toHaveLength(CAREER_STINTS_MAX);
   });
 });
