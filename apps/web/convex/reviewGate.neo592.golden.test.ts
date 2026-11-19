@@ -221,6 +221,15 @@ const GOLDEN_TITLE_CONTEXT = {
   setPlayerNames: [],
   setTeamNames: [],
   sportValue: "Baseball",
+  // NEO-606 — the resolved teams' Location / Name splits (first-seen order),
+  // and the level the leaf names. Both came back in the reads the gate
+  // already made: the hop count below is unchanged.
+  teamSplits: [
+    { location: "Boston", name: "Red Sox" },
+    { location: "Winnipeg", name: "Jets" },
+    { location: "St. Louis", name: "Browns" },
+  ],
+  titleLevels: [{ name: "Insert" }],
   teams: [
     { name: "Boston Red Sox", printed: "Boston Red Sox" },
     { name: "Boston Red Sox", printed: "Bosox" },

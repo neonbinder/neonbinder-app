@@ -104,6 +104,12 @@ export const titleSetFacts = internalQuery({
   args: {
     selectorOptionId: v.id("selectorOptions"),
     sportId: v.id("selectorOptions"),
+    /**
+     * NEO-606 — the teams the resolve gate resolved. Their Location / Name
+     * splits ride back in `teamSplits` beside the set-level ones, in this same
+     * read (NEO-592: no round trip of their own).
+     */
+    resolvedTeamIds: v.optional(v.array(v.id("teams"))),
   },
   returns: setFactsValidator,
   handler: async (ctx, args) => {
@@ -150,6 +156,18 @@ export const titleSetFacts = internalQuery({
         const split = teamSplitOf(team);
         if (split) setTeamSplits.push(split);
       }
+    }
+
+    // NEO-606 — and the resolved teams', after the set-level ones. A flat
+    // list: a card's team finds its split by whole name, so a team named
+    // twice is listed once. A team with no location (or gone) adds nothing.
+    const resolvedTeams = await mapBounded(args.resolvedTeamIds ?? [], (id) => ctx.db.get(id));
+    const seenSplits = new Set(setTeamSplits.map((split) => teamFullName(split)));
+    for (const team of resolvedTeams) {
+      const split = team ? teamSplitOf(team) : undefined;
+      if (!split || seenSplits.has(teamFullName(split))) continue;
+      seenSplits.add(teamFullName(split));
+      setTeamSplits.push(split);
     }
 
     // NEO-528 round 3 — "Player on every card": the player a new card with
@@ -212,31 +230,6 @@ export const playerNamesByIds = internalQuery({
 });
 
 /**
- * NEO-606 — the Location / Name of the teams the resolve gate resolved, for
- * the pre-save title to give a team's location up before the team, as the
- * insert will. Bounded per call; the caller pages. A team with no location
- * (or no longer there) adds nothing.
- */
-export const teamSplitsByIds = internalQuery({
-  args: { ids: v.array(v.id("teams")) },
-  returns: v.array(teamSplitValidator),
-  handler: async (ctx, args) => {
-    if (args.ids.length > TITLE_CONTEXT_PLAYER_PAGE) {
-      throw new Error(
-        `teamSplitsByIds: ${args.ids.length} ids exceeds the ${TITLE_CONTEXT_PLAYER_PAGE}-id page`,
-      );
-    }
-    const out: ListingTeamSplit[] = [];
-    for (const id of args.ids) {
-      const team = await ctx.db.get(id);
-      const split = team ? teamSplitOf(team) : undefined;
-      if (split) out.push(split);
-    }
-    return out;
-  },
-});
-
-/**
  * What the resolve gate learned about each printed name, keyed by the SAME
  * normalisation it looked them up under (`normalizePlayerName` /
  * `normalizeTeamName`). Filled by `resolveUnknownsAndStartBatch`.
@@ -286,6 +279,8 @@ export async function buildTitleContext(
     ctx.runQuery(internal.listingTitleContext.titleSetFacts, {
       selectorOptionId: args.selectorOptionId,
       sportId: args.sportId,
+      // NEO-606 — the resolved teams' splits come back with the set facts.
+      resolvedTeamIds: Array.from(new Set(args.resolved.teamIdByNorm.values())),
     }) as Promise<SetFacts>,
     mapBounded(
       pages,
@@ -317,28 +312,8 @@ export async function buildTitleContext(
     }
   }
 
-  // NEO-606 — the resolved teams' splits, beside the set-level ones the facts
-  // carry. A flat list: a card's team finds its split by whole name.
-  const teamIds = Array.from(new Set(args.resolved.teamIdByNorm.values()));
-  const splits = [...(facts.teamSplits ?? [])];
-  for (let i = 0; i < teamIds.length; i += TITLE_CONTEXT_PLAYER_PAGE) {
-    const page: ListingTeamSplit[] = await ctx.runQuery(
-      internal.listingTitleContext.teamSplitsByIds,
-      { ids: teamIds.slice(i, i + TITLE_CONTEXT_PLAYER_PAGE) },
-    );
-    splits.push(...page);
-  }
-  const seenSplits = new Set<string>();
-  const teamSplits = splits.filter((split) => {
-    const key = teamFullName(split);
-    if (seenSplits.has(key)) return false;
-    seenSplits.add(key);
-    return true;
-  });
-
   return {
     ...facts,
-    ...(teamSplits.length > 0 ? { teamSplits } : {}),
     players: Array.from(players, ([printed, name]) => ({ printed, name })),
     teams: Array.from(teams, ([printed, name]) => ({ printed, name })),
   };

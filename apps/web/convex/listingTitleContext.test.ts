@@ -280,17 +280,4 @@ describe("titleContext teamSplits (NEO-606)", () => {
     expect(result.titleContext?.teams).toEqual([{ printed: "Brooklyn", name: "Brooklyn" }]);
     expect(result.titleContext?.teamSplits).toBeUndefined();
   });
-
-  test("teamSplitsByIds refuses more than one page and is an internalQuery", async () => {
-    const t = convexTest(schema, modules);
-    const ids = Array.from(
-      { length: 201 },
-      () => "k17bad00000000000000000000000000" as unknown as Id<"teams">,
-    );
-    await expect(
-      t.query(internal.listingTitleContext.teamSplitsByIds, { ids }),
-    ).rejects.toThrow();
-    const src = readFileSync(join(__dirname, "listingTitleContext.ts"), "utf8");
-    expect(src).toContain("export const teamSplitsByIds = internalQuery({");
-  });
 });
