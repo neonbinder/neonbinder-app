@@ -1500,7 +1500,7 @@ describe("NEO-535 — a parallel's leading insert words are said once", () => {
 
   test("Anime + Anime Red Refractors reads Anime Red Refractors", () => {
     expect(titleDescription(BOWMAN)).toBe("2026 Bowman Anime Red Refractors");
-    expect(assessListingTitle(BOWMAN).title.startsWith("2026 Bowman Anime Insert Red Refractors Parallel")).toBe(true);
+    expect(assessListingTitle(BOWMAN).title.startsWith("2026 Bowman Anime Red Refractors Parallel")).toBe(true);
   });
 
   test("TRItanium Prismatic White + TRItanium Red Flood reads TRItanium Prismatic White Red Flood", () => {

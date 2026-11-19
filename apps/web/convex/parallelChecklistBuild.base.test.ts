@@ -626,6 +626,6 @@ describe("copies carry the parallel row's NB name as parallelName and in the tit
     // NEO-609: each level is named with its type, so the parallel's words are
     // split by the level above's type name (the shared "Gold Wave" is said
     // once, by that level).
-    expect(copy.listingTitle).toBe("Topps Chrome Gold Wave Parallel Refractors Parallel #7 Baseball");
+    expect(copy.listingTitle).toBe("Topps Chrome Gold Wave Refractors Parallel #7 Baseball");
   });
 });

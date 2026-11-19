@@ -150,6 +150,7 @@ describe("previewListingTitle (NEO-101)", () => {
       "2024 Topps Chrome Base Elly De La Cruz #50 RC Rookie Baseball",
     );
     expect(preview.coreFits).toBe(true);
+    expect(preview.tidyUp).toBe(false);
     expect(preview.dropped).toEqual([]);
     // The chips the panel renders come straight off this.
     expect(preview.inputs).toMatchObject({
@@ -163,6 +164,30 @@ describe("previewListingTitle (NEO-101)", () => {
       teamNames: [],
       sport: "Baseball",
     });
+  });
+
+  test("NEO-609: a title that lost a first name says tidyUp, and coreFits is its inverse", async () => {
+    const t = convexTest(schema, modules);
+    const asAdmin = t.withIdentity(ADMIN_IDENTITY);
+    const { sportId, variantTypeId } = await seedSubtree(t);
+    const NAME = "Bartholomew Maximilian Alexander Christopher Fitzgerald-Worthington";
+    const playerId = await t.run(async (ctx) =>
+      ctx.db.insert("players", {
+        name: NAME,
+        nameNormalized: NAME.toLowerCase().split(" ").sort().join(" "),
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const cardId = await insertCard(t, variantTypeId, {
+      cardNumber: "19",
+      playerIds: [playerId],
+      features: { season: "2024", manufacturer: "Topps", parallelName: "Base" },
+    });
+    const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
+    expect(preview.firstNameLost).toBe(true);
+    expect(preview.tidyUp).toBe(true);
+    expect(preview.coreFits).toBe(false);
   });
 
   test("NEO-535: a stored card on a parallel leaf names the leaf, not the name its features inherited", async () => {
@@ -209,7 +234,7 @@ describe("previewListingTitle (NEO-101)", () => {
     const preview = await asAdmin.query(api.selectorOptions.previewListingTitle, { cardId });
     expect(preview.inputs.parallelName).toBe("Anime Red Refractors");
     // The insert's word is said once (the parallel's leading "Anime").
-    expect(preview.title.startsWith("2024 Topps Chrome Anime Insert Red Refractors Parallel Murakami")).toBe(true);
+    expect(preview.title.startsWith("2024 Topps Chrome Anime Red Refractors Parallel Murakami")).toBe(true);
   });
 
   test("falls back to pendingPlayerNames when a custom card has no resolved players", async () => {

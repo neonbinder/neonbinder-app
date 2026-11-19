@@ -175,6 +175,7 @@ describe("previewListingTitle and titleForStoredCard", () => {
         firstNameLost: stored.firstNameLost,
         ...(stored.shortNameUsed ? { shortNameUsed: true } : {}),
         coreFits: stored.coreFits,
+        tidyUp: stored.tidyUp,
         dropped: stored.dropped,
         inputs: stored.inputs,
       });

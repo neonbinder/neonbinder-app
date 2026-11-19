@@ -358,7 +358,7 @@ describe("NEO-609 cut rows 1-20, one each", () => {
     const a = cut(
       {
         ...ichiro,
-        titleLevels: [{ name: "Base" }],
+        titleLevels: [{ name: "Base", base: true }],
         setTail: "Autographs",
         autographed: "On Card",
       },

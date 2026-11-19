@@ -602,6 +602,6 @@ describe("addCustomCard on a parallel leaf (NEO-535)", () => {
     });
     const row = await getCard(t, cardId);
     expect(row!.features?.parallelName).toBe("Anime Red Refractors");
-    expect(row!.listingTitle.startsWith("2026 Bowman Anime Insert Red Refractors Parallel Murakami")).toBe(true);
+    expect(row!.listingTitle.startsWith("2026 Bowman Anime Red Refractors Parallel Murakami")).toBe(true);
   });
 });

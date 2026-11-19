@@ -619,7 +619,7 @@ describe("buildCardRowForInsert — a card committed on a parallel leaf names th
     );
     expect(committed.row.features?.parallelName).toBe("Anime Red Refractors");
     expect(committed.row.listingTitle).toBe(copied.row.listingTitle);
-    expect(committed.row.listingTitle).toContain("2026 Bowman Anime Insert Red Refractors Parallel Murakami");
+    expect(committed.row.listingTitle).toContain("2026 Bowman Anime Red Refractors Parallel Murakami");
   });
 
   test("off a parallel leaf nothing changes: the snapshot's name stands", () => {

@@ -168,7 +168,7 @@ describe("the description names every level", () => {
   test("a level with no type name has no line of its own; a Base level has none at all", () => {
     const text = generateListingDescription({
       ...base,
-      titleLevels: [{ name: "Base", typeName: "Base" }, { name: "Gold" }],
+      titleLevels: [{ name: "Base", base: true }, { name: "Gold" }],
     });
     expect(text.split("\n")).toEqual(["2001 Topps Chrome Gold card of Ichiro, #7."]);
   });
@@ -252,7 +252,7 @@ describe("Base is in the full title and is the first thing cut", () => {
       ...ichiro,
       manufacturer: "Topps",
       setName: "Chrome",
-      titleLevels: [{ name: "Base" }],
+      titleLevels: [{ name: "Base", base: true }],
     });
     expect(a.title).toBe("2001 Topps Chrome Base Ichiro #7");
     expect(a.dropped).toEqual([]);
@@ -260,12 +260,12 @@ describe("Base is in the full title and is the first thing cut", () => {
 
   test("at exactly 80 Base stays; at 81 it alone goes, then nothing else is touched", () => {
     const at80 = assessListingTitle(
-      atFullLength({ ...ichiro, titleLevels: [{ name: "Base" }], sport: "Baseball" }, 80),
+      atFullLength({ ...ichiro, titleLevels: [{ name: "Base", base: true }], sport: "Baseball" }, 80),
     );
     expect(at80.title).toMatch(/ Base Ichiro #7 Baseball$/);
     expect(at80.title.length).toBe(80);
     const at81 = assessListingTitle(
-      atFullLength({ ...ichiro, titleLevels: [{ name: "Base" }], sport: "Baseball" }, 81),
+      atFullLength({ ...ichiro, titleLevels: [{ name: "Base", base: true }], sport: "Baseball" }, 81),
     );
     expect(at81.title).not.toMatch(/\bBase\b/);
     expect(at81.title).toMatch(/ Ichiro #7 Baseball$/);
@@ -279,26 +279,75 @@ describe("Base is in the full title and is the first thing cut", () => {
       ...ichiro,
       manufacturer: "Topps",
       setName: "Chrome",
-      titleLevels: [{ name: "Base" }],
+      titleLevels: [{ name: "Base", base: true }],
     };
     expect(leftOutOfTitle(inputs, "2001 Topps Chrome Ichiro #7")).toEqual([]);
     expect(titleDescription(inputs)).toBe("2001 Topps Chrome");
     expect(generateListingDescription(inputs)).toBe("2001 Topps Chrome card of Ichiro, #7.");
   });
 
-  test("Base is read through the role helper: any casing, plural, the type's title too", () => {
+  test("Base is the flag the chain sets, whatever the row is called: the cut is the same for every name", () => {
     for (const name of ["Base", "base", "BASES"]) {
       const a = assessListingTitle(
-        atFullLength({ ...ichiro, titleLevels: [{ name }] }, 80 + name.length + 1),
+        atFullLength({ ...ichiro, titleLevels: [{ name, base: true }] }, 80 + name.length + 1),
       );
       expect(a.title).not.toContain(name);
       expect(a.title.length).toBe(80);
     }
-    const typed = assessListingTitle(
-      atFullLength({ ...ichiro, titleLevels: [{ name: "Gold", typeName: "Base" }] }, 85),
-    );
-    expect(typed.title).not.toMatch(/\bBase\b/);
-    expect(typed.title).toMatch(/ Gold Ichiro #7$/);
+  });
+
+  // NEO-609 (invariant 4): a level NAMED Base is an ordinary level. Only the
+  // flag `titleChainFacts` sets from the variant type's kind is the Base role.
+  test.each(["Base", "Basex"])("an insert row named %s under Inserts is an ordinary insert", (name) => {
+    const levels = [{ name, typeName: "Inserts" }];
+    const inputs: ListingCardInputs = {
+      ...ichiro,
+      manufacturer: "Topps",
+      setName: "Chrome",
+      titleLevels: levels,
+    };
+    expect(assessListingTitle(inputs).title).toBe(`2001 Topps Chrome ${name} Insert Ichiro #7`);
+    expect(titleDescription(inputs)).toBe(`2001 Topps Chrome ${name}`);
+    expect(generateListingDescription(inputs).split("\n")).toEqual([
+      `2001 Topps Chrome ${name} card of Ichiro, #7.`,
+      `Insert: ${name}.`,
+    ]);
+    // Row 1 does not take it: at 81 the type name goes (row 5), the name stays.
+    const over = assessListingTitle(atFullLength({ ...ichiro, titleLevels: levels }, 84));
+    expect(over.title).toMatch(new RegExp(`${name} Ichiro #7$`));
+    expect(over.title).not.toContain("Insert");
+  });
+
+  test("the same chain read through titleChainFacts: Base under Inserts has no base flag", () => {
+    const row = (level: string, value: string): TitleChainRow => ({ level, value });
+    expect(
+      titleChainFacts([row("insert", "Base"), row("variantType", "Inserts"), row("setName", "Chrome")])
+        .titleLevels,
+    ).toEqual([{ name: "Base", typeName: "Inserts" }]);
+    expect(
+      titleChainFacts([row("variantType", "Base"), row("setName", "Chrome")]).titleLevels,
+    ).toEqual([{ name: "Base", base: true }]);
+  });
+
+  test("a type's name is trimmed in the facts", () => {
+    const row = (level: string, value: string): TitleChainRow => ({ level, value });
+    expect(
+      titleChainFacts([row("insert", "Gold"), row("variantType", "  Inserts  "), row("setName", "Chrome")])
+        .titleLevels,
+    ).toEqual([{ name: "Gold", typeName: "Inserts" }]);
+  });
+
+  test("a card directly on a type names its level in the singular", () => {
+    const row = (level: string, value: string): TitleChainRow => ({ level, value });
+    expect(
+      titleChainFacts([row("variantType", "Parallels"), row("setName", "Chrome")]).titleLevels,
+    ).toEqual([{ name: "Parallel" }]);
+    expect(
+      titleChainFacts([row("variantType", "Short Prints"), row("setName", "Chrome")]).titleLevels,
+    ).toEqual([{ name: "Short Print" }]);
+    expect(
+      titleChainFacts([row("variantType", "Series"), row("setName", "Chrome")]).titleLevels,
+    ).toEqual([{ name: "Series" }]);
   });
 
   test("a features-only Base card (no level in its chain) says Base through its parallel name", () => {

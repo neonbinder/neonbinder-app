@@ -92,7 +92,7 @@ describe("titleChainFacts", () => {
         insertNameValue: "Dugout Collection",
         insertIsRole: true,
         // NEO-609: every level is named with its type's row title, as stored.
-        titleLevels: [{ name: "Dugout Collection", typeName: title }],
+        titleLevels: [{ name: "Dugout Collection", typeName: title.trim() }],
       });
     }
   });
@@ -219,7 +219,7 @@ describe("titleChainFacts", () => {
         row("insert", "Stray"),
         row("variantType", "Inserts"),
       ]),
-    ).toEqual({ titleLevels: [{ name: "Base" }] });
+    ).toEqual({ titleLevels: [{ name: "Base", base: true }] });
     // A variant type past the setName row confers no kind, and no type name.
     expect(
       titleChainFacts([
@@ -253,7 +253,7 @@ describe("titleChainFacts", () => {
     expect(titleChainFacts([null])).toEqual({});
     expect(
       titleChainFacts([row("variantType", "Base"), null, row("setName", "x", { listingShortName: "y" })]),
-    ).toEqual({ titleLevels: [{ name: "Base" }] });
+    ).toEqual({ titleLevels: [{ name: "Base", base: true }] });
     // A break before the variant type: the insert has no kind to read, so no
     // role and no type name.
     expect(
