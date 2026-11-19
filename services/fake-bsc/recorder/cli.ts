@@ -9,11 +9,12 @@
  * BSC credentials come from stdin or a prompt only. The fake's caller and
  * admin keys come from FAKE_BSC_CALLER_KEY / FAKE_BSC_ADMIN_KEY in this
  * process's environment (README: read them from Secret Manager into the
- * command, never into a file). The fake is reached as the loader SA through
- * ADC impersonation.
+ * command, never into a file). The fake is reached with a Google ID token:
+ * from FAKE_BSC_ID_TOKEN_FILE (a file re-read on each request) when set,
+ * otherwise from ADC.
  */
 import { readCredentials } from "./credentials";
-import { FakeClient, adcIdTokenMinter, isLoopback } from "./fake-client";
+import { FakeClient, assertFakeUrl, idTokenSource, isLoopback } from "./fake-client";
 import { bscSession, loadBrowserModules } from "./bsc";
 import { MAX_REQUESTS_PER_SESSION, bscCaller, describeRequest, planMisses, runRecordSession } from "./record";
 import { describeRefusal, describeUndo, describeUndoCheck, describeWrite, loadWriteRequest, runCaptureWrite, runUndoWrite, type CaptureResult, type UndoResult } from "./capture-write";
@@ -77,16 +78,20 @@ export function readMax(value: string | true | undefined): number | undefined {
   return Math.min(Number(value), MAX_REQUESTS_PER_SESSION);
 }
 
-function fakeClient(flags: Map<string, string | true>): FakeClient {
+export function fakeClient(flags: Map<string, string | true>): FakeClient {
   const url = str(flags, "--fake");
   if (!url) throw new Error("--fake <url> is required");
+  assertFakeUrl(url);
   const callerKey = process.env.FAKE_BSC_CALLER_KEY ?? "";
   const adminKey = process.env.FAKE_BSC_ADMIN_KEY ?? "";
   if (!callerKey || !adminKey) throw new Error("FAKE_BSC_CALLER_KEY and FAKE_BSC_ADMIN_KEY must be set for this command (see README)");
+  for (const [name, value] of [["FAKE_BSC_CALLER_KEY", callerKey], ["FAKE_BSC_ADMIN_KEY", adminKey]]) {
+    if (/[\u0000-\u0020\u007f-\u009f]/.test(value)) throw new Error(`${name} contains whitespace or control characters`);
+  }
   const noIdToken = flags.get("--no-id-token") === true;
   if (noIdToken && !isLoopback(url)) throw new Error("--no-id-token is only for a fake on localhost");
   const audience = str(flags, "--audience") ?? new URL(url).origin;
-  return new FakeClient({ baseUrl: url, callerKey, adminKey, idToken: noIdToken ? null : adcIdTokenMinter(audience) });
+  return new FakeClient({ baseUrl: url, callerKey, adminKey, idToken: noIdToken ? null : idTokenSource(audience) });
 }
 
 const say = (line: string) => process.stderr.write(`${line}\n`);
