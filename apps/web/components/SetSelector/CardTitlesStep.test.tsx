@@ -95,7 +95,7 @@ describe("CardTitlesStep — what is on screen", () => {
       .toBeTruthy();
     expect(
       screen.getByRole("heading", {
-        name: "These titles had to leave something out. Check what went, then keep 'em or make 'em yours.",
+        name: "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.",
       }),
     ).toBeTruthy();
 
@@ -340,7 +340,7 @@ describe("CardTitlesStep — accessibility wiring", () => {
       headingId: "titles-lead",
     });
     expect(document.getElementById("titles-lead")?.textContent).toBe(
-      "These titles had to leave something out. Check what went, then keep 'em or make 'em yours.",
+      "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.",
     );
   });
 

@@ -34,7 +34,7 @@ const OVER: TitleContext = { ...CONTEXT, setNameValue: `${FIRST_NAME_SET} Collec
 
 const LABEL = "Set name in titles";
 const LEAD = "Set name hogging the title? Trim it here and every title below gets it.";
-const TITLES_LEAD = "These titles had to leave something out. Check what went, then keep 'em or make 'em yours.";
+const TITLES_LEAD = "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.";
 const BOX = "2026 Topps Chrome Sapphire";
 
 function card(n: string, extra: Partial<PreviewCardForTitles> = {}): PreviewCardForTitles {
