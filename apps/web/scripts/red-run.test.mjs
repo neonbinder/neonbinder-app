@@ -4,6 +4,7 @@
 // paths outside the report, zip bombs, terminal escapes). The unit tests sit here,
 // where vitest collects .mjs (vitest.include.mjs).
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { crc32 } from "node:zlib";
@@ -237,10 +238,10 @@ function makeZip(entries) {
   const locals = [];
   const centrals = [];
   let offset = 0;
-  for (const { name, data = "", mode = 0o100644, size } of entries) {
+  for (const { name, data = "", mode = 0o100644, size, host = 3, crc: crcOverride } of entries) {
     const body = Buffer.from(data);
     const nameBuf = Buffer.from(name);
-    const crc = crc32(body);
+    const crc = crcOverride ?? crc32(body);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);
     local.writeUInt16LE(10, 4);
@@ -250,7 +251,7 @@ function makeZip(entries) {
     local.writeUInt16LE(nameBuf.length, 26);
     const central = Buffer.alloc(46);
     central.writeUInt32LE(0x02014b50, 0);
-    central.writeUInt16LE((3 << 8) | 20, 4); // made by unix
+    central.writeUInt16LE((host << 8) | 20, 4); // made by: 3 unix, 16 BeOS, 5 Atari
     central.writeUInt16LE(10, 6);
     central.writeUInt32LE(crc, 16);
     central.writeUInt32LE(body.length, 20);
@@ -286,6 +287,13 @@ describe("inspectZip", () => {
     expect(() => inspectZip(z)).toThrow(/symlink/);
   });
 
+  it("refuses a symlink whatever host the entry claims (Info-ZIP restores BeOS and Atari links too)", () => {
+    for (const host of [0, 5, 16]) {
+      const z = makeZip([{ name: "link", data: "/etc/hosts", mode: 0o120777, host }]);
+      expect(() => inspectZip(z)).toThrow(/symlink/);
+    }
+  });
+
   it("refuses absolute and .. names", () => {
     expect(() => inspectZip(makeZip([{ name: "/etc/passwd" }]))).toThrow(/unsafe name/);
     expect(() => inspectZip(makeZip([{ name: "report/../../x" }]))).toThrow(/unsafe name/);
@@ -316,6 +324,27 @@ describe("safeUnzip / freshDir / walkNoSymlinks", () => {
     writeFileSync(join(dir, "inner.zip"), makeZip([{ name: "pwned", data: "x" }]));
     expect(() => safeUnzip(join(dir, "inner.zip"), dir, "inner.zip.d")).toThrow(/already exists as a symlink/);
     expect(() => lstatSync(join(dir, "elsewhere", "pwned"))).toThrow();
+  });
+
+  it("refuses a host-16 (BeOS) symlink zip before unpacking anything", () => {
+    const dir = fresh();
+    mkdirSync(join(dir, "elsewhere"));
+    writeFileSync(join(dir, "beos.zip"), makeZip([{ name: "link", data: join(dir, "elsewhere"), mode: 0o120777, host: 16 }]));
+    expect(() => safeUnzip(join(dir, "beos.zip"), dir, "out")).toThrow(/symlink/);
+    expect(() => lstatSync(join(dir, "out"))).toThrow();
+  });
+
+  it("never lets unzip write to the terminal: a failure carries its text only in the error", () => {
+    const dir = fresh();
+    // A bad CRC passes inspection; unzip then fails and names the entry, an escape and all.
+    writeFileSync(join(dir, "bad.zip"), makeZip([{ name: "evil\u001b]0;pwned\u0007.txt", data: "abc", crc: 1 }]));
+    const script = `import("${new URL("../playwright/red-run.mjs", import.meta.url).href}").then((m) => {
+      try { m.safeUnzip(process.argv[1], process.argv[2], "out"); } catch { process.exitCode = 3; }
+    });`;
+    const r = spawnSync(process.execPath, ["-e", script, join(dir, "bad.zip"), dir], { encoding: "utf8" });
+    expect(r.status).toBe(3);
+    expect(r.stdout).toBe("");
+    expect(r.stderr).toBe("");
   });
 
   it("freshDir refuses an existing file or directory", () => {

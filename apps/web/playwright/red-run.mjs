@@ -301,7 +301,6 @@ export function inspectZip(buf, limits = ZIP_LIMITS) {
   let p = cdOffset;
   for (let i = 0; i < count; i++) {
     if (p + 46 > buf.length || buf.readUInt32LE(p) !== 0x02014b50) throw new Error("refusing: corrupt central directory");
-    const madeBy = buf.readUInt16LE(p + 4) >> 8;
     let size = buf.readUInt32LE(p + 24);
     const nameLen = buf.readUInt16LE(p + 28);
     const extraLen = buf.readUInt16LE(p + 30);
@@ -321,8 +320,9 @@ export function inspectZip(buf, limits = ZIP_LIMITS) {
       }
       if (size < 0) throw new Error("refusing: zip64 entry without its size");
     }
-    // Unix-made entries carry the file mode in the high 16 bits.
-    const mode = madeBy === 3 ? (attrs >>> 16) & 0o170000 : 0;
+    // The high 16 bits carry a unix file mode. Read them whatever host the entry
+    // claims: Info-ZIP restores a symlink from other hosts too (BeOS 16, Atari 5).
+    const mode = (attrs >>> 16) & 0o170000;
     if (mode === 0o120000) throw new Error(`refusing: the zip holds a symlink (${cleanPath(name)})`);
     if (name.startsWith("/") || name.startsWith("\\") || /^[A-Za-z]:/.test(name) || name.split(/[\\/]/).includes("..")) {
       throw new Error(`refusing: the zip holds an unsafe name (${cleanPath(name)})`);
@@ -341,8 +341,10 @@ export function safeUnzip(zipPath, parent, name) {
   if (!st.isFile() || st.size > ZIP_LIMITS.bytes) throw new Error(`refusing: ${cleanPath(zipPath)} is not a regular file in bounds`);
   inspectZip(readFileSync(zipPath));
   const dir = freshDir(parent, name);
-  // -n: a duplicate entry is skipped, never a prompt on stdin.
-  execFileSync("unzip", ["-qn", zipPath, "-d", dir]);
+  // -n: a duplicate entry is skipped, never a prompt on stdin. Output is never
+  // inherited: unzip prints entry names, which the archive chose; a failure
+  // reaches the reader only through main's cleanPath(err.message).
+  execFileSync("unzip", ["-qn", zipPath, "-d", dir], { stdio: ["ignore", "ignore", "pipe"] });
   walkNoSymlinks(dir);
   return dir;
 }
