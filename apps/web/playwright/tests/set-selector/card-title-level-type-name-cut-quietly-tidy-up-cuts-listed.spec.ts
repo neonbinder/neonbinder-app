@@ -11,16 +11,15 @@
 //     name, and the number came back bare; the drawer says "Left out to fit:
 //     <team>, Bartholomew" (never the type name or the sport), and the "Title
 //     built from" chip for the level is labelled "Proof".
-//   * The checklist badges the card "auto-generated title was cut short" and
-//     the header pill counts it; the walker opens on its "Card titles" step,
-//     whose note, read against the card as it is now, also misses the /25
-//     saved after the title was built.
-//   * With a print run of 25 saved, the walker's Regenerate keeps "/25" and
+//   * With a print run of 25 saved, the drawer's Regenerate keeps "/25" and
 //     the level's name, gives up the team, the number and the first name, and
-//     the note lists all three. Saved, the walker has walked the card, and the
-//     drawer holds that title. A generated title still past the Tidy Up line
-//     keeps its flag (only a typed title clears it), so the card's badge and
-//     the "1 needs you" pill stay. Back undoes the drill's pick of the level.
+//     the note lists all three. A generated title still past the Tidy Up line
+//     keeps its flag, so the checklist still badges the card "auto-generated
+//     title was cut short" and the header pill counts it.
+//   * The walker opens on its "Card titles" step with that title. Saving there
+//     is the operator's answer: the walker is all clear, the badge and the pill
+//     go, and the drawer holds the title. Back undoes the drill's pick of the
+//     level.
 //
 // R2 - every title is a full-string match computed with the generator
 // (`assessListingTitle`), so a type name that is not singular, not cut, cut
@@ -143,10 +142,23 @@ test(
     await printRun.press("Enter");
     await expect(page.getByText(/Saved Print run/).first()).toBeVisible();
     await expect(cardTitle).toHaveValue(bornTitle);
+
+    // The drawer's Regenerate, with the print run in hand: /25 is never cut, so
+    // the number goes too, and the note lists the team, the number and the
+    // first name. Saved, as a title the generator built.
+    await drawer.getByRole("button", { name: "Regenerate card title" }).click();
+    await expect(cardTitle).toHaveValue(listedTitle);
+    await expect(page.getByText(/Saved Card title/).first()).toBeVisible();
+    await expect(leftOut).toHaveText(`Left out to fit: ${team}, #${NUMBER}, ${FIRST}`);
+    await expect(cardTitle).not.toHaveAttribute("aria-invalid", "true");
+    await expect(levelChip.getByText(TYPE_AS_SAID, { exact: true })).toBeVisible();
+    await expectAccessible(page, { within: drawer, label: "Card drawer, a rebuilt title that keeps its print run" });
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
 
-    // ── STEP 3: Tidy Up has it ──
+    // ── STEP 3: still in Tidy Up ──
+    // A generated title still past the Tidy Up line keeps the flag: the
+    // drawer's Regenerate is not the operator's answer.
     const badge = page.getByRole("img", {
       name: new RegExp(`^Card ${NUMBER}(, .*)? needs attention: auto-generated title was cut short$`),
     });
@@ -160,32 +172,21 @@ test(
     await expect(walker.getByText("auto-generated title was cut short", { exact: true })).toBeVisible();
     const walkerTitle = walker.getByRole("textbox", { name: `Card title for #${NUMBER}` });
     const walkerLeftOut = walker.getByText(/^Left out to fit: /);
-    await expect(walkerTitle).toHaveValue(bornTitle);
-    // The note reads the field against the card as it is now: the stored title
-    // was built before the print run, so "/25" is missing from it too.
-    await expect(walkerLeftOut).toHaveText(`Left out to fit: ${team}, ${FIRST}, /${PRINT_RUN}`);
-    await expectAccessible(page, { within: walker, label: "Attention walker, Card titles step for a title cut past the Tidy Up line" });
-
-    // Regenerate with the print run in hand: /25 is never cut, so the number
-    // goes too, and the note lists the team, the number and the first name.
-    await walker.getByRole("button", { name: "Regenerate card title" }).click();
     await expect(walkerTitle).toHaveValue(listedTitle);
     await expect(walkerLeftOut).toHaveText(`Left out to fit: ${team}, #${NUMBER}, ${FIRST}`);
-    await expect(walkerTitle).not.toHaveAttribute("aria-invalid", "true");
-    const walkerLevelChip = walker.getByRole("list", { name: "Title built from" }).getByRole("listitem").filter({ hasText: LEVEL });
-    await expect(walkerLevelChip.getByText(TYPE_AS_SAID, { exact: true })).toBeVisible();
-    await expectAccessible(page, { within: walker, label: "Attention walker, a rebuilt title that keeps its print run" });
+    await expectAccessible(page, { within: walker, label: "Attention walker, Card titles step for a title cut past the Tidy Up line" });
+
+    // Saving in the walker is the operator's answer, title unchanged and all:
+    // the card leaves Tidy Up.
     await walkerTitle.press("Enter");
     await expect(walker.getByText(/All clear.*nothing on this checklist needs attention/)).toBeVisible();
     await walker.getByRole("button", { name: /Done \(Esc\)/ }).click();
     await expect(walker).toBeHidden();
 
-    // ── STEP 4: the stored title is the one the walker saved ──
-    // It is the generator's own title and still leaves out a team, the number
-    // and a first name, so the card stays in Tidy Up: only a typed title
-    // clears the flag.
-    await expect(badge).toBeVisible();
-    await expect(pill).toBeVisible();
+    // ── STEP 4: out of Tidy Up, with the title the walker saved ──
+    await expect(badge).toBeHidden();
+    await expect(pill).toBeHidden();
+    await expect(page.getByRole("button", { name: /^[0-9]+ needs? you$/ })).toHaveCount(0);
     await editCardButton(page, NUMBER).click();
     await expect(cardTitle).toHaveValue(listedTitle);
     await expect(leftOut).toHaveText(`Left out to fit: ${team}, #${NUMBER}, ${FIRST}`);
