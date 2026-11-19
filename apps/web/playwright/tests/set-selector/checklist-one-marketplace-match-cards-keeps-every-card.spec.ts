@@ -97,6 +97,7 @@ import {
   expectNothingDecided,
   expectWizardStep,
   LOOKUPS,
+  nameStepSkip,
   nextStepButton,
   personSkip,
   readBackDecision,
@@ -350,21 +351,30 @@ test(
     await expect(wizard.getByText(new RegExp(`${COLLEGE_TEAM} \\(1994.1996\\)`))).toBeVisible();
     await expect(wizard.getByText(new RegExp(`${team} \\(1994.1996\\)`))).toBeVisible();
     // "Add as New Player" records exactly ONE decision: the helper waits for the
-    // wizard to leave HIS row (his own skip goes). Where names remain, the names'
-    // "Decided (N)" history grows by one (NEO-467: no step count; the lookups were
-    // waited out above, so nothing else moves it). The batch's lookups settle most
-    // rows on their own, so his can be the LAST undecided name: the wizard is then
-    // past the names, where the history is not shown, and the most recent decision,
-    // read back, is his create.
+    // wizard to leave HIS row (his own skip goes). Whether names remain after him
+    // is batch state, read BEFORE the press off the footer's "Skip remaining names
+    // (N)" (N counts every undecided row, his included; the lookups were waited
+    // out above, so nothing else decides a row meanwhile). Both shapes are pinned:
+    //  - N > 1: the wizard presents the next name, and its "Decided (N)" history
+    //    has grown by exactly one (NEO-467: no step count);
+    //  - N = 1: he was the last name, so the wizard is past the names (the
+    //    names-done footer is up, and the history, a name-step thing, is not).
     const decidedBefore = await readDecidedCount(page);
+    const skipRemainingNames = wizard.getByRole("button", { name: /^Skip remaining names \([0-9]+\)$/ });
+    await expect(skipRemainingNames).toBeVisible();
+    const undecidedBefore = Number(((await skipRemainingNames.textContent()) ?? "").match(/\(([0-9]+)\)/)?.[1]);
+    expect(undecidedBefore, "his own row is still undecided before the press").toBeGreaterThanOrEqual(1);
+    test.info().annotations.push({ type: "names-after-live-player", description: String(undecidedBefore - 1) });
     await answerPlayerAsNew(page);
-    await expect(decidedSummary(page).or(nextStepButton(page)).first()).toBeVisible();
-    if (await decidedSummary(page).isVisible()) {
+    if (undecidedBefore > 1) {
+      await expect(nameStepSkip(page)).toBeVisible();
       await expectDecidedCount(page, decidedBefore + 1);
     } else {
-      const decision = await readBackDecision(page, "Added as new", { resume: true });
-      await expect(decision).toBeHidden();
+      await expect(nextStepButton(page)).toBeVisible();
+      await expect(decidedSummary(page)).toHaveCount(0);
     }
+    // Either way, the most recent decision, read back, is HIS, and it is the create.
+    await readBackDecision(page, "Added as new", { resume: true, of: LIVE_PLAYER });
 
     // Every other name is SKIPPED, the cheapest way to a commit: it decides every
     // remaining row, lookups included, creates no players and raises none of

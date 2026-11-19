@@ -37,3 +37,18 @@ it). Record the checklist text in the cleanup state from the Sync press until th
 wizard closes on Save.
 
 Related: [[reference_hand_made_rows_cannot_reach_the_commit_path]], [[patterns-set-no-team-spec-shape]], [[failure-screenshot-shows-the-finally-end-state]]
+
+**Checklist team claim leg (NEO-426 audit).** A pasted row naming a minted team for the
+same teamless player (`3,<Player>,TLC<token>`) puts a `New Team: TLC<token>` step FIRST
+(teams are presented before players), answered with `answerStepAsNew`; the Save note
+still reads `<Player> saves with No Team. ...` (one card; the many-card form starts
+"2 cards save"), and card 3 commits with its team. This only proves "a named, resolved
+team is kept": a claim that stands UNRESOLVED (held for the operator) needs BSC's
+rawTeamName, i.e. a recorded listing. Flag-off leg: `drillToCustom(page, { sport })`
+does goto + one pick (two history entries), so return to the leaf with
+`page.goto(leafUrl)`, not one goBack.
+
+**Branch on batch state, not on a race.** To know whether names remain after the row
+you are about to decide, read the footer's `Skip remaining names (N)` first (N counts
+every undecided row, the presented one included), then pin each shape; read back the
+decision with `readBackDecision(page, "Added as new", { of: <name> })` to prove WHOSE.

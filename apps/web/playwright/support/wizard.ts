@@ -791,6 +791,20 @@ export async function answerPlayerAsNew(page: Page): Promise<void> {
       .or(confirmSaveButton(page))
       .or(wizard.getByText(/still looking up/));
     await expect(plain.or(moved).first()).toBeVisible();
+    // Not a poll (GUIDE "Idioms": settle into ONE state, then branch). The wait
+    // above returns once the app is in one of two states, and neither changes
+    // on its own afterwards:
+    //  - the plain step of THIS row: the "anyway" press recorded nothing, so it
+    //    stays up until it is pressed (it cannot turn into `moved` by itself);
+    //  - `moved`: the press recorded the create and the walk left the row, so
+    //    this row's skip is gone and `plain`, scoped to a wizard that still has
+    //    it, can never match again.
+    // The product opens the plain step only from a row inserted READY with no
+    // lookup (`preselectAwaitingLookup` in EntityReviewWizard.tsx); a row whose
+    // lookup already ran records the create on the first press and never shows
+    // it, so `plain` cannot be read true for a row that is about to move on.
+    // `isVisible` therefore reads the settled state, and `expectNameStepLeft`
+    // below is the hard assert of either path.
     if (await plain.isVisible()) await plain.click();
   }
   await expectNameStepLeft(page, row);
@@ -1041,6 +1055,8 @@ export async function advanceToSave(page: Page): Promise<void> {
  *   in flight presents the decision before that row.
  * - `decision` the decision line, matched exactly when a string ("Skipped",
  *   "Added as new", "Linked to Shohei Ohtani") or by the regex given.
+ * - `of` (optional) the row's name: the panel must be `Decision for <of>`, so
+ *   the read-back proves whose decision it is, not only what it was.
  * - `resume: true` presses the panel's "Next", handing the walk back its own
  *   rule: EXIT the panel is gone and a name step is presented again (its skip
  *   control is up) or, when every name is decided, the names-done footer
@@ -1052,7 +1068,7 @@ export async function advanceToSave(page: Page): Promise<void> {
 export async function readBackDecision(
   page: Page,
   decision: string | RegExp,
-  { resume = false }: { resume?: boolean } = {},
+  { resume = false, of }: { resume?: boolean; of?: string } = {},
 ): Promise<Locator> {
   const wizard = reviewWizard(page);
   await wizard.getByRole("button", { name: /^Back to previous (decision|step)$/ }).click();
@@ -1060,6 +1076,8 @@ export async function readBackDecision(
   await expect(
     panel.getByText(decision, typeof decision === "string" ? { exact: true } : undefined),
   ).toBeVisible();
+  // `of` pins WHOSE decision this is (the group is named for the row's name).
+  if (of !== undefined) await expect(panel).toHaveAccessibleName(`Decision for ${of}`);
 
   if (resume) {
     await panel.getByRole("button", { name: "Next", exact: true }).click();

@@ -30,3 +30,14 @@ catalogue knows; every recorded set with unknown players either names a team on
 its listings (1995 hockey, ASU Onit) or has no listing recorded. The catalogue
 has 0 Non Sport players, and Non Sport has no BSC id (SportLots only).
 Related: [[patterns_worktree_deployment_onto_the_fake_bsc]], [[patterns_leaf_vivid_real_unlicensed_set]]
+
+Update (NEO-426 audit, 2026-11-19): recorded card-listings exist for whole sets only on
+1995 Dayton Bombers ECHL (all 32, every one names the club; owned by the 429 breaker),
+2026 Onit Athlete Arizona State Sun Devils Base (all 10, each names "Arizona State Sun
+Devils", which the catalogue HOLDS; players unknown; drill filters recorded; no spec
+owns it) and Leaf Vivid. Stars of MLB Network Base has results but no listings; five of
+its hosts are unknown to the catalogue, and its publisher file's "No Team" cells mean BSC
+gave them none, so ONE recorded listing there (its card left out of an uploaded file)
+is the cheapest "BSC answers no team for an unknown person" fixture.
+The recorder for catalogue READS is `fake-bsc.sh record <deployment>-` (misses), not
+`capture` (seller writes).

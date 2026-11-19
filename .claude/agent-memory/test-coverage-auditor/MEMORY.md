@@ -24,3 +24,4 @@
 - [Cross-service source-read tests vs path filters](cross-service-source-read-tests-vs-path-filters.md) — parity tests reading a sibling service only run if its lane's filter lists those paths, both ways
 - [Inline workflow logic untested](inline-workflow-logic-untested-and-mirrored-regex.md) — yml gate/jq edits need a script test or yml-pin; hand-mirrored regexes drift
 - [Stored count replaced by live count](host-stored-count-replaced-by-live-count-stales-old-spec.md) — old spec asserting the button survives the fix goes stale; race token untested
+- [Counter-removal port loses a control](counter-removal-port-loses-close-path.md) — ported specs drop sibling clicks; default-stamp specs miss BSC-answer path
