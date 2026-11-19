@@ -1,6 +1,7 @@
 /**
  * NEO-574 — the "Career check" step's own behaviour: one line per
- * (player, team), "Keep as is" picked by default, the four answers, the
+ * (player, team), "Add to career" picked by default (the card's team staged;
+ * Jason 2026-11-19), "Keep as is" the explicit way out, the four answers, the
  * re-check after a different player or team, and the keyboard model.
  * The wiring into the wizard is EntityReviewWizard.career.test.tsx.
  *
@@ -351,15 +352,30 @@ describe("the lines", () => {
     expect(g.getAttribute("aria-label")).toBe("Fernando Tatis Jr. on San Diego Padres");
   });
 
-  it("opens every line on 'Keep as is', as the one tab stop", () => {
+  it("opens every line on 'Add to career' with the card's team staged, as the one tab stop", () => {
     render(<Harness />);
     for (const g of [tatis(), trout()]) {
-      const leave = radio(g, "Keep as is");
-      expect(leave.getAttribute("aria-checked")).toBe("true");
-      expect(leave.tabIndex).toBe(0);
-      expect(radio(g, "Add to career").tabIndex).toBe(-1);
+      const add = radio(g, "Add to career");
+      expect(add.getAttribute("aria-checked")).toBe("true");
+      expect(add.tabIndex).toBe(0);
+      expect(radio(g, "Keep as is").getAttribute("aria-checked")).toBe("false");
+      expect(radio(g, "Keep as is").tabIndex).toBe(-1);
     }
+    // The staged team is on each line from the first render…
+    expect(
+      within(screen.getByRole("list", { name: "Stints to add for Fernando Tatis Jr." })).getByText(
+        "San Diego Padres (2022–2022)",
+      ),
+    ).toBeTruthy();
+    expect(
+      within(screen.getByRole("list", { name: "Stints to add for Mike Trout" })).getByText(
+        "Los Angeles Angels (2022–2022)",
+      ),
+    ).toBeTruthy();
+    // …and the stints form is ready, yet nothing is stored until the operator touches a line.
+    expect(screen.getByRole("group", { name: "Stints form for Fernando Tatis Jr." })).toBeTruthy();
     expect(answersSeen).toEqual({});
+    expect(answerCalls).toBe(0);
   });
 
   // Jason (NEO-574): the choices are the standard secondary NeonButton, not a
@@ -372,31 +388,36 @@ describe("the lines", () => {
       expect(r.className).toContain("neon-button");
       expect(r.getAttribute("type")).toBe("button");
     }
-    expect(isFilledBlue(radio(g, "Keep as is"))).toBe(true);
-    for (const name of ["Add to career", "Wrong player", "Fix card’s team"]) {
+    expect(isFilledBlue(radio(g, "Add to career"))).toBe(true);
+    for (const name of ["Keep as is", "Wrong player", "Fix card’s team"]) {
       expect(isOutline(radio(g, name))).toBe(true);
       expect(radio(g, name).style.getPropertyValue("--nb-ink")).toBe("var(--neon-blue-text)");
     }
-    fireEvent.click(radio(g, "Add to career"));
-    expect(isFilledBlue(radio(g, "Add to career"))).toBe(true);
-    expect(isOutline(radio(g, "Keep as is"))).toBe(true);
+    fireEvent.click(radio(g, "Keep as is"));
+    expect(isFilledBlue(radio(g, "Keep as is"))).toBe(true);
+    expect(isOutline(radio(g, "Add to career"))).toBe(true);
   });
 
   it("keeps the radio semantics on the buttons: checked, one tab stop, arrows, Enter", () => {
     render(<Harness />);
     const g = tatis();
     const radios = within(g).getAllByRole("radio");
-    expect(radios.map((r) => r.getAttribute("aria-checked"))).toEqual(["true", "false", "false", "false"]);
-    expect(radios.map((r) => r.tabIndex)).toEqual([0, -1, -1, -1]);
-    const leave = radio(g, "Keep as is");
-    act(() => leave.focus());
-    fireEvent.keyDown(leave, { key: "ArrowRight" });
+    expect(radios.map((r) => r.getAttribute("aria-checked"))).toEqual(["false", "true", "false", "false"]);
+    expect(radios.map((r) => r.tabIndex)).toEqual([-1, 0, -1, -1]);
     const add = radio(g, "Add to career");
+    const leave = radio(g, "Keep as is");
+    act(() => add.focus());
+    // The arrows move the pick, wrapping: left from the default is Keep as is.
+    fireEvent.keyDown(add, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(leave);
+    expect(leave.getAttribute("aria-checked")).toBe("true");
+    expect(leave.tabIndex).toBe(0);
+    expect(add.tabIndex).toBe(-1);
+    expect(isFilledBlue(leave)).toBe(true);
+    expect(answersSeen[keyOf("p-tatis")]).toEqual({ kind: "leave" });
+    fireEvent.keyDown(leave, { key: "ArrowRight" });
     expect(document.activeElement).toBe(add);
     expect(add.getAttribute("aria-checked")).toBe("true");
-    expect(add.tabIndex).toBe(0);
-    expect(leave.tabIndex).toBe(-1);
-    expect(isFilledBlue(add)).toBe(true);
     // Enter is handled by the radio, not left to the button's click.
     const notPrevented = fireEvent.keyDown(add, { key: "Enter" });
     expect(notPrevented).toBe(false);
@@ -422,6 +443,12 @@ describe("Add to career", () => {
 
   it("stages the card's team from the set's year, so the team is named before anything is typed", () => {
     render(<Harness />);
+    // The default: staged with no touch, and nothing stored for it.
+    expect(within(stintsList("Fernando Tatis Jr.")).getByText(PADRES_CHIP)).toBeTruthy();
+    expect(answersSeen[keyOf("p-tatis")]).toBeUndefined();
+    // Keep as is drops it; choosing Add to career again stages it afresh and stores it.
+    fireEvent.click(radio(tatis(), "Keep as is"));
+    expect(screen.queryByRole("list", { name: "Stints to add for Fernando Tatis Jr." })).toBeNull();
     fireEvent.click(radio(tatis(), "Add to career"));
     expect(within(stintsList("Fernando Tatis Jr.")).getByText(PADRES_CHIP)).toBeTruthy();
     expect(answersSeen[keyOf("p-tatis")]).toEqual({
@@ -438,9 +465,10 @@ describe("Add to career", () => {
     });
     const lines = toLines(created).filter((l) => l.playerId === "p-tatis");
     render(<Harness linesOverride={lines} teamNameOverride="San Diego Padres" shortOverride={{}} />);
-    fireEvent.click(
-      screen.getByRole("radio", { name: "Add to career" }),
-    );
+    // Staged by default; a round trip through Keep as is stores the same stint.
+    expect(screen.getByText("San Diego Padres (2022–2022)")).toBeTruthy();
+    fireEvent.click(screen.getByRole("radio", { name: "Keep as is" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Add to career" }));
     expect(answersSeen[lines[0].key]).toEqual({
       kind: "add",
       stints: [{ teamName: "Padres", label: "San Diego Padres", fromYear: 2022, toYear: 2022 }],
@@ -498,6 +526,7 @@ describe("Add to career", () => {
   it("stays open-ended for a set from this year or later, and closes an earlier year", () => {
     const thisYear = new Date().getFullYear();
     render(<Harness setYear={thisYear} />);
+    fireEvent.click(radio(tatis(), "Keep as is"));
     fireEvent.click(radio(tatis(), "Add to career"));
     expect(answersSeen[keyOf("p-tatis")]).toEqual({
       kind: "add",
@@ -508,6 +537,13 @@ describe("Add to career", () => {
     ).toBeTruthy();
     cleanup();
     render(<Harness setYear={thisYear - 1} />);
+    // Untouched, the default shows the closed single-year stint.
+    expect(
+      within(stintsList("Fernando Tatis Jr.")).getByText(
+        `San Diego Padres (${thisYear - 1}–${thisYear - 1})`,
+      ),
+    ).toBeTruthy();
+    fireEvent.click(radio(tatis(), "Keep as is"));
     fireEvent.click(radio(tatis(), "Add to career"));
     expect(answersSeen[keyOf("p-tatis")]).toEqual({
       kind: "add",
@@ -666,7 +702,19 @@ describe("Add to career", () => {
     fireEvent.click(radio(tatis(), "Add to career"));
     nextEntry = { name: "Nowhere Nine", fromYear: 2012 };
     fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
-    expect((answersSeen[keyOf("p-tatis")] as { stints: unknown[] }).stints).toHaveLength(1);
+    // Nothing was added, so nothing was stored: the default's one chip stays.
+    expect(answersSeen[keyOf("p-tatis")]).toBeUndefined();
+    expect(within(stintsList("Fernando Tatis Jr.")).getAllByRole("listitem")).toHaveLength(1);
+  });
+
+  it("a line whose team cannot be named still opens on Add to career: nothing staged, the form ready", () => {
+    const nameless = { ...LINES.find((l) => l.playerId === "p-tatis")!, teamId: undefined, teamName: undefined };
+    render(<Harness linesOverride={[nameless]} shortUnknown />);
+    const g = screen.getByRole("radiogroup", { name: careerLineLabel("Fernando Tatis Jr.", "this team", "12") });
+    expect(radio(g, "Add to career").getAttribute("aria-checked")).toBe("true");
+    expect(screen.queryByRole("list", { name: "Stints to add for Fernando Tatis Jr." })).toBeNull();
+    expect(screen.getByRole("group", { name: "Stints form for Fernando Tatis Jr." })).toBeTruthy();
+    expect(answersSeen).toEqual({});
   });
 
   it("does not stage the same stint twice", () => {
@@ -686,7 +734,9 @@ describe("Add to career", () => {
     expect(within(stintsList("Fernando Tatis Jr.")).queryByText(/Angels/)).toBeNull();
     nextEntry = { name: "Cincinnati Reds", fromYear: 2019, teamId: "t-reds" };
     fireEvent.click(screen.getByRole("button", { name: "Add stint for Mike Trout" }));
-    expect((answersSeen[keyOf("p-tatis")] as { stints: unknown[] }).stints).toHaveLength(1);
+    // Tatis was never touched, so he stays on his default; Trout's add is stored.
+    expect(answersSeen[keyOf("p-tatis")]).toBeUndefined();
+    expect(within(stintsList("Fernando Tatis Jr.")).getAllByRole("listitem")).toHaveLength(1);
     expect((answersSeen[keyOf("p-trout")] as { stints: unknown[] }).stints).toHaveLength(2);
   });
 
@@ -788,12 +838,13 @@ describe("Wrong player", () => {
     fireEvent.click(radio(tatis(), "Wrong player"));
     fireEvent.click(screen.getByRole("radio", { name: /Fernando Tatis Sr\./ }));
     const follow = screen.getByRole("radiogroup", { name: "Career for Fernando Tatis Sr." });
-    expect(isFilledBlue(radio(follow, "Keep as is"))).toBe(true);
-    expect(isOutline(radio(follow, "Add to career"))).toBe(true);
-    expect(radio(follow, "Add to career").tabIndex).toBe(-1);
-    fireEvent.click(radio(follow, "Add to career"));
+    // The follow-up opens on Add to career too.
     expect(isFilledBlue(radio(follow, "Add to career"))).toBe(true);
     expect(isOutline(radio(follow, "Keep as is"))).toBe(true);
+    expect(radio(follow, "Keep as is").tabIndex).toBe(-1);
+    fireEvent.click(radio(follow, "Keep as is"));
+    expect(isFilledBlue(radio(follow, "Keep as is"))).toBe(true);
+    expect(isOutline(radio(follow, "Add to career"))).toBe(true);
   });
 
   it("lists the same-name players, asking only about existing ones, excluding the current", () => {
@@ -942,15 +993,24 @@ describe("Wrong player", () => {
     fireEvent.click(screen.getByRole("radio", { name: /Fernando Tatis Sr\./ }));
     expect(screen.getByText("No Padres in Fernando Tatis Sr.’s career by 2022 either.")).toBeTruthy();
     const follow = screen.getByRole("radiogroup", { name: "Career for Fernando Tatis Sr." });
-    expect(radio(follow, "Keep as is").getAttribute("aria-checked")).toBe("true");
-    fireEvent.click(radio(follow, "Add to career"));
-    // The same widget, on the new player, with the card's team already staged.
+    // Add to career is the default: the same widget, on the new player, with the
+    // card's team already staged, and nothing stored for the follow-up yet.
+    expect(radio(follow, "Add to career").getAttribute("aria-checked")).toBe("true");
+    expect(radio(follow, "Keep as is").getAttribute("aria-checked")).toBe("false");
     expect(
       within(screen.getByRole("list", { name: "Stints to add for Fernando Tatis Sr." })).getByText(
         "San Diego Padres (2022–2022)",
       ),
     ).toBeTruthy();
     expect(screen.getByRole("group", { name: "Stints form for Fernando Tatis Sr." })).toBeTruthy();
+    expect(answersSeen[keyOf("p-tatis")]).not.toHaveProperty("then");
+    // Keep as is is the explicit way out and closes the widget…
+    fireEvent.click(radio(follow, "Keep as is"));
+    expect(answersSeen[keyOf("p-tatis")]).toMatchObject({ then: { kind: "leave" } });
+    expect(screen.queryByRole("list", { name: "Stints to add for Fernando Tatis Sr." })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Stints form for Fernando Tatis Sr." })).toBeNull();
+    // …and Add to career brings the staged team back, stored this time.
+    fireEvent.click(radio(follow, "Add to career"));
     expect(answersSeen[keyOf("p-tatis")]).toMatchObject({
       then: {
         kind: "add",
@@ -1105,7 +1165,8 @@ describe("Wrong player", () => {
         expect(at.getAttribute("aria-checked")).toBe("true");
       }
       expect(searchMounts).toBe(0);
-      expect(screen.queryByRole("textbox")).toBeNull();
+      // (The stints form of an Add to career line is a textbox too; no search is.)
+      expect(screen.queryByRole("textbox", { name: /^Search / })).toBeNull();
     });
 
     it("arrowing off an open search closes it", () => {
@@ -1169,14 +1230,17 @@ describe("Fix card’s team", () => {
     fireEvent.click(radio(trout(), "Fix card’s team"));
     fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
     expect(screen.getByText("No Picks in Mike Trout’s career by 2022 either.")).toBeTruthy();
-    expect(screen.queryByText(/Picked team/)).toBeNull();
-    fireEvent.click(radio(screen.getByRole("radiogroup", { name: "Career for Mike Trout" }), "Add to career"));
-    // The widget stages the PICKED team, by id, from the set's year.
+    expect(screen.queryByText(/Picked team in/)).toBeNull();
+    // The default follow-up stages the PICKED team, by id, from the set's year.
     expect(
       within(screen.getByRole("list", { name: "Stints to add for Mike Trout" })).getByText(
         "Picked team (2022–2022)",
       ),
     ).toBeTruthy();
+    expect(answersSeen[keyOf("p-trout")]).not.toHaveProperty("then");
+    const follow = screen.getByRole("radiogroup", { name: "Career for Mike Trout" });
+    fireEvent.click(radio(follow, "Keep as is"));
+    fireEvent.click(radio(follow, "Add to career"));
     expect(answersSeen[keyOf("p-trout")]).toMatchObject({
       then: { kind: "add", stints: [{ teamId: "picked-team", fromYear: 2022, toYear: 2022 }] },
     });
@@ -1236,24 +1300,31 @@ describe("Fix card’s team", () => {
 });
 
 describe("keyboard", () => {
-  it("arrows move and pick, wrapping", () => {
+  it("arrows move and pick, wrapping, from the default Add to career", () => {
     render(<Harness />);
-    const leave = radio(tatis(), "Keep as is");
-    act(() => leave.focus());
-    fireEvent.keyDown(leave, { key: "ArrowRight" });
-    expect(radio(tatis(), "Add to career").getAttribute("aria-checked")).toBe("true");
-    expect(document.activeElement).toBe(radio(tatis(), "Add to career"));
-    fireEvent.keyDown(radio(tatis(), "Add to career"), { key: "ArrowLeft" });
+    const add = radio(tatis(), "Add to career");
+    act(() => add.focus());
+    fireEvent.keyDown(add, { key: "ArrowLeft" });
+    expect(radio(tatis(), "Keep as is").getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(radio(tatis(), "Keep as is"));
     fireEvent.keyDown(radio(tatis(), "Keep as is"), { key: "ArrowLeft" });
     expect(radio(tatis(), "Fix card’s team").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(radio(tatis(), "Fix card’s team"), { key: "ArrowRight" });
+    expect(radio(tatis(), "Keep as is").getAttribute("aria-checked")).toBe("true");
+    fireEvent.keyDown(radio(tatis(), "Keep as is"), { key: "ArrowRight" });
+    expect(radio(tatis(), "Add to career").getAttribute("aria-checked")).toBe("true");
+    expect(document.activeElement).toBe(radio(tatis(), "Add to career"));
   });
 
-  it("Enter on 'Leave it' moves to the next line, and from the last line out to Next", () => {
+  it("Enter on 'Keep as is' picks it and moves to the next line, and from the last line out to Next", () => {
     render(<Harness />);
     fireEvent.keyDown(radio(trout(), "Keep as is"), { key: "Enter" });
-    expect(document.activeElement).toBe(radio(tatis(), "Keep as is"));
+    expect(answersSeen[keyOf("p-trout")]).toEqual({ kind: "leave" });
+    // The next line is untouched: its tab stop is its default, Add to career.
+    expect(document.activeElement).toBe(radio(tatis(), "Add to career"));
     expect(allDone).not.toHaveBeenCalled();
     fireEvent.keyDown(radio(tatis(), "Keep as is"), { key: "Enter" });
+    expect(answersSeen[keyOf("p-tatis")]).toEqual({ kind: "leave" });
     expect(allDone).toHaveBeenCalledTimes(1);
   });
 
@@ -1283,8 +1354,8 @@ describe("when the career check could not run (NEO-574)", () => {
     render(<Harness readFailed />);
     fireEvent.click(screen.getByRole("button", { name: CAREER_RETRY_LABEL }));
     expect(onRetry).toHaveBeenCalledTimes(1);
-    // The lines are still there and still default to Leave it.
-    expect(radio(tatis(), "Keep as is").getAttribute("aria-checked")).toBe("true");
+    // The lines are still there and still default to Add to career.
+    expect(radio(tatis(), "Add to career").getAttribute("aria-checked")).toBe("true");
   });
 
   it("with no line to list, still shows the heading and Retry", () => {
@@ -1465,8 +1536,9 @@ describe("New player (NEO-591)", () => {
     expect(answersSeen[keyOf("p-tatis")]).toMatchObject({
       kind: "player",
       pick: { playerId: "picked-player" },
-      then: { kind: "leave" },
     });
+    // The follow-up is untouched: its default (add the card's team) applies once the re-check says uncovered.
+    expect(answersSeen[keyOf("p-tatis")]).not.toHaveProperty("then");
     expect(screen.queryByRole("textbox", { name: NAME_BOX })).toBeNull();
   });
 

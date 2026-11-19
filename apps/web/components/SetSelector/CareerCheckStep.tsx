@@ -20,6 +20,8 @@ import { useRelinkCandidates } from "./career-reads";
 import {
   CAREER_RETRY_LABEL,
   LEAVE_FOLLOW_UP,
+  defaultCareerAnswer,
+  lineStintTeam,
   NO_CAREER_TEXT,
   careerFollowUpFailed,
   careerHeading,
@@ -58,11 +60,12 @@ import {
  *
  *   Fernando Tatis Jr.
  *   No San Diego Padres stint by 2022.            Cards #12, #45
- *   (●) Leave it   ( ) Add the stint   ( ) Different player   ( ) Different team
+ *   (●) Add to career   ( ) Keep as is   ( ) Wrong player   ( ) Fix card’s team
  *
- * Every line opens on "Keep as is", so one Next passes the screen; nothing is
- * written until Confirm & Save. The other three answers open one small panel
- * under the line:
+ * Every line opens on "Add to career" with the card's team already staged
+ * (Jason 2026-11-19), so one Next passes the screen and Confirm & Save adds
+ * those stints; "Keep as is" is the explicit way out. Nothing is written until
+ * Confirm & Save. The panels open under the line:
  *
  *  - **Add to career**: the New Player step's stints widget
  *    (`CareerTeamEntry` and its chips). The player's stints on file are listed
@@ -79,8 +82,8 @@ import {
  *
  * A different player or team asks the coverage read about the NEW pair; if
  * that is uncovered too, one more choice appears right there: add the stint
- * for it (the same widget), or leave it. (Picking again is just picking again.)
- * One level deep.
+ * for it (the same widget, the default, with the team staged), or keep as is.
+ * (Picking again is just picking again.) One level deep.
  *
  * ## Keyboard (the house radio-group pattern)
  *
@@ -178,8 +181,8 @@ type StintEnv = {
   existingStintsOf?: (playerId: string) => readonly ExistingStint[];
 };
 
-function kindOf(answer: CareerAnswer | undefined): Kind {
-  return answer?.kind ?? "leave";
+function kindOf(answer: CareerAnswer): Kind {
+  return answer.kind;
 }
 
 export default function CareerCheckStep({
@@ -298,7 +301,7 @@ function CareerLineRow({
   setYear,
   selectorOptionId,
   sportId,
-  answer,
+  answer: storedAnswer,
   onAnswer,
   coverage,
   failed,
@@ -317,6 +320,7 @@ function CareerLineRow({
   setYear: number;
   selectorOptionId: Id<"selectorOptions">;
   sportId: Id<"selectorOptions">;
+  /** The stored answer; absent = the default add (`defaultCareerAnswer`). */
   answer: CareerAnswer | undefined;
   onAnswer: (answer: CareerAnswer) => void;
   coverage: Readonly<Record<string, boolean>>;
@@ -337,7 +341,6 @@ function CareerLineRow({
     teamName,
     shortTeamName === undefined ? line.cardNumbers[0] : undefined,
   );
-  const current = kindOf(answer);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const noteId = useId();
@@ -347,11 +350,11 @@ function CareerLineRow({
   /** The pill opened it (so Escape returns there), not the panel's button. */
   const [searchFromPill, setSearchFromPill] = useState(false);
   /** The card's team as a stint names it: the line's own, with the name its chip shows. */
-  const lineTeam: StintTeamRef = {
-    ...(line.teamId ? { teamId: line.teamId as Id<"teams"> } : {}),
-    ...(line.teamName ? { teamName: line.teamName } : {}),
-    label: teamName,
-  };
+  const lineTeam: StintTeamRef = lineStintTeam(line, teamName);
+  // An untouched line is "Add to career" with the card's team staged; the
+  // operator's first touch stores a real answer.
+  const answer: CareerAnswer = storedAnswer ?? defaultCareerAnswer(line, setYear, teamName);
+  const current = kindOf(answer);
 
   const focusIn = (selector: string) => {
     // Let the panel render, then step into it.
@@ -468,7 +471,7 @@ function CareerLineRow({
           })}
         </div>
 
-        {answer && answer.kind !== "leave" && (
+        {answer.kind !== "leave" && (
           <div ref={panelRef}>
             {answer.kind === "add" && (
               <StintsPanel
@@ -728,7 +731,11 @@ function FollowUp({
         : covered
           ? coveredText(subject, team)
           : uncoveredAgainText(subject, team, setYear);
-  const then: CareerFollowUp = answer.then;
+  // Untouched = add, with the NEW pair's team staged (the default).
+  const then: CareerFollowUp = answer.then ?? {
+    kind: "add",
+    stints: preAddedStints(stintTeam, setYear),
+  };
   const setThen = (next: CareerFollowUp) => onAnswer({ ...answer, then: next });
   const addNow = () => setThen({ kind: "add", stints: preAddedStints(stintTeam, setYear) });
   /** Into the team box, as the line's own "Add to career" does. */
@@ -902,7 +909,7 @@ function PlayerPanel({
   const pickedExisting: ExistingPlayerPick | undefined =
     picked && !isNewPlayerPick(picked) ? picked : undefined;
   const pick = (playerId: Id<"players">, name: string) => {
-    const next: CareerAnswer = { kind: "player", pick: { playerId, name }, then: LEAVE_FOLLOW_UP };
+    const next: CareerAnswer = { kind: "player", pick: { playerId, name } };
     onAnswer(next);
     const pair = followUpPair(line, next);
     if (pair) requestCoverage([coverageAskOf(pair.ask)]);
@@ -951,7 +958,7 @@ function PlayerPanel({
   ];
   const newName = pickedNew ? cleanNewPlayerName(pickedNew.name) : "";
   const newNameReady = pickedNew ? newPlayerNameReady(pickedNew.name) : false;
-  const newStints = answer.then.kind === "add" ? answer.then.stints : [];
+  const newStints = answer.then?.kind === "add" ? answer.then.stints : [];
 
   return (
     <div className="space-y-2">
@@ -1234,7 +1241,7 @@ function TeamPanel({
   const picked = answer.pick;
   const buttonRef = useRef<HTMLButtonElement>(null);
   const pick = (teamId: Id<"teams">, name: string) => {
-    const next: CareerAnswer = { kind: "team", pick: { teamId, name }, then: LEAVE_FOLLOW_UP };
+    const next: CareerAnswer = { kind: "team", pick: { teamId, name } };
     onAnswer(next);
     const pair = followUpPair(line, next);
     if (pair) requestCoverage([coverageAskOf(pair.ask)]);

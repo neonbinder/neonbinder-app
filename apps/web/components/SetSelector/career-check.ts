@@ -5,10 +5,11 @@
  * existing one) and a team is compared with that player's career. If no stint
  * counts toward the set's year for the card's team (`careerCoversCardTeam`),
  * the pair (player, team) is listed ONCE on the step, with its card numbers.
- * The operator can leave it, add the stint, link the cards to a different
+ * The operator can add the stint, leave it, link the cards to a different
  * existing player (or to a NEW player named on the spot), or give the cards a
- * different team. Every line defaults to "Leave it", so one Next passes the
- * screen.
+ * different team. Every line starts on "Add to career" with the card's team
+ * already staged (`defaultCareerAnswer`), so one Next passes the screen AND
+ * adds those stints at Confirm & Save; "Keep as is" is the explicit way out.
  *
  * Nothing here is stored. The answers are wizard state like the teams and
  * autograph answers: `careerCommitFields` turns them into the commit's
@@ -334,7 +335,12 @@ export type StagedStint = {
 /** A team a stint can name, before it has a label or years. */
 export type StintTeamRef = { teamId?: Id<"teams">; teamName?: string; label: string };
 
-/** What happens after a re-check says the NEW pair is uncovered too. */
+/**
+ * What happens after a re-check says the NEW pair is uncovered too. Absent on
+ * an answer (`then`) = "add" with the new pair's team staged (`preAddedStints`),
+ * which counts only once the re-check has said uncovered; `{ kind: "leave" }`
+ * is the operator choosing Keep as is.
+ */
 export type CareerFollowUp = { kind: "leave" } | { kind: "add"; stints: StagedStint[] };
 
 /** An existing NB player the cards are pointed at. */
@@ -356,14 +362,19 @@ export function isNewPlayerPick(pick: PlayerPick | undefined): pick is NewPlayer
 }
 
 /**
- * One line's answer. Absent = "Keep as is". A "player" or "team" answer with no
- * pick yet is the picker being open: it does nothing until a pick lands.
+ * One line's answer. Absent = "Add to career" with the card's team staged
+ * (`defaultCareerAnswer`, Jason 2026-11-19); "Keep as is" is the explicit
+ * `{ kind: "leave" }`. A "player" or "team" answer with no pick yet is the
+ * picker being open: it does nothing until a pick lands. Its `then`, absent
+ * until the operator touches the follow-up choice, means the same default
+ * (add the new pair's team), but only if the re-check says that pair is
+ * uncovered.
  */
 export type CareerAnswer =
   | { kind: "leave" }
   | { kind: "add"; stints: StagedStint[] }
-  | { kind: "player"; pick?: PlayerPick; then: CareerFollowUp }
-  | { kind: "team"; pick?: { teamId: Id<"teams">; name: string }; then: CareerFollowUp };
+  | { kind: "player"; pick?: PlayerPick; then?: CareerFollowUp }
+  | { kind: "team"; pick?: { teamId: Id<"teams">; name: string }; then?: CareerFollowUp };
 
 export type CareerAnswers = Readonly<Record<string, CareerAnswer>>;
 
@@ -393,6 +404,39 @@ export function preAddedStints(
       ...(setYear < currentYear ? { toYear: setYear } : {}),
     },
   ];
+}
+
+/**
+ * The card's team as a stint names it, from the line: its NB id or the string
+ * the batch creates it by. `label` is the name a chip shows (never sent).
+ */
+export function lineStintTeam(
+  line: Pick<CareerLine, "teamId" | "teamName">,
+  label: string = "",
+): StintTeamRef {
+  return {
+    ...(line.teamId ? { teamId: line.teamId as Id<"teams"> } : {}),
+    ...(line.teamName ? { teamName: line.teamName } : {}),
+    label,
+  };
+}
+
+/**
+ * What a line with no stored answer is: "Add to career", the card's team
+ * staged by `preAddedStints`. A line whose team cannot be named still is an
+ * add, with nothing staged (it commits nothing and does not hold Next).
+ * Derived, never stored: the operator's first touch stores a real answer.
+ */
+export function defaultCareerAnswer(
+  line: Pick<CareerLine, "teamId" | "teamName">,
+  setYear: number | undefined,
+  label: string = "",
+  currentYear?: number,
+): Extract<CareerAnswer, { kind: "add" }> {
+  return {
+    kind: "add",
+    stints: preAddedStints(lineStintTeam(line, label), setYear, currentYear),
+  };
 }
 
 /**
@@ -499,12 +543,15 @@ export type ExistingStint = {
 /** A team the batch is creating, which a stint can name by the string a card prints. */
 export type BatchTeam = { label: string; teamName: string };
 
-/** The stints an answer holds (the add itself, or a follow-up add). */
+/**
+ * The stints an answer holds as stored (the add itself, or an explicit
+ * follow-up add). The defaults are not stored: see `defaultCareerAnswer`.
+ */
 export function stintsOf(answer: CareerAnswer | undefined): readonly StagedStint[] {
   if (!answer) return [];
   if (answer.kind === "add") return answer.stints;
   if ((answer.kind === "player" || answer.kind === "team") && answer.pick) {
-    return answer.then.kind === "add" ? answer.then.stints : [];
+    return answer.then?.kind === "add" ? answer.then.stints : [];
   }
   return [];
 }
@@ -623,15 +670,26 @@ function spellingOn(card: CareerCard, printed: string): string {
 
 /**
  * The commit's view of the operator's answers: stints to add and per-card
- * edits. Undefined when there is nothing to send, so an untouched step puts
- * nothing on the wire. A "player" or "team" answer with no pick is "Leave it";
- * an add whose years are not valid yet is not sent (Next waits for it).
+ * edits. Undefined when there is nothing to send. A line with no stored
+ * answer is the default add (`defaultCareerAnswer`, from `setYear`), so an
+ * untouched step sends the card teams' stints; only an explicit Keep as is
+ * sends nothing for its line. A "player" or "team" answer with no pick is
+ * "Keep as is"; an add whose years are not valid yet is not sent.
+ *
+ * A pick whose follow-up the operator has not touched (`then` absent) adds
+ * the new pair's team only when `coverage` says that pair is uncovered
+ * (false): unread, failed or covered pairs add nothing.
  */
 export function careerCommitFields(input: {
   lines: readonly CareerLine[];
   answers: CareerAnswers;
   cards: readonly CareerCard[];
+  /** The set's year: what the default add stages its stints from. */
+  setYear?: number;
+  /** `coverageForPreview` answers by pair key (true = covered). */
+  coverage?: Readonly<Record<string, boolean>>;
   maxYear?: number;
+  currentYear?: number;
 }): CareerCommitFields | undefined {
   const maxYear = input.maxYear ?? maxCareerYear();
   const stints: CareerStintArg[] = [];
@@ -650,9 +708,23 @@ export function careerCommitFields(input: {
   // person share the first line's ref, and both lines' stints.
   const created = new Map<string, CareerNewPlayerArg>();
 
+  /** A pick's follow-up stints: the operator's own, else the default once the new pair reads uncovered. */
+  const followStints = (
+    line: CareerLine,
+    answer: Extract<CareerAnswer, { kind: "player" | "team" }>,
+    team: StintTeamRef,
+  ): readonly StagedStint[] => {
+    if (answer.then) return answer.then.kind === "add" ? answer.then.stints : [];
+    const key = followUpPair(line, answer)?.key;
+    if (key === undefined || input.coverage?.[key] !== false) return [];
+    return preAddedStints(team, input.setYear, input.currentYear);
+  };
+
   for (const line of input.lines) {
-    const answer = input.answers[line.key];
-    if (!answer || answer.kind === "leave") continue;
+    const answer =
+      input.answers[line.key] ??
+      defaultCareerAnswer(line, input.setYear, "", input.currentYear);
+    if (answer.kind === "leave") continue;
     if (answer.kind === "add") {
       for (const stint of answer.stints) addStint(stintArg(line.playerId, stint, maxYear));
       continue;
@@ -673,7 +745,7 @@ export function careerCommitFields(input: {
           { name: printed, ref: player.ref },
         ];
       }
-      if (answer.then.kind === "add") {
+      if (answer.then?.kind === "add") {
         for (const stint of answer.then.stints) {
           const fields = stintFields(stint, maxYear);
           if (!fields) continue;
@@ -698,8 +770,8 @@ export function careerCommitFields(input: {
           { name, playerId },
         ];
       }
-      if (answer.then.kind === "add") {
-        for (const stint of answer.then.stints) addStint(stintArg(playerId, stint, maxYear));
+      for (const stint of followStints(line, answer, lineStintTeam(line))) {
+        addStint(stintArg(playerId, stint, maxYear));
       }
     } else {
       const { teamId } = answer.pick;
@@ -713,8 +785,8 @@ export function careerCommitFields(input: {
         }
         e.teamIds = Array.from(new Set([...(e.teamIds ?? []), teamId]));
       }
-      if (answer.then.kind === "add") {
-        for (const stint of answer.then.stints) addStint(stintArg(line.playerId, stint, maxYear));
+      for (const stint of followStints(line, answer, { teamId, label: "" })) {
+        addStint(stintArg(line.playerId, stint, maxYear));
       }
     }
   }

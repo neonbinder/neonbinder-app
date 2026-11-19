@@ -26,6 +26,8 @@ import {
   uncoveredAgainText,
   careerContextAsks,
   classifyPairs,
+  defaultCareerAnswer,
+  lineStintTeam,
   deriveSittingPairs,
   followUpPair,
   gateJudgedKeys,
@@ -349,11 +351,169 @@ describe("careerCommitFields", () => {
   const tatis = lines.find((l) => l.playerId === "p-tatis")!;
   const trout = lines.find((l) => l.playerId === "p-trout")!;
 
-  it("is nothing when every line is left", () => {
-    expect(careerCommitFields({ lines, answers: {}, cards: CARDS, maxYear: 2030 })).toBeUndefined();
+  it("is nothing when every line is explicitly kept as is", () => {
+    const kept: CareerAnswers = {
+      [tatis.key]: { kind: "leave" },
+      [trout.key]: { kind: "leave" },
+    };
     expect(
-      careerCommitFields({ lines, answers: { [tatis.key]: { kind: "leave" } }, cards: CARDS, maxYear: 2030 }),
+      careerCommitFields({ lines, answers: kept, cards: CARDS, setYear: 2022, currentYear: 2026, maxYear: 2030 }),
     ).toBeUndefined();
+  });
+
+  describe("untouched lines are the default add (Jason 2026-11-19)", () => {
+    const base = { lines, cards: CARDS, setYear: 2022, currentYear: 2026, maxYear: 2030 };
+
+    it("sends every untouched line's card team, closed at the set's year for a past set", () => {
+      const out = careerCommitFields({ ...base, answers: {} });
+      // Lines are in team order: Angels (Trout), then Padres (Tatis).
+      expect(out?.stints).toEqual([
+        { playerId: "p-trout", teamId: "t-angels", fromYear: 2022, toYear: 2022 },
+        { playerId: "p-tatis", teamId: "t-padres", fromYear: 2022, toYear: 2022 },
+      ]);
+      expect(out?.cardEdits.every((e) => e === undefined)).toBe(true);
+    });
+
+    it("leaves the stint open-ended for a set from this year or later", () => {
+      const out = careerCommitFields({ ...base, setYear: 2026, answers: {} });
+      expect(out?.stints).toEqual([
+        { playerId: "p-trout", teamId: "t-angels", fromYear: 2026 },
+        { playerId: "p-tatis", teamId: "t-padres", fromYear: 2026 },
+      ]);
+    });
+
+    it("names a team the batch creates by its printed text", () => {
+      const created = deriveSittingPairs({
+        cards: CARDS,
+        rows: [{ kind: "team", name: "Padres", decision: { action: "create" } }],
+        context: CONTEXT,
+      });
+      const line = toLines(created).find((l) => l.playerId === "p-tatis")!;
+      const out = careerCommitFields({ ...base, lines: [line], answers: {} });
+      expect(out?.stints).toEqual([
+        { playerId: "p-tatis", teamName: "Padres", fromYear: 2022, toYear: 2022 },
+      ]);
+    });
+
+    it("Keep as is on a line drops only that line's stint", () => {
+      const out = careerCommitFields({ ...base, answers: { [tatis.key]: { kind: "leave" } } });
+      expect(out?.stints).toEqual([
+        { playerId: "p-trout", teamId: "t-angels", fromYear: 2022, toYear: 2022 },
+      ]);
+    });
+
+    it("a stored add replaces the default for its line, an emptied one sends nothing for it", () => {
+      const out = careerCommitFields({
+        ...base,
+        answers: {
+          [tatis.key]: { kind: "add", stints: [stint("t-reds", 2019, 2021)] },
+          [trout.key]: { kind: "add", stints: [] },
+        },
+      });
+      expect(out?.stints).toEqual([
+        { playerId: "p-tatis", teamId: "t-reds", fromYear: 2019, toYear: 2021 },
+      ]);
+    });
+
+    it("a line whose team cannot be named adds nothing and does not hide the others", () => {
+      const nameless = { ...tatis, teamId: undefined, teamName: undefined, key: "nameless" };
+      expect(careerCommitFields({ ...base, lines: [nameless], answers: {} })).toBeUndefined();
+      const out = careerCommitFields({ ...base, lines: [nameless, trout], answers: {} });
+      expect(out?.stints).toEqual([
+        { playerId: "p-trout", teamId: "t-angels", fromYear: 2022, toYear: 2022 },
+      ]);
+    });
+
+    it("with no set year there is nothing to stage, so nothing is sent", () => {
+      expect(careerCommitFields({ ...base, setYear: undefined, answers: {} })).toBeUndefined();
+    });
+
+    it("does not send the default stint of a line that was re-teamed away", () => {
+      // The printed string comes off every card of the line, so a name-keyed stint has nothing to resolve by.
+      const created = deriveSittingPairs({
+        cards: CARDS,
+        rows: [{ kind: "team", name: "Padres", decision: { action: "create" } }],
+        context: CONTEXT,
+      });
+      const line = toLines(created).find((l) => l.playerId === "p-tatis")!;
+      const out = careerCommitFields({
+        ...base,
+        lines: [line],
+        cards: CARDS.filter((c) => c.teams[0] === "Padres").slice(0, 2),
+        answers: {
+          [line.key]: { kind: "team", pick: { teamId: tid("t-other"), name: "Other" }, then: { kind: "leave" } },
+        },
+      });
+      expect(out?.stints).toEqual([]);
+      expect(out?.cardEdits[0]?.teamIds).toEqual(["t-other"]);
+    });
+  });
+
+  describe("a pick's follow-up defaults to add, once the new pair reads uncovered", () => {
+    const base = { lines, cards: CARDS, setYear: 2022, currentYear: 2026, maxYear: 2030 };
+    const keptTrout: CareerAnswers = { [trout.key]: { kind: "leave" } };
+    const playerPick: CareerAnswers = {
+      ...keptTrout,
+      [tatis.key]: { kind: "player", pick: { playerId: pid("p-tatis-sr"), name: "Fernando Tatis" } },
+    };
+    const teamPick: CareerAnswers = {
+      [tatis.key]: { kind: "leave" },
+      [trout.key]: { kind: "team", pick: { teamId: tid("t-other"), name: "Other" } },
+    };
+
+    it("a different player gets the card's team when their career lacks it", () => {
+      const out = careerCommitFields({ ...base, answers: playerPick, coverage: { "p-tatis-sr|t-padres": false } });
+      expect(out?.stints).toEqual([
+        { playerId: "p-tatis-sr", teamId: "t-padres", fromYear: 2022, toYear: 2022 },
+      ]);
+      expect(out?.cardEdits[0]?.playerIdByName).toEqual([{ name: "Fernando Tatis Jr.", playerId: "p-tatis-sr" }]);
+    });
+
+    it("a different team gets the stint for the line's player on the PICKED team", () => {
+      const out = careerCommitFields({ ...base, answers: teamPick, coverage: { "p-trout|t-other": false } });
+      expect(out?.stints).toEqual([
+        { playerId: "p-trout", teamId: "t-other", fromYear: 2022, toYear: 2022 },
+      ]);
+    });
+
+    it("adds nothing while the re-check is unread, failed or covered", () => {
+      for (const coverage of [undefined, {}, { "p-tatis-sr|t-padres": true }]) {
+        const out = careerCommitFields({ ...base, answers: playerPick, coverage });
+        expect(out?.stints).toEqual([]);
+      }
+    });
+
+    it("an explicit Keep as is on the follow-up adds nothing, even when uncovered", () => {
+      const answers: CareerAnswers = {
+        ...keptTrout,
+        [tatis.key]: {
+          kind: "player",
+          pick: { playerId: pid("p-tatis-sr"), name: "Fernando Tatis" },
+          then: { kind: "leave" },
+        },
+      };
+      const out = careerCommitFields({ ...base, answers, coverage: { "p-tatis-sr|t-padres": false } });
+      expect(out?.stints).toEqual([]);
+    });
+
+    it("an unpicked player or team adds nothing, whatever the coverage says", () => {
+      const answers: CareerAnswers = {
+        [tatis.key]: { kind: "player" },
+        [trout.key]: { kind: "team" },
+      };
+      expect(
+        careerCommitFields({ ...base, answers, coverage: { "p-tatis-sr|t-padres": false } }),
+      ).toBeUndefined();
+    });
+
+    it("a pick on a line whose team cannot be named adds nothing", () => {
+      const nameless = { ...tatis, teamId: undefined, teamName: undefined, key: "nameless" };
+      const answers: CareerAnswers = {
+        nameless: { kind: "player", pick: { playerId: pid("p-tatis-sr"), name: "Fernando Tatis" } },
+      };
+      const out = careerCommitFields({ ...base, lines: [nameless], answers, coverage: { "p-tatis-sr|~": false } });
+      expect(out?.stints).toEqual([]);
+    });
   });
 
   it("adds a stint by team id", () => {
@@ -972,5 +1132,38 @@ describe("a new player (NEO-591)", () => {
       maxYear: 2030,
     });
     expect(out?.newPlayers?.[0].stints).toHaveLength(CAREER_STINTS_MAX);
+  });
+});
+
+describe("defaultCareerAnswer (an untouched line is Add to career)", () => {
+  const line = { teamId: "t-padres", teamName: undefined };
+
+  it("stages the card's team the way Add to career does, label included", () => {
+    expect(defaultCareerAnswer(line, 2022, "San Diego Padres", 2026)).toEqual({
+      kind: "add",
+      stints: [{ teamId: "t-padres", label: "San Diego Padres", fromYear: 2022, toYear: 2022 }],
+    });
+    expect(defaultCareerAnswer(line, 2026, "San Diego Padres", 2026).stints).toEqual([
+      { teamId: "t-padres", label: "San Diego Padres", fromYear: 2026 },
+    ]);
+  });
+
+  it("names a batch team by its printed text", () => {
+    expect(defaultCareerAnswer({ teamId: undefined, teamName: "Padres" }, 2022, "Padres", 2026).stints).toEqual([
+      { teamName: "Padres", label: "Padres", fromYear: 2022, toYear: 2022 },
+    ]);
+  });
+
+  it("is still an add, with nothing staged, when the team cannot be named or the set has no year", () => {
+    expect(defaultCareerAnswer({ teamId: undefined, teamName: undefined }, 2022)).toEqual({
+      kind: "add",
+      stints: [],
+    });
+    expect(defaultCareerAnswer(line, undefined)).toEqual({ kind: "add", stints: [] });
+  });
+
+  it("lineStintTeam is the line's team ref with the chip's label", () => {
+    expect(lineStintTeam(line, "San Diego Padres")).toEqual({ teamId: "t-padres", label: "San Diego Padres" });
+    expect(lineStintTeam({ teamId: undefined, teamName: "Padres" })).toEqual({ teamName: "Padres", label: "" });
   });
 });

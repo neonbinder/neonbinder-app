@@ -250,12 +250,60 @@ describe("when the step is asked", () => {
 });
 
 describe("answers", () => {
-  it("every line starts on 'Keep as is', so nothing is reported and Next just passes", () => {
+  it("every line starts on 'Add to career', so the card's team is reported untouched and Next just passes", () => {
     const onCareerChange = vi.fn();
     render(wizard({ onCareerChange }));
-    expect(onCareerChange).toHaveBeenLastCalledWith(undefined);
+    const group = screen.getAllByRole("radiogroup")[0];
+    expect(within(group).getByRole("radio", { name: "Add to career" }).getAttribute("aria-checked")).toBe("true");
+    // Nothing was touched, yet the commit already carries the default stint.
+    const fields = onCareerChange.mock.calls.at(-1)?.[0];
+    expect(fields?.stints).toEqual([{ playerId: "p-tatis", teamId: "t-padres", fromYear: 2022, toYear: 2022 }]);
+    expect(fields?.cardEdits.every((e: unknown) => e === undefined)).toBe(true);
     fireEvent.click(next());
     expect(screen.queryByRole("heading", { name: careerHeading(1) })).toBeNull();
+    // Passing the step keeps what it reported.
+    expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toHaveLength(1);
+  });
+
+  it("'Keep as is' takes the default stints back out, and Add to career puts them back", () => {
+    const onCareerChange = vi.fn();
+    render(wizard({ onCareerChange }));
+    const group = screen.getAllByRole("radiogroup")[0];
+    fireEvent.click(within(group).getByRole("radio", { name: "Keep as is" }));
+    expect(onCareerChange.mock.calls.at(-1)?.[0]).toBeUndefined();
+    fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
+    expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toEqual([
+      { playerId: "p-tatis", teamId: "t-padres", fromYear: 2022, toYear: 2022 },
+    ]);
+  });
+
+  it("Back and Next keep the answers: an untouched line stays the default, a Keep as is stays kept", () => {
+    const onCareerChange = vi.fn();
+    const both: CareerContext = {
+      ...CONTEXT,
+      gaps: [
+        { teamId: tid("t-padres"), playerIds: [pid("p-tatis")] },
+        { teamId: tid("t-angels"), playerIds: [pid("p-trout")] },
+      ],
+    };
+    // A teamless third card gives the wizard a step after the career check to go Back from.
+    const cards: Card[] = [...CARDS, { cardNumber: "77", cardName: "Base", players: ["Pete Rose"] }];
+    render(wizard({ onCareerChange, careerContext: both }, cards));
+    const groups = screen.getAllByRole("radiogroup");
+    expect(groups).toHaveLength(2);
+    // Keep the first line (Trout, by team order), leave the second alone.
+    fireEvent.click(within(groups[0]).getByRole("radio", { name: "Keep as is" }));
+    const before = JSON.stringify(onCareerChange.mock.calls.at(-1)?.[0]);
+    expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toEqual([
+      { playerId: "p-tatis", teamId: "t-padres", fromYear: 2022, toYear: 2022 },
+    ]);
+    fireEvent.click(next());
+    expect(screen.queryByRole("heading", { name: careerHeading(2) })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Back to previous step" }));
+    const again = screen.getAllByRole("radiogroup");
+    expect(within(again[0]).getByRole("radio", { name: "Keep as is" }).getAttribute("aria-checked")).toBe("true");
+    expect(within(again[1]).getByRole("radio", { name: "Add to career" }).getAttribute("aria-checked")).toBe("true");
+    expect(JSON.stringify(onCareerChange.mock.calls.at(-1)?.[0])).toBe(before);
   });
 
   it("adding a stint reports it up, with the team by id", () => {
@@ -285,10 +333,11 @@ describe("answers", () => {
     teamRows = [{ _id: "t-reds", name: "Reds", location: "Cincinnati" }];
     render(wizard());
     const group = screen.getAllByRole("radiogroup")[0];
-    expect(screen.queryByRole("list", { name: "Career on file for Fernando Tatis Jr." })).toBeNull();
-    fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
+    // The default line opens the widget, so what is on file is listed at once.
     const onFile = screen.getByRole("list", { name: "Career on file for Fernando Tatis Jr." });
     expect(within(onFile).getByText("Cincinnati Reds (2019–2021)")).toBeTruthy();
+    fireEvent.click(within(group).getByRole("radio", { name: "Keep as is" }));
+    expect(screen.queryByRole("list", { name: "Career on file for Fernando Tatis Jr." })).toBeNull();
   });
 
   it("pressing a staged chip loads it into the real form, and + Add stages it again with the new years", () => {
@@ -540,7 +589,7 @@ describe("a coverage read that fails (never silently 'covered')", () => {
     expect(next().getAttribute("aria-disabled")).not.toBe("true");
     // Focus is on the first line; a later change to the read (a name arriving
     // again, the teams read re-subscribing) moves neither the order nor focus.
-    const first = within(screen.getAllByRole("radiogroup")[0]).getByRole("radio", { name: "Keep as is" });
+    const first = within(screen.getAllByRole("radiogroup")[0]).getByRole("radio", { name: "Add to career" });
     expect(document.activeElement).toBe(first);
     teamsLoaded = false;
     rerender(wizard({ careerContext: both }));
@@ -606,8 +655,8 @@ describe("a coverage read that fails (never silently 'covered')", () => {
       const onCareerChange = vi.fn();
       const { rerender } = render(wizard({ onCareerChange, batchId: "" }));
       const group = screen.getAllByRole("radiogroup")[0];
-      fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
-      expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toHaveLength(1);
+      fireEvent.click(within(group).getByRole("radio", { name: "Keep as is" }));
+      expect(onCareerChange.mock.calls.at(-1)?.[0]).toBeUndefined();
       // The same component instance, handed another set.
       rerender(
         wizard({
@@ -615,10 +664,11 @@ describe("a coverage read that fails (never silently 'covered')", () => {
           selectorOptionId: "selopt-2" as unknown as Id<"selectorOptions">,
         }),
       );
-      expect(onCareerChange.mock.calls.at(-1)?.[0]).toBeUndefined();
+      // The Keep as is is forgotten: the line is back on its default add.
+      expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toHaveLength(1);
       const again = within(screen.getAllByRole("radiogroup")[0]);
-      expect(again.getByRole("radio", { name: "Keep as is" }).getAttribute("aria-checked")).toBe("true");
-      expect(screen.queryByLabelText(/^From year for /)).toBeNull();
+      expect(again.getByRole("radio", { name: "Add to career" }).getAttribute("aria-checked")).toBe("true");
+      expect(screen.getByLabelText(/^From year for /)).toBeTruthy();
     });
 
     it("asks the coverage reads again for the new batch (a fresh fetcher)", () => {
@@ -643,11 +693,13 @@ describe("a coverage read that fails (never silently 'covered')", () => {
       const onCareerChange = vi.fn();
       const { rerender } = render(wizard({ onCareerChange }));
       fireEvent.click(
-        within(screen.getAllByRole("radiogroup")[0]).getByRole("radio", { name: "Add to career" }),
+        within(screen.getAllByRole("radiogroup")[0]).getByRole("radio", { name: "Keep as is" }),
       );
+      expect(onCareerChange.mock.calls.at(-1)?.[0]).toBeUndefined();
       rerender(wizard({ onCareerChange, isOpen: false }));
       rerender(wizard({ onCareerChange, isOpen: true }));
-      expect(onCareerChange.mock.calls.at(-1)?.[0]).toBeUndefined();
+      // The Keep as is is gone: the line is on its default add again.
+      expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toHaveLength(1);
     });
   });
 

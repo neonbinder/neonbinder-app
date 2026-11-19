@@ -695,8 +695,10 @@ export default function EntityReviewWizard({
   /**
    * NEO-574 — the career step's answers as the commit reads them: stints to
    * add and per-card edits (a different player, a different team), aligned
-   * with `previewCards`. `undefined` while nothing was changed. The parent
-   * holds them in client state; they are never stored anywhere else.
+   * with `previewCards`. An untouched line counts as "Add to career" with the
+   * card's team staged, so this holds those stints too; `undefined` when
+   * there is nothing to send (no stints, no edits). The parent holds them in
+   * client state; they are never stored anywhere else.
    */
   onCareerChange?: (fields: CareerCommitFields | undefined) => void;
   /**
@@ -1584,9 +1586,15 @@ export default function EntityReviewWizard({
   const careerFields = useMemo(
     () =>
       careerEnabled && checklistedCards && careerLines.length > 0
-        ? careerCommitFields({ lines: careerLines, answers: careerAnswers, cards: checklistedCards })
+        ? careerCommitFields({
+            lines: careerLines,
+            answers: careerAnswers,
+            cards: checklistedCards,
+            setYear: careerSetYear,
+            coverage: careerCoverage,
+          })
         : undefined,
-    [careerEnabled, checklistedCards, careerLines, careerAnswers],
+    [careerEnabled, checklistedCards, careerLines, careerAnswers, careerSetYear, careerCoverage],
   );
   /**
    * NEO-591 — a "New player named …" line whose name box is empty: Next waits
@@ -1978,11 +1986,17 @@ export default function EntityReviewWizard({
   /**
    * NEO-591 — the stints the "Add to career" widget lists as already on file:
    * the career lines' players' stints, with their teams' names. Read only once
-   * some answer opens the widget.
+   * some line opens the widget: an untouched line is "Add to career", so any
+   * line without a stored answer does.
    */
-  const careerWantsStints = Object.values(careerAnswers).some(
-    (a) => a.kind === "add" || ((a.kind === "player" || a.kind === "team") && a.pick !== undefined),
-  );
+  const careerWantsStints = careerLines.some((line) => {
+    const a = careerAnswers[line.key];
+    return (
+      a === undefined ||
+      a.kind === "add" ||
+      ((a.kind === "player" || a.kind === "team") && a.pick !== undefined)
+    );
+  });
   const careerStintTeamIds = useMemo(() => {
     if (!careerWantsStints) return [] as Array<Id<"teams">>;
     const ids = new Set<Id<"teams">>();
@@ -3898,8 +3912,8 @@ export default function EntityReviewWizard({
               ? autographChoiceRef.current
               : nextStepButtonRef.current
             : screenKey === "career"
-              ? // NEO-574 — the first line's radio; Leave it is already picked,
-                // so Enter there is "next line".
+              ? // NEO-574 — the first line's radio; Add to career is already
+                // picked (the default), so Enter there steps into its team box.
                 careerFirstRef.current
               : screenKey === "checklist"
                 ? // NEO-478 — the same rule: the first card still waiting, else Next.
@@ -6414,8 +6428,10 @@ export default function EntityReviewWizard({
               /*
                 NEO-574 — the "Career check" step: each (player, team) the
                 player's career does not show for the set's year, once, with
-                its cards. Every line defaults to "Leave it", so Next passes
-                it; nothing is written until Confirm & Save.
+                its cards. Every line defaults to "Add to career" with the
+                card's team staged, so Next passes it and Confirm & Save adds
+                those stints; "Keep as is" opts a line out. Nothing is written
+                until Confirm & Save.
               */
               careerSetYear !== undefined && sportId !== undefined ? (
                 <CareerCheckStep
