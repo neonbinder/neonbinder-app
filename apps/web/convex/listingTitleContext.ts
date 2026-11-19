@@ -42,6 +42,7 @@ import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { titleChainFacts, titleChainFactsFields } from "./listingShortName";
 import { effectiveCardPlayerDefaults } from "./cardPlayersBulk";
+import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
 import { mapBounded, settleAll } from "./lib/boundedConcurrency";
 
 /** Player ids read per `playerNamesByIds` call: one transaction's budget. */
@@ -113,6 +114,13 @@ export const titleSetFacts = internalQuery({
   },
   returns: setFactsValidator,
   handler: async (ctx, args) => {
+    // The gate resolves at most `MAX_CHECKLIST_TEAM_TEXTS` distinct team
+    // names, so no honest caller sends more ids than that.
+    if ((args.resolvedTeamIds?.length ?? 0) > MAX_CHECKLIST_TEAM_TEXTS) {
+      throw new Error(
+        `titleSetFacts: ${args.resolvedTeamIds!.length} resolved team ids exceeds the ${MAX_CHECKLIST_TEAM_TEXTS} the gate resolves`,
+      );
+    }
     const leaf = await ctx.db.get(args.selectorOptionId);
     const inheritedFeatures =
       leaf?.features && Object.keys(leaf.features).length > 0 ? leaf.features : undefined;

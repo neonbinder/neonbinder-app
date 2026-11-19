@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { convexTest } from "convex-test";
 import { describe, expect, test } from "vitest";
 import { api, internal } from "./_generated/api";
+import { MAX_CHECKLIST_TEAM_TEXTS } from "./checklistCandidates";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
 import { normalizeTeamName } from "./teams";
@@ -207,6 +208,35 @@ describe("listingTitleContext internals", () => {
     await expect(
       t.query(internal.listingTitleContext.playerNamesByIds, { ids }),
     ).rejects.toThrow();
+  });
+
+  test("titleSetFacts refuses more resolved team ids than the gate resolves", async () => {
+    const t = convexTest(schema, modules);
+    const sportId = await t.run((ctx) =>
+      ctx.db.insert("selectorOptions", {
+        level: "sport",
+        value: "Baseball",
+        platformData: {},
+        children: [],
+        lastUpdated: Date.now(),
+      }),
+    );
+    const teamId = await t.run((ctx) =>
+      ctx.db.insert("teams", {
+        name: "Red Sox",
+        nameNormalized: "red sox",
+        sportId,
+        lastUpdated: Date.now(),
+      }),
+    );
+    const resolvedTeamIds = Array.from({ length: MAX_CHECKLIST_TEAM_TEXTS + 1 }, () => teamId);
+    await expect(
+      t.query(internal.listingTitleContext.titleSetFacts, {
+        selectorOptionId: sportId,
+        sportId,
+        resolvedTeamIds,
+      }),
+    ).rejects.toThrow(/resolved team ids exceeds/);
   });
 
   test.each(["titleSetFacts", "playerNamesByIds"])(
