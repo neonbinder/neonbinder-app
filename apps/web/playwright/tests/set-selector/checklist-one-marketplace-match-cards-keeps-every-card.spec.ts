@@ -91,12 +91,15 @@ import {
   advanceToSave,
   awaitLookupsSettled,
   confirmSaveButton,
+  decidedSummary,
   expectDecidedCount,
   expectNoStepCount,
   expectNothingDecided,
   expectWizardStep,
   LOOKUPS,
+  nextStepButton,
   personSkip,
+  readBackDecision,
   readDecidedCount,
   readProgress,
   reviewWizard,
@@ -347,12 +350,21 @@ test(
     await expect(wizard.getByText(new RegExp(`${COLLEGE_TEAM} \\(1994.1996\\)`))).toBeVisible();
     await expect(wizard.getByText(new RegExp(`${team} \\(1994.1996\\)`))).toBeVisible();
     // "Add as New Player" records exactly ONE decision: the helper waits for the
-    // wizard to leave HIS row (his own skip goes), and the names' "Decided (N)"
-    // history grows by one (NEO-467: no step count; the lookups were waited out
-    // above, so nothing else moves it).
+    // wizard to leave HIS row (his own skip goes). Where names remain, the names'
+    // "Decided (N)" history grows by one (NEO-467: no step count; the lookups were
+    // waited out above, so nothing else moves it). The batch's lookups settle most
+    // rows on their own, so his can be the LAST undecided name: the wizard is then
+    // past the names, where the history is not shown, and the most recent decision,
+    // read back, is his create.
     const decidedBefore = await readDecidedCount(page);
     await answerPlayerAsNew(page);
-    await expectDecidedCount(page, decidedBefore + 1);
+    await expect(decidedSummary(page).or(nextStepButton(page)).first()).toBeVisible();
+    if (await decidedSummary(page).isVisible()) {
+      await expectDecidedCount(page, decidedBefore + 1);
+    } else {
+      const decision = await readBackDecision(page, "Added as new", { resume: true });
+      await expect(decision).toBeHidden();
+    }
 
     // Every other name is SKIPPED, the cheapest way to a commit: it decides every
     // remaining row, lookups included, creates no players and raises none of
