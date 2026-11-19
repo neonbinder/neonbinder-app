@@ -18,6 +18,29 @@ import {
   narrowMissingCaptures,
 } from "./fakeBsc";
 
+// Every write the fake's /__fake/health can list as missing (BSC's two, then the eBay
+// writes). The fake's test (services/fake-bsc/tests/ebay-server.test.mjs) reads this
+// array from source and fails when it differs from the fake's own list, and runs each
+// name through the pattern in narrowMissingCaptures. Keep it plain double-quoted strings.
+const REQUIRED_CAPTURE_NAMES = [
+  "PUT seller/bulk-upload",
+  "POST common/card/undefined/product/undefined/attachment",
+  "POST ebay/api/sell/inventory/v1/bulk_create_or_replace_inventory_item",
+  "POST ebay/api/sell/inventory/v1/bulk_create_offer",
+  "DELETE ebay/api/sell/inventory/v1/inventory_item/:sku",
+  "POST ebay/api/sell/inventory/v1/location/:merchantLocationKey",
+  "POST ebay/api/sell/inventory/v1/location/:merchantLocationKey/update_location_details",
+  "POST ebay/api/sell/inventory/v1/location/:merchantLocationKey/enable",
+  "PUT ebay/api/sell/inventory/v1/offer/:offerId",
+  "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused",
+  "POST ebay/apim/commerce/media/v1_beta/image/create_image_from_file",
+  "GET ebay/apim/commerce/media/v1_beta/image/:imageId",
+  "POST ebay/api/sell/inventory/v1/offer/:offerId/publish",
+  "POST ebay/api/sell/inventory/v1/bulk_update_price_quantity",
+  "POST ebay/api/sell/inventory/v1/offer/:offerId/withdraw",
+];
+
+
 vi.mock("./lib/bscFakeIdToken", () => ({
   nodeBscIdToken: async () => "stub-id-token",
   idTokenExpiresAt: (_token: string, fallback: number) => fallback,
@@ -136,22 +159,7 @@ describe("narrowMissingCaptures", () => {
   });
 
   test("keeps the eBay capture names, variant suffix included (the fake's full required list is fifteen names)", () => {
-    const ebay = [
-      "POST ebay/api/sell/inventory/v1/bulk_create_or_replace_inventory_item",
-      "POST ebay/api/sell/inventory/v1/bulk_create_offer",
-      "DELETE ebay/api/sell/inventory/v1/inventory_item/:sku",
-      "POST ebay/api/sell/inventory/v1/location/:merchantLocationKey",
-      "POST ebay/api/sell/inventory/v1/location/:merchantLocationKey/update_location_details",
-      "POST ebay/api/sell/inventory/v1/location/:merchantLocationKey/enable",
-      "PUT ebay/api/sell/inventory/v1/offer/:offerId",
-      "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused",
-      "POST ebay/apim/commerce/media/v1_beta/image/create_image_from_file",
-      "GET ebay/apim/commerce/media/v1_beta/image/:imageId",
-      "POST ebay/api/sell/inventory/v1/offer/:offerId/publish",
-      "POST ebay/api/sell/inventory/v1/bulk_update_price_quantity",
-      "POST ebay/api/sell/inventory/v1/offer/:offerId/withdraw",
-    ];
-    const all = ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment", ...ebay];
+    const all = REQUIRED_CAPTURE_NAMES;
     expect(all).toHaveLength(15);
     expect(narrowMissingCaptures({ writeCaptures: { missing: all } })).toEqual(all);
     // Only a lower-case word after ` #` is a variant; anything else stays unreadable.

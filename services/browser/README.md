@@ -613,7 +613,12 @@ signing in again clears it.
 (NEO-552) is informational: Convex never acts on it, and an older service
 simply omits it (CI's probe verdict reads a missing value as the wrong target).
 `POST /probe/bsc` is new and Convex never calls it. Neither does it call
-`POST /probe/ebay` (NEO-555); CI is its only caller.
+`POST /probe/ebay` (NEO-555); CI is its only caller. `ebayFake` and
+`ebayTarget` on `/health` (NEO-555) are informational too, and Convex does not
+read them: `ebayFake` is true only when this process would honour a fake eBay
+credential key (a valid fake URL and caller key, never in prod), and
+`ebayTarget` is the environment a bare eBay key uses (`production`, `sandbox`,
+or `null` when no eBay app is configured).
 
 ### The mechanical check
 

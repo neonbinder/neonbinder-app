@@ -24,6 +24,7 @@ import { EbayOAuthLine, logEbayOAuthOp } from "../observability";
  *   POST /oauth/ebay/connect  { key, code, expectEbayUserId? }
  *                           | { key, refreshToken, expectEbayUserId? }  (not in production)
  *     → 200 { username, ebayUserId, environment, expiresAt }
+ *       (`environment` is "fake" for a fake-key session, never "production")
  *   POST /oauth/ebay/refresh  { key }
  *     → 200 { token, expiresAt }
  *   POST /webhooks/ebay/verify  { signatureHeader, body }
@@ -149,6 +150,16 @@ export function resolveEbayConfigForKey(
   };
 }
 
+/**
+ * The environment label that leaves the process (connect answer, ebay_oauth_call
+ * log). A fake-key config carries `environment: "production"` internally, as a
+ * behaviour label, but must never SAY production outward: it is "fake".
+ */
+function outwardEnvironment(config: EbayOAuthConfig | null): "sandbox" | "production" | "fake" | undefined {
+  if (!config) return undefined;
+  return config.fake ? "fake" : config.environment;
+}
+
 export interface EbayOAuthRouterDeps {
   /** Built per request, like the other routers, so a bad client cannot poison the process. */
   createStore?: () => EbayCredentialsStore;
@@ -266,7 +277,7 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
       const config: EbayOAuthConfig | null = resolved.config;
       const base = {
         operation: "connect" as const,
-        environment: config?.environment,
+        environment: outwardEnvironment(config),
         ...(resolved.fake ? { target: "fake" as const } : {}),
       };
       if (!config) {
@@ -371,7 +382,7 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
       finish(res, line, startMs, 200, {
         username: identity.username,
         ebayUserId: identity.userId,
-        environment: config.environment,
+        environment: outwardEnvironment(config),
         expiresAt: tokens.expiresAt,
       });
     },
@@ -386,7 +397,7 @@ export function createEbayOAuthRouter(deps: EbayOAuthRouterDeps = {}): Router {
       const config = resolved.config;
       const line = {
         operation: "refresh" as const,
-        environment: config?.environment,
+        environment: outwardEnvironment(config),
         ...(resolved.fake ? { target: "fake" as const } : {}),
       };
       if (!config) {

@@ -164,7 +164,7 @@ export interface EbayOAuthLine {
   operation: "connect" | "refresh" | "verify";
   /** "code" or "refresh_token" on connect; omitted on refresh. */
   grant?: "code" | "refresh_token";
-  environment?: "sandbox" | "production";
+  environment?: "sandbox" | "production" | "fake";
   /** NEO-555: "fake" when the credential key was a fake-session key. Absent otherwise. */
   target?: "fake";
   duration_ms: number;

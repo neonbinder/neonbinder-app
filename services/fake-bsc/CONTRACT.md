@@ -252,7 +252,7 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
 
 ## Recorder (`services/fake-bsc/recorder/`)
 
-- Jason runs it. Credentials come from Bitwarden at run time and are never
+- The account owner runs it. Credentials come from Bitwarden at run time and are never
   written anywhere. Tokens stay in process memory.
 - Sign-in uses `bscPasswordSignIn()` from `services/browser`.
 - To-do list: `GET /__fake/misses?prefix=` as the loader SA. Only the three
@@ -304,10 +304,10 @@ Request bodies are limited to what NB's BSC traffic needs: 2 MB for
   answers 409 `catalogue full` ("Storage layout", entry cap).
 - `--watch --prefix` long-polls the miss list during a local E2E run.
 
-### Write capture (Jason, 2026-11-14)
+### Write capture (decision of 2026-11-14)
 
 Seller writes get no real test before prod. Instead, whenever a PR adds or
-changes a BSC write (listing PUT, photo upload, any new write), Jason performs
+changes a BSC write (listing PUT, photo upload, any new write), the account owner performs
 that write once locally against real BSC and the recorder captures it:
 `recorder capture-write`. It sends exactly one write request (a listing PUT
 is built as NB builds it, from one seller-profile read and two seller-sheet
@@ -390,7 +390,7 @@ As built (`apps/web/convex/bscCallGate.ts`, policy in
 `convex/lib/bscCallGatePolicy.ts`, one `marketplaceCallGates` row):
 
 - Bucket: 60 a minute, burst 10 against BuySportsCards. **None against the
-  fake** (Jason): no wait and no `throttled` refusal, ever, and a healthy
+  fake**: no wait and no `throttled` refusal, ever, and a healthy
   grant writes nothing; only the breaker below applies. A wave (the
   fetch-time team lookup) acquires once per wave of up to 10; every other
   call acquires one. Against BuySportsCards a wait over 15 s is refused
@@ -1083,7 +1083,7 @@ Sandbox only:   POST .../location/:merchantLocationKey
                 POST .../location/:merchantLocationKey/enable
                 PUT  .../offer/:offerId
                 POST .../offer/:offerId/publish #refused      (the sandbox's refusal)
-Production only (`ebay-capture --prod`, Jason only):
+Production only (`ebay-capture --prod`, manual, the account owner only):
                 POST .../commerce/media/v1_beta/image/create_image_from_file
                 GET  .../commerce/media/v1_beta/image/:imageId
                 POST .../offer/:offerId/publish               (the real listing)
@@ -1211,7 +1211,7 @@ access token per run, plus one app token where row 16 needs it.
   captured). Dry run unless `--yes`.
 - **`ebay-capture --prod --fake <url> --client-id <id> --cert-secret <name>
   --session-secret <name> --project <id> [--picture <file>] [--yes]`**
-  (Jason only): see "Production capture".
+  (manual, the account owner only): see "Production capture".
 - **`ebay-undo (--sandbox [--creds-file <path>] | --prod <the four
   credential flags>) --sku NBCAPTURE-... [--yes]`**: withdraws the SKU's
   live offer and deletes the item, then checks. Refuses any SKU outside its
@@ -1219,22 +1219,22 @@ access token per run, plus one app token where row 16 needs it.
 
 #### Production capture (`ebay-capture --prod`)
 
-One real listing on Jason's production account, to capture the writes the
-sandbox cannot (publish, price update, withdraw, media). Credentials: his NB
-production session's refresh token and the production Cert ID, read with his
-own gcloud (`gcloud secrets versions access` run by the recorder, stdout kept
+One real listing on the account owner's production account, to capture the writes the
+sandbox cannot (publish, price update, withdraw, media). Credentials: the owner's NB
+production session's refresh token and the production Cert ID, read with the
+owner's own gcloud (`gcloud secrets versions access` run by the recorder, stdout kept
 in memory; secret names and project come from flags the private wrapper
 passes), plus the production client id. Refresh grant only.
 
 - SKU fixed to `NBCAPTURE-PRD-<yyyymmdd>` (UTC); any other value is refused.
 - Pre-checks, before anything is written: `GET inventory_item/<sku>` is 404,
-  `GET offer?sku=` has none, his payment, return and fulfillment policies and
-  his `neonbinder-main` location exist (read only; nothing is created and
+  `GET offer?sku=` has none, the owner's payment, return and fulfillment policies and
+  the owner's `neonbinder-main` location exist (read only; nothing is created and
   there is no opt-in). Any other answer to the item or offer read (a 401, a
   5xx) is a refusal naming the status, with nothing written.
 - Default is a dry run that prints exactly the **7 requests that change the
   account**: (1) image upload, (2) bulk item (one, qty 1), (3) bulk offer
-  (one, $999.99, his first payment, return and fulfillment policies), (4)
+  (one, $999.99, the owner's first payment, return and fulfillment policies), (4)
   publish, (5) bulk price update (price only, to $999.98), (6) withdraw, (7)
   DELETE inventory item. Reads (the pre-checks, `GET image`, the final
   verification) are listed on one line, unnumbered. Writes only with `--yes`

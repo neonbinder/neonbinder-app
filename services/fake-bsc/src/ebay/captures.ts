@@ -52,7 +52,7 @@ const SET = new Set(EBAY_CAPTURE_ENDPOINTS);
  * The eBay captures `/__fake/health` `writeCaptures.missing` names until each
  * is stored, like BSC's two write endpoints: every write `recorder ebay-capture`
  * stores whatever the sandbox answers (so a normal run always has it), plus the
- * eight the production run stores (`--prod`, Jason only). Without one, the
+ * eight the production run stores (`--prod`, manual, the account owner only). Without one, the
  * fake's answer for that write is checked against nothing. Read captures and
  * the token endpoint are not on it. The unit test "the required eBay captures
  * are exactly what the recorder stores" runs both captures against stubs, so a

@@ -265,6 +265,31 @@ describe("a fake key routes to the fake eBay", () => {
     assert.equal(line.success, true);
   });
 
+  it("never says production outward: connect answers environment \"fake\", and the log label is \"fake\" (S1)", async () => {
+    const connect = await post("/oauth/ebay/connect", { key: FAKE_KEY, code: CODE });
+    assert.equal(connect.status, 200);
+    assert.equal(connect.body.environment, "fake");
+
+    const seed = await post("/oauth/ebay/connect", { key: FAKE_KEY, refreshToken: REFRESH });
+    assert.equal(seed.status, 200);
+    assert.equal(seed.body.environment, "fake");
+
+    store.map.set(FAKE_KEY, { username: "u", ebayUserId: "abc123immutable", token: "old", expiresAt: 1, refreshToken: REFRESH });
+    const refresh = await post("/oauth/ebay/refresh", { key: FAKE_KEY });
+    assert.equal(refresh.status, 200);
+
+    for (const res of [connect, seed, refresh]) {
+      assert.ok(!/production/i.test(res.text), "no response says production");
+    }
+    const outLines = lines("ebay_oauth_call");
+    assert.equal(outLines.length, 3);
+    for (const l of outLines) {
+      assert.equal(l.environment, "fake");
+      assert.equal(l.target, "fake");
+    }
+    assert.ok(!logs.some((l) => /"environment":"production"/.test(l)), "no log line labels the fake production");
+  });
+
   it("connect over https adds the Cloud Run ID token headers (X-Serverless-Authorization and x-nb-fake-id-token)", async () => {
     const origin = "https://neonbinder-fake-bsc-abc123-uc.a.run.app";
     env = { ENVIRONMENT: "dev", ...SANDBOX_ENV, NEONBINDER_FAKE_BSC_URL: origin, NEONBINDER_FAKE_BSC_KEY: CALLER_KEY };
@@ -408,6 +433,59 @@ describe("a fake key is refused", () => {
       assertNothingCalled(res, key);
     }
     assert.ok(lines("ebay_fake_key_refused").some((l) => l.reason === "fake_key_malformed"));
+  });
+});
+
+describe("a fake key's refusal paths leak and write nothing", () => {
+  const HTTPS_ORIGIN = "https://neonbinder-fake-bsc-abc123-uc.a.run.app";
+
+  for (const [operation, path, body] of [
+    ["connect", "/oauth/ebay/connect", { key: FAKE_KEY, code: CODE }],
+    ["refresh", "/oauth/ebay/refresh", { key: FAKE_KEY }],
+  ]) {
+    it(`${operation}: an ID-token mint failure naming the audience is a fixed error, no token call, nothing stored`, async () => {
+      env = { ENVIRONMENT: "dev", ...SANDBOX_ENV, NEONBINDER_FAKE_BSC_URL: HTTPS_ORIGIN, NEONBINDER_FAKE_BSC_KEY: CALLER_KEY };
+      mintIdToken = async (aud) => {
+        throw new Error(`could not mint an ID token for audience ${aud} (AUDIENCE-LEAK-SENTINEL)`);
+      };
+      store.map.set(FAKE_KEY, { username: "u", ebayUserId: "abc123immutable", token: "old", expiresAt: 1, refreshToken: REFRESH });
+      const before = { ...store.map.get(FAKE_KEY) };
+      store.writes = 0;
+
+      const res = await post(path, body);
+
+      assert.ok(res.status >= 400, "the call fails");
+      assert.deepEqual(Object.keys(res.body), ["error_class"], "a fixed {error_class} body");
+      assert.ok(!res.text.includes("run.app") && !res.text.includes("AUDIENCE-LEAK-SENTINEL") && !/audience/i.test(res.text));
+      assert.deepEqual(calls, [], "no token (or any) call was made");
+      assert.equal(store.writes, 0, "nothing written");
+      assert.deepEqual(store.map.get(FAKE_KEY), before, "the stored session is untouched");
+      const text = logs.join("\n");
+      assert.ok(!text.includes("run.app") && !text.includes("AUDIENCE-LEAK-SENTINEL"), "nothing leaks into the logs either");
+    });
+  }
+
+  it("a 300-character ebay-credentials-fake-... key is refused by connect with nothing called", async () => {
+    const longKey = `ebay-credentials-fake-${"a".repeat(300 - "ebay-credentials-fake-".length)}`;
+    assert.equal(longKey.length, 300);
+    const res = await post("/oauth/ebay/connect", { key: longKey, code: CODE });
+    assert.equal(res.status, 400);
+    assert.deepEqual(res.body, { error_class: "bad_request" });
+    assertNothingCalled(res, "300-char key");
+    assert.ok(!res.text.includes(longKey));
+    assert.ok(!logs.join("\n").includes(longKey));
+  });
+
+  it("ENVIRONMENT=\" prod \" (padded) is still prod: /health says ebayFake false and a fake key is refused as fake_key_in_prod", async () => {
+    const padded = { ENVIRONMENT: " prod ", ...PRODUCTION_ENV, ...FAKE_ENV };
+    assert.equal(resolveFakeEbayTarget(padded).ok, false);
+
+    env = padded;
+    const res = await post("/oauth/ebay/connect", { key: FAKE_KEY, code: CODE });
+    assert.equal(res.status, 400);
+    assertNothingCalled(res, "padded prod");
+    assert.ok(lines("ebay_fake_key_refused").some((l) => l.reason === "fake_key_in_prod"));
+    assert.equal(lines("ebay_oauth_call")[0].error_class, "fake_key_in_prod");
   });
 });
 
@@ -651,6 +729,12 @@ describe("GET /health reports ebayFake and ebayTarget", () => {
   it("prod with a stray fake URL: ebayFake is still false", async () => {
     const body = await health({ ENVIRONMENT: "prod", ...PRODUCTION_ENV, ...FAKE_ENV });
     assert.equal(body.ebayFake, false);
+  });
+
+  it("a padded ENVIRONMENT=\" prod \" with a fake URL and key: ebayFake false", async () => {
+    const body = await health({ ENVIRONMENT: " prod ", ...PRODUCTION_ENV, ...FAKE_ENV });
+    assert.equal(body.ebayFake, false);
+    assert.equal(body.ebayTarget, "production");
   });
 
   it("no eBay app: ebayTarget null (a fake-only process serves fake keys and nothing else)", async () => {

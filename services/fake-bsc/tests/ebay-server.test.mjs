@@ -5,6 +5,9 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { createVerify } from "node:crypto";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { ADMIN_KEY, CALLER, LOADER, setLogSink, startFake } from "./helpers.mjs";
 
 const require = createRequire(import.meta.url);
@@ -708,14 +711,32 @@ describe("fake eBay: captures", () => {
     }
   });
 
-  it("keeps every required name in the shape Convex's narrowMissingCaptures reads, and the list inside its cap", () => {
-    // Mirrors `narrowMissingCaptures` (apps/web/convex/fakeBsc.ts): a name it cannot read makes the whole answer unreadable.
-    const readable = /^[A-Z]{3,7} [A-Za-z0-9/_.:-]{1,128}( #[a-z0-9_]{1,32})?$/;
-    for (const e of EBAY_REQUIRED_CAPTURES) assert.match(e, readable, e);
-    assert.equal(new Set(EBAY_REQUIRED_CAPTURES).size, EBAY_REQUIRED_CAPTURES.length, "no name twice");
-    assert.equal(EBAY_REQUIRED_CAPTURES.length, 13);
-    assert.ok(2 + EBAY_REQUIRED_CAPTURES.length <= 20, "Convex reads at most 20 missing names (MAX_MISSING_CAPTURES)");
+  it("keeps every required name readable by Convex's narrowMissingCaptures (its pattern read from source), the list inside its cap, and the Convex test's list equal to the fake's", () => {
+    const convex = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../apps/web/convex");
+    const source = readFileSync(path.join(convex, "fakeBsc.ts"), "utf8");
+    // The pattern a missing name must match, and the cap, exactly as the Convex action holds them.
+    const pattern = /typeof m === "string" && \/(.+)\/\.test\(m\)/.exec(source);
+    assert.ok(pattern, "narrowMissingCaptures no longer filters names with an inline pattern: update this pin");
+    const readable = new RegExp(pattern[1]);
+    const cap = /const MAX_MISSING_CAPTURES = (\d+);/.exec(source);
+    assert.ok(cap, "MAX_MISSING_CAPTURES not found in fakeBsc.ts");
+
+    const { WRITE_ENDPOINTS } = require("../dist/src/paths.js");
+    const required = [...Object.keys(WRITE_ENDPOINTS), ...EBAY_REQUIRED_CAPTURES];
+    for (const e of required) assert.match(e, readable, `${e}: Convex would read the whole health answer as unreadable`);
+    assert.equal(new Set(required).size, required.length, "no name twice");
+    assert.ok(required.length <= Number(cap[1]), `${required.length} required names, Convex reads at most ${cap[1]}`);
     for (const e of EBAY_REQUIRED_CAPTURES) assert.ok(EBAY_CAPTURE_ENDPOINTS.includes(e), `${e} is a capture name the fake accepts`);
+
+    // The pattern still refuses what it should (a changed pattern that accepts anything would pass the loop above).
+    for (const bad of ["not an endpoint", "PUT a{b}", "POST ebay/api/x #Re fused", "POST ebay/api/x # "]) assert.doesNotMatch(bad, readable, bad);
+
+    // The list the Convex test holds is the fake's list.
+    const test = readFileSync(path.join(convex, "fakeBsc.test.ts"), "utf8");
+    const block = /const REQUIRED_CAPTURE_NAMES = \[([^\]]*)\];/.exec(test);
+    assert.ok(block, "REQUIRED_CAPTURE_NAMES not found in fakeBsc.test.ts");
+    const held = [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    assert.deepEqual([...held].sort(), [...required].sort(), "apps/web/convex/fakeBsc.test.ts REQUIRED_CAPTURE_NAMES differs from the fake's required list");
   });
 
   it("flags a capture whose shape lacks a path the fake answers with", async () => {
