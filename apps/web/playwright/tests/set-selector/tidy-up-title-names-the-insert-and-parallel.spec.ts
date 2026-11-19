@@ -10,8 +10,9 @@
 // The set's name is ONE unbroken 100-character token (200 is the set-name
 // cap): the worst case for the title's wrap, since it has no space to break
 // at. The heading clamps it visually, so beside the exact full name each
-// dialog proves the layout on both projects: the heading and the "Step x of y"
-// counter are on screen, never overlap, and stay inside the viewport's width.
+// dialog proves the layout on both projects: the heading and the header's
+// progress bar ("Wizard progress", which replaced the "Step x of y" counter in
+// NEO-467) are on screen, never overlap, and stay inside the viewport's width.
 // NEO-499: at 100 characters the Set Builder's own "Attributes for <set>
 // (Set)" heading used to run off a phone's right edge and widen the page, so
 // a tap on "Create variant type" landed on the page instead. The drill stops
@@ -123,15 +124,15 @@ test(
       await expect(walker.getByRole("heading", { name, exact: true })).toBeVisible();
       await expect(walker.getByRole("button", { name: `Skip for now, card ${cardNumber}` })).toBeVisible();
 
-      // Layout: heading and counter both on screen, clear of each other, and
-      // inside the viewport's width (stacked below `sm`, side by side above).
-      const counter = walker.getByText(/^Step [0-9]+ of [0-9]+$/);
-      await expect(counter).toBeVisible();
+      // Layout: heading and progress bar both on screen, clear of each other,
+      // and inside the viewport's width.
+      const progress = walker.getByRole("progressbar", { name: "Wizard progress" });
+      await expect(progress).toBeVisible();
       await expectClearAndInside(
         page,
         walker.getByRole("heading", { name, exact: true }),
-        counter,
-        "the tidy-up heading and the Step x of y counter",
+        progress,
+        "the tidy-up heading and the Wizard progress bar",
       );
 
       await page.keyboard.press("Escape");

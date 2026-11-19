@@ -91,11 +91,17 @@ import {
   advanceToSave,
   awaitLookupsSettled,
   confirmSaveButton,
+  expectDecidedCount,
+  expectNoStepCount,
+  expectNothingDecided,
+  expectWizardStep,
   LOOKUPS,
   personSkip,
-  readStep,
+  readDecidedCount,
+  readProgress,
   reviewWizard,
-  stepCounter,
+  STEP_SUBTITLE,
+  wizardProgress,
 } from "../../support/wizard";
 
 const SET = "Roanoke Express ECHL";
@@ -285,9 +291,12 @@ test(
     // The fetch has landed above, so this is our own queueing of the batch's lookups: measured
     // 3 ms on the #487 merge-group run (GUIDE), the standard 7 s.
     await expect(wizard).toBeVisible();
-    // NEO-335 Phase 2: the sitting starts at its first step, nothing decided
-    // (on a name step x is the decided count plus one; y grows, so it is left free).
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // NEO-335 Phase 2: the sitting starts at its first step, nothing decided (a
+    // name step is up and there is no "Decided (N)" history; NEO-467).
+    await expectNothingDecided(page);
+    // NEO-467: the header shows a progress bar, never an exact "Step x of y" or
+    // a growth line.
+    await expectNoStepCount(page);
     await expect(wizard.getByRole("button", { name: "Back to Match Cards" })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, first row" });
 
@@ -337,10 +346,13 @@ test(
     await wizard.getByRole("button", { name: "Add career team" }).click();
     await expect(wizard.getByText(new RegExp(`${COLLEGE_TEAM} \\(1994.1996\\)`))).toBeVisible();
     await expect(wizard.getByText(new RegExp(`${team} \\(1994.1996\\)`))).toBeVisible();
-    // "Add as New Player" records exactly ONE decision (x moves by one).
-    const { x: stepBefore } = await readStep(page);
+    // "Add as New Player" records exactly ONE decision: the helper waits for the
+    // wizard to leave HIS row (his own skip goes), and the names' "Decided (N)"
+    // history grows by one (NEO-467: no step count; the lookups were waited out
+    // above, so nothing else moves it).
+    const decidedBefore = await readDecidedCount(page);
     await answerPlayerAsNew(page);
-    await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore + 1} of [0-9]+$`));
+    await expectDecidedCount(page, decidedBefore + 1);
 
     // Every other name is SKIPPED, the cheapest way to a commit: it decides every
     // remaining row, lookups included, creates no players and raises none of
@@ -358,6 +370,7 @@ test(
 
     // ── STEP 6b: the cards that would save with NO team get their own step ──
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
+    await expectWizardStep(page, STEP_SUBTITLE.teams);
     // ...and the step OPENS AT ITS TOP: the intro is in view, not scrolled up behind the header.
     const intro = wizard.getByText("Pick a team for each card, or leave it for later.");
     await expect(intro).toBeVisible();
@@ -491,13 +504,19 @@ test(
     const left = String(Number(noPlayersCount) - 2);
 
     // ── STEP 6c: Next (Enter) leaves the teams step for the Save step ──
-    // y is read on the teams step AFTER its answers (a team answer can change a
-    // card's title, and a title that then needs a look would add the "Card
-    // titles" step) and held to on the Save step, which is always "Step y of y".
-    const teamsStep = await readStep(page);
-    expect(teamsStep.x, "the teams step is never the last step: Save comes after it").toBeLessThan(teamsStep.y);
+    // The teams step is never the last step: it offers Next, not Confirm & Save.
+    // advanceToSave walks any "Card titles" step a team answer raised (a team
+    // can change a card's title) and lands on Save, which fills the progress
+    // bar (NEO-467: no exact count; the bar never goes back across the walk).
+    await expect(next).toBeVisible();
+    await expect(confirmSaveButton(page)).toBeHidden();
+    const teamsProgress = await readProgress(page);
+    expect(teamsProgress.subtitle).toBe(STEP_SUBTITLE.teams);
     await advanceToSave(page);
-    await expect(stepCounter(page)).toHaveText(`Step ${teamsStep.y} of ${teamsStep.y}`);
+    await expect(wizardProgress(page), "the Save step fills the progress bar").toHaveAttribute("aria-valuenow", "100");
+    expect((await readProgress(page)).percent, "the bar never goes back from the teams step to Save").toBeGreaterThanOrEqual(
+      teamsProgress.percent,
+    );
     await expect(wizard.getByText(new RegExp(`Save ${FETCHED} cards?\\?`))).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Save step" });
     // Never gated by the teams step's answers: Confirm & Save is the Save step's footer button.
@@ -585,9 +604,9 @@ test(
     // Every name on these cards is now known (the created player) or skipped for
     // this set (the skip records the commit wrote), and LEFT cards are stored
     // with no team. So the next sync has no names to ask but cards that would
-    // save teamless, and the review opens straight onto its teams step: "Step 1
-    // of 2", teams then Save (a re-synced row is not a NEW row, so no "Card
-    // titles" step joins them).
+    // save teamless, and the review opens straight onto its teams step, then
+    // Save (a re-synced row is not a NEW row, so no "Card titles" step joins
+    // them): one Next from the teams step lands on Save.
     //
     // THE CONTENT REVIEW COMES FIRST, AND IT ALWAYS COMES. A re-sync diffs every
     // incoming card against its stored row (NEO-203): the pre-filled card is
@@ -609,7 +628,7 @@ test(
     // THE FEATURE: the same review, teams only. Entity resolution runs no lookups
     // here (nothing is unknown), so this is our own server answering: 7 s.
     await expect(wizard).toBeVisible();
-    await expect(stepCounter(page)).toHaveText("Step 1 of 2");
+    await expectWizardStep(page, STEP_SUBTITLE.teams);
     await expect(wizard.getByText("Cards with no team", { exact: true })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, teams-only re-sync" });
     // No names: neither bulk link exists, because nothing is undecided. Paired
@@ -627,10 +646,11 @@ test(
     // card and career. Paired with the positive above.
     await expect(wizard.getByRole("radio", { name: new RegExp(`^${team} — `) })).toHaveCount(0);
 
-    // Next leaves every line on its default and lands on Save, "Step 2 of 2", for
-    // every fetched card again.
-    await advanceToSave(page);
-    await expect(stepCounter(page)).toHaveText("Step 2 of 2");
+    // ONE Next leaves every line on its default and lands on Save (nothing sits
+    // between the teams step and Save), for every fetched card again.
+    await next.click();
+    await expectWizardStep(page, STEP_SUBTITLE.save);
+    await expect(confirmSaveButton(page)).toBeVisible();
     await expect(wizard.getByText(new RegExp(`Save ${FETCHED} cards?\\?`))).toBeVisible();
 
     // Never gated: Confirm & Save with every line on its default saves the same

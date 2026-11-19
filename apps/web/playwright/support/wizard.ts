@@ -8,9 +8,12 @@
  *
  * The wizard since NEO-335 ("Tidy up <year> <set> <variant>" since NEO-497,
  * `TIDY_UP_NAME`): names -> teams -> titles ->
- * save, ONE "Step x of y" counter (WizardChrome). On a NAME step x is the
- * decided count plus one, so "Step 1 of N" is a batch with nothing decided;
- * y grows as staged steps arrive, so pin x, never y. Past the names come a
+ * save. Since NEO-467 its header shows a progress bar ("Wizard progress",
+ * `aria-valuetext` = the step's subtitle, `aria-valuenow` = a rounded percent,
+ * 100 on Save), not an exact "Step x of y": a spec says where the wizard is by
+ * the subtitle (`expectWizardStep`), and that a name row was decided by that
+ * row's own skip control going away (`readNameStep` / `expectNameStepLeft`),
+ * never by a number. Past the names come a
  * "Cards with no team" step and a "Card titles" step (each only when needed,
  * each with a footer "Next (Enter)" and NO Confirm & Save), then "Ready to
  * save", the only step with Confirm & Save. Since NEO-345 an "Autographed
@@ -18,8 +21,8 @@
  * carries BSC's AU tag on a part with no autograph format; its answer is
  * REQUIRED (Next stays aria-disabled until one is picked), so `advanceToSave`
  * answers it. The post-save attention walker
- * wears the same title; tell them apart by the walker's "Skip for now, card
- * <number>" or by this wizard's footer.
+ * wears the same title and progress bar; tell them apart by the walker's
+ * "Skip for now, card <number>" or by this wizard's footer.
  *
  * `util-wizard-career-form-into-view.yaml` (NEO-335) has NO Playwright
  * counterpart on purpose: it only dragged the body so Maestro's tap would not
@@ -40,6 +43,7 @@ import {
   DRILL_DEFAULTS,
   drillToBaseVariant,
   drillToColdManufacturer,
+  escapeRe,
   syncChecklistButton,
   VARIANT_TYPES_SYNC,
   type DrillTarget,
@@ -97,35 +101,204 @@ export function reviewWizard(page: Page): Locator {
 }
 
 /**
- * The header's one counter ("Step 3 of 12", a `role="status"` node, so one
- * element). Replaces the "N of M reviewed" line. Contract: a locator; on a
- * name step x is the decided count plus one, y grows, so match on x only.
+ * NEO-467: the header's progress bar, `role="progressbar"` named "Wizard
+ * progress". Its `aria-valuetext` is the step's subtitle and its
+ * `aria-valuenow` a rounded percent (100 on Save); it only ever moves forward.
+ * There is no exact count ("Step x of y") anywhere. Contract: a locator,
+ * nothing waited for. The post-save attention walker wears the same header,
+ * so scope a walker check to the walker's own dialog.
  */
-export function stepCounter(page: Page): Locator {
-  return reviewWizard(page).getByText(/^Step [0-9]+ of [0-9]+$/);
+export function wizardProgress(page: Page): Locator {
+  return reviewWizard(page).getByRole("progressbar", { name: "Wizard progress" });
 }
 
 /**
- * `{ x, y }` read off `stepCounter`. Contract: waits (7 s) for the counter to
- * be visible, then returns the numbers it shows at that instant.
+ * The wizard's step subtitles (`STEP_SUBTITLE` in entity-review-steps.ts).
+ * Every name step of one kind shares its subtitle, so a subtitle says WHICH
+ * KIND of step is up, never which row: a row is told by its own name
+ * (`readNameStep`). NEO-478's `checklist` step ("Checklist says otherwise")
+ * comes BEFORE the names and is not in `POST_NAME_ORDER`.
  */
-export async function readStep(page: Page): Promise<{ x: number; y: number }> {
-  const counter = stepCounter(page);
-  await expect(counter).toBeVisible();
-  const match = ((await counter.textContent()) ?? "").match(/^Step ([0-9]+) of ([0-9]+)$/);
-  expect(match, "the wizard header shows a Step x of y counter").toBeTruthy();
-  return { x: Number(match![1]), y: Number(match![2]) };
-}
+export const STEP_SUBTITLE = {
+  league: "New league",
+  team: "New team",
+  player: "New player",
+  pick: "Which player is this?",
+  checklist: "Checklist disagreements",
+  teams: "Cards with no team",
+  autograph: "Autographed cards",
+  titles: "Card titles",
+  save: "Ready to save",
+} as const;
+
+/** The steps after the names, in the order the wizard walks them. */
+const POST_NAME_ORDER: readonly string[] = [
+  STEP_SUBTITLE.teams,
+  STEP_SUBTITLE.autograph,
+  STEP_SUBTITLE.titles,
+  STEP_SUBTITLE.save,
+];
+
+/** Any name-step subtitle. */
+const NAME_STEP_SUBTITLE = new RegExp(
+  `^(${[STEP_SUBTITLE.league, STEP_SUBTITLE.team, STEP_SUBTITLE.player, STEP_SUBTITLE.pick]
+    .map(escapeRe)
+    .join("|")})$`,
+);
+
+/** A presented name row's skip control, any kind (its accessible name names the row). */
+const NAME_ROW_SKIP = /^Skip .* — (not a person|not a team|this team has no league)$/;
 
 /**
- * Wait until the counter has left step `x` (a decision or a Next landed).
- * Anchored "Step x of" so "Step 5" cannot answer for "Step 15". Contract: a
- * 7 s web-first assert; pair it with a positive assert on where you expect to be.
+ * Assert the wizard is on the step whose subtitle is `subtitle` (a string is
+ * matched whole), read off the progress bar's `aria-valuetext`. Contract: a
+ * 7 s web-first assert; it also proves the progress bar is there.
  */
-export async function expectStepLeft(page: Page, x: number): Promise<void> {
-  await expect(stepCounter(page), `the wizard is still on Step ${x}`).not.toHaveText(
-    new RegExp(`^Step ${x} of `),
+export async function expectWizardStep(page: Page, subtitle: string | RegExp): Promise<void> {
+  await expect(wizardProgress(page), `the wizard is on its "${String(subtitle)}" step`).toHaveAttribute(
+    "aria-valuetext",
+    subtitle,
   );
+}
+
+/**
+ * `{ subtitle, percent }` read off the progress bar. Contract: waits (7 s) for
+ * it to be visible, then reads both at that instant. Read it only once the
+ * step you mean is asserted, so the numbers belong to that step. A percent may
+ * only be held not to go down across a change; never pin its value.
+ */
+export async function readProgress(page: Page): Promise<{ subtitle: string; percent: number }> {
+  const bar = wizardProgress(page);
+  await expect(bar).toBeVisible();
+  const subtitle = (await bar.getAttribute("aria-valuetext")) ?? "";
+  const percent = Number(await bar.getAttribute("aria-valuenow"));
+  expect(Number.isFinite(percent), "the wizard's progress bar carries a numeric aria-valuenow").toBe(true);
+  return { subtitle, percent };
+}
+
+/**
+ * NEO-467: the header carries no exact count. No "Step x of y" anywhere in the
+ * dialog and no growth line ("2 more steps: ...", "1 fewer step: ..."), with
+ * the progress bar as the positive under those negatives (GUIDE R2).
+ */
+export async function expectNoStepCount(page: Page): Promise<void> {
+  const wizard = reviewWizard(page);
+  await expect(wizardProgress(page)).toBeVisible();
+  await expect(wizard.getByText(/Step [0-9]+ of [0-9]+/)).toHaveCount(0);
+  await expect(wizard.getByText(/[0-9]+ (more|fewer) steps?:/)).toHaveCount(0);
+}
+
+/**
+ * The names' "Decided (N)" history summary (its count is a node of its own).
+ * The product renders it on the name steps and on Save from the first decision
+ * on, never on the teams / autograph / titles steps. Contract: a locator.
+ */
+export function decidedSummary(page: Page): Locator {
+  return reviewWizard(page).getByText(/^Decided \([0-9]+\)$/);
+}
+
+/**
+ * A batch with nothing decided yet (what "Step 1 of N" used to say): the
+ * header is on a name step and there is no "Decided (N)" history. The subtitle
+ * is the positive under the negative.
+ */
+export async function expectNothingDecided(page: Page): Promise<void> {
+  await expectWizardStep(page, NAME_STEP_SUBTITLE);
+  await expect(decidedSummary(page)).toHaveCount(0);
+}
+
+/**
+ * N of the "Decided (N)" history at this instant, 0 when there is none yet. A
+ * count of DECISIONS, not of steps (NEO-467 removed the step count): a spec
+ * proves one press recorded exactly one decision by reading it before and
+ * asserting `Decided (N+1)` after. Read it only on a settled name step (a row
+ * presented, its lookups drained), so nothing else moves it. Contract: waits
+ * (7 s) for a name step, then reads once.
+ */
+export async function readDecidedCount(page: Page): Promise<number> {
+  await expectWizardStep(page, NAME_STEP_SUBTITLE);
+  const summary = decidedSummary(page);
+  if (!(await summary.isVisible())) return 0;
+  const match = ((await summary.textContent()) ?? "").match(/^Decided \(([0-9]+)\)$/);
+  expect(match, "the Decided history reads Decided (N)").toBeTruthy();
+  return Number(match![1]);
+}
+
+/**
+ * Assert the "Decided (N)" history reads exactly `n` decisions (no history at
+ * all for 0), on a name step. Pair with `readDecidedCount`. Contract: a 7 s
+ * web-first assert (a decision is our own mutation answering, R5).
+ */
+export async function expectDecidedCount(page: Page, n: number): Promise<void> {
+  if (n === 0) {
+    await expectWizardStep(page, NAME_STEP_SUBTITLE);
+    await expect(decidedSummary(page), "no name is decided yet").toHaveCount(0);
+    return;
+  }
+  await expect(decidedSummary(page), `exactly ${n} names are decided`).toHaveText(`Decided (${n})`);
+}
+
+/**
+ * The presented name step's skip control, whatever its kind ("Skip <name> —
+ * not a person", "... — not a team", "... — this team has no league"). One
+ * row is presented at a time, and its skip names it. Contract: a locator.
+ */
+export function nameStepSkip(page: Page): Locator {
+  return reviewWizard(page).getByRole("button", { name: NAME_ROW_SKIP });
+}
+
+/**
+ * The presented name row's identity: its skip control's accessible name. Name
+ * steps of a kind share a subtitle, so this, not the header, says which row is
+ * up. Contract: waits (7 s) for a row to be presented, returns the name.
+ */
+export async function readNameStep(page: Page): Promise<string> {
+  const skip = nameStepSkip(page);
+  await expect(skip, "a name step is presented").toBeVisible();
+  return (await skip.getAttribute("aria-label")) ?? "";
+}
+
+/** Any presented name row's skip OTHER than `row` (a `readNameStep` value). */
+function otherNameRow(page: Page, row: string): Locator {
+  return reviewWizard(page).getByRole("button", {
+    name: new RegExp(`^(?!${escapeRe(row)}$)Skip .* — (not a person|not a team|this team has no league)$`),
+  });
+}
+
+/**
+ * Wait until the wizard has left the name row whose skip is `row` (from
+ * `readNameStep`): that row's own control is gone, and the wizard stands on
+ * something else: a DIFFERENT row, the names-done footer ("Next (Enter)" /
+ * Confirm & Save), or the footer's "still looking up" while the next row's
+ * lookup runs. The row's skip stays on screen (held) while its decision is in
+ * flight, so its going away is the decision landing. Contract: 7 s each.
+ */
+export async function expectNameStepLeft(page: Page, row: string): Promise<void> {
+  const wizard = reviewWizard(page);
+  await expect(wizard.getByRole("button", { name: row, exact: true }), `the wizard is still on "${row}"`).toBeHidden();
+  await expect(
+    otherNameRow(page, row)
+      .or(nextStepButton(page))
+      .or(confirmSaveButton(page))
+      .or(wizard.getByText(/still looking up/))
+      .first(),
+    `the wizard moved on from "${row}" to another step`,
+  ).toBeVisible();
+}
+
+/**
+ * Wait until a Next on the post-name step `from` (a subtitle, from
+ * `readProgress`) has landed: the progress bar names a step that comes AFTER
+ * it in the wizard's order (teams, autograph, titles, save). A positive
+ * assert, so a Next that did nothing, or went backwards, fails here by name.
+ * Contract: a 7 s web-first assert (Next is a client-side step change).
+ */
+export async function expectPostNameStepLeft(page: Page, from: string): Promise<void> {
+  const at = POST_NAME_ORDER.indexOf(from);
+  expect(at, `"${from}" is a step after the names`).toBeGreaterThanOrEqual(0);
+  const later = POST_NAME_ORDER.slice(at + 1);
+  expect(later.length, `"${from}" is not the last step`).toBeGreaterThan(0);
+  await expectWizardStep(page, new RegExp(`^(${later.map(escapeRe).join("|")})$`));
 }
 
 /** The footer's forward button on the teams / autograph / titles steps. */
@@ -270,9 +443,9 @@ export async function walkToAutographStep(page: Page): Promise<void> {
   for (let i = 0; i < 3; i++) {
     await expect(next, "the wizard offers Next on its way to the Autographed cards step").toBeVisible();
     if (await group.isVisible()) break;
-    const { x } = await readStep(page);
+    const { subtitle } = await readProgress(page);
     await next.click();
-    await expectStepLeft(page, x);
+    await expectPostNameStepLeft(page, subtitle);
   }
   await expect(group, "the wizard reached its Autographed cards step").toBeVisible();
 }
@@ -286,8 +459,8 @@ export async function walkToAutographStep(page: Page): Promise<void> {
  *
  * Contract: EXIT the tidy-up dialog is open, named for the set it fetched
  * ("Tidy up 2024 Topps Stars of MLB Network" by default, NEO-497) and
- * axe-clean, every row undecided ("Step 1 of N"; callers assert that
- * themselves). With a checklist (the default set always has one), the checklist is a source of
+ * axe-clean, every row undecided (callers assert that themselves,
+ * `expectNothingDecided`). With a checklist (the default set always has one), the checklist is a source of
  * its own (NEO-496, NQ1), so Match Cards opens on both branches and is
  * confirmed keeping every marketplace card (`confirmChecklistMatchCards`); the
  * pairing session is then PARKED behind the wizard ("Back to Match Cards" is
@@ -439,7 +612,7 @@ export async function openOneMarketplaceSetBase(
  * util-fetch-one-marketplace-set-checklist-to-wizard.yaml (NEO-330): the
  * one-marketplace twin of `fetchChecklistToWizard`. Opens the set's Base
  * (`openOneMarketplaceSetBase`), syncs the never-fetched checklist and lands
- * in the entity-review wizard with nothing decided ("Step 1 of N"). There is
+ * in the entity-review wizard with nothing decided. There is
  * no parked pairing session behind it ("Back to Match Cards" is not offered)
  * unless a checklist was uploaded: then BSC and the checklist are two sources
  * (NEO-496, NQ1), Match Cards opens and is confirmed keeping every BSC card
@@ -518,27 +691,28 @@ export async function cancelUndecided(page: Page): Promise<void> {
 
 /**
  * util-discard-resumed-review-batch.yaml: a batch an earlier flow left behind
- * opens with decisions already on it ("Step k+1 of M", k names decided);
- * throw it away and fetch again so this flow starts at "Step 1 of N".
+ * opens with decisions already on it (its "Decided (k)" history is up); throw
+ * it away and fetch again so this flow starts with nothing decided.
  *
  * Contract: ENTRY the wizard is open. EXIT a batch is on screen with nothing
  * expired; a resumed one has been discarded and re-fetched (via
  * `fetchChecklistToWizard`, default set). Not a licence to ignore a dirty
- * batch: the caller still asserts `Step 1 of N` itself right after.
+ * batch: the caller still asserts `expectNothingDecided` itself right after.
  */
 export async function discardResumedReviewBatch(page: Page, env: FlowEnv): Promise<void> {
-  await expect(stepCounter(page)).toBeVisible();
-  if (!/^Step 1 of /.test((await stepCounter(page).textContent()) ?? "")) {
+  // Settled into one state first (the header is up), then branch on it.
+  await expect(wizardProgress(page)).toBeVisible();
+  if (await decidedSummary(page).isVisible()) {
     await page.getByRole("button", { name: "Cancel (Esc)" }).click();
     await expect(page.getByText(/Discard [0-9]+ decisions?/)).toBeVisible();
     await page.getByRole("button", { name: "Discard", exact: true }).click();
     await expect(page.getByText("Fetch cancelled — no cards saved.")).toBeVisible({ timeout: 30_000 });
     await fetchChecklistToWizard(page, env);
   }
-  // A fresh batch opens at "Step 1 of N", but its own lookups start settling
-  // rows at once, so by the time this is read x may already have moved: what
-  // must hold is that a batch is on screen with nothing expired.
-  await expect(stepCounter(page)).toHaveText(/^Step [0-9]+ of [1-9][0-9]*$/);
+  // A fresh batch opens with nothing decided, but its own lookups start
+  // settling rows at once: what must hold here is that a batch is on screen
+  // with nothing expired (an expired batch has an empty subtitle).
+  await expect(wizardProgress(page)).toHaveAttribute("aria-valuetext", /\S/);
 }
 
 /**
@@ -550,7 +724,7 @@ export async function discardResumedReviewBatch(page: Page, env: FlowEnv): Promi
 export async function openDecidedList(page: Page): Promise<Locator> {
   const wizard = reviewWizard(page);
   const names = wizard.getByRole("list", { name: "Decided names" });
-  const summary = wizard.getByText(/^Decided \([0-9]+\)$/);
+  const summary = decidedSummary(page);
   await expect(summary).toBeVisible();
   if (!(await names.isVisible())) await summary.click();
   await expect(names).toBeVisible();
@@ -591,30 +765,35 @@ export function addAsNewPlayerButton(page: Page): Locator {
  *    the plain New Player step and records nothing, so the helper then waits
  *    for that step's own "Add as New Player" primary and presses it. On a row
  *    whose lookup already ran, the press records the create and the walk moves
- *    on (the counter's x moves), which is checked first so the NEXT row's
- *    primary is never mistaken for the plain step.
+ *    on (the row's own skip goes), which is checked first so the NEXT row's
+ *    primary is never mistaken for the plain step: the plain step counts only
+ *    while this row's skip is still beside it.
  * A catalogue refresh that turns a fixture name into a suggestion therefore
  * changes nothing for the specs that create.
  *
  * Contract: ENTRY a player row is presented with a create button on screen
- * (waited for, 7 s). EXIT the counter has left the step it was on, i.e. one
- * decision was recorded (a name step's x is the decided count plus one). Pin
- * y never.
+ * (waited for, 7 s). EXIT the wizard has left that row (`expectNameStepLeft`),
+ * i.e. its decision was recorded.
  */
 export async function answerPlayerAsNew(page: Page): Promise<void> {
   const wizard = reviewWizard(page);
   const button = addAsNewPlayerButton(page);
   await expect(button).toBeVisible();
   const demoted = /anyway$/.test(((await button.textContent()) ?? "").trim());
-  const { x } = await readStep(page);
+  const row = await readNameStep(page);
   await button.click();
   if (demoted) {
-    const plain = wizard.getByRole("button", { name: "Add as New Player", exact: true });
-    const moved = stepCounter(page).filter({ hasNotText: new RegExp(`^Step ${x} of `) });
+    // The plain step of THIS row: its primary with this row's skip beside it.
+    const thisRow = page.getByRole("button", { name: row, exact: true });
+    const plain = wizard.filter({ has: thisRow }).getByRole("button", { name: "Add as New Player", exact: true });
+    const moved = otherNameRow(page, row)
+      .or(nextStepButton(page))
+      .or(confirmSaveButton(page))
+      .or(wizard.getByText(/still looking up/));
     await expect(plain.or(moved).first()).toBeVisible();
-    if (!(await moved.isVisible())) await plain.click();
+    if (await plain.isVisible()) await plain.click();
   }
-  await expectStepLeft(page, x);
+  await expectNameStepLeft(page, row);
 }
 
 /**
@@ -780,10 +959,10 @@ export async function walkToPlayerRow(
       if (!(await held.isVisible()) && !(await preselected.isVisible()) && !(await pickStep.isVisible())) break;
       // Wait for THIS skip to land before looking again: until the decision
       // round-trips the row is still up, and a second pass would skip the
-      // player after it too. On a name step x moving is the decision landing.
-      const { x } = await readStep(page);
+      // player after it too. The row's own skip going is the decision landing.
+      const row = await readNameStep(page);
       await person.click();
-      await expectStepLeft(page, x);
+      await expectNameStepLeft(page, row);
       await passTeamSteps();
     }
     await expect(person).toBeVisible();
@@ -802,8 +981,8 @@ export async function walkToPlayerRow(
  * - ENTRY the wizard is open and every name is decided: its footer shows
  *   "Next (Enter)" or "Confirm & Save". (Waited for here, 7 s.)
  * - Presses Next until the Save step is up; each press is proved to have MOVED
- *   the wizard (the "Step x of y" x it left is gone), so a Next that does
- *   nothing fails by name. Next leaves every line on its default (a pre-filled
+ *   the wizard to a LATER post-name step (`expectPostNameStepLeft`, read off
+ *   the progress bar's subtitle), so a Next that does nothing fails by name. Next leaves every line on its default (a pre-filled
  *   team, else "Leave for later"; every title kept) - the same answers the old
  *   final step's Confirm & Save saved. A spec whose FEATURE is the teams or
  *   titles step drives that step itself and does not call this.
@@ -813,7 +992,8 @@ export async function walkToPlayerRow(
  *   (`answerAutographStep`). A caller that must not decide it for the part
  *   (the spec whose feature is that step) calls `walkToAutographStep` and
  *   answers it itself BEFORE this.
- * - EXIT the Save step: subtitle "Ready to save" and Confirm & Save on screen,
+ * - EXIT the Save step: subtitle "Ready to save" (the progress bar's
+ *   `aria-valuetext`, at 100) and Confirm & Save on screen,
  *   nothing pressed. The caller asserts its own "Save N cards?" and owns the
  *   commit.
  *
@@ -828,14 +1008,16 @@ export async function advanceToSave(page: Page): Promise<void> {
   for (let i = 0; i < 4; i++) {
     await expect(next.or(save)).toBeVisible();
     if (await save.isVisible()) break;
-    const { x } = await readStep(page);
+    const { subtitle } = await readProgress(page);
     if (await autograph.isVisible()) await answerAutographStep(page);
     await next.click();
-    await expectStepLeft(page, x);
+    await expectPostNameStepLeft(page, subtitle);
   }
   await expect(save).toBeVisible();
   // The subtitle is pinned in the header with the footer, not body content.
-  await expect(wizard.getByText("Ready to save", { exact: true })).toBeVisible();
+  await expect(wizard.getByText(STEP_SUBTITLE.save, { exact: true })).toBeVisible();
+  await expectWizardStep(page, STEP_SUBTITLE.save);
+  await expect(wizardProgress(page), "the Save step ends the progress bar").toHaveAttribute("aria-valuenow", "100");
 }
 
 /**
@@ -854,7 +1036,7 @@ export async function advanceToSave(page: Page): Promise<void> {
  *   Either footer offers a Back, so this takes "Back to previous decision" or
  *   "Back to previous step".
  *   The caller WAITS for the walk to have moved before calling this
- *   (`answerPlayerAsNew`'s `expectStepLeft`, or the live step's group/heading
+ *   (`answerPlayerAsNew`'s `expectNameStepLeft`, or the live step's group/heading
  *   `toBeHidden()` after a raw Link click); Back pressed while the decision is
  *   in flight presents the decision before that row.
  * - `decision` the decision line, matched exactly when a string ("Skipped",

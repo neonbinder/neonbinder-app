@@ -7,10 +7,11 @@ import { recordedNoMatchName } from "../../support/recorded-names";
 import {
   answerPlayerAsNew,
   advanceToSave,
+  expectDecidedCount,
+  expectNothingDecided,
   fetchOneMarketplaceSetChecklistToWizard,
-  readStep,
+  readDecidedCount,
   reviewWizard,
-  stepCounter,
   walkToPlayerRow,
 } from "../../support/wizard";
 
@@ -37,7 +38,8 @@ test(
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
     await fetchOneMarketplaceSetChecklistToWizard(page, env, { set: SET, checklist: CHECKLISTS.memphisRiverKings });
     const wizard = reviewWizard(page);
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Nothing decided: a name step is up and there is no "Decided (N)" history (NEO-467).
+    await expectNothingDecided(page);
     // readyToCreate: this spec creates the player, so the walk also passes any
     // player whose create is held by a career team it skipped.
     await walkToPlayerRow(page, { readyToCreate: true });
@@ -69,13 +71,14 @@ test(
     await expect(wizard.getByRole("combobox", { name: "Career team name" })).toBeVisible();
     await expect(wizard.getByText(new RegExp(`${team} \\(2001.2005\\)`))).toBeVisible();
 
-    // "Add as New Player" records exactly ONE decision: the header's "Step x of
-    // y" has x = decided + 1 on a name step, so x moves by exactly one. Pin x,
-    // not y (y grows as staged steps arrive); the pattern is anchored at both
-    // ends, so "Step 5" cannot answer for "Step 15".
-    const { x: stepBefore } = await readStep(page);
+    // "Add as New Player" records exactly ONE decision: the helper waits for the
+    // wizard to leave THIS row (its own skip goes), and the names' "Decided (N)"
+    // history grows by exactly one. NEO-467: the header has no step count, so
+    // the decision count is the number to pin. Every lookup was waited out
+    // above, so nothing else moves it.
+    const decidedBefore = await readDecidedCount(page);
     await answerPlayerAsNew(page);
-    await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore + 1} of [0-9]+$`));
+    await expectDecidedCount(page, decidedBefore + 1);
 
     await wizard.getByRole("button", { name: /Skip remaining names \([0-9]+\)/ }).click();
     // The walk already waited every lookup out, so the bulk is one mutation of

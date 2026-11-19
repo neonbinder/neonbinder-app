@@ -51,3 +51,4 @@
 - [NEO-609 title levels tests](reference_neo609_title_levels_test_patterns.md) — atFullLength padding, refill hides city cuts, Proof parity fixture, tsx probe loop
 - [NEO-581 countSeq + busy window](reference_neo581_countseq_and_busy_window.md) — which door seq checks bite; busy-at-zero label window is unobservable
 - [NEO-592 gate parity patterns](reference_neo592_gate_parity_patterns.md) — origin/main differential via sibling copy, db probe, outside-in call counting, mutant runner
+- [NEO-426 teamless sport tests](reference_neo426_teamless_sport_test_patterns.md) — chunk-direct commit tests, undefined->null in t.run, module-registry probe, break results

@@ -58,8 +58,9 @@ import {
   answerStepAsNew,
   checklistDisagreementHeading,
   confirmSaveButton,
+  expectWizardStep,
   reviewWizard,
-  stepCounter,
+  wizardProgress,
 } from "../support/wizard";
 import type { Page } from "@playwright/test";
 
@@ -355,7 +356,7 @@ test(
       // The file is BSC's own answers, so it cannot disagree with BSC: a "Checklist says
       // otherwise" step here means the capture is stale (re-capture it, SET-REGISTRY.md),
       // and the walk below would sit on a step it has no answer for until its 240 s ran out.
-      await expect(stepCounter(page)).toBeVisible();
+      await expect(wizardProgress(page)).toBeVisible();
       await expect(
         checklistDisagreementHeading(page),
         "the seed's 2024-topps-chrome-base.csv disagrees with BSC (Checklist says otherwise): the capture is stale",
@@ -382,12 +383,12 @@ test(
     // NEO-335: one wizard shape is legitimate here, NO NAMES and past-the-names
     // steps only: a card that would save with no team (a SportLots-only card
     // never carries one) or a new card whose title gets trimmed opens the
-    // review straight onto "Cards with no team" / "Card titles" (Step 1 of ...).
+    // review straight onto "Cards with no team" / "Card titles", its first step.
     // fetchChecklist waited for the wizard or the "Saved" banner, so which one
     // is up is settled and read once. The seed answers nothing on those steps.
     if (await wizard.isVisible()) {
       // The file is BSC's own answers, so a "Checklist says otherwise" step means the capture is stale.
-      await expect(stepCounter(page)).toBeVisible();
+      await expect(wizardProgress(page)).toBeVisible();
       await expect(
         checklistDisagreementHeading(page),
         "the seed's 2024-topps-chrome-insert-future-stars.csv disagrees with BSC (Checklist says otherwise): the capture is stale",
@@ -395,7 +396,8 @@ test(
       // A names review fails here, by name: nothing is undecided.
       await expect(wizard.getByRole("button", { name: /Skip remaining names|Add remaining players as new/ })).toHaveCount(0);
       await expect(wizard.getByText(/^(Cards with no team|Card titles)$/)).toBeVisible();
-      await expect(wizard.getByText(/^Step 1 of [0-9]+$/)).toBeVisible();
+      // NEO-467: the header's progress bar names that first step.
+      await expectWizardStep(page, /^(Cards with no team|Card titles)$/);
       await advanceToSave(page);
       // The Save step, for all 20; the strict count below then pins the save.
       await expect(wizard.getByRole("heading", { name: "Save 20 cards?" })).toBeVisible();

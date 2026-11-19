@@ -79,6 +79,8 @@ import {
 import { variantTypeKind } from "./variantRole";
 // NEO-556: the leaf's set-level "No Team", stamped once BSC answers with none.
 import { noTeamCardVerdict, stampNoTeam, teamDefaultOf } from "./lib/selectorTeams";
+// NEO-426 — a teamless sport is one more reason to stamp "No team".
+import { createSportNoTeamReader } from "./sportTeamless";
 
 /**
  * Walk up the parent chain from a cardChecklist's selectorOption to
@@ -640,28 +642,31 @@ async function findSkippedTeamNameKeys(
 }
 
 /**
- * NEO-556 — the leaf's "No Team" stamp for a card BSC has just answered with
- * no team (nothing on file, or the whole claim ruled "not a team").
+ * NEO-556 / NEO-426 — the "No Team" default's stamp for a card BSC has just
+ * answered with no team (nothing on file, or the whole claim ruled "not a
+ * team").
  *
  * The card's birth held the stamp back while this lookup was outstanding
  * (`noTeamCardVerdict` → `awaitingLookup`, product invariant 8). Now the data
- * is in and names no team, so the set's answer applies: asked of the card as
- * this patch leaves it (no team, no hint, the lookup stamped), and only when
- * the card's OWN leaf says No Team — copied down at the leaf's creation and
- * moved by the cascade, so no walk up the chain. A pending team name still
- * holds it back. Credited to whoever set the No Team (`stampNoTeam`); the
- * caller has already returned for a card carrying a team or a ruling.
+ * is in and names no team, so a default applies: asked of the card as this
+ * patch leaves it (no team, no hint, the lookup stamped), by the SAME verdict
+ * the birth path asks, and vouched for by either
+ *  - the card's own leaf saying No Team (NEO-556; copied down at the leaf's
+ *    creation and moved by the cascade, so no walk up the chain), or
+ *  - every player on the card playing a teamless HOME sport (NEO-426;
+ *    `sportDefaultNoTeam`, which also refuses a card with no player or a
+ *    player name still waiting on review).
+ * A pending team name still holds it back. Credited to whoever set the
+ * default (`stampNoTeam`); there is no operator here. The caller has already
+ * returned for a card carrying a team or a ruling.
  *
  * Returns the fields to spread into the caller's patch (`{}` for none).
  */
-async function leafNoTeamStamp(
+async function noTeamDefaultStamp(
   ctx: MutationCtx,
   row: Doc<"cardChecklist">,
   now: number,
 ): Promise<{ teamNoneConfirmedAt?: number; teamNoneConfirmedByUserId?: string }> {
-  const leaf = await ctx.db.get(row.selectorOptionId);
-  const leafDefault = teamDefaultOf(leaf);
-  if (leafDefault.kind !== "noTeam") return {};
   const verdict = noTeamCardVerdict({
     teamOnCardIds: row.teamOnCardIds,
     pendingTeamNames: row.pendingTeamNames,
@@ -670,9 +675,16 @@ async function leafNoTeamStamp(
     teamCheckOutcome: "answered",
     platformData: row.platformData?.bsc ? { bsc: { ref: row.platformData.bsc.ref } } : {},
   });
-  return verdict.verdict === "stamp"
-    ? stampNoTeam(leafDefault.noTeamDefault.setByUserId, now)
-    : {};
+  if (verdict.verdict !== "stamp") return {};
+  const leafDefault = teamDefaultOf(await ctx.db.get(row.selectorOptionId));
+  const vouchedBy =
+    leafDefault.kind === "noTeam"
+      ? leafDefault.noTeamDefault
+      : await createSportNoTeamReader(ctx).defaultFor({
+          playerIds: row.playerIds ?? [],
+          pendingPlayerNameCount: row.pendingPlayerNames?.length ?? 0,
+        });
+  return vouchedBy ? stampNoTeam(vouchedBy.setByUserId, now) : {};
 }
 
 export const applyBscTeamResolution = internalMutation({
@@ -801,13 +813,14 @@ export const applyBscTeamResolution = internalMutation({
       // value that was really the attribute label, "AU  SN1") would contradict
       // the answer the operator is about to act on.
       //
-      // NEO-556: and the leaf's "No Team", now that BSC has named none.
+      // NEO-556 / NEO-426: and the leaf's "No Team" (or the players' teamless
+      // sport), now that BSC has named none.
       const now = Date.now();
       await ctx.db.patch(row._id, {
         teamCheckDoneAt: now,
         teamCheckOutcome: "answered",
         bscTeamName: undefined,
-        ...(await leafNoTeamStamp(ctx, row, now)),
+        ...(await noTeamDefaultStamp(ctx, row, now)),
       });
       return { applied: false, unmatched: false };
     }
@@ -866,7 +879,7 @@ export const applyBscTeamResolution = internalMutation({
         teamCheckDoneAt: now,
         teamCheckOutcome: "answered",
         bscTeamName: undefined,
-        ...(await leafNoTeamStamp(ctx, row, now)),
+        ...(await noTeamDefaultStamp(ctx, row, now)),
       });
       return { applied: false, unmatched: false };
     }

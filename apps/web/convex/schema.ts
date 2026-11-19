@@ -638,6 +638,34 @@ export const selectorOptionFields = {
     v.object({ setAt: v.number(), setByUserId: v.string() }),
   ),
   /**
+   * NEO-426 — this SPORT has no teams (Non Sport, Golf, Tennis): a card whose
+   * every player's HOME sport (`players.sportId`; extra `playerSports` never
+   * count) carries this stamp saves as "No team" by default, with nothing to
+   * answer in the wizard's Teams step.
+   *
+   * Meaningful on `level: "sport"` rows only, and set only there
+   * (`sportTeamless.setTeamlessSport` refuses any other level). Same shape as
+   * `noTeamDefault`, for the same reason: `setAt` / `setByUserId` are
+   * server-stamped (the time and `requireAdmin`'s subject), because a
+   * background path (`applyBscTeamResolution`) stamps the card on the
+   * operator's behalf and needs someone to credit.
+   *
+   * A DEFAULT, never a block: one more reason to stamp, decided by
+   * `noTeamCardVerdict` on the card as it is born (so a listing that names a
+   * team, a pending team name, or a lookup still owed holds it back — product
+   * invariant 8). Nothing refuses, strips or hides a team because of it; a
+   * team from any source wins. Read only through `convex/lib/teamlessSport.ts`,
+   * never by the sport's display name (invariant 4).
+   *
+   * ABSENT means "this sport has teams"; switching it off removes the field
+   * (a stored `false` would be a second way to say the same thing). Touches
+   * no existing card. NB data only: no adapter or sync reads or writes it. No
+   * index (sports are a handful of rows under `by_level`); no backfill.
+   */
+  teamlessSport: v.optional(
+    v.object({ setAt: v.number(), setByUserId: v.string() }),
+  ),
+  /**
    * NEO-528 round 3 — "Player on every card": the player every NEW card
    * beneath this row is born with, when it arrives with no player of its own
    * (no resolved player and no name waiting for review).

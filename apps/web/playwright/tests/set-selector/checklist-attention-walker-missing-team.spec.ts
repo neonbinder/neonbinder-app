@@ -2,8 +2,9 @@
 // NEO-102: the attention walker answers a card's missing team, one card at a
 // time. Since NEO-335 its one door is the checklist header's amber "N need you"
 // pill ("1 needs you" for one card) and it wears the wizard's chrome (title
-// "Tidy up <year> <set> <variant>" since NEO-497, subtitle = the question, one "Step x of y" counter, no
-// "fixed" count); the wizard shares that title, so the walker is told apart by
+// "Tidy up <year> <set> <variant>" since NEO-497, subtitle = the question, and
+// since NEO-467 a progress bar named "Wizard progress" in place of the "Step x
+// of y" counter, no "fixed" count); the wizard shares that title, so the walker is told apart by
 // its own "Skip for now, card <number>" control. SKIP defers (nothing written); NO TEAM is a persisted
 // answer; a PICKED TEAM saved with "Save & Next" clears the badge because the
 // row changed. Per-worker, per-attempt custom set under the real
@@ -46,8 +47,7 @@ test(
     await expect(pill("2 need you")).toBeVisible();
     await expectAccessible(page, { label: "Checklist with two cards needing attention" });
 
-    // Open the walker from the pill: it pins the first flagged row, #801, and
-    // its counter agrees with the pill (two cards, the first on screen).
+    // Open the walker from the pill: it pins the first flagged row, #801.
     await pill("2 need you").click();
     // NEO-497: the walker is named for the checklist it tidies, the year and
     // set, never "this set". The checklist is the "Base" row under Insert, and
@@ -58,7 +58,14 @@ test(
     });
     await expect(walker).toBeVisible();
     await expect(walker.getByRole("button", { name: skipFor("801") })).toBeVisible();
-    await expect(walker.getByText("Step 1 of 2", { exact: true })).toBeVisible();
+    // NEO-467: the header's progress bar names the step, and carries no exact
+    // count. That the sitting holds the pill's two cards is proved by the walk
+    // itself: one skip reaches #802, and one answer there reaches All clear.
+    const progress = walker.getByRole("progressbar", { name: "Wizard progress" });
+    const percent = async () => Number(await progress.getAttribute("aria-valuenow"));
+    await expect(progress).toHaveAttribute("aria-valuetext", "Cards with no team");
+    await expect(walker.getByText(/Step [0-9]+ of [0-9]+/)).toHaveCount(0);
+    const firstCard = await percent();
     await expect(walker.getByText("Cards with no team", { exact: true })).toBeVisible();
     await expect(walker.getByText("No players on this card.")).toBeVisible();
     await expect(walker.getByText("Pick at least one team, or record that this card has none.")).toBeVisible();
@@ -68,15 +75,18 @@ test(
     // is proved after the walker closes, where #801 keeps its badge.
     await walker.getByRole("button", { name: skipFor("801") }).click();
     await expect(walker.getByRole("button", { name: skipFor("802") })).toBeVisible();
-    await expect(walker.getByText("Step 2 of 2", { exact: true })).toBeVisible();
+    await expect(walker.getByRole("button", { name: skipFor("801") })).toBeHidden();
+    // Moving on never moves the bar back.
+    const secondCard = await percent();
+    expect(secondCard, "the progress bar does not go back when the walker moves on").toBeGreaterThanOrEqual(firstCard);
     await expectAccessible(page, { within: walker, label: "Attention walker, second card" });
 
     // NO TEAM is an answer, not an abandonment.
     await walker.getByRole("button", { name: "No team on this card" }).click();
     await expect(walker.getByText("All clear — nothing on this checklist needs attention.")).toBeVisible();
-    // Nothing is left: the rail is full and y still holds the two cards this
-    // sitting saw (y never shrinks).
-    await expect(walker.getByText("Step 2 of 2", { exact: true })).toBeVisible();
+    // Nothing is left, and the bar has not gone back.
+    await expect(walker.getByRole("button", { name: skipFor("802") })).toBeHidden();
+    expect(await percent(), "the progress bar does not go back at All clear").toBeGreaterThanOrEqual(secondCard);
     await expectAccessible(page, { within: walker, label: "Attention walker, all clear" });
     await walker.getByRole("button", { name: "Done (Esc)" }).click();
     await expect(walker).toBeHidden();
@@ -88,10 +98,11 @@ test(
     await expect(pill("1 needs you")).toBeVisible();
 
     // Reopen: the skipped card comes back first (the skip was session-only), and
-    // a fresh sitting counts only what is flagged now.
+    // a fresh sitting holds only what is flagged now: one Save & Next below goes
+    // straight to All clear.
     await pill("1 needs you").click();
     await expect(walker.getByRole("button", { name: skipFor("801") })).toBeVisible();
-    await expect(walker.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    await expect(progress).toHaveAttribute("aria-valuetext", "Cards with no team");
 
     // A TEAM: create one through the picker (a single search token, minted).
     const TEAM = `CNWT${T}`;
@@ -116,7 +127,7 @@ test(
     await expect(search).toBeHidden();
     await walker.getByRole("button", { name: /Save & Next/ }).click();
     await expect(walker.getByText("All clear — nothing on this checklist needs attention.")).toBeVisible();
-    await expect(walker.getByText("Step 1 of 1", { exact: true })).toBeVisible();
+    await expect(walker.getByRole("button", { name: skipFor("801") })).toBeHidden();
     await walker.getByRole("button", { name: "Done (Esc)" }).click();
     await expect(walker).toBeHidden();
 

@@ -1324,7 +1324,7 @@ not change; none of them can express the =1 half.
 | set | **Roanoke Express ECHL** |
 | variant type | `Base` (the set's ONLY variant type — clean sync, BSC pill, no reconcile dialog) |
 | checklist | **25 cards**, all BSC-only — FETCHED and **COMMITTED** by the flow |
-| unknown names | **25 — all players, 0 teams** ("25 new players + 0 new teams need confirmation", "0 of 25 reviewed" when measured; since NEO-335 Phase 2 the banner reads "25 names need a look before this saves." and the header "Step 1 of …"), stable for 27s after the wizard opened |
+| unknown names | **25 — all players, 0 teams** ("25 new players + 0 new teams need confirmation", "0 of 25 reviewed" when measured; since NEO-335 Phase 2 the banner reads "25 names need a look before this saves." and the header "Step 1 of …", a count NEO-467 replaced with a progress bar), stable for 27s after the wizard opened |
 | Base mapping | left **UNMAPPED** on SportLots, on purpose — the flow cancels the picker |
 | writer | `tests/set-selector/checklist-one-marketplace-match-cards-keeps-every-card.spec.ts`, **sole writer** |
 | pre-synced by `tests/setup.spec.ts` | **no** — the flow pays its own cold syncs, on its own runner, in parallel (the NEO-248 rule: nothing goes in the seed) |
@@ -1425,10 +1425,12 @@ subtitle `Cards with no team`, intro `Pick a team for each card, or leave it
 for later.`, footer `Next (Enter)`) before the Save step (`Ready to save`,
 `Save N cards?`, Confirm & Save). This fixture is a true blank: BSC lists no
 team for any of the 25, so every card is on the teams step (the same 25 the
-old attention count climbed to). The step prints no count; the header's
-`Step x of y` is the only number.
+old attention count climbed to). The step prints no count, and since NEO-467
+neither does the header: its progress bar (`Wizard progress`) names the step
+in its value text.
 
-- **STEP 5** uploads `1995-hockey-roanoke-express-echl-base-one-live` (24 of the 25 cards; Chris Pollack's row is left out) before the sync, so BSC is asked about his card only (`Teams from your checklist: 24 of 25 cards.`), and asserts the sitting opens at `Step 1 of …`. STEP 6 creates Chris Pollack (a recorded Hockey no-match the catalogue does not hold) and skips every other person. STEP 10 uploads the same file again; its final banner is exactly `Saved 25 cards. Teams from your checklist: 24 of 25 cards.`
+- **STEP 5** uploads `1995-hockey-roanoke-express-echl-base-one-live` (24 of the 25 cards; Chris Pollack's row is left out) before the sync, so BSC is asked about his card only (`Teams from your checklist: 24 of 25 cards.`), and asserts the sitting opens with nothing decided (a name step, no
+`Decided (N)` history; NEO-467) and no step count anywhere. STEP 6 creates Chris Pollack (a recorded Hockey no-match the catalogue does not hold) and skips every other person. STEP 10 uploads the same file again; its final banner is exactly `Saved 25 cards. Teams from your checklist: 24 of 25 cards.`
 - **STEP 6** creates the first player the wizard presents ("Add as New
   Player"; header `New player`), with ONE hand-staged career team
   this worker's real one-word club from `recordedNoMatchName(env, "checklist-one-marketplace-match-cards-keeps-every-card")` (NEO-413; written `<club>` below) (1994–1996), decided "Add as New Team" in its own New Team step
@@ -1455,8 +1457,9 @@ old attention count climbed to). The step prints no count; the header's
   team…` again → `RXO<token>T` → `No matches.` → Enter → the New Team dialog →
   `Create team RXO<token>T`, which joins that card selected (the Penguins
   radio is then unchecked); the line itself stays on `Leave for later`.
-- **STEP 6c** leaves with `Next (Enter)` and asserts the Save step is
-  `Step y of y` (y read on the teams step) and `Save 25 cards?`.
+- **STEP 6c** leaves with `Next (Enter)` and asserts the Save step fills the
+  progress bar (`aria-valuenow` 100, never below the teams step's percent)
+  and `Save 25 cards?`.
 - **STEP 7** asserts the pill reads `22 need you` within 7s of
   `Saved 25 cards.` (25 − the "no team" card − the RXO card − the pre-filled
   card; one card per player here, measurement 5).
@@ -1467,11 +1470,11 @@ old attention count climbed to). The step prints no count; the header's
 - **STEP 10** re-syncs. The content review always opens (the pre-filled and
   RXO cards store a team BSC does not list; skipped cards store no player
   link against an incoming name), and the flow presses `Skip changes`. With
-  no names left the review opens TEAMS-ONLY — `Step 1 of 2`,
-  `Cards with no team`, no bulk links, ONE line `Cards with no players (22)`
+  no names left the review opens TEAMS-ONLY — on `Cards with no team`, no
+  bulk links, ONE line `Cards with no players (22)`
   on `Leave for later` (exactly the cards left for later), the pre-filled card
   not asked again —
-  then `Step 2 of 2`, `Save 25 cards?`, and Confirm & Save lands
+  then ONE Next lands on Save (`Ready to save`), `Save 25 cards?`, and Confirm & Save lands
   `Saved 25 cards.` again.
 
 So the flow writes, on top of the 25 cards: one PLAYER (a real Roanoke name,
@@ -2091,7 +2094,7 @@ assertions are unchanged; nothing in them was Big League-specific.
 | | |
 | -- | -- |
 | BSC cards | **10** (read-only probe, BSC only, SportLots paused, 2026-11-09). The cards carry **no team**; the uploaded file says so on every row (`No Team`, NEO-489), so BSC is asked for nothing per card and no card reaches "Cards with no team" |
-| unknown names | six names no sport holds: Lauren Shehadi #1, Robert Flores #2, Brian Kenny #4, Greg Amsinger #6, Lauren Gardner #9 and `Intentional Talk` #10 (a show, not a person). #7 Chris Young has two catalogue namesakes (b. 1979 and b. 1983), so his row is a same-name PICK step. The other cards resolve to catalogue players. MEASURED (own deployment, SportLots paused, 2026-11-09): the wizard opens `Step 1 of 9`, `Add remaining players as new (6)`, `Skip remaining names (7)` |
+| unknown names | six names no sport holds: Lauren Shehadi #1, Robert Flores #2, Brian Kenny #4, Greg Amsinger #6, Lauren Gardner #9 and `Intentional Talk` #10 (a show, not a person). #7 Chris Young has two catalogue namesakes (b. 1979 and b. 1983), so his row is a same-name PICK step. The other cards resolve to catalogue players. MEASURED (own deployment, SportLots paused, 2026-11-09, before NEO-467 replaced the step count with a progress bar): the wizard opens `Step 1 of 9`, `Add remaining players as new (6)`, `Skip remaining names (7)` |
 | recording | the six are recorded no-matches; Chris Young's lookup is a recorded hit (dated MLB stints) |
 | first player row | **#7 Chris Young's pick step, not #1.** The presented row is pinned state (`EntityReviewWizard.tsx`, NEO-220 rule 1), and a pick step is inserted READY, so it is the first settled player and is pinned before #1's lookup lands, whatever the card order (the probe's "after the first player row" was wrong). So `career-team-entry` and `link-to-existing-player` walk with `walkToPlayerRow({ readyToCreate: true })`, which skips a pick step (and a preselect or a held create) and stops on the first truly unknown name (expected #1 Lauren Shehadi, the first in card order; the name it lands on is not asserted). The cards stage no team step |
 | provisioned | `tests/setup.spec.ts`: variant types synced and the Base mapped (both sides live; BSC-only under a SportLots pause, where it reads unmapped and every drill cancels the picker), checklist asserted EMPTY. Filed under 2024 `Topps` by its name |
@@ -2543,7 +2546,7 @@ lookup) and in Football (a no-match; the sport switch re-queues it), captured
 2026-11-04, `docs/operations/neo289-enrichment-fixtures.md` §4a. His 2010 row is
 a suggestion inserted ready and is never looked up.
 
-**Measured on dev, 2026-11-03, BSC only (every fetch discarded).** `Team Bonus`:
+**Measured on dev, 2026-11-03, BSC only (every fetch discarded; the `Step x of y` counts are from before NEO-467, whose header has no count).** `Team Bonus`:
 20 cards, `Step 1 of 2`, one unknown name (Kendry Morales). `Silk Collection`:
 201 cards, `Step 1 of 3`, two unknown names (Michael Brantley, Kendry Morales).
 Both names are absent from every other spec and registry entry. The Base (for reference, never fetched here): 7 unknown

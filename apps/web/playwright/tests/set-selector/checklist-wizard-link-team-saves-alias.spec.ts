@@ -44,10 +44,11 @@ import {
   advanceToSave,
   confirmSaveButton,
   fetchOneMarketplaceSetChecklistToWizard,
+  expectDecidedCount,
+  expectNothingDecided,
   nextStepButton,
-  readStep,
+  readDecidedCount,
   reviewWizard,
-  stepCounter,
 } from "../../support/wizard";
 import type { Page } from "@playwright/test";
 
@@ -118,9 +119,8 @@ test(
     const wizard = reviewWizard(page);
 
     // ── PART 3: walk the team and league steps, acting on one club by name ──
-    // NEO-335's counter: on a name step x is the decided count plus one, so
-    // nothing decided is "Step 1 of N" (a full match: not "Step 11 of ...").
-    await expect(stepCounter(page)).toHaveText(/^Step 1 of [0-9]+$/);
+    // Nothing decided: a name step is up and there is no "Decided (N)" history (NEO-467).
+    await expectNothingDecided(page);
     // Wait the batch's lookups out so every step the walk reads is settled and
     // nothing that settles later out-ranks the row under test (leagues before
     // teams before players). Marketplace-class wait: one lookup per unknown
@@ -191,7 +191,10 @@ test(
           .first(),
       ).toBeVisible();
       await expect(wizard.getByRole("button", { name: `Link to ${FIXTURE_TEAM}` })).toBeVisible();
-      const { x: stepBefore } = await readStep(page);
+      // This row's own skip: it stays on screen exactly while the row is undecided.
+      const rowSkip = wizard.getByRole("button", { name: `Skip ${ROW} — not a team`, exact: true });
+      await expect(rowSkip).toBeVisible();
+      const decidedBefore = await readDecidedCount(page);
       await expect(wizard.getByRole("button", { name: "Add as New Team" })).toBeDisabled();
       await expect(wizard.getByRole("heading", { name: `New Team: ${ROW}` })).toBeVisible();
       await expectAccessible(page, { within: wizard, label: "Entity review wizard, new team name refused as an alias" });
@@ -199,8 +202,12 @@ test(
       // Link through the search: the typed token finds the fixture by name.
       await searchAll.fill(`Ali${T}`);
       await expect(searchAll).toHaveValue(`Ali${T}`);
-      // Still undecided: the refused create recorded nothing.
-      await expect(stepCounter(page)).toHaveText(new RegExp(`^Step ${stepBefore} of [0-9]+$`));
+      // Still undecided: the refused create recorded nothing, so the wizard is
+      // still on this row (its heading and its own skip) and the "Decided (N)"
+      // history has not grown (NEO-467: no step count to pin).
+      await expect(wizard.getByRole("heading", { name: `New Team: ${ROW}` })).toBeVisible();
+      await expect(rowSkip).toBeVisible();
+      await expectDecidedCount(page, decidedBefore);
       await page.getByRole("option", { name: new RegExp(`^${FIXTURE_TEAM}`) }).click();
       await expect(wizard.getByRole("heading", { name: `New Team: ${ROW}` })).toBeHidden();
 
