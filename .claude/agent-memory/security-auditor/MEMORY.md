@@ -81,7 +81,7 @@
 - [Neo356 theme prepaint](patterns_neo356_theme_prepaint.md) — inline pre-paint script: compare to literals; no CSP in apps/web
 - [Neo358 collector rows pin catalog](patterns_neo358_collector_rows_pin_catalog.md) — user copies guarding catalog deletes/moves = signed-in
 - [Neo364 client-carried undo](patterns_neo364_client_carried_undo.md) — forged inverse = raw write API; per-step owner/home/class/qty re-check held
-- [Cross-run artifacts](patterns_cross_run_artifacts.md) — A CI job that reads other runs' artifacts must filter to this repo's runs
+- [Cross-run artifacts](patterns_cross_run_artifacts.md) — CI jobs and local scripts reading run artifacts: fork filter; nested-zip symlink escape
 - [Unauthenticated probe functions](patterns_unauthenticated_probe_functions.md) — weigh a no-auth ping against an auth-failing call (not zero)
 - [Neo408 seed without exports](patterns_neo408_seed_without_exports.md) — internal read fns replacing `convex export`: reachability = deploy key
 - [Neo370 scheduled marketplace poll](patterns_neo370_scheduled_marketplace_poll.md) — 24/7 poll: credential gating; backoff == interval

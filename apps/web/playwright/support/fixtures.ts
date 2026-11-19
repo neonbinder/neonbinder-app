@@ -33,6 +33,10 @@
  *   captureConsole — an option, off by default: `test.use({ captureConsole: true })`
  *            keeps the page's console lines and attaches them, scrubbed
  *            (./redact.mjs), to a red result as `console`.
+ *   wireLog — automatic (NEO-398, ./wire-log.ts). A red result carries
+ *            `client-wire.log`: the context's page errors, console errors and
+ *            warnings, navigations and Convex frames (type, request id and
+ *            function path only), scrubbed by ./redact.mjs.
  *
  * Plus `expectAccessible(page, { within?, label? })`, the axe check (below),
  * and Playwright's own `isMobile` fixture for the rare genuine layout branch.
@@ -48,7 +52,8 @@ import { checkAccessibility, type AccessibleOptions } from "./a11y";
 import { BscFake } from "./bscFake";
 import { EbayFake } from "./ebayFake";
 import { makeEnv, type FlowEnv } from "./env";
-import { redact } from "./redact.mjs";
+import { redact, redactLiterals } from "./redact.mjs";
+import { attachWireOnFailure, recordWire, runLiterals } from "./wire-log";
 import { expectWorkerReset, WORKER_RESET_CAP_MS, WORKER_RESET_LAUNCH_MS, WORKER_RESET_REDIRECT } from "./worker-reset";
 
 export type SignIn = (
@@ -97,7 +102,17 @@ export const test = base.extend<{
   consoleOnFailure: void;
   noRetryOnSharedAccounts: void;
   resetAfterFailure: void;
+  wireLog: void;
 }>({
+  // The client's side of a failure: attached as client-wire.log (./wire-log.ts, NEO-398).
+  wireLog: [
+    async ({ context }, use, testInfo) => {
+      const lines = recordWire(context);
+      await use();
+      await attachWireOnFailure(testInfo, lines);
+    },
+    { auto: true },
+  ],
   env: async ({}, use, testInfo) => {
     // The project feeds the d/m marker in every minted name, and the retry the
     // attempt number (./env.ts).
@@ -216,7 +231,9 @@ export const test = base.extend<{
       if (testInfo.status === testInfo.expectedStatus || lines.length === 0) return;
       // Scrubbed line by line: a Clerk call carries the testing token in its query,
       // a signed storage address its signature (./redact.mjs). Never raw.
-      const body = lines.map((line) => redact(line).slice(0, CONSOLE_LINE_CHARS)).join("\n");
+      // The run's bare deployment name first (./wire-log.ts runLiterals, NEO-398).
+      const literals = runLiterals();
+      const body = lines.map((line) => redact(redactLiterals(line, literals)).slice(0, CONSOLE_LINE_CHARS)).join("\n");
       await testInfo.attach("console", { body, contentType: "text/plain" });
     },
     { auto: true },
