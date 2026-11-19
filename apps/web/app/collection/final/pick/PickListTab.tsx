@@ -1837,12 +1837,14 @@ function CondensedMarkers({ row, salesLink }: { row: PickRow; salesLink: boolean
   const notInNb = !row.card && cardFacts(row) !== null;
   if (!row.lastOnes && !row.short && !row.isNew && !noBox && !notInNb) return null;
   const why = salesLink ? COPY.notInNbWhyLinked : COPY.notInNbWhy;
+  // "Not in Neon Binder" is the longest marker, so it alone may break between its words when
+  // the Player column is squeezed (whitespace-normal); the other chips stay whole.
   return (
     <span className="flex flex-wrap gap-1 whitespace-nowrap">
       {notInNb && (
         <span
           title={why}
-          className="nb-pick-chip rounded border border-dashed border-notice-warn-rule bg-notice-warn-bg px-1.5 text-xs font-semibold leading-5 text-notice-warn-ink"
+          className="nb-pick-chip whitespace-normal rounded border border-dashed border-notice-warn-rule bg-notice-warn-bg px-1.5 text-xs font-semibold leading-5 text-notice-warn-ink"
         >
           <span>{NOT_IN_NB}</span>
           <span className="sr-only">. {why}</span>
