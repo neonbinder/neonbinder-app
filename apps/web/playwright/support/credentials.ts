@@ -9,7 +9,7 @@
 import { expect, type Page } from "@playwright/test";
 import { EBAY_POLICY, type EbayFake } from "./ebayFake";
 import type { FlowEnv } from "./env";
-import { test } from "./fixtures";
+import { expectAccessible, test } from "./fixtures";
 
 /**
  * A live SportLots login is a real ~22 s Puppeteer/SSO round trip (the flows' 30 s).
@@ -288,6 +288,12 @@ export async function removeEbayConnection(page: Page, opts: { gate: number }): 
  *   5. NB Free Shipping for Cards under $20, NB Tracked for $20 and up, the
  *      first Payment and Returns policy: "You're all set".
  *
+ * `seller: "alt"` connects the worker's second fake seller instead, through
+ * eBay's consent screen ("Agree as another eBay account"; the seed hop knows
+ * only the main one). `axeLabel` runs the axe check just before the first
+ * pick, on the state the branch left: with `setMeUp: "not offered"` that is the
+ * hand-pick (Payment and Returns offered, none picked).
+ *
  * ENTRY the page is signed in, eBay not connected, every other box already
  * in-person (a connection that lists walks every card in a listed box). The
  * caller records "connected" for its cleanup BEFORE calling: the hop may
@@ -298,16 +304,29 @@ export async function removeEbayConnection(page: Page, opts: { gate: number }): 
 export async function connectEbayAndFinishSetup(
   page: Page,
   ebayFake: EbayFake,
-  opts: { gate: number; setMeUp?: "offered" | "not offered" },
+  opts: { gate: number; setMeUp?: "offered" | "not offered"; seller?: "main" | "alt"; axeLabel?: string },
 ): Promise<void> {
   const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
   const steps = page.getByRole("status").filter({ hasText: /to go\. Nothing lists on eBay until they're done\.$/ });
-  await ebayFake.holdShippingPolicy(EBAY_POLICY.free);
-  await ebayFake.holdShippingPolicy(EBAY_POLICY.tracked);
-  await saveEbayConnection(page, { listing: true, gate: opts.gate });
+  const seller = opts.seller ?? "main";
+  await ebayFake.holdShippingPolicy(EBAY_POLICY.free, seller);
+  await ebayFake.holdShippingPolicy(EBAY_POLICY.tracked, seller);
+  if (seller === "main") {
+    await saveEbayConnection(page, { listing: true, gate: opts.gate });
+  } else {
+    // eBay's consent screen, as the second account; home again on a full page load.
+    await page.goto("/profile/ebay");
+    await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: opts.gate });
+    await page.getByRole("button", { name: "Connect eBay", exact: true }).click();
+    await expect(page).toHaveURL(/\/testing\/fake-ebay\/authorize\?/, { timeout: opts.gate });
+    const consent = page.getByRole("region", { name: "Stand-in eBay sign-in", exact: true });
+    await expect(consent.getByRole("button", { name: "Agree", exact: true })).toBeFocused({ timeout: opts.gate });
+    await consent.getByRole("button", { name: "Agree as another eBay account", exact: true }).click();
+    await expect(page).toHaveURL(/\/profile\/credentials\?platform=ebay$/, { timeout: opts.gate });
+  }
   await expect(
     page.getByText(/^Rockin' on eBay as .+ since .+\.$/),
-    "eBay did not connect after the seed hop. Either the deployment's eBay is not the fake (EBAY_ENVIRONMENT=fake), " +
+    "eBay did not connect after the seed hop or the consent screen. Either the deployment's eBay is not the fake (EBAY_ENVIRONMENT=fake), " +
       "or eBay is paused here (NEONBINDER_PAUSED_PLATFORMS) while this runner's PAUSED_PLATFORMS does not name ebay.",
   ).toBeVisible();
   await expect(page.getByText(EBAY_TEST_MODE_LINE, { exact: true })).toBeVisible();
@@ -350,6 +369,7 @@ export async function connectEbayAndFinishSetup(
       await expect(radios.getByRole("radio", { checked: true })).toHaveCount(0);
     }
   }
+  if (opts.axeLabel) await expectAccessible(page, { label: opts.axeLabel });
   await free.click();
   await expect(free).toBeChecked();
   const tracked = page.getByRole("radiogroup", { name: "$20 and up", exact: true }).getByRole("radio", { name: EBAY_POLICY.tracked.name, exact: true });

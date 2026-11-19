@@ -24,3 +24,5 @@
 - [Cross-service source-read tests vs path filters](cross-service-source-read-tests-vs-path-filters.md) — parity tests reading a sibling service only run if its lane's filter lists those paths, both ways
 - [Inline workflow logic untested](inline-workflow-logic-untested-and-mirrored-regex.md) — yml gate/jq edits need a script test or yml-pin; hand-mirrored regexes drift
 - [Split spec drops assertions](marketplace-spec-split-to-helper-drops-assertions.md) — grep every removed string; one-shot fault may be spent by a poll
+- [Empty state on isolated account](empty-state-belongs-on-the-isolated-account.md) — sales/history pile up on the main account; empty-state asserts go on new-profile
+- [Silent write proved by later write](unconfirmed-write-proved-by-a-later-confirming-write.md) — same-client mutations apply in order; needs mutation-only, failure alert absent, reload

@@ -309,7 +309,9 @@ test("<title states the feature>", { tag: ["@set-selector"] }, async ({ page, si
   `connectEbayAndFinishSetup` (NEO-555: the main seller connected with listing on and
   set up, for specs whose subject is what happens after; one implementation). It
   branches on "Set me up" only after the policy read has landed; `setMeUp: "offered"
-  | "not offered"` pins the branch where the spec knows the seller's state.
+  | "not offered"` pins the branch where the spec knows the seller's state, `seller: "alt"`
+  connects the second seller through the consent screen, and `axeLabel` axe-checks the
+  state just before the first pick.
 - `support/marketplace-wait.ts` (NEO-487, NEO-552): `expectAfterMarketplace(page, target,
   { platform, what, state? })` (7 s of our own time plus every second the "Waiting on
   <platform>" line is up; a hard cap of 180 s), `expectStepWithSportLots(page, target, env,

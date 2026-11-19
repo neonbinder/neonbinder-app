@@ -274,6 +274,7 @@ test(
     // meets it whichever of the press and the poll drains them. "2 listed" with
     // nothing held back then proves the renewal and the retried write; a broken
     // renewal fails the write signed out and nothing lists.
+    // No readback that the 401 was spent: the fake's control cannot read a rule's remaining `times`, and the fake cannot change in B2.
     await ebayFake.setFaults([ebayFault.unauthorized(EBAY_PATH.bulkItems, { times: 1 })]);
     await countBoth("1");
     await syncAndRead();

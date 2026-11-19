@@ -294,7 +294,8 @@ describe("addMyEbayOrder with listedCardNumber", () => {
       as(t).action(api.testing.addMyEbayOrder, {
         order: { lines: [{ listedCardNumber: "FS-2", sku: "NB2-x-NM", quantity: 1 } as never] },
       }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/^Validator error: Expected one of object, object, got `\{"listedCardNumber":"FS-2","quantity":1,"sku":"NB2-x-NM"\}`/);
+    // Refused before any work: no read of the caller's links, no call to the fake.
     expect(calls).toEqual([]);
   });
 
@@ -375,6 +376,18 @@ describe("addMyBscOrder with listedCardNumber", () => {
     await expect(
       as(t).action(api.testing.addMyBscOrder, { order: { items: [{ listedCardNumber: number, quantity: 1 }] } }),
     ).rejects.toThrow(/none of your cards/);
+    expect(calls).toEqual([]);
+  });
+
+  test("an item may not carry both a number and ids", async () => {
+    const t = convexTest(schema, modules);
+    await seedCatalog(t);
+    await expect(
+      as(t).action(api.testing.addMyBscOrder, {
+        order: { items: [{ listedCardNumber: "FS-2", cardId: "bsc-fs2", quantity: 1 } as never] },
+      }),
+    ).rejects.toThrow(/^Validator error: Expected one of object, object, got `\{"cardId":"bsc-fs2","listedCardNumber":"FS-2","quantity":1\}`/);
+    // Refused before any work: no read of the caller's links, no call to the fake.
     expect(calls).toEqual([]);
   });
 

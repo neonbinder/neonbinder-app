@@ -40,13 +40,17 @@
 //      ledger is axe-checked on its first visible step; the fake answers at
 //      once, so that is usually the finished ledger, not one mid-run (the
 //      ledger stays after the run, outside Set me up's box). The hand-pick
-//      (Set me up not offered) is proven by `ebay-refusals-and-sign-out`, on a
-//      seller it set up earlier in the same spec.
+//      (Set me up not offered) is step 11's.
 //   9. The shipping picks: $20 and up first NB Free Shipping then NB Tracked (a
 //      changed pick saves), Cards under $20 NB Free Shipping. "You're all set".
 //  10. Disconnect (the confirm dialog): "Disconnected from eBay...", not
-//      connected, Connect and the consent warning back. The afterEach does the
-//      same on a failure.
+//      connected, Connect and the consent warning back.
+//  11. The hand-pick: the same `alt` seller connected again. It still holds the
+//      payment and returns policies step 8 made (NB's Disconnect never touches
+//      eBay's side), so "Set me up" is not offered and the seller's own are
+//      offered with none picked, axe-checked in that state, then picked
+//      (`connectEbayAndFinishSetup`, `seller: "alt"`, `setMeUp: "not offered"`).
+//      Disconnect again. The afterEach disconnects on a failure.
 //
 // Fresh-only (GUIDE "fresh-only specs"): the `alt` seller is new only once per
 // seed. The fake keeps a seller's policies, payment and returns, location and
@@ -65,7 +69,7 @@
 // account's fake `alt` seller it leaves two shipping policies, NB's standard
 // payment and returns policies and a location, until the pass's reset.
 import { inventoryTabs, putOtherBoxesInPerson } from "../../support/collection";
-import { EBAY_TEST_MODE_LINE, expectEbayHookedUp, removeEbayConnection } from "../../support/credentials";
+import { connectEbayAndFinishSetup, EBAY_TEST_MODE_LINE, expectEbayHookedUp, removeEbayConnection } from "../../support/credentials";
 import { EBAY_POLICY } from "../../support/ebayFake";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 
@@ -100,7 +104,7 @@ test.afterEach(async ({ context }) => {
 });
 
 test(
-  "Profile -> Credentials -> eBay: connecting through eBay's consent screen, then the setup (card weight, shipping policies made on eBay, ships from, Set me up, the picks) until it's all set, and Disconnect",
+  "Profile -> Credentials -> eBay: connecting through eBay's consent screen, then the setup (card weight, shipping policies made on eBay, ships from, Set me up, the picks) until it's all set, Disconnect, and the hand-pick when the seller already has payment and returns",
   { tag: ["@profile", "@credentials"] },
   async ({ page, signIn, env, ebayFake }) => {
     written.connected = false;
@@ -351,5 +355,20 @@ test(
     await expect(connect).toBeVisible();
     await expect(connectedLine).toBeHidden();
     await expect(page.getByText(CONSENT_HEADING, { exact: true })).toBeVisible();
+
+    // --- 11. The hand-pick: the same seller again, its payment and returns already on eBay -------------
+    written.disconnected = false;
+    await connectEbayAndFinishSetup(page, ebayFake, {
+      gate: LAUNCH_GATE,
+      seller: "alt",
+      setMeUp: "not offered",
+      axeLabel: "Profile, eBay connected again, payment and returns to pick by hand",
+    });
+    await disconnect.click();
+    await confirm.getByRole("button", { name: "Yes, disconnect" }).click();
+    await expect(said("Disconnected from eBay. Every listing NeonBinder put up there is down.")).toBeVisible();
+    written.disconnected = true;
+    await expect(connect).toBeVisible();
+    await expect(connectedLine).toBeHidden();
   },
 );
