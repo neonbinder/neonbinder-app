@@ -197,7 +197,10 @@ vi.mock("./EntityReviewWizard", () => ({
     hasAutographFormat,
     onAutographFormatChange,
     title,
+    teamlessPlayerNames,
   }: {
+    // NEO-426 — the fetch's names resolved to a flagged (teamless) home sport.
+    teamlessPlayerNames?: string[];
     // NEO-497 — the header's title, which the parent reads off the chain.
     title?: string;
     // NEO-345 — the autograph step, reduced to the parent's half: whether the
@@ -241,6 +244,9 @@ vi.mock("./EntityReviewWizard", () => ({
       {title !== undefined && <p>{`Wizard title: ${title}`}</p>}
       {commitError && <p>{`Wizard commit error: ${commitError}`}</p>}
       {teamsOnly && <p>Wizard opened teams-only</p>}
+      {teamlessPlayerNames && (
+        <p>{`Teamless player names: [${teamlessPlayerNames.join(",")}]`}</p>
+      )}
       {onTeamAnswersChange && (
         <button
           type="button"
@@ -2327,6 +2333,119 @@ describe("CardChecklist — one attached marketplace skips the dialog (NEO-255)"
       expect(mockCommitChecklist).not.toHaveBeenCalled();
       // Only the new row is settled by the set's team; the existing one is asked.
       expect(screen.getByText("Settled-team positions: [1]")).toBeTruthy();
+    });
+
+    /**
+     * NEO-426 — a NEW card every one of whose people plays a sport flagged "No
+     * teams in this sport" is not asked about: the commit stamps it No team.
+     * Every name resolved on this path, so the fetch's `teamlessPlayerNames` is
+     * the whole fact. A sitting left with nothing to ask commits with no wizard.
+     */
+    describe("NEO-426: the teamless-sport default", () => {
+      const playersBatch = (
+        players: string[][],
+        extra: Array<Record<string, unknown>> = [],
+      ) => ({
+        ...arrivedBatch,
+        cards: slCandidates.map(({ teams: _teams, ...card }, i) => ({
+          ...card,
+          players: players[i],
+          ...(extra[i] ?? {}),
+        })),
+      });
+
+      async function syncWith(
+        rerender: Parameters<typeof streamCandidates>[0],
+        batch: ReturnType<typeof playersBatch>,
+        teamlessPlayerNames?: string[],
+      ) {
+        mockResolveEntities.mockResolvedValue({
+          unknownPlayers: [],
+          unknownTeams: [],
+          batchId: undefined,
+          ...(teamlessPlayerNames ? { teamlessPlayerNames } : {}),
+        });
+        fireEvent.click(screen.getByLabelText("Sync card checklist"));
+        await streamCandidates(rerender, batch);
+        await act(async () => {
+          resolveFetch({
+            success: true,
+            message: "0 matched, 0 BSC-only, 2 SL-only",
+            candidateCount: 2,
+            attachedSides: ["sportlots"],
+          });
+        });
+        await waitFor(() => expect(mockResolveEntities).toHaveBeenCalled());
+      }
+
+      it("commits with no wizard when every card's people are all teamless, sending no team answer", async () => {
+        const { rerender } = renderChecklist();
+        await syncWith(rerender, playersBatch([["Pat Nonsport"], ["Pat Nonsport", "Kim Nonsport"]]), [
+          "Pat Nonsport",
+          "Kim Nonsport",
+        ]);
+        await waitFor(() => expect(mockCommitChecklist).toHaveBeenCalledTimes(1));
+        expect(screen.queryByText(/Wizard summary/)).toBeNull();
+        // The commit stamps these itself; the client sends nothing for them.
+        for (const card of mockCommitChecklist.mock.calls[0][0].cards) {
+          expect(card).not.toHaveProperty("teamNone");
+          expect(card).not.toHaveProperty("teamIds");
+        }
+      });
+
+      it("opens the wizard when the fetch named no teamless player (the control)", async () => {
+        const { rerender } = renderChecklist();
+        await syncWith(rerender, playersBatch([["Pat Nonsport"], ["Pat Nonsport"]]));
+        expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+        expect(mockCommitChecklist).not.toHaveBeenCalled();
+      });
+
+      it("opens the wizard when one card has a person who is not teamless, handing it the names", async () => {
+        const { rerender } = renderChecklist();
+        await syncWith(rerender, playersBatch([["Pat Nonsport"], ["Pat Nonsport", "Ron Ballplayer"]]), [
+          "Pat Nonsport",
+        ]);
+        expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+        expect(screen.getByText("Teamless player names: [Pat Nonsport]")).toBeTruthy();
+        expect(mockCommitChecklist).not.toHaveBeenCalled();
+      });
+
+      it("opens the wizard when a card carries BSC's listing team, even for a teamless player", async () => {
+        const { rerender } = renderChecklist();
+        await syncWith(
+          rerender,
+          playersBatch([["Pat Nonsport"], ["Pat Nonsport"]], [{ rawTeamName: "Cubs" }, {}]),
+          ["Pat Nonsport"],
+        );
+        expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+        expect(mockCommitChecklist).not.toHaveBeenCalled();
+      });
+
+      it("opens the wizard for a card that re-syncs a stored row, even for a teamless player", async () => {
+        state.cards = [
+          settledCard({ _id: "row-1", cardNumber: "1", teamOnCardIds: undefined }),
+        ];
+        mockDiffChecklist.mockResolvedValue({
+          ...emptyDiff,
+          cards: [
+            { index: 0, cardNumber: "1", cardName: "Solo One", bucket: "identical", existingId: "row-1", fields: [] },
+          ],
+        });
+        const { rerender } = renderChecklist();
+        await syncWith(rerender, playersBatch([["Pat Nonsport"], ["Pat Nonsport"]]), [
+          "Pat Nonsport",
+        ]);
+        expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+        expect(mockCommitChecklist).not.toHaveBeenCalled();
+      });
+
+      it("a teamless name that is on no card changes nothing: the cards are asked", async () => {
+        const { rerender } = renderChecklist();
+        await syncWith(rerender, playersBatch([["Ron Ballplayer"], ["Ron Ballplayer"]]), [
+          "Pat Nonsport",
+        ]);
+        expect(await screen.findByText("Wizard opened teams-only")).toBeTruthy();
+      });
     });
 
     it("NEO-335 Phase 2: hands the wizard the title context and the re-synced positions", async () => {
