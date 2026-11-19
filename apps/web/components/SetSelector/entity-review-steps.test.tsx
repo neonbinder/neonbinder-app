@@ -1,5 +1,6 @@
 /**
- * NEO-335 Phase 2 — the pure step model behind "Step x of y".
+ * NEO-335 Phase 2 — the pure step model behind the wizard's progress bar
+ * (NEO-467: a bar, not "Step x of y").
  *
  * (`.test.tsx` although it renders nothing: the components project only
  * collects `.test.tsx` under components/.)
@@ -8,12 +9,9 @@ import { describe, expect, it } from "vitest";
 import {
   advanceStepCount,
   asAutographFormat,
-  AUTOGRAPH_GROWTH_REASON,
   autographCardIndexes,
   carriesAutograph,
   cardsForTeamsStep,
-  growthLine,
-  growthReasons,
   initialStepCount,
   nextPostReviewStep,
   plannedTotal,
@@ -23,9 +21,9 @@ import {
   reviewStepKind,
   STEP_SUBTITLE,
   stepNumber,
+  stepProgress,
   trackSteps,
   upcomingReviewStepKind,
-  type StepRow,
 } from "./entity-review-steps";
 import type { NavRow } from "./entity-review-nav";
 import { storedPeople, type TeamsReviewRow } from "./teams-on-cards";
@@ -65,53 +63,48 @@ describe("plannedTotal — y = review rows + teams? + titles? + save", () => {
 });
 
 describe("advanceStepCount — grows, never shrinks, freezes on Save", () => {
-  it("grows when staged rows arrive and reports how many", () => {
+  it("grows when staged rows arrive", () => {
     const start = initialStepCount(plan(3));
-    const { count, added } = advanceStepCount(start, plan(5), false);
-    expect(count.total).toBe(6);
-    expect(added).toBe(2);
+    expect(advanceStepCount(start, plan(5), false).total).toBe(6);
   });
 
   it("never shrinks: fewer rows, a teams step gone, a titles step gone", () => {
     const start = initialStepCount(plan(4, true, true)); // 7
     const shrunk = advanceStepCount(start, plan(2, false, false), false);
-    expect(shrunk.count).toBe(start); // same object: nothing moved
-    expect(shrunk.added).toBe(0);
-    expect(shrunk.count.total).toBe(7);
+    expect(shrunk).toBe(start); // same object: nothing moved
+    expect(shrunk.total).toBe(7);
   });
 
   it("returns the same object when nothing changed", () => {
     const start = initialStepCount(plan(3, true));
-    expect(advanceStepCount(start, plan(3, true), false).count).toBe(start);
+    expect(advanceStepCount(start, plan(3, true), false)).toBe(start);
   });
 
   it("adds the teams step once, and keeps it", () => {
     const start = initialStepCount(plan(3));
     const grown = advanceStepCount(start, plan(3, true), false);
-    expect(grown.added).toBe(1);
-    expect(grown.count.teamsStep).toBe(true);
-    const later = advanceStepCount(grown.count, plan(3, false), false);
-    expect(later.count.teamsStep).toBe(true);
-    expect(later.count.total).toBe(5);
+    expect(grown.total).toBe(5);
+    expect(grown.teamsStep).toBe(true);
+    const later = advanceStepCount(grown, plan(3, false), false);
+    expect(later.teamsStep).toBe(true);
+    expect(later.total).toBe(5);
   });
 
   it("adds nothing once on Save, and nothing on the move onto Save", () => {
     const start = initialStepCount(plan(3)); // 4
     const onSave = advanceStepCount(start, plan(5, true, true), true);
-    expect(onSave.added).toBe(0);
-    expect(onSave.count.total).toBe(4);
-    expect(onSave.count.frozen).toBe(true);
+    expect(onSave.total).toBe(4);
+    expect(onSave.frozen).toBe(true);
     // Still on Save: still nothing.
-    const still = advanceStepCount(onSave.count, plan(9, true, true), true);
-    expect(still.count).toBe(onSave.count);
+    expect(advanceStepCount(onSave, plan(9, true, true), true)).toBe(onSave);
   });
 
   it("thaws when the operator leaves Save, and only then counts what turned up", () => {
-    const frozen = advanceStepCount(initialStepCount(plan(3)), plan(3), true).count;
+    const frozen = advanceStepCount(initialStepCount(plan(3)), plan(3), true);
     const left = advanceStepCount(frozen, plan(3, false, true), false);
-    expect(left.count.frozen).toBe(false);
-    expect(left.added).toBe(1);
-    expect(left.count.titlesStep).toBe(true);
+    expect(left.frozen).toBe(false);
+    expect(left.total).toBe(5);
+    expect(left.titlesStep).toBe(true);
   });
 });
 
@@ -134,6 +127,20 @@ describe("stepNumber — x", () => {
     const count = initialStepCount(plan(2, false, true)); // 4
     expect(stepNumber(count, { kind: "titles" })).toBe(3);
     expect(stepNumber(count, { kind: "save" })).toBe(4);
+  });
+});
+
+describe("stepProgress — the bar's fill (NEO-467)", () => {
+  it("is the steps behind the one on screen, out of the plan", () => {
+    const count = initialStepCount(plan(3, true)); // 5
+    expect(stepProgress(count, { kind: "review", index: 0 })).toEqual({ done: 0, planned: 5 });
+    expect(stepProgress(count, { kind: "review", index: 2 })).toEqual({ done: 2, planned: 5 });
+    expect(stepProgress(count, { kind: "teams" })).toEqual({ done: 3, planned: 5 });
+  });
+
+  it("is full on Save", () => {
+    const count = initialStepCount(plan(3, true, true));
+    expect(stepProgress(count, { kind: "save" })).toEqual({ done: 6, planned: 6 });
   });
 });
 
@@ -270,104 +277,35 @@ describe("post-review navigation", () => {
   });
 });
 
-describe("growth line", () => {
-  it("is the approved copy, singular and plural", () => {
-    expect(growthLine(2, ["teams for Jim Thome"])).toBe("2 more steps: teams for Jim Thome");
-    expect(growthLine(1, ["teams for Jim Thome"])).toBe("1 more step: teams for Jim Thome");
-  });
-
-  it("names the player whose career teams were staged", () => {
-    const player: StepRow = { _id: "p", kind: "player", name: "Jim Thome" };
-    const staged: StepRow[] = [
-      { _id: "t1", kind: "team", name: "Cleveland Indians", source: { kind: "careerTeamOf", playerRowId: "p" } },
-      { _id: "t2", kind: "team", name: "Philadelphia Phillies", source: { kind: "careerTeamOf", playerRowId: "p" } },
-    ];
-    expect(
-      growthReasons({
-        addedRows: staged,
-        allRows: [...staged, player],
-        teamsStepAdded: false,
-        titlesStepAdded: false,
-      }),
-    ).toEqual(["teams for Jim Thome"]);
-  });
-
-  it("joins several players, and names the other kinds of growth", () => {
-    const rows: StepRow[] = [
-      { _id: "p1", kind: "player", name: "A" },
-      { _id: "p2", kind: "player", name: "B" },
-      { _id: "tm", kind: "team", name: "Sydney Blue Sox" },
-      { _id: "t1", kind: "team", name: "X", source: { kind: "careerTeamOf", playerRowId: "p1" } },
-      { _id: "t2", kind: "team", name: "Y", source: { kind: "careerTeamOf", playerRowId: "p2" } },
-      { _id: "l1", kind: "league", name: "ABL", source: { kind: "leagueOf", teamRowId: "tm" } },
-    ];
-    expect(
-      growthReasons({
-        addedRows: rows.slice(3),
-        allRows: rows,
-        teamsStepAdded: true,
-        titlesStepAdded: true,
-      }),
-    ).toEqual([
-      "teams for A and B",
-      "league for Sydney Blue Sox",
-      "cards with no team",
-      "card titles",
-    ]);
-  });
-});
-
 describe("trackSteps — one sitting", () => {
-  const player: StepRow = { _id: "p", kind: "player", name: "Jim Thome" };
-  const other: StepRow = { _id: "q", kind: "player", name: "Other Guy" };
-
-  it("starts quiet, and hands back the same object while nothing moves", () => {
-    const first = trackSteps(null, { rows: [player, other], teamsStep: false, titlesStep: false, onSave: false });
-    expect(first.count.total).toBe(3);
-    expect(first.growth).toBeNull();
-    const again = trackSteps(first, { rows: [player, other], teamsStep: false, titlesStep: false, onSave: false });
+  it("hands back the same object while nothing moves", () => {
+    const first = trackSteps(null, { reviewRows: 2, teamsStep: false, titlesStep: false, onSave: false });
+    expect(first.total).toBe(3);
+    const again = trackSteps(first, { reviewRows: 2, teamsStep: false, titlesStep: false, onSave: false });
     expect(again).toBe(first);
   });
 
-  it("announces staged career steps with the player's name", () => {
-    const first = trackSteps(null, { rows: [player, other], teamsStep: false, titlesStep: false, onSave: false });
-    const staged: StepRow[] = [
-      { _id: "t1", kind: "team", name: "Indians", source: { kind: "careerTeamOf", playerRowId: "p" } },
-      { _id: "t2", kind: "team", name: "Phillies", source: { kind: "careerTeamOf", playerRowId: "p" } },
-    ];
-    const grown = trackSteps(first, {
-      rows: [...staged, player, other],
-      teamsStep: false,
-      titlesStep: false,
-      onSave: false,
-    });
-    expect(grown.count.total).toBe(5);
-    expect(grown.growth).toEqual({ seq: 1, text: "2 more steps: teams for Jim Thome" });
+  it("grows with staged career steps and a teams step that appears on a skip", () => {
+    const first = trackSteps(null, { reviewRows: 2, teamsStep: false, titlesStep: false, onSave: false });
+    const staged = trackSteps(first, { reviewRows: 4, teamsStep: false, titlesStep: false, onSave: false });
+    expect(staged.total).toBe(5);
+    const teams = trackSteps(staged, { reviewRows: 4, teamsStep: true, titlesStep: false, onSave: false });
+    expect(teams.total).toBe(6);
   });
 
-  it("announces a teams step that appears on an operator's skip", () => {
-    const first = trackSteps(null, { rows: [player], teamsStep: false, titlesStep: false, onSave: false });
-    const grown = trackSteps(first, { rows: [player], teamsStep: true, titlesStep: false, onSave: false });
-    expect(grown.growth?.text).toBe("1 more step: cards with no team");
-    expect(grown.growth?.seq).toBe(1);
-    const titles = trackSteps(grown, { rows: [player], teamsStep: true, titlesStep: true, onSave: false });
-    expect(titles.growth).toEqual({ seq: 2, text: "1 more step: card titles" });
-  });
-
-  it("never shrinks and never announces a shrink", () => {
-    const first = trackSteps(null, { rows: [player, other], teamsStep: true, titlesStep: false, onSave: false });
-    const after = trackSteps(first, { rows: [player], teamsStep: false, titlesStep: false, onSave: false });
+  it("never shrinks", () => {
+    const first = trackSteps(null, { reviewRows: 2, teamsStep: true, titlesStep: false, onSave: false });
+    const after = trackSteps(first, { reviewRows: 1, teamsStep: false, titlesStep: false, onSave: false });
     expect(after).toBe(first);
-    expect(after.count.total).toBe(4);
+    expect(after.total).toBe(4);
   });
 
   it("adds nothing on Save", () => {
-    const first = trackSteps(null, { rows: [player], teamsStep: false, titlesStep: false, onSave: false });
-    const onSave = trackSteps(first, { rows: [player], teamsStep: true, titlesStep: true, onSave: true });
-    expect(onSave.count.total).toBe(2);
-    expect(onSave.growth).toBeNull();
+    const first = trackSteps(null, { reviewRows: 1, teamsStep: false, titlesStep: false, onSave: false });
+    const onSave = trackSteps(first, { reviewRows: 1, teamsStep: true, titlesStep: true, onSave: true });
+    expect(onSave.total).toBe(2);
     const stillOnSave = trackSteps(onSave, {
-      rows: [player, other],
+      reviewRows: 2,
       teamsStep: true,
       titlesStep: true,
       onSave: true,
@@ -445,24 +383,22 @@ describe("autograph step — counting and position", () => {
 
   it("is a high-water mark like the others", () => {
     const first = initialStepCount(withAutograph(1, false, false));
-    const { count, added } = advanceStepCount(first, plan(1), false);
+    const count = advanceStepCount(first, plan(1), false);
     expect(count).toBe(first);
-    expect(added).toBe(0);
     expect(count.autographStep).toBe(true);
   });
 
-  it("is announced when it turns up mid-sitting", () => {
-    const row: StepRow = { _id: "p", kind: "player", name: "Mike Trout" };
-    const first = trackSteps(null, { rows: [row], teamsStep: false, titlesStep: false, onSave: false });
+  it("joins the plan when it turns up mid-sitting", () => {
+    const first = trackSteps(null, { reviewRows: 1, teamsStep: false, titlesStep: false, onSave: false });
     const grown = trackSteps(first, {
-      rows: [row],
+      reviewRows: 1,
       teamsStep: false,
       autographStep: true,
       titlesStep: false,
       onSave: false,
     });
-    expect(grown.growth?.text).toBe(`1 more step: ${AUTOGRAPH_GROWTH_REASON}`);
-    expect(grown.count.total).toBe(3);
+    expect(grown.total).toBe(3);
+    expect(grown.autographStep).toBe(true);
   });
 });
 

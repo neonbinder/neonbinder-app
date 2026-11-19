@@ -1,35 +1,35 @@
 /**
- * NEO-335 — "Step x of y" for the tidy-up wizard. Pure: no React, no Convex.
+ * NEO-335 — the step plan for the tidy-up wizard. Pure: no React, no Convex.
  *
- * Jason, 2026-10-10: ONE counter that sums every screen the operator should
- * expect, no per-type counts. The sitting is a list of steps:
+ * NEO-467 (Jason, 2026-11-07): the header shows a progress bar, not "Step x
+ * of y", so the plan only has to be reasonably accurate. The sitting is a
+ * list of steps:
  *
- *     y = 1 checklist step             (NEO-478, FIRST: a card the operator's
+ *     planned = 1 checklist step       (NEO-478, FIRST: a card the operator's
  *                                       published checklist disagrees with)
- *       + review rows                  (one per name: New league / New team /
+ *             + review rows            (one per name: New league / New team /
  *                                       New player / "Which player is this?",
  *                                       staged career New Team/League steps
  *                                       included — they are rows too)
- *       + 1 teams step                 (if any card would save teamless)
- *       + 1 autograph step             (NEO-345: a NEW card carries AU and the
+ *             + 1 teams step           (if any card would save teamless)
+ *             + 1 autograph step       (NEO-345: a NEW card carries AU and the
  *                                       leaf has no autograph format yet)
- *       + 1 titles step                (if any card title needs a look)
- *       + 1 save step
+ *             + 1 titles step          (if any card title needs a look)
+ *             + 1 save step
  *
- * ## The rules y lives by (C6, D6, D9)
+ * The bar's fill is steps done ÷ steps planned (`stepProgress`), and Save is
+ * always full.
  *
- * - **It never shrinks during a sitting.** A step the operator was promised
- *   stays counted. Every input is a high-water mark: review rows by count,
- *   the teams and titles steps once present. A counted step that turns out to
- *   have nothing in it is passed over, so x jumps; it never goes backwards.
- * - **It grows only on an operator decision or a staged career step.** The
- *   teams step is judged OPTIMISTICALLY while names are still being reviewed
- *   (`cardsForTeamsStep`): an undecided team name is assumed to resolve, so
- *   the step appears up front for cards that print no team at all, and later
- *   only when the operator rules a team name out. New review rows only ever
- *   arrive by staging (a player's career teams, a typed league).
- * - **Growth is announced**, politely: "2 more steps: teams for Jim Thome".
- * - **Nothing is added while the operator is on Save.** The count freezes
+ * - **The plan never shrinks during a sitting.** Every input is a high-water
+ *   mark: review rows by count, the teams and titles steps once present. A
+ *   counted step that turns out to have nothing in it is passed over, so the
+ *   bar jumps forward.
+ * - **It grows on an operator decision or a staged career step**, and the bar
+ *   stalls rather than moving back (`WizardChrome` holds its high-water mark).
+ *   The teams step is judged OPTIMISTICALLY while names are still being
+ *   reviewed (`cardsForTeamsStep`), so it appears up front for cards that
+ *   print no team at all.
+ * - **Nothing is added while the operator is on Save.** The plan freezes
  *   there; anything that turns up after is the post-save walker's to catch.
  */
 import { isAmbiguousPlayerRow, type NavRow } from "./entity-review-nav";
@@ -45,9 +45,8 @@ import {
   type StoredPeople,
   type TeamsReviewRow,
 } from "./teams-on-cards";
-import { CHECKLIST_GROWTH_REASON } from "./checklist-conflict";
 
-/** Every kind of screen the counter counts. */
+/** Every kind of screen the wizard walks. */
 export type WizardStepKind =
   | "league"
   | "team"
@@ -205,7 +204,7 @@ export interface StepCount {
   frozen: boolean;
 }
 
-/** y for a plan, with no history. */
+/** The steps in a plan, with no history. */
 export function plannedTotal(input: StepPlanInput): number {
   return (
     Math.max(0, input.reviewRows) +
@@ -234,27 +233,22 @@ export function initialStepCount(input: StepPlanInput, onSave = false): StepCoun
 /**
  * The next count: never smaller than `prev`, unchanged while on Save.
  * Returns `prev` itself (same object) when nothing moved, so a caller can
- * compare by identity. `added` is how many steps this call grew y by.
+ * compare by identity.
  */
 export function advanceStepCount(
   prev: StepCount,
   input: StepPlanInput,
   onSave: boolean,
-): { count: StepCount; added: number } {
+): StepCount {
   // On Save — and the move ONTO Save — adds nothing. Steps that turn up now
   // are the walker's, after the save.
-  if (onSave) {
-    if (prev.frozen) return { count: prev, added: 0 };
-    return { count: { ...prev, frozen: true }, added: 0 };
-  }
-  // Off Save (again): a thaw, then whatever turned up meanwhile counts as
-  // growth like any other.
+  if (onSave) return prev.frozen ? prev : { ...prev, frozen: true };
+  // Off Save (again): a thaw, then whatever turned up meanwhile counts.
   const reviewRows = Math.max(prev.reviewRows, input.reviewRows);
   const checklistStep = prev.checklistStep === true || input.checklistStep === true;
   const teamsStep = prev.teamsStep || input.teamsStep;
   const autographStep = prev.autographStep || input.autographStep === true;
   const titlesStep = prev.titlesStep || input.titlesStep;
-  const total = plannedTotal({ reviewRows, checklistStep, teamsStep, autographStep, titlesStep });
   if (
     reviewRows === prev.reviewRows &&
     checklistStep === (prev.checklistStep === true) &&
@@ -262,21 +256,16 @@ export function advanceStepCount(
     autographStep === prev.autographStep &&
     titlesStep === prev.titlesStep
   ) {
-    return prev.frozen
-      ? { count: { ...prev, frozen: false }, added: 0 }
-      : { count: prev, added: 0 };
+    return prev.frozen ? { ...prev, frozen: false } : prev;
   }
   return {
-    count: {
-      total,
-      reviewRows,
-      ...(checklistStep ? { checklistStep: true } : {}),
-      teamsStep,
-      autographStep,
-      titlesStep,
-      frozen: false,
-    },
-    added: Math.max(0, total - prev.total),
+    total: plannedTotal({ reviewRows, checklistStep, teamsStep, autographStep, titlesStep }),
+    reviewRows,
+    ...(checklistStep ? { checklistStep: true } : {}),
+    teamsStep,
+    autographStep,
+    titlesStep,
+    frozen: false,
   };
 }
 
@@ -291,8 +280,9 @@ function postReviewSteps(count: StepCount): number {
 }
 
 /**
- * x for a position. Post-review steps are counted back from the END, so Save
- * is always "Step y of y" whatever the high-water marks did on the way.
+ * The 1-based place of a position in the plan. Post-review steps are counted
+ * back from the END, so Save is always the last step whatever the high-water
+ * marks did on the way.
  */
 export function stepNumber(count: StepCount, position: StepPosition): number {
   switch (position.kind) {
@@ -318,10 +308,23 @@ export function stepNumber(count: StepCount, position: StepPosition): number {
 }
 
 /**
+ * NEO-467 — what the progress bar reads: the steps behind the one on screen,
+ * out of the plan. Save is full.
+ */
+export function stepProgress(
+  count: StepCount,
+  position: StepPosition,
+): { done: number; planned: number } {
+  const planned = count.total;
+  if (position.kind === "save") return { done: planned, planned };
+  return { done: Math.max(0, stepNumber(count, position) - 1), planned };
+}
+
+/**
  * The 0-based review step for the row on screen.
  *
  * An undecided row is the next one to do: every decided row is behind it, so
- * it is step `decided + 1` — which is what makes the counter tick forward one
+ * it is step `decided + 1` — which is what makes the bar step forward one
  * at a time however the walk reorders (teams first, staged steps ahead of
  * their player). A decided row being read back sits at its place among the
  * decided rows, in batch order. With nothing on screen (names still being
@@ -380,7 +383,7 @@ export function upcomingReviewStepKind(rows: readonly NavRow[]): WizardStepKind 
  * on yet is assumed to resolve, because most do (Add as New Team, Link). So
  * the step is counted from the start for cards that print no team at all, and
  * otherwise appears only when the operator SKIPS a team name — an operator
- * decision, which is the only kind of growth the counter allows.
+ * decision, which is the only kind of growth the plan allows.
  *
  * A team name an EARLIER save of this set skipped (`people.skippedTeamNames`)
  * is known before the sitting starts, so a card printing only such names is
@@ -462,138 +465,40 @@ export function previousPostReviewStep(
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Growth: what the polite live region says when y grows.
-// ---------------------------------------------------------------------------
-
-/** The slice of a review row the growth line reads. */
-export type StepRow = Pick<NavRow, "_id" | "kind" | "name" | "source">;
-
-/** "A", "A and B", "A, B and C". */
-function listJoin(names: readonly string[]): string {
-  if (names.length <= 1) return names[0] ?? "";
-  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
-}
-
-/**
- * Why y grew, in words, for the steps added since the last look.
- *
- * - staged career New Team steps → "teams for {player}" (Jason-approved)
- * - a league staged for a team   → "league for {team}"
- * - the teams step               → "cards with no team"
- * - the autograph step           → "autographed cards" (NEO-345, placeholder)
- * - the titles step              → "card titles"
- * - any other new row            → "more names" (Jason)
- */
-export function growthReasons(input: {
-  addedRows: readonly StepRow[];
-  allRows: readonly StepRow[];
-  teamsStepAdded: boolean;
-  /** NEO-345 — absent reads as false. */
-  autographStepAdded?: boolean;
-  titlesStepAdded: boolean;
-  /** NEO-478 — absent reads as false. */
-  checklistStepAdded?: boolean;
-}): string[] {
-  const nameById = new Map(input.allRows.map((r) => [r._id, r.name ?? ""]));
-  const players: string[] = [];
-  const teams: string[] = [];
-  let other = false;
-  for (const row of input.addedRows) {
-    const source = row.source;
-    if (source?.kind === "careerTeamOf") {
-      const who = nameById.get(source.playerRowId);
-      if (who && !players.includes(who)) players.push(who);
-      else if (!who) other = true;
-    } else if (source?.kind === "leagueOf") {
-      const team = nameById.get(source.teamRowId);
-      if (team && !teams.includes(team)) teams.push(team);
-      else if (!team) other = true;
-    } else {
-      other = true;
-    }
-  }
-  const reasons: string[] = [];
-  if (players.length > 0) reasons.push(`teams for ${listJoin(players)}`);
-  if (teams.length > 0) reasons.push(`league for ${listJoin(teams)}`);
-  if (other) reasons.push("more names");
-  if (input.checklistStepAdded) reasons.push(CHECKLIST_GROWTH_REASON);
-  if (input.teamsStepAdded) reasons.push("cards with no team");
-  if (input.autographStepAdded) reasons.push(AUTOGRAPH_GROWTH_REASON);
-  if (input.titlesStepAdded) reasons.push("card titles");
-  return reasons;
-}
-
-/** NEO-345 — the growth line's words for the autograph step. */
-export const AUTOGRAPH_GROWTH_REASON = "autographed cards";
-
-/** "2 more steps: teams for Jim Thome" / "1 more step: …". */
-export function growthLine(added: number, reasons: readonly string[]): string {
-  const head = `${added} more ${added === 1 ? "step" : "steps"}`;
-  return reasons.length > 0 ? `${head}: ${reasons.join(", ")}` : head;
-}
-
-/**
- * Everything the counter remembers across renders of one sitting. Feed it
- * every render through `trackSteps`; it hands back the SAME object while
- * nothing moved.
- */
-export interface StepTracker {
-  count: StepCount;
-  /** Review row ids already counted — so a growth can say which are new. */
-  knownRowIds: ReadonlySet<string>;
-  /** The latest growth. `seq` ticks per growth so a host can tell two apart. */
-  growth: { seq: number; text: string } | null;
-}
-
 export interface TrackStepsInput {
-  rows: readonly StepRow[];
+  /** Review rows in the batch. */
+  reviewRows: number;
   /** NEO-478 — absent reads as false. */
   checklistStep?: boolean;
   teamsStep: boolean;
+  /**
+   * NEO-426 — false while a fact the teams step's membership reads is still
+   * loading (the flagged sports, a newly linked player's home sport). The
+   * counted teams step is then HELD as it was, not added on a half-loaded
+   * answer. Absent reads as true. A host should not start the plan
+   * (`prev === null`) until it is true, so the first count is close.
+   */
+  teamsStepKnown?: boolean;
   /** NEO-345 — absent reads as false. */
   autographStep?: boolean;
   titlesStep: boolean;
   onSave: boolean;
 }
 
-export function trackSteps(prev: StepTracker | null, input: TrackStepsInput): StepTracker {
+/**
+ * The plan's memory across renders of one sitting. Feed it every render; it
+ * hands back the SAME object while nothing moved.
+ */
+export function trackSteps(prev: StepCount | null, input: TrackStepsInput): StepCount {
+  const known = input.teamsStepKnown !== false;
   const plan: StepPlanInput = {
-    reviewRows: input.rows.length,
+    reviewRows: input.reviewRows,
     checklistStep: input.checklistStep === true,
-    teamsStep: input.teamsStep,
+    // Unknown: hold what was counted (nothing yet, on a first count).
+    teamsStep: known ? input.teamsStep : (prev?.teamsStep ?? false),
     autographStep: input.autographStep === true,
     titlesStep: input.titlesStep,
   };
-  if (prev === null) {
-    return {
-      count: initialStepCount(plan, input.onSave),
-      knownRowIds: new Set(input.rows.map((r) => r._id)),
-      growth: null,
-    };
-  }
-  const { count, added } = advanceStepCount(prev.count, plan, input.onSave);
-  if (count === prev.count) return prev;
-  if (added === 0) {
-    // Frozen/unfrozen only; nothing new to remember or announce.
-    return { ...prev, count };
-  }
-  const addedRows = count.frozen
-    ? []
-    : input.rows.filter((r) => !prev.knownRowIds.has(r._id));
-  const reasons = growthReasons({
-    addedRows,
-    allRows: input.rows,
-    teamsStepAdded: count.teamsStep && !prev.count.teamsStep,
-    checklistStepAdded: count.checklistStep === true && prev.count.checklistStep !== true,
-    autographStepAdded: count.autographStep && !prev.count.autographStep,
-    titlesStepAdded: count.titlesStep && !prev.count.titlesStep,
-  });
-  const knownRowIds = new Set(prev.knownRowIds);
-  for (const row of input.rows) knownRowIds.add(row._id);
-  return {
-    count,
-    knownRowIds,
-    growth: { seq: (prev.growth?.seq ?? 0) + 1, text: growthLine(added, reasons) },
-  };
+  if (prev === null) return initialStepCount(plan, input.onSave);
+  return advanceStepCount(prev, plan, input.onSave);
 }

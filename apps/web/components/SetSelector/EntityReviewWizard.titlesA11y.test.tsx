@@ -23,7 +23,8 @@ vi.mock("../../convex/_generated/api", () => {
 });
 
 vi.mock("convex/react", () => ({
-  useQuery: () => undefined,
+  // NEO-426 — no sport flagged: the teams step is exactly what it was.
+  useQuery: (ref: string) => (ref === "sportTeamless.listTeamlessSportIds" ? [] : undefined),
   useQueries: (queries: Record<string, unknown>) => {
     const out: Record<string, unknown> = {};
     for (const key of Object.keys(queries)) out[key] = undefined;

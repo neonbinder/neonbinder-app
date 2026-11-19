@@ -20,8 +20,8 @@ import UnreviewedNameFixer from "./UnreviewedNameFixer";
  *
  * `CardAttentionWalker` needs no change for either beyond the kind's place in
  * `WALK_RANK` and `WALK_SUBTITLE` below, which are `Record`s so the compiler
- * asks. It owns the queue, the dialog chrome ("Tidy up <the set>", "Step x
- * of y"), Skip and Close; a fixer owns one card's
+ * asks. It owns the queue, the dialog chrome ("Tidy up <the set>" and its
+ * progress bar), Skip and Close; a fixer owns one card's
  * question, its own writes, and its own primary action. NEO-101 landed
  * `{ kind: "titleOverLimit"; length: number }`, `{ kind: "titleTruncated" }`
  * and `{ kind: "aspectValueOverLimit"; field: "cardVariation"; length: number }`

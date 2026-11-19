@@ -109,6 +109,11 @@ vi.mock("../../convex/_generated/api", () => ({
       getParallelPromotionPreview: "spc.getParallelPromotionPreview",
       promoteParallelToSet: "spc.promoteParallelToSet",
     },
+    // NEO-426 — the sport row's "No teams in this sport" switch, bound at
+    // render on every level.
+    sportTeamless: {
+      setTeamlessSport: "sportTeamless.setTeamlessSport",
+    },
     // NEO-345 — the Autograph format row's save, bound at render on every level.
     autographFormat: {
       setAutographFormat: "autographFormat.setAutographFormat",
@@ -144,6 +149,8 @@ const mockSetSelectorOptionListingShortName = vi.fn();
 /** NEO-237 */
 const mockSetSelectorOptionSetNamePrefix = vi.fn();
 const mockSetManufacturerSlViaAllBrands = vi.fn();
+/** NEO-426 */
+const mockSetTeamlessSport = vi.fn();
 /** NEO-294 */
 const mockMoveSetToBrand = vi.fn();
 /** NEO-277 */
@@ -210,6 +217,7 @@ vi.mock("convex/react", () => ({
     if (mutation === "brandView.setManufacturerSlViaAllBrands")
       return mockSetManufacturerSlViaAllBrands;
     if (mutation === "brandView.moveSetToBrand") return mockMoveSetToBrand;
+    if (mutation === "sportTeamless.setTeamlessSport") return mockSetTeamlessSport;
     if (mutation === "autographFormat.setAutographFormat") return mockSetAutographFormat;
     return vi.fn();
   },
