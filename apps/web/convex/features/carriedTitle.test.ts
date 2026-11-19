@@ -40,8 +40,8 @@ const parallel = (parallelName: string, printRun?: number, extra?: Partial<Listi
 
 /** Builder title 77 chars, "Mike" cut: fails on the first-name rule. Description 67. */
 const LONG = "Kanji Orange Wave Refractor Sapphire Gold X";
-/** Builder title fits with full names. */
-const SHORT = "Kanji Gold Refractor";
+/** Builder title fits with nothing from the Tidy Up line left out (NEO-609). */
+const SHORT = "Kanji Gold";
 
 const rest = (sourceTitle: string, sourceInputs: ListingCardInputs = SOURCE, sourceFlagged = false) =>
   carriedTitleRest({ sourceTitle, sourceFlagged, sourceInputs });
@@ -55,7 +55,7 @@ describe("titleDescriptionForms", () => {
   });
 
   test("a parallel adds its own name; forms never repeat", () => {
-    const forms = titleDescriptionForms(parallel(SHORT, 50));
+    const forms = titleDescriptionForms(parallel("Kanji Gold Refractor", 50));
     expect(forms).toContain("2024 Topps Chrome Anime Kanji Gold Refractor");
     expect(new Set(forms).size).toBe(forms.length);
     for (let i = 1; i < forms.length; i += 1) {
@@ -153,12 +153,29 @@ describe("assessParallelCopyTitle", () => {
     expect(titleDescription(parallel(LONG, 25))).toHaveLength(67);
   });
 
-  test("step 1: the builder wins when it fits with full names, hand edit or not", () => {
+  test("step 1: the builder wins when it fits with nothing in Tidy Up, hand edit or not", () => {
     const inputs = parallel(SHORT, 50);
     const outcome = assessParallelCopyTitle(inputs, "Trout Halos");
     expect(outcome.title).toBe(assessListingTitle(inputs).title);
+    expect(outcome.tidyUp).toBe(false);
     expect(outcome.carried).toBeUndefined();
     expect(outcome.failing).toBe(false);
+  });
+
+  test("step 1 reads fits && !tidyUp: a title that fits but dropped a whole team does not win (NEO-609)", () => {
+    // "Kanji Gold Refractor" fits in 80 but gives up the Angels (row 12).
+    const inputs = parallel("Kanji Gold Refractor", 50);
+    const builder = assessListingTitle(inputs);
+    expect(builder).toMatchObject({ fits: true, tidyUp: true, firstNameLost: false });
+    const outcome = assessParallelCopyTitle(inputs, "Trout Halos");
+    expect(outcome.carried).toBe(true);
+    expect(outcome.title).toBe("2024 Topps Chrome Anime Kanji Gold Refractor Trout Halos /50");
+    expect(outcome.failing).toBe(false);
+    // With no hand edit to carry the builder's flagged result goes to the dialog.
+    const flagged = assessParallelCopyTitle(inputs);
+    expect(flagged.title).toBe(builder.title);
+    expect(flagged.failing).toBe(true);
+    expect(flagged.tidyUp).toBe(true);
   });
 
   test("step 2: the hand edit, re-headed with the parallel's description and its /N", () => {
@@ -167,6 +184,7 @@ describe("assessParallelCopyTitle", () => {
       title: "2024 Topps Chrome Anime Kanji Orange Wave Refractor Sapphire Gold X Trout /25",
       fits: true,
       firstNameLost: false,
+      tidyUp: false,
       coreFits: true,
       carried: true,
       failing: false,
@@ -254,8 +272,21 @@ describe("assessParallelCopyTitle", () => {
       expect(carried).toBe("Judge AUTO Yankees");
     });
 
-    test("short parallel names keep the builder's title", () => {
-      expect(on("Gold Refractor", 50)).toMatchObject({ failing: false, title: "2025 Topps Chrome Update TRItanium Autographs Gold Refractor Aaron Judge /50" });
+    test("a short parallel name that costs a whole team goes to the dialog (Tidy Up, NEO-609)", () => {
+      // Fits at 76, but the Yankees and the number are out: not a title that "works".
+      expect(on("Gold Refractor", 50)).toMatchObject({
+        failing: true,
+        tidyUp: true,
+        title: "2025 Topps Chrome Update TRItanium Autographs Gold Refractor Aaron Judge /50",
+      });
+    });
+
+    test("a hand edit is carried where the builder would sit in Tidy Up and the re-head fits", () => {
+      expect(on("Gold", 50)).toMatchObject({
+        failing: false,
+        carried: true,
+        title: "2025 Topps Chrome Update TRItanium Autographs Gold Judge AUTO Yankees /50",
+      });
       expect(on("SuperFractor", 1)).toMatchObject({ failing: false });
     });
 

@@ -95,7 +95,7 @@ describe("CardTitlesStep — what is on screen", () => {
       .toBeTruthy();
     expect(
       screen.getByRole("heading", {
-        name: "These titles lost a first name or ran long. Keep 'em, or make 'em yours.",
+        name: "These titles had to leave something out. Check what went, then keep 'em or make 'em yours.",
       }),
     ).toBeTruthy();
 
@@ -111,11 +111,12 @@ describe("CardTitlesStep — what is on screen", () => {
   test("identical drops share one line with a count; each card's own name sits under its field", () => {
     setup({
       cards: [
-        card("1", { cardVariation: "Throwback" }),
-        card("2", { players: ["Julio Rodriguez"], cardVariation: "Throwback" }),
+        card("1", { isRelic: true }),
+        card("2", { players: ["Julio Rodriguez"], isRelic: true }),
       ],
     });
-    const shared = screen.getByText(/^Left out to fit: Throwback/);
+    // NEO-609: a variation is never cut, so the shared drop is a RELIC.
+    const shared = screen.getByText(/^Left out to fit: RELIC/);
     expect(shared.textContent).toContain("(2 cards)");
     expect(shared.textContent).not.toMatch(/Shohei|Julio/);
     expect(screen.getByText("Left out to fit: Shohei")).toBeTruthy();
@@ -339,14 +340,16 @@ describe("CardTitlesStep — accessibility wiring", () => {
       headingId: "titles-lead",
     });
     expect(document.getElementById("titles-lead")?.textContent).toBe(
-      "These titles lost a first name or ran long. Keep 'em, or make 'em yours.",
+      "These titles had to leave something out. Check what went, then keep 'em or make 'em yours.",
     );
   });
 
   test("headingId lands on the variation lead when only variations are on the step", () => {
     setup({
-      cards: [card("2", { cardVariation: LONG_VARIATION })],
-      titleContext: SHORT,
+      // A variation is never cut (NEO-609), so only a short title leaves it
+      // as the sole fault.
+      cards: [card("2", { players: [], cardVariation: "v".repeat(66) })],
+      titleContext: { ...SHORT, setNameValue: "X", inheritedFeatures: {} },
       headingId: "titles-lead",
     });
     expect(document.getElementById("titles-lead")?.textContent).toBe(
@@ -372,13 +375,13 @@ describe("CardTitlesStep — accessibility wiring", () => {
   test("a group of cards is described by the drop they share; its <li> stays a list item", () => {
     setup({
       cards: [
-        card("1", { cardVariation: "Throwback" }),
-        card("2", { players: ["Julio Rodriguez"], cardVariation: "Throwback" }),
+        card("1", { isRelic: true }),
+        card("2", { players: ["Julio Rodriguez"], isRelic: true }),
       ],
     });
     const group = screen.getByRole("group");
     const line = document.getElementById(group.getAttribute("aria-describedby")!);
-    expect(line?.textContent).toMatch(/^Left out to fit: Throwback/);
+    expect(line?.textContent).toMatch(/^Left out to fit: RELIC/);
     expect(group.tagName).toBe("DIV");
     expect(group.parentElement?.tagName).toBe("LI");
     expect(within(group).getAllByRole("textbox")).toHaveLength(2);

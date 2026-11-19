@@ -27,7 +27,9 @@ describe("generateListingTitle", () => {
     // NEO-101 (Jason, 2026-09-02): titles now PACK. `Rookie` is appended as a
     // second spelling behind `RC` — a third of sold rookie listings carry both
     // words, and an unused character is a search term thrown away.
-    expect(title).toBe("2024 Topps Chrome Elly De La Cruz #50 RC Rookie");
+    // NEO-609 (Jason, 2026-11-18): "Base" IS in the full title; it is the
+    // first word cut, and nothing here needs a cut.
+    expect(title).toBe("2024 Topps Chrome Base Elly De La Cruz #50 RC Rookie");
     expect(title.length).toBeLessThanOrEqual(80);
   });
 
@@ -186,6 +188,7 @@ describe("assessListingTitle (NEO-101)", () => {
       title: "2024 Topps Chrome Elly De La Cruz #50 RC Rookie",
       fits: true,
       firstNameLost: false,
+      tidyUp: false,
       coreFits: true,
       dropped: [],
     });
@@ -265,10 +268,10 @@ describe("assessListingTitle (NEO-101)", () => {
     expect(title.toLowerCase().split("gold refractor")).toHaveLength(2);
   });
 
-  test('parallelName "Base" is not a token, in any casing', () => {
+  test('parallelName "Base" is a token in any casing (NEO-609), said as the row spells it', () => {
     for (const parallelName of ["Base", "base", "  BASE  "]) {
       expect(assessListingTitle({ ...BASE, parallelName }).title).toBe(
-        "2024 Topps Chrome Elly De La Cruz #50",
+        `2024 Topps Chrome ${parallelName.trim()} Elly De La Cruz #50`,
       );
     }
   });
@@ -481,6 +484,7 @@ describe("assessListingTitle (NEO-101)", () => {
       title: "#9",
       fits: true,
       firstNameLost: false,
+      tidyUp: false,
       coreFits: true,
       dropped: [],
     });
@@ -612,7 +616,9 @@ describe("generateListingTitle invariants — fuzz (NEO-101)", () => {
           );
         }
       }
-      expect(a.coreFits, context).toBe(!a.firstNameLost && !a.shortNameUsed);
+      expect(a.coreFits, context).toBe(!a.tidyUp && !a.shortNameUsed);
+      // A first name lost is a Tidy Up cut (row 18), never the other way round.
+      if (a.firstNameLost) expect(a.tidyUp, context).toBe(true);
     }
   });
 });
@@ -742,11 +748,13 @@ describe("generateListingDescription", () => {
     const variation = "A ".repeat(60) + "Variation";
     const desc = generateListingDescription({ cardNumber: "1", cardVariation: variation });
     expect(desc).toContain(variation);
-    // The 129-character variation alone is over the cap: the title cuts it
-    // (row 15) and the refill puts the number back.
-    expect(generateListingTitle({ cardNumber: "1", cardVariation: variation })).toBe(
-      "#1",
-    );
+    // The 129-character variation alone is over the cap and a variation is
+    // never cut (NEO-609): the number goes (row 13), the title stays over the
+    // cap, and the card is flagged by its length rather than by a lost word.
+    const a = assessListingTitle({ cardNumber: "1", cardVariation: variation });
+    expect(a.title).toBe(variation);
+    expect(a.fits).toBe(false);
+    expect(a.dropped).toEqual(["#1"]);
   });
 
   test("NEO-101: teams get their own line, named in full", () => {
@@ -1076,6 +1084,7 @@ describe("NEO-535 — the box (\"Set name in titles\") replaces the whole descri
       firstNameLost: false,
       dropped: [],
       shortNameUsed: true,
+      tidyUp: false,
       coreFits: false,
     });
   });
@@ -1092,7 +1101,10 @@ describe("NEO-535 — the box (\"Set name in titles\") replaces the whole descri
   test("never on a title that fits with full names, even when a real token is left out", () => {
     const a = assessListingTitle(dropsTeamOnly);
     expect(a.shortNameUsed).toBeUndefined();
-    expect(a.coreFits).toBe(true);
+    // NEO-609: a whole team cut (row 12) is a Tidy Up cut, so the card is on
+    // the Card titles step even though it fits and the box was not needed.
+    expect(a.tidyUp).toBe(true);
+    expect(a.coreFits).toBe(false);
     expect(a.title).toContain("Rookie Debut Patch Autographs");
   });
 
@@ -1139,6 +1151,7 @@ describe("NEO-335 — the \"Insert\" and \"Parallel\" labels (cut rows 4 and 5)"
       title: "1996 Score Dugout Collection Insert Gold Parallel Ken Griffey Jr. #5",
       fits: true,
       firstNameLost: false,
+      tidyUp: false,
       coreFits: true,
       dropped: [],
     });
@@ -1159,9 +1172,10 @@ describe("NEO-335 — the \"Insert\" and \"Parallel\" labels (cut rows 4 and 5)"
     expect(
       generateListingTitle({ ...score, parallelName: "Gold", parallelIsRole: false }),
     ).toBe("1996 Score Gold Ken Griffey Jr. #5");
-    // A "Base" parallel name is no parallel token, so nothing to label.
+    // A "Base" parallel name is no parallel: it is the Base word (NEO-609:
+    // said in the full title, cut first), and it is never labelled "Parallel".
     expect(generateListingTitle({ ...score, parallelName: "Base", parallelIsRole: true })).toBe(
-      "1996 Score Ken Griffey Jr. #5",
+      "1996 Score Base Ken Griffey Jr. #5",
     );
   });
 
@@ -1255,7 +1269,7 @@ describe("NEO-335 — the \"Insert\" and \"Parallel\" labels (cut rows 4 and 5)"
         teamNames: ["Cincinnati Reds"],
         sport: "Baseball",
       }),
-    ).toBe("2024 Topps Chrome Elly De La Cruz #50 RC Cincinnati Reds Rookie Baseball");
+    ).toBe("2024 Topps Chrome Base Elly De La Cruz #50 RC Cincinnati Reds Rookie Baseball");
   });
 });
 
@@ -1707,14 +1721,16 @@ describe("NEO-528 + NEO-535 — cameos in the title: named while there is room, 
     expect(a.fits).toBe(true);
   });
 
-  test("at exactly 81 with a cameo the \"#\" alone goes, and the cameo stays", () => {
+  test("at exactly 81 with a cameo the cameo goes (row 7), not the \"#\": the \"#\" rule starts at the Tidy Up line (NEO-609)", () => {
     const card = { ...base, teamNames: [] };
     const short = assessListingTitle(card).title;
     const cameo = nameOf(81 - short.length - 3);
     expect(cameo.length).toBeGreaterThan(10);
     const a = assessListingTitle({ ...card, cameoNames: [cameo] });
-    expect(a.title).toBe(short.replace("Shohei Ohtani #17", `Shohei Ohtani & ${cameo} 17`));
-    expect(a.title.length).toBe(80);
+    expect(a.title).toBe(short);
+    expect(a.title).toContain("#17");
+    expect(a.dropped).toEqual([cameo]);
+    expect(a.tidyUp).toBe(false);
   });
 
   test("a cameo who is also the card's player is said once", () => {
@@ -1799,11 +1815,15 @@ describe("NEO-606 a team gives up its location before it goes", () => {
     expect(a.title.length).toBe(80);
   });
 
-  test("at 81 the '#' alone goes and the team keeps its city; at 82 the city goes", () => {
+  test("at 81 the city goes (row 11) before the '#' rule, which starts at the Tidy Up line; at 82 it goes too", () => {
+    // NEO-609: the city is a quiet cut. The "#"-alone rule is checked before
+    // each cut from the Tidy Up line (whole teams) on, so at exactly 81 the
+    // city still goes first and the number keeps its "#".
     const at81 = assessListingTitle(card(64, { teamNames: ["New York Yankees"], teamSplits: [NY] }));
-    expect(at81.title.length).toBe(80);
-    expect(at81.title.endsWith("Ohtani 17 New York Yankees")).toBe(true);
+    expect(at81.title.length).toBe(72);
+    expect(at81.title.endsWith("Ohtani #17 Yankees")).toBe(true);
     expect(at81.dropped).toEqual([]);
+    expect(at81.tidyUp).toBe(false);
     const at82 = assessListingTitle(card(65, { teamNames: ["New York Yankees"], teamSplits: [NY] }));
     expect(at82.title.endsWith("#17 Yankees")).toBe(true);
     expect(at82.title.length).toBe(73);
@@ -1951,13 +1971,15 @@ describe("NEO-606 a team gives up its location before it goes", () => {
         }),
       );
 
-    test("comes back as its nickname when the variation is cut and the whole name does not fit", () => {
-      const a = withVariation(70, [NY]);
-      expect(a.title.endsWith("#17 Yankees")).toBe(true);
-      expect(a.dropped).toEqual(["New York Yankees Logo"]);
-      // Without the split it is simply gone.
-      const plain = withVariation(70, []);
-      expect(plain.title.endsWith("#17")).toBe(true);
+    test("stays out: a variation is never cut (NEO-609), so what it says never comes back", () => {
+      // The variation says the team, and nothing may cut the variation, so the
+      // team is not added after it, whole or as its nickname.
+      const a = withVariation(60, [NY]);
+      expect(a.title.endsWith("New York Yankees Logo")).toBe(true);
+      expect(a.title.split("Yankees")).toHaveLength(2);
+      expect(a.dropped).toEqual(["#17"]);
+      // The same card without a split reads the same.
+      expect(withVariation(60, []).title).toBe(a.title);
     });
   });
 

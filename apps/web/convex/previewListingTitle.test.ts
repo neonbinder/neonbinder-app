@@ -147,7 +147,7 @@ describe("previewListingTitle (NEO-101)", () => {
     // NEO-101: the sport ancestor and the second "Rookie" spelling are part
     // of the packed title now, and both are resolved by THIS query.
     expect(preview.title).toBe(
-      "2024 Topps Chrome Elly De La Cruz #50 RC Rookie Baseball",
+      "2024 Topps Chrome Base Elly De La Cruz #50 RC Rookie Baseball",
     );
     expect(preview.coreFits).toBe(true);
     expect(preview.dropped).toEqual([]);
@@ -233,7 +233,7 @@ describe("previewListingTitle (NEO-101)", () => {
     });
     expect(preview.inputs.playerNames).toEqual(["Nobody In The Players Table"]);
     expect(preview.title).toBe(
-      "2024 Topps Chrome Nobody In The Players Table #7 Baseball",
+      "2024 Topps Chrome Base Nobody In The Players Table #7 Baseball",
     );
   });
 
@@ -262,7 +262,7 @@ describe("previewListingTitle (NEO-101)", () => {
     // NEO-535: the parallel ("Gold") is part of the description, before the
     // number; the tail keeps its order.
     expect(preview.title).toBe(
-      "2024 Topps Chrome Gold #300b AUTO RELIC /25 Image Variation SP Baseball",
+      "2024 Topps Chrome Base Gold #300b AUTO RELIC /25 Image Variation SP Baseball",
     );
     expect(preview.inputs.printRun).toBe(25);
     expect(preview.inputs.cardVariation).toBe("Image Variation");
@@ -428,7 +428,7 @@ describe("previewListingTitle (NEO-101)", () => {
     });
     expect(preview.inputs.teamNames).toEqual(["Savannah Bananas"]);
     expect(preview.title).toBe(
-      "2024 Topps Chrome #9001 Savannah Bananas Baseball",
+      "2024 Topps Chrome Base #9001 Savannah Bananas Baseball",
     );
   });
 

@@ -48,7 +48,7 @@ const card = (s: SetRef): Card => ({
 describe("NEO-527 — the brand-unknown row is never in a dashboard title or heading", () => {
   test("toDash's title and set label leave the flagged brand out", () => {
     const dash = toDash(card(set({ brandUnknown: true })));
-    expect(dash.title).toMatch(/^2026 Bowman Brock Purdy #87/);
+    expect(dash.title).toMatch(/^2026 Bowman Base Brock Purdy #87/);
     expect(dash.title).not.toMatch(/unknown/i);
     expect(dash.setLabel).toBe("2026 Bowman");
   });
