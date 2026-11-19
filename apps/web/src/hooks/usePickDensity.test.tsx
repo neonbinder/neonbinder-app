@@ -11,16 +11,13 @@ import {
   readPickDensity,
   resetPickDensityForTests,
   usePickDensity,
-  useWidePickPage,
 } from "./usePickDensity";
 
-function Probe({ path = "/inventory", search = "?tab=pick" }: { path?: string; search?: string }) {
+function Probe() {
   const [density, setDensity] = usePickDensity();
-  const wide = useWidePickPage(path, search);
   return (
     <>
       <output aria-label="Density">{density}</output>
-      <output aria-label="Wide">{String(wide)}</output>
       <button type="button" onClick={() => setDensity("condensed")}>
         Condensed
       </button>
@@ -44,7 +41,6 @@ describe("usePickDensity", () => {
   it("is Spacious when nothing is saved", () => {
     render(<Probe />);
     expect(shown("Density")).toBe("spacious");
-    expect(shown("Wide")).toBe("true");
   });
 
   it("switches every reader at once and saves the choice on this device", () => {
@@ -55,8 +51,6 @@ describe("usePickDensity", () => {
     );
     act(() => screen.getByRole("button", { name: "Condensed" }).click());
     expect(shown("Density")).toBe("condensed");
-    // The page frame follows: a condensed Pick List keeps the 6xl column.
-    expect(shown("Wide")).toBe("false");
     expect(window.localStorage.getItem(PICK_DENSITY_KEY)).toBe("condensed");
 
     // A fresh visit reads it back.
@@ -91,11 +85,6 @@ describe("usePickDensity", () => {
       window.dispatchEvent(new StorageEvent("storage", { key: PICK_DENSITY_KEY, newValue: "condensed" }));
     });
     expect(shown("Density")).toBe("condensed");
-  });
-
-  it("opens the wide page only on a spacious Pick List", () => {
-    render(<Probe path="/inventory" search="?tab=list" />);
-    expect(shown("Wide")).toBe("false");
   });
 });
 

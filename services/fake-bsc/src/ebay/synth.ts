@@ -464,7 +464,8 @@ function withdraw(s: EbaySellerState, offerId: string): EbayAnswer {
   if (!o || o.status !== "PUBLISHED" || o.listingStatus !== "ACTIVE" || o.listingId === null) return err(404, 25713);
   o.status = "UNPUBLISHED";
   o.listingStatus = "ENDED";
-  return { status: 200, body: { listingId: o.listingId, warnings: [] } };
+  // Production answers `{listingId}` with no `warnings` (the 2026-11-17 capture); publish keeps its empty list.
+  return { status: 200, body: { listingId: o.listingId } };
 }
 
 function bulkPriceQuantity(s: EbaySellerState, body: unknown): EbayAnswer {
@@ -786,7 +787,8 @@ export function answerSeller(s: EbaySellerState, call: SellerCall): SellerResult
       const l = s.locations.get(p.merchantLocationKey);
       if (!l) return err(404, 25804);
       l.status = "ENABLED";
-      return { status: 200, body: {} };
+      // The sandbox answers 200 with no body at all (the contract types an empty object).
+      return { status: 200 };
     }
     case "bulkItems":
       return bulkItems(s, call.body);

@@ -256,11 +256,13 @@
 - [Stacked branch merge after parent squash](reference_stacked_branch_merge_after_parent_squash.md) — merge base predates the parent: clean hunks duplicate code; re-merge with merge-tree base
 - [New listing problem reason: hand lists](reference_new_listing_problem_reason_has_hand_lists.md) — SYNC_HELD_REASONS, REPORTABLE_SYNC_REASONS judgement, test Reason union, spec copy literals
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
+- [Host-stored count goes stale](host-stored-count-goes-stale-ask-the-door.md) — door reports live counts (onCounts + recount + countOnMount); no subscription for big parents
 - [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
 - [Error state is neon pink on title fields](feedback_error_state_is_neon_pink_title_fields.md) — NEO-606: too-long counter/note/box pink via OVER_FIELD_CLASS; DESIGN.md updated; no wider sweep (Jason decides)
 - [Listing inputs field threads through validators](reference_listing_inputs_field_threads_through_validators.md) — new ListingCardInputs field: 2 returns validators, 5 build paths, shared team cache; fixtures by title length + tsx probe
 - [Error ink = neon-pink-text alias](reference_error_ink_is_neon_pink_text_alias.md) — notice-danger-ink inherits its TEXT_NEVER_ON bars; error in a dark tile goes on a bg-field well
 - [Title chain facts travel by key](reference_title_chain_facts_travel_by_key.md) — pickTitleChainFacts replaces hand-passed lines; tidyUp (not coreFits) says the builder worked
+- [Dense one-line rows: wrap atomic pieces, never clip](reference_fixed_table_layout_counts_a_hidden_column_in_a_colspan.md) — nowrap atoms, w-1 short cols, no-clip assertion; table-fixed colSpan phantom col
 - [Repeating a set-building spec needs a full reseed](reference_repeating_a_set_building_spec_needs_a_full_reseed.md) — partial reset breaks setup; each repeat = agent-convex --seed + setup + bootstrap
 - [Review gate is hops times latency](reference_review_gate_is_hops_times_latency.md) — mapBounded in a query, settleAll in the action, prelude query, review_gate_timing line
 - [Bound R2 calls yourself](reference_bound_r2_calls_yourself_aws4fetch_retries_ten_times.md) — aws4fetch retries 5xx x10 past any signal; sign + fetch with an AbortController timer

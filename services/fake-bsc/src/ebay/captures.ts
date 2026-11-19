@@ -5,7 +5,7 @@
  * required list (`Captures.missing` stays BSC-only until PR B).
  */
 import { shapeOf, type Shape } from "../shape";
-import { endpointName, sampleAnswers } from "./sample";
+import { endpointName, REFUSED, sampleAnswers } from "./sample";
 
 /** Every eBay capture endpoint name, in the order the sample walks them. */
 export const EBAY_CAPTURE_ENDPOINTS: readonly string[] = Object.freeze([
@@ -36,7 +36,7 @@ export const EBAY_CAPTURE_ENDPOINTS: readonly string[] = Object.freeze([
   endpointName("bulkItems"),
   endpointName("bulkOffers"),
   endpointName("updateOffer"),
-  endpointName("publishOffer", "25002"),
+  endpointName("publishOffer", REFUSED),
   endpointName("deleteItem"),
   // Writes only production accepts (`ebay-capture --prod`)
   endpointName("uploadImage"),
@@ -57,6 +57,63 @@ export function ebayCaptureSlug(endpoint: string): string {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")}`.slice(0, 150);
+}
+
+/**
+ * One path a capture may lack. By default it covers everything below it (a
+ * prefix). `parentOnly` covers the path itself, and what is below it only when
+ * the capture lacks the path altogether: an object that is present must still
+ * carry its required fields.
+ */
+interface OptionalRule {
+  readonly path: string;
+  readonly parentOnly?: true;
+}
+
+/**
+ * Paths the fake's answer carries that a stored capture may legitimately lack,
+ * because eBay includes them only for some objects and the capture saw one
+ * object. A path here is never required of the capture; if the capture has it
+ * its types are still compared. Scoped per endpoint.
+ * Evidence is the first sandbox capture (2026-11-16): each was documented in
+ * eBay's contract and absent from the answer the sandbox gave.
+ */
+const CAPTURE_OPTIONAL: Record<string, readonly OptionalRule[]> = {
+  // Account state: the sandbox seller's user answer has no `status`; NB reads userId and username only.
+  [endpointName("identityUser")]: [{ path: "status" }],
+  // A return policy made some other way (Seller Hub, the older API) has no `default` on its category type.
+  [endpointName("listReturnPolicies")]: [{ path: "returnPolicies[].categoryTypes[].default" }],
+  // `listing` exists only once an offer has been published; the capture's offer was not. NB reads
+  // `listing.listingId` and `status`, so once `listing` is there `listingId` is required and type-checked.
+  // `listingStatus` and `soldQuantity` are not read by NB and may vary.
+  [endpointName("getOffers")]: [
+    { path: "offers[].listing", parentOnly: true },
+    { path: "offers[].listing.listingStatus" },
+    { path: "offers[].listing.soldQuantity" },
+  ],
+  // The capture reads the seller's FIRST item (limit=1), which need not be the one NB just sent: the
+  // descriptors, package type and aspects are optional on an item, and aspect names with a space or a digit
+  // run collapse to `*` in a shape, so which aspect paths exist depends on the item's names (a first item
+  // may lack a name such as Sport, or carry no aspects at all).
+  [endpointName("listItems")]: [
+    { path: "inventoryItems[].conditionDescriptors" },
+    { path: "inventoryItems[].packageWeightAndSize.packageType" },
+    { path: "inventoryItems[].product.aspects" },
+  ],
+};
+
+const isBelow = (path: string, parent: string): boolean => path.startsWith(`${parent}.`) || path.startsWith(`${parent}[]`);
+
+/** Is `path` one a capture of `endpoint` may lack? `capture` is the stored shape being checked. */
+export function isOptionalCapturePath(endpoint: string, path: string, capture: Shape): boolean {
+  const rules = Object.hasOwn(CAPTURE_OPTIONAL, endpoint) ? CAPTURE_OPTIONAL[endpoint] : [];
+  return rules.some((r) => {
+    if (path === r.path) return true;
+    if (!isBelow(path, r.path)) return false;
+    if (!r.parentOnly) return true;
+    // Below a parent-only rule: optional only while the parent is wholly absent from the capture.
+    return capture[r.path] === undefined && !Object.keys(capture).some((k) => isBelow(k, r.path));
+  });
 }
 
 let cached: Record<string, { status: number; shape: Shape }> | null = null;
