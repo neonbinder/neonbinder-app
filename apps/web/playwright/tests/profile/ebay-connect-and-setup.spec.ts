@@ -2,7 +2,12 @@
 // finishes the setup that listing waits on. On a test deployment eBay is the
 // stand-in (services/fake-bsc), whose consent screen is NB's testing page
 // `/testing/fake-ebay/authorize` on the app's own origin, so the whole trip is
-// driven as a collector drives it. The flow:
+// driven as a collector drives it. It runs on the worker's isolated
+// `new-profile` account (GUIDE "Mind which account a fixture lands on"): no spec
+// writes a sale there, so its Sales tab is the one place the empty state is
+// certain (on the main account the BuySportsCards and eBay listing specs, the
+// unmatched-sale and pick-list specs all leave sales, and only the failure reset
+// clears them). The flow:
 //   1. Profile -> Credentials -> eBay, not connected: the test-mode line (the
 //      safety assert), and the consent warning before Connect, which describes
 //      the button.
@@ -14,9 +19,12 @@
 //      where to start; the consent screen is not in Back's path. Connected IS
 //      listing, but nothing goes up until the setup is done: "5 to go".
 //   4. Sync status agrees ("Setup unfinished") and links back to the page;
-//      Back returns.
-//   5. Packing: the weight of a single card, 1 oz to 3 oz by Enter; a reload
-//      keeps it.
+//      Back returns. Sales, next door, has none yet and names eBay (the
+//      connection put it in play) with its orders page one link away; Back.
+//   5. Offers and Packing: "Take Best Offers" starts on; they turn it off. The
+//      weight of a single card, 1 oz to 3 oz by Enter, says "Saved." (one
+//      client's writes land in order, so that line also says the switch's
+//      write, which says nothing of its own, has landed); a reload keeps both.
 //   6. Shipping, which NB never makes (NEO-423): the seller has no shipping
 //      policy, so the card says so, links out to make one on eBay (a new tab,
 //      eBay's business policies) and offers "Check eBay again". Checked with
@@ -28,7 +36,12 @@
 //   7. Ships from: Enter saves it, "4 to go", the keyboard stays in the field.
 //   8. "Set me up" (offered: the seller has no payment or returns policy) makes
 //      NeonBinder's standard ones on eBay, ticked off step by step, never a
-//      shipping policy; it picks them for the Payment and Returns slots.
+//      shipping policy; it picks them for the Payment and Returns slots. The
+//      ledger is axe-checked on its first visible step; the fake answers at
+//      once, so that is usually the finished ledger, not one mid-run (the
+//      ledger stays after the run, outside Set me up's box). The hand-pick
+//      (Set me up not offered) is proven by `ebay-refusals-and-sign-out`, on a
+//      seller it set up earlier in the same spec.
 //   9. The shipping picks: $20 and up first NB Free Shipping then NB Tracked (a
 //      changed pick saves), Cards under $20 NB Free Shipping. "You're all set".
 //  10. Disconnect (the confirm dialog): "Disconnected from eBay...", not
@@ -46,12 +59,12 @@
 // loads (`LAUNCH_GATE`): the sign-in hop, the consent screen (its own route),
 // the return home, Sync status and the reload.
 //
-// R7/R7a. Writes no set. Its NB writes are the signed-in user's own rows: the
-// eBay connection and its setup (cleared by the Disconnect), and every box set
-// to in-person, which is left that way. On the worker's fake `alt` seller it
-// leaves two shipping policies, NB's standard payment and returns policies and
-// a location, until the pass's reset.
-import { putOtherBoxesInPerson } from "../../support/collection";
+// R7/R7a. Writes no set. Its NB writes are the `new-profile` account's own
+// rows: the eBay connection and its setup (cleared by the Disconnect, Best Offer
+// with it), and every box set to in-person, which is left that way. On that
+// account's fake `alt` seller it leaves two shipping policies, NB's standard
+// payment and returns policies and a location, until the pass's reset.
+import { inventoryTabs, putOtherBoxesInPerson } from "../../support/collection";
 import { EBAY_TEST_MODE_LINE, expectEbayHookedUp, removeEbayConnection } from "../../support/credentials";
 import { EBAY_POLICY } from "../../support/ebayFake";
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -63,6 +76,9 @@ const PAUSED_LINE = "eBay is on a break. Your changes wait here and go up when i
 const SETUP_NOTE = "Your eBay setup isn't finished, so nothing goes up there yet.";
 const STILL_NO_SHIPPING = "Still no shipping policies on eBay. Make one there, then check again.";
 const SHIPPING_IN = "Your shipping policies are in. Pick away.";
+const PICK_TWO = "Pick two of your own eBay shipping policies: one for cards under $20, one for $20 and up.";
+/** The isolated account this spec runs on (see the header). */
+const ACCOUNT = "new-profile";
 /** No box has this name: `putOtherBoxesInPerson` keeps none of the worker's boxes listed. */
 const KEEP_NO_BOX = "";
 const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -97,7 +113,7 @@ test(
     const allSet = page.getByRole("heading", { level: 3, name: "You're all set", exact: true });
 
     // --- 1. Not connected: the stand-in, and the consent warning before Connect ----------------
-    await signIn("/profile/ebay");
+    await signIn("/profile/ebay", { account: ACCOUNT });
     await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
     // Fails loudly, naming the setup, when this deployment has no eBay wiring.
     await expectEbayHookedUp(page);
@@ -171,10 +187,34 @@ test(
     await page.goBack();
     await expect(page).toHaveURL(/[?&]tab=sync/);
     await expect(unfinished.getByText("Setup unfinished", { exact: true })).toBeVisible();
+    // Sales: none yet on this account, and eBay is named (connected, so in play),
+    // with its orders page one link away. Back returns to Sync status.
+    await inventoryTabs(page).getByRole("link", { name: "Sales", exact: true }).click();
+    await expect(page).toHaveURL(/[?&]tab=sales/);
+    await expect(page.getByRole("heading", { level: 2, name: "What sold" })).toBeVisible();
+    await expect(
+      page.getByText(/^No sales yet\. When a card sells on .*eBay.*, the order shows up here within about 15 minutes\.$/),
+    ).toBeVisible();
+    await expect(page.getByRole("list", { name: "Orders, newest first" })).toHaveCount(0);
+    const ordersLink = page.getByRole("list", { name: "Orders pages" }).getByRole("link", { name: /^Open eBay orders/ });
+    await expect(ordersLink).toHaveAttribute("href", "https://www.ebay.com/sh/ord");
+    await expectAccessible(page, { label: "Inventory Sales, none yet, eBay named" });
+    await page.goBack();
+    await expect(page).toHaveURL(/[?&]tab=sync/);
+    await expect(unfinished.getByText("Setup unfinished", { exact: true })).toBeVisible();
     await finishSetup.click();
     await expect(page).toHaveURL(CREDENTIALS);
 
-    // --- 5. Packing: the weight of a single card -------------------------------------------------------
+    // --- 5. Offers and Packing --------------------------------------------------------------------------
+    // Best Offer starts on for a fresh connection; they turn it off. The switch
+    // says nothing when it saves (its line speaks only on a failure), so the
+    // weight's "Saved." below is what says it landed: one client's writes land
+    // in the order they were made.
+    const offers = page.getByRole("checkbox", { name: "Take Best Offers", exact: true });
+    await expect(page.getByRole("heading", { level: 3, name: "Offers", exact: true })).toBeVisible();
+    await expect(offers).toBeChecked();
+    await offers.click();
+    await expect(offers).not.toBeChecked();
     // A fresh connection reads the default, 1 oz. Enter on 3 oz saves it.
     const weight = page.getByRole("radiogroup", { name: "Weight of a single card", exact: true });
     const oneOz = weight.getByRole("radio", { name: "1 oz", exact: true });
@@ -188,15 +228,22 @@ test(
     await expect(threeOz).toBeChecked();
     await expect(threeOz).toBeFocused();
     await expect(weight.getByRole("radio", { checked: true })).toHaveCount(1);
-    // Saved for real: a reload (a full page load) still reads 3 oz.
+    await expect(page.getByRole("alert").filter({ hasText: "That didn't save, so Best Offer is back how it was." })).toHaveCount(0);
+    await expectAccessible(page, { label: "Profile, eBay connected, card weight saved, Best Offer off" });
+    // Saved for real: a reload (a full page load) still reads 3 oz, and Best Offer off.
     await page.reload();
     await expect(connectedLine).toBeVisible({ timeout: LAUNCH_GATE });
     await expect(threeOz).toBeChecked();
     await expect(weight.getByRole("radio", { checked: true })).toHaveCount(1);
+    await expect(offers).not.toBeChecked();
 
     // --- 6. Shipping: none on the account, made on eBay, found by "Check eBay again" ----------------
     const shippingHeading = page.getByRole("heading", { level: 3, name: "Shipping", exact: true });
+    await expect(page.getByRole("heading", { level: 3, name: "Ships from", exact: true })).toBeVisible();
     await expect(shippingHeading).toBeVisible();
+    await expect(page.getByRole("heading", { level: 3, name: "Payment and returns", exact: true })).toBeVisible();
+    // Shipping is the seller's own pick: the page says so, and offers nothing that makes one.
+    await expect(page.getByText(PICK_TWO, { exact: true })).toBeVisible();
     await expect(page.getByText("No shipping policies on your eBay account yet.", { exact: true })).toBeVisible();
     const makeOne = page.getByRole("link", { name: "Make a shipping policy on eBay (opens in a new tab)", exact: true });
     await expect(makeOne).toHaveAttribute("href", "https://www.ebay.com/bp/manage");
@@ -220,6 +267,7 @@ test(
     const twentyPlus = page.getByRole("radiogroup", { name: "$20 and up", exact: true });
     await expect(underTwenty.getByRole("radio", { name: EBAY_POLICY.free.name, exact: true })).toBeVisible();
     await expect(page.getByText("No shipping policies on your eBay account yet.", { exact: true })).toHaveCount(0);
+    await expect(page.getByText(PICK_TWO, { exact: true })).toBeVisible();
 
     // --- 7. Ships from -------------------------------------------------------------------------------------
     await page.getByRole("textbox", { name: "ZIP code", exact: true }).fill("53703");
@@ -232,6 +280,7 @@ test(
     await expect(steps).toHaveText("4 to go. Nothing lists on eBay until they're done.");
     await expect(stateField).toBeFocused();
     await expect(page.getByRole("textbox", { name: "ZIP code", exact: true })).toHaveValue("53703");
+    await expectAccessible(page, { label: "Profile, eBay connected, location saved, policies still to pick" });
 
     // --- 8. Set me up: NeonBinder's standard payment and returns policies, made on eBay ---------------
     // Offered: this seller has neither. Each step is ticked off as eBay answers;
@@ -242,6 +291,11 @@ test(
     const ledger = page.getByRole("list", { name: "Set me up, step by step", exact: true });
     await expect(ledger).toBeVisible();
     const ledgerSteps = ledger.getByRole("listitem");
+    // Its first visible step, axe-checked. The fake answers at once, so this is
+    // usually the ledger already finished rather than one mid-run; it stays on
+    // the page after the run either way.
+    await expect(ledgerSteps.first()).toBeVisible();
+    await expectAccessible(page, { within: ledger, label: "Profile, eBay Set me up, step by step" });
     const answer = said(/^(Made \d+ on your eBay account|You already had everything)/);
     for (let i = 0; i < 4; i++) {
       const step = ledgerSteps.nth(i);
@@ -280,6 +334,9 @@ test(
     await expect(steps).toBeHidden();
     await expect(page.getByRole("heading", { level: 3, name: "Finish these and your boxes go up", exact: true })).toBeHidden();
     await expect(page.getByText("Everything in a listed box lists on eBay at your count.", { exact: true })).toBeVisible();
+    await expect(
+      page.getByText("Every raw card in a listed box goes up at its box count, and sales land in Inventory, under Sales. Disconnecting stops both."),
+    ).toBeVisible();
     await expectAccessible(page, { label: "Profile, eBay connected and set up" });
 
     // --- 10. Disconnect ------------------------------------------------------------------------------------

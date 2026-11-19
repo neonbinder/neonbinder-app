@@ -53,7 +53,7 @@ export const EBAY_PATH = {
 
 type Method = FakeFaultRule["match"]["method"];
 
-/** The method eBay uses on each template; a rule on a prefix names its own (default `*`, any). */
+/** The method eBay uses on each fixed template; a rule on a prefix must name its own (the fake has no "any"). */
 const METHOD_OF: Readonly<Record<string, Method>> = {
   [EBAY_PATH.bulkItems]: "POST",
   [EBAY_PATH.publish]: "POST",

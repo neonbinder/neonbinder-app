@@ -82,12 +82,13 @@
 //      NeonBinder put up on eBay and leaves the account not connected. The
 //      afterEach does the same on a failure.
 //
-// GAP (NEO-555 G1, reported): step 5 names the sold card by its printed number
-// (`listedCardNumber`). eBay sale lines match by NB's SKU and the listing id,
-// and the SKU embeds NB's own card id, which no screen shows, so a spec cannot
-// write one. The testing control is to resolve the number against the caller's
-// own eBay links (exactly one, else refuse); until it does, this spec is red at
-// step 5's hop by design (GUIDE hard rule 1: never weakened to pass).
+// Step 5 names the sold card by its printed number (`listedCardNumber`): the
+// testing control resolves it to this worker's own eBay listing of that card
+// (exactly one, else it refuses), since NB's SKU embeds an id no screen shows.
+// Sales' empty state is not asserted here: this account may already hold sales
+// from other specs on the worker (the BuySportsCards listing, unmatched-sale and
+// pick-list specs), so `profile/ebay-connect-and-setup` proves it on the
+// isolated `new-profile` account instead.
 //
 // What "2 listed" proves about eBay. The drain reads the seller's inventory,
 // uploads the photos, creates the inventory items and offers, PUBLISHES them
@@ -684,8 +685,8 @@ test(
     // worker's fake seller, then the sales poll run now; the cron's poll may have
     // stored it first, and the hop then reads nothing new: the screen below is
     // the same either way, so the counts are never asserted.
-    // GAP G1 (header): the sold card is named by its printed number, which the
-    // testing control is to resolve to this worker's own eBay listing of it.
+    // The sold card is named by its printed number; the control resolves it to
+    // this worker's own eBay listing of it.
     const orderId = `${env.ATTEMPT_TOKEN}s`;
     const strangerTitle = `Stranger${env.ATTEMPT_TOKEN}`;
     await ebayFake.addOrder({

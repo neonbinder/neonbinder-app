@@ -20,12 +20,21 @@
 //      than the last run, so the press within the minute is taken. Sync: still
 //      0 listed, each held back with "It didn't go live. Check eBay's Seller
 //      Hub for a selling limit, then press Sync."
-//   5. eBay's sign-in lapses once (`unauthorized`: one 401 on the next seller
-//      read). The quick counts back to 1 queue the cards again; Sync: NeonBinder
-//      renews the token and tries once more, the row reads "2 listed" with
-//      nothing held back, and Profile still reads connected (no sign-in asked).
+//   5. eBay's sign-in lapses once (`unauthorized`: one 401 on the next write
+//      of the cards' details, a request only a listing push makes). The quick
+//      counts back to 1 queue the cards again; Sync: the cards were never live
+//      (step 4 stopped them before going live), so the run writes their details
+//      again and meets the 401; NeonBinder renews the token and sends the write
+//      once more. The row reads "2 listed" with nothing held back, and Profile
+//      still reads connected (no sign-in asked). Without the renewal the write
+//      would fail signed out and the cards would not list, so "2 listed" is the
+//      proof the 401 was met and recovered from.
 //   6. Disconnect (it takes the two down). The box tidied (counts to 0, the
-//      common price cleared, the box deleted).
+//      common price cleared, the box deleted). Then the hand-pick: the same main
+//      seller connected and set up again, now holding the payment and returns
+//      policies step 1 made or found, so "Set me up" is NOT offered and the
+//      helper picks the seller's own (`connectEbayAndFinishSetup` with
+//      `setMeUp: "not offered"`); Disconnect again.
 //   7. The account switch: Connect, eBay's consent screen, "Agree as another
 //      eBay account": connected as a DIFFERENT eBay user than step 1's. Then
 //      Disconnect again. The afterEach disconnects on a failure.
@@ -34,9 +43,9 @@
 // a press does. The faults stay on until the step's result is read (no
 // `times`, except the one 401), so whichever run takes the cards meets the same
 // refusal and the row reads the same: the spec asserts the row and the held-back
-// reasons, never which run wrote them. Step 5's single 401 may be spent by the
-// poll's own seller read instead; the cards still list, and that the renewal
-// stays silent is what a collector sees either way (accepted limit).
+// reasons, never which run wrote them. Step 5's single 401 sits on the details
+// write, which the poll's own sales read never makes, so whichever run lists the
+// cards (the press's or the poll's drain) is the one that meets it.
 //
 // Desktop only (project-scope.mjs PROJECT_IGNORE, with the reason): what it
 // proves is the server's answer to eBay's refusals, shown on the screens the
@@ -260,7 +269,12 @@ test(
     await backToChecklist();
 
     // --- 5. eBay's sign-in lapses once: renewed by itself, and the cards list ---------------------------------
-    await ebayFake.setFaults([ebayFault.unauthorized(EBAY_PATH.sell, { method: "GET", times: 1 })]);
+    // The one 401 is on the details write (POST, bulk), which only a listing push
+    // makes: never live, both cards' details go again on this run, so the run
+    // meets it whichever of the press and the poll drains them. "2 listed" with
+    // nothing held back then proves the renewal and the retried write; a broken
+    // renewal fails the write signed out and nothing lists.
+    await ebayFake.setFaults([ebayFault.unauthorized(EBAY_PATH.bulkItems, { times: 1 })]);
     await countBoth("1");
     await syncAndRead();
     await expect(row.getByText(/^2 listed(, \d+ updated)?$/)).toBeVisible();
@@ -292,6 +306,22 @@ test(
     await expect(page.getByRole("heading", { level: 2, name: boxName, exact: true })).toBeVisible();
     await deleteOpenBox(page, boxName);
     await expect(boxes.getByRole("button", { name: new RegExp(`^${escapeRegExp(boxName)},`) })).toHaveCount(0);
+
+    // --- 6b. The hand-pick: the same seller again, its payment and returns already on eBay ----------------
+    // Step 1 left the main seller holding payment and returns policies (Set me up
+    // made them, or an earlier spec had), and NB's Disconnect never touches eBay's
+    // side, so "Set me up" is not offered now and the seller's own are picked.
+    await page.goto("/profile/ebay");
+    await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible({ timeout: LAUNCH_GATE });
+    await expect(connect).toBeVisible();
+    written.connected = true;
+    await connectEbayAndFinishSetup(page, ebayFake, { gate: LAUNCH_GATE, setMeUp: "not offered" });
+    await expect(connectedLine).toContainText(`as ${mainUser} since`);
+    await disconnect.click();
+    await confirm.getByRole("button", { name: "Yes, disconnect" }).click();
+    await expect(said("Disconnected from eBay. Every listing NeonBinder put up there is down.")).toBeVisible();
+    written.connected = false;
+    await expect(connect).toBeVisible();
 
     // --- 7. Another eBay account: Connect, "Agree as another eBay account", a different user ---------------
     await page.goto("/profile/ebay");

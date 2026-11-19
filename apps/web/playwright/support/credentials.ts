@@ -278,7 +278,13 @@ export async function removeEbayConnection(page: Page, opts: { gate: number }): 
  *   3. Ships from saved (Enter in the last field); "4 to go".
  *   4. "Set me up" when offered (a seller with no payment or returns policy yet;
  *      an earlier spec on the worker made them, so it may not be): its answer
- *      line. Otherwise it is gone, asserted.
+ *      line. Otherwise the hand-pick: Set me up gone and the seller's own
+ *      Payment and Returns policies offered, nothing picked yet. The branch is
+ *      taken only after the policy read has landed on one of the two (never an
+ *      instant read of a page still loading). `setMeUp` pins the branch: a
+ *      caller that KNOWS the seller's state (it set the seller up earlier in the
+ *      same spec) passes "not offered", and the hand-pick is then proven, not
+ *      merely allowed (the refusals spec does).
  *   5. NB Free Shipping for Cards under $20, NB Tracked for $20 and up, the
  *      first Payment and Returns policy: "You're all set".
  *
@@ -289,7 +295,11 @@ export async function removeEbayConnection(page: Page, opts: { gate: number }): 
  * eBay, connected and set up. Every step the standard budget except the hop's
  * full page load (`gate`, the caller's LAUNCH_GATE).
  */
-export async function connectEbayAndFinishSetup(page: Page, ebayFake: EbayFake, opts: { gate: number }): Promise<void> {
+export async function connectEbayAndFinishSetup(
+  page: Page,
+  ebayFake: EbayFake,
+  opts: { gate: number; setMeUp?: "offered" | "not offered" },
+): Promise<void> {
   const said = (text: string | RegExp) => page.getByRole("status").filter({ hasText: text });
   const steps = page.getByRole("status").filter({ hasText: /to go\. Nothing lists on eBay until they're done\.$/ });
   await ebayFake.holdShippingPolicy(EBAY_POLICY.free);
@@ -303,14 +313,21 @@ export async function connectEbayAndFinishSetup(page: Page, ebayFake: EbayFake, 
   await expect(page.getByText(EBAY_TEST_MODE_LINE, { exact: true })).toBeVisible();
   await expect(steps).toHaveText("5 to go. Nothing lists on eBay until they're done.");
 
-  // The seller's policies are read from eBay when the page opens; the read has
-  // landed when one of the seller's own shipping policies is offered, and "Set
-  // me up" renders in the same paint.
+  // The seller's policies are read from eBay when the page opens. The read has
+  // landed when one of the seller's own shipping policies is offered AND the
+  // Payment and returns card shows its answer: "Set me up" (a payment or returns
+  // policy missing) or the seller's own Payment policies. Both come from the
+  // one read, so the branch below is settled by a web-first wait, not guessed.
   const underTwenty = page.getByRole("radiogroup", { name: "Cards under $20", exact: true });
   const free = underTwenty.getByRole("radio", { name: EBAY_POLICY.free.name, exact: true });
   await expect(free).toBeVisible();
   const setMeUp = page.getByRole("button", { name: "Set me up", exact: true });
+  const paymentRadios = page.getByRole("radiogroup", { name: "Payment", exact: true }).getByRole("radio");
+  await expect(setMeUp.or(paymentRadios.first()).first()).toBeVisible();
   const setMeUpOffered = await setMeUp.isVisible();
+  if (opts.setMeUp !== undefined) {
+    expect(setMeUpOffered ? "offered" : "not offered", "whether Set me up is offered to this seller").toBe(opts.setMeUp);
+  }
 
   await page.getByRole("textbox", { name: "ZIP code", exact: true }).fill("53703");
   await page.getByRole("textbox", { name: "City", exact: true }).fill("Madison");
@@ -323,7 +340,15 @@ export async function connectEbayAndFinishSetup(page: Page, ebayFake: EbayFake, 
     await setMeUp.click();
     await expect(said(/^(Made \d+ on your eBay account|You already had everything)/)).toBeVisible();
   } else {
+    // The hand-pick: nothing to make, so nothing offered to make it, and the
+    // seller's own payment and returns policies are there to pick, none picked
+    // yet (a fresh connection starts from an empty setup).
     await expect(setMeUp).toBeHidden();
+    for (const group of ["Payment", "Returns"]) {
+      const radios = page.getByRole("radiogroup", { name: group, exact: true });
+      await expect(radios.getByRole("radio").first()).toBeVisible();
+      await expect(radios.getByRole("radio", { checked: true })).toHaveCount(0);
+    }
   }
   await free.click();
   await expect(free).toBeChecked();

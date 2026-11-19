@@ -69,12 +69,10 @@
 //      card's line by its NB name and nothing wrong with it; Back returns to Sync
 //      status; the first card's quick count reads 0 (its one copy sold) and the
 //      second's still 1.
-//      GAP (NEO-555 G1, reported): the sold card is named by its printed number
-//      (`listedCardNumber`). BuySportsCards sale lines match by BuySportsCards' own
-//      card id, which no screen shows, so a spec cannot write one. The testing
-//      control is to resolve the number against the caller's own BuySportsCards
-//      links (exactly one, else refuse); until it does, this spec is red at the
-//      sale's hop by design (GUIDE hard rule 1: never weakened to pass).
+//      The sold card is named by its printed number (`listedCardNumber`): the
+//      testing control resolves it to this worker's own BuySportsCards listing
+//      of that card (exactly one, else it refuses), since BuySportsCards' own
+//      card id is on no screen.
 //   4. They turn the box's "Listed on marketplaces" off, Sync again, and the
 //      set reads 0 listed, with the second card taken to 0 (the first is
 //      already 0 on both sides: the sale lowered it).
@@ -990,8 +988,8 @@ test(
     // its listing, as BuySportsCards does), then the sales poll run now; the
     // cron's poll may have stored it first, and the hop then reads nothing new:
     // the screen below is the same either way, so the counts are never asserted.
-    // GAP G1 (header): the sold card is named by its printed number, which the
-    // testing control is to resolve to this worker's own BuySportsCards listing of it.
+    // The sold card is named by its printed number; the control resolves it to
+    // this worker's own BuySportsCards listing of it.
     const orderNo = `${env.ATTEMPT_TOKEN}b`;
     await bscFake.addOrder({ orderNo, items: [{ listedCardNumber: a.split(" ")[0].replace(/^#/, ""), quantity: 1 }] });
     await bscFake.pollNow();
