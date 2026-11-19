@@ -74,6 +74,30 @@ export function candidateLinkLabel(candidate: TeamStepCandidate): string {
   return `Link to ${candidate.league ? `${base} · ${candidate.league}` : base}`;
 }
 
+/**
+ * Every candidate's link name, in order, each one distinct.
+ *
+ * Two rows can print the same name, era and league (two undated rows under one
+ * name is the common case), and a button the operator, a screen reader or a
+ * spec must tell apart cannot share its name with another. The rows that would
+ * collide are numbered in list order: "… · undated #1", "… · undated #2" for
+ * rows with no years, "… · #1" for rows that share years. A row whose label is
+ * already unique is left as `candidateLinkLabel` writes it.
+ */
+export function candidateLinkLabels(candidates: readonly TeamStepCandidate[]): string[] {
+  const base = candidates.map(candidateLinkLabel);
+  const seen = new Map<string, number>();
+  for (const label of base) seen.set(label, (seen.get(label) ?? 0) + 1);
+  const next = new Map<string, number>();
+  return candidates.map((candidate, index) => {
+    const label = base[index];
+    if ((seen.get(label) ?? 0) < 2) return label;
+    const n = (next.get(label) ?? 0) + 1;
+    next.set(label, n);
+    return candidate.era ? `${label} · #${n}` : `${label} · undated #${n}`;
+  });
+}
+
 /** "Printed on 1 card" / "Printed on 12 cards". */
 export function printedOnLabel(total: number): string {
   return `Printed on ${total} ${total === 1 ? "card" : "cards"}`;
@@ -96,49 +120,75 @@ export default function TeamStepContext({
   onLink: (teamId: Id<"teams">) => void;
 }) {
   const context = useQuery(api.entityReviewQueue.teamStepContext, { reviewRowId });
-  // Unanswered, or a row with nothing to show: the step is exactly what it was.
-  if (!context) return null;
-
-  const { candidates, cards, moreCards, playersDontSettle } = context;
+  // Unanswered, or a row with nothing to show: the step is exactly what it was,
+  // plus the empty live region below (it must already be mounted when the
+  // intro lands, or the intro is not announced).
+  const candidates = context?.candidates ?? [];
+  const cards = context?.cards ?? [];
+  const moreCards = context?.moreCards ?? 0;
+  const playersDontSettle = context?.playersDontSettle ?? false;
   const total = cards.length + moreCards;
+  const hasCandidates = candidates.length >= 2;
+  const linkLabels = candidateLinkLabels(hasCandidates ? candidates : []);
 
   return (
     <div className="space-y-3">
-      {candidates.length >= 2 && (
-        <div className="rounded-md border border-neon-blue-text/40 border-l-4 border-l-selection bg-neon-blue/5 p-3 space-y-2">
-          <p className="text-sm text-ink-2">{candidatesIntro(candidates.length)}</p>
-          {playersDontSettle && (
-            <p className="text-xs text-ink-3">{PLAYERS_DONT_SETTLE_LINE}</p>
-          )}
-          <ul aria-label={CANDIDATES_LIST_LABEL} className="flex flex-col items-start gap-1.5">
-            {candidates.map((candidate) => (
-              <li key={candidate.teamId} className="max-w-full">
-                <NeonButton
-                  size="1"
-                  variant="secondary"
-                  outline
-                  // The label is a team's name, era and league: a long one wraps
-                  // inside the button instead of running out of the dialog.
-                  // `min-h-6 py-1` is the same 24px on one line.
-                  className="h-auto min-h-6 max-w-full py-1 text-left wrap-anywhere"
-                  aria-disabled={disabled ? true : undefined}
-                  onClick={() => {
-                    if (disabled) return;
-                    onLink(candidate.teamId);
-                  }}
-                >
-                  {candidateLinkLabel(candidate)}
-                </NeonButton>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
+      {/* The panel wrapper is ONE element for the whole life of the step, so the
+          intro inside it (the house `role="status"` live region, implied
+          polite) is already mounted, empty, when the query answers and its
+          text is announced. `contents` drops the wrapper's box until there are
+          candidates, so an empty region adds no gap. No focus moves: the
+          wizard has already put focus on the step's heading. */}
+      <div
+        className={
+          hasCandidates
+            ? "rounded-md border border-neon-blue-text/40 border-l-4 border-l-selection bg-neon-blue/5 p-3 space-y-2"
+            : "contents"
+        }
+      >
+        <p role="status" className="text-sm text-ink-2">
+          {hasCandidates ? candidatesIntro(candidates.length) : ""}
+        </p>
+        {hasCandidates && (
+          <>
+            {playersDontSettle && (
+              <p className="text-xs text-ink-3">{PLAYERS_DONT_SETTLE_LINE}</p>
+            )}
+            {/* role="list": Safari drops list semantics under list-style:none. */}
+            <ul
+              role="list"
+              aria-label={CANDIDATES_LIST_LABEL}
+              className="flex flex-col items-start gap-1.5"
+            >
+              {candidates.map((candidate, index) => (
+                <li key={candidate.teamId} className="max-w-full">
+                  <NeonButton
+                    size="1"
+                    variant="secondary"
+                    outline
+                    // The label is a team's name, era and league: a long one wraps
+                    // inside the button instead of running out of the dialog.
+                    // `min-h-6 py-1` is the same 24px on one line.
+                    className="h-auto min-h-6 max-w-full py-1 text-left wrap-anywhere"
+                    aria-disabled={disabled ? true : undefined}
+                    onClick={() => {
+                      if (disabled) return;
+                      onLink(candidate.teamId);
+                    }}
+                  >
+                    {linkLabels[index]}
+                  </NeonButton>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+      </div>
 
       {cards.length > 0 && (
         <div className="space-y-1.5">
           <p className="text-sm text-ink-2">{printedOnLabel(total)}</p>
-          <ul aria-label={CARDS_LIST_LABEL} className="space-y-2">
+          <ul role="list" aria-label={CARDS_LIST_LABEL} className="space-y-2">
             {cards.map((card, cardIndex) => (
               <li key={`${card.number ?? "none"}-${cardIndex}`} className="flex gap-3">
                 {/* A fixed column, so the players of every card line up; a

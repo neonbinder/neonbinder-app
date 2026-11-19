@@ -354,6 +354,12 @@ export type CardTeamPickInput = {
  *      player with stints on BOTH rows is a tie too; the year does not break
  *      it (D6). An UNDATED stint counts as support for its own row, so a retro
  *      card of a past player still finds its team.
+ *      A silent card may abstain only while the voters' row is also the row
+ *      the set year would pick. If the voters agree on a row the year would NOT
+ *      pick and ANY card is silent, the answer is `null`: one card's evidence
+ *      must not be applied to cards that say nothing, against the year
+ *      (CLAUDE.md invariant 8). When EVERY card votes, the voters' row stands
+ *      even against the year (a retro set: the Rickey Henderson case).
  *   4. If no player supports any row, the set year picks, as before — EXCEPT
  *      when the year's pick matched the name only by alias while another
  *      eligible row holds the name as its OWN primary name: then `null`. An
@@ -400,8 +406,12 @@ export function pickCardTeam<T extends TeamEraRow & { _id: string }>(
   //    name a row vote, and those must agree on exactly one.
   if (supportedPerCard.some((onCard) => onCard.size > 0)) {
     let answer: string | null = null;
+    let anySilent = false;
     for (const onCard of supportedPerCard) {
-      if (onCard.size === 0) continue;
+      if (onCard.size === 0) {
+        anySilent = true;
+        continue;
+      }
       if (onCard.size !== 1) return null;
       const [only] = onCard;
       if (answer !== null && answer !== only) return null;
@@ -409,11 +419,11 @@ export function pickCardTeam<T extends TeamEraRow & { _id: string }>(
     }
     const row = eligible.find((r) => r._id === answer);
     if (!row) return null;
-    return {
-      row,
-      via: "players",
-      agreesWithYear: yearPick !== null && yearPick.row._id === row._id,
-    };
+    const agreesWithYear = yearPick !== null && yearPick.row._id === row._id;
+    // Silent cards abstain only while the year backs the voters. Against the
+    // year, the cards that said nothing are the operator's to place.
+    if (anySilent && !agreesWithYear) return null;
+    return { row, via: "players", agreesWithYear };
   }
 
   // 4. No player says anything: the set year picks, with one guard.

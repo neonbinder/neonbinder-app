@@ -407,10 +407,19 @@ describe("pickCardTeam", () => {
       expect(pick?.row).toBe(NOW);
     });
 
-    test("silent cards plus one voter for the OLD era: the old era, and the year disagrees", () => {
+    test("silent cards plus one voter for the OLD era: null, one card's evidence is not applied to the silent ones against the year", () => {
+      expect(
+        pickCardTeam([NOW, OLD, AA], {
+          ...base,
+          cards: [...four, [[old(1901, 1902)]]],
+        }),
+      ).toBeNull();
+    });
+
+    test("every card votes OLD: the old era, and the year disagrees", () => {
       const pick = pickCardTeam([NOW, OLD, AA], {
         ...base,
-        cards: [...four, [[old(1901, 1902)]]],
+        cards: [[[old(1901, 1902)]], [[old(1901, 1902)]]],
       });
       expect(pick).toEqual({ row: OLD, via: "players", agreesWithYear: false });
     });
@@ -436,7 +445,7 @@ describe("pickCardTeam", () => {
     test("an undated stint on a row still supports it (retro card of a past player)", () => {
       const pick = pickCardTeam([NOW, OLD, AA], {
         ...base,
-        cards: [...four, [[{ teamId: "bal-old" }]]],
+        cards: [[[{ teamId: "bal-old" }]]],
       });
       expect(pick?.row).toBe(OLD);
       expect(pick?.via).toBe("players");
