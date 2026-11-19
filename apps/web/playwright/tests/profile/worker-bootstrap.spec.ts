@@ -5,27 +5,19 @@
 // server-side, then warms both marketplace sessions (best effort).
 import { test, expect } from "../../support/fixtures";
 import { loginToBsc, loginToSportLots } from "../../support/credentials";
-import { expectStepWithSportLots } from "../../support/marketplace-wait";
+import { expectWorkerReset, WORKER_RESET_REDIRECT } from "../../support/worker-reset";
 
 test(
   "Worker bootstrap — sign in as TEST_EMAIL_${WORKER_INDEX}, reset state, and seed BSC + SL creds",
   { tag: ["@util"] },
   async ({ page, signIn, env }) => {
-    await signIn(
-      "/testing/reset?redirect=/testing/seed-credentials?redirect=/profile/credentials",
-    );
-    // One wait covers the whole redirect chain. While SportLots is live the seed performs a real
-    // SportLots sign-in (30-65 s), hence the flow's 90 s. Paused, the chain is the fake
-    // BuySportsCards' sign-in alone: the longest run measured 6.4 s on the #487 merge-group run (GUIDE) (the fake's cold first
-    // token), so ceil(6.4 + 7) = 14 s.
-    await expectStepWithSportLots(page, page.getByRole("heading", { name: "Profile Settings" }), env, {
-      liveMs: 90_000,
-      pausedMs: 14_000,
-      statusLine: false,
-      what: "the bootstrap's reset and credential seed",
-    });
-    // The chain ends on the credentials page.
-    await expect(page).toHaveURL(/\/profile\/credentials/);
+    // The reset chain is shared with the failure reset (support/worker-reset.ts): one
+    // wait covers sign-in, reset and credential seed, with the flow's 90 s while
+    // SportLots is live and the fake BuySportsCards' measured 14 s while it is paused.
+    await signIn(WORKER_RESET_REDIRECT);
+    await expectWorkerReset(page, env);
+    // The account is seeded: the chain ended on Credentials (the helper's own exit, said here too).
+    await expect(page.getByRole("heading", { name: "Profile Settings" })).toBeVisible();
 
     // The warm-ups are an optimisation (`optional: true` in the flow): a
     // failure is logged, never fatal. The steps above stay mandatory. The BSC

@@ -117,6 +117,10 @@ jobs:
           filters: |
             web:
               - 'apps/web/**'
+              # The web-unit lane runs flaky-reporter.test.mjs, which reads the
+              # shared redactor corpus and CLI.
+              - '.github/scripts/redact-corpus.json'
+              - '.github/scripts/redact-cli.mjs'
             browser:
               - 'services/browser/**'
               # NEO-552: browser's bsc-fake-identity-contract test loads these two
@@ -165,6 +169,10 @@ jobs:
               - 'scripts/**'
               - '.github/scripts/**'
               - '.github/actions/notify-discord/**'
+              # redact-ci-log.test.mjs exercises the redactor and reporter that
+              # live under apps/web.
+              - 'apps/web/playwright/support/redact.mjs'
+              - 'apps/web/playwright/support/flaky-reporter.mjs'
               # NEO-555: a script test reads the workflow files (filter parity).
               - '.github/workflows/**'
             # NEO-386: the scanner script runs on a collector's own computer,

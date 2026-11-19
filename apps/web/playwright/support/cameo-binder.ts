@@ -68,9 +68,8 @@ export async function removeCopy(page: Page, checklist: Locator, short: string):
   await expect(none.or(remove)).toBeVisible();
   if (await remove.isVisible()) {
     await remove.click();
-    // This card's own notice first, then the shared wait-and-dismiss (R3).
-    await expect(drawer.getByRole("status").filter({ hasText: `Removed ${short}, Raw, Excellent` })).toBeVisible();
-    await confirmRemoved(drawer);
+    // This card's own notice, waited for and dismissed by the shared helper (R3).
+    await confirmRemoved(drawer, `Removed ${short}, Raw, Excellent`);
     await expect(none).toBeVisible();
   }
   await drawer.getByRole("button", { name: "Close card detail" }).click();

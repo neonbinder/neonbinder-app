@@ -156,7 +156,7 @@ test(
     await yourCopies.getByRole("button", { name: `Remove ${short}, Raw, Excellent`, exact: true }).click();
     // The list empties optimistically; "Removed ..." is the server's answer. The
     // card can only be deleted once that write has landed, so wait for it.
-    await confirmRemoved(drawer);
+    await confirmRemoved(drawer, `Removed ${short}, Raw, Excellent`);
     await expect(yourCopies.getByText("None yet. Fill in what you know below and add it.")).toBeVisible();
     await drawer.getByRole("button", { name: "Close card detail" }).click();
     await expect(drawer).toBeHidden();

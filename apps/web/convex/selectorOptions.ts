@@ -233,9 +233,12 @@ import {
   assertSubVariantParent,
   assertVariantTypeRenameAllowed,
   collectDescendantIds,
+  findPriorYearSameProduct,
   findSetYearForSelectorOption,
   variantTypeRenameCheck,
 } from "./lib/selectorAncestry";
+// NEO-592: bounded concurrency for the review gate's reads.
+import { mapBounded, settleAll } from "./lib/boundedConcurrency";
 // NEO-277: the set-level team rules — copy-down at creation, and the
 // equal-to-previous cascade the edit path and its preview both apply.
 import {
@@ -312,6 +315,7 @@ import {
   refreshDescriptionsAfterRename,
 } from "./cardDescriptionFanOut";
 import {
+  FIND_MANY_TEAMS_BY_NAME_MAX,
   MAX_TEAM_ALIASES,
   MAX_TEAM_ALIAS_LENGTH,
   // NEO-284 security audit: the warn-and-skip flavour of the primary-name
@@ -1260,6 +1264,11 @@ export const SKIPPED_NAME_LOOKUP_PAGE = 300;
  * name by name. Inside, it is one indexed point lookup per candidate against
  * `by_selector_option_and_kind_and_name`.
  *
+ * NEO-592 — no longer the gate's first choice: `reviewGatePrelude` reads the
+ * set's skip rows once by prefix, and the gate asks THIS only for a set whose
+ * skip rows overflow `SKIPPED_NAME_LOOKUP_PAGE` (the prefix read is then
+ * incomplete). Its lookups are independent, so they run concurrently.
+ *
  * NEO-294 — at most `SKIPPED_NAME_LOOKUP_PAGE` candidates per call, refused
  * above that; see the arithmetic on the constant and the slicing loop in
  * `resolveUnknownsAndStartBatch`.
@@ -1287,9 +1296,10 @@ export const findSkippedEntityNames = internalQuery({
           `${SKIPPED_NAME_LOOKUP_PAGE} per call — slice them`,
       );
     }
-    const skipped: string[] = [];
-    for (const candidate of args.candidates) {
-      const row = await ctx.db
+    // NEO-592 — independent point lookups, issued together; the answer keeps
+    // the candidates' order.
+    const rows = await mapBounded(args.candidates, (candidate) =>
+      ctx.db
         .query("entityReviewSkips")
         .withIndex("by_selector_option_and_kind_and_name", (q) =>
           q
@@ -1297,9 +1307,12 @@ export const findSkippedEntityNames = internalQuery({
             .eq("kind", candidate.kind)
             .eq("nameNormalized", candidate.nameNormalized),
         )
-        .first();
-      if (row) skipped.push(`${candidate.kind}:${candidate.nameNormalized}`);
-    }
+        .first(),
+    );
+    const skipped: string[] = [];
+    args.candidates.forEach((candidate, i) => {
+      if (rows[i]) skipped.push(`${candidate.kind}:${candidate.nameNormalized}`);
+    });
     return skipped;
   },
 });
@@ -1425,6 +1438,193 @@ export const findSetYearForSelectorOptionQuery = internalQuery({
   },
 });
 
+/**
+ * NEO-592 — everything the review gate reads from the database BEFORE it
+ * starts asking about names, in ONE query.
+ *
+ * ## Why one hop
+ *
+ * `resolveChecklistEntities` is an action, so each of these used to be its own
+ * `ctx.runQuery` round trip from the action, one after another:
+ * `getAncestorChain`, `getSelectorOptionById`, `getCardChecklist`, one
+ * `findSkippedEntityNames` per 300 names, `findSetYearForSelectorOptionQuery`
+ * and `findPriorYearProduct`. They are independent reads, so they now run
+ * together inside one transaction (and the action no longer calls public
+ * `api.*` queries for them).
+ *
+ * ## What each part answers
+ *
+ *  - `sportMatches`: `sportId` is the `sport` ancestor of `selectorOptionId`.
+ *    The gate re-validates the id the browser sent rather than trusting it
+ *    (see the handler's refusal); `sportLabel` is that row's value, for logs.
+ *  - `pendingPlayerNames` / `pendingTeamNames`: the names the set's own cards
+ *    (home cards, then cross-listed guest cards, in checklist order) still
+ *    carry as pending, deduped by exact string with first-seen order kept. The
+ *    gate files them beside the fetched names; nothing else of the checklist
+ *    leaves the query (the whole `getCardChecklist` row set used to).
+ *  - `skippedKeys`: every `${kind}:${nameNormalized}` this set's operator has
+ *    ruled "not a person / not a team" (NEO-212), read ONCE by index prefix
+ *    instead of one point lookup per candidate name. `null` when the set holds
+ *    more than `SKIPPED_NAME_LOOKUP_PAGE` of them: the prefix read is then
+ *    incomplete, so the gate falls back to asking `findSkippedEntityNames` for
+ *    its own candidates in slices. A short list is never mistaken for a
+ *    complete one.
+ *  - `setYear`, `priorYearProductId`: the same two answers the gate used to
+ *    ask for separately, from the same shared walks.
+ *
+ * Internal: the gate has already checked the operator.
+ */
+export const reviewGatePrelude = internalQuery({
+  args: {
+    selectorOptionId: v.id("selectorOptions"),
+    sportId: v.id("selectorOptions"),
+  },
+  returns: v.object({
+    sportMatches: v.boolean(),
+    sportLabel: v.string(),
+    pendingPlayerNames: v.array(v.string()),
+    pendingTeamNames: v.array(v.string()),
+    skippedKeys: v.union(v.array(v.string()), v.null()),
+    setYear: v.union(v.number(), v.null()),
+    priorYearProductId: v.union(v.id("selectorOptions"), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    const [sportMatches, sportRow, pending, skippedKeys, setYear, priorYearProductId] =
+      await Promise.all([
+        // The topmost `sport` row on the way up, as `getAncestorChain`'s
+        // `chain.find(level === "sport")` read it (root first).
+        (async () => {
+          let sportAncestorId: Id<"selectorOptions"> | undefined;
+          let cursor: Id<"selectorOptions"> | undefined = args.selectorOptionId;
+          for (let depth = 0; cursor && depth < PRELUDE_ANCESTOR_DEPTH; depth++) {
+            const node: Doc<"selectorOptions"> | null = await ctx.db.get(cursor);
+            if (!node) break;
+            if (node.level === "sport") sportAncestorId = node._id;
+            cursor = node.parentId;
+          }
+          return sportAncestorId === args.sportId;
+        })(),
+        ctx.db.get(args.sportId),
+        pendingNamesOfChecklist(ctx, args.selectorOptionId),
+        (async (): Promise<string[] | null> => {
+          const rows = await ctx.db
+            .query("entityReviewSkips")
+            .withIndex("by_selector_option_and_kind_and_name", (q) =>
+              q.eq("selectorOptionId", args.selectorOptionId),
+            )
+            .take(SKIPPED_NAME_LOOKUP_PAGE + 1);
+          if (rows.length > SKIPPED_NAME_LOOKUP_PAGE) return null;
+          return rows.map((row) => `${row.kind}:${row.nameNormalized}`);
+        })(),
+        findSetYearForSelectorOption(ctx, args.selectorOptionId),
+        findPriorYearSameProduct(ctx, args.selectorOptionId),
+      ]);
+    return {
+      sportMatches,
+      sportLabel: sportRow?.value ?? "",
+      pendingPlayerNames: pending.players,
+      pendingTeamNames: pending.teams,
+      skippedKeys,
+      setYear: setYear ?? null,
+      priorYearProductId: priorYearProductId ?? null,
+    };
+  },
+});
+
+/** Depth cap on the prelude's sport walk; a real chain is five rows deep. */
+const PRELUDE_ANCESTOR_DEPTH = 32;
+
+/**
+ * NEO-592 — the pending player and team names on a set's cards, in the order
+ * `getCardChecklist` would list those cards (home cards plus cross-listed
+ * guests, sorted by card number), each name once, first sight kept.
+ *
+ * Reads the same documents `getCardChecklist` read, but returns only the two
+ * name lists, and skips the home-set label walk that query builds for guest
+ * rows and the gate never used.
+ */
+async function pendingNamesOfChecklist(
+  ctx: QueryCtx,
+  selectorOptionId: Id<"selectorOptions">,
+): Promise<{ players: string[]; teams: string[] }> {
+  const [homeCards, crossListings] = await Promise.all([
+    ctx.db
+      .query("cardChecklist")
+      .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", selectorOptionId))
+      .collect(),
+    ctx.db
+      .query("cardCrossListings")
+      .withIndex("by_selector_option", (q) => q.eq("selectorOptionId", selectorOptionId))
+      .collect(),
+  ]);
+  const guestCards = (
+    await mapBounded(crossListings, (link) => ctx.db.get(link.cardChecklistId))
+  ).filter((card): card is Doc<"cardChecklist"> => card !== null);
+  const merged = [...homeCards, ...guestCards].sort((a, b) =>
+    compareCardNumbers(a.cardNumber, b.cardNumber),
+  );
+  const players = new Set<string>();
+  const teams = new Set<string>();
+  for (const card of merged) {
+    for (const name of card.pendingPlayerNames ?? []) players.add(name);
+    for (const name of card.pendingTeamNames ?? []) teams.add(name);
+  }
+  return { players: Array.from(players), teams: Array.from(teams) };
+}
+
+/**
+ * NEO-592 — hop and per-phase timing for one review-gate run, filled while it
+ * runs and written out as one `review_gate_timing` log line.
+ */
+type GateTiming = { hops: number; phases: Record<string, number> };
+
+/** NEO-592 — `reviewGatePrelude`'s answer. */
+type ReviewGatePrelude = {
+  pendingPlayerNames: string[];
+  pendingTeamNames: string[];
+  skippedKeys: string[] | null;
+  setYear: number | null;
+  priorYearProductId: Id<"selectorOptions"> | null;
+};
+
+/**
+ * `ctx.runQuery` / `ctx.runMutation` that count themselves into `timing.hops`:
+ * the number of action-to-function round trips a run made, the figure the
+ * ticket is about.
+ */
+function countHops(
+  ctx: ActionCtx,
+  timing: GateTiming,
+): Pick<ActionCtx, "runQuery" | "runMutation"> {
+  return {
+    runQuery: ((ref: unknown, ...rest: unknown[]) => {
+      timing.hops += 1;
+      return (ctx as unknown as { runQuery: (...a: unknown[]) => unknown }).runQuery(ref, ...rest);
+    }) as ActionCtx["runQuery"],
+    runMutation: ((ref: unknown, ...rest: unknown[]) => {
+      timing.hops += 1;
+      return (ctx as unknown as { runMutation: (...a: unknown[]) => unknown }).runMutation(
+        ref,
+        ...rest,
+      );
+    }) as ActionCtx["runMutation"],
+  };
+}
+
+/** Run `work`, adding its wall time to `timing.phases[phase]`. */
+async function timedPhase<T>(
+  timing: GateTiming,
+  phase: string,
+  work: () => Promise<T>,
+): Promise<T> {
+  const startedAt = Date.now();
+  try {
+    return await work();
+  } finally {
+    timing.phases[phase] = (timing.phases[phase] ?? 0) + (Date.now() - startedAt);
+  }
+}
+
 
 /**
  * Detect unresolved player/team names for a selectorOption and kick off the
@@ -1454,6 +1654,11 @@ type NameReviewAnswer = {
 /** PR 451 — names per `players.resolveNamesForReview` call, and calls in flight. */
 export const NAME_REVIEW_SLICE = 25;
 export const NAME_REVIEW_CONCURRENCY = 4;
+/**
+ * NEO-592 — `teams.findManyByNameAndSport` calls in flight beside the player
+ * slices and the set-history scan: 4 + 3 + 1 keeps the action's fan-out at 8.
+ */
+export const TEAM_NAME_REVIEW_CONCURRENCY = 3;
 
 async function resolveUnknownsAndStartBatch(
   ctx: ActionCtx,
@@ -1491,6 +1696,13 @@ async function resolveUnknownsAndStartBatch(
      * nothing is recorded and the gate is exactly what it was.
      */
     resolvedNames?: ResolvedNames;
+    /**
+     * NEO-592 — what `reviewGatePrelude` read in its one hop: the set's own
+     * pending names, its skipped names, its year and its prior-year product.
+     */
+    prelude: ReviewGatePrelude;
+    /** NEO-592 — hop count and phase times, written to by this function. */
+    timing: GateTiming;
   },
 ): Promise<{
   unknownPlayers: string[];
@@ -1506,6 +1718,9 @@ async function resolveUnknownsAndStartBatch(
    */
   autoLinkedCount: number;
 }> {
+  // NEO-592 — every action-to-function hop below goes through `gate`, which
+  // counts it for the `review_gate_timing` line.
+  const gate = countHops(ctx, args.timing);
   const unknownPlayers: string[] = [];
   const unknownTeams: string[] = [];
   /**
@@ -1559,13 +1774,11 @@ async function resolveUnknownsAndStartBatch(
   // confirms them via the wizard. Without this pass, users who add a
   // custom card for a brand-new player would never get prompted to
   // enrich that player via the standard confirmation flow.
-  const customRows = await ctx.runQuery(api.selectorOptions.getCardChecklist, {
-    selectorOptionId: args.selectorOptionId,
-  });
-  for (const r of customRows) {
-    for (const p of r.pendingPlayerNames ?? []) addPlayer(p);
-    for (const t of r.pendingTeamNames ?? []) addTeam(t);
-  }
+  //
+  // NEO-592 — read by `reviewGatePrelude` (every card on this selectorOption,
+  // home and cross-listed, in checklist order), not by a hop of its own.
+  for (const p of args.prelude.pendingPlayerNames) addPlayer(p);
+  for (const t of args.prelude.pendingTeamNames) addTeam(t);
 
   // ── NEO-212: names an operator already ruled are not an entity ──────────
   //
@@ -1585,26 +1798,24 @@ async function resolveUnknownsAndStartBatch(
   // Scoped to THIS selectorOption, matching the table's per-set key: a name
   // that is noise on one checklist is very often a real player on the next.
   //
-  // ── NEO-294: asked in BOUNDED SLICES, because one query is one transaction ─
+  // ── NEO-592: read ONCE, by prefix, in the prelude ───────────────────────
   //
-  // This list is every distinct player and team name the fetch observed, not
-  // just the unknown ones, so a real first-time sync hands it ~750 (2024 Topps
-  // Chrome). The budget counts one operation per CALL, and that query makes a
-  // call PER NAME, so ~750 names is ~750 operations in one transaction — past
-  // what is comfortable. CI run 35771938308's seed job died here — the
-  // operator's version being a bare `Server Error` at Confirm New Players,
-  // before the wizard opens, with no way forward at all.
+  // This used to be one indexed point lookup per candidate name (NEO-294
+  // sliced them 300 to a query because the list is every distinct name the
+  // fetch observed, ~750 on a first 2024 Topps Chrome sync), awaited one at a
+  // time: 232 sequential reads on a set the E2E suite builds. The prelude now
+  // reads the set's skip rows with one prefix range, and membership is tested
+  // here, in memory, with the same kind + normalized-name equality. The result
+  // is the candidate keys that are skipped, exactly the set the point lookups
+  // produced.
   //
-  // This is the EASY instance of NEO-296's shape and the reason is worth
-  // stating: `resolveUnknownsAndStartBatch` runs inside an ACTION
-  // (`resolveChecklistEntities` / `fetchCardChecklist`), and an action is not
-  // a transaction. Each `ctx.runQuery` below is its own transaction with its
-  // own budget, so slicing the list costs a few extra round trips and buys a
-  // complete answer — no cursor, no resumption, nothing partial to report.
-  // The union of every slice IS what one unbounded call used to return, so
-  // NOTHING is truncated here; the loop runs to the end of the list or throws.
-  //
-  // (The two HARD instances — a mutation that must page and resume — are
+  // A set holding more skip rows than `SKIPPED_NAME_LOOKUP_PAGE` is the
+  // prelude's `null`: its prefix read was cut short, so it cannot say a name is
+  // NOT skipped. Then (and only then) the NEO-294 sliced point lookups run, now
+  // concurrent. Each `ctx.runQuery` is its own transaction with its own
+  // budget, so slicing costs round trips and buys a complete answer — no
+  // cursor, no resumption, nothing partial to report. (The two HARD instances
+  // of that shape — a mutation that must page and resume — are
   // `entityReviewQueue.decideAllRemaining` and `commitCardChecklistFinalize`.)
   const skipCandidates = [
     ...Array.from(playerByNorm.keys(), (nameNormalized) => ({
@@ -1617,33 +1828,38 @@ async function resolveUnknownsAndStartBatch(
     })),
   ];
   const skippedKeys = new Set<string>();
-  for (
-    let start = 0;
-    start < skipCandidates.length;
-    start += SKIPPED_NAME_LOOKUP_PAGE
-  ) {
-    const slice = skipCandidates.slice(start, start + SKIPPED_NAME_LOOKUP_PAGE);
-    for (const key of await ctx.runQuery(
-      internal.selectorOptions.findSkippedEntityNames,
-      { selectorOptionId: args.selectorOptionId, candidates: slice },
-    )) {
-      skippedKeys.add(key);
+  if (args.prelude.skippedKeys !== null) {
+    const heldBySet = new Set(args.prelude.skippedKeys);
+    for (const { kind, nameNormalized } of skipCandidates) {
+      if (heldBySet.has(`${kind}:${nameNormalized}`)) skippedKeys.add(`${kind}:${nameNormalized}`);
     }
+  } else {
+    const slices: Array<typeof skipCandidates> = [];
+    for (let start = 0; start < skipCandidates.length; start += SKIPPED_NAME_LOOKUP_PAGE) {
+      slices.push(skipCandidates.slice(start, start + SKIPPED_NAME_LOOKUP_PAGE));
+    }
+    const answers = await mapBounded(
+      slices,
+      (slice) =>
+        gate.runQuery(internal.selectorOptions.findSkippedEntityNames, {
+          selectorOptionId: args.selectorOptionId,
+          candidates: slice,
+        }),
+      NAME_REVIEW_CONCURRENCY,
+    );
+    for (const keys of answers) for (const key of keys) skippedKeys.add(key);
   }
 
   /**
-   * NEO-254 — the year of the set these names were read off, resolved ONCE.
+   * NEO-254 — the year of the set these names were read off, resolved ONCE
+   * (by the prelude, NEO-592).
    *
    * One ancestor walk for the whole gate rather than one per name. Undefined
    * for an orphaned subtree or a fixture with no year row, and every caller
    * below treats that as "cannot narrow" — the name goes to a human, never to
    * whichever row the index returned first.
    */
-  const setYear =
-    (await ctx.runQuery(
-      internal.selectorOptions.findSetYearForSelectorOptionQuery,
-      { selectorOptionId: args.selectorOptionId },
-    )) ?? undefined;
+  const setYear = args.prelude.setYear ?? undefined;
   /**
    * The team names that appeared on a card alongside this player, deduped and
    * keyed by the NORMALIZED name — the same key `playerByNorm` and the
@@ -1668,31 +1884,33 @@ async function resolveUnknownsAndStartBatch(
    * `historyPlayers` is then empty and every name takes today's path.
    * Skipped entirely when there are no names to ask about.
    */
+  //
+  // NEO-592 — started HERE and awaited with the name lookups below: the scan
+  // reads only the set's own committed cards, so it does not depend on any
+  // name's answer, and its few sequential hops now overlap the lookups instead
+  // of preceding them.
   const historyStartedAt = Date.now();
-  const history: SetHistory | null =
+  const historyScan: Promise<SetHistory | null> =
     playerByNorm.size > 0 || teamByNorm.size > 0
-      ? await scanSetHistory(ctx, {
+      ? scanSetHistory(gate, {
           selectorOptionId: args.selectorOptionId,
+        }).then((scanned) => {
+          // Ids and counts only, never a name.
+          console.log(
+            JSON.stringify({
+              msg: "set_history_scan",
+              selectorOptionId: args.selectorOptionId,
+              complete: scanned.complete,
+              nodes: scanned.stats.nodes,
+              calls: scanned.stats.calls,
+              names: scanned.playersByName.size,
+              teams: scanned.teamIds.size,
+              durationMs: Date.now() - historyStartedAt,
+            }),
+          );
+          return scanned;
         })
-      : null;
-  if (history) {
-    // Ids and counts only, never a name.
-    console.log(
-      JSON.stringify({
-        msg: "set_history_scan",
-        selectorOptionId: args.selectorOptionId,
-        complete: history.complete,
-        nodes: history.stats.nodes,
-        calls: history.stats.calls,
-        names: history.playersByName.size,
-        teams: history.teamIds.size,
-        durationMs: Date.now() - historyStartedAt,
-      }),
-    );
-  }
-  const historyPlayers: Map<string, Set<string>> = history?.complete
-    ? history.playersByName
-    : new Map();
+      : Promise.resolve(null);
 
   /**
    * NEO-424 — player names decided WITHOUT a wizard step but shown in the
@@ -1740,21 +1958,34 @@ async function resolveUnknownsAndStartBatch(
    * the same card year and card teams, so the gate below is unchanged. A name
    * whose answer is missing reads as no match: it goes to review, never
    * silently resolved.
+   *
+   * NEO-592 — the team names are asked the same way
+   * (`teams.findManyByNameAndSport`: up to 50 names a call, up to 3 calls at
+   * once) instead of one `findByNameAndSport` hop per name, and both run at
+   * the same time as each other and as the set-history scan. At most
+   * 4 + 3 + 1 = 8 calls are in flight. Each answer is positional, so a name's
+   * slot, not the order calls finish in, decides which name it answers.
    */
   const resolvedByNorm = new Map<string, NameReviewAnswer>();
-  {
-    const toAsk = [...playerByNorm].filter(
-      ([normalized]) => !skippedKeys.has(`player:${normalized}`),
-    );
-    const slices: Array<typeof toAsk> = [];
-    for (let i = 0; i < toAsk.length; i += NAME_REVIEW_SLICE) {
-      slices.push(toAsk.slice(i, i + NAME_REVIEW_SLICE));
-    }
-    for (let i = 0; i < slices.length; i += NAME_REVIEW_CONCURRENCY) {
-      const group = slices.slice(i, i + NAME_REVIEW_CONCURRENCY);
-      const answers: NameReviewAnswer[][] = await Promise.all(
-        group.map((slice) =>
-          ctx.runQuery(internal.players.resolveNamesForReview, {
+  const playerAsks = [...playerByNorm].filter(
+    ([normalized]) => !skippedKeys.has(`player:${normalized}`),
+  );
+  const playerSlices: Array<typeof playerAsks> = [];
+  for (let i = 0; i < playerAsks.length; i += NAME_REVIEW_SLICE) {
+    playerSlices.push(playerAsks.slice(i, i + NAME_REVIEW_SLICE));
+  }
+  const teamAsks = [...teamByNorm].filter(([normalized]) => !skippedKeys.has(`team:${normalized}`));
+  const teamSlices: Array<typeof teamAsks> = [];
+  for (let i = 0; i < teamAsks.length; i += FIND_MANY_TEAMS_BY_NAME_MAX) {
+    teamSlices.push(teamAsks.slice(i, i + FIND_MANY_TEAMS_BY_NAME_MAX));
+  }
+  const [history, playerAnswers, teamAnswers] = await timedPhase(args.timing, "resolve", () =>
+    settleAll<[SetHistory | null, NameReviewAnswer[][], Array<Array<Doc<"teams"> | null>>]>([
+      historyScan,
+      mapBounded(
+        playerSlices,
+        (slice) =>
+          gate.runQuery(internal.players.resolveNamesForReview, {
             sportId: args.sportId,
             ...(setYear !== undefined ? { cardYear: setYear } : {}),
             names: slice.map(([normalized, name]) => {
@@ -1762,16 +1993,45 @@ async function resolveUnknownsAndStartBatch(
               return teams.length > 0 ? { name, cardTeamNames: teams } : { name };
             }),
           }),
-        ),
-      );
-      group.forEach((slice, g) => {
-        slice.forEach(([normalized], k) => {
-          const answer = answers[g]?.[k];
-          if (answer) resolvedByNorm.set(normalized, answer);
-        });
-      });
-    }
-  }
+        NAME_REVIEW_CONCURRENCY,
+      ),
+      mapBounded(
+        teamSlices,
+        (slice) =>
+          gate.runQuery(internal.teams.findManyByNameAndSport, {
+            sportId: args.sportId,
+            /*
+             * NEO-254 — the SET'S year, which this gate already knows.
+             *
+             * Without it a name two eras share never resolves:
+             * `findByNameAndSport` answers `null` for several candidates by
+             * design, so every "Winnipeg Jets" would be reported unknown and
+             * queued for review on EVERY sync of the set, forever, no matter
+             * how many times an operator answered it. The year is what picks
+             * the row whose era covers the cards in hand.
+             */
+            ...(setYear !== undefined ? { setYear } : {}),
+            names: slice.map(([, name]) => name),
+          }),
+        TEAM_NAME_REVIEW_CONCURRENCY,
+      ),
+    ]),
+  );
+  playerSlices.forEach((slice, g) => {
+    slice.forEach(([normalized], k) => {
+      const answer = playerAnswers[g]?.[k];
+      if (answer) resolvedByNorm.set(normalized, answer);
+    });
+  });
+  const teamDocByNorm = new Map<string, Doc<"teams"> | null>();
+  teamSlices.forEach((slice, g) => {
+    slice.forEach(([normalized], k) => {
+      teamDocByNorm.set(normalized, teamAnswers[g]?.[k] ?? null);
+    });
+  });
+  const historyPlayers: Map<string, Set<string>> = history?.complete
+    ? history.playersByName
+    : new Map();
 
   for (const [normalized, name] of playerByNorm) {
     if (skippedKeys.has(`player:${normalized}`)) continue;
@@ -1951,29 +2211,16 @@ async function resolveUnknownsAndStartBatch(
     origin: "setHistory" | "careerTeam";
   }> = [];
   const unresolvedTeams: Array<{ normalized: string; name: string }> = [];
-  for (const [normalized, name] of teamByNorm) {
-    if (skippedKeys.has(`team:${normalized}`)) continue;
-    const existing = await ctx.runQuery(api.teams.findByNameAndSport, {
-      name,
-      sportId: args.sportId,
-      /*
-       * NEO-254 — the SET'S year, which this gate already knows.
-       *
-       * Without it a name two eras share never resolves: `findByNameAndSport`
-       * answers `null` for several candidates by design, so every "Winnipeg
-       * Jets" would be reported unknown and queued for review on EVERY sync of
-       * the set, forever, no matter how many times an operator answered it.
-       * The year is what picks the row whose era covers the cards in hand.
-       */
-      ...(setYear !== undefined ? { setYear } : {}),
-    });
+  for (const [normalized, name] of teamAsks) {
+    // NEO-592 — asked above, in one batch with every other team name.
+    const existing = teamDocByNorm.get(normalized) ?? null;
     if (!existing) unresolvedTeams.push({ normalized, name });
     // NEO-335 — recorded for the title context, under the gate's own key.
     else args.resolvedNames?.teamNameByNorm.set(normalized, teamFullName(existing));
   }
   const historyTeams =
     unresolvedTeams.length > 0 && history?.complete && history.teamIds.size > 0
-      ? await setHistoryTeamKeys(ctx, history.teamIds)
+      ? await setHistoryTeamKeys(gate, history.teamIds)
       : null;
   const unresolvedAfterHistory: Array<{ normalized: string; name: string }> = [];
   for (const { normalized, name } of unresolvedTeams) {
@@ -2032,38 +2279,38 @@ async function resolveUnknownsAndStartBatch(
     if (cardPlayerIds) careerTeamAsks.push({ normalized, name, cardPlayerIds });
     else unknownTeams.push(name);
   }
-  for (let start = 0; start < careerTeamAsks.length; start += NAME_REVIEW_CONCURRENCY) {
-    const group = careerTeamAsks.slice(start, start + NAME_REVIEW_CONCURRENCY);
-    const answers = await Promise.all(
-      group.map(async (ask) => {
-        const teamId: Id<"teams"> | null = await ctx.runQuery(
-          internal.teams.resolveTeamByCardPlayers,
-          {
-            sportId: args.sportId,
-            name: ask.name,
-            ...(setYear !== undefined ? { setYear } : {}),
-            cardPlayerIds: ask.cardPlayerIds,
-          },
-        );
-        return teamId ? await ctx.runQuery(internal.teams.getInternal, { id: teamId }) : null;
-      }),
-    );
-    group.forEach((ask, k) => {
-      const team = answers[k];
-      if (!team) {
-        unknownTeams.push(ask.name);
-        return;
-      }
-      teamAutoLinks.push({
-        kind: "team",
-        name: ask.name,
-        teamId: team._id,
-        rowSportId: team.sportId,
-        origin: "careerTeam",
-      });
-      args.resolvedNames?.teamNameByNorm.set(ask.normalized, teamFullName(team));
+  // NEO-592 — the asks are independent, so they run in a rolling window of
+  // `NAME_REVIEW_CONCURRENCY` rather than in groups that each wait for their
+  // slowest member, and `resolveTeamByCardPlayers` answers with the team row
+  // itself, so there is no second hop to read it back.
+  const careerAnswers = await timedPhase(args.timing, "careerTeams", () =>
+    mapBounded(
+      careerTeamAsks,
+      (ask) =>
+        gate.runQuery(internal.teams.resolveTeamByCardPlayers, {
+          sportId: args.sportId,
+          name: ask.name,
+          ...(setYear !== undefined ? { setYear } : {}),
+          cardPlayerIds: ask.cardPlayerIds,
+        }),
+      NAME_REVIEW_CONCURRENCY,
+    ),
+  );
+  careerTeamAsks.forEach((ask, k) => {
+    const team = careerAnswers[k];
+    if (!team) {
+      unknownTeams.push(ask.name);
+      return;
+    }
+    teamAutoLinks.push({
+      kind: "team",
+      name: ask.name,
+      teamId: team._id,
+      rowSportId: team.sportId,
+      origin: "careerTeam",
     });
-  }
+    args.resolvedNames?.teamNameByNorm.set(ask.normalized, teamFullName(team));
+  });
 
   /**
    * NEO-424 — rule E, PRESELECTS for names still unknown: a default the
@@ -2080,65 +2327,81 @@ async function resolveUnknownsAndStartBatch(
   }> = [];
   const priorYearPick = new Map<string, Id<"players">>();
   if (queuedPlayerNames.length > 0) {
-    const priorProductId = await ctx.runQuery(
-      internal.setHistory.findPriorYearProduct,
-      { selectorOptionId: args.selectorOptionId },
-    );
-    if (priorProductId) {
-      const prior = await scanSetHistory(ctx, {
-        selectorOptionId: priorProductId,
-      });
-      if (prior.complete) {
-        for (const name of queuedPlayerNames) {
-          const id = onlyId(prior.playersByName.get(normalizePlayerName(name)));
-          if (id) priorYearPick.set(name, id as Id<"players">);
-        }
-      }
-      console.log(
-        JSON.stringify({
-          msg: "prior_year_product_scan",
-          selectorOptionId: args.selectorOptionId,
-          priorProductId,
-          complete: prior.complete,
-          nodes: prior.stats.nodes,
-          calls: prior.stats.calls,
-          preselected: priorYearPick.size,
-        }),
+    await timedPhase(args.timing, "preselects", async () => {
+      // The prior-year product came with the prelude (NEO-592): one more read
+      // of the same walk that used to cost the gate a hop of its own.
+      const priorProductId = args.prelude.priorYearProductId;
+      // E2 only asks about names that matched nobody in the set's sport: a
+      // name with two or more in-sport rows has two or more namesakes in all
+      // sports.
+      //
+      // NEO-592 — asked for EVERY such name, not only those E1 leaves
+      // unsettled, so the namesake lookup does not have to wait for the
+      // prior-year scan to know which names remain. The extra answers are never
+      // read: the loop below skips a name E1 picked before it looks at E2's
+      // map, so the preselects are exactly what they were.
+      const namesakeKeys = Array.from(
+        new Set(
+          queuedPlayerNames
+            .filter((name) => matchCountByName.get(name) === 0)
+            .map((name) => normalizePlayerName(name))
+            .filter((key) => key.length > 0),
+        ),
       );
-    }
-    // E2 only asks about names that matched nobody in the set's sport: a name
-    // with two or more in-sport rows has two or more namesakes in all sports.
-    const namesakeKeys = Array.from(
-      new Set(
-        queuedPlayerNames
-          .filter((name) => !priorYearPick.has(name) && matchCountByName.get(name) === 0)
-          .map((name) => normalizePlayerName(name))
-          .filter((key) => key.length > 0),
-      ),
-    );
-    const namesakeByKey = new Map<
-      string,
-      { playerId: Id<"players">; sportId: Id<"selectorOptions">; sportValue: string }
-    >();
-    for (let start = 0; start < namesakeKeys.length; start += NAMESAKE_NAMES_PER_CALL) {
-      for (const row of await ctx.runQuery(internal.setHistory.findOnlyNamesakes, {
-        names: namesakeKeys.slice(start, start + NAMESAKE_NAMES_PER_CALL),
-      })) {
-        namesakeByKey.set(row.nameNormalized, row);
+      const namesakeSlices: string[][] = [];
+      for (let start = 0; start < namesakeKeys.length; start += NAMESAKE_NAMES_PER_CALL) {
+        namesakeSlices.push(namesakeKeys.slice(start, start + NAMESAKE_NAMES_PER_CALL));
       }
-    }
-    for (const name of queuedPlayerNames) {
-      if (priorYearPick.has(name)) continue;
-      const row = namesakeByKey.get(normalizePlayerName(name));
-      if (!row) continue;
-      preselects.push({
-        name,
-        playerId: row.playerId,
-        sportId: row.sportId,
-        sportValue: row.sportValue,
-        reason: "onlyNamesake",
-      });
-    }
+      const priorScan: Promise<SetHistory | null> = priorProductId
+        ? scanSetHistory(gate, { selectorOptionId: priorProductId })
+        : Promise.resolve(null);
+      const namesakeLookups = mapBounded(
+        namesakeSlices,
+        (names) => gate.runQuery(internal.setHistory.findOnlyNamesakes, { names }),
+        NAME_REVIEW_CONCURRENCY,
+      );
+      const [prior, namesakeAnswers] = await settleAll<
+        [SetHistory | null, Awaited<typeof namesakeLookups>]
+      >([priorScan, namesakeLookups]);
+      if (priorProductId && prior) {
+        if (prior.complete) {
+          for (const name of queuedPlayerNames) {
+            const id = onlyId(prior.playersByName.get(normalizePlayerName(name)));
+            if (id) priorYearPick.set(name, id as Id<"players">);
+          }
+        }
+        console.log(
+          JSON.stringify({
+            msg: "prior_year_product_scan",
+            selectorOptionId: args.selectorOptionId,
+            priorProductId,
+            complete: prior.complete,
+            nodes: prior.stats.nodes,
+            calls: prior.stats.calls,
+            preselected: priorYearPick.size,
+          }),
+        );
+      }
+      const namesakeByKey = new Map<
+        string,
+        { playerId: Id<"players">; sportId: Id<"selectorOptions">; sportValue: string }
+      >();
+      for (const rows of namesakeAnswers) {
+        for (const row of rows) namesakeByKey.set(row.nameNormalized, row);
+      }
+      for (const name of queuedPlayerNames) {
+        if (priorYearPick.has(name)) continue;
+        const row = namesakeByKey.get(normalizePlayerName(name));
+        if (!row) continue;
+        preselects.push({
+          name,
+          playerId: row.playerId,
+          sportId: row.sportId,
+          sportValue: row.sportValue,
+          reason: "onlyNamesake",
+        });
+      }
+    });
   }
 
   /*
@@ -2157,9 +2420,19 @@ async function resolveUnknownsAndStartBatch(
     string,
     { sportId: Id<"selectorOptions">; sportValue: string | null }
   >();
+  const homeSportSlices: Array<Array<Id<"players">>> = [];
   for (let start = 0; start < idsNeedingSport.length; start += SET_HISTORY_IDS_PER_CALL) {
-    const slice = idsNeedingSport.slice(start, start + SET_HISTORY_IDS_PER_CALL);
-    for (const row of await ctx.runQuery(internal.setHistory.historyPlayersByIds, { playerIds: slice })) {
+    homeSportSlices.push(idsNeedingSport.slice(start, start + SET_HISTORY_IDS_PER_CALL));
+  }
+  const homeSportAnswers = await timedPhase(args.timing, "links", () =>
+    mapBounded(
+      homeSportSlices,
+      (slice) => gate.runQuery(internal.setHistory.historyPlayersByIds, { playerIds: slice }),
+      NAME_REVIEW_CONCURRENCY,
+    ),
+  );
+  for (const rows of homeSportAnswers) {
+    for (const row of rows) {
       homeSportById.set(row.playerId as string, {
         sportId: row.sportId,
         sportValue: row.sportValue,
@@ -2269,6 +2542,7 @@ async function resolveUnknownsAndStartBatch(
   // Asked first rather than called unconditionally: with no batch open and no
   // unknown names, `startBatch` would mint an EMPTY batch and hand the client
   // a batchId for a wizard with nothing in it.
+  const batchStartedAt = Date.now();
   const callerId = await getCurrentUserId(ctx);
   if (!callerId) throw new Error("Not authenticated");
   // NEO-402 — replaces this operator's record for the set whole, so a re-fetch
@@ -2276,7 +2550,7 @@ async function resolveUnknownsAndStartBatch(
   // NEO-424 — auto-linked names are deliberately absent (D1): this record is
   // read BEFORE decisions in the commit prelude, so an auto-link written here
   // would survive the operator's Change.
-  await ctx.runMutation(internal.checklistNameResolutions.replaceForFetch, {
+  await gate.runMutation(internal.checklistNameResolutions.replaceForFetch, {
     selectorOptionId: args.selectorOptionId,
     createdByUserId: callerId,
     sportId: args.sportId,
@@ -2293,12 +2567,12 @@ async function resolveUnknownsAndStartBatch(
   const opensBatch = hasUnknowns || autoLinks.length > 0;
   const openBatchId = opensBatch
     ? null
-    : await ctx.runQuery(internal.entityReviewQueue.findOpenBatch, {
+    : await gate.runQuery(internal.entityReviewQueue.findOpenBatch, {
         selectorOptionId: args.selectorOptionId,
         createdByUserId: callerId,
       });
   if (opensBatch || openBatchId !== null) {
-    batchId = await ctx.runMutation(internal.entityReviewQueue.startBatch, {
+    batchId = await gate.runMutation(internal.entityReviewQueue.startBatch, {
       selectorOptionId: args.selectorOptionId,
       createdByUserId: callerId,
       sportId: args.sportId,
@@ -2319,6 +2593,8 @@ async function resolveUnknownsAndStartBatch(
       ...(preselects.length > 0 ? { preselects } : {}),
     });
   }
+
+  args.timing.phases.batch = Date.now() - batchStartedAt;
 
   return {
     unknownPlayers,
@@ -17346,17 +17622,26 @@ export const resolveChecklistEntities = action({
     await requireAdmin(ctx);
     assertCardBatchWithinLimits(args.cards, "resolveChecklistEntities");
 
+    // NEO-592 — hop count and per-phase times for the `review_gate_timing`
+    // line at the end: this action's wall time is its storage round trips.
+    const gateStartedAt = Date.now();
+    const timing: GateTiming = { hops: 0, phases: {} };
+    const gate = countHops(ctx, timing);
+
+    // Everything the gate reads before it asks about names, in one hop.
+    const prelude = await timedPhase(timing, "prelude", () =>
+      gate.runQuery(internal.selectorOptions.reviewGatePrelude, {
+        selectorOptionId: args.selectorOptionId,
+        sportId: args.sportId,
+      }),
+    );
+
     // `sportId` used to be derived server-side inside fetchCardChecklist; it
     // now round-trips through the browser, so it must be re-validated rather
     // than trusted. A wrong id would bucket every name against the wrong
     // sport (making them all look unknown) and stamp review rows with a row
     // that has no sportConfig, silently disabling Wikidata enrichment.
-    const chainForSport = await ctx.runQuery(
-      api.selectorOptions.getAncestorChain,
-      { id: args.selectorOptionId },
-    );
-    const sportAncestor = chainForSport.find((a) => a.level === "sport");
-    if (!sportAncestor || sportAncestor._id !== args.sportId) {
+    if (!prelude.sportMatches) {
       throw new Error(
         "resolveChecklistEntities: sportId is not the sport ancestor of selectorOptionId",
       );
@@ -17422,29 +17707,45 @@ export const resolveChecklistEntities = action({
       }
     }
 
-    const sportRow = await ctx.runQuery(
-      api.selectorOptions.getSelectorOptionById,
-      { id: args.sportId },
-    );
-
     const resolvedNames = emptyResolvedNames();
     const result = await resolveUnknownsAndStartBatch(ctx, {
       selectorOptionId: args.selectorOptionId,
       sportId: args.sportId,
-      sportLabel: sportRow?.value ?? "",
+      sportLabel: prelude.sportLabel,
       additionalPlayerNames,
       additionalTeamNames,
       cardTeamNamesByPlayer,
       cardPlayerNamesByTeam,
       resolvedNames,
+      prelude,
+      timing,
     });
     // NEO-335 — after the gate, from the gate's own answers.
-    const titleContext = await buildTitleContext(ctx, {
-      selectorOptionId: args.selectorOptionId,
-      sportId: args.sportId,
-      cards: args.cards,
-      resolved: resolvedNames,
-    });
+    const titleContext = await timedPhase(timing, "title", () =>
+      buildTitleContext(gate, {
+        selectorOptionId: args.selectorOptionId,
+        sportId: args.sportId,
+        cards: args.cards,
+        resolved: resolvedNames,
+      }),
+    );
+    // NEO-592 — ids, counts and milliseconds only, never a name.
+    console.log(
+      JSON.stringify({
+        msg: "review_gate_timing",
+        selectorOptionId: args.selectorOptionId,
+        sportId: args.sportId,
+        cards: args.cards.length,
+        playerNames: additionalPlayerNames.length,
+        teamNames: additionalTeamNames.length,
+        unknownPlayers: result.unknownPlayers.length,
+        unknownTeams: result.unknownTeams.length,
+        autoLinked: result.autoLinkedCount,
+        hops: timing.hops,
+        totalMs: Date.now() - gateStartedAt,
+        phasesMs: timing.phases,
+      }),
+    );
     return { ...result, titleContext };
   },
 });

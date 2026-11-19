@@ -64,6 +64,10 @@ const WAVE = 10;
 /** Long enough that the window outlasts the spec: the lane must not get a turn before the assert. */
 const RETRY_AFTER_S = 90;
 
+// GUIDE hard rule 5: a breaker spec never retries. Its fault opens the deployment-wide
+// BSC call gate, which the failure reset does not close.
+test.describe.configure({ retries: 0 });
+
 test(
   "Checklist fetch — a BSC 429 on the team lookup opens the cooldown: the fetch lands at once, no team is guessed, and every card waits in the background queue (NEO-552)",
   { tag: ["@set-selector", "@bsc-breaker"] },

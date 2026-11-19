@@ -41,9 +41,13 @@ import { normalizePlayerName } from "./players";
 import { normalizeTeamName } from "./teams";
 import { titleChainFacts, titleChainFactsFields } from "./listingShortName";
 import { effectiveCardPlayerDefaults } from "./cardPlayersBulk";
+import { mapBounded, settleAll } from "./lib/boundedConcurrency";
 
 /** Player ids read per `playerNamesByIds` call: one transaction's budget. */
 export const TITLE_CONTEXT_PLAYER_PAGE = 200;
+
+/** `playerNamesByIds` pages asked at once by `buildTitleContext`. */
+const TITLE_CONTEXT_PAGE_CONCURRENCY = 4;
 
 /** Depth cap on the ancestor walk, as the prelude's sibling walks have. */
 const MAX_ANCESTOR_DEPTH = 16;
@@ -181,11 +185,14 @@ export const playerNamesByIds = internalQuery({
         `playerNamesByIds: ${args.ids.length} ids exceeds the ${TITLE_CONTEXT_PLAYER_PAGE}-id page`,
       );
     }
+    // NEO-592 — independent point reads, issued together (up to 16 to storage
+    // per round) rather than one round trip each; input order kept.
+    const players = await mapBounded(args.ids, (id) => ctx.db.get(id));
     const out: Array<{ id: Id<"players">; name: string }> = [];
-    for (const id of args.ids) {
-      const player = await ctx.db.get(id);
+    args.ids.forEach((id, i) => {
+      const player = players[i];
       if (player) out.push({ id, name: player.name });
-    }
+    });
     return out;
   },
 });
@@ -212,7 +219,7 @@ export function emptyResolvedNames(): ResolvedNames {
  * normaliser.
  */
 export async function buildTitleContext(
-  ctx: ActionCtx,
+  ctx: Pick<ActionCtx, "runQuery">,
   args: {
     selectorOptionId: Id<"selectorOptions">;
     sportId: Id<"selectorOptions">;
@@ -221,20 +228,29 @@ export async function buildTitleContext(
   },
 ): Promise<TitleContext> {
   type SetFacts = Omit<TitleContext, "players" | "teams">;
-  const facts: SetFacts = await ctx.runQuery(internal.listingTitleContext.titleSetFacts, {
-    selectorOptionId: args.selectorOptionId,
-    sportId: args.sportId,
-  });
-
   const ids = Array.from(new Set(args.resolved.playerIdByNorm.values()));
-  const nameById = new Map<string, string>();
+  const pages: Array<Array<Id<"players">>> = [];
   for (let i = 0; i < ids.length; i += TITLE_CONTEXT_PLAYER_PAGE) {
-    const page: Array<{ id: Id<"players">; name: string }> = await ctx.runQuery(
-      internal.listingTitleContext.playerNamesByIds,
-      {
-        ids: ids.slice(i, i + TITLE_CONTEXT_PLAYER_PAGE),
-      },
-    );
+    pages.push(ids.slice(i, i + TITLE_CONTEXT_PLAYER_PAGE));
+  }
+  // NEO-592 — the set facts and the player-name pages do not depend on each
+  // other, so they are asked together (the pages at most four at once) rather
+  // than one after another; every answer is merged in the same order.
+  const [facts, namePages] = await settleAll<
+    [SetFacts, Array<Array<{ id: Id<"players">; name: string }>>]
+  >([
+    ctx.runQuery(internal.listingTitleContext.titleSetFacts, {
+      selectorOptionId: args.selectorOptionId,
+      sportId: args.sportId,
+    }) as Promise<SetFacts>,
+    mapBounded(
+      pages,
+      (page) => ctx.runQuery(internal.listingTitleContext.playerNamesByIds, { ids: page }),
+      TITLE_CONTEXT_PAGE_CONCURRENCY,
+    ),
+  ]);
+  const nameById = new Map<string, string>();
+  for (const page of namePages) {
     for (const { id, name } of page) nameById.set(id, name);
   }
 

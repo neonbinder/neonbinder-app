@@ -5,6 +5,7 @@ import { v } from "convex/values";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { getCurrentUserId, requireAdmin } from "../auth";
+import { siteTokenForCurrentUser } from "../credentials";
 import {
   recordAdapterCall,
   recordAdapterPhase,
@@ -262,56 +263,70 @@ export const getBscToken = internalAction({
     error: v.optional(v.string()),
   }),
   handler: async (ctx, args): Promise<{ success: boolean; token?: string; error?: string }> => {
-    const requestId = args.requestId ?? newRequestId();
-    const start = Date.now();
-    try {
-      const tokenResult = await ctx.runAction(
-        internal.credentials.getSiteToken,
-        { site: "buysportscards" },
-      );
-
-      if (tokenResult?.token) {
-        await recordAdapterCall(ctx, {
-          requestId,
-          operation: "getBscToken",
-          platform: "bsc",
-          duration_ms: Date.now() - start,
-          success: true,
-        });
-        return { success: true, token: tokenResult.token };
-      }
-
-      await recordAdapterCall(ctx, {
-        requestId,
-        operation: "getBscToken",
-        platform: "bsc",
-        duration_ms: Date.now() - start,
-        success: false,
-        error_class: "no_credentials",
-      });
-      return {
-        success: false,
-        error: "No BSC token available. Connect your BSC account first.",
-      };
-    } catch (error) {
-      console.error("[getBscToken] Error:", error);
-      await recordAdapterCall(ctx, {
-        requestId,
-        operation: "getBscToken",
-        platform: "bsc",
-        duration_ms: Date.now() - start,
-        success: false,
-        error_class: classifyAdapterError(
-          error instanceof Error ? error.message : String(error),
-        ),
-      });
-      return {
-        success: false,
-        error: `Failed to get BSC token: ${error instanceof Error ? error.message : "Unknown error"}`,
-      };
-    }
+    return await readBscToken(ctx, args.requestId);
   },
 });
+
+/**
+ * The body of `getBscToken` as a plain function. The adapter's own actions
+ * call this directly instead of `ctx.runAction(getBscToken)`: that route is
+ * `getBscToken` -> `credentials.getSiteToken`, two action hops per fetch, and
+ * a CI run saw a parent sit idle for 27 s on a child that had finished in
+ * 0.4 s (NEO-605). Same answer, same `recordAdapterCall`, same error
+ * classification; the identity is `ctx.auth`'s, which is what `runAction`
+ * propagated, so a caller with none still gets "Not authenticated" (as a
+ * `success: false` answer). Never throws, never logs the token.
+ */
+export async function readBscToken(
+  ctx: ActionCtx,
+  requestId?: string,
+): Promise<{ success: boolean; token?: string; error?: string }> {
+  const rid = requestId ?? newRequestId();
+  const start = Date.now();
+  try {
+    const tokenResult = await siteTokenForCurrentUser(ctx, "buysportscards");
+
+    if (tokenResult?.token) {
+      await recordAdapterCall(ctx, {
+        requestId: rid,
+        operation: "getBscToken",
+        platform: "bsc",
+        duration_ms: Date.now() - start,
+        success: true,
+      });
+      return { success: true, token: tokenResult.token };
+    }
+
+    await recordAdapterCall(ctx, {
+      requestId: rid,
+      operation: "getBscToken",
+      platform: "bsc",
+      duration_ms: Date.now() - start,
+      success: false,
+      error_class: "no_credentials",
+    });
+    return {
+      success: false,
+      error: "No BSC token available. Connect your BSC account first.",
+    };
+  } catch (error) {
+    console.error("[getBscToken] Error:", error);
+    await recordAdapterCall(ctx, {
+      requestId: rid,
+      operation: "getBscToken",
+      platform: "bsc",
+      duration_ms: Date.now() - start,
+      success: false,
+      error_class: classifyAdapterError(
+        error instanceof Error ? error.message : String(error),
+      ),
+    });
+    return {
+      success: false,
+      error: `Failed to get BSC token: ${error instanceof Error ? error.message : "Unknown error"}`,
+    };
+  }
+}
 
 /**
  * NEO-239 — the levels a BSC request is SCOPED by, and the facets a checklist
@@ -429,7 +444,7 @@ export const fetchBscSelectorOptions = action({
       const tokenStart = Date.now();
       const tokenResult: { success: boolean; token?: string; error?: string } =
         await whileWaitingOnBsc(rec, () =>
-          ctx.runAction(internal.adapters.buysportscards.getBscToken, { requestId }),
+          readBscToken(ctx, requestId),
         );
       tokenMs = Date.now() - tokenStart;
 
@@ -1573,7 +1588,7 @@ async function bscChecklistWithSession(
       }
       const refreshed: { success: boolean; token?: string; error?: string } =
         await whileWaitingOnBsc(rec, () =>
-          ctx.runAction(internal.adapters.buysportscards.getBscToken, {}),
+          readBscToken(ctx),
         );
       logMarketplaceLimiter({
         limiter: "bsc_token_reauth",
@@ -2023,7 +2038,7 @@ export const fetchBscChecklist = action({
       // `fetchBscSelectorOptions`).
       const tokenResult: { success: boolean; token?: string; error?: string } =
         await whileWaitingOnBsc(rec, () =>
-          ctx.runAction(internal.adapters.buysportscards.getBscToken, {}),
+          readBscToken(ctx),
         );
 
       if (!tokenResult.success || !tokenResult.token) {
@@ -2141,7 +2156,7 @@ export const probeBscChecklistBatch = internalAction({
       try {
         const tokenResult: { success: boolean; token?: string; error?: string } =
           await whileWaitingOnBsc(rec, () =>
-            ctx.runAction(internal.adapters.buysportscards.getBscToken, {}),
+            readBscToken(ctx),
           );
         token = tokenResult.success ? tokenResult.token : undefined;
       } catch {
