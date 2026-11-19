@@ -89,3 +89,5 @@
 - [Admin group writes and the failure reset](patterns_admin_group_writes_and_the_failure_reset.md) — NEO-592: own set for group-wide admin close; reset local opt-in, order proof, no-retry tags
 - [Action idle between child calls](patterns_action_stall_between_child_calls.md) — group convex-logs by requestId; token→gate gap ~0.03 s healthy; 2-source fetch has no wait line pre-dialog
 - [Window vs rest exec medians; eBay policy timeouts](patterns_window_vs_rest_exec_medians.md) — loaded deployment vs slow code; getOptedInPrograms timeout lines
+- [Find one card among NNO cards](patterns_find_one_card_among_nno_cards.md) — drawer Next/Previous card walk by Card name; wizard Skip aria-label gives the name; clear a flag you flip on a global row
+- [Cross-sport player resurfaces on re-sync](pattern_cross_sport_player_resurfaces_on_resync.md) — a player created under another sport comes back as a "New player" row on re-sync (gate is set-sport-scoped); a teams-only re-sync spec must account for him

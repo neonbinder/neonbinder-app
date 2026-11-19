@@ -243,3 +243,4 @@
 - [Merge guard survival; bscTeamPool enqueue](patterns_merge_resolution_guard_survival_and_bsc_lane_enqueue.md) — comm -23 line-survival check for merges; one-slot lane enqueue is bounded if admin/internal + row re-read
 - [Cross-workflow preview wait](patterns_cross_workflow_preview_wait.md) — waiter gate ⊆ builder's merge_group scope; tag-exists wait = stale revision
 - [Listing text trust path](patterns_listing_text_trust_path.md) — generator text reaches eBay unescaped; a new input from a non-admin/marketplace write = finding
+- [Patterns neo426 teamless sport default](patterns_neo426_teamless_sport_default.md) — server auto-stamp of a suppression flag: compare to what the wire already sends; absent lookup != answered
