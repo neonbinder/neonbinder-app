@@ -2006,3 +2006,59 @@ describe("eBay Marketplace Account Deletion endpoint", () => {
     });
   });
 });
+
+// ── NEO-555: the fake eBay ───────────────────────────────────────────────────
+
+describe("connecting on the fake eBay", () => {
+  const FAKE_ROOT = "https://neonbinder-fake-bsc-0000-uc.a.run.app";
+  function armFake() {
+    vi.stubEnv("EBAY_ENVIRONMENT", "fake");
+    vi.stubEnv("EBAY_CLIENT_ID", "");
+    vi.stubEnv("EBAY_RU_NAME", "");
+    vi.stubEnv("TESTING_RESET_SECRET", "armed");
+    vi.stubEnv("NEONBINDER_BSC_API_BASE", FAKE_ROOT);
+    vi.stubEnv("NEONBINDER_FAKE_BSC_KEY", "caller-key");
+  }
+
+  test("connectionState reports environment fake, configured", async () => {
+    armFake();
+    const s = await setup({ connected: false });
+    expect(await s.me.query(api.ebayConnect.connectionState, {})).toMatchObject({
+      configured: true,
+      environment: "fake",
+      status: "notConnected",
+    });
+  });
+
+  test("an unusable fake setup is not configured: no environment, no consent URL, never the sandbox", async () => {
+    armFake();
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    // Sandbox wiring beside it must not be picked up.
+    vi.stubEnv("EBAY_CLIENT_ID", "cid");
+    vi.stubEnv("EBAY_RU_NAME", "ru");
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const s = await setup({ connected: false });
+    expect(await s.me.query(api.ebayConnect.connectionState, {})).toMatchObject({ configured: false, environment: null });
+    expect(await s.me.mutation(api.ebayConnect.beginConnect, {})).toMatchObject({ ok: false });
+    vi.restoreAllMocks();
+  });
+
+  test("beginConnect answers the relative testing consent page with the stored bare nonce, whatever the origin", async () => {
+    armFake();
+    const s = await setup({ connected: false });
+    for (const returnOrigin of [undefined, "https://www.neonbinder.io", "http://localhost:3000"]) {
+      const begun = (await s.me.mutation(api.ebayConnect.beginConnect, { returnOrigin })) as { authorizeUrl: string };
+      expect(begun.authorizeUrl.startsWith("/testing/fake-ebay/authorize?")).toBe(true);
+      const state = new URL(begun.authorizeUrl, "https://x.invalid").searchParams.get("state");
+      expect(state).toMatch(/^[0-9a-f]{48}$/);
+      expect((await settingsRow(s))?.connectNonce).toBe(state);
+    }
+  });
+
+  test("returnStateFor on fake is the bare nonce for any origin", () => {
+    const nonce = "f".repeat(48);
+    for (const origin of ["https://www.neonbinder.io", "http://localhost:3000", "https://neonbinder-abc123def-neon-binder.vercel.app"]) {
+      expect(returnStateFor(nonce, origin, "fake")).toBe(nonce);
+    }
+  });
+});

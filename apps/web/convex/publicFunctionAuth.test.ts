@@ -4081,3 +4081,44 @@ describe("NEO-552: the fake BSC test controls are locked like the other testing 
     await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/real BuySportsCards/);
   });
 });
+
+/**
+ * NEO-555 — the fake eBay test controls (`testing.fakeEbayConsent`,
+ * `testing.setMyEbaySeller`, `testing.addMyEbayOrder`) and the poll-now
+ * control (`testing.pollMySalesNow`). Public because the stand-in consent page
+ * and the E2E hops call them as the signed-in suite account, so they carry the
+ * testing seeds' locks: refused to an anonymous caller, refused where
+ * `TESTING_RESET_SECRET` is unset (every production deployment), and refused on
+ * a deployment whose eBay is not the fake. None takes a namespace or an owner;
+ * both are derived from the verified Clerk subject (pinned in
+ * `testing.fakeEbay.test.ts`).
+ */
+describe("NEO-555: the fake eBay test controls are locked like the other testing seeds", () => {
+  const order = { lines: [{ quantity: 1 }] };
+  const cases: Array<[string, (t: ReturnType<typeof convexTest>) => Promise<unknown>]> = [
+    ["testing.fakeEbayConsent", (t) => t.action(api.testing.fakeEbayConsent, {})],
+    ["testing.setMyEbaySeller", (t) => t.action(api.testing.setMyEbaySeller, { optedIn: true })],
+    ["testing.addMyEbayOrder", (t) => t.action(api.testing.addMyEbayOrder, { order })],
+    ["testing.pollMySalesNow", (t) => t.action(api.testing.pollMySalesNow, { platform: "ebay" })],
+  ];
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  test.each(cases)("%s refuses an anonymous caller", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    await expect(call(convexTest(schema, modules))).rejects.toThrow(/Not authenticated/);
+  });
+
+  test.each(cases)("%s throws where TESTING_RESET_SECRET is unset", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "");
+    await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/not enabled/);
+  });
+
+  test.each(cases)("%s refuses a deployment whose eBay is not the fake", async (_name, call) => {
+    vi.stubEnv("TESTING_RESET_SECRET", "test-enabled");
+    vi.stubEnv("EBAY_ENVIRONMENT", "");
+    await expect(call(convexTest(schema, modules).withIdentity(SIGNED_IN))).rejects.toThrow(/does not talk to the fake eBay/);
+  });
+});

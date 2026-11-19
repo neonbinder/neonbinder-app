@@ -51,6 +51,7 @@ import type { ActionCtx } from "./_generated/server";
 import {
   applySaleLinesCore,
   eraOfVariant,
+  pollOwnerImpl,
   projectEbayOrderForRecord,
   recordOrderCore,
   SALE_ITEMS_PER_APPLY,
@@ -496,6 +497,8 @@ export const MAX_FAKE_BSC_DELAY_MS = 120_000;
 export const MAX_FAKE_BSC_FAULT_TTL_S = 3_600;
 /** Most items on one injected order. */
 export const MAX_FAKE_BSC_ORDER_ITEMS = 50;
+/** Most error ids one `ebayError` fault carries (the fake's own cap). */
+export const MAX_FAKE_EBAY_ERROR_IDS = 10;
 
 /** One fault rule, as CONTRACT.md "Faults" names it. */
 export const fakeBscFaultRuleValidator = v.object({
@@ -505,11 +508,24 @@ export const fakeBscFaultRuleValidator = v.object({
     pathTemplate: v.string(),
     cardId: v.optional(v.string()),
   }),
-  kind: v.union(v.literal("429"), v.literal("503"), v.literal("delay"), v.literal("hang"), v.literal("reset")),
+  kind: v.union(
+    v.literal("429"),
+    v.literal("503"),
+    v.literal("delay"),
+    v.literal("hang"),
+    v.literal("reset"),
+    // NEO-555 — the two kinds that answer in eBay's own bodies; their template must start `ebay/`.
+    v.literal("ebayError"),
+    v.literal("unauthorized"),
+  ),
   delayMs: v.optional(v.number()),
   retryAfterS: v.optional(v.number()),
   times: v.optional(v.number()),
   ttlS: v.optional(v.number()),
+  /** `ebayError` only: the HTTP status answered (400-599). */
+  status: v.optional(v.number()),
+  /** `ebayError` only: eBay's error ids in the body (1-10 whole numbers). */
+  errorIds: v.optional(v.array(v.number())),
 });
 type FakeBscFaultRule = (typeof fakeBscFaultRuleValidator)["type"];
 
@@ -544,17 +560,37 @@ export function checkFakeBscFaultRules(rules: FakeBscFaultRule[]): void {
     throw new Error(`Set between 1 and ${MAX_FAKE_BSC_FAULT_RULES} fault rules`);
   }
   for (const rule of rules) {
+    // NEO-555 — a template may end in `/*` to cover everything under a prefix
+    // (`ebay/api/sell/*`). The star is only ever the last segment, so a rule
+    // can never be a bare `*` that matches every path of both marketplaces.
     const template = rule.match.pathTemplate;
+    const literal = template.endsWith("/*") ? template.slice(0, -2) : template;
     if (
       template.length === 0 ||
       template.length > 200 ||
-      !/^[A-Za-z0-9/_:.-]+$/.test(template) ||
+      literal.length === 0 ||
+      !/^[A-Za-z0-9/_:.-]+$/.test(literal) ||
       template.includes("..") ||
       template.includes("//") ||
       // A scheme (`https:`) makes it a URL, not a path; `:id` placeholders follow a slash.
       /^[A-Za-z][A-Za-z0-9+.-]*:/.test(template)
     ) {
-      throw new Error("A fault rule's pathTemplate must be a BSC path template such as seller/order/:id");
+      throw new Error("A fault rule's pathTemplate must be a marketplace path template such as seller/order/:id or ebay/api/sell/*");
+    }
+    const ebayKind = rule.kind === "ebayError" || rule.kind === "unauthorized";
+    if (ebayKind && !template.startsWith("ebay/")) {
+      throw new Error(`A ${rule.kind} fault's pathTemplate must start with ebay/`);
+    }
+    if (rule.kind === "ebayError") {
+      if (!isWholeIn(rule.status, 400, 599) || rule.status === undefined) {
+        throw new Error("An ebayError fault needs a status from 400 to 599");
+      }
+      const ids = rule.errorIds;
+      if (!ids || ids.length < 1 || ids.length > MAX_FAKE_EBAY_ERROR_IDS || !ids.every((id) => isWholeIn(id, 1, 9_999_999))) {
+        throw new Error(`An ebayError fault needs 1 to ${MAX_FAKE_EBAY_ERROR_IDS} errorIds, each a whole number`);
+      }
+    } else if (rule.status !== undefined || rule.errorIds !== undefined) {
+      throw new Error("status and errorIds belong to ebayError faults");
     }
     if (rule.match.cardId !== undefined && !/^[A-Za-z0-9-]{1,64}$/.test(rule.match.cardId)) {
       throw new Error("A fault rule's cardId must be a BSC card id");
@@ -679,6 +715,255 @@ export const clearBscCallGate = action({
     await callerFakeBscNamespace(ctx);
     const cleared: { deleted: number } = await ctx.runMutation(internal.bscCallGate.clearForTesting, {});
     return cleared;
+  },
+});
+
+// ── NEO-555: the fake eBay's test controls ────────────────────────────────
+//
+// What a spec sets up on its own fake eBay seller, and the poll it presses to
+// see a sale. Same locks as the fake BSC controls above: they throw where
+// `TESTING_RESET_SECRET` is unset, refuse an anonymous caller, act only on the
+// caller's own namespace (derived from the verified Clerk subject; no
+// namespace argument exists to spoof), and refuse a deployment whose eBay is
+// not the fake (`ebayConfig()` is null or not `fake` there). Nothing secret
+// passes through these arguments; the consent code `fakeEbayConsent` returns
+// is a one-time code for the caller's own fake seller, worth nothing anywhere
+// else.
+
+/** Whether this deployment's eBay is the fake. `ebayConfig()` is only ever `fake` beside the testing flag and the fake BSC. */
+export function fakeEbayMode(): boolean {
+  return ebayConfig()?.environment === "fake";
+}
+
+/** The fake's two sellers: the main one every run starts as, and a second account to switch to. */
+export const fakeEbaySellerValidator = v.literal("alt");
+
+const FAKE_EBAY_SKU_MAX = 50;
+const FAKE_EBAY_TITLE_MAX = 80;
+export const MAX_FAKE_EBAY_POLICIES = 10;
+export const MAX_FAKE_EBAY_ORDER_LINES = 50;
+
+/** One shipping policy a seller already has on the fake (NB never creates shipping policies). */
+export const fakeEbayPolicyValidator = v.object({
+  name: v.string(),
+  costType: v.optional(v.union(v.literal("FLAT_RATE"), v.literal("CALCULATED"))),
+  services: v.array(
+    v.object({
+      code: v.string(),
+      costCents: v.optional(v.number()),
+      freeShipping: v.optional(v.boolean()),
+      carrier: v.optional(v.string()),
+    }),
+  ),
+});
+type FakeEbayPolicy = (typeof fakeEbayPolicyValidator)["type"];
+
+/** One order a spec injects into its fake seller's history, in the fake's own terms (CONTRACT.md, "Orders"). */
+export const fakeEbayOrderValidator = v.object({
+  orderId: v.optional(v.string()),
+  paymentStatus: v.optional(
+    v.union(v.literal("PAID"), v.literal("PARTIALLY_REFUNDED"), v.literal("FULLY_REFUNDED"), v.literal("PENDING"), v.literal("FAILED")),
+  ),
+  fulfillmentStatus: v.optional(v.union(v.literal("NOT_STARTED"), v.literal("IN_PROGRESS"), v.literal("FULFILLED"))),
+  cancelled: v.optional(v.boolean()),
+  /** When the order was placed, epoch ms. The fake's clock when absent. */
+  creationDateMs: v.optional(v.number()),
+  lines: v.array(
+    v.object({
+      /** A SKU NB listed puts the sale on that listing; absent or unknown is a sale NB did not make. */
+      sku: v.optional(v.string()),
+      title: v.optional(v.string()),
+      quantity: v.number(),
+      priceCents: v.optional(v.number()),
+      listingId: v.optional(v.string()),
+    }),
+  ),
+});
+type FakeEbayOrder = (typeof fakeEbayOrderValidator)["type"];
+
+/** Throws on a policy list the fake would refuse; the fake never sees it. */
+export function checkFakeEbayPolicies(policies: FakeEbayPolicy[]): void {
+  if (policies.length < 1 || policies.length > MAX_FAKE_EBAY_POLICIES) {
+    throw new Error(`Give between 1 and ${MAX_FAKE_EBAY_POLICIES} fulfillmentPolicies`);
+  }
+  const code = /^[A-Za-z0-9_]{1,64}$/;
+  for (const [i, policy] of policies.entries()) {
+    if (policy.name.length < 1 || policy.name.length > 64 || /[\u0000-\u001f\u007f]/.test(policy.name)) {
+      throw new Error(`fulfillmentPolicies[${i}].name is blank, too long or has a control character`);
+    }
+    if (policy.services.length < 1 || policy.services.length > 5) {
+      throw new Error(`fulfillmentPolicies[${i}].services must hold 1-5`);
+    }
+    for (const [j, service] of policy.services.entries()) {
+      if (!code.test(service.code)) throw new Error(`fulfillmentPolicies[${i}].services[${j}].code is not a service code`);
+      if (service.carrier !== undefined && !code.test(service.carrier)) {
+        throw new Error(`fulfillmentPolicies[${i}].services[${j}].carrier is not a carrier code`);
+      }
+      if (!isWholeIn(service.costCents, 0, 100_000)) {
+        throw new Error(`fulfillmentPolicies[${i}].services[${j}].costCents must be whole cents`);
+      }
+    }
+  }
+}
+
+/** Throws on an order the fake would refuse. */
+export function checkFakeEbayOrder(order: FakeEbayOrder): void {
+  if (order.orderId !== undefined && !/^[0-9A-Za-z-]{1,64}$/.test(order.orderId)) throw new Error("orderId is not an eBay order id");
+  if (order.creationDateMs !== undefined && !(Number.isFinite(order.creationDateMs) && order.creationDateMs > 0 && order.creationDateMs < 8.64e15)) {
+    throw new Error("creationDateMs must be epoch milliseconds");
+  }
+  if (order.lines.length < 1 || order.lines.length > MAX_FAKE_EBAY_ORDER_LINES) {
+    throw new Error(`An order carries between 1 and ${MAX_FAKE_EBAY_ORDER_LINES} lines`);
+  }
+  for (const [i, line] of order.lines.entries()) {
+    if (line.sku !== undefined && (line.sku.length < 1 || line.sku.length > FAKE_EBAY_SKU_MAX)) throw new Error(`lines[${i}].sku is blank or too long`);
+    if (line.title !== undefined && (line.title.length < 1 || line.title.length > FAKE_EBAY_TITLE_MAX || /[\u0000-\u001f\u007f]/.test(line.title))) {
+      throw new Error(`lines[${i}].title is blank, too long or has a control character`);
+    }
+    if (!isWholeIn(line.quantity, 1, 1_000)) throw new Error(`lines[${i}].quantity must be a whole number from 1 to 1000`);
+    if (!isWholeIn(line.priceCents, 0, 10_000_000)) throw new Error(`lines[${i}].priceCents must be whole cents`);
+    if (line.listingId !== undefined && !/^\d{1,40}$/.test(line.listingId)) throw new Error(`lines[${i}].listingId must be digits`);
+  }
+}
+
+/**
+ * Throws unless the fake did what was asked. Reads the control result
+ * defensively (`fakeBsc` reports failure in its result, it never throws): a
+ * failure, or a "skipped" from a module that found no fake to talk to, is a
+ * failure here, because the caller already decided this deployment is on it.
+ */
+function requireFakeEbayDone(result: unknown, what: string): void {
+  const r = (typeof result === "object" && result !== null ? result : {}) as { ok?: unknown; skipped?: unknown; error?: unknown; status?: unknown };
+  if (r.ok === false) {
+    throw new Error(`Fake eBay did not ${what}: ${typeof r.error === "string" ? r.error : "no answer"}${typeof r.status === "number" ? ` (${r.status})` : ""}`);
+  }
+  if (r.skipped === true) {
+    throw new Error(`Fake eBay did not ${what}: this deployment has no fake eBay to talk to`);
+  }
+}
+
+/**
+ * The caller's namespace for a fake eBay call, after the testing locks.
+ * Throws off a testing deployment, for an anonymous caller, and on a
+ * deployment whose eBay is not the fake.
+ */
+async function callerFakeEbayNamespace(ctx: ActionCtx): Promise<{ userId: string; ns: string }> {
+  if (!process.env.TESTING_RESET_SECRET) {
+    throw new Error("Fake eBay controls are not enabled on this deployment");
+  }
+  const userId = await getCurrentUserId(ctx);
+  if (!userId) {
+    throw new Error("Not authenticated");
+  }
+  if (!fakeEbayMode()) {
+    throw new Error("This deployment does not talk to the fake eBay, so it takes no fake sellers or orders");
+  }
+  return { userId, ns: fakeBscNamespaceFor(userId, process.env.CONVEX_CLOUD_URL) };
+}
+
+/**
+ * Mint a one-time consent code for the caller's own fake eBay seller, as the
+ * fake's consent screen does when the collector agrees. `seller: "alt"` is
+ * the second account ("Agree as another eBay account"). The stand-in consent
+ * page (`/testing/fake-ebay/authorize`) calls this; the code then rides back
+ * to `/profile/ebay` exactly as eBay's would.
+ */
+export const fakeEbayConsent = action({
+  args: { seller: v.optional(fakeEbaySellerValidator) },
+  returns: v.object({ code: v.string() }),
+  handler: async (ctx, args): Promise<{ code: string }> => {
+    const { ns } = await callerFakeEbayNamespace(ctx);
+    const minted: unknown = await ctx.runAction(internal.fakeBsc.ebayConsent, {
+      ns,
+      ...(args.seller !== undefined ? { seller: args.seller } : {}),
+    });
+    requireFakeEbayDone(minted, "mint a consent code");
+    const code = (minted as { code?: unknown }).code;
+    if (typeof code !== "string" || code.length === 0) {
+      throw new Error("Fake eBay did not mint a consent code: it sent none");
+    }
+    return { code };
+  },
+});
+
+/**
+ * Set up the caller's fake eBay seller: opt it into business policies and/or
+ * give it the shipping policies a real seller already has (NB never creates
+ * shipping policies). Listing policies imply the opt-in unless `optedIn` says
+ * otherwise.
+ */
+export const setMyEbaySeller = action({
+  args: {
+    seller: v.optional(fakeEbaySellerValidator),
+    optedIn: v.optional(v.boolean()),
+    fulfillmentPolicies: v.optional(v.array(fakeEbayPolicyValidator)),
+  },
+  returns: v.object({ policies: v.number() }),
+  handler: async (ctx, args): Promise<{ policies: number }> => {
+    const { ns } = await callerFakeEbayNamespace(ctx);
+    if (args.fulfillmentPolicies !== undefined) checkFakeEbayPolicies(args.fulfillmentPolicies);
+    const done: unknown = await ctx.runAction(internal.fakeBsc.ebaySeller, {
+      ns,
+      ...(args.seller !== undefined ? { seller: args.seller } : {}),
+      ...(args.optedIn !== undefined ? { optedIn: args.optedIn } : {}),
+      ...(args.fulfillmentPolicies !== undefined ? { fulfillmentPolicies: args.fulfillmentPolicies } : {}),
+    });
+    requireFakeEbayDone(done, "set the seller up");
+    return { policies: args.fulfillmentPolicies?.length ?? 0 };
+  },
+});
+
+/**
+ * Add one order to the caller's fake eBay seller history, as a buyer's
+ * purchase would, so the sales poll has something to find. A line naming a SKU
+ * NB listed is a sale of that listing; a line without one is a sale NB did not
+ * make, shown with eBay's own title.
+ */
+export const addMyEbayOrder = action({
+  args: { seller: v.optional(fakeEbaySellerValidator), order: fakeEbayOrderValidator },
+  returns: v.object({ lines: v.number() }),
+  handler: async (ctx, args): Promise<{ lines: number }> => {
+    const { ns } = await callerFakeEbayNamespace(ctx);
+    checkFakeEbayOrder(args.order);
+    const done: unknown = await ctx.runAction(internal.fakeBsc.ebayOrders, {
+      ns,
+      ...(args.seller !== undefined ? { seller: args.seller } : {}),
+      order: args.order,
+    });
+    requireFakeEbayDone(done, "add the order");
+    return { lines: args.order.lines.length };
+  },
+});
+
+/**
+ * Run the caller's sales poll now, for one marketplace, and answer when it has
+ * finished, so a spec does not wait out the 15-minute cron. It is the cron's
+ * own poll for the caller alone (`pollOwnerImpl`); when the cron's poll lands
+ * first the orders are already stored and this reads none new. A poll that
+ * ended in an error throws, so the hop prints a failure rather than a count.
+ * Refuses a deployment on the real marketplace it names.
+ */
+export const pollMySalesNow = action({
+  args: { platform: listingPlatformValidator },
+  returns: v.object({ ordersRead: v.number(), ordersStored: v.number(), linesApplied: v.number() }),
+  handler: async (ctx, args): Promise<{ ordersRead: number; ordersStored: number; linesApplied: number }> => {
+    if (!process.env.TESTING_RESET_SECRET) {
+      throw new Error("The sales poll control is not enabled on this deployment");
+    }
+    const userId = await getCurrentUserId(ctx);
+    if (!userId) {
+      throw new Error("Not authenticated");
+    }
+    if (args.platform === "ebay" ? !fakeEbayMode() : !fakeBscMode()) {
+      throw new Error(
+        args.platform === "ebay"
+          ? "This deployment does not talk to the fake eBay, so it takes no poll on demand"
+          : "This deployment talks to the real BuySportsCards, so it takes no poll on demand",
+      );
+    }
+    const report = await pollOwnerImpl(ctx, { ownerId: userId, platform: args.platform });
+    if (report.error !== null) throw new Error(`The sales check failed: ${report.error}`);
+    return { ordersRead: report.ordersRead, ordersStored: report.ordersStored, linesApplied: report.linesApplied };
   },
 });
 
@@ -1607,6 +1892,28 @@ export const seedMyTestCredentials = action({
       // production). One token exchange, no browser login, so it simply
       // reconnects every time. Skipped like any site with no dev secret.
       if (site === "ebay") {
+        // NEO-555 — on a deployment wired to the fake eBay, the sign-in is the
+        // caller's own fake seller: the fake mints a consent code for their
+        // namespace and the connect spends it, the same grant the consent
+        // screen's Agree gives. No refresh token and no real seller exist
+        // there. The sandbox branch below stays for a deployment on the sandbox.
+        if (fakeEbayMode()) {
+          const minted: unknown = await ctx.runAction(internal.fakeBsc.ebayConsent, {
+            ns: fakeBscNamespaceFor(userId, process.env.CONVEX_CLOUD_URL),
+          });
+          const code = (minted as { code?: unknown } | null)?.code;
+          if (typeof code !== "string" || code.length === 0) {
+            seeded.push({ site, stored: false, reason: "Fake eBay did not mint a consent code" });
+            continue;
+          }
+          const connected = await ctx.runAction(internal.credentials.connectEbay, {
+            userId,
+            code,
+            listing: args.listing === true ? "save" : "testOff",
+          });
+          seeded.push({ site, stored: connected.ok, ...(connected.ok ? {} : { reason: connected.error }) });
+          continue;
+        }
         const refreshToken = process.env.DEV_EBAY_REFRESH_TOKEN;
         if (!refreshToken || !ebayConfigured() || ebayConfig()?.environment !== "sandbox") {
           seeded.push({ site, stored: false, skipped: true });

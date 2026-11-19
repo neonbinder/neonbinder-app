@@ -229,7 +229,6 @@ import type * as syncReports from "../syncReports.js";
 import type * as teamColorSources from "../teamColorSources.js";
 import type * as teams from "../teams.js";
 import type * as testing from "../testing.js";
-import type * as testingSellerCleanup from "../testingSellerCleanup.js";
 import type * as userProfile from "../userProfile.js";
 import type * as variantRole from "../variantRole.js";
 import type * as wikidataPool from "../wikidataPool.js";
@@ -463,7 +462,6 @@ declare const fullApi: ApiFromModules<{
   teamColorSources: typeof teamColorSources;
   teams: typeof teams;
   testing: typeof testing;
-  testingSellerCleanup: typeof testingSellerCleanup;
   userProfile: typeof userProfile;
   variantRole: typeof variantRole;
   wikidataPool: typeof wikidataPool;

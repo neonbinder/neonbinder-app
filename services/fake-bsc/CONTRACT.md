@@ -98,12 +98,16 @@ first, then in code.
   username is not this deployment's own fake account is refused
   (`fake_bsc_namespace_clash`); re-seeding the user repairs it.
 - **Cleanup.** After both E2E passes, `e2e.yml` (the `e2e` job, `if: always()`)
-  runs the internal action `credentials:deleteFakeBscSessionsFromCli` with the
-  preview deploy key. It deletes, through `DELETE /credentials/:key`, the fake
-  key of every user on the deployment, only keys with this deployment's own
-  `buysportscards-credentials-fake-<convexSlug>-` prefix, clears their BSC
-  flag, and reports counts. Outside fake mode it deletes nothing. A failure
-  only warns; the TTL removes what is left.
+  runs the internal action `credentials:deleteFakeSessionsFromCli` (NEO-555;
+  it was `deleteFakeBscSessionsFromCli`) with the preview deploy key. It
+  deletes, through `DELETE /credentials/:key`, the fake key of every user on
+  the deployment, for each marketplace that is in fake mode, only keys with
+  this deployment's own `buysportscards-credentials-fake-<convexSlug>-` or
+  `ebay-credentials-fake-<convexSlug>-` prefix, clears their flag for that
+  site, and reports counts per site: `{fake: true, bsc?: {users, deleted,
+  failed, truncated}, ebay?: {...}}` (`{fake: false}` outside fake mode, where
+  it deletes nothing). A site not in fake mode is skipped, never deleted
+  under its bare key. A failure only warns; the TTL removes what is left.
 
 ## Recorded vs synthesised
 
@@ -817,6 +821,9 @@ namespace beside the BSC state. Nothing in Convex or the browser service
 points at it yet (that is the cutover, PR B); until then it only answers its
 own tests, the drift job and the recorder.
 
+> **PR B (NEO-555) is the cutover: see "PR B: how Convex and the browser
+> service use it" at the end of this section.**
+
 ### Paths, one per real eBay host
 
 | Real host | Fake path |
@@ -1101,6 +1108,77 @@ sandbox capture did not store). A unit test runs both captures against stubs and
 required name is not stored by either run, or when a stored write is neither
 required nor conditional, so a renamed capture goes red. A name may carry a
 ` #variant` after the path; Convex's `narrowMissingCaptures` reads it.
+
+### PR B: how Convex and the browser service use it (NEO-555)
+
+PR B1 taught the browser service the fake key; PR B2 points Convex at the fake.
+They deploy from one commit on separate schedules, so every cross-check below
+fails closed.
+
+- **Switch.** `EBAY_ENVIRONMENT=fake` on a Convex deployment (valid ONLY beside
+  `TESTING_RESET_SECRET` and a fake BSC target, i.e. `NEONBINDER_BSC_API_BASE`
+  naming the fake and `NEONBINDER_FAKE_BSC_KEY` set; the host pin is the one
+  `lib/fakeMarketplace.ts` holds for BSC and eBay alike). Anything else is
+  "not configured", logged (`ebay_fake_misconfigured`: platform and reason
+  only), and **never falls back to the sandbox or production**: Connect is
+  refused and the drain and the order poll skip eBay. `EBAY_CLIENT_ID` and
+  `EBAY_RU_NAME` are ignored in fake mode; the fake's public constants are
+  used. `apiBase` is `<fake origin>/ebay/api`, `mediaBase` is `<fake
+  origin>/ebay/apim`, picture upload is on, links use the production hosts.
+  `fakeBsc:ebayTarget` answers `{mode: "fake" | "sandbox" | "production" |
+  "unconfigured"}` for CI.
+- **Consent.** `ebayAuthorizeUrl` answers the relative
+  `/testing/fake-ebay/authorize?<same params>` with the same bare-nonce state
+  (no return origin is folded in). The testing page asks `fakeBsc.ebayConsent`
+  for a code and hands it to the usual `completeConnect`.
+- **Keys.** `credKey("ebay")` is `ebay-credentials-fake-<convexSlug>-<userId>`
+  in fake mode (a request that asked for the fake never uses the bare key,
+  even when the setup is unusable) and the bare key everywhere else.
+- **Guard 1 (health).** In fake mode Convex sends no eBay credential call
+  (`/oauth/ebay/*`, or any `/credentials/*` call naming an eBay key) unless
+  the browser service's cached `/health` says `ebayFake: true`; a revision
+  without the field is refused too, logged `fake_ebay_browser_not_fake`.
+- **Guard 2 (the connect echo; B1 security audit, mandatory).** The connect
+  answer's `environment` is compared strictly with this deployment's own
+  (`credentials.expectedConnectEnvironment`): `"fake"` is expected in fake
+  mode and ONLY there. A sandbox or production deployment (a bare key)
+  discards a `"fake"` echo as `environmentMismatch`, and a fake deployment
+  discards anything but `"fake"`; the stored session is deleted and nothing
+  is recorded either way.
+- **Calls.** The default-runtime seller client (`adapters/ebaySeller.ts`) sends
+  every request in fake mode with the caller key, the ID token in
+  `X-Serverless-Authorization` and the bare copy in `x-nb-fake-id-token`
+  (`lib/fakeMarketplace.ts`, `signForFake`, token from `internal.fakeBsc.idToken`,
+  cached per audience), `redirect: "error"`. A call that cannot be signed
+  sends nothing and is a `network` failure. eBay paths have no call gate and
+  no `x-nb-fake-ns` header (the user token names the namespace).
+- **Test controls** (`apps/web/convex/fakeBsc.ts`, internal, every `ns` under
+  this deployment's own prefix, all no-ops unless the deployment is on the
+  fake eBay; `seller` is `"main"` (default) or `"alt"`):
+
+  ```ts
+  internal.fakeBsc.ebayConsent({ ns, seller? })   // POST /__fake/ebay/consent -> { code }; THROWS (fixed message) when it cannot give one
+  internal.fakeBsc.ebaySeller({ ns, seller?, optedIn?, fulfillmentPolicies? })
+                                                  // POST /__fake/ebay/seller -> { ok, skipped, fulfillmentPolicyIds, optedIn } | { ok: false, status?, error, detail? }
+  internal.fakeBsc.ebayOrders({ ns, seller?, order })
+                                                  // POST /__fake/ebay/orders -> { ok, skipped, orderIds } | { ok: false, ... }
+  internal.fakeBsc.ebayTarget({})                 // -> { mode }
+  ```
+
+  Policies and orders are bounded on the Convex side as the fake bounds them,
+  so a bad seed never leaves. `detail` is the fake's own validation reason
+  (never a key or token).
+- **Faults.** `setFaults` takes the two eBay kinds (`ebayError {status,
+  errorIds}`, `unauthorized`, templates starting `ebay/` only) and a template
+  ending `/*` as a prefix (never a bare `*`, a mid-path star, `//` or `..`).
+  One list per namespace for both marketplaces. eBay has no call gate, so the
+  `@bsc-breaker` rule does not apply to `ebay/` templates.
+- **Gone.** `testingSellerCleanup` (NEO-445/453), `deleteInventoryItem` and
+  `getInventorySkusPage` are deleted: with every deployment on the fake there
+  is no shared seller account to clear. The end-of-run session cleanup is
+  `credentials:deleteFakeSessionsFromCli` (see "Cleanup", above).
+- **Not changed.** The prod deploy gate and the daily drift still read
+  production eBay, read-only (browser `/probe/ebay`).
 
 ### Drift: `POST /__fake/drift-compare {marketplace: "ebay", ...}` (admin)
 
