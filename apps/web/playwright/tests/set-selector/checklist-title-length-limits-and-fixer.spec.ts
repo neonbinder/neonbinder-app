@@ -189,7 +189,9 @@ test(
     // ── Walk it to a fix: opened by hand from the pill (the walker never opens itself) ──
     await pill.click();
     // NEO-497: named for the checklist it tidies (year and set; the checklist is
-    // the Base row under Insert, and a Base checklist's title leaves "Base" out).
+    // the Base row under Insert, and the walker's name drops a trailing "Base").
+    // The listing title does not: under an Insert type a row called Base is an
+    // ordinary insert (NEO-609), so its name stays in the title like any level's.
     const fixer = page.getByRole("dialog", { name: tidyUpName({ year: "2024", set }), exact: true });
     await expect(fixer).toBeVisible();
     // The walker and the wizard share title and counter; its own Skip control
@@ -208,28 +210,44 @@ test(
     await expect(fixerVariation).not.toHaveAttribute("aria-invalid", "true");
     await expectAccessible(page, { within: fixer, label: "Attention walker, over-long variation" });
 
-    // NEO-535: the fixer's "Left out to fit" note, read from the field's text.
-    // Regenerate builds the title with the saved variation in hand: it cannot
-    // fit (71 characters) and is the one token left out, so the rebuilt title
-    // equals the stored one and the note names the variation. Typing it back
-    // takes the note off at once (the stale-note fix); Regenerate restores both.
+    // NEO-609: the variation is never cut, nor is the row's own name "Base" (an
+    // ordinary insert's name here). Regenerate builds the title with the saved
+    // variation in hand and makes every other cut (the type name, the team, the
+    // number, the sport), and with the 71-character variation it is still over
+    // 80 (about 100 characters, by the set name's length), so it is
+    // kept over the cap and says so. The "Left out to fit" note is read from
+    // the field's text and waits until the text fits: typed back to the stored
+    // title (which lacks the variation), the note names the variation, and the
+    // variation typed back in takes it off again. Regenerate asks twice over
+    // typed text.
     const fixerTitle = fixer.getByRole("textbox", { name: `Card title for #${num}` });
     const fixerRegenerate = fixer.getByRole("button", { name: "Regenerate card title" });
     const fixerLeftOut = fixer.getByText(/^Left out to fit: /);
+    const fixerTooLong = fixer.getByText(
+      "Too long to list as-is. Trim it here, or shorten the set name for the whole row.",
+      { exact: true },
+    );
+    const regeneratedOver = `2024 Topps ${set} Base ${variationText}`;
+    const stored = await fixerTitle.inputValue();
     await fixerRegenerate.click();
-    await expect(fixer.getByRole("list", { name: "Title built from" })).toBeVisible();
-    await expect(fixerTitle).toHaveValue(generated);
+    await expect(fixerTitle).toHaveValue(regeneratedOver);
+    await expect(fixerTitle).toHaveAttribute("aria-invalid", "true");
+    await expect(fixerTooLong).toBeVisible();
+    await expect(fixerLeftOut).toHaveCount(0);
+    await expectAccessible(page, { within: fixer, label: "Attention walker, regenerated title kept over 80 by its variation" });
+    await fixerTitle.fill(stored);
+    await expect(fixerTitle).not.toHaveAttribute("aria-invalid", "true");
     await expect(fixerLeftOut).toHaveText(`Left out to fit: ${variationText}`);
-    await expectAccessible(page, { within: fixer, label: "Attention walker, variation left out of the title" });
-    const rebuilt = await fixerTitle.inputValue();
     // A line break typed or pasted reads as a space (one line, NEO-535).
-    await fixerTitle.fill(`${rebuilt}\n${variationText}`);
-    await expect(fixerTitle).toHaveValue(`${rebuilt} ${variationText}`);
+    await fixerTitle.fill(`${stored}\n${variationText}`);
+    await expect(fixerTitle).toHaveValue(`${stored} ${variationText}`);
     await expect(fixerLeftOut).toHaveCount(0);
     await fixerRegenerate.click();
     await expect(fixer.getByText("Regenerate again to replace the title you have typed.")).toBeVisible();
     await fixerRegenerate.click();
-    await expect(fixerTitle).toHaveValue(rebuilt);
+    await expect(fixerTitle).toHaveValue(regeneratedOver);
+    // Over the cap, the walker will not save: the stored title goes back in.
+    await fixerTitle.fill(stored);
     await expect(fixerLeftOut).toHaveText(`Left out to fit: ${variationText}`);
 
     await expect(fixer.getByRole("button", { name: /Save \(Enter\)/ })).toBeVisible();

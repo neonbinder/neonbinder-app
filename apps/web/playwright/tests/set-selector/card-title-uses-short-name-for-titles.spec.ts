@@ -1,13 +1,19 @@
 // Origin: .maestro/flows/set-selector/card-title-uses-short-name-for-titles.yaml (Maestro suite retired in NEO-341; see git history)
 //
-// R1 - ONE feature (NEO-535, the listing-title cut order): a card's title is
-// built to fit eBay's 80 characters by cutting in a fixed order, never a word
-// of the set's description, and what it had to leave out is said under the
-// field, read from the text the field holds now. A title that cannot fit
-// after every cut takes the set's "Set name in titles" verbatim, and the
+// R1 - ONE feature (NEO-535, NEO-609, the listing-title cut order): a card's
+// title is built to fit eBay's 80 characters by cutting in a fixed order,
+// never a word of the set's description, and what it had to leave out is said
+// under the field, read from the text the field holds now. A title that cannot
+// fit after every cut takes the set's "Set name in titles" verbatim, and the
 // collector's card search reads the description, which keeps everything.
-//   * Card A's full title is EXACTLY 81 characters: only the "#" of its card
-//     number goes (the 81 rule), nothing is reported left out.
+//   * NEO-609: each level names itself and then its variant type's name, in the
+//     singular ("<row> Insert"); the type name is a quiet cut (row 5) and goes
+//     before the "#" rule is ever tried (the rule starts at the Tidy Up line).
+//   * Card Q's full title is EXACTLY 81 characters: the "Insert" type name goes
+//     (quiet), and its "#" stays.
+//   * Card A is 81 once every quiet cut is made (the type name, the sport):
+//     only the "#" of its card number goes then (the 81 rule), nothing is
+//     reported left out.
 //   * Card B's longer number cannot come back even bare: the number goes, the
 //     player's full name stays, and the drawer says "Left out to fit: #<num>".
 //     Typing the number back into the field takes the note away at once (the
@@ -54,37 +60,43 @@
 // R7a / data isolation - a PER-ATTEMPT hand-made set `ttl<token>…` under the
 // REAL Baseball / 2024 / Topps (SET-REGISTRY.md, prefix `ttl`): the quick-add
 // PlayerPicker searches the set's sport, where the reference catalogue's
-// Baseball rows live. `Insert` > `Base` (cards A, B) and `Insert` > the long
-// insert (card C) beneath it, all hand-made, so no marketplace call fires.
+// Baseball rows live. `Insert` > `Rw<token>…` (cards Q, A, B, D, E) and
+// `Insert` > the long insert (card C) beneath it, all hand-made, so no
+// marketplace call fires. The row is a minted token, not the reserved-looking
+// "Base" the spec used before NEO-609: a single-token row keeps the level's
+// own name and its "Insert" type name apart in every assertion (R7a).
 // The player is the catalogue's George Brett (one Baseball row, read only; the
 // same row `checklist-missing-team-fixer-hand-added-card` reads). Nothing is
-// deleted: the set is this attempt's alone. Cards A, B and C carry no team;
+// deleted: the set is this attempt's alone. Cards Q, A, B and C carry no team;
 // D and E carry one each, made in the New team dialog for this attempt
 // (minted single tokens, GUIDE "Minted names"; a team is never looked up).
 //
-// Fixture arithmetic - exact on every runner. ATTEMPT_TOKEN's length varies
-// with the worker and the random tail, so the set name is that token padded to
-// SET_LEN characters, and every length below is fixed:
-//   description  "2024 Topps <set> Base" = 11 + 21 + 5 = 37; the hand-made
-//                insert row "Base" sits under an Insert type, so it is an
-//                insert by role and earns the "Insert" label (cut row 4).
-//   card A       37 + " Insert" 7 + " George Brett" 13 + " #<A>" 15 +
-//                " Baseball" 9 = 81  ->  the "#" alone goes: 80.
-//   card B       the same with a 31-character number: 99. Cuts: the label
-//                (92), the sport (83), the number (50); the refill tries the
-//                number first, but even bare it makes 82, so it stays out
-//                and the sport and the label come back: 66, full name.
-//   card C       "2024 Topps <set> <60-character insert> Brett" is 99 after
+// Fixture arithmetic - exact on every runner (computed with the generator,
+// `assessListingTitle`). ATTEMPT_TOKEN is 12 characters at most and varies with
+// the worker and the random tail, so the set name and the row are that token
+// padded to SET_LEN / ROW_LEN characters, and every length below is fixed:
+//   description  "2024 Topps <set> <row>" = 11 + 15 + 1 + 14 = 41; the row
+//                sits under the "Insert" type, so the title says "<row>
+//                Insert" (the type name, cut row 5).
+//   card Q       41 + " Insert" 7 + " George Brett" 13 + " #<Q>" 11 +
+//                " Baseball" 9 = 81. The type name goes (74) and it fits; the
+//                "#" rule is never reached. The refill cannot put it back (81).
+//   card A       the same with a 25-character number: 97. The type name (90)
+//                and the sport (81) go, then at exactly 81 the "#" alone: 80.
+//   card B       the same with a 31-character number: 103. The type name
+//                (96), the sport (87), the number (54); the refill tries the
+//                number first, but even bare it makes 86, so it stays out
+//                and the sport and the type name come back: 70, full name.
+//   card C       "2024 Topps <set> <60-character insert> Brett" is 93 after
 //                every cut (the description, the surname): STOP, kept over
-//                the cap. With the box (48 characters) it is 74.
-//   card D       57 + " #D1" 4 + " <15-character location> <15-character
-//                nickname>" 32 + " Baseball" 9 = 102. Cuts: the label (95),
-//                the sport (86), the team's location (70): it fits. The
-//                refill puts the sport back (79), not the label (86), and
-//                the location cannot come back.
+//                the cap. With the box (42 characters) it is 68.
+//   card D       41 + " Insert" 7 + 13 + " #D1" 4 + " <15-character location>
+//                <15-character nickname>" 32 + " Baseball" 9 = 106. Cuts: the
+//                type name (99), the sport (90), the team's location (74): it
+//                fits. Neither the sport (83) nor the type name (81) fits back.
 //   card E       the same, with ONE 31-character team name and no location:
-//                the label, the sport, then the team whole (54); the refill
-//                puts the sport and the label back: 70.
+//                the type name, the sport, then the team whole (58); the
+//                refill puts the sport and the type name back: 74.
 // Card B's number leads with `NB<token>`, a single token (GUIDE, minted names)
 // the search index splits off at the hyphen; no other card holds it.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -95,10 +107,12 @@ import { tidyUpName } from "../../support/wizard";
 import { expectNoOverCapLook, expectOverCapLook } from "../../support/theme";
 import type { Page } from "@playwright/test";
 
-const SET_LEN = 21;
+const SET_LEN = 15;
+const ROW_LEN = 14;
 const PLAYER = "George Brett";
 const LONG_INSERT = "Commemorative Anniversary Collectors Edition Hologram Series";
-const NUM_A = "91A-AA1234567"; // 13 characters
+const NUM_Q = "Q9-123456"; // 9 characters
+const NUM_A = "91A-AA1234567890123456789"; // 25 characters
 const NUM_C = "C1";
 const NUM_D = "D1";
 const NUM_E = "E1";
@@ -158,17 +172,25 @@ test(
   async ({ page, signIn, env, isMobile }) => {
     const set = `ttl${env.ATTEMPT_TOKEN}`.padEnd(SET_LEN, "x");
     expect(set, "the set name is exactly SET_LEN characters on every runner").toHaveLength(SET_LEN);
+    const row = `Rw${env.ATTEMPT_TOKEN}`.padEnd(ROW_LEN, "x");
+    expect(row, "the row is exactly ROW_LEN characters on every runner").toHaveLength(ROW_LEN);
+    expect([NUM_Q.length, NUM_A.length]).toEqual([9, 25]);
     const searchToken = `NB${env.ATTEMPT_TOKEN}`;
     const numB = `${searchToken}-`.padEnd(31, "0");
     expect(numB, "card B's number is 31 characters on every runner").toHaveLength(31);
     const box = `2024 Topps ${set} Hologram Series`;
 
-    const head = `2024 Topps ${set} Base Insert ${PLAYER}`;
-    const titleA = `${head} ${NUM_A} Baseball`;
+    const description = `2024 Topps ${set} ${row}`;
+    const head = `${description} Insert ${PLAYER}`;
+    const titleQ = `${description} ${PLAYER} #${NUM_Q} Baseball`;
+    const titleA = `${description} ${PLAYER} ${NUM_A}`;
     const titleB = `${head} Baseball`;
     const titleCOver = `2024 Topps ${set} ${LONG_INSERT} Brett`;
     const titleCBox = `${box} ${PLAYER} #${NUM_C} Baseball`;
-    expect([titleA.length, titleB.length, titleCOver.length, titleCBox.length]).toEqual([80, 66, 99, 74]);
+    expect(description, "the description is 41 characters").toHaveLength(41);
+    expect([titleQ.length, titleA.length, titleB.length, titleCOver.length, titleCBox.length]).toEqual([
+      74, 80, 70, 93, 68,
+    ]);
     // NEO-606: card D's team has a location to give up, card E's (the same
     // length, one name) has none. Single tokens padded to a fixed length.
     const teamD: NewTeam = {
@@ -178,9 +200,9 @@ test(
     const teamE: NewTeam = { name: `Wh${env.ATTEMPT_TOKEN}`.padEnd(31, "x") };
     const teamDFull = `${teamD.location} ${teamD.name}`;
     expect([teamDFull.length, teamE.name.length], "both teams are 31 characters on every runner").toEqual([31, 31]);
-    const titleD = `2024 Topps ${set} Base ${PLAYER} #${NUM_D} ${teamD.name} Baseball`;
+    const titleD = `${description} ${PLAYER} #${NUM_D} ${teamD.name}`;
     const titleE = `${head} #${NUM_E} Baseball`;
-    expect([titleD.length, titleE.length]).toEqual([79, 70]);
+    expect([titleD.length, titleE.length]).toEqual([74, 74]);
 
     const drawer = page.getByRole("dialog", { name: /^Card #/ });
     const cardTitle = drawer.getByRole("textbox", { name: "Card title", exact: true });
@@ -193,21 +215,36 @@ test(
     await signIn("/set-selector");
     await expect(setBuilderReady(page)).toBeVisible({ timeout: LAUNCH_GATE });
 
-    // R9: Baseball > 2024 > Topps > ttl… > Insert > Base, checklist open.
+    // R9: Baseball > 2024 > Topps > ttl… > Insert > Rw…, checklist open.
     await drillToCustom(page, {
       sport: "Baseball",
       year: "2024",
       manufacturer: "Topps",
       set,
       variantType: "Insert",
-      variant: "Base",
+      variant: row,
     });
 
-    // ── STEP 1: cards A and B, the same player under the same description ──
+    // ── STEP 1: cards Q, A and B, the same player under the same description ──
+    await addBrettCard(page, NUM_Q);
     await addBrettCard(page, NUM_A);
     await addBrettCard(page, numB);
 
-    // ── STEP 2: card A, exactly 81, loses only its "#" ──
+    // ── STEP 1b (NEO-609): card Q, 81 in full, gives up its type name, not its "#" ──
+    // Stored at creation. The type name is a quiet cut, made before the "#"
+    // rule is tried, and neither is ever reported left out.
+    await editCardButton(page, NUM_Q).click();
+    await expect(cardTitle).toBeVisible();
+    await expect(cardTitle).toHaveValue(titleQ);
+    await expect(builtFrom.getByRole("listitem").filter({ hasText: `#${NUM_Q}` })).toBeVisible();
+    // The row's chip is labelled with its type's name in the singular.
+    const rowChip = builtFrom.getByRole("listitem").filter({ hasText: row });
+    await expect(rowChip.getByText("Insert", { exact: true })).toBeVisible();
+    await expect(leftOut).toHaveCount(0);
+    await doneEditing.click();
+    await expect(cardTitle).toBeHidden();
+
+    // ── STEP 2: card A, 81 after the quiet cuts, loses only its "#" ──
     await editCardButton(page, NUM_A).click();
     await expect(cardTitle).toBeVisible();
     await regenerate.click();
@@ -266,7 +303,8 @@ test(
     // ── STEP 3b (NEO-606): a team gives up its location before it goes ──
     // Card D: the location is the cut that makes it fit, so the title it was
     // stored with at creation (no Regenerate here) names the team by its
-    // nickname, and nothing is reported left out: a location is not a team.
+    // nickname, and nothing is reported left out: a location is not a team,
+    // and the type name and the sport are quiet cuts.
     // The chips are drawn from the preview, so they prove the note has loaded.
     await addBrettCard(page, NUM_D, teamD);
     await editCardButton(page, NUM_D).click();
@@ -277,8 +315,8 @@ test(
     await expectAccessible(page, { within: drawer, label: "Card drawer, a team named by its nickname to fit" });
     await doneEditing.click();
     await expect(cardTitle).toBeHidden();
-    // Card E: a team with no location can only be dropped whole, and the note
-    // names it in full.
+    // Card E: a team with no location can only be dropped whole (a Tidy Up
+    // cut), and the note names it in full.
     await addBrettCard(page, NUM_E, teamE);
     await editCardButton(page, NUM_E).click();
     await expect(cardTitle).toBeVisible();
@@ -440,7 +478,7 @@ test(
     await hit.click();
     await expect(page).toHaveURL(/[?&]tab=checklists/);
     // The card's own checklist, named "<season> <set> <row>".
-    await expect(page.getByRole("region", { name: `2024 ${set} Base` })).toBeVisible();
+    await expect(page.getByRole("region", { name: `2024 ${set} ${row}` })).toBeVisible();
     await expect(find).toBeHidden();
     await page.goBack();
     await expect(page).not.toHaveURL(/[?&]tab=checklists/);

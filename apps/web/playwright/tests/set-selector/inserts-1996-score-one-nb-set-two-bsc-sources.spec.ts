@@ -4,9 +4,10 @@
 // NEO-535: the "Card titles" step is also proved in the SportLots-PAUSED branch, which
 // has no marketplace pairing and no 220-card merge. There ONE BSC insert (Series 1,
 // 110 cards, a captured publisher's checklist uploaded first) is renamed to a name
-// long enough that titles run over 80 or lose a first name, so the wizard opens its
-// "Card titles" step and its "Set name in titles" box, and the box and per-card
-// edits are proved there, then read back off the stored cards.
+// long enough that every title has to leave something out (NEO-609: a whole team, the
+// number or a first name sends a card to the step), so the wizard opens its "Card
+// titles" step and its "Set name in titles" box, and the box and per-card edits are
+// proved there, then read back off the stored cards.
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
 import { expectAfterMarketplace } from "../../support/marketplace-wait";
 import {
@@ -63,31 +64,37 @@ async function expectBulkWalkDone(page: Page): Promise<void> {
   ).toBeVisible({ timeout: 240_000 });
 }
 
-// ── The SportLots-paused branch's fixture (NEO-535) ──
+// ── The SportLots-paused branch's fixture (NEO-535, NEO-609) ──
 // Series 1's NB row is renamed to LONG_INSERT. The title arithmetic is exact because
-// the name is a fixed string (no minted token): the description "1996 Score <name>" is
-// 67 characters, so of the 110 cards 45 lose a first name or run over 80 and 65 fit
-// whole (computed with the title builder, `assessListingTitle`, over the captured
-// checklist). The three cards the spec reads back sit among the last rows of the list,
-// where a fresh mount of the checklist renders them (#104, #106, #107):
-//   #104 LaTroy Hawkins  loses a first name   (listed; hand-edited in the step)
-//   #106 Derek Jeter     fits with full names (NOT listed; the box must leave it alone)
-//   #107 Michael Tucker  loses a first name   (listed; the box brings the name back)
-// and #76 Todd Hollandsworth runs over 80 after every cut (listed, flagged).
-// NEO-606: the catalogue's teams carry a Location and a Name, and a team gives up its
-// location before it goes. #107's Kansas City Royals does not fit even as "Royals"
-// under the long description (dropped whole, named in full in its note); under the
-// box it fits as "Royals" and not whole, so the step's title and the stored one both
-// read "<box> Michael Tucker #107 Royals Baseball" (79).
+// the name is a fixed string (no minted token), computed with the title builder
+// (`assessListingTitle`) over the captured checklist. The description "1996 Score
+// <name>" is 67 characters, and the row's type name ("Insert") is a quiet cut, so
+// every one of the 110 titles has to give up a whole team, the number or a first name
+// (NEO-609, the Tidy Up line): all 110 are on the step, which draws the first 50 in
+// card order and counts the rest ("And 60 more, saved as generated."). The cards the
+// spec reads sit among those 50:
+//   #2  Rich Becker      loses the team and the number, keeps his full name: the box,
+//                        which steps in only for a lost first name or a title over 80,
+//                        leaves it alone
+//   #8  Don Mattingly    loses the team and "Don" (hand-edited in the step)
+//   #12 Darren Daulton   loses the team and "Darren"; the box brings the name back and
+//                        the team fits as its nickname (NEO-606), the sport kept
+// and #76 Todd Hollandsworth, past the 50 drawn, runs over 80 after every cut (81): the
+// step counts it as still running long until the box makes it fit.
 const SERIES_1_CARDS = 110;
+/** The step draws this many title rows (`TITLE_ROWS_SHOWN`) and counts the rest. */
+const TITLE_ROWS_SHOWN = 50;
 const LONG_INSERT = "Dugout Collection Artists Proofs Hologram Foil Series II";
 const LONG_DESCRIPTION = `1996 Score ${LONG_INSERT}`;
 // The box text the operator types: the description without the filler words.
 const SHORT_BOX = "1996 Score Dugout Collection Artists Proofs";
-/** #107 under the box: the team by its nickname (NEO-606), the sport kept. */
-const TUCKER_BOXED = `${SHORT_BOX} Michael Tucker #107 Royals Baseball`;
-// What the operator types over #104's generated title.
-const OWN_TITLE = "1996 Score Artists Proofs LaTroy Hawkins #104 My Own Title";
+/** #12 under the box: the first name back, the team by its nickname (NEO-606), the sport kept. */
+const DAULTON_BOXED = `${SHORT_BOX} Darren Daulton #12 Phillies Baseball`;
+/** #76 under the box (saved as generated, past the 50 drawn): it fits, the team by its nickname. */
+const HOLLANDSWORTH_BOXED = `${SHORT_BOX} Todd Hollandsworth #76 Dodgers`;
+// What the operator types over #8's generated title: first past the cap, then their own.
+const OVER_TITLE = `${LONG_DESCRIPTION} Don Mattingly #8 New York Yankees`;
+const OWN_TITLE = "1996 Score Artists Proofs Don Mattingly #8 My Own Title";
 
 async function openScoreInserts(page: Page, env: Parameters<typeof drillToSet>[1]) {
   await drillToSet(page, env, { year: "1996", manufacturer: "Score", set: "Score", createManufacturer: true });
@@ -165,65 +172,69 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   if ((await subtitle.textContent()) === "Cards with no team") await next.click();
   await expect(wizard.getByText("Card titles", { exact: true })).toBeVisible();
   await expect(
-    wizard.getByRole("heading", { name: "These titles lost a first name or ran long. Keep 'em, or make 'em yours." }),
+    wizard.getByRole("heading", {
+      name: "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.",
+      exact: true,
+    }),
   ).toBeVisible();
 
   const box = wizard.getByRole("textbox", { name: "Set name in titles", exact: true });
   const title = (number: number) => wizard.getByRole("textbox", { name: new RegExp(`^Title for #${number} `) });
-  // The box opens on the set's whole description, and shows how much of the 80 it is.
+  // The box opens on the set's whole description (no type name), and shows how much of the 80 it is.
   await expect(box).toHaveValue(LONG_DESCRIPTION);
   await expect(box).toHaveAccessibleDescription(/\b67\/80\b/);
-  // The over-long titles: #107 lost "Michael", #76 runs over 80 after every cut and is flagged.
-  await expect(title(107)).toHaveValue(`${LONG_DESCRIPTION} Tucker #107`);
-  await expect(title(107)).toHaveAccessibleDescription(/Left out to fit: .*Michael/);
-  // NEO-606: a team dropped whole is named in full.
-  await expect(title(107)).toHaveAccessibleDescription(/Left out to fit: .*Kansas City Royals/);
-  await expect(title(76)).toHaveValue(`${LONG_DESCRIPTION} Hollandsworth`);
-  await expect(title(76)).toHaveAccessibleDescription(/Too long to list as-is\./);
-  // NEO-606: the whole box says it is over: invalid to a screen reader, and the error
-  // pink on its edge and on its note (the row's own status line).
-  const row76 = wizard.getByRole("listitem").filter({ has: page.getByRole("textbox", { name: /^Title for #76 / }) });
-  const note76 = row76.getByRole("status");
-  await expect(note76).toHaveText("Too long to list as-is.");
-  await expect(title(76)).toHaveAttribute("aria-invalid", "true");
-  await expectOverCapLook(title(76), note76);
-  // #106 fits with its whole name, so it is not on this step at all.
-  await expect(title(106)).toHaveCount(0);
-  const listed = await wizard.getByRole("textbox", { name: /^Title for #/ }).count();
-  expect(listed, "the step lists the titles that lost a first name or ran long, not all 110").toBeGreaterThan(0);
-  expect(listed).toBeLessThan(SERIES_1_CARDS);
-  await expectAccessible(page, { within: wizard, label: "Card titles step, titles over 80 (SportLots paused)" });
+  // #12 lost "Darren" and its team, whole (it does not fit even as "Phillies").
+  await expect(title(12)).toHaveValue(`${LONG_DESCRIPTION} Daulton #12`);
+  await expect(title(12)).toHaveAccessibleDescription(/Left out to fit: .*Darren/);
+  await expect(title(12)).toHaveAccessibleDescription(/Left out to fit: .*Philadelphia Phillies/);
+  // #2 kept its full name and gave up its team and number: a Tidy Up cut puts it here too.
+  await expect(title(2)).toHaveValue(`${LONG_DESCRIPTION} Rich Becker`);
+  await expect(title(2)).toHaveAccessibleDescription(/Left out to fit: Minnesota Twins, #2/);
+  // Every one of the 110 had to leave something out: 50 are drawn and the rest counted.
+  const titles = wizard.getByRole("textbox", { name: /^Title for #/ });
+  await expect(titles).toHaveCount(TITLE_ROWS_SHOWN);
+  await expect(wizard.getByText(`And ${SERIES_1_CARDS - TITLE_ROWS_SHOWN} more, saved as generated.`, { exact: true })).toBeVisible();
+  await expectAccessible(page, { within: wizard, label: "Card titles step, every title left something out (SportLots paused)" });
 
-  // ── P5. Trim the box: only the listed titles change ──
+  // ── P5. Trim the box: only the titles that lost a first name or ran long change ──
   await box.fill(SHORT_BOX);
-  // Enter settles the box in place; its status is read at the settle.
+  // Enter settles the box in place; its status is read at the settle. It counts every
+  // title, the ones past the 50 drawn too: #76, over 80 after every cut, fits now.
   await box.press("Enter");
   await expect(wizard.getByText("Every title fits now.")).toBeVisible();
   await expect(box).toHaveAccessibleDescription(/\b43\/80\b/);
-  // #107 has its first name back, opening with the box text verbatim, and its team fits as
-  // the nickname, where it would not fit whole (NEO-606): neither is reported left out.
-  await expect(title(107)).toHaveValue(TUCKER_BOXED);
-  await expect(title(107)).not.toHaveAccessibleDescription(/Michael|Kansas City|Royals/);
-  // #76 now fits: the over-the-cap alert is gone, and the title opens with the box text.
-  await expect(title(76)).toHaveValue(new RegExp(`^${escapeRe(SHORT_BOX)} Todd Hollandsworth `));
-  await expect(title(76)).not.toHaveAccessibleDescription(/Too long to list as-is\./);
-  // NEO-606: trimmed to fit, the box lets go of the error: not invalid, no pink, no note.
-  await expect(title(76)).not.toHaveAttribute("aria-invalid", "true");
-  // The emptied status line hides itself, so it leaves the accessibility tree.
-  await expect(note76).toHaveCount(0);
-  await expectNoOverCapLook(title(76));
-  // The list itself never moved under the edit, and #106 is still off it.
-  await expect(wizard.getByRole("textbox", { name: /^Title for #/ })).toHaveCount(listed);
-  await expect(title(106)).toHaveCount(0);
+  // #12 has its first name back, opening with the box text verbatim, and its team fits as
+  // the nickname, where it would not fit whole (NEO-606): nothing is reported left out.
+  await expect(title(12)).toHaveValue(DAULTON_BOXED);
+  await expect(title(12)).not.toHaveAccessibleDescription(/Left out to fit/);
+  // #2 fit with its full name, so the box leaves it alone: the same title, the same note.
+  await expect(title(2)).toHaveValue(`${LONG_DESCRIPTION} Rich Becker`);
+  await expect(title(2)).toHaveAccessibleDescription(/Left out to fit: Minnesota Twins, #2/);
+  // The list itself never moved under the edit.
+  await expect(titles).toHaveCount(TITLE_ROWS_SHOWN);
   await expectAccessible(page, { within: wizard, label: "Card titles step, every title fits (SportLots paused)" });
 
   // ── P6. A title typed by hand wins on its card ──
-  await title(104).fill(OWN_TITLE);
-  await title(104).press("Enter");
-  await expect(wizard.getByRole("button", { name: /^Use generated title for #104 / })).toBeVisible();
-  await expect(title(104)).toHaveValue(OWN_TITLE);
-  // The box did not take #107's edit away: a hand edit is per card.
-  await expect(title(107)).toHaveValue(TUCKER_BOXED);
+  // Typed past 80 first: the whole box says it is over, invalid to a screen reader and the
+  // error pink on its edge and on its note (the row's own status line, NEO-606).
+  const row8 = wizard.getByRole("listitem").filter({ has: page.getByRole("textbox", { name: /^Title for #8 / }) });
+  const note8 = row8.getByRole("status");
+  await title(8).fill(OVER_TITLE);
+  await expect(note8).toHaveText("Too long to list as-is.");
+  await expect(title(8)).toHaveAttribute("aria-invalid", "true");
+  await expectOverCapLook(title(8), note8);
+  await expectAccessible(page, { within: wizard, label: "Card titles step, a title typed past 80 (SportLots paused)" });
+  // Their own title, which fits: the error lets go (not invalid, no pink, the emptied
+  // status line hides itself and leaves the accessibility tree), and Enter keeps it.
+  await title(8).fill(OWN_TITLE);
+  await expect(title(8)).not.toHaveAttribute("aria-invalid", "true");
+  await expect(note8).toHaveCount(0);
+  await expectNoOverCapLook(title(8));
+  await title(8).press("Enter");
+  await expect(wizard.getByRole("button", { name: /^Use generated title for #8 / })).toBeVisible();
+  await expect(title(8)).toHaveValue(OWN_TITLE);
+  // The box did not take #12's edit away: a hand edit is per card.
+  await expect(title(12)).toHaveValue(DAULTON_BOXED);
 
   // ── P7. Save: the Save step is a later step, and Enter on it commits ──
   const { x: titlesStep } = await readStep(page);
@@ -237,7 +248,6 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(wizard).toBeHidden();
 
   // ── P8. The stored cards carry the chosen titles ──
-  // Re-enter the set: a fresh load of the checklist renders the LAST rows, where #104-#110 are.
   await openScoreInserts(page, env);
   await columnSearch(page, "Inserts").fill("Artist");
   await expect(columnOption(page, "Inserts", LONG_INSERT)).toBeVisible();
@@ -245,7 +255,9 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
   await expect(columnOption(page, "Inserts", SERIES_2)).toBeVisible();
   await columnOption(page, "Inserts", LONG_INSERT).click();
   const cardTitle = page.getByRole("textbox", { name: "Card title" });
+  // The checklist opens at its end; its search brings a card's row up.
   const openCard = async (number: number) => {
+    await page.getByRole("searchbox", { name: "Search cards" }).fill(String(number));
     await page.getByRole("button", { name: new RegExp(`^Edit card ${number}, `) }).click();
     await expect(cardTitle).toBeVisible();
   };
@@ -253,19 +265,23 @@ async function cardTitlesWithOnlyBscAttached(page: Page, env: Parameters<typeof 
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(cardTitle).toBeHidden();
   };
-  // #107: the box text opens it (the listed title the operator kept), and the stored title is
+  // #12: the box text opens it (the listed title the operator kept), and the stored title is
   // exactly what the step showed, its team by the nickname (NEO-606).
-  await openCard(107);
-  await expect(cardTitle).toHaveValue(TUCKER_BOXED);
+  await openCard(12);
+  await expect(cardTitle).toHaveValue(DAULTON_BOXED);
   await closeCard();
-  // #104: the title the operator typed.
-  await openCard(104);
+  // #8: the title the operator typed.
+  await openCard(8);
   await expect(cardTitle).toHaveValue(OWN_TITLE);
   await closeCard();
-  // #106: it fit with its whole name, so the box never touched it: the builder's own title, saved.
-  await openCard(106);
-  await expect(cardTitle).toHaveValue(`${LONG_DESCRIPTION} Derek Jeter`);
+  // #2: it fit with its whole name, so the box never touched it: the builder's own title, saved.
+  await openCard(2);
+  await expect(cardTitle).toHaveValue(`${LONG_DESCRIPTION} Rich Becker`);
   await expectAccessible(page, { label: "Card detail drawer, a title the box left alone (SportLots paused)" });
+  await closeCard();
+  // #76, past the 50 drawn, was saved as generated: with the box, as the step counted it.
+  await openCard(76);
+  await expect(cardTitle).toHaveValue(HOLLANDSWORTH_BOXED);
   await closeCard();
   // The box text sits on the insert row itself (its attributes panel), for the cards that come next.
   await expect(page.getByRole("heading", { name: `Attributes for ${LONG_INSERT}` })).toBeVisible();
