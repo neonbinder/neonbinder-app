@@ -3,7 +3,11 @@ import { useQuery } from "convex/react";
 import { api } from "../../convex/_generated/api";
 import type { Id } from "../../convex/_generated/dataModel";
 // Pure and browser-safe: the same generator the server titled the card with.
-import { assessListingTitle, leftOutOfTitle } from "../../convex/features/generateListing";
+import {
+  assessListingTitle,
+  leftOutOfTitle,
+  singularTypeName,
+} from "../../convex/features/generateListing";
 import { variantTypeKindFromTitle } from "../../convex/variantRole";
 
 /**
@@ -215,7 +219,7 @@ function pushDescription(
   // Base word is cut first and is no source fact worth a chip.
   const levels = inputs.titleLevels?.filter((l) => variantTypeKindFromTitle(l.name) !== "base");
   if (levels) {
-    for (const level of levels) push(level.typeName?.trim() ?? "", level.name);
+    for (const level of levels) push(singularTypeName(level.typeName ?? ""), level.name);
   } else {
     push("Insert", inputs.insertName);
   }

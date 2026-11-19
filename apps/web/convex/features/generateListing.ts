@@ -55,7 +55,7 @@
  */
 
 import { LISTING_DESCRIPTION_MAX, LISTING_TITLE_MAX } from "./listingLimits";
-import { sameTitleWord, variantTypeKindFromTitle } from "../variantRole";
+import { variantTypeKindFromTitle } from "../variantRole";
 import { isGenerationalSuffix } from "../../lib/players/name-fragment";
 import { teamFullName } from "../../lib/teams/team-name";
 import { parallelAfterInsert, parallelOpensWithInsert, roughlySays } from "../listingShortName";
@@ -290,7 +290,7 @@ export const PARALLEL_LABEL = "Parallel";
  * Does `name` already end with `typeName` as a word, singular or plural
  * ("Gold Insert" with "Inserts", "Prizm Parallels" with "Parallel")? Then the
  * type name would only repeat it. A type name of several words is matched
- * word for word, the last one singular or plural.
+ * word for word, the last one compared singular to singular.
  */
 function endsWithTypeName(name: string, typeName: string): boolean {
   const named = wordsOf(name);
@@ -298,7 +298,7 @@ function endsWithTypeName(name: string, typeName: string): boolean {
   if (wanted.length === 0 || named.length < wanted.length) return false;
   const tail = named.slice(named.length - wanted.length);
   return tail.every((word, i) =>
-    i < wanted.length - 1 ? word === wanted[i] : sameTitleWord(word, wanted[i]),
+    i < wanted.length - 1 ? word === wanted[i] : singularWord(word) === singularWord(wanted[i]),
   );
 }
 
@@ -465,15 +465,45 @@ function stripDoubledWords(name: string, inputs: ListingCardInputs): string {
  *       more: `LevelParts.base` / `typeBase` are the whole of it.
  *   Q2  Where a type name sits against its level's name. Default after:
  *       "Future Stars Inserts". false: before, "Inserts Future Stars".
- *   Q3  How a type name is worded: `typeNameAsSaid` (default verbatim from
- *       the variant type's row, "Inserts").
+ *   Q3  How a type name is worded: `typeNameAsSaid`. DECIDED (Jason
+ *       2026-11-18): singular, "Inserts" reads "Insert" (`singularTypeName`).
  *   Q4  Where the "#"-at-81 rule starts: `HASH_RULE_FROM_ROW` (default the
  *       first Tidy Up row, so a quiet cut is always made before a "#" is).
  *   Q5  "Left out to fit" is unchanged (`leftOutOfTitle`).
  */
 const TYPE_NAME_FOLLOWS_LEVEL = true;
 function typeNameAsSaid(typeName: string): string {
-  return typeName.trim();
+  return singularTypeName(typeName);
+}
+
+/**
+ * A word in the singular, by suffix alone: "Inserts" -> "Insert", "Legacies"
+ * -> "Legacy", "Rookies" -> "Rookie" (a "kies" word keeps its "ie"). A word
+ * ending in ss, us, is, series or species, and one already singular, is left
+ * alone.
+ */
+function singularWord(word: string): string {
+  const lower = word.toLowerCase();
+  if (lower.length < 3 || /(ss|us|is)$/.test(lower) || !lower.endsWith("s")) return word;
+  // The two English words that are their own plural.
+  if (/(series|species)$/.test(lower)) return word;
+  if (lower.length > 4 && lower.endsWith("ies") && !lower.endsWith("kies")) {
+    const y = word.endsWith("S") ? "Y" : "y";
+    return `${word.slice(0, -3)}${y}`;
+  }
+  return word.slice(0, -1);
+}
+
+/**
+ * A variant type's name as a title, a description line and a preview chip
+ * say it (one source, so they agree): the singular of its LAST word, so
+ * "Short Prints" reads "Short Print".
+ */
+export function singularTypeName(typeName: string): string {
+  const words = typeName.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "";
+  words[words.length - 1] = singularWord(words[words.length - 1]);
+  return words.join(" ");
 }
 
 /** Is `text` the Base kind's word ("Base", "Bases"), read through the role helper? */
@@ -1457,7 +1487,7 @@ export function generateListingDescription(
   if (levels) {
     for (const level of levels) {
       if (level.typeName && !isBaseWord(level.typeName)) {
-        lines.push(`${level.typeName}: ${level.name}.`);
+        lines.push(`${typeNameAsSaid(level.typeName)}: ${level.name}.`);
       }
     }
   } else {
