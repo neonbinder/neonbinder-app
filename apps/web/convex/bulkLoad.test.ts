@@ -1350,6 +1350,25 @@ describe("source pin: the armed gate on every bulk-load writer (NEO-611)", () =>
     expect(src.match(/export const \w+ = \w+\s*</g) ?? []).toEqual([]);
   });
 
+  /** The braces of every `import … from "./_generated/server"` in a source text. */
+  const serverImportBraces = (text: string) =>
+    [...text.matchAll(/import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*["']\.\/_generated\/server["']/g)].map(
+      (m) => m[1],
+    );
+  const renamesAnything = (text: string) => serverImportBraces(text).some((b) => /\bas\b/.test(b));
+
+  test("the import from ./_generated/server renames nothing (an aliased builder would slip past the count)", () => {
+    expect(serverImportBraces(src).length).toBeGreaterThan(0);
+    expect(renamesAnything(src)).toBe(false);
+  });
+
+  test("the rename check fails on an aliased builder import", () => {
+    expect(renamesAnything('import { internalMutation as m } from "./_generated/server";')).toBe(true);
+    expect(renamesAnything('import { internalQuery, internalMutation as m } from "./_generated/server";')).toBe(true);
+    expect(renamesAnything('import type { MutationCtx as C } from "./_generated/server";')).toBe(true);
+    expect(renamesAnything('import { internalMutation, internalQuery } from "./_generated/server";')).toBe(false);
+  });
+
   test("a mention of the gate in a comment does not count as the gate", () => {
     const sample = [
       "// assertBulkLoadArmed(args.confirm);",
