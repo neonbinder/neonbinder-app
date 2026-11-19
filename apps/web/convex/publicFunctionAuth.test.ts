@@ -497,6 +497,25 @@ describe("NEO-212: the entity review + player management surface is admin-gated"
         return t.query(api.entityReviewQueue.teamStepContext, { reviewRowId });
       },
     ],
+    // NEO-602. The same-name player step's cards and candidates' stints: reads
+    // other people's player careers, so admin like the batch it belongs to.
+    [
+      "entityReviewQueue.playerStepContext",
+      async (t, sportId) => {
+        const reviewRowId = await t.run(async (ctx) =>
+          ctx.db.insert("entityReviewQueue", {
+            selectorOptionId: sportId,
+            batchId: "batch-1",
+            createdByUserId: "somebody",
+            kind: "player" as const,
+            name: "Luis Castillo",
+            sportId,
+            status: "ready" as const,
+          }),
+        );
+        return t.query(api.entityReviewQueue.playerStepContext, { reviewRowId });
+      },
+    ],
     // NEO-313. Writes a player's additional sports — globally-shared
     // reference data, and it re-derives the alias index. Admin, like
     // `savePlayerFields` beside it.

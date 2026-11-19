@@ -1443,6 +1443,57 @@ function addCardPlayerNames(
 }
 
 /**
+ * NEO-602 — the cards that printed a PLAYER's name, as the operator sees them
+ * on that player's pick step ("Which Luis Castillo is this?"): per NORMALIZED
+ * player name (the same key `cardTeamNamesByPlayer` uses, so two spellings of
+ * one person pool), the first `CARD_PLAYER_TEAM_MAX_CARDS` cards with their
+ * number and the team(s) printed on them, and a count of every card.
+ *
+ * Kept apart from `cardTeamNamesByPlayer`, which pools the teams of every card
+ * into one list for the narrowing rules and so cannot say WHICH card named
+ * which team. Display only; nothing decides from it.
+ */
+type CardsByPlayer = Map<
+  string,
+  {
+    shown: Array<{ number?: string; teams: string[] }>;
+    total: number;
+    /** `number|teams` of every card counted, so a card filed twice is one. */
+    seen: Set<string>;
+  }
+>;
+
+/** Teams a card shows on a pick step; a card names one or two, so this is never reached by a real one. */
+const MAX_SHOWN_TEAMS_PER_CARD = 4;
+
+function addCardForPlayer(
+  target: CardsByPlayer,
+  playerName: string,
+  teamsOnCard: ReadonlyArray<string>,
+  cardNumber?: string,
+): void {
+  const key = normalizePlayerName(playerName);
+  if (!key) return;
+  const number = cardNumber?.trim();
+  const teams = teamsOnCard
+    .map((team) => team.trim())
+    .filter(Boolean)
+    .slice(0, MAX_SHOWN_TEAMS_PER_CARD);
+  const seenKey = `${number ?? ""}\u0000${teams.join("\u0000")}`;
+  let entry = target.get(key);
+  if (!entry) {
+    entry = { shown: [], total: 0, seen: new Set() };
+    target.set(key, entry);
+  }
+  if (entry.seen.has(seenKey)) return;
+  entry.seen.add(seenKey);
+  entry.total += 1;
+  if (entry.shown.length < CARD_PLAYER_TEAM_MAX_CARDS) {
+    entry.shown.push({ ...(number ? { number } : {}), teams });
+  }
+}
+
+/**
  * NEO-254 — the set's year, for an ACTION that needs it.
  *
  * `resolveUnknownsAndStartBatch` runs in an action, so it cannot walk the
@@ -1600,6 +1651,13 @@ async function resolveUnknownsAndStartBatch(
      * not. Absent, the set year decides alone.
      */
     cardPlayerNamesByTeam?: CardPlayersByTeam;
+    /**
+     * NEO-602 — the cards that printed each player name, by NORMALIZED name
+     * (see `addCardForPlayer`). Written onto a same-name player's review row
+     * so its pick step can show the card number and printed team. Display
+     * only; absent, the pick step shows its candidates alone.
+     */
+    cardsByPlayer?: CardsByPlayer;
     /**
      * NEO-335 — filled with what this gate RESOLVED (normalized name → player
      * id / team full name), for the "Card titles" step's `titleContext`. The
@@ -2450,6 +2508,38 @@ async function resolveUnknownsAndStartBatch(
       moreCards: entry ? Math.max(0, entry.total - cards.length) : 0,
     });
   }
+  /**
+   * NEO-602 — for each player step that may be a same-name PICK (two or more
+   * players answer to the name: the ones the gate reports as ambiguous, and a
+   * name it linked that a Change turns back into a pick), the cards that
+   * printed the name. Bounded by the gate's card bound; printed text only.
+   */
+  const playerContexts: Array<{
+    name: string;
+    cards: Array<{ number?: string; teams: string[] }>;
+    moreCards: number;
+  }> = [];
+  {
+    const asked = new Set<string>();
+    const pickNames = [
+      ...ambiguousPlayers,
+      ...autoLinks.flatMap((link) =>
+        link.kind === "player" && link.candidatePlayerIds.length >= 2 ? [link.name] : [],
+      ),
+    ];
+    for (const name of pickNames) {
+      const normalized = normalizePlayerName(name);
+      if (!normalized || asked.has(normalized)) continue;
+      asked.add(normalized);
+      const entry = args.cardsByPlayer?.get(normalized);
+      if (!entry || entry.shown.length === 0) continue;
+      playerContexts.push({
+        name,
+        cards: entry.shown,
+        moreCards: Math.max(0, entry.total - entry.shown.length),
+      });
+    }
+  }
   // NEO-424 (D4) — an auto-link alone opens a batch too: it is a decided row
   // the operator must be able to see and Change before the commit.
   const opensBatch = hasUnknowns || autoLinks.length > 0;
@@ -2482,6 +2572,9 @@ async function resolveUnknownsAndStartBatch(
       // NEO-602 — what each team step shows the operator: the cards that
       // printed the name, their players, and the rows the name reached.
       ...(teamContexts.length > 0 ? { teamContexts } : {}),
+      // NEO-602 — and what each same-name player step shows: the cards that
+      // printed the name, with the team printed on each.
+      ...(playerContexts.length > 0 ? { playerContexts } : {}),
     });
   }
 
@@ -17540,11 +17633,15 @@ export const resolveChecklistEntities = action({
     // a team, so a team name the set year cannot settle may be settled by its
     // card's players (`addCardPlayerNames`).
     const cardPlayerNamesByTeam: CardPlayersByTeam = new Map();
+    // NEO-602 — and each player's own cards (number, printed team), for the
+    // same-name pick step.
+    const cardsByPlayer: CardsByPlayer = new Map();
     for (const c of args.cards) {
       const teamsOnCard = cardTeamNames(c);
       for (const p of c.players ?? []) {
         additionalPlayerNames.push(p);
         addCardTeamNames(cardTeamNamesByPlayer, p, teamsOnCard);
+        addCardForPlayer(cardsByPlayer, p, teamsOnCard, c.cardNumber);
       }
       for (const t of teamsOnCard) {
         additionalTeamNames.push(t);
@@ -17567,6 +17664,7 @@ export const resolveChecklistEntities = action({
           if (!p.trim()) continue;
           additionalPlayerNames.push(p);
           addCardTeamNames(cardTeamNamesByPlayer, p, teamsForChecklistPlayers);
+          addCardForPlayer(cardsByPlayer, p, teamsForChecklistPlayers, c.cardNumber);
         }
         for (const t of checklistTeams) additionalTeamNames.push(t);
         // NEO-490 — the card as the operator may settle it: the checklist's
@@ -17601,6 +17699,7 @@ export const resolveChecklistEntities = action({
       additionalTeamNames,
       cardTeamNamesByPlayer,
       cardPlayerNamesByTeam,
+      cardsByPlayer,
       resolvedNames,
     });
     // NEO-335 — after the gate, from the gate's own answers.

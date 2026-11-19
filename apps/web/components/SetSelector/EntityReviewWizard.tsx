@@ -32,6 +32,7 @@ import { CopyButton } from "../primitives/CopyButton";
 import { NearMatchPanel, type NearMatch } from "../entities/NearMatchPanel";
 import { TeamMatchSearch } from "../entities/TeamMatchSearch";
 import TeamStepContext from "./TeamStepContext";
+import PlayerStepContext from "./PlayerStepContext";
 import {
   aliasHolderSentence as sharedAliasHolderSentence,
   eraOverlapReason,
@@ -4981,30 +4982,38 @@ export default function EntityReviewWizard({
                   )}
 
                   {pickStep && !linkingOpen && (
-                    <SameNamePlayerPanel
-                      candidates={sameNameCandidates}
-                      scanCapped={sameNameScanCapped}
-                      setSportValue={current.setSportValue}
-                      disabled={busy}
-                      onPick={(playerId) => {
-                        if (busy) return;
-                        const picked = sameNameCandidates.find(
-                          (c) => c.playerId === playerId,
-                        );
-                        if (picked) {
-                          setPickedSameNameByRow((prev) => ({
-                            ...prev,
-                            [current._id]: picked,
-                          }));
-                        }
-                        void handleLink(
-                          current._id,
-                          "player",
-                          playerId as Id<"players">,
-                          linkOptions,
-                        );
-                      }}
-                    />
+                    <>
+                      <SameNamePlayerPanel
+                        candidates={sameNameCandidates}
+                        scanCapped={sameNameScanCapped}
+                        setSportValue={current.setSportValue}
+                        disabled={busy}
+                        onPick={(playerId) => {
+                          if (busy) return;
+                          const picked = sameNameCandidates.find(
+                            (c) => c.playerId === playerId,
+                          );
+                          if (picked) {
+                            setPickedSameNameByRow((prev) => ({
+                              ...prev,
+                              [current._id]: picked,
+                            }));
+                          }
+                          void handleLink(
+                            current._id,
+                            "player",
+                            playerId as Id<"players">,
+                            linkOptions,
+                          );
+                        }}
+                      />
+                      {/* NEO-602 — the evidence the choice is made by: the cards
+                          that print this name (number, printed team) and each
+                          candidate's stints. Under the choices, as the team step
+                          puts its cards under its own. Keyed by row so each step
+                          starts fresh. */}
+                      <PlayerStepContext key={current._id} reviewRowId={current._id} />
+                    </>
                   )}
 
                   {/* NEO-212: the operator's escape hatch when the enrichment

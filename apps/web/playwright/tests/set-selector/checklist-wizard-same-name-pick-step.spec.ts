@@ -159,6 +159,15 @@ test(
     // names the club "Tigers"; a refresh that moves his stint fails here by name.
     await expect(linkCatalogue.getByText("Tigers 2026–present", { exact: true })).toBeVisible();
     await expect(linkCatalogue).toHaveAccessibleName(`Link to ${NAME}, On a roster that year, Tigers 2026 to present`);
+    // NEO-602: the step shows the card the name came off, so the operator can choose by
+    // it: the card's number and the team printed on it (RP03 says "Hanshin Tigers"), and
+    // under them each candidate with the stints on file. Read from the cards the fetch
+    // observed, not the catalogue, so a refresh cannot move them; which stint is marked as
+    // the printed team is catalogue data and is not pinned.
+    const printedCards = wizard.getByRole("list", { name: "Cards that print this name" });
+    await expect(printedCards).toContainText("#RP03");
+    await expect(printedCards).toContainText("Hanshin Tigers");
+    await expect(wizard.getByRole("list", { name: "Known teams for each player on file" })).toContainText(`${NAME}, b. 1851`);
     await expect(wizard.getByRole("button", { name: "Create new" })).toBeVisible();
     await expect(wizard.getByRole("button", { name: `Skip ${NAME} — not a person` })).toBeVisible();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, same-name pick step" });

@@ -3724,6 +3724,29 @@ export default defineSchema({
       })),
       moreCards: v.number(),
     })),
+    /**
+     * NEO-602, player-kind only — what the "Which {name} is this?" pick step
+     * shows beside its candidates.
+     *
+     * Jason, 2026-11-19: "I don't know how I would choose between the two
+     * active luis castillo. We should show the card number & team from the
+     * player on the screen." The cards are not committed while the wizard is
+     * open, so the review gate writes, once at insert, the first cards that
+     * print the name: the number and the team(s) as printed. The candidates'
+     * own stints are read on demand (`playerStepContext`), from the rows in
+     * `enrichment.existingCandidates`.
+     *
+     * Display only: nothing decides from it. Absent on every row written
+     * before this field and on a name that was never a same-name choice.
+     * Additive and optional.
+     */
+    playerContext: v.optional(v.object({
+      cards: v.array(v.object({
+        number: v.optional(v.string()),
+        teams: v.array(v.string()),
+      })),
+      moreCards: v.number(),
+    })),
   })
     .index("by_selector_option", ["selectorOptionId"])
     .index("by_selector_option_and_batch", ["selectorOptionId", "batchId"])

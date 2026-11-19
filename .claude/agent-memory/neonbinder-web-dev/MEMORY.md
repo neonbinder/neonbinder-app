@@ -258,3 +258,4 @@
 - [ListingCardInputs field needs every returns validator](reference_listing_inputs_field_needs_every_returns_validator.md) — typecheck green, runtime "extra field"; add to previewListingTitle + parallelCopyTitles validators
 - [Attributes panel collapsed tests need a non-set level](reference_attributes_panel_collapsed_tests_need_non_set_level.md) — a setName row opens itself; collapsed tests use insert/parallel or click Hide first
 - [Wizard extra query lives in a child component](reference_wizard_extra_query_lives_in_a_child_component.md) — new per-step read: child owns useQuery; getBatch stays slim; auto-linked rows carry context too
+- [Read-only diagnosis on a deployment](reference_read_only_diagnosis_on_a_deployment.md) — convex data caps 8192; internal fns run without identity; open-wizard cards live in checklistCandidates
