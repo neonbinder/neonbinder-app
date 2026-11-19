@@ -2,7 +2,7 @@
 // Pure files/env in, outcome and exit status out. No network.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -205,4 +205,54 @@ test("fake: a catalogue failure with any non-501 step stays generic", () => {
 test("real: a 501 pattern never gets the recorder hint", () => {
   const body = { ...OK_PROBE("real"), outcome: "catalogue_non_2xx", steps: [{ step: "read.filters", status: 501 }] };
   assert.doesNotMatch(probe("real", { bscTarget: "real" }, body).err, /recorder/);
+});
+
+// NEO-555: bsc-probe.sh --health-only on a fake run also requires ebayFake.
+import { createServer } from "node:http";
+function healthOnly(expect, health) {
+  return new Promise((resolve) => {
+    const server = createServer((_req, res) => {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(health));
+    }).listen(0, "127.0.0.1", () => {
+      const dir = mkdtempSync(join(tmpdir(), "bscprobe-h-"));
+      const gh = join(dir, "out");
+      writeFileSync(gh, "");
+      const child = spawn("bash", [join(SCRIPTS, "bsc-probe.sh"), expect, "--health-only"], {
+        env: { ...process.env, TARGET_URL: `http://127.0.0.1:${server.address().port}`, PROBE_ID_TOKEN: "tok", OUT_DIR: dir, GITHUB_OUTPUT: gh },
+      });
+      let err = "";
+      child.stderr.on("data", (d) => (err += d));
+      child.stdout.on("data", (d) => (err += d));
+      child.on("close", (code) => {
+        server.close();
+        resolve({ code, out: readFileSync(gh, "utf8"), log: err });
+      });
+    });
+  });
+}
+
+test("health-only fake: bscTarget fake and ebayFake true passes", async () => {
+  const r = await healthOnly("fake", { bscTarget: "fake", ebayFake: true });
+  assert.equal(r.code, 0);
+  assert.match(r.out, /outcome=ok/);
+});
+
+test("health-only fake: ebayFake false or missing fails as wrong_target", async () => {
+  for (const h of [{ bscTarget: "fake", ebayFake: false }, { bscTarget: "fake" }]) {
+    const r = await healthOnly("fake", h);
+    assert.equal(r.code, 1);
+    assert.match(r.out, /outcome=wrong_target/);
+    assert.match(r.log, /ebayFake/);
+  }
+});
+
+test("health-only real: ebayFake is not asked of production", async () => {
+  const r = await healthOnly("real", { bscTarget: "real" });
+  assert.equal(r.code, 0);
+});
+
+test("health-only fake: a real bscTarget still fails first", async () => {
+  const r = await healthOnly("fake", { bscTarget: "real", ebayFake: true });
+  assert.equal(r.code, 1);
 });

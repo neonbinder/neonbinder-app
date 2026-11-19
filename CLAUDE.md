@@ -131,8 +131,8 @@ re-measure before quoting them for Playwright.
    `services/browser` — they are not the expensive part, and they catch most
    breakage without a round trip.
 3. **Run the specs covering the change on this worktree's own Convex
-   deployment**, before the first push (below). Seller specs and cloud threads
-   use shared dev instead.
+   deployment**, before the first push (below). Cloud threads use shared dev
+   instead.
 4. **Audit once.** One full audit round per ticket (the auditors the change
    calls for, all in parallel). After the fixes, re-audit only the delta: the
    fix commits, sent to every auditor whose findings they answer or whose
@@ -227,7 +227,7 @@ deployment, created through
 [Convex agent mode](https://docs.convex.dev/cli/agent-mode), so a reset or a code
 push from one session cannot change another session's run. The local Convex
 backend is not used, because it has no public URL and the app needs live
-integrations. Seller specs and cloud threads are the exceptions (next section).
+integrations. Cloud threads are the exception (next section).
 
 1. **Bring the branch onto latest main** (`git fetch origin main && git merge
    origin/main`).
@@ -328,18 +328,24 @@ integrations. Seller specs and cloud threads are the exceptions (next section).
 
 What a per-worktree deployment does not separate or cover:
 
-- **Marketplace sellers.** SportLots and the eBay sandbox each have one test
-  seller. Do not connect a seller on your own deployment: every deployment runs
-  the 15-minute sales poll against the seller connected there. `@marketplace-seller`
-  (eBay) specs run on shared dev or a PR preview (next section). BuySportsCards is
-  the fake (NEO-552) with one account per test user, so BSC specs run on your own
-  deployment.
+- **Marketplace sellers.** BuySportsCards (NEO-552) and eBay (NEO-555) are both
+  the standing fake (`services/fake-bsc`, CONTRACT.md) on every test deployment,
+  with one account per test user, so their listing, sale and takedown specs run
+  on your own deployment, in parallel, and nothing you do there reaches a real
+  marketplace. eBay is the fake when the deployment's `EBAY_ENVIRONMENT` is
+  `fake`; the agent-convex script copies it with the rest of dev's env, and
+  `npx convex run fakeBsc:ebayTarget` says `fake` when it is wired. SportLots
+  has one real test seller: do not connect it on your own deployment, because
+  every deployment runs the 15-minute sales poll against the seller connected
+  there.
 - **Saved marketplace logins.** The browser service keys them by Clerk user, not
   by deployment, with one exception: on a deployment wired to the fake
   BuySportsCards the BSC login is keyed by deployment AND user
-  (`buysportscards-credentials-fake-<slug>-<user>`, NEO-552), so BSC specs on
+  (`buysportscards-credentials-fake-<slug>-<user>`, NEO-552), and likewise the
+  eBay login on a deployment wired to the fake eBay
+  (`ebay-credentials-fake-<slug>-<user>`, NEO-555), so those specs on
   your deployment never share a session with CI or another worktree. SportLots
-  and eBay logins are still per user. Locally, a worker with no `TEST_EMAIL_<n>`
+  logins are still per user. Locally, a worker with no `TEST_EMAIL_<n>`
   falls back to `TEST_EMAIL`, so those workers are one user in every worktree. A
   reset stays on your deployment, but those saved logins are shared. Avoid any
   worker that has its own `TEST_EMAIL_<n>` while CI is running, because CI signs
@@ -347,10 +353,13 @@ What a per-worktree deployment does not separate or cover:
 - **PR service code.** The deployment calls the dev `services/browser` and
   `services/preprocess`. A spec covering a change there runs against the PR's
   preview after the first push.
-- **Single-host integrations.** eBay's OAuth redirect and deletion endpoint are
-  registered to one host, so connecting eBay through the UI does not work here.
-  Buying or tracking a label registers a webhook per deployment on the one dev
-  EasyPost account.
+- **Single-host integrations.** Buying or tracking a label registers a webhook
+  per deployment on the one dev EasyPost account. Connecting eBay through the UI
+  works on every test deployment: in fake mode Connect goes to the testing
+  consent page (`/testing/fake-ebay/authorize`, on your own origin), not to
+  eBay's registered redirect. A deployment on the real eBay sandbox or
+  production (`EBAY_ENVIRONMENT=sandbox|production`) still has the registered
+  host only; never point your own deployment at it.
 
 Limits: the deployment expires 5 days after creation because the block passes
 `--expiration`. Always pass it: each deployment holds a full copy of dev's secrets.
@@ -359,11 +368,12 @@ close-out (step 6) rather than leaving it to expire. The env copy is a snapshot:
 long-lived deployment's env changes. A rotated dev secret's old value stays on these
 deployments until they expire or you copy again.
 
-#### Cloud threads and seller specs: shared dev (NEO-390)
+#### Cloud threads: shared dev (NEO-390)
 
-Cloud threads cannot create a per-worktree deployment yet, and seller specs need
-the shared eBay sandbox seller. Both run on the shared dev deployment. Everything on it moves
-forward only, because every session and thread shares it:
+Cloud threads cannot create a per-worktree deployment yet, so they run on the
+shared dev deployment. (Seller specs no longer need it since NEO-555: eBay is
+the fake, like BuySportsCards.) Everything on it moves forward only, because
+every session and thread shares it:
 
 1. **Bring the branch onto latest main** (`git fetch origin main && git merge
    origin/main`). Never push a branch that is behind main onto dev: that rolls
@@ -386,9 +396,8 @@ forward only, because every session and thread shares it:
    that user's binders, boxes and copies. Only one session at a time can run specs
    on them, so agree the order in the thread. Set `PAUSED_PLATFORMS` to dev's
    `NEONBINDER_PAUSED_PLATFORMS`.
-5. **One seller session at a time.** Before a `@marketplace-seller` (eBay) spec, check that
-   no CI seller job is in progress. CI's seller queue cannot see local runs, so agree
-   the order in the thread.
+5. **Do not connect SportLots on dev.** It is the one real seller left (eBay and
+   BuySportsCards are the fake, NEO-555); agree any SportLots run in the thread.
 6. **Dev is not reseeded per run.** It keeps whatever the last run left. A spec
    that needs a fresh seed (fresh-only, or a precondition such as "this set does
    not exist yet") needs the reset, which wipes dev under every other session:
@@ -484,7 +493,7 @@ npm run test:e2e:seed    # e2e-baseline.sh reset + the setup (seed) project
 > "Run your specs on your own Convex deployment before the first push"
 > above. **Nobody deploys to any dev deployment from CI** (NEO-249). A developer's
 > long-lived dev deployment is the env source for those deployments and the shared
-> home of cloud threads and seller specs ("Cloud threads and seller specs: shared dev" above), so a push there brings
+> home of cloud threads ("Cloud threads: shared dev" above), so a push there brings
 > the branch onto latest main first. Point local Vite at **that PR's Convex preview**
 > only when your own deployment cannot reproduce a CI red — see "Debugging a red spec
 > against the PR's own services" above.
@@ -715,7 +724,7 @@ All workflows live in `.github/workflows/`. `pr-pipeline.yml` is the single all-
 - **`fake-bsc.yml`** / **`fake-bsc-deploy.yml`** (NEO-552) — `services/fake-bsc` build + unit tests per PR, and its deploy lane (called by `release.yml` ahead of the browser lane, and by `workflow_dispatch`). The fake is a standing dev Cloud Run service that every preview, worktree deployment and dev call instead of BuySportsCards; its recordings live only in its bucket. `bsc-drift.yml` is the daily real-BSC shape check through the prod browser service's `/probe/bsc`. See `services/fake-bsc/CONTRACT.md`.
 - **`browser-deploy.yml`** / **`preprocess-deploy.yml`** — the prod deploy lanes, `workflow_call`-only (invoked by `release.yml`; `workflow_dispatch` is retained for dev-only validation). **Both** dev and prod use blue/green — deploy at 0% under a `sha-<short>` tag, probe/smoke the tagged URL, then one atomic `update-traffic` that promotes *and* drops the tag (NEO-114). There is deliberately **no rollback job**: nothing is promoted until the probe passes, so there is nothing to roll back (NEO-67). Gated on the `BROWSER_DEPLOY_ENABLED` / `PREPROCESS_DEPLOY_ENABLED` repo variables.
 - **`preprocess.yml`** — `services/preprocess` lint + unit tests + the **per-PR preprocess preview** (`pr-<N>` tagged no-traffic revision on the dev service + smoke + sticky PR comment). **Pre-merge only.**
-- **`e2e.yml`** — reusable (`workflow_call`) Playwright suite (`apps/web/playwright/`): two passes, each on a freshly seeded preview (fresh-only and sole-writer specs pass once per seed): `setup` → `seed` (scripted reset + the `setup` project, worker 0) → **`shard-desktop` ×8** (`--project=e2e`) → `seed-mobile` (needs every desktop shard, runs even if desktop has reds; reset + `setup` again) → **`shard-mobile` ×8** (`--project=e2e-mobile`), each shard given an explicit file list by `shard-plan.mjs <N> <i> --project <p>` (longest-first over that project's timings, which the best-effort `timings` job rebuilds beside `seed` from the median of the last few green runs' reports, falling back to the committed `timings.json`; NEO-389; `playwright/project-scope.mjs` lists the few specs one project leaves out) and running the `bootstrap` project for its own test account first (so each pass re-bootstraps after its reset) → beside each pass's shards, a **`seller-desktop`** / **`seller-mobile`** job runs the marketplace-seller listing specs (`SELLER_SPECS` in `project-scope.mjs`, tag `@marketplace-seller`; no shard plans them; eBay only since NEO-552, so the list may be empty and the job then passes as a no-op) as worker 8, one PR at a time repo-wide behind an in-job queue (`.github/scripts/seller-queue.sh`: polls this repo's other runs' jobs, fails closed, first come first served, never cancels, 60 min cap; `seed-mobile` waits for `seller-desktop` because its reset wipes the preview; once its turn comes the job ends every eBay sandbox listing) because every PR shares one eBay sandbox seller account; BuySportsCards is the fake (one account per test user), so BSC listing specs run in the ordinary shards. After the shards and seller jobs, **`breaker-desktop`** / **`breaker-mobile`** run the `@bsc-breaker` specs (`BREAKER_SPECS`, `shard-plan.mjs --breaker`) serially as worker 8, because a 429, 503, hang or reset fault opens Convex's deployment-wide BSC call gate for every shard (`seed-mobile` also waits for `breaker-desktop`) → the single required **`e2e`** gate (green iff both seeds and every shard, seller and breaker job succeeded, no spec failed **and** every planned spec has a passing result on both projects, so a shard that died before reporting fails it); about 20 min wall clock (seed ~4 min + longest spec ~5 min, twice) → a `report` job (the "Playwright E2E" check and a sticky PR comment). Artifacts are failure screenshots and the blob/merged HTML report, which embeds each failure's `error-context.md` ARIA snapshot (accepted: real marketplace passwords never reach the browser) and the sanitised axe JSON; never traces (a trace records Clerk testing tokens, and the repo is public). `setup` also refuses any preview URL that is not this team's `neonbinder-<hash>-neon-binder.vercel.app` and the production Convex deployment. Note it runs on **every** PR including preprocess-only ones — E2E cannot observe preprocess, but no carve-out exists, deliberately: `preprocess.yml` is path-filtered and therefore cannot block a merge, so `e2e` plus `preprocess-test` are what gate a preprocess PR.
+- **`e2e.yml`** — reusable (`workflow_call`) Playwright suite (`apps/web/playwright/`): two passes, each on a freshly seeded preview (fresh-only and sole-writer specs pass once per seed): `setup` → `seed` (scripted reset + the `setup` project, worker 0) → **`shard-desktop` ×8** (`--project=e2e`) → `seed-mobile` (needs every desktop shard, runs even if desktop has reds; reset + `setup` again) → **`shard-mobile` ×8** (`--project=e2e-mobile`), each shard given an explicit file list by `shard-plan.mjs <N> <i> --project <p>` (longest-first over that project's timings, which the best-effort `timings` job rebuilds beside `seed` from the median of the last few green runs' reports, falling back to the committed `timings.json`; NEO-389; `playwright/project-scope.mjs` lists the few specs one project leaves out) and running the `bootstrap` project for its own test account first (so each pass re-bootstraps after its reset) → eBay and BuySportsCards are both the fake (NEO-552, NEO-555; one account per test user), so their listing specs run in the ordinary shards: there are no seller jobs, seller queue or `@marketplace-seller` tag any more. After the shards, **`breaker-desktop`** / **`breaker-mobile`** run the `@bsc-breaker` specs (`BREAKER_SPECS`, `shard-plan.mjs --breaker`) serially as worker 8, because a 429, 503, hang or reset fault opens Convex's deployment-wide BSC call gate for every shard (`seed-mobile` also waits for `breaker-desktop`) → the single required **`e2e`** gate (green iff both seeds and every shard and breaker job succeeded, no spec failed **and** every planned spec has a passing result on both projects, so a shard that died before reporting fails it); about 20 min wall clock (seed ~4 min + longest spec ~5 min, twice) → a `report` job (the "Playwright E2E" check and a sticky PR comment). Artifacts are failure screenshots and the blob/merged HTML report, which embeds each failure's `error-context.md` ARIA snapshot (accepted: real marketplace passwords never reach the browser) and the sanitised axe JSON; never traces (a trace records Clerk testing tokens, and the repo is public). `setup` also refuses any preview URL that is not this team's `neonbinder-<hash>-neon-binder.vercel.app` and the production Convex deployment. Note it runs on **every** PR including preprocess-only ones — E2E cannot observe preprocess, but no carve-out exists, deliberately: `preprocess.yml` is path-filtered and therefore cannot block a merge, so `e2e` plus `preprocess-test` are what gate a preprocess PR.
 - **`preview-cleanup.yml`** — on PR close, removes the `pr-<N>` Cloud Run tag + image, and deletes the PR's Convex preview. Browser and preprocess get **separate jobs**, because each authenticates as its own deployer SA and `google-github-actions/auth` rewrites ADC in place — a second auth in one job would silently run later steps as the wrong identity. The Convex job finds its target via the PR head SHA's GitHub Deployment record; since NEO-162 it accepts **both** `vercel[bot]` (PRs opened before the cutover) and `github-actions[bot]` (previews built by `web-preview`), so the pre-cutover backlog stays reclaimable.
 - **`refresh-flow-timings.yml`** — weekly, pushes a refreshed `apps/web/playwright/timings.json` (the shard planner's per-spec, per-project timings) to a branch for a maintainer to PR. Since NEO-389 CI rebuilds the timings itself each run, so this only keeps the committed fallback close.
 - **`e2e-repeat.yml`** — manual flakiness sampler (runs the Playwright suite N times).

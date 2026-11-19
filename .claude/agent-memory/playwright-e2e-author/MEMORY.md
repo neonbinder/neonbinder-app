@@ -28,7 +28,8 @@
 - [Prove a theme by painted colour](patterns_prove_a_theme_by_painted_colour.md) — banner bg + heading colour via toHaveCSS; pre-mount false…
 - [Collection checklist total and drawer](patterns_collection_checklist_total_and_drawer.md) — NEO-358: T = listed minus variation rows; missing…
 - [Collection writes are optimistic](patterns_collection_optimistic_writes_wait_for_the_notice.md) — confirm the LAST optimistic write by its notice; un-Have notice is in main; which writes are optimistic
-- [Marketplace listing spec shape](patterns_marketplace_listing_spec_shape.md) — NEO-370: what "N listed" proves, leave+Back flush, distinct counts…
+- [Marketplace listing spec shape](patterns_marketplace_listing_spec_shape.md) — "N listed" proof, distinct counts, fake eBay consent/faults/sales (NEO-555)
+- [Listing specs race the sales poll](listing-specs-race-the-sales-poll.md) — press in 60 s after a poll drain = "already in the works"; pressSync, hard throttled branch
 - [page.clock for client timeouts](patterns_page_clock_for_client_timeouts.md) — NEO-431: install before signIn, fastForward, hold by…
 - [Add cards run-start caps](patterns_add_cards_run_start_caps.md) — NEO-452: 2 active batches (closed run still counts while read) and 12…
 - [Stale-chunk injection](patterns_stale_chunk_injection.md) — NEO-434: stale-chunks.ts arm-time snapshot, no-reload anchor via document-request…
@@ -62,7 +63,7 @@
 - [First seller press may wait for the seller account](patterns_first_seller_press_may_wait_for_the_seller_account.md) — NEO-483: expectRunOrSellerWait + claim wait capped at SELLER_ACCOUNT_CAP_MS; both orders end in the same asserts
 - [Fake BSC faults and the breaker job](patterns_fake_bsc_faults_and_the_breaker_job.md) — NEO-552: bscFake fixture, hop page, deployment-wide gate, @bsc-breaker…
 - [Worktree deployment onto the fake BSC](patterns_worktree_deployment_onto_the_fake_bsc.md) — NEO-552: set browser URL to the tagged revision, reportMisses, misses arrive in levels
-- [eBay hold spec on a hand-made set](patterns_ebay_hold_spec_on_a_handmade_set.md) — NEO-535: over-80 title fixture, hold-only run shape, tagged seller spec vs shard-plan
+- [eBay hold spec on a hand-made set](patterns_ebay_hold_spec_on_a_handmade_set.md) — NEO-535: over-80 title fixture, hold-only run shape, runOver80Flow, connectEbayAndFinishSetup
 - [Re-run a fresh-only spec w/o reseed](patterns_rerun_a_fresh_only_spec_without_a_reseed.md) — gcloud expired: restore spec + reset --except-reference-seed; push a break to prove stored-title asserts
 - [Parallel titles dialog specs](patterns_parallel_titles_dialog_specs.md) — NEO-535: builder-engineered names, box beats carry, sr-only duplicate status, Vite reload false red; NEO-581 partial fix + door unmounts at 0
 - [NEO-535 description, walker, Regenerate specs](patterns_neo535_description_walker_and_regenerate_specs.md) — stale builder text, walker order, rename fan-out shape, mobile-only wrap, plant traps
@@ -92,3 +93,4 @@
 - [Admin group writes and the failure reset](patterns_admin_group_writes_and_the_failure_reset.md) — NEO-592: own set for group-wide admin close; reset local opt-in, order proof, no-retry tags
 - [Action idle between child calls](patterns_action_stall_between_child_calls.md) — group convex-logs by requestId; token→gate gap ~0.03 s healthy; 2-source fetch has no wait line pre-dialog
 - [Window vs rest exec medians; eBay policy timeouts](patterns_window_vs_rest_exec_medians.md) — loaded deployment vs slow code; getOptedInPrograms timeout lines
+- [Injected orders ship up front](patterns_injected_orders_ship_up_front.md) — SHIPPED/FULFILLED keeps the Pick List clean; Convex error $-anchor trap; Switch by keyboard

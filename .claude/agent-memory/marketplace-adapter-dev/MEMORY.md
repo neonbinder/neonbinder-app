@@ -99,3 +99,4 @@
 - [Cloud Run socket destroy restarts the instance](reference_cloud_run_socket_destroy_restarts_instance.md) — fake faults end in 503, never socket.destroy(); hangCapMs injectable
 - [eBay read path: one clock](ebay-read-path-bounded-by-one-clock.md) — 3 s a try, one retry on timeout; timeout is never a missing policy
 - [Direct helper bypasses action stubs](reference_direct_helper_bypasses_credentials_action_stubs.md) — runAction -> plain helper skips vi.mock action stubs; add a twin stub, spy _handler for no-hop proof
+- [One fake host pin for both marketplaces](reference_one_fake_host_pin_shared_by_both_marketplaces.md) — share isFakeServiceHost/signForFake; fake switch keyed on request not config validity; strict echo guard

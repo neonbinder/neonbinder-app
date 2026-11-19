@@ -273,3 +273,4 @@
 - [One-shot status read races the live-words frame](reference_one_shot_status_read_races_the_live_words_frame.md) — NoticeLine text lands a rAF later; waitFor it; notice timers clear only their own id
 - [Restore setTimeout spy before real timers](reference_restore_spy_before_real_timers.md) — spy restored after useRealTimers hangs the afterAll hook 10 s with green tests; monotonic ref ids for notices
 - [Bounded-fetch test: timer arms before the stub](reference_bounded_fetch_test_timer_arms_before_the_stub_is_reached.md) — sign() is async; stub sees an aborted signal; wait on stalled-body count; wrap setTimeout for drain tests
+- [Testing hop status lines are an API](reference_testing_hop_status_lines_are_an_api.md) — /testing/*-fake status lines feed DONE/FAILED regexes in playwright/support; new op = FAILED-matching refusals, report the DONE prefix

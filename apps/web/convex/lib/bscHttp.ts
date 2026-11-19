@@ -30,6 +30,24 @@ import {
   type BscGateOutcome,
   type BscGateRefusalReason,
 } from "./bscCallGatePolicy";
+import {
+  FAKE_BSC_ID_TOKEN_HEADER,
+  FAKE_BSC_KEY_HEADER,
+  FAKE_BSC_NS_HEADER,
+  FAKE_BSC_SIGNED_ID_TOKEN_HEADER,
+  isFakeServiceHost,
+  signForFake,
+  type FakeIdTokenSource,
+} from "./fakeMarketplace";
+
+// The fake's header names are defined once, in `fakeMarketplace.ts` (NEO-555),
+// and re-exported here so BSC callers and tests keep importing them from the BSC door.
+export {
+  FAKE_BSC_ID_TOKEN_HEADER,
+  FAKE_BSC_KEY_HEADER,
+  FAKE_BSC_NS_HEADER,
+  FAKE_BSC_SIGNED_ID_TOKEN_HEADER,
+};
 
 /** BSC's API host. (The www host serves pages, not the API: CloudFront 403s.) */
 const REAL_API_BASE = "https://api-prod.buysportscards.com";
@@ -43,24 +61,6 @@ export const FAKE_BSC_KEY_ENV = "NEONBINDER_FAKE_BSC_KEY";
 /** The deployment-is-a-test-deployment marker (never set in production). */
 const TEST_DEPLOYMENT_ENV = "TESTING_RESET_SECRET";
 
-export const FAKE_BSC_KEY_HEADER = "x-nb-fake-bsc-key";
-export const FAKE_BSC_ID_TOKEN_HEADER = "X-Serverless-Authorization";
-/**
- * The same signed ID token again, bare (no `Bearer`). Cloud Run strips the
- * signature from what it passes on in `X-Serverless-Authorization`, so the
- * fake verifies the signature of this copy itself.
- */
-export const FAKE_BSC_SIGNED_ID_TOKEN_HEADER = "x-nb-fake-id-token";
-
-/**
- * Fake mode only: the run a call with no BSC token belongs to (CONTRACT.md,
- * "Module seams"). `card-listing` is public, so without it the fake cannot
- * tell one run's call from another's and a card-scoped fault hits them all.
- */
-export const FAKE_BSC_NS_HEADER = "x-nb-fake-ns";
-
-/** A fake namespace (`<convexSlug>-<userTag>`) or a deployment prefix (`<convexSlug>-`). */
-const FAKE_NS_VALUE = /^[a-z0-9][a-z0-9-]{0,99}$/;
 
 /** Marks an answer `bscFetch` gave itself because the gate refused (nothing was sent). */
 export const BSC_BREAKER_HEADER = "x-nb-bsc-breaker";
@@ -81,15 +81,6 @@ export type BscTarget =
   | { mode: "real"; apiBase: string; overrideIgnored: boolean }
   | { mode: "fake"; origin: string; apiBase: string; callerKey: string }
   | { mode: "misconfigured"; reason: string };
-
-/**
- * The fake's own Cloud Run service host, and no other: the service name
- * `neonbinder-fake-bsc-` starts the first label (so a tagged revision
- * `pr-N---…` or any other service is refused), then DNS labels, then
- * `run.app`. The first label stays within 63 characters.
- */
-const FAKE_BSC_HOST =
-  /^neonbinder-fake-bsc-(?:[a-z0-9-]{0,42}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.run\.app$/;
 
 /** Where this deployment's BSC calls go. Pure; reads only `env`. */
 export function resolveBscTarget(env: BscEnv = process.env): BscTarget {
@@ -113,7 +104,7 @@ export function resolveBscTarget(env: BscEnv = process.env): BscTarget {
       reason: `${BSC_API_BASE_ENV} must not carry credentials or a port`,
     };
   }
-  if (!FAKE_BSC_HOST.test(url.hostname)) {
+  if (!isFakeServiceHost(url.hostname)) {
     return {
       mode: "misconfigured",
       reason: `${BSC_API_BASE_ENV} must be the neonbinder-fake-bsc-*.run.app service`,
@@ -181,7 +172,7 @@ export function bscHeaders(
  * Mints a Google ID token whose audience is `audience` (the fake's origin).
  * Called only in fake mode; a real-mode call never reaches it.
  */
-export type BscIdTokenSource = (audience: string) => Promise<string>;
+export type BscIdTokenSource = FakeIdTokenSource;
 
 /** A grant from the call gate: the calls made under it report against it. */
 export type BscGrant = { grantedAt: number; reportOutcome: boolean; probe: boolean };
@@ -293,26 +284,14 @@ export function isBscBreakerRefusal(res: Response): boolean {
   return res.headers.get(BSC_BREAKER_HEADER) !== null;
 }
 
-/** The fake-mode request: caller secret, ID token, and never a redirect. */
+/** The fake-mode request: caller secret, ID token, and never a redirect (`signForFake`). */
 async function fakeInit(
   target: Extract<BscTarget, { mode: "fake" }>,
   init: RequestInit,
   idToken: BscIdTokenSource,
   fakeNs?: string,
 ): Promise<RequestInit> {
-  const token = await idToken(target.origin);
-  const headers = new Headers(init.headers);
-  headers.set(FAKE_BSC_KEY_HEADER, target.callerKey);
-  headers.set(FAKE_BSC_ID_TOKEN_HEADER, `Bearer ${token}`);
-  headers.set(FAKE_BSC_SIGNED_ID_TOKEN_HEADER, token);
-  // A request with a BSC token is namespaced by the token; only a tokenless
-  // one (card-listing) names its run, and only in a form the fake reads.
-  if (fakeNs !== undefined && !headers.has("authorization") && FAKE_NS_VALUE.test(fakeNs)) {
-    headers.set(FAKE_BSC_NS_HEADER, fakeNs);
-  }
-  // The ID token and the caller secret go to the fake's origin and nowhere
-  // else: a redirect is a failure, never followed.
-  return { ...init, headers, redirect: "error" };
+  return await signForFake(target, init, idToken, fakeNs);
 }
 
 /**
