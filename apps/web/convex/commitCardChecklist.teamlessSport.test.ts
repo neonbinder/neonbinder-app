@@ -1,9 +1,12 @@
 /**
  * NEO-426 — a teamless sport defaults a card to "No team" (the sport row's
- * `teamlessSport` stamp), at every place a card is born or re-synced:
- * `commitCardChecklistChunk`'s insert and existing-row branches, and
- * `addCustomCard`. (`applyBscTeamResolution`, the lookup-answer path, is in
- * cardChecklist.bscTeamlessSport.test.ts.)
+ * `teamlessSport` stamp), at every place a card is BORN:
+ * `commitCardChecklistChunk`'s insert branch and `addCustomCard`.
+ * (`applyBscTeamResolution`, the lookup-answer path, is in
+ * cardChecklist.bscTeamlessSport.test.ts.) A re-synced (existing) row is never
+ * stamped: existing cards are the operator's to mark (NEO-556's bulk action),
+ * and a stamp there would fire when an incoming team was named but not
+ * accepted, against product invariant 8.
  *
  * The default is ONE more reason to stamp, decided by `noTeamCardVerdict` on
  * the card as it will be born, so everything that holds back the set's No Team
@@ -37,7 +40,10 @@ const NOW = 1_700_000_000_000;
 const SPORT_STAMP = { setAt: NOW, setByUserId: SPORT_SETTER };
 const LEAF_NO_TEAM = { setAt: NOW, setByUserId: LEAF_SETTER };
 
-type T = ReturnType<typeof convexTest>;
+// The schema-typed harness (a bare `ReturnType<typeof convexTest>` loses the
+// schema, so `t.run` cannot see tables or indexes).
+const makeT = () => convexTest(schema, modules);
+type T = ReturnType<typeof makeT>;
 type Sel = Id<"selectorOptions">;
 
 let live: T[] = [];
@@ -48,7 +54,7 @@ beforeEach(() => {
   }) as unknown as typeof fetch);
 });
 afterEach(async () => {
-  for (const t of live) await cancelScheduled(t);
+  for (const t of live) await cancelScheduled(t as unknown as Parameters<typeof cancelScheduled>[0]);
   vi.unstubAllGlobals();
 });
 
@@ -56,7 +62,7 @@ type Opts = { golfFlagged?: boolean; leaf?: Partial<Doc<"selectorOptions">> };
 
 /** Golf (flagged unless told otherwise) › set › leaf, plus Baseball. */
 async function seed(opts: Opts = {}) {
-  const t = convexTest(schema, modules);
+  const t = makeT();
   live.push(t);
   const fx = await t.run(async (ctx) => {
     const row = (level: Doc<"selectorOptions">["level"], value: string, parentId?: Sel, extra = {}) =>
@@ -428,7 +434,7 @@ describe("commitCardChecklistChunk insert — a teamless-sport card is born No t
 // The existing-row (re-sync) branch
 // ───────────────────────────────────────────────────────────────────────────
 
-describe("commitCardChecklistChunk re-sync — an existing teamless row", () => {
+describe("commitCardChecklistChunk re-sync — an existing row is never given the sport default", () => {
   async function existing(t: T, fx: Fx, extra: Partial<Doc<"cardChecklist">> = {}) {
     return t.run(async (ctx) =>
       insertTestCard(ctx, {
@@ -445,28 +451,121 @@ describe("commitCardChecklistChunk re-sync — an existing teamless row", () => 
   const resync = (t: T, fx: Fx, id: Id<"cardChecklist">, extra: Partial<ChunkCard> = {}, operatorUserId = OPERATOR) =>
     commit(t, fx, [wire("1", { existingId: id, ...extra })], { operatorUserId });
   const read = (t: T, id: Id<"cardChecklist">) => t.run(async (ctx) => ctx.db.get(id));
+  const teamRow = (t: T, fx: Fx) =>
+    t.run(async (ctx) =>
+      ctx.db.insert("teams", { ...teamRowFields({ location: "Augusta", name: "Nationals" }), sportId: fx.golf, lastUpdated: NOW }),
+    );
 
-  test("a teamless row of golfers is stamped, credited to the committing operator", async () => {
+  test("a teamless row of golfers is left unstamped, with or without an operator on the call", async () => {
     const { t, fx } = await seed();
     const id = await existing(t, fx, { playerIds: [fx.tiger] });
     await resync(t, fx, id);
+    await commit(t, fx, [wire("1", { existingId: id })]);
     const row = (await read(t, id))!;
-    expect(row.teamNoneConfirmedByUserId).toBe(OPERATOR);
+    expect(stamped(row)).toBe(false);
+    expect(row.teamNoneConfirmedByUserId).toBeUndefined();
     expect(row.teamOnCardIds ?? []).toEqual([]);
   });
 
-  test("with no operator the stamp is credited to whoever flagged the sport", async () => {
+  // The auditor's cases (rule 8): a team the listing NAMED but the re-sync did
+  // not accept must never be answered with "No team".
+  test("a team arriving with no applyFields is not accepted, and the row is not stamped", async () => {
     const { t, fx } = await seed();
+    const team = await teamRow(t, fx);
     const id = await existing(t, fx, { playerIds: [fx.tiger] });
-    await commit(t, fx, [wire("1", { existingId: id })]);
-    expect((await read(t, id))!.teamNoneConfirmedByUserId).toBe(SPORT_SETTER);
+    const out = await resync(t, fx, id, { teamOnCardIds: [team], teamNames: ["Augusta Nationals"] } as never);
+    const row = (await read(t, id))!;
+    expect(row.teamOnCardIds ?? []).toEqual([]);
+    expect(stamped(row)).toBe(false);
+    expect(out.staleDecisionIds).toEqual([]);
   });
 
-  test("a row that has a team is left alone", async () => {
+  test("a team arriving with a stale baseVersion is not accepted, and the row is not stamped", async () => {
     const { t, fx } = await seed();
-    const team = await t.run(async (ctx) =>
-      ctx.db.insert("teams", { ...teamRowFields({ location: "Augusta", name: "Nationals" }), sportId: fx.golf, lastUpdated: NOW }),
+    const team = await teamRow(t, fx);
+    const id = await existing(t, fx, { playerIds: [fx.tiger] });
+    const out = await resync(t, fx, id, {
+      teamOnCardIds: [team],
+      teamNames: ["Augusta Nationals"],
+      applyFields: ["teamOnCardIds"],
+      baseVersion: NOW - 1,
+    } as never);
+    const row = (await read(t, id))!;
+    expect(out.staleDecisionIds).toEqual([id]);
+    expect(row.teamOnCardIds ?? []).toEqual([]);
+    expect(stamped(row)).toBe(false);
+  });
+
+  test("a card an operator took out of No team (teamNone: false) stays unstamped through a re-sync", async () => {
+    const { t, fx } = await seed();
+    const id = await t.withIdentity(ADMIN).mutation(api.selectorOptions.addCustomCard, {
+      selectorOptionId: fx.leaf,
+      cardNumber: "1",
+      cardName: "Card 1",
+      playerIds: [fx.tiger],
+      teamNone: false,
+    });
+    expect(stamped((await read(t, id))!)).toBe(false);
+    await resync(t, fx, id);
+    await resync(t, fx, id, { playerIds: [fx.tiger], applyFields: ["playerIds"], baseVersion: (await read(t, id))!.lastUpdated });
+    expect(stamped((await read(t, id))!)).toBe(false);
+  });
+
+  test("an existing row matched by number (no ref on either side, then a ref attaching) is not stamped", async () => {
+    const { t, fx } = await seed();
+    // The action hands a number-matched row to the chunk as `existingId`
+    // (`existingIdByNumberNoRef`), the same branch as every other match.
+    const id = await existing(t, fx, { playerIds: [fx.tiger] });
+    await resync(t, fx, id);
+    expect(stamped((await read(t, id))!)).toBe(false);
+    await resync(t, fx, id, { platformData: bsc("B9"), teamLookup: "answered" });
+    const row = (await read(t, id))!;
+    expect(row.platformData.bsc?.ref).toBe("B9");
+    expect(stamped(row)).toBe(false);
+  });
+
+  test("a row with no player, a ballplayer, a pending name or a BSC lookup in any state: still unstamped", async () => {
+    const { t, fx } = await seed();
+    const none = await existing(t, fx, {});
+    const ball = await existing(t, fx, { cardNumber: "2", playerIds: [fx.mookie] });
+    const pending = await existing(t, fx, {
+      cardNumber: "3",
+      playerIds: [fx.tiger],
+      pendingPlayerNames: ["Unknown Golfer"],
+    });
+    const answered = await existing(t, fx, {
+      cardNumber: "4",
+      playerIds: [fx.tiger],
+      platformData: { bsc: { ref: "B4", src: "b0" } },
+      teamCheckDoneAt: 7,
+      teamCheckOutcome: "answered",
+    });
+    await commit(
+      t,
+      fx,
+      [
+        wire("1", { existingId: none }),
+        wire("2", { existingId: ball }),
+        wire("3", { existingId: pending }),
+        wire("4", { existingId: answered }),
+      ],
+      { operatorUserId: OPERATOR, resolvedPlayerNames: ["Unknown Golfer"] },
     );
+    for (const id of [none, ball, pending, answered]) expect(stamped((await read(t, id))!)).toBe(false);
+  });
+
+  test("an accepted playerIds change to a golfer does not stamp the row either", async () => {
+    const { t, fx } = await seed();
+    const id = await existing(t, fx, { playerIds: [fx.mookie] });
+    await resync(t, fx, id, { playerIds: [fx.tiger], applyFields: ["playerIds"], baseVersion: NOW });
+    const row = (await read(t, id))!;
+    expect(row.playerIds).toEqual([fx.tiger]);
+    expect(stamped(row)).toBe(false);
+  });
+
+  test("a row that has a team keeps it", async () => {
+    const { t, fx } = await seed();
+    const team = await teamRow(t, fx);
     const id = await existing(t, fx, { playerIds: [fx.tiger], teamOnCardIds: [team] });
     await resync(t, fx, id);
     const row = (await read(t, id))!;
@@ -487,117 +586,14 @@ describe("commitCardChecklistChunk re-sync — an existing teamless row", () => 
     expect(row.teamNoneConfirmedByUserId).toBe("operator_earlier");
   });
 
-  test("a row with no player (or a player of a sport with teams) is not stamped", async () => {
-    const { t, fx } = await seed();
-    const none = await existing(t, fx, {});
-    const ball = await existing(t, fx, { cardNumber: "2", playerIds: [fx.mookie] });
-    await commit(t, fx, [wire("1", { existingId: none }), wire("2", { existingId: ball })], { operatorUserId: OPERATOR });
-    expect(stamped((await read(t, none))!)).toBe(false);
-    expect(stamped((await read(t, ball))!)).toBe(false);
-  });
-
-  test("a player name still pending on the row blocks it; settling the name in this commit lets it stamp", async () => {
-    const { t, fx } = await seed();
-    const id = await existing(t, fx, { playerIds: [fx.tiger], pendingPlayerNames: ["Unknown Golfer"] });
-    await resync(t, fx, id);
-    expect(stamped((await read(t, id))!)).toBe(false);
-
-    await commit(t, fx, [wire("1", { existingId: id })], {
-      operatorUserId: OPERATOR,
-      resolvedPlayerNames: ["Unknown Golfer"],
-    } as never);
-    const row = (await read(t, id))!;
-    expect(row.pendingPlayerNames ?? []).toEqual([]);
-    expect(row.teamNoneConfirmedByUserId).toBe(OPERATOR);
-  });
-
-  test("a pending player name arriving with the sync also blocks", async () => {
-    const { t, fx } = await seed();
-    const id = await existing(t, fx, { playerIds: [fx.tiger] });
-    await resync(t, fx, id, { pendingPlayerNames: ["Unknown Golfer"] });
-    expect(stamped((await read(t, id))!)).toBe(false);
-  });
-
-  test("a pending team name on the row, or a BSC row whose lookup never ran: held", async () => {
-    const { t, fx } = await seed();
-    const pending = await existing(t, fx, { playerIds: [fx.tiger], pendingTeamNames: ["Augusta Nationals"] });
-    const owed = await existing(t, fx, {
-      cardNumber: "2",
-      playerIds: [fx.tiger],
-      platformData: { bsc: { ref: "B2", src: "b0" } },
-    });
-    await commit(t, fx, [wire("1", { existingId: pending }), wire("2", { existingId: owed })], { operatorUserId: OPERATOR });
-    expect(stamped((await read(t, pending))!)).toBe(false);
-    expect(stamped((await read(t, owed))!)).toBe(false);
-  });
-
-  test("a BSC row whose lookup already ran and gave up is held; one that answered is stamped", async () => {
-    const { t, fx } = await seed();
-    const gaveUp = await existing(t, fx, {
-      playerIds: [fx.tiger],
-      platformData: { bsc: { ref: "B1", src: "b0" } },
-      teamCheckDoneAt: 7,
-      teamCheckOutcome: "gaveUp",
-    });
-    const answered = await existing(t, fx, {
-      cardNumber: "2",
-      playerIds: [fx.tiger],
-      platformData: { bsc: { ref: "B2", src: "b0" } },
-      teamCheckDoneAt: 7,
-      teamCheckOutcome: "answered",
-    });
-    await commit(t, fx, [wire("1", { existingId: gaveUp }), wire("2", { existingId: answered })], {
-      operatorUserId: OPERATOR,
-    });
-    expect(stamped((await read(t, gaveUp))!)).toBe(false);
-    expect(stamped((await read(t, answered))!)).toBe(true);
-  });
-
-  test("an accepted playerIds change is honoured: ballplayer swapped for a golfer stamps, golfer swapped for a ballplayer does not", async () => {
-    const { t, fx } = await seed();
-    const toGolfer = await existing(t, fx, { playerIds: [fx.mookie] });
-    const toBallplayer = await existing(t, fx, { cardNumber: "2", playerIds: [fx.tiger] });
-    await commit(
-      t,
-      fx,
-      [
-        wire("1", { existingId: toGolfer, playerIds: [fx.tiger], applyFields: ["playerIds"], baseVersion: NOW }),
-        wire("2", { existingId: toBallplayer, playerIds: [fx.mookie], applyFields: ["playerIds"], baseVersion: NOW }),
-      ],
-      { operatorUserId: OPERATOR },
-    );
-    expect((await read(t, toGolfer))!.playerIds).toEqual([fx.tiger]);
-    expect(stamped((await read(t, toGolfer))!)).toBe(true);
-    expect((await read(t, toBallplayer))!.playerIds).toEqual([fx.mookie]);
-    expect(stamped((await read(t, toBallplayer))!)).toBe(false);
-  });
-
-  test("a stale playerIds decision is not applied, so the row's STORED players decide", async () => {
-    const { t, fx } = await seed();
-    const id = await existing(t, fx, { playerIds: [fx.mookie] });
-    await resync(t, fx, id, { playerIds: [fx.tiger], applyFields: ["playerIds"], baseVersion: NOW - 1 });
-    const row = (await read(t, id))!;
-    expect(row.playerIds).toEqual([fx.mookie]);
-    expect(stamped(row)).toBe(false);
-  });
-
   test("an accepted team arriving with the sync wins: the row takes it and is not stamped", async () => {
     const { t, fx } = await seed();
-    const team = await t.run(async (ctx) =>
-      ctx.db.insert("teams", { ...teamRowFields({ location: "Augusta", name: "Nationals" }), sportId: fx.golf, lastUpdated: NOW }),
-    );
+    const team = await teamRow(t, fx);
     const id = await existing(t, fx, { playerIds: [fx.tiger] });
     await resync(t, fx, id, { teamOnCardIds: [team], applyFields: ["teamOnCardIds"], baseVersion: NOW } as never);
     const row = (await read(t, id))!;
     expect(row.teamOnCardIds).toEqual([team]);
     expect(stamped(row)).toBe(false);
-  });
-
-  test("the sport is not flagged: nothing is stamped on a re-sync", async () => {
-    const { t, fx } = await seed({ golfFlagged: false });
-    const id = await existing(t, fx, { playerIds: [fx.tiger] });
-    await resync(t, fx, id);
-    expect(stamped((await read(t, id))!)).toBe(false);
   });
 });
 

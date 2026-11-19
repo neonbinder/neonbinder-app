@@ -272,3 +272,4 @@
 - [Bounded-fetch test: timer arms before the stub](reference_bounded_fetch_test_timer_arms_before_the_stub_is_reached.md) — sign() is async; stub sees an aborted signal; wait on stalled-body count; wrap setTimeout for drain tests
 - [Source pins trip on stamp/playerIds spellings](reference_source_pins_trip_on_stamp_and_playerids_spellings.md) — noTeamDefault.pin + playerLinksPin reject new `teamNoneConfirmedAt:` / `playerIds:` spellings; shorthand, early return
 - [Client teamless default mirrors server](client-teamless-default-mirrors-server-conservatively.md) — client may ASK about a card the server stamps, never skip one it would not; gate on every server data-claim
+- [convex-test typed harness](convex-test-typed-harness-alias.md) — makeT factory alias, not bare ReturnType<typeof convexTest>

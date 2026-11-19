@@ -31,18 +31,36 @@ import {
 type DbCtx = Pick<QueryCtx, "db">;
 
 /**
+ * The most sport rows `teamlessSportMap` reads. Sports are a handful of rows;
+ * this mirrors `SPORT_ROW_SCAN` in `listingSales.ts` (`sportResolver`).
+ */
+export const TEAMLESS_SPORT_SCAN = 200;
+
+/**
  * Every flagged sport and its stamp, read once per call. Sports are a handful
  * of rows (`by_level` "sport"), so this stays one small read however large the
  * catalogue grows.
+ *
+ * Bounded, and FAILS CLOSED: a scan that fills the cap cannot be trusted to
+ * have seen every flagged sport, so the map comes back empty and the sport
+ * default is never applied (a card then just waits for the operator, which is
+ * the safe side of product invariant 8). A warning names the cap, since a
+ * silent empty map would read as "no sport is flagged".
  */
 export async function teamlessSportMap(
   ctx: DbCtx,
 ): Promise<Map<Id<"selectorOptions">, TeamlessSport>> {
+  const out = new Map<Id<"selectorOptions">, TeamlessSport>();
   const sports = await ctx.db
     .query("selectorOptions")
     .withIndex("by_level", (q) => q.eq("level", "sport"))
-    .collect();
-  const out = new Map<Id<"selectorOptions">, TeamlessSport>();
+    .take(TEAMLESS_SPORT_SCAN);
+  if (sports.length >= TEAMLESS_SPORT_SCAN) {
+    console.warn(
+      `[sportTeamless] teamless sports skipped: op=teamlessSportMap sportRows>=${TEAMLESS_SPORT_SCAN}, scan full`,
+    );
+    return out;
+  }
   for (const row of sports) {
     const stamp = teamlessSportOf(row);
     if (stamp) out.set(row._id, stamp);

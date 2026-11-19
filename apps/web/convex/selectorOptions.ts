@@ -21763,54 +21763,21 @@ export const commitCardChecklistChunk = internalMutation({
           now: Date.now(),
         });
 
-        // NEO-426 — the teamless-sport default on a re-synced row, asked of
-        // the row as this patch leaves it. A row with a team, or a ruling
-        // (its own, or the one just earned above), is left alone: the same
-        // verdict every birth path asks, so a listing that names a team, a
-        // name waiting on review or a lookup still owed holds it back. The
-        // players are the ones the row will carry after the patch (an
-        // accepted `playerIds` change included), and any player name still
-        // waiting on review ends the default. Credited to the committing
-        // admin, else whoever set the default.
-        const resyncNoTeamStamp = await (async () => {
-          // A ruling the row keeps, or the one just earned above, is left be.
-          if (noneConfirmedAfter || teamAnswer.fields.teamNoneConfirmedAt !== undefined) {
-            return {};
-          }
-          const verdict = noTeamCardVerdict({
-            teamOnCardIds: effectiveTeamIds,
-            pendingTeamNames: pendingTeamsAfter,
-            bscTeamName: teamAnswer.fields.bscTeamName ?? existing.bscTeamName,
-            teamCheckDoneAt: teamAnswer.fields.teamCheckDoneAt ?? existing.teamCheckDoneAt,
-            teamCheckOutcome:
-              teamAnswer.fields.teamCheckOutcome ?? existing.teamCheckOutcome,
-            platformData: mergedPlatformData.bsc
-              ? { bsc: { ref: mergedPlatformData.bsc.ref } }
-              : {},
-          });
-          if (verdict.verdict !== "stamp") return {};
-          const playerIds = Array.isArray(contentPatch.playerIds)
-            ? (contentPatch.playerIds as Array<Id<"players">>)
-            : (existing.playerIds ?? []);
-          const pendingPlayersAfter = nextPendingPlayers.changed
-            ? nextPendingPlayers.next
-            : existing.pendingPlayerNames;
-          const vouchedBy = await sportNoTeam.defaultFor({
-            playerIds,
-            pendingPlayerNameCount: pendingPlayersAfter?.length ?? 0,
-          });
-          return vouchedBy
-            ? stampNoTeam(args.operatorUserId ?? vouchedBy.setByUserId, Date.now())
-            : {};
-        })();
-
+        // NEO-426 — a re-synced row is NEVER stamped with a sport default.
+        // The sport default is a birth-time answer only (new-row insert,
+        // `addCustomCard`, and BSC's "no team" answer in
+        // `applyBscTeamResolution`), exactly NEO-556's shape. Stamping here
+        // would fire when an incoming team was named but not accepted (stale
+        // baseVersion, no applyFields, unchecked), which writes "No team"
+        // over a listing that names one (product invariant 8), and would
+        // re-stamp a card an operator deliberately took out of No team.
+        // Existing cards are the operator's to mark (NEO-556's bulk action).
         await ctx.db.patch(existing._id, {
           ...contentPatch,
           ...(operatorFill ? { teamOnCardIds: operatorFill } : {}),
           // NEO-335 — the stamps the operator's pre-save answer (or BSC's
           // fetch-time answer) earned. Empty on every card that has a team.
           ...teamAnswer.fields,
-          ...resyncNoTeamStamp,
           // Patching `undefined` is how Convex deletes a field. Spread only
           // when it applies, so an untouched row's patch is byte-identical to
           // what it was before this feature existed.

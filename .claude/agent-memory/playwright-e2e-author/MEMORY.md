@@ -57,7 +57,7 @@
 - [Transient notice behind a seed redirect](patterns_transient_notice_behind_a_seed_redirect.md) — upload-then-redirect seed hides a window that closes mid-upload; line up confirm/heavy/first query
 - [Placeholder real-intake specs](patterns_placeholder_real_intake_specs.md) — NEO-529: drop on /print/placeholders, cap recovery via Recent runs, second-page tidy, ESM path, stale node_modules
 - [Sibling edits reload a local Vite run](patterns_sibling_edits_reload_a_local_vite_run.md) — one-off red on a step green on rerun: check Vite log for hmr/page reload at that time; eBay unmatched row names
-- [Failure PNG shows the finally end state](patterns_failure_screenshot_shows_the_finally_end_state.md) — self-cleaning specs: the screenshot is post-cleanup; read the blob error-context ARIA snapshot (NEO-481)
+- [Failure PNG vs finally and afterEach](patterns_failure_screenshot_shows_the_finally_end_state.md) — PNG is taken after a body finally, before afterEach (PW 1.63)
 - [Brand-unknown row fixtures + All Brands option names](patterns_brand_unknown_row_fixtures_and_all_brands_option_names.md) — "<set> <brand>" option names need a regex; assert Unknown listed before drilling to it; host collector fixtures on Hockey 1995
 - [First seller press may wait for the seller account](patterns_first_seller_press_may_wait_for_the_seller_account.md) — NEO-483: expectRunOrSellerWait + claim wait capped at SELLER_ACCOUNT_CAP_MS; both orders end in the same asserts
 - [Fake BSC faults and the breaker job](patterns_fake_bsc_faults_and_the_breaker_job.md) — NEO-552: bscFake fixture, hop page, deployment-wide gate, @bsc-breaker…
@@ -93,3 +93,4 @@
 - [Cross-sport player resurfaces on re-sync](pattern_cross_sport_player_resurfaces_on_resync.md) — a player created under another sport comes back as a "New player" row on re-sync (gate is set-sport-scoped); a teams-only re-sync spec must account for him
 - [Wizard progress bar and Decided count](patterns_wizard_progress_bar_and_decided_count.md) — NEO-467: no Step x of y; subtitle via progress bar, row skip going, Decided (N) for "exactly one"
 - [Survey fake-BSC recordings for a fixture](reference_survey_fake_bsc_recordings_for_a_fixture.md) — join results to card-listing teamName, check names per sport in the bundle
+- [Teamless sport spec, review batch cleanup](patterns_teamless_sport_spec_and_review_batch_cleanup.md) — NEO-426 handles; re-paste + Sync resumes a batch so cleanup can cancel it

@@ -6,7 +6,7 @@
  * publicFunctionAuth.test.ts.
  */
 import { convexTest } from "convex-test";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "./_generated/api";
 import schema from "./schema";
 import type { Id } from "./_generated/dataModel";
@@ -14,6 +14,7 @@ import { insertTestCard } from "../lib/testing/card-row";
 import {
   createSportNoTeamReader,
   TEAMLESS_PLAYER_LOOKUP_PAGE,
+  TEAMLESS_SPORT_SCAN,
   teamlessSportIdSet,
   teamlessSportMap,
 } from "./sportTeamless";
@@ -167,6 +168,47 @@ describe("listTeamlessSportIds and the flagged-sport readers", () => {
     }));
     expect(map).toEqual([[golf, STAMP]]);
     expect(ids).toEqual([golf]);
+  });
+
+  test("a sport scan that fills the cap fails closed: an empty map, so the default is never applied", async () => {
+    const t = convexTest(schema, modules);
+    const golf = await seedRow(t, "sport", "Golf", { teamlessSport: STAMP });
+    const a = await seedPlayer(t, golf, "A");
+    // One row under the cap is still read in full.
+    await t.run(async (ctx) => {
+      for (let i = 0; i < TEAMLESS_SPORT_SCAN - 2; i++) {
+        await ctx.db.insert("selectorOptions", {
+          level: "sport",
+          value: `Filler ${i}`,
+          platformData: {},
+          children: [],
+          lastUpdated: SEEDED_AT,
+        });
+      }
+    });
+    const under = await t.run(async (ctx) => ({
+      map: [...(await teamlessSportMap(ctx)).keys()],
+      answer: await createSportNoTeamReader(ctx).defaultFor({ playerIds: [a], pendingPlayerNameCount: 0 }),
+    }));
+    expect(under.map).toEqual([golf]);
+    expect(under.answer).toEqual(STAMP);
+
+    // One more sport fills the cap: nothing can be trusted, so nothing applies.
+    await seedRow(t, "sport", "Overflow");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const over = await t.run(async (ctx) => ({
+        map: [...(await teamlessSportMap(ctx))],
+        ids: [...(await teamlessSportIdSet(ctx))],
+        answer: await createSportNoTeamReader(ctx).defaultFor({ playerIds: [a], pendingPlayerNameCount: 0 }),
+      }));
+      expect(over.map).toEqual([]);
+      expect(over.ids).toEqual([]);
+      expect(over.answer).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("teamlessSportMap"));
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 

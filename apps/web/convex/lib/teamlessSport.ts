@@ -51,9 +51,11 @@ export function isTeamlessSport(
 
 /**
  * The sport-default half of the "No team" rule: does this card, as it will be
- * born (or as a re-synced row stands), default to No team because of its
- * people alone? Returns the flagged stamp that vouches for it (the first
- * person's sport, for credit), or `undefined`.
+ * born, default to No team because of its people alone? Asked at birth only
+ * (a new row, `addCustomCard`, BSC's "no team" answer): a re-synced row is
+ * never asked, since existing cards are the operator's to mark (NEO-556).
+ * Returns the flagged stamp that vouches for it (the first person's sport,
+ * for credit), or `undefined`.
  *
  * True only when ALL of these hold:
  *  - the card has at least one player (the NEO-528 default player counts: the
