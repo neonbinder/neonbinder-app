@@ -126,6 +126,7 @@ import {
 import {
   listingInputsForStoredCard,
   newStoredCardReadCache,
+  teamNameFor,
 } from "./storedCardTitle";
 import { effectiveCardPlayerDefaults, newSelectorRowCache } from "./cardPlayersBulk";
 import {
@@ -142,7 +143,7 @@ import {
   type FetchedParallelCard,
   type LinkableNbCard,
 } from "./lib/parallelCardLink";
-import { teamFullName } from "../lib/teams/team-name";
+import type { ListingTeamSplit } from "./features/generateListing";
 // NEO-358 — the one card delete (with its collector guard) and the counts.
 import {
   cardIsCollected,
@@ -1864,9 +1865,16 @@ export const insertParallelCardsPage = internalMutation({
     };
 
     const readPlayerName = async (id: Id<"players">) => (await ctx.db.get(id))?.name ?? null;
-    const readTeamName = async (id: Id<"teams">) => {
-      const team = await ctx.db.get(id);
-      return team ? teamFullName(team) : null;
+    // NEO-606 — through the shared reader, so a team's split lands in the
+    // cache beside its name (`splitsOf` below reads it from there).
+    const readTeamName = (id: Id<"teams">) => teamNameFor(ctx, id, lookup);
+    const splitsOf = (ids: Array<Id<"teams">> | undefined): ListingTeamSplit[] => {
+      const out: ListingTeamSplit[] = [];
+      for (const id of ids ?? []) {
+        const split = lookup.teamSplits.get(id as string);
+        if (split) out.push(split);
+      }
+      return out;
     };
 
     // NEO-528 round 3 — "Player on every card": the player and cameos a card
@@ -1897,6 +1905,7 @@ export const insertParallelCardsPage = internalMutation({
     const parallelNoTeam =
       parallelDefault.kind === "noTeam" ? parallelDefault.noTeamDefault : undefined;
     const parallelTeamNames = await namesOf(parallelTeamIds, teamName, readTeamName);
+    const parallelTeamSplits = splitsOf(parallelTeamIds);
 
     const created: Array<{ from: Id<"cardChecklist">; to: Id<"cardChecklist"> }> = [];
     let missing = 0;
@@ -1961,6 +1970,7 @@ export const insertParallelCardsPage = internalMutation({
 
       const playerNames = await namesOf(source.playerIds, playerName, readPlayerName);
       const sourceTeamNames = await namesOf(source.teamOnCardIds, teamName, readTeamName);
+      const sourceTeamSplits = splitsOf(source.teamOnCardIds);
       // NEO-528 — the copy pictures the same people as the card it copies:
       // its cameos travel with it (one no longer in NB is left off), then the
       // parallel's defaults: its player on a copy that names nobody and holds
@@ -1991,6 +2001,7 @@ export const insertParallelCardsPage = internalMutation({
           : { ids: undefined, defaulted: false };
       const teamOnCardIds = teamDefault.defaulted ? teamDefault.ids : source.teamOnCardIds;
       const teamNames = teamDefault.defaulted ? parallelTeamNames : sourceTeamNames;
+      const teamSplits = teamDefault.defaulted ? parallelTeamSplits : sourceTeamSplits;
       // NEO-556 — under the parallel's No Team, asked of the copy as it will
       // be born: its teams and pending names, the lookup bookkeeping it
       // carries from its source, and ITS OWN BSC link. A listing that names a
@@ -2047,6 +2058,7 @@ export const insertParallelCardsPage = internalMutation({
         sortOrder: source.sortOrder,
         playerNames: born.playerNames,
         teamNames,
+        ...(teamSplits.length > 0 ? { teamSplits } : {}),
         // Hobby A4 — the insert card's own facts (an autograph, Signed By,
         // a short print) survive; the parallel's snapshot wins on what the
         // parallel IS.
@@ -2083,10 +2095,11 @@ export const insertParallelCardsPage = internalMutation({
       const { inputs, assessment } = assessNewCardListing(card, set, {
         playerNames: card.playerNames,
         teamNames: card.teamNames,
+        teamSplits: card.teamSplits,
         cameoNames: born.cameos.map((c) => c.name),
       });
       let outcome: ParallelCopyTitle | undefined =
-        assessment.fits && !assessment.firstNameLost
+        assessment.fits && !assessment.tidyUp
           ? { ...assessment, failing: false }
           : undefined;
       if (outcome === undefined) {

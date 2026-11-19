@@ -95,7 +95,7 @@ describe("CardTitlesStep — what is on screen", () => {
       .toBeTruthy();
     expect(
       screen.getByRole("heading", {
-        name: "These titles lost a first name or ran long. Keep 'em, or make 'em yours.",
+        name: "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.",
       }),
     ).toBeTruthy();
 
@@ -111,11 +111,12 @@ describe("CardTitlesStep — what is on screen", () => {
   test("identical drops share one line with a count; each card's own name sits under its field", () => {
     setup({
       cards: [
-        card("1", { cardVariation: "Throwback" }),
-        card("2", { players: ["Julio Rodriguez"], cardVariation: "Throwback" }),
+        card("1", { isRelic: true }),
+        card("2", { players: ["Julio Rodriguez"], isRelic: true }),
       ],
     });
-    const shared = screen.getByText(/^Left out to fit: Throwback/);
+    // NEO-609: a variation is never cut, so the shared drop is a RELIC.
+    const shared = screen.getByText(/^Left out to fit: RELIC/);
     expect(shared.textContent).toContain("(2 cards)");
     expect(shared.textContent).not.toMatch(/Shohei|Julio/);
     expect(screen.getByText("Left out to fit: Shohei")).toBeTruthy();
@@ -339,14 +340,16 @@ describe("CardTitlesStep — accessibility wiring", () => {
       headingId: "titles-lead",
     });
     expect(document.getElementById("titles-lead")?.textContent).toBe(
-      "These titles lost a first name or ran long. Keep 'em, or make 'em yours.",
+      "These titles had to leave something out or still run long. Check what went, then keep 'em or make 'em yours.",
     );
   });
 
   test("headingId lands on the variation lead when only variations are on the step", () => {
     setup({
-      cards: [card("2", { cardVariation: LONG_VARIATION })],
-      titleContext: SHORT,
+      // A variation is never cut (NEO-609), so only a short title leaves it
+      // as the sole fault.
+      cards: [card("2", { players: [], cardVariation: "v".repeat(66) })],
+      titleContext: { ...SHORT, setNameValue: "X", inheritedFeatures: {} },
       headingId: "titles-lead",
     });
     expect(document.getElementById("titles-lead")?.textContent).toBe(
@@ -372,13 +375,13 @@ describe("CardTitlesStep — accessibility wiring", () => {
   test("a group of cards is described by the drop they share; its <li> stays a list item", () => {
     setup({
       cards: [
-        card("1", { cardVariation: "Throwback" }),
-        card("2", { players: ["Julio Rodriguez"], cardVariation: "Throwback" }),
+        card("1", { isRelic: true }),
+        card("2", { players: ["Julio Rodriguez"], isRelic: true }),
       ],
     });
     const group = screen.getByRole("group");
     const line = document.getElementById(group.getAttribute("aria-describedby")!);
-    expect(line?.textContent).toMatch(/^Left out to fit: Throwback/);
+    expect(line?.textContent).toMatch(/^Left out to fit: RELIC/);
     expect(group.tagName).toBe("DIV");
     expect(group.parentElement?.tagName).toBe("LI");
     expect(within(group).getAllByRole("textbox")).toHaveLength(2);
@@ -401,9 +404,48 @@ describe("CardTitlesStep — the meter is neutral until past the cap", () => {
       target: { value: "t".repeat(84) },
     });
     const meter = screen.getByText("84/80");
-    // The danger ink, never pink: pink is backing out and taking away.
-    expect(meter.parentElement?.className).toContain("text-notice-danger-ink");
-    expect(meter.parentElement?.className).not.toContain("neon-pink");
+    // NEO-606: neon pink is the app's error colour; the counter paints the pink text role directly, not the danger notice role.
+    expect(meter.parentElement?.className).toContain("text-neon-pink-text");
+    expect(meter.parentElement?.className).not.toContain("notice-danger");
     expect(screen.getByText("4 over")).toBeTruthy();
+  });
+
+  test("NEO-606: past the cap the whole box is marked, in neon pink, and clears as soon as it fits", () => {
+    setup({ cards: [card("1")] });
+    const field = screen.getByRole("textbox", { name: "Title for #1 Card 1" });
+    fireEvent.change(field, { target: { value: "t".repeat(84) } });
+    // happy-dom does not run the stylesheet: the invalid look is the
+    // `aria-invalid:` utilities, which apply exactly while the attribute is set.
+    expect(field.getAttribute("aria-invalid")).toBe("true");
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    expect(field.className).toContain("data-[over=true]:ring-neon-pink-text");
+    // Held (the step saving) keeps the pink edge and shows the grey fill.
+    expect(field.className).toContain("aria-disabled:data-[over=true]:bg-button-neutral");
+    // The note is pink text and tied to the box.
+    const note = screen.getByRole("status");
+    expect(note.textContent).toBe("Too long to list as-is.");
+    expect(note.className).toContain("text-neon-pink-text");
+    expect(note.className).not.toContain("notice-danger");
+    expect(field.getAttribute("aria-describedby")).toContain(note.id);
+    // Back under the cap: the box and the note both let go.
+    fireEvent.change(field, { target: { value: "t".repeat(80) } });
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.getAttribute("data-over")).toBeNull();
+    expect(screen.getByRole("status").textContent).toBe("");
+    expect(field.getAttribute("aria-describedby")).not.toContain(note.id);
+  });
+
+  test("NEO-606: a variation past 65 gets the pink box but is advisory, so never aria-invalid", () => {
+    setup({
+      cards: [card("1", { cardVariation: LONG_VARIATION })],
+      titleContext: SHORT,
+    });
+    const field = screen.getByRole("textbox", { name: "Variation for #1 Card 1" });
+    expect(field.getAttribute("data-over")).toBe("true");
+    expect(field.getAttribute("aria-invalid")).toBeNull();
+    expect(field.className).toContain("data-[over=true]:border-neon-pink-text");
+    fireEvent.change(field, { target: { value: "Throwback uniform" } });
+    expect(field.getAttribute("data-over")).toBeNull();
   });
 });

@@ -283,7 +283,7 @@ describe("addCustomCard generates listingTitle/listingDescription (NEO-24/71-74)
     const card = cards[0];
 
     expect(card.listingTitle).toBe(
-      "2024 Topps Chrome Julio Rodriguez #12 RC Seattle Mariners Rookie Baseball",
+      "2024 Topps Chrome Base Julio Rodriguez #12 RC Seattle Mariners Rookie Baseball",
     );
     // Sold listings average 70 characters; NB's used to average 34.
     expect(card.listingTitle!.length).toBeGreaterThanOrEqual(60);

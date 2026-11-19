@@ -42,6 +42,15 @@ function context(overrides: Partial<TitleContext> = {}): TitleContext {
   };
 }
 const SHORT = context({ setNameValue: "Chrome" });
+/**
+ * A set so short that a 66-character variation is the ONLY thing wrong with a
+ * title. A variation is never cut (NEO-609), so beside a real description it
+ * would run the title over the cap and put the TITLE on the step too.
+ */
+const VARIATION_ONLY = context({ setNameValue: "X", inheritedFeatures: {} });
+const VAR66 = "v".repeat(ASPECT_VALUE_MAX + 1);
+/** A card with no player (the title stays short) and a variation over 65. */
+const bareVariation = (v: string = VAR66) => card("1", { players: [], cardVariation: v });
 
 function card(n: string, extra: Partial<PreviewCardForTitles> = {}): PreviewCardForTitles {
   return { cardNumber: n, cardName: `Card ${n}`, players: ["Shohei Ohtani"], ...extra };
@@ -100,16 +109,28 @@ describe("the 'kept' default carries the title the step showed", () => {
   });
 
   test("a card that is on the step ONLY for its variation sends no 'kept'", () => {
-    const c = card("1", { cardVariation: LONG_VARIATION });
-    const [out] = titleAnswersForCommit([c], SHORT, undefined, {
+    const c = bareVariation();
+    const [out] = titleAnswersForCommit([c], VARIATION_ONLY, undefined, {
       answers: [{ cardVariation: "Throwback" }],
     });
     expect(out).toEqual({ cardVariation: "Throwback", cardVariationAnswered: true });
   });
 
-  test("a typed title on a card on the step only for its variation is not sent", () => {
+  test("a variation never makes a title card: beside a real description its title runs over and 'kept' is sent (NEO-609)", () => {
     const c = card("1", { cardVariation: LONG_VARIATION });
     const [out] = titleAnswersForCommit([c], SHORT, undefined, {
+      answers: [{ cardVariation: "Throwback" }],
+    });
+    expect(out).toEqual({
+      cardVariation: "Throwback",
+      cardVariationAnswered: true,
+      listingTitleKept: shown(c, SHORT, undefined, { answers: [{ cardVariation: "Throwback" }] })!.title,
+    });
+  });
+
+  test("a typed title on a card on the step only for its variation is not sent", () => {
+    const c = bareVariation();
+    const [out] = titleAnswersForCommit([c], VARIATION_ONLY, undefined, {
       answers: [{ listingTitle: "My own title", cardVariation: "Throwback" }],
     });
     expect(out?.listingTitle).toBeUndefined();
@@ -161,11 +182,11 @@ describe("the title draft — 80 / 81 on the browser side", () => {
 });
 
 describe("the variation answer — 65 / 66 and what counts as an answer", () => {
-  const c = card("1", { cardVariation: LONG_VARIATION });
+  const c = bareVariation();
 
   test("exactly 65 is sent; 66 is not; padding is not counted", () => {
     const send = (v: string) =>
-      titleAnswersForCommit([c], SHORT, undefined, { answers: [{ cardVariation: v }] })[0];
+      titleAnswersForCommit([c], VARIATION_ONLY, undefined, { answers: [{ cardVariation: v }] })[0];
     expect(send("v".repeat(ASPECT_VALUE_MAX))).toEqual({
       cardVariation: "v".repeat(ASPECT_VALUE_MAX),
       cardVariationAnswered: true,
@@ -176,34 +197,30 @@ describe("the variation answer — 65 / 66 and what counts as an answer", () => 
 
   test("a blank draft, or the printed variation retyped, is no answer", () => {
     const send = (v: string) =>
-      titleAnswersForCommit([c], SHORT, undefined, { answers: [{ cardVariation: v }] })[0];
+      titleAnswersForCommit([c], VARIATION_ONLY, undefined, { answers: [{ cardVariation: v }] })[0];
     expect(send("")).toBeUndefined();
     expect(send("   ")).toBeUndefined();
-    expect(send(`  ${LONG_VARIATION}  `)).toBeUndefined();
+    expect(send(`  ${VAR66}  `)).toBeUndefined();
   });
 
   test("effectiveVariation: a valid answer wins; an invalid or blank one falls back to the printed text", () => {
     expect(effectiveVariation(c, { cardVariation: "Short" })).toBe("Short");
-    expect(effectiveVariation(c, { cardVariation: "v".repeat(66) })).toBe(LONG_VARIATION);
-    expect(effectiveVariation(c, { cardVariation: "  " })).toBe(LONG_VARIATION);
+    expect(effectiveVariation(c, { cardVariation: "v".repeat(67) })).toBe(VAR66);
+    expect(effectiveVariation(c, { cardVariation: "  " })).toBe(VAR66);
     expect(effectiveVariation(card("2"), undefined)).toBeUndefined();
   });
 
   test("a variation of exactly 65 printed characters is not on the step; 66 is", () => {
-    expect(
-      cardsNeedingTitleReview([card("1", { cardVariation: "v".repeat(65) })], SHORT),
-    ).toEqual([]);
-    expect(
-      cardsNeedingTitleReview([card("1", { cardVariation: "v".repeat(66) })], SHORT),
-    ).toEqual([0]);
+    expect(cardsNeedingTitleReview([bareVariation("v".repeat(65))], VARIATION_ONLY)).toEqual([]);
+    expect(cardsNeedingTitleReview([bareVariation("v".repeat(66))], VARIATION_ONLY)).toEqual([0]);
   });
 
   // A variation printed with a stray space but 65 characters once trimmed is
   // measured trimmed, so the card is not put on the step (the insert stores
   // it trimmed too, so the walker never flags it after save).
   it("a variation that fits once trimmed is not asked about", () => {
-    const padded = card("1", { cardVariation: `${"v".repeat(ASPECT_VALUE_MAX)} ` });
-    expect(cardsNeedingTitleReview([padded], SHORT)).toEqual([]);
+    const padded = bareVariation(`${"v".repeat(ASPECT_VALUE_MAX)} `);
+    expect(cardsNeedingTitleReview([padded], VARIATION_ONLY)).toEqual([]);
   });
 });
 
@@ -212,9 +229,12 @@ describe("recompute on team change", () => {
     teamNameById: new Map(pairs.map(([n, name]) => [tid(n), name])),
   });
 
-  test("a team answer can change what is left out but never who is on the step", () => {
+  test("a team answer that costs the whole team puts the card on the step: a team cut is Tidy Up (NEO-609)", () => {
     const longTeam = names([1, "T".repeat(70)]);
-    expect(cardsNeedingTitleReview([card("1")], SHORT, [{ teamIds: [tid(1)] }], { names: longTeam })).toEqual([]);
+    // Without the team answer the card fits and is not here...
+    expect(cardsNeedingTitleReview([card("1")], SHORT)).toEqual([]);
+    // ...with it the team is cut whole (row 12), which is a Tidy Up cut.
+    expect(cardsNeedingTitleReview([card("1")], SHORT, [{ teamIds: [tid(1)] }], { names: longTeam })).toEqual([0]);
     expect(cardsNeedingTitleReview([card("1")], context(), [{ teamIds: [tid(1)] }], { names: longTeam })).toEqual([0]);
   });
 
@@ -305,8 +325,8 @@ describe("answers are positional beside re-synced rows", () => {
 
 describe("grouping never keys on a card number", () => {
   test("two cards sharing a number but losing different words are two lines, each with its own index", () => {
-    // A dropped variation is a real loss; "Rookie" would be filler (hidden).
-    const cards = [card("5"), card("5", { cardVariation: "Sapphire Throwback Gold Refractor" })];
+    // A dropped RELIC is a real loss the other card does not share.
+    const cards = [card("5"), card("5", { isRelic: true })];
     const { titleGroups } = buildTitleGroups(cards, context());
     expect(titleGroups.map((g) => g.cards.map((c) => c.index))).toEqual([[0], [1]]);
   });
@@ -346,7 +366,7 @@ describe("grouping never keys on a card number", () => {
 
   test("groups keep the order of their first card", () => {
     const { titleGroups } = buildTitleGroups(
-      [card("1", { cardVariation: "Sapphire Throwback Gold Refractor" }), card("2"), card("3", { cardVariation: "Sapphire Throwback Gold Refractor" })],
+      [card("1", { isRelic: true }), card("2"), card("3", { isRelic: true })],
       context(),
     );
     expect(titleGroups.map((g) => g.cards.map((c) => c.index))).toEqual([[0, 2], [1]]);
@@ -360,7 +380,7 @@ describe("unicode and whitespace in what the step reads", () => {
   });
 
   test("a variation of exactly 65 accented letters fits; 66 does not", () => {
-    expect(cardsNeedingTitleReview([card("1", { cardVariation: "é".repeat(65) })], SHORT)).toEqual([]);
-    expect(cardsNeedingTitleReview([card("1", { cardVariation: "é".repeat(66) })], SHORT)).toEqual([0]);
+    expect(cardsNeedingTitleReview([bareVariation("é".repeat(65))], VARIATION_ONLY)).toEqual([]);
+    expect(cardsNeedingTitleReview([bareVariation("é".repeat(66))], VARIATION_ONLY)).toEqual([0]);
   });
 });

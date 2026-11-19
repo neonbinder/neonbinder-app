@@ -764,7 +764,7 @@ describe("playerNamesByIds, buildTitleContext, readManyByIds, collectSubtreeNode
     const t = newT();
     const w = await seedGateWorld(t);
     const { ids } = await manyPlayers(t, 450, "Title Person");
-    const resolved = { playerIdByNorm: new Map<string, Id<"players">>(), teamNameByNorm: new Map<string, string>() };
+    const resolved = { playerIdByNorm: new Map<string, Id<"players">>(), teamNameByNorm: new Map<string, string>(), teamIdByNorm: new Map<string, Id<"teams">>() };
     const cards: Array<{ players: string[]; teams: string[] }> = [];
     for (let i = 0; i < 450; i++) {
       const printed = `Title Person ${i}`;
@@ -819,6 +819,7 @@ describe("playerNamesByIds, buildTitleContext, readManyByIds, collectSubtreeNode
         ids.map((id, i) => [normalizePlayerName(`Title Person ${i}`), id]),
       ),
       teamNameByNorm: new Map<string, string>(),
+      teamIdByNorm: new Map<string, Id<"teams">>(),
     };
     const cards = ids.map((_, i) => ({ players: [`Title Person ${i}`], teams: [] as string[] }));
 

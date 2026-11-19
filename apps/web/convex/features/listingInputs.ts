@@ -44,12 +44,14 @@ import {
   leftOutOfTitle,
   titleDescription,
   type ListingCardInputs,
+  type ListingTeamSplit,
   type ListingTitleAssessment,
 } from "./generateListing";
 import { ASPECT_VALUE_MAX, LISTING_TITLE_MAX } from "./listingLimits";
 import {
   MAX_LISTING_SHORT_NAME_LENGTH,
   normalizeListingShortName,
+  type TitleLevelFact,
 } from "../listingShortName";
 
 /**
@@ -93,6 +95,13 @@ export type ListingSetContext = {
    * is written to the leaf and so covers the whole description.
    */
   listingShortName?: string;
+  /**
+   * NEO-609 — EVERY level of the chain below the set, top level first, with
+   * each one's variant type name (`titleChainFacts`). The title names them
+   * all. Absent: the levels are built from `insertNameValue` /
+   * `parallelLeafValue` as before.
+   */
+  titleLevels?: TitleLevelFact[];
 };
 
 /**
@@ -111,6 +120,13 @@ export type ListingSetContext = {
 export type TitleContext = ListingSetContext & {
   /** Full names of the leaf's set-level teams, in stored order. */
   setTeamNames: string[];
+  /**
+   * NEO-606 — the Location / Name of the teams this context names (the
+   * set-level ones and every resolved printed team) that have a location, in
+   * no particular order: a card's team finds its split by whole name. Passed
+   * to the generator as `teamSplits`. Optional: an older server sends none.
+   */
+  teamSplits?: ListingTeamSplit[];
   /**
    * NEO-528 round 3 — the NB name of the player a new card with no player of
    * its own is born with ("Player on every card"), or empty. Optional: an
@@ -214,7 +230,12 @@ export function mergeCardFeatures(
 export function listingInputsForCard(
   card: ListingCardFacts,
   set: ListingSetContext,
-  names: { playerNames: string[]; teamNames?: string[]; cameoNames?: string[] },
+  names: {
+    playerNames: string[];
+    teamNames?: string[];
+    teamSplits?: ListingTeamSplit[];
+    cameoNames?: string[];
+  },
   mergedFeatures: Record<string, string> = mergeCardFeatures(card, set),
 ): ListingCardInputs {
   // NEO-335 — the insert's name joins the core on the insert row's NB ROLE,
@@ -233,6 +254,7 @@ export function listingInputsForCard(
   const parallelName =
     set.parallelLeafValue?.trim() || mergedFeatures.parallelName?.trim() || undefined;
   const setShortName = set.listingShortName?.trim() || undefined;
+  const titleLevels = set.titleLevels && set.titleLevels.length > 0 ? set.titleLevels : undefined;
   // NEO-335 — the leaf's parallel ROLE earns the parallel its "Parallel"
   // label. `parallelLeafValue` is set by `titleChainFacts` only on that role
   // (`derivedVariantFlags`), so its presence is the role, never its wording.
@@ -248,6 +270,9 @@ export function listingInputsForCard(
     manufacturerBrandUnknown: set.manufacturerBrandUnknown,
     setName: set.setNameValue,
     ...(insertName ? { insertName } : {}),
+    // NEO-609 — absent when the chain has no level, so a Base card builds
+    // exactly the inputs it did before.
+    ...(titleLevels ? { titleLevels } : {}),
     ...(setShortName ? { setShortName } : {}),
     parallelName,
     ...(parallelIsRole ? { parallelIsRole: true } : {}),
@@ -258,6 +283,9 @@ export function listingInputsForCard(
     shortPrint: mergedFeatures.shortPrint,
     cardVariation: card.cardVariation,
     teamNames: names.teamNames,
+    // NEO-606 — absent when no team on the card has a split, so a card without
+    // one builds exactly the inputs it did before.
+    ...(names.teamSplits && names.teamSplits.length > 0 ? { teamSplits: names.teamSplits } : {}),
     sport: set.sportValue,
   };
 }
@@ -320,6 +348,20 @@ export function storedCardVariation(raw: string | undefined): string | undefined
 }
 
 /**
+ * NEO-609 — the `listingTitleTruncated` value a GENERATED title is stored
+ * with, from the assessment it was written from: `true` while a Tidy Up cut is
+ * still out (or the title came from the box), `undefined` otherwise, which in
+ * a patch clears a flag the old title carried. The one reading every writer of
+ * a generated title uses (insert, Regenerate, a player link, a team removal);
+ * only an operator's own typed title clears the flag without asking it.
+ */
+export function generatedTitleTruncatedFlag(
+  assessment: Pick<ListingTitleAssessment, "coreFits">,
+): true | undefined {
+  return assessment.coreFits ? undefined : true;
+}
+
+/**
  * The row fields a NEW card is born with that `titleAttentionItems` reads,
  * from its assessment — exactly what `buildCardRowForInsert` writes when no
  * operator answer rides on the card.
@@ -330,7 +372,7 @@ export function titleAttentionFieldsAtInsert(
 ): TitleAttentionFields {
   return {
     listingTitle: assessment.title,
-    ...(assessment.coreFits ? {} : { listingTitleTruncated: true }),
+    ...(generatedTitleTruncatedFlag(assessment) ? { listingTitleTruncated: true } : {}),
     cardVariation: storedCardVariation(cardVariation),
   };
 }
@@ -343,7 +385,12 @@ export function titleAttentionFieldsAtInsert(
 export function assessNewCardListing(
   card: ListingCardFacts,
   set: ListingSetContext,
-  names: { playerNames: string[]; teamNames?: string[]; cameoNames?: string[] },
+  names: {
+    playerNames: string[];
+    teamNames?: string[];
+    teamSplits?: ListingTeamSplit[];
+    cameoNames?: string[];
+  },
 ): {
   mergedFeatures: Record<string, string>;
   inputs: ListingCardInputs;

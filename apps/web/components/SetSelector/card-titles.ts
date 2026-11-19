@@ -1,7 +1,7 @@
 import type { Id } from "../../convex/_generated/dataModel";
 import { normalizeEntityName } from "../../convex/lib/entityNearMatch";
 import { listingNamesAPlayer } from "../../convex/lib/cardPlayerDefaults";
-import { teamFullName } from "../../lib/teams/team-name";
+import { teamFullName, teamSplitOf } from "../../lib/teams/team-name";
 // Browser-safe: pure feature derivations only, the same ones the insert runs.
 import {
   assessNewCardListing,
@@ -12,7 +12,7 @@ import {
   type TitleAttentionItem,
   type TitleContext,
 } from "../../convex/features/listingInputs";
-import type { ListingCardInputs } from "../../convex/features/generateListing";
+import type { ListingCardInputs, ListingTeamSplit } from "../../convex/features/generateListing";
 import {
   ASPECT_VALUE_MAX,
   LISTING_TITLE_MAX,
@@ -117,6 +117,12 @@ export interface TitleNameSources {
   linkedTeamNameById?: ReadonlyMap<string, string>;
   /** Team id → full name, for the ids in a card's team answer (`teamIdNamesFromGroups`). */
   teamNameById?: ReadonlyMap<string, string>;
+  /**
+   * NEO-606 — the Location / Name of the teams in the two maps above (and any
+   * the operator picked), so a title can give a team's location up before the
+   * team, as the commit's will. Matched to a card's team by whole name.
+   */
+  teamSplits?: readonly ListingTeamSplit[];
 }
 
 const norm = (raw: string): string => normalizeEntityName(raw.trim());
@@ -125,6 +131,13 @@ interface NameIndex {
   player: (printed: string) => string | null;
   team: (printed: string) => string | null;
   teamById: (id: string) => string | null;
+  /**
+   * NEO-606 — every Location / Name the title could use: the server context's,
+   * the wizard sources', and those of teams the operator created in the Names
+   * phase. A card's team finds its split by whole name (`teamSplits` on the
+   * generator's inputs), so the list needs no per-card filtering.
+   */
+  splits: ListingTeamSplit[];
 }
 
 function nameIndex(context: TitleContext, sources: TitleNameSources | undefined): NameIndex {
@@ -138,7 +151,14 @@ function nameIndex(context: TitleContext, sources: TitleNameSources | undefined)
     const target = row.kind === "player" ? playerRows : row.kind === "team" ? teamRows : null;
     if (target && !target.has(key)) target.set(key, row);
   }
+  const splits: ListingTeamSplit[] = [...(context.teamSplits ?? []), ...(sources?.teamSplits ?? [])];
+  for (const row of teamRows.values()) {
+    const created = row.decision?.action === "create" ? row.decision.create : undefined;
+    const split = created ? teamSplitOf(created) : undefined;
+    if (split) splits.push(split);
+  }
   return {
+    splits,
     player(raw) {
       const printed = raw.trim();
       if (!printed) return null;
@@ -196,7 +216,12 @@ function cardNames(
   teamAnswer: TeamAnswer | undefined,
   index: NameIndex,
   context: TitleContext,
-): { playerNames: string[]; teamNames: string[]; cameoNames: string[] } {
+): {
+  playerNames: string[];
+  teamNames: string[];
+  teamSplits: ListingTeamSplit[];
+  cameoNames: string[];
+} {
   let playerNames: string[] = [];
   for (const p of card.players ?? []) {
     const name = index.player(p);
@@ -228,7 +253,7 @@ function cardNames(
   const cameoNames = (context.setCameoNames ?? [])
     .filter((n) => !own.has(normalizeEntityName(n)))
     .slice(0, MAX_CARD_PLAYERS);
-  return { playerNames, teamNames, cameoNames };
+  return { playerNames, teamNames, teamSplits: index.splits, cameoNames };
 }
 
 /** The variation the card will be saved with: a valid trimmed answer, else its own. */
