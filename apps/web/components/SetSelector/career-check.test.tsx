@@ -9,6 +9,7 @@ import type { Id } from "../../convex/_generated/dataModel";
 import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
 import {
   CAREER_READ_FAILED,
+  CAREER_STINTS_MAX,
   NO_CAREER_TEXT,
   applyCareerCardEdit,
   careerCommitFields,
@@ -18,17 +19,21 @@ import {
   playedForText,
   sortCareerLines,
   uncoveredAgainText,
-  yearsHintText,
   careerContextAsks,
   classifyPairs,
   deriveSittingPairs,
   followUpPair,
-  freshStint,
   gateJudgedKeys,
-  linesWithBadYears,
+  isValidStint,
   pairKey,
-  parseStintDraft,
+  preAddedStints,
   reteamedIndexes,
+  sameStint,
+  stintChipText,
+  stintYearsText,
+  stintsOf,
+  withStint,
+  type StagedStint,
   toLines,
   unreferencedCreatedTeamRows,
   type CareerAnswers,
@@ -198,9 +203,6 @@ describe("toLines ordering and copy", () => {
     expect(uncoveredAgainText("Ana", "Padres", 2022)).toBe("No Padres in Ana’s career by 2022 either.");
     expect(coveredText("Ana", "Padres")).toBe("Ana played for the Padres.");
     expect(playedForText("Padres")).toBe("Played for the Padres");
-    expect(yearsHintText()).toBe(
-      `Years go ${MIN_CAREER_YEAR}–${maxCareerYear()}, and To can’t come before From.`,
-    );
   });
   it("never says 'No the team…': with no name known it says what is true of any team", () => {
     for (const none of [undefined, ""]) {
@@ -235,34 +237,77 @@ describe("toLines ordering and copy", () => {
   });
 });
 
-describe("parseStintDraft", () => {
-  it("accepts a From year, with or without a To year", () => {
-    expect(parseStintDraft({ fromYear: "2022", toYear: "" }, 2030)).toEqual({ fromYear: 2022 });
-    expect(parseStintDraft({ fromYear: "2020", toYear: "2022" }, 2030)).toEqual({
-      fromYear: 2020,
-      toYear: 2022,
-    });
+const stint = (teamId: string, fromYear: number, toYear?: number, label = teamId): StagedStint => ({
+  teamId: tid(teamId),
+  label,
+  fromYear,
+  ...(toYear !== undefined ? { toYear } : {}),
+});
+
+describe("the stints a line stages", () => {
+  it("opens with the card's team from the set's year, already staged", () => {
+    expect(preAddedStints({ teamId: tid("t-padres"), label: "San Diego Padres" }, 2022)).toEqual([
+      { teamId: "t-padres", label: "San Diego Padres", fromYear: 2022 },
+    ]);
+    // A team the batch creates is named by its printed string.
+    expect(preAddedStints({ teamName: "Padres", label: "San Diego Padres" }, 2022)).toEqual([
+      { teamName: "Padres", label: "San Diego Padres", fromYear: 2022 },
+    ]);
   });
-  it("refuses blanks, floors, ceilings and an inverted range", () => {
-    expect(parseStintDraft({ fromYear: "", toYear: "" }, 2030)).toBeNull();
-    expect(parseStintDraft({ fromYear: "1200", toYear: "" }, 2030)).toBeNull();
-    expect(parseStintDraft({ fromYear: "2031", toYear: "" }, 2030)).toBeNull();
-    expect(parseStintDraft({ fromYear: "2022", toYear: "2020" }, 2030)).toBeNull();
-    expect(parseStintDraft({ fromYear: "20.5", toYear: "" }, 2030)).toBeNull();
+  it("has nothing to stage without a team or a year", () => {
+    expect(preAddedStints({ label: "this team" }, 2022)).toEqual([]);
+    expect(preAddedStints(undefined, 2022)).toEqual([]);
+    expect(preAddedStints({ teamId: tid("t"), label: "T" }, undefined)).toEqual([]);
   });
-  it("takes four digits and nothing else: no hex, exponent, sign or padding (U3)", () => {
-    for (const bad of ["0x7C6", "1.99e3", "+2022", "2022.0", " 20 22", "02022", "202", "0b11111100110"]) {
-      expect(parseStintDraft({ fromYear: bad, toYear: "" }, 2030)).toBeNull();
-      expect(parseStintDraft({ fromYear: "2020", toYear: bad }, 2030)).toBeNull();
-    }
-    expect(parseStintDraft({ fromYear: " 2022 ", toYear: " 2024 " }, 2030)).toEqual({
-      fromYear: 2022,
-      toYear: 2024,
-    });
+  it("calls two stints one when the team and From year agree (what the server dedupes on)", () => {
+    expect(sameStint(stint("t1", 2022), stint("t1", 2022, 2024))).toBe(true);
+    expect(sameStint(stint("t1", 2022), stint("t1", 2023))).toBe(false);
+    expect(sameStint(stint("t1", 2022), stint("t2", 2022))).toBe(false);
+    const named = (name: string): StagedStint => ({ teamName: name, label: name, fromYear: 2022 });
+    expect(sameStint(named("Padres"), named(" padres "))).toBe(true);
+    expect(sameStint(named("Padres"), stint("t1", 2022))).toBe(false);
   });
-  it("opens on the set's year", () => {
-    expect(freshStint(2022)).toEqual({ fromYear: "2022", toYear: "" });
-    expect(freshStint(undefined)).toEqual({ fromYear: "", toYear: "" });
+  it("adds a stint once", () => {
+    const one = [stint("t1", 2022)];
+    expect(withStint(one, stint("t2", 2019, 2021))).toHaveLength(2);
+    expect(withStint(one, stint("t1", 2022, 2023))).toHaveLength(1);
+    expect(one).toHaveLength(1);
+  });
+  it("reads the years as the New Player chips do", () => {
+    expect(stintYearsText({ fromYear: 2022 })).toBe("2022–present");
+    expect(stintYearsText({ fromYear: 2019, toYear: 2021 })).toBe("2019–2021");
+    expect(stintYearsText({})).toBe("");
+    expect(stintChipText({ label: "San Diego Padres", fromYear: 2022 })).toBe(
+      "San Diego Padres (2022–present)",
+    );
+    expect(stintChipText({ label: "Reds" })).toBe("Reds");
+  });
+  it("holds the year bounds exactly and refuses a to-year before the from-year", () => {
+    expect(isValidStint(stint("t", 2030), 2030)).toBe(true);
+    expect(isValidStint(stint("t", 2031), 2030)).toBe(false);
+    expect(isValidStint(stint("t", MIN_CAREER_YEAR - 1), 2030)).toBe(false);
+    expect(isValidStint(stint("t", MIN_CAREER_YEAR), 2030)).toBe(true);
+    expect(isValidStint(stint("t", 2022, 2021), 2030)).toBe(false);
+    expect(isValidStint(stint("t", 2022, 2022), 2030)).toBe(true);
+    expect(isValidStint(stint("t", 2022, 2031), 2030)).toBe(false);
+    expect(isValidStint(stint("t", 2022.5), 2030)).toBe(false);
+    expect(isValidStint(stint("t", 2022, 2022.5), 2030)).toBe(false);
+    expect(maxCareerYear()).toBeGreaterThanOrEqual(2022);
+  });
+  it("finds the stints an answer holds: the add itself, or a follow-up add after a pick", () => {
+    const s1 = [stint("t1", 2022)];
+    expect(stintsOf(undefined)).toEqual([]);
+    expect(stintsOf({ kind: "leave" })).toEqual([]);
+    expect(stintsOf({ kind: "add", stints: s1 })).toBe(s1);
+    expect(
+      stintsOf({
+        kind: "team",
+        pick: { teamId: tid("t2"), name: "T2" },
+        then: { kind: "add", stints: s1 },
+      }),
+    ).toBe(s1);
+    // Not before a pick.
+    expect(stintsOf({ kind: "player", then: { kind: "add", stints: s1 } })).toEqual([]);
   });
 });
 
@@ -281,10 +326,95 @@ describe("careerCommitFields", () => {
   });
 
   it("adds a stint by team id", () => {
-    const answers: CareerAnswers = { [tatis.key]: { kind: "add", fromYear: "2022", toYear: "" } };
+    const answers: CareerAnswers = { [tatis.key]: { kind: "add", stints: [stint("t-padres", 2022)] } };
     const out = careerCommitFields({ lines, answers, cards: CARDS, maxYear: 2030 });
     expect(out?.stints).toEqual([{ playerId: "p-tatis", teamId: "t-padres", fromYear: 2022 }]);
     expect(out?.cardEdits.every((e) => e === undefined)).toBe(true);
+  });
+
+  it("sends EVERY stint staged on a line, for the line's player, in order", () => {
+    const answers: CareerAnswers = {
+      [tatis.key]: {
+        kind: "add",
+        stints: [stint("t-padres", 2022), stint("t-reds", 2019, 2021), stint("t-padres", 2015, 2016)],
+      },
+    };
+    const out = careerCommitFields({ lines, answers, cards: CARDS, maxYear: 2030 });
+    expect(out?.stints).toEqual([
+      { playerId: "p-tatis", teamId: "t-padres", fromYear: 2022 },
+      { playerId: "p-tatis", teamId: "t-reds", fromYear: 2019, toYear: 2021 },
+      { playerId: "p-tatis", teamId: "t-padres", fromYear: 2015, toYear: 2016 },
+    ]);
+  });
+
+  it("sends a mix of saved teams (by id) and a team the batch creates (by printed name)", () => {
+    const created = deriveSittingPairs({
+      cards: CARDS,
+      rows: [{ kind: "team", name: "Padres", decision: { action: "create" } }],
+      context: CONTEXT,
+    });
+    const line = toLines(created).find((l) => l.playerId === "p-tatis")!;
+    const out = careerCommitFields({
+      lines: [line],
+      answers: {
+        [line.key]: {
+          kind: "add",
+          stints: [
+            { teamName: "Padres", label: "San Diego Padres", fromYear: 2022 },
+            stint("t-reds", 2019, 2021, "Cincinnati Reds"),
+          ],
+        },
+      },
+      cards: CARDS,
+      maxYear: 2030,
+    });
+    expect(out?.stints).toEqual([
+      { playerId: "p-tatis", teamName: "Padres", fromYear: 2022 },
+      { playerId: "p-tatis", teamId: "t-reds", fromYear: 2019, toYear: 2021 },
+    ]);
+  });
+
+  it("sends nothing for a line whose stints were all removed", () => {
+    const answers: CareerAnswers = { [tatis.key]: { kind: "add", stints: [] } };
+    expect(careerCommitFields({ lines, answers, cards: CARDS, maxYear: 2030 })).toBeUndefined();
+  });
+
+  it("sends nothing for a line changed away from Add to career", () => {
+    // The answer is replaced when the choice changes, so its stints are gone with it.
+    const answers: CareerAnswers = { [tatis.key]: { kind: "leave" } };
+    expect(careerCommitFields({ lines, answers, cards: CARDS, maxYear: 2030 })).toBeUndefined();
+  });
+
+  it("holds each stint to the year bounds and sends the rest", () => {
+    const answers: CareerAnswers = {
+      [tatis.key]: { kind: "add", stints: [stint("t-padres", 2031), stint("t-reds", 2019, 2018), stint("t-a", 2020)] },
+    };
+    const out = careerCommitFields({ lines, answers, cards: CARDS, maxYear: 2030 });
+    expect(out?.stints).toEqual([{ playerId: "p-tatis", teamId: "t-a", fromYear: 2020 }]);
+  });
+
+  it("drops a stint for a printed team no card of the commit carries any more", () => {
+    const created = deriveSittingPairs({
+      cards: CARDS,
+      rows: [{ kind: "team", name: "Padres", decision: { action: "create" } }],
+      context: CONTEXT,
+    });
+    const line = toLines(created).find((l) => l.playerId === "p-tatis")!;
+    // Cards 0, 1 and 3 print "Padres"; here every one of them is re-teamed away
+    // by the line's own team answer, so nothing is left to resolve the name by.
+    const out = careerCommitFields({
+      lines: [line],
+      answers: {
+        [line.key]: {
+          kind: "team",
+          pick: { teamId: tid("t-other"), name: "Other" },
+          then: { kind: "add", stints: [{ teamName: "Padres", label: "Padres", fromYear: 2020 }] },
+        },
+      },
+      cards: CARDS.filter((c) => c.teams[0] === "Padres").slice(0, 2),
+      maxYear: 2030,
+    });
+    expect(out?.stints).toEqual([]);
   });
 
   it("adds a stint for a team the batch creates by its printed name", () => {
@@ -296,19 +426,13 @@ describe("careerCommitFields", () => {
     const line = toLines(created).find((l) => l.playerId === "p-tatis")!;
     const out = careerCommitFields({
       lines: [line],
-      answers: { [line.key]: { kind: "add", fromYear: "2022", toYear: "2023" } },
+      answers: { [line.key]: { kind: "add", stints: [{ teamName: "Padres", label: "Padres", fromYear: 2022, toYear: 2023 }] } },
       cards: CARDS,
       maxYear: 2030,
     });
     expect(out?.stints).toEqual([
       { playerId: "p-tatis", teamName: "Padres", fromYear: 2022, toYear: 2023 },
     ]);
-  });
-
-  it("does not send an add whose years are not a stint", () => {
-    const answers: CareerAnswers = { [tatis.key]: { kind: "add", fromYear: "", toYear: "" } };
-    expect(careerCommitFields({ lines, answers, cards: CARDS, maxYear: 2030 })).toBeUndefined();
-    expect(linesWithBadYears(lines, answers, 2030)).toEqual([tatis.key]);
   });
 
   it("relinks every card of the line to the picked player, by the card's printed name", () => {
@@ -333,11 +457,14 @@ describe("careerCommitFields", () => {
       [tatis.key]: {
         kind: "player",
         pick: { playerId: pid("p-tatis-sr"), name: "Fernando Tatis" },
-        then: { kind: "add", fromYear: "1996", toYear: "" },
+        then: { kind: "add", stints: [stint("t-padres", 1996), stint("t-reds", 1990, 1995)] },
       },
     };
     const out = careerCommitFields({ lines, answers, cards: CARDS, maxYear: 2030 });
-    expect(out?.stints).toEqual([{ playerId: "p-tatis-sr", teamId: "t-padres", fromYear: 1996 }]);
+    expect(out?.stints).toEqual([
+      { playerId: "p-tatis-sr", teamId: "t-padres", fromYear: 1996 },
+      { playerId: "p-tatis-sr", teamId: "t-reds", fromYear: 1990, toYear: 1995 },
+    ]);
   });
 
   it("re-teams the line's cards: the printed string comes off and the pick goes on", () => {
@@ -345,7 +472,7 @@ describe("careerCommitFields", () => {
       [trout.key]: {
         kind: "team",
         pick: { teamId: tid("t-other"), name: "Los Angeles Angels" },
-        then: { kind: "add", fromYear: "2022", toYear: "" },
+        then: { kind: "add", stints: [stint("t-other", 2022)] },
       },
     };
     const out = careerCommitFields({ lines, answers, cards: CARDS, maxYear: 2030 });
@@ -371,8 +498,8 @@ describe("careerCommitFields", () => {
     const out = careerCommitFields({
       lines: [tatis, dup],
       answers: {
-        [tatis.key]: { kind: "add", fromYear: "2022", toYear: "" },
-        other: { kind: "add", fromYear: "2022", toYear: "" },
+        [tatis.key]: { kind: "add", stints: [stint("t-padres", 2022)] },
+        other: { kind: "add", stints: [stint("t-padres", 2022)] },
       },
       cards: CARDS,
       maxYear: 2030,
@@ -523,16 +650,7 @@ describe("unreferencedCreatedTeamRows", () => {
   });
 });
 
-describe("adversarial: careerCommitFields and parseStintDraft", () => {
-  it("parseStintDraft holds the year bounds exactly and refuses a to-year before the from-year", () => {
-    expect(parseStintDraft({ fromYear: "2030", toYear: "" }, 2030)).toEqual({ fromYear: 2030 });
-    expect(parseStintDraft({ fromYear: "2031", toYear: "" }, 2030)).toBeNull();
-    expect(parseStintDraft({ fromYear: "2022", toYear: "2021" }, 2030)).toBeNull();
-    expect(parseStintDraft({ fromYear: "2022", toYear: "2022" }, 2030)).toEqual({ fromYear: 2022, toYear: 2022 });
-    expect(parseStintDraft({ fromYear: "2022.5", toYear: "" }, 2030)).toBeNull();
-    expect(parseStintDraft({ fromYear: "abc", toYear: "" }, 2030)).toBeNull();
-  });
-
+describe("adversarial: careerCommitFields", () => {
   it("two lines on one card, both re-teamed, drop both printed teams and keep both picks", () => {
     const cards = [
       { cardNumber: "5", cardName: "Two", players: ["Mike Trout"], teams: ["Angels", "Padres"] },
@@ -556,16 +674,29 @@ describe("adversarial: careerCommitFields and parseStintDraft", () => {
     expect(applied.teamIds).toEqual(["t-a2", "t-p2"]);
   });
 
-  it("an add on a line sends exactly one stint", () => {
+  it("a stint staged twice on one line (same team, same From year) is sent once", () => {
     const lines = toLines(deriveSittingPairs({ cards: CARDS, rows: [], context: CONTEXT }));
     const tatis = lines.find((l) => l.playerId === "p-tatis")!;
     const out = careerCommitFields({
       lines,
-      answers: { [tatis.key]: { kind: "add", fromYear: "2022", toYear: "" } },
+      answers: { [tatis.key]: { kind: "add", stints: [stint("t-padres", 2022), stint("t-padres", 2022, 2023)] } },
       cards: CARDS,
       maxYear: 2030,
     });
     expect(out?.stints).toHaveLength(1);
+  });
+
+  it("never sends more stints than the commit accepts", () => {
+    const lines = toLines(deriveSittingPairs({ cards: CARDS, rows: [], context: CONTEXT }));
+    const tatis = lines.find((l) => l.playerId === "p-tatis")!;
+    const many = Array.from({ length: CAREER_STINTS_MAX + 20 }, (_, i) => stint(`t-${i}`, 2000));
+    const out = careerCommitFields({
+      lines,
+      answers: { [tatis.key]: { kind: "add", stints: many } },
+      cards: CARDS,
+      maxYear: 2030,
+    });
+    expect(out?.stints).toHaveLength(CAREER_STINTS_MAX);
   });
 });
 

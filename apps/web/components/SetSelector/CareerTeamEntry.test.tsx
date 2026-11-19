@@ -77,7 +77,7 @@ vi.mock("convex/react", () => ({
   },
 }));
 
-import CareerTeamEntry from "./CareerTeamEntry";
+import CareerTeamEntry, { UNKNOWN_TEAM_AMBIGUOUS, UNKNOWN_TEAM_TEXT } from "./CareerTeamEntry";
 
 function makeTeam(name: string, id: string) {
   return { _id: id, name };
@@ -1460,5 +1460,192 @@ describe("CareerTeamEntry — prefill and quick picks (NEO-574)", () => {
   it("shows no quick-pick group when there are none", () => {
     renderEntry({ quickPicks: [] });
     expect(screen.queryByRole("group", { name: "Also on the cards" })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// NEO-591 — the Career check step's use of the same form
+// ---------------------------------------------------------------------------
+
+describe("CareerTeamEntry — whose stint, and only teams that exist (NEO-591)", () => {
+  const PADRES = makeTeam("San Diego Padres", "t-padres");
+  const REDS = makeTeam("Cincinnati Reds", "t-reds");
+  const suffix = " for Luis Rodriguez";
+  const nameBox = () => screen.getByLabelText(`Career team name${suffix}`) as HTMLInputElement;
+  const fromBox = () => screen.getByLabelText(`From year${suffix}`) as HTMLInputElement;
+  const addButton = () => screen.getByRole("button", { name: `Add career team${suffix}` });
+  const typeKnown = (value: string) => {
+    fireEvent.change(nameBox(), { target: { value } });
+    act(() => {
+      vi.advanceTimersByTime(DEBOUNCE_MS);
+    });
+  };
+
+  it("puts the player on every control's name, so two forms never read alike", () => {
+    renderEntry({ label: "Luis Rodriguez" });
+    expect(nameBox()).toBeTruthy();
+    expect(fromBox()).toBeTruthy();
+    expect(screen.getByLabelText(`To year (optional)${suffix}`)).toBeTruthy();
+    expect(addButton()).toBeTruthy();
+    // And the New Player names are not on it.
+    expect(screen.queryByLabelText("Career team name")).toBeNull();
+  });
+
+  it("emits no team id outside knownTeamsOnly, even for an exact saved team", () => {
+    currentTeams = [PADRES];
+    const { onAdd } = renderEntry({ label: "Luis Rodriguez" });
+    typeKnown("San Diego Padres");
+    fireEvent.change(fromBox(), { target: { value: "2022" } });
+    fireEvent.click(addButton());
+    expect(onAdd).toHaveBeenCalledWith({ name: "San Diego Padres", fromYear: 2022 });
+  });
+
+  describe("knownTeamsOnly", () => {
+    it("adds the saved team typed in full, carrying its id", () => {
+      currentTeams = [PADRES, REDS];
+      const { onAdd } = renderEntry({ label: "Luis Rodriguez", knownTeamsOnly: true });
+      typeKnown("San Diego Padres");
+      fireEvent.change(fromBox(), { target: { value: "2022" } });
+      fireEvent.change(screen.getByLabelText(`To year (optional)${suffix}`), { target: { value: "2024" } });
+      fireEvent.click(addButton());
+      expect(onAdd).toHaveBeenCalledWith({
+        name: "San Diego Padres",
+        fromYear: 2022,
+        toYear: 2024,
+        teamId: "t-padres",
+      });
+    });
+
+    it("adds a team taken from the list, carrying its id", () => {
+      currentTeams = [PADRES, REDS];
+      const { onAdd } = renderEntry({ label: "Luis Rodriguez", knownTeamsOnly: true });
+      typeKnown("Cincin");
+      fireEvent.click(screen.getByRole("option", { name: "Use Cincinnati Reds" }));
+      expect(nameBox().value).toBe("Cincinnati Reds");
+      fireEvent.change(fromBox(), { target: { value: "2019" } });
+      fireEvent.click(addButton());
+      expect(onAdd).toHaveBeenCalledWith({ name: "Cincinnati Reds", fromYear: 2019, teamId: "t-reds" });
+    });
+
+    it("adds a team the batch is creating by name, with no id", () => {
+      currentTeams = [];
+      const { onAdd } = renderEntry({
+        label: "Luis Rodriguez",
+        knownTeamsOnly: true,
+        stagedNames: ["Memphis RiverKings"],
+      });
+      typeKnown("Memphis RiverKings");
+      fireEvent.change(fromBox(), { target: { value: "2012" } });
+      fireEvent.click(addButton());
+      expect(onAdd).toHaveBeenCalledWith({ name: "Memphis RiverKings", fromYear: 2012 });
+    });
+
+    it("will not add a name that matches nothing, and says so once the search has answered", () => {
+      currentTeams = [];
+      const { onAdd } = renderEntry({ label: "Luis Rodriguez", knownTeamsOnly: true });
+      fireEvent.change(nameBox(), { target: { value: "Nowhere Nine" } });
+      fireEvent.change(fromBox(), { target: { value: "2022" } });
+      // Not before the search has answered: a name still being looked up is not yet unknown.
+      expect(screen.queryByText(UNKNOWN_TEAM_TEXT)).toBeNull();
+      act(() => {
+        vi.advanceTimersByTime(DEBOUNCE_MS);
+      });
+      expect(screen.getByText(UNKNOWN_TEAM_TEXT)).toBeTruthy();
+      expect((addButton() as HTMLButtonElement).disabled).toBe(true);
+      fireEvent.click(addButton());
+      expect(onAdd).not.toHaveBeenCalled();
+    });
+
+    it("forgets a team taken from the list when the text changes after", () => {
+      currentTeams = [PADRES];
+      const { onAdd } = renderEntry({ label: "Luis Rodriguez", knownTeamsOnly: true });
+      typeKnown("San Di");
+      fireEvent.click(screen.getByRole("option", { name: "Use San Diego Padres" }));
+      fireEvent.change(nameBox(), { target: { value: "San Diego Padre" } });
+      act(() => {
+        vi.advanceTimersByTime(DEBOUNCE_MS);
+      });
+      fireEvent.change(fromBox(), { target: { value: "2022" } });
+      expect((addButton() as HTMLButtonElement).disabled).toBe(true);
+      expect(onAdd).not.toHaveBeenCalled();
+    });
+
+    it("does not guess between two saved teams with one name: the list stays up to pick one", () => {
+      const first = makeTeam("Winnipeg Jets", "t-jets-old");
+      const second = makeTeam("Winnipeg Jets", "t-jets-new");
+      currentTeams = [first, second];
+      const { onAdd } = renderEntry({ label: "Luis Rodriguez", knownTeamsOnly: true });
+      typeKnown("Winnipeg Jets");
+      fireEvent.change(fromBox(), { target: { value: "2016" } });
+      expect(screen.getByText(UNKNOWN_TEAM_AMBIGUOUS)).toBeTruthy();
+      expect((addButton() as HTMLButtonElement).disabled).toBe(true);
+      const rows = screen.getAllByRole("option", { name: "Use Winnipeg Jets" });
+      expect(rows).toHaveLength(2);
+      fireEvent.click(rows[1]);
+      fireEvent.click(addButton());
+      expect(onAdd).toHaveBeenCalledWith({ name: "Winnipeg Jets", fromYear: 2016, teamId: "t-jets-new" });
+    });
+
+    it("takes the prefilled team once the search has found it", () => {
+      currentTeams = [PADRES];
+      const { onAdd } = renderEntry({
+        label: "Luis Rodriguez",
+        knownTeamsOnly: true,
+        initialTeam: "San Diego Padres",
+        initialFromYear: 2022,
+      });
+      fireEvent.click(addButton());
+      expect(onAdd).toHaveBeenCalledWith({ name: "San Diego Padres", fromYear: 2022, teamId: "t-padres" });
+    });
+  });
+
+  describe("onDone", () => {
+    it("Enter in an empty To year or From year box means done, once", () => {
+      const onDone = vi.fn();
+      renderEntry({ label: "Luis Rodriguez", onDone });
+      const to = screen.getByLabelText(`To year (optional)${suffix}`);
+      fireEvent.keyDown(to, { key: "Enter" });
+      expect(onDone).toHaveBeenCalledTimes(1);
+      fireEvent.keyDown(fromBox(), { key: "Enter" });
+      expect(onDone).toHaveBeenCalledTimes(2);
+      fireEvent.keyDown(fromBox(), { key: "Enter", repeat: true });
+      expect(onDone).toHaveBeenCalledTimes(2);
+    });
+
+    it("Enter in the empty team box means done too", () => {
+      const onDone = vi.fn();
+      renderEntry({ label: "Luis Rodriguez", onDone });
+      fireEvent.keyDown(nameBox(), { key: "Enter" });
+      expect(onDone).toHaveBeenCalledTimes(1);
+    });
+
+    it("is not done while anything is typed: Enter adds or does nothing, as before", () => {
+      const onDone = vi.fn();
+      const { onAdd } = renderEntry({ label: "Luis Rodriguez", onDone });
+      typeKnown("Brand New Club");
+      fireEvent.keyDown(nameBox(), { key: "Enter" });
+      fireEvent.change(fromBox(), { target: { value: "2021" } });
+      fireEvent.keyDown(fromBox(), { key: "Enter" });
+      expect(onAdd).toHaveBeenCalledWith({ name: "Brand New Club", fromYear: 2021 });
+      expect(onDone).not.toHaveBeenCalled();
+      // The form is empty again: now Enter is done.
+      fireEvent.keyDown(fromBox(), { key: "Enter" });
+      expect(onDone).toHaveBeenCalledTimes(1);
+    });
+
+    it("does nothing extra without onDone (the New Player step)", () => {
+      renderEntry();
+      fireEvent.keyDown(screen.getByLabelText("From year"), { key: "Enter" });
+      fireEvent.keyDown(screen.getByLabelText("Career team name"), { key: "Enter" });
+      expect(screen.getByLabelText("Career team name")).toBeTruthy();
+    });
+  });
+
+  it("disabled turns the form off", () => {
+    renderEntry({ label: "Luis Rodriguez", disabled: true, initialTeam: "San Diego Padres", initialFromYear: 2022 });
+    expect(nameBox().disabled).toBe(true);
+    expect(fromBox().disabled).toBe(true);
+    expect((screen.getByLabelText(`To year (optional)${suffix}`) as HTMLInputElement).disabled).toBe(true);
+    expect((addButton() as HTMLButtonElement).disabled).toBe(true);
   });
 });

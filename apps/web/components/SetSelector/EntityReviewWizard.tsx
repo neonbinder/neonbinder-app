@@ -87,6 +87,7 @@ import CareerCheckStep from "./CareerCheckStep";
 import { CareerCoverageFetcher } from "./career-reads";
 import {
   applyCareerCardEdit,
+  cardTeamStrings,
   careerCommitFields,
   classifyPairs,
   coverageAskOf,
@@ -94,22 +95,21 @@ import {
   gateJudgedKeys,
   CAREER_CHECKING,
   CAREER_NAMES_WAIT_MS,
-  CAREER_NEXT_BLOCKED,
   CAREER_READ_FAILED,
   CAREER_TEAM_NOT_NEEDED,
   followUpPair,
-  linesWithBadYears,
   pairKey,
   reteamedIndexes,
-  stintDraftOf,
   toLines,
   unreferencedCreatedTeamRows,
+  type BatchTeam,
   type CareerAnswer,
   type CareerAnswers,
   type CareerCommitFields,
   type CareerContext,
   type CareerLine,
   type CoverageAsk,
+  type ExistingStint,
 } from "./career-check";
 import { careerPrefill } from "./career-prefill";
 // NEO-478: the "Checklist says otherwise" step, first, ahead of the names.
@@ -1251,8 +1251,6 @@ export default function EntityReviewWizard({
   const footerStatusId = useId();
   /** NEO-574 — the first line's tab-stop radio, focused on arrival. */
   const careerFirstRef = useRef<HTMLButtonElement>(null);
-  /** NEO-574 (a11y) — Next pressed while an add form holds years that are not a stint. */
-  const [careerBlockedPresses, setCareerBlockedPresses] = useState(0);
   /** NEO-345 — the autograph step's question; its Next is described by it. */
   const autographLeadId = useId();
   /** NEO-345 — the autograph step's tab-stop choice, focused while unanswered. */
@@ -1962,14 +1960,74 @@ export default function EntityReviewWizard({
     }
     return [...ids].sort();
   }, [rows, careerGapLines, careerFields]);
-  const linkedTeams = useQuery(
-    api.teams.getManyByIds,
-    linkedTeamIds.length > 0 ? { ids: linkedTeamIds } : "skip",
-  );
   const linkedPlayers = useQuery(
     api.players.getManyByIds,
     linkedPlayerIds.length > 0 ? { ids: linkedPlayerIds } : "skip",
   );
+  /**
+   * NEO-591 — the stints the "Add to career" widget lists as already on file:
+   * the career lines' players' stints, with their teams' names. Read only once
+   * some answer opens the widget.
+   */
+  const careerWantsStints = Object.values(careerAnswers).some(
+    (a) => a.kind === "add" || ((a.kind === "player" || a.kind === "team") && a.pick !== undefined),
+  );
+  const careerStintTeamIds = useMemo(() => {
+    if (!careerWantsStints) return [] as Array<Id<"teams">>;
+    const ids = new Set<Id<"teams">>();
+    for (const p of linkedPlayers ?? []) for (const y of p.teamYears ?? []) ids.add(y.teamId);
+    return [...ids].sort();
+  }, [careerWantsStints, linkedPlayers]);
+  const careerStintTeams = useQuery(
+    api.teams.getManyByIds,
+    careerStintTeamIds.length > 0 ? { ids: careerStintTeamIds } : "skip",
+  );
+  // Declared after the stint teams' read, so the wizard's own team read is the
+  // last `teams.getManyByIds` subscription of a render.
+  const linkedTeams = useQuery(
+    api.teams.getManyByIds,
+    linkedTeamIds.length > 0 ? { ids: linkedTeamIds } : "skip",
+  );
+  const careerExistingStintsOf = (playerId: string): ExistingStint[] => {
+    const player = (linkedPlayers ?? []).find((p) => p._id === playerId);
+    if (!player || !careerStintTeams) return [];
+    const nameOf = new Map(careerStintTeams.map((t) => [t._id as string, teamFullName(t)]));
+    return (player.teamYears ?? []).flatMap((y, i) => {
+      const label = nameOf.get(y.teamId);
+      return label
+        ? [
+            {
+              key: `${y.teamId}-${y.fromYear ?? "u"}-${i}`,
+              label,
+              ...(y.fromYear !== undefined ? { fromYear: y.fromYear } : {}),
+              ...(y.toYear !== undefined ? { toYear: y.toYear } : {}),
+            },
+          ]
+        : [];
+    });
+  };
+  /**
+   * NEO-591 — the teams this batch is creating that a card prints: the only
+   * not-yet-saved teams a career stint can name (the commit resolves a stint
+   * for one through the card's printed string, as it resolves the card's team).
+   */
+  const careerBatchTeams = useMemo<BatchTeam[]>(() => {
+    if (!rows || !checklistedCards) return [];
+    const printed = new Map<string, string>();
+    for (const card of checklistedCards) {
+      for (const t of cardTeamStrings(card)) {
+        const key = normalizeEntityName(t);
+        if (key && !printed.has(key)) printed.set(key, t);
+      }
+    }
+    const out: BatchTeam[] = [];
+    for (const row of rows) {
+      if (row.kind !== "team" || row.decision?.action !== "create" || !row.decision.create) continue;
+      const teamName = printed.get(normalizeEntityName(row.name));
+      if (teamName) out.push({ label: teamFullName(row.decision.create), teamName });
+    }
+    return out;
+  }, [rows, checklistedCards]);
 
   /** id → display name, for `describeDecision`'s "Linked to {name}". */
   const linkedNameById = useMemo(() => {
@@ -3640,11 +3698,6 @@ export default function EntityReviewWizard({
    * Save), whichever step was asked for.
    */
   const autographUnanswered = postLive.autograph && autographAnswer === undefined;
-  /** NEO-574 — an add form holding years that are not a stint holds Next. */
-  const careerBadYears = useMemo(
-    () => linesWithBadYears(careerLines, careerAnswers),
-    [careerLines, careerAnswers],
-  );
   /** NEO-478 — the checklist step's answers are required too. */
   const checklistUnanswered = postLive.checklist && checklistUnansweredCount > 0;
   /** Every name decided and none on screen: the teams / autograph / titles / save steps. */
@@ -4452,7 +4505,7 @@ export default function EntityReviewWizard({
     saving ||
     (postStep === "autograph" && autographUnanswered) ||
     (postStep === "checklist" && checklistUnanswered) ||
-    (postStep === "career" && (careerBadYears.length > 0 || careerChecking));
+    (postStep === "career" && careerChecking);
   /**
    * NEO-345 (a11y) — a press (click, Enter or Space) on Next while the
    * autograph step is unanswered: say why in the step's status line and move
@@ -4468,18 +4521,6 @@ export default function EntityReviewWizard({
       if (firstOpen) {
         document
           .querySelector<HTMLButtonElement>(`[data-checklist-conflict="${firstOpen.index}"] button`)
-          ?.focus();
-      }
-      return;
-    }
-    // NEO-574 — and the career step's, which says to fix the years.
-    if (postStep === "career" && careerBadYears.length > 0) {
-      setCareerBlockedPresses((n) => n + 1);
-      const bad = careerLines.find((l) => l.key === careerBadYears[0]);
-      if (bad) {
-        Array.from(document.querySelectorAll<HTMLElement>("[data-career-line]"))
-          .find((el) => el.dataset.careerLine === bad.key)
-          ?.querySelector<HTMLInputElement>("input")
           ?.focus();
       }
       return;
@@ -4632,9 +4673,7 @@ export default function EntityReviewWizard({
         ? CAREER_CHECKING
         : careerReadFailed
           ? CAREER_READ_FAILED
-          : careerBlockedPresses > 0 && careerBadYears.length > 0
-            ? CAREER_NEXT_BLOCKED
-            : null;
+          : null;
   const footerLine: string | null =
     careerLine ??
     (!expired &&
@@ -6373,6 +6412,8 @@ export default function EntityReviewWizard({
                     (linkedTeams ?? []).find((t) => t._id === teamId)?.name
                   }
                   hasNoCareer={(line) => careerPlayerHasNoCareer(line)}
+                  existingStintsOf={careerExistingStintsOf}
+                  batchTeams={careerBatchTeams}
                   readFailed={careerReadFailed}
                   onRetry={() => {
                     retryCareerCheck();

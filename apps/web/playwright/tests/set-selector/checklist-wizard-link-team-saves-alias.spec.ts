@@ -46,16 +46,19 @@
 //   - The step lists #902 and #903 ("No Rockies in the career by 1996.") and NOT #901, whose
 //     team P's stint covers. The catalogue's players on the linked club are listed too: the
 //     club is minted per attempt, so no catalogue career holds it.
-//   - Answers: #902 "Add to career" with the prefilled year and a typed end year (read back in
-//     Players admin; a To year before From holds Next first, and the answer survives Back);
-//     #903 "Keep as is" (P's career has no Marlins); Jamey Wright's line (#21) "Wrong player"
-//     -> P, and Todd Helton's (#22) "Fix card's team" -> the Marlins (he never played there, so
-//     the nested "Career for Todd Helton" prompt comes up), each read back on the saved card.
+//   - Answers: #902 "Add to career" opens the New Player step's stints widget with the card's team
+//     already staged from the set's year (NEO-591): that stint is removed and re-added with an end
+//     year (the form takes the team and year back), and a second spell for the same club is added
+//     (both read back in Players admin; the answers survive Back); #903 "Keep as is" (P's career
+//     has no Marlins); Jamey Wright's line (#21) "Wrong player" -> P, and Todd Helton's (#22)
+//     "Fix card's team" -> the Marlins (he never played there, so the nested "Career for Todd
+//     Helton" prompt comes up), each read back on the saved card. Both pickers open on choosing
+//     the answer, with focus in their search box (NEO-591).
 //     A catalogue player's career is never written: "Wrong player" puts P on the card, and
 //     Helton's prompt stays on "Keep as is".
 //   - Not shown live: "Wrong player" picking a same-name candidate ("Which <name>?"). No
 //     catalogue player on these sets has a same-name twin (each name here matches one player,
-//     measured NEO-574), so Wright goes through "Someone else". The candidates and their order
+//     measured NEO-574), so Wright goes through the search. The candidates and their order
 //     (the ones covering the card's team first) are unit-covered in convex/careerCoverage.test.ts.
 // Fresh-only like the rest of the spec (committed cards are never checked again).
 import { test, expect, expectAccessible, LAUNCH_GATE } from "../../support/fixtures";
@@ -312,38 +315,49 @@ test(
     }
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check" });
 
-    // #902: "Add to career", the team and the set's year already in; an end year typed.
+    // #902: "Add to career" opens the stints widget the New Player step uses. The card's team is
+    // already staged, named, from the set's year; the form below it is empty.
+    const stagedRockies = wizard.getByRole("list", { name: `Stints to add for ${scaffold}` });
+    const rockiesName = wizard.getByRole("combobox", { name: `Career team name for ${scaffold}` });
+    const rockiesFrom = wizard.getByRole("spinbutton", { name: `From year for ${scaffold}` });
+    const rockiesTo = wizard.getByRole("spinbutton", { name: `To year (optional) for ${scaffold}` });
+    const addRockies = wizard.getByRole("button", { name: `Add career team for ${scaffold}` });
     await lineRockies.getByRole("radio", { name: "Add to career" }).click();
     await expect(lineRockies.getByRole("radio", { name: "Add to career" })).toBeChecked();
-    await expect(wizard.getByRole("spinbutton", { name: `From year for ${scaffold}, ${ROCKIES}` })).toHaveValue(SET_YEAR);
-    const toRockies = wizard.getByRole("spinbutton", { name: `To year (optional) for ${scaffold}, ${ROCKIES}` });
-    await expect(toRockies).toHaveValue("");
-    // Years that are not a stint hold Next. A press on the held Next (Enter on it, as the checklist
-    // step's spec presses its own) is refused: the footer says why and focus goes back to the years.
-    await toRockies.fill("1990");
-    await expect(nextStepButton(page)).toBeDisabled();
-    await nextStepButton(page).focus();
-    await page.keyboard.press("Enter");
-    await expect(wizard.getByText("Fix the years first — then Next.", { exact: true })).toBeVisible();
-    await expect(careerHeading).toBeVisible();
-    await expect(wizard.getByRole("spinbutton", { name: `From year for ${scaffold}, ${ROCKIES}` })).toBeFocused();
-    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check, Next held by the years" });
-    await toRockies.fill("1997");
+    await expect(stagedRockies.getByRole("listitem")).toHaveCount(1);
+    await expect(stagedRockies.getByRole("listitem").first()).toContainText(`${ROCKIES} (${SET_YEAR}–present)`);
+    await expect(rockiesName).toHaveValue("");
+    await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check, stints widget" });
+    // Edit it: remove the staged stint and the form takes the team and the set's year back.
+    await wizard.getByRole("button", { name: `Remove ${ROCKIES} (${SET_YEAR}–present) for ${scaffold}` }).click();
+    await expect(stagedRockies).toHaveCount(0);
+    await expect(rockiesName).toHaveValue(ROCKIES);
+    await expect(rockiesFrom).toHaveValue(SET_YEAR);
+    await rockiesTo.fill("1997");
+    await addRockies.click();
+    await expect(stagedRockies.getByRole("listitem")).toHaveCount(1);
+    await expect(stagedRockies.getByRole("listitem").first()).toContainText(`${ROCKIES} (${SET_YEAR}–1997)`);
+    // A second spell with the same club: any team, any years, as many as are needed.
+    await rockiesName.fill(ROCKIES);
+    await rockiesFrom.fill("1999");
+    await rockiesTo.fill("2000");
+    await addRockies.click();
+    await expect(stagedRockies.getByRole("listitem")).toHaveCount(2);
+    await expect(stagedRockies.getByRole("listitem").nth(1)).toContainText(`${ROCKIES} (1999–2000)`);
     await expect(nextStepButton(page)).toBeEnabled();
-    // The answer and its years survive Back out of the step and the way in again.
+    // The answer and its stints survive Back out of the step and the way in again.
     await wizard.getByRole("button", { name: "Back to previous step" }).click();
     await expect(careerHeading).toBeHidden();
     await wizard.getByRole("button", { name: /^Next( \(Enter\))?$/ }).first().click();
     await expect(careerHeading).toBeVisible();
     await expect(lineRockies.getByRole("radio", { name: "Add to career" })).toBeChecked();
-    await expect(wizard.getByRole("spinbutton", { name: `From year for ${scaffold}, ${ROCKIES}` })).toHaveValue(SET_YEAR);
-    await expect(toRockies).toHaveValue("1997");
+    await expect(stagedRockies.getByRole("listitem")).toHaveCount(2);
 
-    // #21: "Wrong player" -> P, through "Someone else…". P's stint covers the club: said, no ask.
+    // #21: "Wrong player" -> P, through the player search, which opens on the choice itself with
+    // focus in it (no second click). P's stint covers the club: said, no ask.
     await lineWright.getByRole("radio", { name: /^Wrong player$/ }).click();
-    await wizard.getByRole("button", { name: "Someone else for Jamey Wright" }).click();
     const playerSearch = wizard.getByRole("textbox", { name: "Search existing players" });
-    await expect(playerSearch).toBeVisible();
+    await expect(playerSearch).toBeFocused();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check, player search open" });
     await playerSearch.fill(scaffold);
     await wizard.getByRole("option", { name: `Link to ${scaffold}` }).click();
@@ -353,9 +367,8 @@ test(
     // asks again about HIS career (the nested prompt). His career is not this spec's to write: the
     // prompt stays on "Keep as is".
     await lineHelton.getByRole("radio", { name: /^Fix card.s team$/ }).click();
-    await wizard.getByRole("button", { name: "Pick a team for Todd Helton" }).click();
     const careerTeamSearch = wizard.getByRole("textbox", { name: "Search existing teams" });
-    await expect(careerTeamSearch).toBeVisible();
+    await expect(careerTeamSearch).toBeFocused();
     await expectAccessible(page, { within: wizard, label: "Entity review wizard, Career check, team search open" });
     await careerTeamSearch.fill(MARLINS);
     await wizard.getByRole("option", { name: `Link to ${MARLINS}` }).click();
@@ -410,8 +423,8 @@ test(
     await expect(drawer.getByRole("button", { name: `Remove team ${FIXTURE_TEAM}`, exact: true })).toHaveCount(0);
     await page.getByRole("button", { name: "Done editing card" }).click();
     await expect(drawer).toBeHidden();
-    // P's career: the stint he came with, the one "Add to career" added (the prefilled year and the
-    // typed end), and no Marlins ("Keep as is" wrote nothing).
+    // P's career: the stint he came with, the two "Add to career" added (the set's year to the typed
+    // end, and the second spell), and no Marlins ("Keep as is" wrote nothing).
     await page.goto("/admin/players");
     await expectPlayersLoaded(page, 30_000);
     await page.getByRole("textbox", { name: "Filter players" }).fill(scaffold);
@@ -421,8 +434,9 @@ test(
     const career = page.getByRole("list", { name: "Career history" }).getByRole("listitem");
     await expect(career.filter({ hasText: `${FIXTURE_TEAM} · 1994–${SET_YEAR}` })).toHaveCount(1);
     await expect(career.filter({ hasText: `${ROCKIES} · ${SET_YEAR}–1997` })).toHaveCount(1);
+    await expect(career.filter({ hasText: `${ROCKIES} · 1999–2000` })).toHaveCount(1);
     await expect(career.filter({ hasText: MARLINS })).toHaveCount(0);
-    await expect(career).toHaveCount(2);
+    await expect(career).toHaveCount(3);
 
     // ── PART 6: Team Management shows the alias ──
     await openTeams(page, `Ali${T}`);

@@ -21,6 +21,10 @@ let currentRows: unknown[];
 let playerIdReads: string[][];
 /** The teams read has answered (false = still loading, so the step waits). */
 let teamsLoaded = true;
+/** What the team typeahead (`teams.pickerCandidates`) answers, as the server ranks it. */
+let pickerRows: Array<{ team: { _id: string; name: string }; tier: number }> = [];
+/** Stints a player has on file, by player id. */
+let playerStints: Record<string, Array<{ teamId: string; fromYear?: number; toYear?: number }>> = {};
 /** Extra team rows the read serves, by id. */
 let teamRows: Array<{ _id: string; name: string; location?: string }> = [];
 
@@ -28,13 +32,18 @@ vi.mock("convex/react", () => ({
   useQuery: (ref: string, args: unknown) => {
     if (args === "skip") return undefined;
     if (ref === "entityReviewQueue.getBatch") return currentRows;
+    if (ref === "teams.pickerCandidates") return pickerRows;
     if (ref === "players.getManyByIds") {
       playerIdReads.push((args as { ids: string[] }).ids);
       const known: Record<string, string> = {
         "p-tatis": "Fernando Tatis Jr.",
         "p-trout": "Mike Trout",
       };
-      return (args as { ids: string[] }).ids.map((id) => ({ _id: id, name: known[id] ?? `Name of ${id}` }));
+      return (args as { ids: string[] }).ids.map((id) => ({
+        _id: id,
+        name: known[id] ?? `Name of ${id}`,
+        ...(playerStints[id] ? { teamYears: playerStints[id] } : {}),
+      }));
     }
     if (ref === "teams.getManyByIds") {
       // Only the team the search "picks" has a row here; the read itself has
@@ -105,7 +114,6 @@ import {
   CAREER_RETRY_LABEL,
   CAREER_CHECKING,
   CAREER_NAMES_WAIT_MS,
-  CAREER_NEXT_BLOCKED,
   careerHeading,
   CAREER_TEAM_NOT_NEEDED,
   type CareerContext,
@@ -173,6 +181,8 @@ beforeEach(() => {
   currentRows = [];
   teamsLoaded = true;
   teamRows = [];
+  pickerRows = [];
+  playerStints = {};
   fetcherMounts = 0;
   playerIdReads = [];
   fetcherBehaviour = () => {};
@@ -256,20 +266,78 @@ describe("answers", () => {
     expect(fields?.stints).toEqual([{ playerId: "p-tatis", teamId: "t-padres", fromYear: 2022 }]);
   });
 
-  it("holds Next while an add form's years are not a stint, and says so", () => {
+  it("shows the card's team staged on the line, named, from the set's year", () => {
+    teamRows = [{ _id: "t-padres", name: "Padres", location: "San Diego" }];
     render(wizard());
     const group = screen.getAllByRole("radiogroup")[0];
     fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
-    const from = screen.getByLabelText(/^From year for /);
-    fireEvent.change(from, { target: { value: "" } });
+    const staged = screen.getByRole("list", { name: "Stints to add for Fernando Tatis Jr." });
+    expect(within(staged).getAllByRole("listitem").map((li) => li.textContent)).toEqual([
+      "San Diego Padres (2022–present)×",
+    ]);
+    // And the form for more, named for the player.
+    expect(screen.getByLabelText("Career team name for Fernando Tatis Jr.")).toBeTruthy();
+  });
+
+  it("lists the stints the player has on file, with their teams' names", () => {
+    playerStints = { "p-tatis": [{ teamId: "t-reds", fromYear: 2019, toYear: 2021 }] };
+    teamRows = [{ _id: "t-reds", name: "Reds", location: "Cincinnati" }];
+    render(wizard());
+    const group = screen.getAllByRole("radiogroup")[0];
+    expect(screen.queryByRole("list", { name: "Career on file for Fernando Tatis Jr." })).toBeNull();
+    fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
+    const onFile = screen.getByRole("list", { name: "Career on file for Fernando Tatis Jr." });
+    expect(within(onFile).getByText("Cincinnati Reds (2019–2021)")).toBeTruthy();
+  });
+
+  it("reports EVERY stint added on the line, and only while the line is on Add to career", () => {
+    vi.useFakeTimers();
+    try {
+      pickerRows = [{ team: { _id: "t-reds", name: "Cincinnati Reds" }, tier: 4 }];
+      const onCareerChange = vi.fn();
+      render(wizard({ onCareerChange }));
+      const group = screen.getAllByRole("radiogroup")[0];
+      fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
+      // A second stint, for another team, through the same form New Player uses.
+      fireEvent.change(screen.getByLabelText("Career team name for Fernando Tatis Jr."), {
+        target: { value: "Cincinnati Reds" },
+      });
+      act(() => {
+        vi.advanceTimersByTime(250);
+      });
+      fireEvent.change(screen.getByLabelText("From year for Fernando Tatis Jr."), {
+        target: { value: "2019" },
+      });
+      fireEvent.change(screen.getByLabelText("To year (optional) for Fernando Tatis Jr."), {
+        target: { value: "2021" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Add career team for Fernando Tatis Jr." }));
+      expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toEqual([
+        { playerId: "p-tatis", teamId: "t-padres", fromYear: 2022 },
+        { playerId: "p-tatis", teamId: "t-reds", fromYear: 2019, toYear: 2021 },
+      ]);
+      // Remove the card's own team: only the one added by hand is sent.
+      fireEvent.click(
+        screen.getByRole("button", { name: /^Remove .*2022–present.* for Fernando Tatis Jr\.$/ }),
+      );
+      expect(onCareerChange.mock.calls.at(-1)?.[0]?.stints).toEqual([
+        { playerId: "p-tatis", teamId: "t-reds", fromYear: 2019, toYear: 2021 },
+      ]);
+      // Away from Add to career: nothing is sent.
+      fireEvent.click(within(group).getByRole("radio", { name: "Keep as is" }));
+      expect(onCareerChange.mock.calls.at(-1)?.[0]).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never holds Next for the stints: what is staged is already a stint", () => {
+    render(wizard());
+    const group = screen.getAllByRole("radiogroup")[0];
+    fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
+    expect(next().getAttribute("aria-disabled")).not.toBe("true");
     fireEvent.click(next());
-    expect(screen.getByRole("heading", { name: careerHeading(1) })).toBeTruthy();
-    expect(next().getAttribute("aria-disabled")).toBe("true");
-    // Why Next is held is said in the wizard's live region, not the step's.
-    expect(
-      screen.getAllByRole("status").some((el) => el.textContent === CAREER_NEXT_BLOCKED),
-    ).toBe(true);
-    expect(CAREER_NEXT_BLOCKED).toBe("Fix the years first — then Next.");
+    expect(screen.queryByRole("heading", { name: careerHeading(1) })).toBeNull();
   });
 });
 
@@ -282,7 +350,6 @@ describe("a re-teamed card leaves the teams step", () => {
   function reteam() {
     const group = screen.getAllByRole("radiogroup")[0];
     fireEvent.click(within(group).getByRole("radio", { name: "Fix card’s team" }));
-    fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
     fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
   }
 
@@ -629,7 +696,6 @@ describe("a New Team nobody names any more (NEO-574)", () => {
     toSummary();
     const group = screen.getAllByRole("radiogroup")[0];
     fireEvent.click(within(group).getByRole("radio", { name: "Fix card’s team" }));
-    fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
     fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
     fireEvent.click(next());
     // A zero row is not listed at all.
@@ -649,7 +715,6 @@ describe("a New Team nobody names any more (NEO-574)", () => {
     toSummary();
     const group = screen.getAllByRole("radiogroup")[0];
     fireEvent.click(within(group).getByRole("radio", { name: "Fix card’s team" }));
-    fireEvent.click(screen.getByRole("button", { name: "Pick a team for Mike Trout" }));
     fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
     fireEvent.click(next());
     const decided = within(screen.getByRole("list", { name: "Decided names" }));
@@ -665,7 +730,6 @@ describe("a relinked player reaches the titles step (NEO-574)", () => {
     render(wizard());
     const group = screen.getAllByRole("radiogroup")[0];
     fireEvent.click(within(group).getByRole("radio", { name: "Wrong player" }));
-    fireEvent.click(screen.getByRole("button", { name: "Someone else for Fernando Tatis Jr." }));
     fireEvent.click(screen.getByRole("button", { name: "Search result player" }));
     expect(playerIdReads.at(-1)).toContain("picked-player");
   });

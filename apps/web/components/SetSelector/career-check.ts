@@ -314,19 +314,34 @@ export function sortCareerLines<T extends CareerLine>(
 // Answers
 // ---------------------------------------------------------------------------
 
-/** A stint being typed: strings, because it is a form. */
-export type StintDraft = { fromYear: string; toYear: string };
+/**
+ * One stint the operator is adding, as the stints widget holds it: a team,
+ * named by its NB id or (a team the batch is creating) by the string a card in
+ * this commit prints, exactly one of the two, with its years. `label` is the
+ * team as the chip shows it ("San Diego Padres"); it is never sent anywhere.
+ */
+export type StagedStint = {
+  teamId?: Id<"teams">;
+  teamName?: string;
+  label: string;
+  fromYear: number;
+  /** Absent = still there. */
+  toYear?: number;
+};
+
+/** A team a stint can name, before it has a label or years. */
+export type StintTeamRef = { teamId?: Id<"teams">; teamName?: string; label: string };
 
 /** What happens after a re-check says the NEW pair is uncovered too. */
-export type CareerFollowUp = { kind: "leave" } | ({ kind: "add" } & StintDraft);
+export type CareerFollowUp = { kind: "leave" } | { kind: "add"; stints: StagedStint[] };
 
 /**
- * One line's answer. Absent = "Leave it". A "player" or "team" answer with no
+ * One line's answer. Absent = "Keep as is". A "player" or "team" answer with no
  * pick yet is the picker being open: it does nothing until a pick lands.
  */
 export type CareerAnswer =
   | { kind: "leave" }
-  | ({ kind: "add" } & StintDraft)
+  | { kind: "add"; stints: StagedStint[] }
   | { kind: "player"; pick?: { playerId: Id<"players">; name: string }; then: CareerFollowUp }
   | { kind: "team"; pick?: { teamId: Id<"teams">; name: string }; then: CareerFollowUp };
 
@@ -334,53 +349,73 @@ export type CareerAnswers = Readonly<Record<string, CareerAnswer>>;
 
 export const LEAVE_FOLLOW_UP: CareerFollowUp = { kind: "leave" };
 
-/** A fresh add form: From year the set's, To year blank. */
-export function freshStint(setYear: number | undefined): StintDraft {
-  return { fromYear: setYear === undefined ? "" : String(setYear), toYear: "" };
+/**
+ * The stints an "Add to career" opens with: the card's team from the set's
+ * year, on, already staged. (None when the team cannot be named.)
+ */
+export function preAddedStints(team: StintTeamRef | undefined, setYear: number | undefined): StagedStint[] {
+  if (!team || setYear === undefined || (!team.teamId && !team.teamName)) return [];
+  return [
+    {
+      ...(team.teamId ? { teamId: team.teamId } : { teamName: team.teamName }),
+      label: team.label,
+      fromYear: setYear,
+    },
+  ];
 }
 
-const YEAR_TEXT = /^\d{4}$/;
-
-/** The years a draft means, or null when they are not a valid stint yet. */
-export function parseStintDraft(
-  draft: StintDraft,
-  maxYear: number = maxCareerYear(),
-): { fromYear: number; toYear?: number } | null {
-  const from = draft.fromYear.trim();
-  // Four digits and nothing else: `Number()` would take "0x7C6" or "1.99e3".
-  if (!YEAR_TEXT.test(from)) return null;
-  const fromYear = Number(from);
-  if (fromYear < MIN_CAREER_YEAR || fromYear > maxYear) return null;
-  const to = draft.toYear.trim();
-  if (to === "") return { fromYear };
-  if (!YEAR_TEXT.test(to)) return null;
-  const toYear = Number(to);
-  if (toYear > maxYear || toYear < fromYear) return null;
-  return { fromYear, toYear };
+/** Two stints are the same one: same team, same From year (what the server dedupes on). */
+export function sameStint(a: StagedStint, b: StagedStint): boolean {
+  const team = (s: StagedStint) => (s.teamId ? `id:${s.teamId}` : `~${fold(s.teamName ?? "")}`);
+  return team(a) === team(b) && a.fromYear === b.fromYear;
 }
 
-/** The stint form a line's answer is holding, if any (the add itself, or a follow-up add). */
-export function stintDraftOf(answer: CareerAnswer | undefined): StintDraft | null {
-  if (!answer) return null;
-  if (answer.kind === "add") return answer;
+/** `stints` with `stint` on the end, unless it is already there. */
+export function withStint(stints: readonly StagedStint[], stint: StagedStint): StagedStint[] {
+  return stints.some((s) => sameStint(s, stint)) ? [...stints] : [...stints, stint];
+}
+
+const YEAR_OK = (n: number, min: number, max: number): boolean =>
+  Number.isInteger(n) && n >= min && n <= max;
+
+/** The years are a stint the server will take (the widget already holds them to this). */
+export function isValidStint(stint: StagedStint, maxYear: number = maxCareerYear()): boolean {
+  if (!YEAR_OK(stint.fromYear, MIN_CAREER_YEAR, maxYear)) return false;
+  if (stint.toYear === undefined) return true;
+  return YEAR_OK(stint.toYear, stint.fromYear, maxYear);
+}
+
+/** "2022–present", "2019–2021": the years as a stint chip shows them. */
+export function stintYearsText(years: { fromYear?: number; toYear?: number }): string {
+  if (years.fromYear === undefined) return "";
+  return `${years.fromYear}–${years.toYear ?? "present"}`;
+}
+
+/** "San Diego Padres (2022–present)": a stint as its chip reads. */
+export function stintChipText(stint: { label: string; fromYear?: number; toYear?: number }): string {
+  const years = stintYearsText(stint);
+  return years ? `${stint.label} (${years})` : stint.label;
+}
+
+/** A stint the player already has on file, for the widget to show. */
+export type ExistingStint = {
+  key: string;
+  label: string;
+  fromYear?: number;
+  toYear?: number;
+};
+
+/** A team the batch is creating, which a stint can name by the string a card prints. */
+export type BatchTeam = { label: string; teamName: string };
+
+/** The stints an answer holds (the add itself, or a follow-up add). */
+export function stintsOf(answer: CareerAnswer | undefined): readonly StagedStint[] {
+  if (!answer) return [];
+  if (answer.kind === "add") return answer.stints;
   if ((answer.kind === "player" || answer.kind === "team") && answer.pick) {
-    return answer.then.kind === "add" ? answer.then : null;
+    return answer.then.kind === "add" ? answer.then.stints : [];
   }
-  return null;
-}
-
-/** Lines whose add form is open and not a valid stint: Next waits for these. */
-export function linesWithBadYears(
-  lines: readonly CareerLine[],
-  answers: CareerAnswers,
-  maxYear: number = maxCareerYear(),
-): string[] {
-  return lines
-    .filter((line) => {
-      const draft = stintDraftOf(answers[line.key]);
-      return draft !== null && parseStintDraft(draft, maxYear) === null;
-    })
-    .map((line) => line.key);
+  return [];
 }
 
 /**
@@ -442,19 +477,25 @@ export type CareerCommitFields = {
   cardEdits: Array<CareerCardEdit | undefined>;
 };
 
-function stintFor(
-  playerId: string,
-  team: { teamId?: string; teamName?: string },
-  draft: StintDraft,
-  maxYear: number,
-): CareerStintArg | null {
-  const years = parseStintDraft(draft, maxYear);
-  if (!years) return null;
+function stintArg(playerId: string, stint: StagedStint, maxYear: number): CareerStintArg | null {
+  if (!isValidStint(stint, maxYear)) return null;
+  if (!stint.teamId && !(stint.teamName ?? "").trim()) return null;
   return {
     playerId: playerId as Id<"players">,
-    ...(team.teamId ? { teamId: team.teamId as Id<"teams"> } : { teamName: team.teamName }),
-    ...years,
+    ...(stint.teamId ? { teamId: stint.teamId } : { teamName: stint.teamName }),
+    fromYear: stint.fromYear,
+    ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
   };
+}
+
+/**
+ * The team strings a card carries, trimmed: `teams[]`, else the legacy `team`
+ * (the commit's own reading, `cardTeamNames`).
+ */
+export function cardTeamStrings(card: { team?: string; teams?: readonly string[] }): string[] {
+  const named = (card.teams ?? []).map((t) => t.trim()).filter(Boolean);
+  if (named.length === 0 && card.team?.trim()) named.push(card.team.trim());
+  return Array.from(new Set(named));
 }
 
 /** The printed spelling of `printed` as THIS card carries it. */
@@ -480,6 +521,7 @@ export function careerCommitFields(input: {
   const seen = new Set<string>();
   const addStint = (stint: CareerStintArg | null) => {
     if (!stint) return;
+    // The key the server dedupes on, so two entries it would treat as one are sent once.
     const key = `${stint.playerId}|${stint.teamId ?? `~${fold(stint.teamName ?? "")}`}|${stint.fromYear}`;
     if (seen.has(key)) return;
     seen.add(key);
@@ -492,7 +534,7 @@ export function careerCommitFields(input: {
     const answer = input.answers[line.key];
     if (!answer || answer.kind === "leave") continue;
     if (answer.kind === "add") {
-      addStint(stintFor(line.playerId, line, answer, maxYear));
+      for (const stint of answer.stints) addStint(stintArg(line.playerId, stint, maxYear));
       continue;
     }
     if (!answer.pick) continue;
@@ -506,7 +548,9 @@ export function careerCommitFields(input: {
           { name, playerId },
         ];
       }
-      if (answer.then.kind === "add") addStint(stintFor(playerId, line, answer.then, maxYear));
+      if (answer.then.kind === "add") {
+        for (const stint of answer.then.stints) addStint(stintArg(playerId, stint, maxYear));
+      }
     } else {
       const { teamId } = answer.pick;
       for (const index of line.cardIndexes) {
@@ -520,12 +564,22 @@ export function careerCommitFields(input: {
         e.teamIds = Array.from(new Set([...(e.teamIds ?? []), teamId]));
       }
       if (answer.then.kind === "add") {
-        addStint(stintFor(line.playerId, { teamId }, answer.then, maxYear));
+        for (const stint of answer.then.stints) addStint(stintArg(line.playerId, stint, maxYear));
       }
     }
   }
-  if (stints.length === 0 && edits.every((e) => e === undefined)) return undefined;
-  return { stints: stints.slice(0, CAREER_STINTS_MAX), cardEdits: edits };
+  // A stint that names a team by a printed string needs a card of this commit
+  // that still prints it: the commit resolves such a team through its cards, so
+  // when another line took the string off the last of them there is nothing to
+  // resolve it by. (A team named by id never depends on a card.)
+  const carried = new Set<string>();
+  input.cards.forEach((card, i) => {
+    const dropped = new Set((edits[i]?.dropTeams ?? []).map(fold));
+    for (const t of cardTeamStrings(card)) if (!dropped.has(fold(t))) carried.add(fold(t));
+  });
+  const kept = stints.filter((s) => s.teamId !== undefined || carried.has(fold(s.teamName ?? "")));
+  if (kept.length === 0 && edits.every((e) => e === undefined)) return undefined;
+  return { stints: kept.slice(0, CAREER_STINTS_MAX), cardEdits: edits };
 }
 
 /** Two commit-field bundles say the same thing (so the host is not re-rendered for nothing). */
@@ -667,11 +721,6 @@ export function playedForText(team: string | undefined): string {
   return team ? `Played for the ${team}` : "Played for this team";
 }
 
-/** Why the years are not a stint. */
-export function yearsHintText(): string {
-  return `Years go ${MIN_CAREER_YEAR}–${maxCareerYear()}, and To can’t come before From.`;
-}
-
 /**
  * How long the step waits for the listed teams' names before it lists the
  * lines with the text the cards print (a names read that never answers must
@@ -679,7 +728,6 @@ export function yearsHintText(): string {
  */
 export const CAREER_NAMES_WAIT_MS = 15_000;
 
-export const CAREER_NEXT_BLOCKED = "Fix the years first — then Next.";
 export const CAREER_CHECKING = "Checking careers…";
 /** The coverage read failed. Next still saves; Retry asks again. */
 export const CAREER_READ_FAILED = "Couldn’t check careers. Retry, or Next saves without it.";

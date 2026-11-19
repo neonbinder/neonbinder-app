@@ -1,9 +1,9 @@
 import { useEffect, useId, useRef, useState, type KeyboardEvent, type Ref } from "react";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
-import { Input } from "../primitives/Input";
-import { MIN_CAREER_YEAR, maxCareerYear } from "../../lib/players/career-years";
+import { nameSearchKey } from "../../lib/entities/name-search";
 import { NOTHING_ON_FILE, formatPlayerDescription } from "../../lib/players/player-description";
+import CareerTeamEntry, { type CareerTeamAdded } from "./CareerTeamEntry";
 import EntityLinkSearch from "./EntityLinkSearch";
 import { cardNumbersSummary } from "./teams-on-cards";
 import { useRelinkCandidates } from "./career-reads";
@@ -16,19 +16,22 @@ import {
   coverageAskOf,
   coveredText,
   followUpPair,
-  freshStint,
+  preAddedStints,
   sortCareerLines,
   noStintText,
-  parseStintDraft,
   playedForText,
+  stintChipText,
   uncoveredAgainText,
-  yearsHintText,
+  withStint,
+  type BatchTeam,
   type CareerAnswer,
   type CareerAnswers,
   type CareerFollowUp,
   type CareerLine,
   type CoverageAsk,
-  type StintDraft,
+  type ExistingStint,
+  type StagedStint,
+  type StintTeamRef,
 } from "./career-check";
 
 /**
@@ -41,26 +44,35 @@ import {
  *   No San Diego Padres stint by 2022.            Cards #12, #45
  *   (●) Leave it   ( ) Add the stint   ( ) Different player   ( ) Different team
  *
- * Every line opens on "Leave it", so one Next passes the screen; nothing is
+ * Every line opens on "Keep as is", so one Next passes the screen; nothing is
  * written until Confirm & Save. The other three answers open one small panel
  * under the line:
  *
- *  - **Add the stint**: From year (the set's year) and an optional To year.
- *  - **Different player**: the same-name players on file, those whose career
- *    covers the team first, and "Someone else…" for a search of existing
- *    players. Existing players only.
- *  - **Different team**: a search of existing teams.
+ *  - **Add to career**: the New Player step's stints widget
+ *    (`CareerTeamEntry` and its chips). The player's stints on file are listed
+ *    (none for a player with no career), the card's team from the set's year
+ *    is already staged, and the operator can remove it, change it, or add any
+ *    number more. Every stint staged here is sent at Confirm & Save.
+ *  - **Wrong player**: the same-name players on file, those whose career
+ *    covers the team first, and a search of existing players, open at once.
+ *  - **Fix card's team**: a search of existing teams, open at once.
  *
  * A different player or team asks the coverage read about the NEW pair; if
  * that is uncovered too, one more choice appears right there: add the stint
- * for it, or leave it. (Picking again is just picking again.) One level deep.
+ * for it (the same widget), or leave it. (Picking again is just picking again.)
+ * One level deep.
  *
  * ## Keyboard (the house radio-group pattern)
  *
  * Each line is ONE radio group and ONE Tab stop, on its picked radio. Arrows
- * move and pick, wrapping. Space or a click picks. Enter picks AND moves on:
- * to the panel it opens, or from "Leave it" to the next line, and from the
- * last line to Next. A held (repeating) Enter is refused.
+ * move and pick, wrapping, and NEVER open a picker or move focus off the
+ * pills, so arrowing across "Wrong player" and "Fix card's team" is quiet.
+ * Space or a click picks AND opens the picker that choice needs (the search
+ * takes focus). Enter does the same, and from "Keep as is" moves on to the
+ * next line (the last line: to Next), and from "Add to career" steps into the
+ * team box. A held (repeating) Enter is refused. Escape in a search puts
+ * focus back on the pill that opened it. In the stints widget, Enter on an
+ * empty form is "done here": on to the next line.
  *
  * The heading and the status line are fixed names the wizard's Next is
  * described by.
@@ -110,6 +122,13 @@ export type CareerCheckStepProps = {
   shortTeamNameOfId?: (teamId: string) => string | undefined;
   /** The player has no stints at all: "No career on file yet." instead of the team. */
   hasNoCareer?: (line: CareerLine) => boolean;
+  /** The stints a player has on file, for the "Add to career" widget to list. */
+  existingStintsOf?: (playerId: string) => readonly ExistingStint[];
+  /**
+   * Teams the batch is creating that a card prints, which a stint can name
+   * (they have no NB id until Confirm & Save).
+   */
+  batchTeams?: readonly BatchTeam[];
   /**
    * The coverage read is still on its way for some pairs: nothing to list yet.
    * The words ("Checking careers…", the failure, the years hint) are said by
@@ -126,6 +145,17 @@ export type CareerCheckStepProps = {
   headingId: string;
   /** The first line's first radio, which the host focuses on arrival. */
   firstRef?: Ref<HTMLButtonElement>;
+};
+
+const NO_BATCH_TEAMS: readonly BatchTeam[] = [];
+
+/** What every stints widget on the step needs besides its own stints. */
+type StintEnv = {
+  setYear: number;
+  selectorOptionId: Id<"selectorOptions">;
+  sportId: Id<"selectorOptions">;
+  batchTeams: readonly BatchTeam[];
+  existingStintsOf?: (playerId: string) => readonly ExistingStint[];
 };
 
 function kindOf(answer: CareerAnswer | undefined): Kind {
@@ -147,6 +177,8 @@ export default function CareerCheckStep({
   shortTeamNameOf,
   shortTeamNameOfId,
   hasNoCareer,
+  existingStintsOf,
+  batchTeams = NO_BATCH_TEAMS,
   readFailed = false,
   onRetry,
   onAllDone,
@@ -224,6 +256,7 @@ export default function CareerCheckStep({
                 return a?.kind === "team" && a.pick ? shortTeamNameOfId?.(a.pick.teamId) : undefined;
               })()}
               noCareer={hasNoCareer ? hasNoCareer(line) : false}
+              stintEnv={{ setYear, selectorOptionId, sportId, batchTeams, existingStintsOf }}
               disabled={disabled}
               firstRef={i === 0 ? firstRef : undefined}
               onWalk={() => walkFrom(line.key)}
@@ -255,6 +288,7 @@ function CareerLineRow({
   shortTeamName,
   pickedTeamShortName,
   noCareer,
+  stintEnv,
   disabled,
   firstRef,
   onWalk,
@@ -273,6 +307,7 @@ function CareerLineRow({
   shortTeamName: string | undefined;
   pickedTeamShortName?: string;
   noCareer: boolean;
+  stintEnv: StintEnv;
   disabled: boolean;
   firstRef?: Ref<HTMLButtonElement>;
   onWalk: () => void;
@@ -283,32 +318,59 @@ function CareerLineRow({
     shortTeamName === undefined ? line.cardNumbers[0] : undefined,
   );
   const current = kindOf(answer);
+  const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const noteId = useId();
   const cardsId = useId();
-  /** The player/team search opens on an Enter-walk, and on its own button. */
+  /** The player/team search is open: it opens on its pill, and on the panel's own button. */
   const [searchOpen, setSearchOpen] = useState(false);
+  /** The pill opened it (so Escape returns there), not the panel's button. */
+  const [searchFromPill, setSearchFromPill] = useState(false);
+  /** The card's team as a stint names it: the line's own, with the name its chip shows. */
+  const lineTeam: StintTeamRef = {
+    ...(line.teamId ? { teamId: line.teamId as Id<"teams"> } : {}),
+    ...(line.teamName ? { teamName: line.teamName } : {}),
+    label: teamName,
+  };
 
-  const choose = (kind: Kind, walk: boolean) => {
+  const focusIn = (selector: string) => {
+    // Let the panel render, then step into it.
+    setTimeout(() => {
+      panelRef.current?.querySelector<HTMLElement>(selector)?.focus();
+    }, 0);
+  };
+  const focusPill = () => {
+    rootRef.current?.querySelector<HTMLElement>(`[data-career-kind="${current}"]`)?.focus();
+  };
+
+  /**
+   * A radio is chosen. `arrow` only picks, and never opens anything or moves
+   * focus (arrowing across the pills stays quiet); `press` (a click, Space) and
+   * `enter` pick AND open what the choice needs, so a picker is never a second
+   * click away. Pressing the radio that is already picked opens it again.
+   */
+  const choose = (kind: Kind, via: "arrow" | "press" | "enter") => {
     if (disabled) return;
     if (kind !== current) {
       if (kind === "leave") onAnswer({ kind: "leave" });
-      else if (kind === "add") onAnswer({ kind: "add", ...freshStint(setYear) });
-      else onAnswer({ kind, then: LEAVE_FOLLOW_UP });
+      else if (kind === "add") {
+        onAnswer({ kind: "add", stints: preAddedStints(lineTeam, setYear) });
+      } else onAnswer({ kind, then: LEAVE_FOLLOW_UP });
       setSearchOpen(false);
     }
-    if (!walk) return;
+    if (via === "arrow") return;
     if (kind === "leave") {
-      onWalk();
+      if (via === "enter") onWalk();
       return;
     }
-    if (kind === "team") setSearchOpen(true);
-    // Let the panel render, then step into it.
-    setTimeout(() => {
-      panelRef.current
-        ?.querySelector<HTMLElement>("input, button")
-        ?.focus();
-    }, 0);
+    if (kind === "add") {
+      if (via === "enter") focusIn("input");
+      return;
+    }
+    setSearchFromPill(true);
+    setSearchOpen(true);
+    // The search takes focus as it mounts; one already open is refocused.
+    focusIn("input");
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLButtonElement>, kind: Kind) => {
@@ -322,7 +384,7 @@ function CareerLineRow({
       event.preventDefault();
       if (disabled) return;
       const to = KINDS[(KINDS.indexOf(kind) + step + KINDS.length) % KINDS.length];
-      choose(to, false);
+      choose(to, "arrow");
       event.currentTarget.parentElement
         ?.querySelector<HTMLElement>(`[data-career-kind="${to}"]`)
         ?.focus();
@@ -334,11 +396,11 @@ function CareerLineRow({
     event.preventDefault();
     event.stopPropagation();
     if (event.repeat) return;
-    choose(kind, true);
+    choose(kind, "enter");
   };
 
   return (
-    <div className="rounded-lg border border-rule-strong bg-raised">
+    <div ref={rootRef} className="rounded-lg border border-rule-strong bg-raised">
       <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 border-b border-rule px-3 py-2">
         <div>
           <h4 className="text-sm font-semibold text-ink">{playerName}</h4>
@@ -371,7 +433,7 @@ function CareerLineRow({
                 aria-disabled={disabled || undefined}
                 tabIndex={picked ? 0 : -1}
                 data-career-kind={kind}
-                onClick={() => choose(kind, false)}
+                onClick={() => choose(kind, "press")}
                 onKeyDown={(event) => onKeyDown(event, kind)}
                 className="max-sm:min-h-11"
               >
@@ -389,11 +451,14 @@ function CareerLineRow({
         {answer && answer.kind !== "leave" && (
           <div ref={panelRef}>
             {answer.kind === "add" && (
-              <StintFields
-                label={`${playerName}, ${teamName}`}
-                draft={answer}
-                onChange={(draft) => onAnswer({ kind: "add", ...draft })}
-                onEnter={onWalk}
+              <StintsPanel
+                subject={playerName}
+                playerId={line.playerId}
+                team={lineTeam}
+                stints={answer.stints}
+                onChange={(stints) => onAnswer({ kind: "add", stints })}
+                env={stintEnv}
+                onDone={onWalk}
                 disabled={disabled}
               />
             )}
@@ -410,9 +475,17 @@ function CareerLineRow({
                 requestCoverage={requestCoverage}
                 playerName={playerName}
                 teamName={shortTeamName ?? ""}
+                lineTeam={lineTeam}
+                stintEnv={stintEnv}
                 disabled={disabled}
                 searchOpen={searchOpen}
                 setSearchOpen={setSearchOpen}
+                onOpenSearch={() => {
+                  setSearchFromPill(false);
+                  setSearchOpen(true);
+                }}
+                searchFromPill={searchFromPill}
+                focusPill={focusPill}
                 onWalk={onWalk}
               />
             )}
@@ -429,9 +502,16 @@ function CareerLineRow({
                 requestCoverage={requestCoverage}
                 playerName={playerName}
                 pickedShortName={pickedTeamShortName}
+                stintEnv={stintEnv}
                 disabled={disabled}
                 searchOpen={searchOpen}
                 setSearchOpen={setSearchOpen}
+                onOpenSearch={() => {
+                  setSearchFromPill(false);
+                  setSearchOpen(true);
+                }}
+                searchFromPill={searchFromPill}
+                focusPill={focusPill}
                 onWalk={onWalk}
               />
             )}
@@ -443,87 +523,124 @@ function CareerLineRow({
 }
 
 // ---------------------------------------------------------------------------
-// The add form
+// The add widget: the New Player step's stints widget
 // ---------------------------------------------------------------------------
 
-function StintFields({
-  label,
-  draft,
+/** The same team: by id, or by the printed string of a team the batch creates. */
+function sameTeam(a: StintTeamRef | StagedStint, b: StintTeamRef | StagedStint): boolean {
+  if (a.teamId || b.teamId) return a.teamId === b.teamId;
+  return nameSearchKey(a.teamName ?? "") === nameSearchKey(b.teamName ?? "") && !!a.teamName;
+}
+
+/**
+ * NEO-591 — "Add to career". It is the stints widget the New Player step
+ * uses (its chips and `CareerTeamEntry`), not a copy of it:
+ *
+ *   On file:  [Padres (2019–2021)] [Reds (2022–present)]      (read-only)
+ *   Adding:   [San Diego Padres (2022–present) ×]
+ *   [ team name … ] [ From year ] [ To year ] [ + Add ]
+ *
+ * The card's team from the set's year is already staged. Removing it puts it
+ * back in the form (changed years are a remove and an add, as on New Player).
+ * Stints are valid by construction (the form holds the years) and name a team
+ * that exists (`knownTeamsOnly`), so nothing staged can fail at Confirm & Save.
+ */
+function StintsPanel({
+  subject,
+  playerId,
+  team,
+  stints,
   onChange,
-  onEnter,
+  env,
+  onDone,
   disabled,
 }: {
-  /** "Player, Team": makes each field's name distinct among the lines. */
-  label: string;
-  draft: StintDraft;
-  onChange: (draft: StintDraft) => void;
-  onEnter?: () => void;
+  /** Whose career: names each control, so two lines never read alike. */
+  subject: string;
+  playerId: string;
+  /** The card's team, which the form offers again once its stint is removed. */
+  team: StintTeamRef;
+  stints: readonly StagedStint[];
+  onChange: (stints: StagedStint[]) => void;
+  env: StintEnv;
+  /** Enter on the empty form. */
+  onDone: () => void;
   disabled: boolean;
 }) {
-  const valid = parseStintDraft(draft) !== null;
-  const max = maxCareerYear();
-  const errorId = useId();
-  /** Enter was pressed on years that are not a stint: say why, even if a box is blank. */
-  const [pressed, setPressed] = useState(false);
-  const fromFilled = draft.fromYear.trim() !== "";
-  const toFilled = draft.toYear.trim() !== "";
-  const showError = !valid && (pressed || fromFilled || toFilled);
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (event.key !== "Enter") return;
-    // Enter in a year is "done with this line": on to the next, never the
-    // wizard's own Enter. Years that are not a stint stay put, and say why.
-    event.preventDefault();
-    event.stopPropagation();
-    if (event.repeat) return;
-    if (!valid) {
-      setPressed(true);
+  const existing = env.existingStintsOf?.(playerId) ?? [];
+  const teamStaged = stints.some((s) => sameTeam(s, team));
+  const prefilled = !teamStaged && (team.teamId !== undefined || !!team.teamName);
+  const onAdd = (entry: CareerTeamAdded) => {
+    const years = {
+      fromYear: entry.fromYear,
+      ...(entry.toYear !== undefined ? { toYear: entry.toYear } : {}),
+    };
+    if (entry.teamId) {
+      onChange(withStint(stints, { teamId: entry.teamId, label: entry.name, ...years }));
       return;
     }
-    onEnter?.();
+    const key = nameSearchKey(entry.name);
+    const batch = env.batchTeams.find((t) => nameSearchKey(t.label) === key);
+    if (batch) onChange(withStint(stints, { teamName: batch.teamName, label: batch.label, ...years }));
   };
   return (
-    <div className="flex flex-wrap items-end gap-x-3 gap-y-1">
-      <label className="flex flex-col gap-0.5 text-xs text-ink-2">
-        <span>From year</span>
-        <Input
-          bare
-          type="number"
-          value={draft.fromYear}
-          placeholder="From year"
-          aria-label={`From year for ${label}`}
-          aria-invalid={showError && (pressed || fromFilled) ? true : undefined}
-          aria-describedby={showError ? errorId : undefined}
-          min={MIN_CAREER_YEAR}
-          max={max}
-          disabled={disabled}
-          onChange={(e) => onChange({ ...draft, fromYear: e.target.value })}
-          onKeyDown={onKeyDown}
-          className="w-24 p-1.5 text-sm"
-        />
-      </label>
-      <label className="flex flex-col gap-0.5 text-xs text-ink-2">
-        <span>To year (optional)</span>
-        <Input
-          bare
-          type="number"
-          value={draft.toYear}
-          placeholder="To year"
-          aria-label={`To year (optional) for ${label}`}
-          aria-invalid={showError && toFilled ? true : undefined}
-          aria-describedby={showError ? errorId : undefined}
-          min={MIN_CAREER_YEAR}
-          max={max}
-          disabled={disabled}
-          onChange={(e) => onChange({ ...draft, toYear: e.target.value })}
-          onKeyDown={onKeyDown}
-          className="w-28 p-1.5 text-sm"
-        />
-      </label>
-      {/* Always mounted, text swapped in: a live region that exists before it
-          speaks. */}
-      <p id={errorId} role="status" className="basis-full text-xs text-neon-pink-text">
-        {showError ? yearsHintText() : ""}
-      </p>
+    <div className="space-y-1.5">
+      {existing.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span aria-hidden="true" className="text-xs text-ink-3">
+            On file:
+          </span>
+          <ul className="flex flex-wrap gap-1.5" aria-label={`Career on file for ${subject}`}>
+            {existing.map((stint) => (
+              <li key={stint.key}>
+                <span className="inline-flex items-center rounded-full border border-rule bg-raised px-2 py-0.5 text-xs text-ink-3">
+                  {stintChipText(stint)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {stints.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span aria-hidden="true" className="text-xs text-ink-3">
+            Adding:
+          </span>
+          <ul className="flex flex-wrap gap-1.5" aria-label={`Stints to add for ${subject}`}>
+            {stints.map((stint, idx) => (
+              <li key={`${stint.teamId ?? stint.teamName}-${stint.fromYear}`}>
+                <span className="inline-flex items-center gap-1 rounded-full border border-rule-strong bg-raised px-2 py-0.5 text-xs text-ink-2">
+                  {stintChipText(stint)}
+                  <button
+                    type="button"
+                    aria-label={`Remove ${stintChipText(stint)} for ${subject}`}
+                    aria-disabled={disabled || undefined}
+                    onClick={() => {
+                      if (disabled) return;
+                      onChange(stints.filter((_, i) => i !== idx));
+                    }}
+                    className="hit-area-24 text-ink-3 hover:text-neon-pink-text focus-outline rounded"
+                  >
+                    ×
+                  </button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <CareerTeamEntry
+        sportId={env.sportId}
+        contextOptionId={env.selectorOptionId}
+        stagedNames={env.batchTeams.map((t) => t.label)}
+        label={subject}
+        knownTeamsOnly
+        disabled={disabled}
+        onAdd={onAdd}
+        onDone={onDone}
+        initialTeam={prefilled ? team.label : undefined}
+        initialFromYear={prefilled ? env.setYear : undefined}
+      />
     </div>
   );
 }
@@ -535,6 +652,9 @@ function StintFields({
 function FollowUp({
   line,
   setYear,
+  stintEnv,
+  stintTeam,
+  subjectId,
   answer,
   onAnswer,
   coverage,
@@ -546,6 +666,11 @@ function FollowUp({
 }: {
   line: CareerLine;
   setYear: number;
+  stintEnv: StintEnv;
+  /** The team a stint for the NEW pair names, and the name its chip shows. */
+  stintTeam: StintTeamRef;
+  /** The player the NEW pair is about. */
+  subjectId: string;
   answer: Extract<CareerAnswer, { kind: "player" | "team" }>;
   onAnswer: (answer: CareerAnswer) => void;
   coverage: Readonly<Record<string, boolean>>;
@@ -574,8 +699,8 @@ function FollowUp({
           : uncoveredAgainText(subject, team, setYear);
   const then: CareerFollowUp = answer.then;
   const setThen = (next: CareerFollowUp) => onAnswer({ ...answer, then: next });
-  const addNow = () => setThen({ kind: "add", ...freshStint(setYear) });
-  /** Into the years, as the line's own "Add to career" does. */
+  const addNow = () => setThen({ kind: "add", stints: preAddedStints(stintTeam, setYear) });
+  /** Into the team box, as the line's own "Add to career" does. */
   const intoYears = () => {
     setTimeout(() => {
       boxRef.current?.querySelector<HTMLElement>("input")?.focus();
@@ -654,11 +779,14 @@ function FollowUp({
             })}
           </div>
           {then.kind === "add" && (
-            <StintFields
-              label={`${subject}, ${team || "this team"}`}
-              draft={then}
-              onChange={(draft) => setThen({ kind: "add", ...draft })}
-              onEnter={onWalk}
+            <StintsPanel
+              subject={subject}
+              playerId={subjectId}
+              team={stintTeam}
+              stints={then.stints}
+              onChange={(stints) => setThen({ kind: "add", stints })}
+              env={stintEnv}
+              onDone={onWalk}
               disabled={disabled}
             />
           )}
@@ -692,9 +820,14 @@ function PlayerPanel({
   requestCoverage,
   playerName,
   teamName,
+  lineTeam,
+  stintEnv,
   disabled,
   searchOpen,
   setSearchOpen,
+  onOpenSearch,
+  searchFromPill,
+  focusPill,
   onWalk,
 }: {
   line: CareerLine;
@@ -709,9 +842,17 @@ function PlayerPanel({
   playerName: string;
   /** The short team name, for "Played for …". */
   teamName: string;
+  /** The card's team as a stint for the picked player names it. */
+  lineTeam: StintTeamRef;
+  stintEnv: StintEnv;
   disabled: boolean;
   searchOpen: boolean;
   setSearchOpen: (open: boolean) => void;
+  /** Open the search from the panel's own button. */
+  onOpenSearch: () => void;
+  /** The pill opened the search: Escape returns there. */
+  searchFromPill: boolean;
+  focusPill: () => void;
   onWalk: () => void;
 }) {
   const read = useRelinkCandidates(selectorOptionId, {
@@ -732,10 +873,10 @@ function PlayerPanel({
       setTimeout(() => elseRef.current?.focus(), 0);
     }
   };
-  /** Leaving the search without a pick: focus goes back to the button that opened it. */
+  /** Leaving the search without a pick: focus goes back to what opened it. */
   const cancelSearch = () => {
     setSearchOpen(false);
-    setTimeout(() => elseRef.current?.focus(), 0);
+    setTimeout(() => (searchFromPill ? focusPill() : elseRef.current?.focus()), 0);
   };
   const picked = answer.pick;
   // A pick made with "Someone else…" is not among the candidates: it joins
@@ -786,7 +927,9 @@ function PlayerPanel({
           size="1"
           variant="secondary"
           outline
-          onClick={() => setSearchOpen(true)}
+          onClick={() => {
+            if (!disabled) onOpenSearch();
+          }}
           aria-disabled={disabled || undefined}
           aria-label={`Someone else for ${playerName}`}
           className="max-sm:min-h-11"
@@ -798,6 +941,9 @@ function PlayerPanel({
         <FollowUp
           line={line}
           setYear={setYear}
+          stintEnv={stintEnv}
+          stintTeam={lineTeam}
+          subjectId={picked.playerId}
           answer={answer}
           onAnswer={onAnswer}
           coverage={coverage}
@@ -929,9 +1075,13 @@ function TeamPanel({
   requestCoverage,
   playerName,
   pickedShortName,
+  stintEnv,
   disabled,
   searchOpen,
   setSearchOpen,
+  onOpenSearch,
+  searchFromPill,
+  focusPill,
   onWalk,
 }: {
   line: CareerLine;
@@ -946,9 +1096,15 @@ function TeamPanel({
   playerName: string;
   /** The picked team's short name, when known: what the follow-up calls it. */
   pickedShortName?: string;
+  stintEnv: StintEnv;
   disabled: boolean;
   searchOpen: boolean;
   setSearchOpen: (open: boolean) => void;
+  /** Open the search from the panel's own button. */
+  onOpenSearch: () => void;
+  /** The pill opened the search: Escape returns there. */
+  searchFromPill: boolean;
+  focusPill: () => void;
   onWalk: () => void;
 }) {
   const picked = answer.pick;
@@ -962,10 +1118,10 @@ function TeamPanel({
     // The search is about to unmount with focus in it.
     setTimeout(() => buttonRef.current?.focus(), 0);
   };
-  /** Leaving the search without a pick: focus goes back to the button that opened it. */
+  /** Leaving the search without a pick: focus goes back to what opened it. */
   const cancelSearch = () => {
     setSearchOpen(false);
-    setTimeout(() => buttonRef.current?.focus(), 0);
+    setTimeout(() => (searchFromPill ? focusPill() : buttonRef.current?.focus()), 0);
   };
   const open = searchOpen;
 
@@ -987,7 +1143,9 @@ function TeamPanel({
             size="1"
             variant="secondary"
             outline
-            onClick={() => setSearchOpen(true)}
+            onClick={() => {
+              if (!disabled) onOpenSearch();
+            }}
             aria-disabled={disabled || undefined}
             aria-label={
               picked
@@ -1004,6 +1162,9 @@ function TeamPanel({
         <FollowUp
           line={line}
           setYear={setYear}
+          stintEnv={stintEnv}
+          stintTeam={{ teamId: picked.teamId, label: picked.name }}
+          subjectId={line.playerId}
           answer={answer}
           onAnswer={onAnswer}
           coverage={coverage}

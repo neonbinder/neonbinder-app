@@ -88,6 +88,10 @@ export { MIN_CAREER_YEAR } from "../../lib/players/career-years";
 /** See `PlayerAutocomplete`'s SEARCH_DEBOUNCE_MS — same value, same reasoning. */
 const SEARCH_DEBOUNCE_MS = 200;
 
+/** NEO-591 — `knownTeamsOnly`: what the form says when the typed team does not exist. */
+export const UNKNOWN_TEAM_TEXT = "No team by that name. Pick one from the list.";
+export const UNKNOWN_TEAM_AMBIGUOUS = "More than one team has that name. Pick one from the list.";
+
 /** How many suggestions the dropdown shows, staged and searched combined. */
 const MAX_SUGGESTIONS = 8;
 
@@ -102,9 +106,17 @@ export type CareerTeamDraft = {
   toYear?: number;
 };
 
+/**
+ * What `onAdd` reports in `knownTeamsOnly` mode: the stint, plus the NB team it
+ * names when that is a saved team (a team the batch is still creating has no id
+ * yet, and is found by its name).
+ */
+export type CareerTeamAdded = CareerTeamDraft & { teamId?: Id<"teams"> };
+
 /** One dropdown row. `staged` drives the ordering and the dedupe — never a
- *  visible difference; see the option's `aria-label`. */
-type Suggestion = { key: string; name: string; staged: boolean };
+ *  visible difference; see the option's `aria-label`. `teamId` is the saved
+ *  team a row is (absent on a staged name). */
+type Suggestion = { key: string; name: string; staged: boolean; teamId?: Id<"teams"> };
 
 export default function CareerTeamEntry({
   sportId,
@@ -115,6 +127,10 @@ export default function CareerTeamEntry({
   initialTeam,
   initialFromYear,
   quickPicks,
+  label,
+  disabled = false,
+  knownTeamsOnly = false,
+  onDone,
 }: {
   /** NEO-96: the sport-level selectorOptions row id, not its display name. */
   sportId: Id<"selectorOptions">;
@@ -130,7 +146,7 @@ export default function CareerTeamEntry({
    * return them — suggesting them is the whole point.
    */
   stagedNames: string[];
-  onAdd: (entry: CareerTeamDraft) => void;
+  onAdd: (entry: CareerTeamAdded) => void;
   /**
    * NEO-236 — "the operator has started filling this in".
    *
@@ -157,13 +173,38 @@ export default function CareerTeamEntry({
    * added is not offered again.
    */
   quickPicks?: ReadonlyArray<{ team: string; fromYear: number }>;
+  /**
+   * NEO-591 — whose stint this is, when more than one of these forms can be on
+   * screen (the Career check step has one per "Add to career" line). It
+   * rides on each control's name ("From year for Luis Rodriguez") so no two
+   * read alike. Absent, the names are the New Player step's, unchanged.
+   */
+  label?: string;
+  disabled?: boolean;
+  /**
+   * NEO-591 — the team must be one that exists: a saved team (offered in the
+   * list, or typed exactly) or a team in `stagedNames`. A name that matches
+   * neither cannot be added, and says so, because the form is used after the
+   * wizard's New Team steps, where nothing can create it any more. `onAdd`
+   * then carries the saved team's id. Off (the New Player step), typing a new
+   * name IS creating it.
+   */
+  knownTeamsOnly?: boolean;
+  /**
+   * NEO-591 — Enter on an EMPTY form means "nothing more to add": the host
+   * moves on (the Career check step goes to its next line).
+   */
+  onDone?: () => void;
 }) {
+  const suffix = label ? ` for ${label}` : "";
   const initialName = initialTeam ?? "";
   const initialYear = initialFromYear === undefined ? "" : String(initialFromYear);
   const [name, setName] = useState(initialName);
   const [debouncedName, setDebouncedName] = useState(initialName);
   const [fromYear, setFromYear] = useState(initialYear);
   const [toYear, setToYear] = useState("");
+  /** The saved team a suggestion was taken from (`knownTeamsOnly`); typing clears it. */
+  const [pickedTeamId, setPickedTeamId] = useState<Id<"teams"> | null>(null);
   /*
    * The prefill the fields last followed (render-phase "previous props"
    * pattern). A form still sitting on that prefill — or empty, which is what
@@ -180,6 +221,7 @@ export default function CareerTeamEntry({
       setName(initialName);
       setDebouncedName(initialName);
       setFromYear(initialYear);
+      setPickedTeamId(null);
     }
   }
   /** + Add just fired: the next prefill, if one arrives, is where Enter goes. */
@@ -211,6 +253,8 @@ export default function CareerTeamEntry({
    * emptied form never is.
    */
   const blank = name.trim() === "" && fromYear.trim() === "";
+  /** Nothing in any of the three boxes. */
+  const isEmpty = blank && toYear.trim() === "";
   const dirty =
     toYear.trim() !== "" ||
     (!blank && (name.trim() !== followed.name.trim() || fromYear.trim() !== followed.year));
@@ -337,7 +381,7 @@ export default function CareerTeamEntry({
       // Dropping a saved team already offered as staged: the same name twice,
       // once tagged and once not, reads as two different teams.
       .filter((t) => !stagedKeys.has(normalizeEntityName(t.name)))
-      .map((t) => ({ key: `team:${t._id}`, name: t.name, staged: false }));
+      .map((t) => ({ key: `team:${t._id}`, name: t.name, staged: false, teamId: t._id }));
 
     return [...staged, ...saved].slice(0, MAX_SUGGESTIONS);
   }, [stagedNames, freshSearched, trimmedName]);
@@ -362,8 +406,33 @@ export default function CareerTeamEntry({
     return suggestions.findIndex((s) => nameSearchKey(s.name) === key);
   }, [suggestions, trimmedName]);
   const exactMatch = exactIdx >= 0;
+  /*
+   * NEO-591 — which team the typed name IS, in `knownTeamsOnly` mode: a team
+   * the batch is creating (found by name), else the saved team taken from the
+   * list, else the one saved team the whole name matches. Two saved teams
+   * with one name are not guessed between: the list stays open to pick one.
+   */
+  const typedKey = nameSearchKey(trimmedName);
+  const stagedMatch =
+    knownTeamsOnly && typedKey !== "" && stagedNames.some((n) => nameSearchKey(n) === typedKey);
+  const savedMatchIds = useMemo<Array<Id<"teams">>>(() => {
+    if (!knownTeamsOnly || typedKey === "" || savedStale) return [];
+    return (freshSearched ?? [])
+      .filter((t) => nameSearchKey(teamFullName(t)) === typedKey)
+      .map((t) => t._id);
+  }, [knownTeamsOnly, typedKey, savedStale, freshSearched]);
+  const resolvedTeamId: Id<"teams"> | undefined =
+    knownTeamsOnly && !stagedMatch
+      ? (pickedTeamId ?? (savedMatchIds.length === 1 ? savedMatchIds[0] : undefined))
+      : undefined;
+  const teamKnown = !knownTeamsOnly || stagedMatch || resolvedTeamId !== undefined;
+  const ambiguousName = knownTeamsOnly && !stagedMatch && !pickedTeamId && savedMatchIds.length > 1;
   /** What the combobox actually shows: open, with rows, and not an echo. */
-  const listOpen = suggestionsOpen && suggestions.length > 0 && (!exactMatch || browsing);
+  const listOpen =
+    suggestionsOpen && suggestions.length > 0 && (!exactMatch || browsing || ambiguousName);
+  /** Typed, the search has answered, no list is offering a pick, and nothing by that name exists. */
+  const showUnknownTeam =
+    knownTeamsOnly && trimmedName !== "" && !savedStale && !teamKnown && !ambiguousName && !listOpen;
 
   /**
    * The "did you mean?" prompt: a name that is CLOSE to something already in
@@ -417,7 +486,7 @@ export default function CareerTeamEntry({
   const toValid =
     toNum === undefined ||
     (Number.isInteger(toNum) && toNum <= maxYear && toNum >= fromNum);
-  const canAdd = trimmedName !== "" && fromValid && toValid;
+  const canAdd = trimmedName !== "" && fromValid && toValid && teamKnown && !disabled;
 
   const commit = () => {
     if (!canAdd) return;
@@ -425,7 +494,9 @@ export default function CareerTeamEntry({
       name: trimmedName,
       fromYear: fromNum,
       ...(toNum !== undefined ? { toYear: toNum } : {}),
+      ...(resolvedTeamId ? { teamId: resolvedTeamId } : {}),
     });
+    setPickedTeamId(null);
     setName("");
     setDebouncedName("");
     setFromYear("");
@@ -453,6 +524,7 @@ export default function CareerTeamEntry({
 
   /** A quick pick fills the team and From year, and leaves the add to the operator. */
   const takeQuickPick = (team: string, year: number) => {
+    setPickedTeamId(null);
     setName(team);
     setDebouncedName(team);
     setFromYear(String(year));
@@ -478,6 +550,12 @@ export default function CareerTeamEntry({
   const handleYearKeyDown = (e: KeyboardEvent<HTMLInputElement>) => {
     if (e.key !== "Enter") return;
     e.preventDefault();
+    // NEO-591 — an empty form has nothing to add: Enter is "done here".
+    if (onDone && isEmpty) {
+      e.stopPropagation();
+      if (!e.repeat) onDone();
+      return;
+    }
     commit();
   };
 
@@ -505,7 +583,8 @@ export default function CareerTeamEntry({
    * Focus lands on FROM YEAR, not back on the name: the team is chosen, and
    * the stint is not finished until it has a year.
    */
-  const pickSuggestion = (teamName: string) => {
+  const pickSuggestion = (teamName: string, teamId?: Id<"teams">) => {
+    setPickedTeamId(teamId ?? null);
     setName(teamName);
     setDebouncedName(teamName);
     setSuggestionsOpen(false);
@@ -594,7 +673,8 @@ export default function CareerTeamEntry({
           type="text"
           value={name}
           placeholder="Team name (search or type new)…"
-          aria-label="Career team name"
+          aria-label={`Career team name${suffix}`}
+          disabled={disabled}
           role="combobox"
           aria-expanded={listOpen}
           aria-controls={listboxId}
@@ -603,6 +683,7 @@ export default function CareerTeamEntry({
           }
           aria-autocomplete="list"
           onChange={(e) => {
+            setPickedTeamId(null);
             setName(e.target.value);
             setSuggestionsOpen(true);
             setBrowsing(false);
@@ -631,12 +712,17 @@ export default function CareerTeamEntry({
               // otherwise just close the dropdown.
               e.preventDefault();
               if (listOpen && suggestions[highlightIdx]) {
-                pickSuggestion(suggestions[highlightIdx].name);
+                pickSuggestion(suggestions[highlightIdx].name, suggestions[highlightIdx].teamId);
               } else if (exactMatch && !browsing) {
                 setSuggestionsOpen(false);
                 fromYearRef.current?.focus();
               } else {
                 setSuggestionsOpen(false);
+                // NEO-591 — and an empty form is "done here".
+                if (onDone && isEmpty) {
+                  e.stopPropagation();
+                  if (!e.repeat) onDone();
+                }
               }
             } else if (e.key === "Escape") {
               /*
@@ -704,7 +790,7 @@ export default function CareerTeamEntry({
                    */
                   aria-label={`Use ${s.name}`}
                   onMouseEnter={() => setHighlightIdx(idx)}
-                  onClick={() => pickSuggestion(s.name)}
+                  onClick={() => pickSuggestion(s.name, s.teamId)}
                   className={`flex w-full items-center gap-2 px-2 py-1 text-left text-sm ${
                     idx === highlightIdx
                       ? "bg-neon-green/20 text-neon-green-text"
@@ -724,6 +810,18 @@ export default function CareerTeamEntry({
             : ""}
         </p>
       </div>
+
+      {knownTeamsOnly && (
+        /* Always mounted, text swapped in: a live region that exists before it
+           speaks. Only when the search has answered and nothing matches. */
+        <p role="status" className="text-xs text-neon-pink-text">
+          {ambiguousName
+            ? UNKNOWN_TEAM_AMBIGUOUS
+            : showUnknownTeam
+              ? UNKNOWN_TEAM_TEXT
+              : ""}
+        </p>
+      )}
 
       {didYouMeanShown && (
         <p className="text-xs text-ink-3" onMouseDown={holdListWhilePressed}>
@@ -748,7 +846,8 @@ export default function CareerTeamEntry({
           type="number"
           value={fromYear}
           placeholder="From year"
-          aria-label="From year"
+          aria-label={`From year${suffix}`}
+          disabled={disabled}
           min={MIN_CAREER_YEAR}
           max={maxYear}
           onChange={(e) => setFromYear(e.target.value)}
@@ -760,7 +859,8 @@ export default function CareerTeamEntry({
           type="number"
           value={toYear}
           placeholder="To year"
-          aria-label="To year (optional)"
+          aria-label={`To year (optional)${suffix}`}
+          disabled={disabled}
           min={MIN_CAREER_YEAR}
           max={maxYear}
           onChange={(e) => setToYear(e.target.value)}
@@ -773,7 +873,7 @@ export default function CareerTeamEntry({
           outline
           onClick={commit}
           disabled={!canAdd}
-          aria-label="Add career team"
+          aria-label={`Add career team${suffix}`}
         >
           + Add
         </NeonButton>
