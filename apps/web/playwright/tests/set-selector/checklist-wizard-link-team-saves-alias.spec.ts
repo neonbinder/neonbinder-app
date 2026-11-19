@@ -212,7 +212,16 @@ test(
       await wizard.getByLabel("New team active from (optional)").fill("1997");
       const cleared = wizard.getByText("No clash with that name now.", { exact: true });
       await expect(cleared).toBeVisible();
-      await expect(wizard.getByText(/already answers to this name as an alias/)).toHaveCount(0);
+      // The refusal (", and <reason>. Remove it there, …") is gone from the step
+      // and the footer. What stays is the form's statement of who answers to
+      // the name: allowed now, so told, never refused (NEO-602).
+      await expect(wizard.getByText(/already answers to this name as an alias, and /)).toHaveCount(0);
+      await expect(
+        wizard.getByText(
+          `${FIXTURE_TEAM} · 1990–1996 already answers to this name as an alias. Give this one years that don't overlap if it is a different team.`,
+          { exact: true },
+        ),
+      ).toBeVisible();
       await expect(addAsNew).toBeEnabled();
       await expectAccessible(page, { within: wizard, label: "Entity review wizard, alias clash cleared by the draft's years" });
 
