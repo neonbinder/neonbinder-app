@@ -177,8 +177,8 @@ export const bscFault = {
 };
 
 /**
- * One item of an order. Either the BuySportsCards ids themselves, or (NEO-555,
- * PROPOSED: the testing control does not take it yet) `listedCardNumber`: a card
+ * One item of an order. Either the BuySportsCards ids themselves, or (NEO-555)
+ * `listedCardNumber`: a card
  * THIS worker listed on BuySportsCards, named by its printed number as the
  * checklist shows it ("FS-1"). A spec never sees a BuySportsCards card id or an
  * NB SKU (neither is on any screen), so it cannot name a sold card any other

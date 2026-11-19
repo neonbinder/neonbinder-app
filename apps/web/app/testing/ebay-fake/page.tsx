@@ -8,6 +8,7 @@ import { api } from "@/convex/_generated/api";
 //                                                  {optedIn?, fulfillmentPolicies?, seller?: "alt"}
 //   /testing/ebay-fake?order=<url-encoded JSON>    add one order to the caller's fake seller history:
 //                                                  the order, plus an optional top-level seller: "alt"
+//                                                  (a line may name the card by `listedCardNumber`; the server resolves it, exactly one, NEO-555)
 //   /testing/ebay-fake?poll=1                      run the caller's eBay sales poll now and wait for it
 // This page waits for the Convex client to pick up the Clerk session, calls
 // the matching auth-scoped testing action (the caller's own fake eBay seller

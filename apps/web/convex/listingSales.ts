@@ -834,7 +834,7 @@ export const recordOrder = internalMutation({
 
 /** The BSC era of a card, from NB's own year row above its variant. */
 export async function eraOfVariant(
-  ctx: Pick<MutationCtx, "db">,
+  ctx: Pick<QueryCtx, "db">,
   variantId: Id<"selectorOptions">,
   cache: Map<string, BscEra | null>,
 ): Promise<BscEra | null> {

@@ -30,6 +30,7 @@ import {
   internalMutation,
   internalQuery,
   type MutationCtx,
+  type QueryCtx,
 } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import { v } from "convex/values";
@@ -45,7 +46,7 @@ import { addOne, applyCopyChanges, defaultConditionOf, getOrCreateMain } from ".
 import { ListingGate } from "./listingGate";
 import { intakePhotoFailureValidator, listingPlatformValidator, listingProblemReasonValidator } from "./schema";
 import { DRAIN_LEASE_MS } from "./listingDrain";
-import { LISTING_PLATFORMS, listingStateOf, listsAnywhere, newToken, pushesCounts } from "./listingOutbox";
+import { LISTING_PLATFORMS, listingStateOf, listsAnywhere, listsOnMarketplaces, newToken, pushesCounts } from "./listingOutbox";
 import { VISIT_GAP_MS } from "./dashboard";
 import type { ActionCtx } from "./_generated/server";
 import {
@@ -61,6 +62,8 @@ import { ebayLineTitle, projectEbayOrder } from "./lib/ebayListing";
 import { TEST_OUTBOX_SEQ, TEST_SALE_ORDER_PREFIX, TEST_SYNC_MARK } from "./lib/testSeedMarks";
 import { bscConditionFor, type BscEra } from "./lib/bscConditions";
 import { buildListingSku } from "./lib/listingSku";
+import { foldBscTargets, type ListingCopy } from "./lib/bscSheetPlan";
+import { hasListingCondition } from "./lib/listingReadiness";
 import { BSC_LISTED_BOUNDS, BSC_ORDER_BOUNDS, bscListedText } from "./lib/bscOrders";
 import { CatalogReader } from "./lib/catalogView";
 import { slotIds } from "./platformSlots";
@@ -551,6 +554,26 @@ export const fakeBscOrderValidator = v.object({
 });
 type FakeBscOrder = (typeof fakeBscOrderValidator)["type"];
 
+/**
+ * An order as a spec sends it (`addMyBscOrder`): an item is either the BSC ids
+ * themselves, or `listedCardNumber`, a card THIS caller lists on BuySportsCards
+ * named by its printed number. A spec never sees a BSC card id or an NB SKU,
+ * so the server resolves the number against the caller's own listings, exactly
+ * one (`listedCardForOrder`), and builds the id item from it.
+ */
+export const fakeBscOrderRequestValidator = v.object({
+  orderNo: v.optional(v.string()),
+  status: v.optional(v.string()),
+  orderDateMs: v.optional(v.number()),
+  items: v.array(
+    v.union(
+      fakeBscOrderValidator.fields.items.element,
+      v.object({ listedCardNumber: v.string(), quantity: v.number(), priceCents: v.optional(v.number()) }),
+    ),
+  ),
+});
+type FakeBscOrderRequest = (typeof fakeBscOrderRequestValidator)["type"];
+
 const isWholeIn = (n: number | undefined, min: number, max: number) =>
   n === undefined || (Number.isInteger(n) && n >= min && n <= max);
 
@@ -666,19 +689,179 @@ export const setMyBscFaults = action({
   },
 });
 
+// ── Naming a sold card by its printed number (NEO-555, G1) ───────────────────
+
+/** How many of the caller's copies or links one resolution reads (a test user holds a handful). */
+const LISTED_SCAN_MAX = 2_000;
+const LISTED_NUMBER_MAX = 32;
+
+/** What `listedCardForOrder` found: how many listings carry that number, and the ids when exactly one. */
+export const listedCardResolutionValidator = v.object({
+  matches: v.number(),
+  ebay: v.optional(v.object({ sku: v.string(), listingId: v.string() })),
+  bsc: v.optional(v.object({ cardId: v.string(), condition: v.string(), sku: v.string() })),
+});
+export type ListedCardResolution = (typeof listedCardResolutionValidator)["type"];
+
+const foldNumber = (n: string) => n.trim().toLowerCase();
+
+/**
+ * The caller's OWN live listing of the card printed `cardNumber`, on one
+ * platform. A card number is never unique at any scope (CLAUDE.md invariant
+ * 7), so this answers `matches` and fills the ids only when it is exactly 1.
+ *   - eBay: a `live` link of the caller's with a listing id (NB's link rows
+ *     are the listings it made); one match per link (card + condition bucket).
+ *   - BSC: NB keeps no BSC listing row, so a listing is what the drain would
+ *     push: the caller's graded-free copies in a box that lists, folded the
+ *     way the push folds them (`foldBscTargets`), for a card that carries a
+ *     BSC id; one match per (card, BSC condition).
+ * Another user's listings are never read: every query is keyed on `ownerId`.
+ */
+export async function resolveListedCard(
+  ctx: QueryCtx,
+  args: { ownerId: string; platform: "ebay" | "bsc"; cardNumber: string },
+): Promise<ListedCardResolution> {
+  const wanted = foldNumber(args.cardNumber);
+  const cards = new Map<string, Doc<"cardChecklist"> | null>();
+  const cardOf = async (id: Id<"cardChecklist">) => {
+    if (!cards.has(id)) cards.set(id, await ctx.db.get(id));
+    return cards.get(id) ?? null;
+  };
+  if (args.platform === "ebay") {
+    const links = await ctx.db
+      .query("marketplaceListingLinks")
+      .withIndex("by_owner_platform_card_condition", (q) => q.eq("ownerId", args.ownerId).eq("platform", "ebay"))
+      .take(LISTED_SCAN_MAX + 1);
+    if (links.length > LISTED_SCAN_MAX) throw new Error("Too many eBay listings to name a card by its number");
+    const found: Array<{ sku: string; listingId: string }> = [];
+    for (const link of links) {
+      if (link.status !== "live" || link.listingId === undefined) continue;
+      const card = await cardOf(link.cardId);
+      if (card && foldNumber(card.cardNumber) === wanted) found.push({ sku: link.sku, listingId: link.listingId });
+    }
+    return found.length === 1 ? { matches: 1, ebay: found[0] } : { matches: found.length };
+  }
+  const copies = await ctx.db
+    .query("collectionCopies")
+    .withIndex("by_owner_and_card", (q) => q.eq("ownerId", args.ownerId))
+    .take(LISTED_SCAN_MAX + 1);
+  if (copies.length > LISTED_SCAN_MAX) throw new Error("Too many copies to name a card by its number");
+  const lists = new Map<string, boolean>();
+  const listedBox = async (homeId: Id<"collectionContainers">) => {
+    if (!lists.has(homeId)) {
+      const home = await ctx.db.get(homeId);
+      lists.set(homeId, home !== null && home.ownerId === args.ownerId && listsOnMarketplaces(home));
+    }
+    return lists.get(homeId) === true;
+  };
+  const byCard = new Map<Id<"cardChecklist">, ListingCopy[]>();
+  for (const row of copies) {
+    const cardId = ctx.db.normalizeId("cardChecklist", row.cardId);
+    if (cardId === null) continue; // a private card is never listed
+    const card = await cardOf(cardId);
+    if (!card || foldNumber(card.cardNumber) !== wanted || (card.platformData?.bsc?.ref ?? null) === null) continue;
+    if (!(await listedBox(row.homeId))) continue;
+    const copy: ListingCopy = {
+      copyId: row._id,
+      homeId: row.homeId,
+      ...(row.acquiredOn !== undefined ? { acquiredOn: row.acquiredOn } : {}),
+      creationTime: row._creationTime,
+      card: { kind: "catalog", id: cardId },
+      homeIsBox: true,
+      graded: row.grading !== undefined,
+      quantity: row.quantity,
+      ...(row.condition !== undefined && hasListingCondition(row.condition) ? { condition: row.condition } : {}),
+      hasPhotos: false,
+    };
+    byCard.set(cardId, [...(byCard.get(cardId) ?? []), copy]);
+  }
+  const eras = new Map<string, BscEra | null>();
+  const found: Array<{ cardId: string; condition: string; sku: string }> = [];
+  for (const [cardId, group] of byCard) {
+    const card = await cardOf(cardId);
+    if (!card) continue;
+    const era = await eraOfVariant(ctx, card.selectorOptionId, eras);
+    const { targets } = foldBscTargets({ copies: group, era, commonPriceCents: null });
+    for (const target of targets) {
+      found.push({ cardId: card.platformData?.bsc?.ref as string, condition: target.bscCondition, sku: target.sku });
+    }
+  }
+  return found.length === 1 ? { matches: 1, bsc: found[0] } : { matches: found.length };
+}
+
+/** The resolution as a query, for the testing actions (internal: reached only from them). */
+export const listedCardForOrder = internalQuery({
+  args: { ownerId: v.string(), platform: v.union(v.literal("ebay"), v.literal("bsc")), cardNumber: v.string() },
+  returns: listedCardResolutionValidator,
+  handler: async (ctx, args) => await resolveListedCard(ctx, args),
+});
+
+/** Throws on a `listedCardNumber` a spec could not have meant, before anything is read. */
+function checkListedCardNumber(value: string, where: string): void {
+  if (value.trim() === "" || value.length > LISTED_NUMBER_MAX || /[\u0000-\u001f\u007f]/.test(value)) {
+    throw new Error(`${where}.listedCardNumber is blank, too long or has a control character`);
+  }
+}
+
+/** The fixed refusal for a number that did not name exactly one of the caller's listings. */
+function listedCardRefusal(where: string, platform: "ebay" | "bsc", matches: number): Error {
+  const site = platform === "ebay" ? "eBay" : "BuySportsCards";
+  return new Error(
+    matches === 0
+      ? `${where}: none of your cards with that number is listed on ${site}`
+      : `${where}: more than one of your listings on ${site} has that number, so it names no one card`,
+  );
+}
+
 /**
  * Add one order to the caller's fake seller order history, as a buyer's
- * purchase would, so the sales poll has something to find.
+ * purchase would, so the sales poll has something to find. An item may name
+ * the card by `listedCardNumber` instead of the BSC ids (see
+ * `fakeBscOrderRequestValidator`).
  */
 export const addMyBscOrder = action({
-  args: { order: fakeBscOrderValidator },
+  args: { order: fakeBscOrderRequestValidator },
   returns: v.object({ items: v.number() }),
   handler: async (ctx, args) => {
     const ns = await callerFakeBscNamespace(ctx);
-    checkFakeBscOrder(args.order);
-    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.addOrder, { ns, order: args.order });
+    const request: FakeBscOrderRequest = args.order;
+    if (request.items.length === 0 || request.items.length > MAX_FAKE_BSC_ORDER_ITEMS) {
+      throw new Error(`An order carries between 1 and ${MAX_FAKE_BSC_ORDER_ITEMS} items`);
+    }
+    // callerFakeBscNamespace passed, so the caller is signed in.
+    const userId = (await getCurrentUserId(ctx)) as string;
+    const items: FakeBscOrder["items"] = [];
+    for (const [i, item] of request.items.entries()) {
+      if (!("listedCardNumber" in item)) {
+        items.push(item);
+        continue;
+      }
+      const where = `items[${i}]`;
+      checkListedCardNumber(item.listedCardNumber, where);
+      const found = await ctx.runQuery(internal.testing.listedCardForOrder, {
+        ownerId: userId,
+        platform: "bsc",
+        cardNumber: item.listedCardNumber,
+      });
+      if (found.matches !== 1 || !found.bsc) throw listedCardRefusal(where, "bsc", found.matches);
+      items.push({
+        cardId: found.bsc.cardId,
+        condition: found.bsc.condition,
+        sellerSku: found.bsc.sku,
+        quantity: item.quantity,
+        ...(item.priceCents !== undefined ? { priceCents: item.priceCents } : {}),
+      });
+    }
+    const order: FakeBscOrder = {
+      ...(request.orderNo !== undefined ? { orderNo: request.orderNo } : {}),
+      ...(request.status !== undefined ? { status: request.status } : {}),
+      ...(request.orderDateMs !== undefined ? { orderDateMs: request.orderDateMs } : {}),
+      items,
+    };
+    checkFakeBscOrder(order);
+    const done: FakeBscControlResult = await ctx.runAction(internal.fakeBsc.addOrder, { ns, order });
     requireFakeBscDone(done, "add the order");
-    return { items: args.order.items.length };
+    return { items: order.items.length };
   },
 });
 
@@ -780,6 +963,24 @@ export const fakeEbayOrderValidator = v.object({
   ),
 });
 type FakeEbayOrder = (typeof fakeEbayOrderValidator)["type"];
+
+/**
+ * An order as a spec sends it (`addMyEbayOrder`): a line is the fake's own
+ * (a SKU and listing id, or a title for a sale NB did not make), or
+ * `listedCardNumber`, a card THIS caller lists on eBay named by its printed
+ * number, which the server resolves to the live listing's SKU and listing id
+ * (`listedCardForOrder`), exactly one.
+ */
+export const fakeEbayOrderRequestValidator = v.object({
+  ...fakeEbayOrderValidator.fields,
+  lines: v.array(
+    v.union(
+      fakeEbayOrderValidator.fields.lines.element,
+      v.object({ listedCardNumber: v.string(), quantity: v.number(), priceCents: v.optional(v.number()) }),
+    ),
+  ),
+});
+type FakeEbayOrderRequest = (typeof fakeEbayOrderRequestValidator)["type"];
 
 /** Throws on a policy list the fake would refuse; the fake never sees it. */
 export function checkFakeEbayPolicies(policies: FakeEbayPolicy[]): void {
@@ -920,18 +1121,45 @@ export const setMyEbaySeller = action({
  * make, shown with eBay's own title.
  */
 export const addMyEbayOrder = action({
-  args: { seller: v.optional(fakeEbaySellerValidator), order: fakeEbayOrderValidator },
+  args: { seller: v.optional(fakeEbaySellerValidator), order: fakeEbayOrderRequestValidator },
   returns: v.object({ lines: v.number() }),
   handler: async (ctx, args): Promise<{ lines: number }> => {
     const { ns } = await callerFakeEbayNamespace(ctx);
-    checkFakeEbayOrder(args.order);
+    const request: FakeEbayOrderRequest = args.order;
+    if (request.lines.length < 1 || request.lines.length > MAX_FAKE_EBAY_ORDER_LINES) {
+      throw new Error(`An order carries between 1 and ${MAX_FAKE_EBAY_ORDER_LINES} lines`);
+    }
+    const userId = (await getCurrentUserId(ctx)) as string;
+    const lines: FakeEbayOrder["lines"] = [];
+    for (const [i, line] of request.lines.entries()) {
+      if (!("listedCardNumber" in line)) {
+        lines.push(line);
+        continue;
+      }
+      const where = `lines[${i}]`;
+      checkListedCardNumber(line.listedCardNumber, where);
+      const found = await ctx.runQuery(internal.testing.listedCardForOrder, {
+        ownerId: userId,
+        platform: "ebay",
+        cardNumber: line.listedCardNumber,
+      });
+      if (found.matches !== 1 || !found.ebay) throw listedCardRefusal(where, "ebay", found.matches);
+      lines.push({
+        sku: found.ebay.sku,
+        listingId: found.ebay.listingId,
+        quantity: line.quantity,
+        ...(line.priceCents !== undefined ? { priceCents: line.priceCents } : {}),
+      });
+    }
+    const order: FakeEbayOrder = { ...request, lines };
+    checkFakeEbayOrder(order);
     const done: unknown = await ctx.runAction(internal.fakeBsc.ebayOrders, {
       ns,
       ...(args.seller !== undefined ? { seller: args.seller } : {}),
-      order: args.order,
+      order,
     });
     requireFakeEbayDone(done, "add the order");
-    return { lines: args.order.lines.length };
+    return { lines: order.lines.length };
   },
 });
 

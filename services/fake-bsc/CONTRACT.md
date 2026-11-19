@@ -1165,6 +1165,14 @@ fails closed.
   internal.fakeBsc.ebayTarget({})                 // -> { mode }
   ```
 
+  The wrappers a spec calls (`testing.addMyEbayOrder` / `addMyBscOrder`) take a
+  line/item `{listedCardNumber, quantity, priceCents?}` in place of ids: the
+  server resolves the printed number against the CALLER'S OWN live listings on
+  that platform (eBay: a `live` link with a listing id; BSC: what the push
+  would list, per card and BSC condition), exactly one, and sends the real
+  SKU/listing id or BSC card id. Zero or several matches are refused with a
+  fixed message. Lines with ids or a title pass through unchanged.
+
   Policies and orders are bounded on the Convex side as the fake bounds them,
   so a bad seed never leaves. `detail` is the fake's own validation reason
   (never a key or token).

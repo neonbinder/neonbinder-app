@@ -6,6 +6,7 @@ import { api } from "@/convex/_generated/api";
 // Test-only hop (NEO-552). An E2E spec visits
 //   /testing/bsc-fake?rules=<url-encoded JSON array of fault rules>   set the caller's fake BSC faults
 //   /testing/bsc-fake?order=<url-encoded JSON order>                  add one order to the caller's fake seller history
+//                                                                    (an item may name the card by `listedCardNumber`; the server resolves it, exactly one, NEO-555)
 //   /testing/bsc-fake?clear=faults|gate|all                           drop the faults and/or the deployment's BSC call gate
 //   /testing/bsc-fake?poll=1                                          run the caller's BSC sales poll now and wait for it (NEO-555)
 // This page waits for the Convex client to pick up the Clerk session, calls

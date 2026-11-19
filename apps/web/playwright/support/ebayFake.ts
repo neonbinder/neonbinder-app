@@ -131,8 +131,8 @@ export type EbaySeller = "main" | "alt";
 
 /**
  * One line of an eBay order. Either a sale NB did not list (`title`, no SKU:
- * NB shows it under eBay's title and touches no box), or (PROPOSED, NEO-555:
- * the testing control does not take it yet) `listedCardNumber`, a card THIS
+ * NB shows it under eBay's title and touches no box), or (NEO-555)
+ * `listedCardNumber`, a card THIS
  * worker listed on eBay named by its printed number as the checklist shows it
  * ("FS-1"). An NB SKU embeds NB's own card id, which no screen shows, so a spec
  * cannot name a sold listing any other way. The control is to resolve the
