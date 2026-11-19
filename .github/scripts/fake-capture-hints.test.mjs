@@ -75,6 +75,7 @@ test("an empty bucket prints nothing", () => {
   assert.match(r.lines[0], /BSC/);
 });
 
-test("the hint names no person", () => {
-  assert.ok(!hints(PROD).lines.join("\n").includes("Jason"));
+test("the production hint says who runs it by role", () => {
+  const prodLine = hints(PROD).lines.join("\n");
+  assert.match(prodLine, /the account owner/);
 });

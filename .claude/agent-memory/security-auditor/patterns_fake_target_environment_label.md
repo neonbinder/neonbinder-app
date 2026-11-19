@@ -21,3 +21,11 @@ said "production", leaving the cross-wiring guard blind to fake-vs-real.
 say "fake"? Prefer reporting the truth outward (`"fake"` or an added
 `target: "fake"`) so an older or mis-configured peer fails closed on mismatch.
 Related: [[neo552-fake-upstream-and-recorder]].
+
+**Follow-through (B1 delta):** the fix was one helper (`outwardEnvironment`) used at
+every outward site; the peer that compares the echo (Convex connect) must then
+expect `"fake"` in fake mode, or it refuses every fake connect (fails closed, so
+safe, but a later ticket's job). Same review also showed a second trap: making a
+fake-mode gate's SETUP step hard (mint exits 1) does not make the gate hard if the
+verdict still downgrades the leg it feeds to a warning (`account_warning` exit 0).
+In fake mode every leg is ours; check the verdict, not only the setup step.

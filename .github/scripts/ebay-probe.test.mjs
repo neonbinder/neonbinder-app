@@ -84,6 +84,18 @@ test("account_warning passes with a warning when the app leg is sound", () => {
   assert.match(r.err, /::warning::/);
 });
 
+test("account_warning fails in fake mode with a fixed error, and still warns in real mode", () => {
+  const body = (t) => ({ ...OK_PROBE(t), outcome: "account_warning", accountLeg: { ok: false, outcome: "refresh_failed", scopes: null, detail: "x-secret" } });
+  const fake = verdict("fake", body("fake"));
+  assert.equal(fake.outcome, "account_warning");
+  assert.equal(fake.status, 1);
+  assert.match(fake.err, /::error::eBay probe \(fake\): account_warning/);
+  assert.ok(!fake.err.includes("x-secret") && !fake.err.includes("refresh_failed"));
+  const real = verdict("real", body("real"));
+  assert.equal(real.status, 0);
+  assert.match(real.err, /::warning::/);
+});
+
 test("account_warning with a broken app leg is inconsistent and fails", () => {
   const r = verdict("real", { ...OK_PROBE("real"), outcome: "account_warning", appLeg: { ok: false, outcome: "x" } });
   assert.equal(r.status, 1);
