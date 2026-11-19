@@ -366,6 +366,18 @@ describe("Keeping", () => {
     expect(screen.getByRole("button", { name: "Edit name for #MEM-BB Bo Bichette" })).toBeTruthy();
   });
 
+  test("its name is its words: the fold glyph is hidden from assistive tech (NEO-591)", () => {
+    mount(world());
+    const toggle = keepingToggle();
+    const glyph = toggle.querySelector("span[aria-hidden='true']");
+    expect(glyph?.textContent).toBe("▼");
+    // The accessible name has no ▶/▼ in it, open or folded, and no extra label.
+    expect(toggle.getAttribute("aria-label")).toBeNull();
+    fireEvent.click(toggle);
+    expect(toggle.querySelector("span[aria-hidden='true']")?.textContent).toBe("▶");
+    expect(screen.getByRole("button", { name: "Keeping (0)" })).toBe(toggle);
+  });
+
   test("its title edits like Matched's, and the new name is saved", async () => {
     const { onConfirm } = mount(world());
     fireEvent.click(screen.getByLabelText("Keep #MEM-BB Bo Bichette as BSC-only"));

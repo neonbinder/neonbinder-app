@@ -18,6 +18,7 @@ import {
 } from "@testing-library/react";
 import CardPairingModal, {
   PAIRING_STREAM_DONE_ANNOUNCEMENT,
+  pairLinkedAnnouncement,
   pairingStreamLateAnnouncement,
   pairingStreamProgressAnnouncement,
   pairingStreamingSentence,
@@ -918,6 +919,35 @@ describe("CardPairingModal — marketplace name conflicts (NEO-189)", () => {
 
     // No conflict, so no reason to seize the operator's attention.
     expect(screen.getByLabelText("Expand matched cards")).toBeTruthy();
+  });
+
+  test("a clean link says where the pair went, since Matched stays folded (NEO-591)", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc, bscCard("5", "Roberto Osuna")],
+      unmatchedSl: [yastrzemskiSl, slCard("5", "Roberto Osuna")],
+    });
+    const announcer = () =>
+      screen.getAllByRole("status").find((el) => !el.id) as HTMLElement;
+    expect(announcer().textContent).toBe("");
+
+    linkByLabel("#5 Roberto Osuna", "#5 Roberto Osuna");
+
+    expect(announcer().textContent).toBe(
+      pairLinkedAnnouncement("#5 Roberto Osuna", "#5 Roberto Osuna"),
+    );
+    expect(pairLinkedAnnouncement("#5 Roberto Osuna", "#5 Roberto Osuna")).toBe(
+      "Linked #5 Roberto Osuna to #5 Roberto Osuna. Moved to Matched.",
+    );
+  });
+
+  test("a link with a conflict does not also announce the move: the conflict has focus", () => {
+    renderModal({
+      unmatchedBsc: [yastrzemskiBsc],
+      unmatchedSl: [yastrzemskiSl],
+    });
+    linkYastrzemski();
+    const announcer = screen.getAllByRole("status").find((el) => !el.id) as HTMLElement;
+    expect(announcer.textContent).toBe("");
   });
 
   test("the collapsed header still reports the conflict count, in text and to assistive tech", () => {

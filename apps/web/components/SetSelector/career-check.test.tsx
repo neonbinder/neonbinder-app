@@ -39,6 +39,7 @@ import {
   stintChipText,
   stintYearsText,
   stintsOf,
+  replaceStint,
   withStint,
   type StagedStint,
   toLines,
@@ -305,6 +306,23 @@ describe("the stints a line stages", () => {
     expect(withStint(one, stint("t2", 2019, 2021))).toHaveLength(2);
     expect(withStint(one, stint("t1", 2022, 2023))).toHaveLength(1);
     expect(one).toHaveLength(1);
+  });
+  it("replaces an edited stint where it stood, and keeps one of a kind", () => {
+    const list = [stint("t1", 2022), stint("t2", 2019, 2021), stint("t3", 2015)];
+    // New years for the first: same place.
+    expect(replaceStint(list, list[0], stint("t1", 2020, 2023))).toEqual([
+      stint("t1", 2020, 2023),
+      list[1],
+      list[2],
+    ]);
+    // Moved onto another stint's team and From year: the edit wins, the other goes.
+    expect(replaceStint(list, list[0], stint("t2", 2019, 2020))).toEqual([
+      stint("t2", 2019, 2020),
+      list[2],
+    ]);
+    // The edited stint is gone already: a plain add.
+    expect(replaceStint([list[1]], list[0], stint("t1", 2020))).toEqual([list[1], stint("t1", 2020)]);
+    expect(list).toHaveLength(3);
   });
   it("reads the years as the New Player chips do", () => {
     expect(stintYearsText({ fromYear: 2022 })).toBe("2022–present");

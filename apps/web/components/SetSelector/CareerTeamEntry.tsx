@@ -127,6 +127,7 @@ export default function CareerTeamEntry({
   initialTeam,
   initialFromYear,
   load,
+  resetToken = 0,
   quickPicks,
   label,
   disabled = false,
@@ -184,6 +185,11 @@ export default function CareerTeamEntry({
     fromYear: number;
     toYear?: number;
   };
+  /**
+   * NEO-591 — empty the form (name and both years) when this changes, as
+   * removing the stint that was being edited does. Nothing happens on mount.
+   */
+  resetToken?: number;
   /**
    * NEO-574 — other teams the cards print for this player, as one-press
    * fills for the team and From year. Parent-filtered: a team already
@@ -250,13 +256,41 @@ export default function CareerTeamEntry({
   const [browsing, setBrowsing] = useState(false);
   /* NEO-591 — an edit request (render-phase, after the prefill, so it wins). */
   const [appliedLoad, setAppliedLoad] = useState<number | undefined>(undefined);
+  /**
+   * What the last `load` put in the form. A form still holding exactly that is
+   * the stint being looked at, not work the operator has started: it is not
+   * dirty, because the stint it came from is still staged.
+   */
+  const [loadedBaseline, setLoadedBaseline] = useState<{
+    name: string;
+    from: string;
+    to: string;
+  } | null>(null);
   if (load && load.token !== appliedLoad) {
     setAppliedLoad(load.token);
     setName(load.name);
     setDebouncedName(load.name);
     setFromYear(String(load.fromYear));
     setToYear(load.toYear === undefined ? "" : String(load.toYear));
+    setLoadedBaseline({
+      name: load.name.trim(),
+      from: String(load.fromYear),
+      to: load.toYear === undefined ? "" : String(load.toYear),
+    });
     setPickedTeamId(load.teamId ?? null);
+    setSuggestionsOpen(false);
+    setBrowsing(false);
+  }
+  /* NEO-591 — a reset request: the form goes back to empty. */
+  const [appliedReset, setAppliedReset] = useState(resetToken);
+  if (resetToken !== appliedReset) {
+    setAppliedReset(resetToken);
+    setName("");
+    setDebouncedName("");
+    setFromYear("");
+    setToYear("");
+    setLoadedBaseline(null);
+    setPickedTeamId(null);
     setSuggestionsOpen(false);
     setBrowsing(false);
   }
@@ -284,9 +318,13 @@ export default function CareerTeamEntry({
   const blank = name.trim() === "" && fromYear.trim() === "";
   /** Nothing in any of the three boxes. */
   const isEmpty = blank && toYear.trim() === "";
-  const dirty =
-    toYear.trim() !== "" ||
-    (!blank && (name.trim() !== followed.name.trim() || fromYear.trim() !== followed.year));
+  const dirty = loadedBaseline
+    ? !isEmpty &&
+      (name.trim() !== loadedBaseline.name ||
+        fromYear.trim() !== loadedBaseline.from ||
+        toYear.trim() !== loadedBaseline.to)
+    : toYear.trim() !== "" ||
+      (!blank && (name.trim() !== followed.name.trim() || fromYear.trim() !== followed.year));
 
   /*
    * Emitted on the TRANSITIONS only, and through a ref rather than a dep.
@@ -526,6 +564,7 @@ export default function CareerTeamEntry({
       ...(resolvedTeamId ? { teamId: resolvedTeamId } : {}),
     });
     setPickedTeamId(null);
+    setLoadedBaseline(null);
     setName("");
     setDebouncedName("");
     setFromYear("");
@@ -873,7 +912,8 @@ export default function CareerTeamEntry({
         </p>
       )}
 
-      <div className="flex items-center gap-2" onMouseDown={holdListWhilePressed}>
+      {/* flex-wrap: at 320px the two year boxes and + Add do not fit one row. */}
+      <div className="flex flex-wrap items-center gap-2" onMouseDown={holdListWhilePressed}>
         <Input
           bare
           ref={fromYearRef}

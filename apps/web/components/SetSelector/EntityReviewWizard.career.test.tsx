@@ -115,6 +115,8 @@ import {
   CAREER_CHECKING,
   CAREER_NAMES_WAIT_MS,
   CAREER_NEW_PLAYER_UNNAMED,
+  CAREER_EDIT_REFUSED,
+  CAREER_STINT_UNADDED,
   careerHeading,
   CAREER_TEAM_NOT_NEEDED,
   type CareerContext,
@@ -351,7 +353,12 @@ describe("answers", () => {
         name: "Edit San Diego Padres (2022–2022) for Fernando Tatis Jr.",
       }),
     );
-    expect(screen.queryByRole("list", { name: "Stints to add for Fernando Tatis Jr." })).toBeNull();
+    // The stint stays on the list, marked, while its years are in the form.
+    expect(
+      within(screen.getByRole("list", { name: "Stints to add for Fernando Tatis Jr." }))
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["San Diego Padres (2022–2022)editing×"]);
     const name = screen.getByLabelText("Career team name for Fernando Tatis Jr.") as HTMLInputElement;
     const from = screen.getByLabelText("From year for Fernando Tatis Jr.") as HTMLInputElement;
     const to = screen.getByLabelText("To year (optional) for Fernando Tatis Jr.") as HTMLInputElement;
@@ -407,6 +414,83 @@ describe("answers", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  describe("a stint started and not added (NEO-591)", () => {
+    const start = () => {
+      teamRows = [{ _id: "t-padres", name: "Padres", location: "San Diego" }];
+      render(wizard());
+      const group = screen.getAllByRole("radiogroup")[0];
+      fireEvent.click(within(group).getByRole("radio", { name: "Add to career" }));
+      return screen.getByLabelText("Career team name for Fernando Tatis Jr.") as HTMLInputElement;
+    };
+
+    it("holds Next with the reason on the status line, until it is added or cleared", () => {
+      const name = start();
+      expect(next().getAttribute("aria-disabled")).toBeNull();
+      fireEvent.change(name, { target: { value: "Cin" } });
+      expect(next().getAttribute("aria-disabled")).toBe("true");
+      const status = screen.getByText(CAREER_STINT_UNADDED);
+      expect((next().getAttribute("aria-describedby") ?? "").split(" ")).toContain(status.id);
+      fireEvent.change(name, { target: { value: "" } });
+      expect(next().getAttribute("aria-disabled")).toBeNull();
+      expect(screen.queryByText(CAREER_STINT_UNADDED)).toBeNull();
+    });
+
+    it("pressing the held Next lands in that form and does not go on", () => {
+      const name = start();
+      fireEvent.change(name, { target: { value: "Cin" } });
+      act(() => (document.activeElement as HTMLElement | null)?.blur());
+      fireEvent.click(next());
+      expect(screen.getByRole("heading", { name: careerHeading(1) })).toBeTruthy();
+      expect(document.activeElement).toBe(name);
+      // Enter on the focused Next does the same.
+      act(() => next().focus());
+      fireEvent.keyDown(next(), { key: "Enter" });
+      expect(screen.getByRole("heading", { name: careerHeading(1) })).toBeTruthy();
+      expect(document.activeElement).toBe(name);
+    });
+
+    it("a year typed alone counts, and so does a changed edit", () => {
+      const name = start();
+      fireEvent.change(screen.getByLabelText("To year (optional) for Fernando Tatis Jr."), {
+        target: { value: "2024" },
+      });
+      expect(next().getAttribute("aria-disabled")).toBe("true");
+      fireEvent.change(screen.getByLabelText("To year (optional) for Fernando Tatis Jr."), {
+        target: { value: "" },
+      });
+      expect(next().getAttribute("aria-disabled")).toBeNull();
+      // Edit loads the stint; untouched it is not held, changed it is.
+      fireEvent.click(
+        screen.getByRole("button", { name: "Edit San Diego Padres (2022–2022) for Fernando Tatis Jr." }),
+      );
+      expect(next().getAttribute("aria-disabled")).toBeNull();
+      fireEvent.change(screen.getByLabelText("To year (optional) for Fernando Tatis Jr."), {
+        target: { value: "2024" },
+      });
+      expect(next().getAttribute("aria-disabled")).toBe("true");
+      expect(name).toBeTruthy();
+    });
+
+    it("Edit on another chip is refused while something is typed, and says so", () => {
+      const name = start();
+      fireEvent.change(name, { target: { value: "Cin" } });
+      fireEvent.click(
+        screen.getByRole("button", { name: "Edit San Diego Padres (2022–2022) for Fernando Tatis Jr." }),
+      );
+      expect(screen.getByText(CAREER_EDIT_REFUSED)).toBeTruthy();
+      expect(name.value).toBe("Cin");
+    });
+
+    it("is released when the line is set to Keep as is", () => {
+      const name = start();
+      fireEvent.change(name, { target: { value: "Cin" } });
+      expect(next().getAttribute("aria-disabled")).toBe("true");
+      const group = screen.getAllByRole("radiogroup")[0];
+      fireEvent.click(within(group).getByRole("radio", { name: "Keep as is" }));
+      expect(next().getAttribute("aria-disabled")).toBeNull();
+    });
   });
 
   it("never holds Next for the stints: what is staged is already a stint", () => {
@@ -868,6 +952,15 @@ describe("Wrong player → New player (NEO-591)", () => {
     fireEvent.change(nameBox(), { target: { value: "Luis Rodriguez" } });
     expect(next().getAttribute("aria-disabled")).toBeNull();
     expect(screen.queryByText(CAREER_NEW_PLAYER_UNNAMED)).toBeNull();
+  });
+
+  it("points the blank name box at the status line that says why Next waits", () => {
+    pickNew();
+    expect(nameBox().getAttribute("aria-describedby")).toBeNull();
+    fireEvent.change(nameBox(), { target: { value: "   " } });
+    const reason = screen.getByText(CAREER_NEW_PLAYER_UNNAMED);
+    expect(nameBox().getAttribute("aria-describedby")).toBe(reason.id);
+    expect(reason.getAttribute("role")).toBe("status");
   });
 
   it("holds Next for a name with no letter or digit, too", () => {

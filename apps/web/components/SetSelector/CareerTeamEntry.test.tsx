@@ -1551,6 +1551,80 @@ describe("CareerTeamEntry — loading a stint to edit (NEO-591)", () => {
     expect(onAdd).toHaveBeenCalledWith({ name: "Memphis RiverKings", fromYear: 2018, toYear: 2019 });
   });
 
+  describe("what counts as started work once a stint is loaded", () => {
+    const track = () => {
+      const onDirtyChange = vi.fn();
+      const view = render(entry({ onDirtyChange }));
+      view.rerender(entry({ onDirtyChange, load: load(1) }));
+      return { onDirtyChange, ...view };
+    };
+
+    it("a form holding exactly the loaded stint is not dirty: the stint is still staged", () => {
+      const { onDirtyChange } = track();
+      expect(onDirtyChange.mock.calls.map((c) => c[0])).toEqual([false]);
+    });
+
+    it("changing any of the three boxes makes it dirty, and putting it back makes it clean", () => {
+      const { onDirtyChange } = track();
+      fireEvent.change(toBox(), { target: { value: "2022" } });
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+      fireEvent.change(toBox(), { target: { value: "2021" } });
+      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+      fireEvent.change(fromBox(), { target: { value: "2018" } });
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+      fireEvent.change(fromBox(), { target: { value: "2019" } });
+      fireEvent.change(nameBox(), { target: { value: "San Diego Padre" } });
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    });
+
+    it("emptying the form is not dirty (nothing is left to lose)", () => {
+      const { onDirtyChange } = track();
+      fireEvent.change(toBox(), { target: { value: "2022" } });
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+      fireEvent.change(nameBox(), { target: { value: "" } });
+      fireEvent.change(fromBox(), { target: { value: "" } });
+      fireEvent.change(toBox(), { target: { value: "" } });
+      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+    });
+
+    it("+ Add ends it: the form is empty and clean, and a later typing is dirty again", () => {
+      const { onDirtyChange } = track();
+      fireEvent.change(fromBox(), { target: { value: "2018" } });
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+      fireEvent.click(screen.getByRole("button", { name: "Add career team" }));
+      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+      fireEvent.change(nameBox(), { target: { value: "Chi" } });
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    });
+
+    it("a form with no stint loaded keeps the old rule: any typing is dirty", () => {
+      const onDirtyChange = vi.fn();
+      render(entry({ onDirtyChange }));
+      fireEvent.change(nameBox(), { target: { value: "C" } });
+      expect(onDirtyChange).toHaveBeenLastCalledWith(true);
+    });
+  });
+
+  describe("a reset request", () => {
+    it("empties the name and both years, once per token, and not on mount", () => {
+      const onDirtyChange = vi.fn();
+      const { rerender } = render(entry({ onDirtyChange, resetToken: 0, load: load(1) }));
+      expect(nameBox().value).toBe("San Diego Padres");
+      rerender(entry({ onDirtyChange, resetToken: 1, load: load(1) }));
+      expect([nameBox().value, fromBox().value, toBox().value]).toEqual(["", "", ""]);
+      expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+      // The same token again changes nothing the operator types afterwards.
+      fireEvent.change(nameBox(), { target: { value: "Chi" } });
+      rerender(entry({ onDirtyChange, resetToken: 1, load: load(1) }));
+      expect(nameBox().value).toBe("Chi");
+    });
+  });
+
+  it("wraps its years row, so From, To and + Add fit a 320px dialog", () => {
+    render(entry({}));
+    expect(fromBox().parentElement?.className).toContain("flex-wrap");
+  });
+
   it("changes nothing for a caller that passes no load (the New Player step)", () => {
     const { onAdd } = renderEntry({ initialTeam: "San Diego Padres", initialFromYear: 2022 });
     expect(nameBox().value).toBe("San Diego Padres");

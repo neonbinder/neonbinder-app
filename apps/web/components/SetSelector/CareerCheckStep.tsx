@@ -1,12 +1,18 @@
 import {
+  createContext,
+  useCallback,
+  useContext,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
   type ComponentProps,
   type KeyboardEvent,
+  type ReactNode,
   type Ref,
 } from "react";
+import { createPortal } from "react-dom";
 import type { Id } from "../../convex/_generated/dataModel";
 import NeonButton from "../modules/NeonButton";
 import { Input } from "../primitives/Input";
@@ -18,6 +24,7 @@ import EntityLinkSearch from "./EntityLinkSearch";
 import { cardNumbersSummary } from "./teams-on-cards";
 import { useRelinkCandidates } from "./career-reads";
 import {
+  CAREER_EDIT_REFUSED,
   CAREER_RETRY_LABEL,
   LEAVE_FOLLOW_UP,
   defaultCareerAnswer,
@@ -33,6 +40,8 @@ import {
   newPlayerAnswer,
   newPlayerNameReady,
   preAddedStints,
+  replaceStint,
+  sameStint,
   sortCareerLines,
   noStintText,
   playedForText,
@@ -168,6 +177,19 @@ export type CareerCheckStepProps = {
   headingId: string;
   /** The first line's first radio, which the host focuses on arrival. */
   firstRef?: Ref<HTMLButtonElement>;
+  /**
+   * Some line's stints form holds a stint the operator started and has not
+   * added (or a changed edit). The host holds Next while it is true, and says
+   * why on its status line. Reported on the transitions; false when the step
+   * goes away.
+   */
+  onStintDraftChange?: (open: boolean) => void;
+  /**
+   * The id of the host's status line, which says why Next is held. A new
+   * player's name box with no name yet points at it (`aria-describedby`), so
+   * the reason is read where the operator is.
+   */
+  blankNameReasonId?: string;
 };
 
 const NO_BATCH_TEAMS: readonly BatchTeam[] = [];
@@ -208,6 +230,8 @@ export default function CareerCheckStep({
   disabled = false,
   headingId,
   firstRef,
+  onStintDraftChange,
+  blankNameReasonId,
 }: CareerCheckStepProps) {
   /** The team as the line shows it: the short name, once it is known. */
   const shortOf = (line: CareerLine): string | undefined =>
@@ -224,6 +248,43 @@ export default function CareerCheckStep({
   const orderKeys = [...keptKeys, ...sorted.map((l) => l.key).filter((k) => !keptKeys.includes(k))];
   const lines = orderKeys.map((k) => byKey.get(k)!);
   if (orderKeys.join("\u0000") !== shownOrder.join("\u0000")) setShownOrder(orderKeys);
+  /*
+   * NEO-591 — which lines have a stint started in their form and not added.
+   * Each stints form reports its own line; the host hears only "any".
+   */
+  const [draftKeys, setDraftKeys] = useState<ReadonlySet<string>>(() => new Set());
+  const reportDraft = useCallback((key: string, dirty: boolean) => {
+    setDraftKeys((prev) => {
+      if (prev.has(key) === dirty) return prev;
+      const next = new Set(prev);
+      if (dirty) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
+  const draftOpen = draftKeys.size > 0;
+  const draftHandlerRef = useRef(onStintDraftChange);
+  useEffect(() => {
+    draftHandlerRef.current = onStintDraftChange;
+  }, [onStintDraftChange]);
+  useEffect(() => {
+    draftHandlerRef.current?.(draftOpen);
+  }, [draftOpen]);
+  // The step going away (Back, close) must not leave Next held for ever.
+  useEffect(() => () => draftHandlerRef.current?.(false), []);
+  /**
+   * A player with two lines (one per team) has two of every control. Their
+   * names then carry the line ("Player on Team"), where a player with one
+   * line keeps the plain name.
+   */
+  const playersWithTwoLines = new Set<string>();
+  {
+    const seen = new Set<string>();
+    for (const l of lines) {
+      if (seen.has(l.playerId)) playersWithTwoLines.add(l.playerId);
+      seen.add(l.playerId);
+    }
+  }
   const rowRef = (key: string) =>
     Array.from(document.querySelectorAll<HTMLElement>("[data-career-line]")).find(
       (el) => el.dataset.careerLine === key,
@@ -283,6 +344,9 @@ export default function CareerCheckStep({
               disabled={disabled}
               firstRef={i === 0 ? firstRef : undefined}
               onWalk={() => walkFrom(line.key)}
+              sharedPlayer={playersWithTwoLines.has(line.playerId)}
+              reportDraft={reportDraft}
+              blankNameReasonId={blankNameReasonId}
             />
           </li>
         ))}
@@ -290,6 +354,28 @@ export default function CareerCheckStep({
       {readFailed && <RetryButton onRetry={onRetry} disabled={disabled} />}
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// What a line shares with its panels
+// ---------------------------------------------------------------------------
+
+type LineContextValue = {
+  /** The line's always-mounted status region, once it is in the document. */
+  statusEl: HTMLElement | null;
+  /** The line's stints form holds something started and not added. */
+  onDraft: (dirty: boolean) => void;
+};
+const LineContext = createContext<LineContextValue>({ statusEl: null, onDraft: () => {} });
+
+/**
+ * Words for the line's status region. The region exists before they do and
+ * their text is swapped inside it, so a screen reader hears each one (a region
+ * that mounts already holding its text is silent).
+ */
+function RowStatus({ children }: { children: ReactNode }) {
+  const { statusEl } = useContext(LineContext);
+  return statusEl ? createPortal(children, statusEl) : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -315,6 +401,9 @@ function CareerLineRow({
   disabled,
   firstRef,
   onWalk,
+  sharedPlayer,
+  reportDraft,
+  blankNameReasonId,
 }: {
   line: CareerLine;
   setYear: number;
@@ -335,14 +424,41 @@ function CareerLineRow({
   disabled: boolean;
   firstRef?: Ref<HTMLButtonElement>;
   onWalk: () => void;
+  /** Another line on the step is this same player (on another team). */
+  sharedPlayer: boolean;
+  reportDraft: (lineKey: string, dirty: boolean) => void;
+  blankNameReasonId?: string;
 }) {
   const groupLabel = careerLineLabel(
     playerName,
     teamName,
     shortTeamName === undefined ? line.cardNumbers[0] : undefined,
   );
+  /**
+   * What names this line's controls ("Stints to add for …", "Someone else
+   * for …"): the plain player, or, when that player has another line, the
+   * line itself ("Player on Team"), so no two controls read alike.
+   */
+  const controlSubject = sharedPlayer ? groupLabel : playerName;
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
+  /*
+   * NEO-591 (a11y) — the line's one status region. It is mounted with the
+   * line, empty, and the panels write their words into it, so a screen reader
+   * hears each change rather than a region that arrives already saying it.
+   */
+  const [statusEl, setStatusEl] = useState<HTMLElement | null>(null);
+  const lineKey = line.key;
+  const lineContext = useMemo<LineContextValue>(
+    () => ({ statusEl, onDraft: (dirty) => reportDraft(lineKey, dirty) }),
+    [statusEl, reportDraft, lineKey],
+  );
+  /**
+   * The last answer of each kind, kept while another kind is picked: arrowing
+   * across the four pills must not destroy a typed name, edited stints or a
+   * pick. Only the CURRENT kind's answer is ever the line's answer.
+   */
+  const remembered = useRef<Partial<Record<Kind, CareerAnswer>>>({});
   const noteId = useId();
   const cardsId = useId();
   /** The player/team search is open: it opens on its pill, and on the panel's own button. */
@@ -375,7 +491,10 @@ function CareerLineRow({
   const choose = (kind: Kind, via: "arrow" | "press" | "enter") => {
     if (disabled) return;
     if (kind !== current) {
-      if (kind === "leave") onAnswer({ kind: "leave" });
+      remembered.current[current] = answer;
+      const back = remembered.current[kind];
+      if (back) onAnswer(back);
+      else if (kind === "leave") onAnswer({ kind: "leave" });
       else if (kind === "add") {
         onAnswer({ kind: "add", stints: preAddedStints(lineTeam, setYear) });
       } else onAnswer({ kind, then: LEAVE_FOLLOW_UP });
@@ -423,125 +542,134 @@ function CareerLineRow({
   };
 
   return (
-    <div ref={rootRef} className="rounded-lg border border-rule-strong bg-raised">
-      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 border-b border-rule px-3 py-2">
-        <div>
-          <h4 className="text-sm font-semibold text-ink">{playerName}</h4>
-          <p id={noteId} className="text-sm text-ink-2">
-            {noCareer ? NO_CAREER_TEXT : noStintText(shortTeamName, setYear)}
+    <LineContext.Provider value={lineContext}>
+      <div ref={rootRef} className="rounded-lg border border-rule-strong bg-raised">
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 border-b border-rule px-3 py-2">
+          <div>
+            <h4 className="text-sm font-semibold text-ink">{playerName}</h4>
+            <p id={noteId} className="text-sm text-ink-2">
+              {noCareer ? NO_CAREER_TEXT : noStintText(shortTeamName, setYear)}
+            </p>
+          </div>
+          <p id={cardsId} className="text-xs text-ink-3">
+            Cards {cardNumbersSummary(line.cardNumbers.map((cardNumber) => ({ cardNumber })))}
           </p>
         </div>
-        <p id={cardsId} className="text-xs text-ink-3">
-          Cards {cardNumbersSummary(line.cardNumbers.map((cardNumber) => ({ cardNumber })))}
-        </p>
-      </div>
-      <div className="space-y-3 p-3">
-        <div
-          role="radiogroup"
-          aria-label={groupLabel}
-          aria-describedby={`${noteId} ${cardsId}`}
-          className="flex flex-wrap gap-2"
-        >
-          {KINDS.map((kind) => {
-            const picked = kind === current;
-            return (
-              <NeonButton
-                key={kind}
-                ref={kind === current ? firstRef : undefined}
-                variant="secondary"
-                outline={!picked}
-                type="button"
-                role="radio"
-                aria-checked={picked}
-                aria-disabled={disabled || undefined}
-                tabIndex={picked ? 0 : -1}
-                data-career-kind={kind}
-                onClick={() => choose(kind, "press")}
-                onKeyDown={(event) => onKeyDown(event, kind)}
-                className="max-sm:min-h-11"
-              >
-                {picked && (
-                  <span aria-hidden="true" className="mr-1.5">
-                    ✓
-                  </span>
-                )}
-                {KIND_LABEL[kind]}
-              </NeonButton>
-            );
-          })}
-        </div>
-
-        {answer.kind !== "leave" && (
-          <div ref={panelRef}>
-            {answer.kind === "add" && (
-              <StintsPanel
-                subject={playerName}
-                playerId={line.playerId}
-                stints={answer.stints}
-                onChange={(stints) => onAnswer({ kind: "add", stints })}
-                env={stintEnv}
-                onDone={onWalk}
-                disabled={disabled}
-              />
-            )}
-            {answer.kind === "player" && (
-              <PlayerPanel
-                line={line}
-                setYear={setYear}
-                selectorOptionId={selectorOptionId}
-                sportId={sportId}
-                answer={answer}
-                onAnswer={onAnswer}
-                coverage={coverage}
-                failed={failed}
-                requestCoverage={requestCoverage}
-                playerName={playerName}
-                lineLabel={groupLabel}
-                teamName={shortTeamName ?? ""}
-                lineTeam={lineTeam}
-                stintEnv={stintEnv}
-                disabled={disabled}
-                searchOpen={searchOpen}
-                setSearchOpen={setSearchOpen}
-                onOpenSearch={() => {
-                  setSearchFromPill(false);
-                  setSearchOpen(true);
-                }}
-                searchFromPill={searchFromPill}
-                focusPill={focusPill}
-                onWalk={onWalk}
-              />
-            )}
-            {answer.kind === "team" && (
-              <TeamPanel
-                line={line}
-                setYear={setYear}
-                selectorOptionId={selectorOptionId}
-                sportId={sportId}
-                answer={answer}
-                onAnswer={onAnswer}
-                coverage={coverage}
-                failed={failed}
-                requestCoverage={requestCoverage}
-                playerName={playerName}
-                pickedShortName={pickedTeamShortName}
-                stintEnv={stintEnv}
-                disabled={disabled}
-                searchOpen={searchOpen}
-                setSearchOpen={setSearchOpen}
-                onOpenSearch={() => {
-                  setSearchFromPill(false);
-                  setSearchOpen(true);
-                }}
-                searchFromPill={searchFromPill}
-                focusPill={focusPill}
-                onWalk={onWalk}
-              />
-            )}
+        <div className="space-y-3 p-3">
+          <div
+            role="radiogroup"
+            aria-label={groupLabel}
+            aria-describedby={`${noteId} ${cardsId}`}
+            className="flex flex-wrap gap-2"
+          >
+            {KINDS.map((kind) => {
+              const picked = kind === current;
+              return (
+                <NeonButton
+                  key={kind}
+                  ref={kind === current ? firstRef : undefined}
+                  variant="secondary"
+                  outline={!picked}
+                  type="button"
+                  role="radio"
+                  aria-checked={picked}
+                  aria-disabled={disabled || undefined}
+                  tabIndex={picked ? 0 : -1}
+                  data-career-kind={kind}
+                  onClick={() => choose(kind, "press")}
+                  onKeyDown={(event) => onKeyDown(event, kind)}
+                  className="max-sm:min-h-11"
+                >
+                  {picked && (
+                    <span aria-hidden="true" className="mr-1.5">
+                      ✓
+                    </span>
+                  )}
+                  {KIND_LABEL[kind]}
+                </NeonButton>
+              );
+            })}
           </div>
-        )}
+
+          {/* Always here, empty until a panel has something to say. */}
+          <p ref={setStatusEl} role="status" className="text-sm text-ink-2 empty:hidden" />
+
+          {answer.kind !== "leave" && (
+            <div ref={panelRef}>
+              {answer.kind === "add" && (
+                <StintsPanel
+                  subject={controlSubject}
+                  playerId={line.playerId}
+                  stints={answer.stints}
+                  onChange={(stints) => onAnswer({ kind: "add", stints })}
+                  env={stintEnv}
+                  onDone={onWalk}
+                  disabled={disabled}
+                />
+              )}
+              {answer.kind === "player" && (
+                <PlayerPanel
+                  line={line}
+                  setYear={setYear}
+                  selectorOptionId={selectorOptionId}
+                  sportId={sportId}
+                  answer={answer}
+                  onAnswer={onAnswer}
+                  coverage={coverage}
+                  failed={failed}
+                  requestCoverage={requestCoverage}
+                  playerName={playerName}
+                  controlSubject={controlSubject}
+                  sharedPlayer={sharedPlayer}
+                  blankNameReasonId={blankNameReasonId}
+                  lineLabel={groupLabel}
+                  teamName={shortTeamName ?? ""}
+                  lineTeam={lineTeam}
+                  stintEnv={stintEnv}
+                  disabled={disabled}
+                  searchOpen={searchOpen}
+                  setSearchOpen={setSearchOpen}
+                  onOpenSearch={() => {
+                    setSearchFromPill(false);
+                    setSearchOpen(true);
+                  }}
+                  searchFromPill={searchFromPill}
+                  focusPill={focusPill}
+                  onWalk={onWalk}
+                />
+              )}
+              {answer.kind === "team" && (
+                <TeamPanel
+                  line={line}
+                  setYear={setYear}
+                  selectorOptionId={selectorOptionId}
+                  sportId={sportId}
+                  answer={answer}
+                  onAnswer={onAnswer}
+                  coverage={coverage}
+                  failed={failed}
+                  requestCoverage={requestCoverage}
+                  playerName={playerName}
+                  controlSubject={controlSubject}
+                  pickedShortName={pickedTeamShortName}
+                  stintEnv={stintEnv}
+                  disabled={disabled}
+                  searchOpen={searchOpen}
+                  setSearchOpen={setSearchOpen}
+                  onOpenSearch={() => {
+                    setSearchFromPill(false);
+                    setSearchOpen(true);
+                  }}
+                  searchFromPill={searchFromPill}
+                  focusPill={focusPill}
+                  onWalk={onWalk}
+                />
+              )}
+            </div>
+          )}
+        </div>
       </div>
-    </div>
+    </LineContext.Provider>
   );
 }
 
@@ -559,12 +687,18 @@ function CareerLineRow({
  *
  * The card's team is already staged, from the set's year: to the same year for
  * a past set, to "present" for this year's or later (`preAddedStints`). A chip's
- * label is a button: pressing it takes that stint out of the list and loads its
- * team and both years into the form, so changing a stint is edit, then + Add.
- * The × only removes. Stints are valid by construction (the form holds the
- * years) and name a team that exists (`knownTeamsOnly`), so nothing staged can
- * fail at Confirm & Save.
+ * label is a button: pressing it loads that stint's team and both years into
+ * the form and marks the chip "editing"; + Add then puts the new years in the
+ * chip's place. The stint stays in the list meanwhile, so nothing is lost if
+ * the operator wanders off; × removes it (and, on the chip being edited,
+ * empties the form). Pressing Edit while the form holds something the operator
+ * typed is refused, and says so, rather than overwrite it. A form with a stint
+ * started and not added holds the host's Next (`onDraft`). Stints are valid by
+ * construction (the form holds the years) and name a team that exists
+ * (`knownTeamsOnly`), so nothing staged can fail at Confirm & Save.
  */
+const stintKey = (s: StagedStint): string => `${s.teamId ?? s.teamName}-${s.fromYear}`;
+
 function StintsPanel({
   subject,
   playerId,
@@ -585,23 +719,66 @@ function StintsPanel({
   disabled: boolean;
 }) {
   const existing = env.existingStintsOf?.(playerId) ?? [];
+  const { onDraft } = useContext(LineContext);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const editingBaseId = useId();
   /** The stint being edited, handed to the form; a new token each press. */
   const [edit, setEdit] = useState<ComponentProps<typeof CareerTeamEntry>["load"]>(undefined);
+  /** The staged stint whose years the form holds: + Add replaces it. */
+  const [editing, setEditing] = useState<StagedStint | null>(null);
+  /** Bumped to empty the form (the stint it held is gone). */
+  const [resetToken, setResetToken] = useState(0);
+  /** The form holds something the operator typed (or changed) and has not added. */
+  const [formDirty, setFormDirty] = useState(false);
+  /** Edit was pressed on a dirty form this many times running (0 = no reason shown). */
+  const [refusals, setRefusals] = useState(0);
+  const onFormDirty = (dirty: boolean) => {
+    setFormDirty(dirty);
+    if (!dirty) setRefusals(0);
+    onDraft(dirty);
+  };
+  // The panel going away (another answer, another line) must not leave the
+  // step thinking a stint is half-typed.
+  const onDraftRef = useRef(onDraft);
+  useEffect(() => {
+    onDraftRef.current = onDraft;
+  }, [onDraft]);
+  useEffect(() => () => onDraftRef.current(false), []);
+
+  /*
+   * Focus after × (only when × held it): the next chip's Edit, else the
+   * previous chip's, else the team box. The pressed button is about to leave
+   * the document, and focus would fall to the page.
+   */
+  const editRefs = useRef(new Map<string, HTMLButtonElement>());
+  const parkRef = useRef<{ stintKey: string } | "box" | null>(null);
+  useEffect(() => {
+    const park = parkRef.current;
+    if (park === null) return;
+    parkRef.current = null;
+    if (park === "box") rootRef.current?.querySelector<HTMLElement>("input")?.focus();
+    else editRefs.current.get(park.stintKey)?.focus();
+  });
+
   const onAdd = (entry: CareerTeamAdded) => {
     const years = {
       fromYear: entry.fromYear,
       ...(entry.toYear !== undefined ? { toYear: entry.toYear } : {}),
     };
+    let added: StagedStint | undefined;
     if (entry.teamId) {
-      onChange(withStint(stints, { teamId: entry.teamId, label: entry.name, ...years }));
-      return;
+      added = { teamId: entry.teamId, label: entry.name, ...years };
+    } else {
+      const key = nameSearchKey(entry.name);
+      const batch = env.batchTeams.find((t) => nameSearchKey(t.label) === key);
+      if (batch) added = { teamName: batch.teamName, label: batch.label, ...years };
     }
-    const key = nameSearchKey(entry.name);
-    const batch = env.batchTeams.find((t) => nameSearchKey(t.label) === key);
-    if (batch) onChange(withStint(stints, { teamName: batch.teamName, label: batch.label, ...years }));
+    if (!added) return;
+    onChange(editing ? replaceStint(stints, editing, added) : withStint(stints, added));
+    setEditing(null);
   };
   return (
-    <div className="space-y-1.5">
+    <div ref={rootRef} className="space-y-1.5" data-career-stint-draft={formDirty ? "started" : undefined}>
       {existing.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5">
           <span aria-hidden="true" className="text-xs text-ink-3">
@@ -624,46 +801,85 @@ function StintsPanel({
             Adding:
           </span>
           <ul className="flex flex-wrap gap-1.5" aria-label={`Stints to add for ${subject}`}>
-            {stints.map((stint, idx) => (
-              <li key={`${stint.teamId ?? stint.teamName}-${stint.fromYear}`}>
-                <span className="inline-flex items-center gap-1 rounded-full border border-rule-strong bg-raised px-2 py-0.5 text-xs text-ink-2">
-                  <button
-                    type="button"
-                    aria-label={`Edit ${stintChipText(stint)} for ${subject}`}
-                    aria-disabled={disabled || undefined}
-                    onClick={() => {
-                      if (disabled) return;
-                      setEdit({
-                        token: (edit?.token ?? 0) + 1,
-                        name: stint.label,
-                        ...(stint.teamId ? { teamId: stint.teamId } : {}),
-                        fromYear: stint.fromYear,
-                        ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
-                      });
-                      onChange(stints.filter((_, i) => i !== idx));
-                    }}
-                    className="hit-area-24 rounded text-left hover:text-ink focus-outline"
+            {stints.map((stint, idx) => {
+              const key = stintKey(stint);
+              const isEditing = editing !== null && sameStint(editing, stint);
+              const editingId = `${editingBaseId}-${idx}`;
+              return (
+                <li key={key}>
+                  <span
+                    className={`inline-flex items-center gap-2 rounded-full border bg-raised px-2 py-0.5 text-xs text-ink-2 ${
+                      isEditing ? "border-neon-blue-text" : "border-rule-strong"
+                    }`}
                   >
-                    {stintChipText(stint)}
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${stintChipText(stint)} for ${subject}`}
-                    aria-disabled={disabled || undefined}
-                    onClick={() => {
-                      if (disabled) return;
-                      onChange(stints.filter((_, i) => i !== idx));
-                    }}
-                    className="hit-area-24 text-ink-3 hover:text-neon-pink-text focus-outline rounded"
-                  >
-                    ×
-                  </button>
-                </span>
-              </li>
-            ))}
+                    <button
+                      type="button"
+                      ref={(el) => {
+                        if (el) editRefs.current.set(key, el);
+                        else editRefs.current.delete(key);
+                      }}
+                      aria-label={`Edit ${stintChipText(stint)} for ${subject}`}
+                      aria-current={isEditing ? "true" : undefined}
+                      aria-describedby={isEditing ? editingId : undefined}
+                      aria-disabled={disabled || undefined}
+                      onClick={() => {
+                        if (disabled) return;
+                        if (formDirty) {
+                          // Something typed would be overwritten: say so and stay put.
+                          setRefusals((n) => n + 1);
+                          return;
+                        }
+                        setRefusals(0);
+                        setEditing(stint);
+                        setEdit({
+                          token: (edit?.token ?? 0) + 1,
+                          name: stint.label,
+                          ...(stint.teamId ? { teamId: stint.teamId } : {}),
+                          fromYear: stint.fromYear,
+                          ...(stint.toYear !== undefined ? { toYear: stint.toYear } : {}),
+                        });
+                      }}
+                      className="hit-area-24 rounded text-left hover:text-ink focus-outline"
+                    >
+                      {stintChipText(stint)}
+                    </button>
+                    {isEditing && (
+                      <span id={editingId} className="text-neon-blue-text">
+                        editing
+                      </span>
+                    )}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${stintChipText(stint)} for ${subject}`}
+                      aria-disabled={disabled || undefined}
+                      onClick={(event) => {
+                        if (disabled) return;
+                        if (document.activeElement === event.currentTarget) {
+                          const neighbour = stints[idx + 1] ?? stints[idx - 1];
+                          parkRef.current = neighbour ? { stintKey: stintKey(neighbour) } : "box";
+                        }
+                        if (isEditing) {
+                          // Cancelling the edit: the form lets go of the years too.
+                          setEditing(null);
+                          setResetToken((n) => n + 1);
+                        }
+                        onChange(stints.filter((_, i) => i !== idx));
+                      }}
+                      className="hit-area-24 text-ink-3 hover:text-ink focus-outline rounded"
+                    >
+                      ×
+                    </button>
+                  </span>
+                </li>
+              );
+            })}
           </ul>
         </div>
       )}
+      {/* Always here, so the reason is heard when it appears. */}
+      <p role="status" className="text-xs text-neon-pink-text empty:hidden">
+        {refusals > 0 ? `${CAREER_EDIT_REFUSED}${refusals % 2 === 0 ? "\u00A0" : ""}` : ""}
+      </p>
       <CareerTeamEntry
         sportId={env.sportId}
         contextOptionId={env.selectorOptionId}
@@ -673,7 +889,9 @@ function StintsPanel({
         disabled={disabled}
         onAdd={onAdd}
         onDone={onDone}
+        onDirtyChange={onFormDirty}
         load={edit}
+        resetToken={resetToken}
       />
     </div>
   );
@@ -694,6 +912,7 @@ function FollowUp({
   coverage,
   failed,
   subject,
+  controlSubject = subject,
   team,
   disabled,
   onWalk,
@@ -711,6 +930,11 @@ function FollowUp({
   failed: Readonly<Record<string, boolean>>;
   /** Whose career, and which team, the re-check is about. */
   subject: string;
+  /**
+   * What names this follow-up's controls: the subject, made distinct when
+   * another line would give the same controls the same names.
+   */
+  controlSubject?: string;
   team: string;
   disabled: boolean;
   onWalk: () => void;
@@ -746,14 +970,13 @@ function FollowUp({
   };
   return (
     <div ref={boxRef} className="space-y-2">
-      <p role="status" className="text-sm text-ink-2">
-        {statusText}
-      </p>
+      {/* The line's own status region says it (see `RowStatus`). */}
+      <RowStatus>{statusText}</RowStatus>
       {read === "done" && !covered && (
         <>
           <div
             role="radiogroup"
-            aria-label={`Career for ${subject}`}
+            aria-label={`Career for ${controlSubject}`}
             id={groupId}
             className="flex flex-wrap gap-2"
           >
@@ -818,7 +1041,7 @@ function FollowUp({
           </div>
           {then.kind === "add" && (
             <StintsPanel
-              subject={subject}
+              subject={controlSubject}
               playerId={subjectId}
               stints={then.stints}
               onChange={(stints) => setThen({ kind: "add", stints })}
@@ -856,6 +1079,9 @@ function PlayerPanel({
   failed,
   requestCoverage,
   playerName,
+  controlSubject,
+  sharedPlayer,
+  blankNameReasonId,
   lineLabel,
   teamName,
   lineTeam,
@@ -878,6 +1104,12 @@ function PlayerPanel({
   failed: Readonly<Record<string, boolean>>;
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   playerName: string;
+  /** What names this line's controls: the player, or the line when the player has two. */
+  controlSubject: string;
+  /** This player has another line on the step. */
+  sharedPlayer: boolean;
+  /** The host's status line, which says why Next is held while the name is blank. */
+  blankNameReasonId?: string;
   /** The line's radio group name: tells this line's name box from another's. */
   lineLabel: string;
   /** The short team name, for "Played for …". */
@@ -904,6 +1136,8 @@ function PlayerPanel({
   const elseRef = useRef<HTMLButtonElement>(null);
   const nameRef = useRef<HTMLInputElement>(null);
   const stintsRef = useRef<HTMLDivElement>(null);
+  /** The search, to know whether focus is in it when a namesake is picked. */
+  const searchWrapRef = useRef<HTMLDivElement>(null);
   const picked = answer.pick;
   const pickedNew: NewPlayerPick | undefined = isNewPlayerPick(picked) ? picked : undefined;
   const pickedExisting: ExistingPlayerPick | undefined =
@@ -914,9 +1148,11 @@ function PlayerPanel({
     const pair = followUpPair(line, next);
     if (pair) requestCoverage([coverageAskOf(pair.ask)]);
     if (searchOpen) {
+      // Focus in the search (a result was taken) is about to be lost with it;
+      // focus on a namesake (an arrow pick) is not the search's to take.
+      const focusInSearch = searchWrapRef.current?.contains(document.activeElement) ?? false;
       setSearchOpen(false);
-      // The search is about to unmount with focus in it.
-      setTimeout(() => elseRef.current?.focus(), 0);
+      if (focusInSearch) setTimeout(() => elseRef.current?.focus(), 0);
     }
   };
   /**
@@ -962,13 +1198,9 @@ function PlayerPanel({
 
   return (
     <div className="space-y-2">
-      {read.state === "loading" && (
-        <p role="status" className="text-sm text-ink-2">
-          Looking for players…
-        </p>
-      )}
+      {read.state === "loading" && <RowStatus>Looking for players…</RowStatus>}
       <PlayerChoices
-        label={`Which ${line.printedPlayer}?`}
+        label={sharedPlayer ? `Which ${controlSubject}?` : `Which ${line.printedPlayer}?`}
         choices={choices}
         team={teamName}
         pickedId={pickedExisting?.playerId}
@@ -982,13 +1214,15 @@ function PlayerPanel({
         onEnterNew={() => nameRef.current?.focus()}
       />
       {searchOpen ? (
-        <EntityLinkSearch
-          kind="player"
-          sportId={sportId}
-          contextOptionId={selectorOptionId}
-          onSelect={(id, name) => pick(id as Id<"players">, name)}
-          onCancel={cancelSearch}
-        />
+        <div ref={searchWrapRef}>
+          <EntityLinkSearch
+            kind="player"
+            sportId={sportId}
+            contextOptionId={selectorOptionId}
+            onSelect={(id, name) => pick(id as Id<"players">, name)}
+            onCancel={cancelSearch}
+          />
+        </div>
       ) : (
         <NeonButton
           ref={elseRef}
@@ -999,7 +1233,7 @@ function PlayerPanel({
             if (!disabled) onOpenSearch();
           }}
           aria-disabled={disabled || undefined}
-          aria-label={`Someone else for ${playerName}`}
+          aria-label={`Someone else for ${controlSubject}`}
           className="max-sm:min-h-11"
         >
           Someone else…
@@ -1015,6 +1249,7 @@ function PlayerPanel({
             maxLength={MAX_PLAYER_NAME_LENGTH}
             aria-label={`New player’s name for ${lineLabel}`}
             aria-invalid={!newNameReady || undefined}
+            aria-describedby={newNameReady ? undefined : blankNameReasonId}
             data-career-new-name={newNameReady ? "named" : "blank"}
             disabled={disabled}
             onChange={(e) =>
@@ -1032,7 +1267,11 @@ function PlayerPanel({
           />
           <div ref={stintsRef}>
             <StintsPanel
-              subject={newName || line.printedPlayer.trim()}
+              subject={
+                sharedPlayer
+                  ? `${newName || line.printedPlayer.trim()} (${lineLabel})`
+                  : newName || line.printedPlayer.trim()
+              }
               playerId=""
               stints={newStints}
               onChange={(stints) => onAnswer({ ...answer, then: { kind: "add", stints } })}
@@ -1055,6 +1294,9 @@ function PlayerPanel({
           coverage={coverage}
           failed={failed}
           subject={pickedExisting.name}
+          controlSubject={
+            sharedPlayer ? `${pickedExisting.name} (${lineLabel})` : pickedExisting.name
+          }
           team={teamName}
           disabled={disabled}
           onWalk={onWalk}
@@ -1205,6 +1447,7 @@ function TeamPanel({
   failed,
   requestCoverage,
   playerName,
+  controlSubject,
   pickedShortName,
   stintEnv,
   disabled,
@@ -1225,6 +1468,8 @@ function TeamPanel({
   failed: Readonly<Record<string, boolean>>;
   requestCoverage: (asks: readonly CoverageAsk[]) => void;
   playerName: string;
+  /** What names this line's controls: the player, or the line when the player has two. */
+  controlSubject: string;
   /** The picked team's short name, when known: what the follow-up calls it. */
   pickedShortName?: string;
   stintEnv: StintEnv;
@@ -1280,8 +1525,8 @@ function TeamPanel({
             aria-disabled={disabled || undefined}
             aria-label={
               picked
-                ? `Pick another team for ${playerName}`
-                : `Pick a team for ${playerName}`
+                ? `Pick another team for ${controlSubject}`
+                : `Pick a team for ${controlSubject}`
             }
             className="max-sm:min-h-11"
           >
@@ -1301,6 +1546,7 @@ function TeamPanel({
           coverage={coverage}
           failed={failed}
           subject={playerName}
+          controlSubject={controlSubject}
           team={pickedShortName ?? picked.name}
           disabled={disabled}
           onWalk={onWalk}

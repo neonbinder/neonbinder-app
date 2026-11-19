@@ -78,6 +78,8 @@ type EntryProps = {
   initialTeam?: string;
   initialFromYear?: number;
   load?: { token: number; name: string; teamId?: string; fromYear: number; toYear?: number };
+  resetToken?: number;
+  onDirtyChange?: (dirty: boolean) => void;
   onAdd: (entry: { name: string; fromYear: number; toYear?: number; teamId?: string }) => void;
   onDone?: () => void;
 };
@@ -111,6 +113,7 @@ vi.mock("./CareerTeamEntry", async () => {
 
 import CareerCheckStep, { careerLineLabel } from "./CareerCheckStep";
 import {
+  CAREER_EDIT_REFUSED,
   CAREER_RETRY_LABEL,
   NO_CAREER_TEXT,
   careerHeading,
@@ -193,6 +196,8 @@ function Harness(props: {
   disabled?: boolean;
   /** The set's year; 2022 unless a test is about this year. */
   setYear?: number;
+  onStintDraftChange?: (open: boolean) => void;
+  blankNameReasonId?: string;
 }) {
   const [answers, setAnswers] = useState<CareerAnswers>({});
   useEffect(() => {
@@ -563,13 +568,22 @@ describe("Add to career", () => {
       expect(edit("Los Angeles Angels (2022–2022)", "Mike Trout")).toBeTruthy();
     });
 
-    it("takes the stint off the list and loads its team and both years into the form", () => {
+    it("keeps the stint on the list, marks it as being edited, and loads its team and both years into the form", () => {
       render(<Harness />);
       fireEvent.click(radio(tatis(), "Add to career"));
       expect(entryProps["Fernando Tatis Jr."].load).toBeUndefined();
+      expect(edit(PADRES_CHIP).getAttribute("aria-current")).toBeNull();
       fireEvent.click(edit(PADRES_CHIP));
-      expect(screen.queryByRole("list", { name: "Stints to add for Fernando Tatis Jr." })).toBeNull();
-      expect(answersSeen[keyOf("p-tatis")]).toEqual({ kind: "add", stints: [] });
+      // Nothing is taken out: a wander off now loses nothing.
+      expect(
+        within(stintsList("Fernando Tatis Jr.")).getAllByRole("listitem").map((li) => li.textContent),
+      ).toEqual([`${PADRES_CHIP}editing×`]);
+      expect(answersSeen[keyOf("p-tatis")]).toBeUndefined();
+      // Visible and accessible: the chip's button is current and described by "editing".
+      const pressed = edit(PADRES_CHIP);
+      expect(pressed.getAttribute("aria-current")).toBe("true");
+      const described = document.getElementById(pressed.getAttribute("aria-describedby") ?? "");
+      expect(described?.textContent).toBe("editing");
       expect(entryProps["Fernando Tatis Jr."].load).toEqual({
         token: 1,
         name: "San Diego Padres",
@@ -593,15 +607,17 @@ describe("Add to career", () => {
       });
     });
 
-    it("works on any staged stint, and leaves the others where they are", () => {
+    it("works on any staged stint, and marks only that one", () => {
       render(<Harness />);
       fireEvent.click(radio(tatis(), "Add to career"));
       nextEntry = { name: "Cincinnati Reds", fromYear: 2019, toYear: 2021, teamId: "t-reds" };
       fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
       fireEvent.click(edit("Cincinnati Reds (2019–2021)"));
+      // Both stay; only the pressed one is marked.
       expect(
         within(stintsList("Fernando Tatis Jr.")).getAllByRole("listitem").map((li) => li.textContent),
-      ).toEqual([`${PADRES_CHIP}×`]);
+      ).toEqual([`${PADRES_CHIP}×`, "Cincinnati Reds (2019–2021)editing×"]);
+      expect(edit(PADRES_CHIP).getAttribute("aria-current")).toBeNull();
       expect(entryProps["Fernando Tatis Jr."].load).toMatchObject({
         name: "Cincinnati Reds",
         fromYear: 2019,
@@ -623,6 +639,126 @@ describe("Add to career", () => {
       expect(
         within(stintsList("Fernando Tatis Jr.")).getAllByRole("listitem").map((li) => li.textContent),
       ).toEqual(["San Diego Padres (2020–2023)×"]);
+    });
+
+    it("+ Add puts the new years where the edited stint stood, not at the end", () => {
+      render(<Harness />);
+      fireEvent.click(radio(tatis(), "Add to career"));
+      nextEntry = { name: "Cincinnati Reds", fromYear: 2019, toYear: 2021, teamId: "t-reds" };
+      fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      fireEvent.click(edit(PADRES_CHIP));
+      nextEntry = { name: "San Diego Padres", fromYear: 2020, toYear: 2023, teamId: "t-padres" };
+      fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      expect(
+        within(stintsList("Fernando Tatis Jr.")).getAllByRole("listitem").map((li) => li.textContent),
+      ).toEqual(["San Diego Padres (2020–2023)×", "Cincinnati Reds (2019–2021)×"]);
+      // The mark goes with the edit.
+      expect(screen.queryByText("editing")).toBeNull();
+    });
+
+    it("editing a stint into one the list already holds leaves one of them", () => {
+      render(<Harness />);
+      fireEvent.click(radio(tatis(), "Add to career"));
+      nextEntry = { name: "Cincinnati Reds", fromYear: 2019, toYear: 2021, teamId: "t-reds" };
+      fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      fireEvent.click(edit(PADRES_CHIP));
+      nextEntry = { name: "Cincinnati Reds", fromYear: 2019, toYear: 2020, teamId: "t-reds" };
+      fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      expect(
+        within(stintsList("Fernando Tatis Jr.")).getAllByRole("listitem").map((li) => li.textContent),
+      ).toEqual(["Cincinnati Reds (2019–2020)×"]);
+    });
+
+    it("× on the chip being edited removes it, clears the mark and empties the form", () => {
+      render(<Harness />);
+      fireEvent.click(radio(tatis(), "Add to career"));
+      expect(entryProps["Fernando Tatis Jr."].resetToken).toBe(0);
+      fireEvent.click(edit(PADRES_CHIP));
+      fireEvent.click(
+        screen.getByRole("button", { name: `Remove ${PADRES_CHIP} for Fernando Tatis Jr.` }),
+      );
+      expect(answersSeen[keyOf("p-tatis")]).toEqual({ kind: "add", stints: [] });
+      expect(screen.queryByText("editing")).toBeNull();
+      expect(entryProps["Fernando Tatis Jr."].resetToken).toBe(1);
+    });
+
+    it("× on another chip leaves the edit and the form alone", () => {
+      render(<Harness />);
+      fireEvent.click(radio(tatis(), "Add to career"));
+      nextEntry = { name: "Cincinnati Reds", fromYear: 2019, toYear: 2021, teamId: "t-reds" };
+      fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      fireEvent.click(edit(PADRES_CHIP));
+      fireEvent.click(
+        screen.getByRole("button", { name: "Remove Cincinnati Reds (2019–2021) for Fernando Tatis Jr." }),
+      );
+      expect(edit(PADRES_CHIP).getAttribute("aria-current")).toBe("true");
+      expect(entryProps["Fernando Tatis Jr."].resetToken).toBe(0);
+    });
+
+    describe("while the form holds something typed", () => {
+      const typing = (dirty: boolean) =>
+        act(() => entryProps["Fernando Tatis Jr."].onDirtyChange?.(dirty));
+      const stageReds = () => {
+        nextEntry = { name: "Cincinnati Reds", fromYear: 2019, toYear: 2021, teamId: "t-reds" };
+        fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+      };
+
+      it("refuses Edit with a reason in a status line, leaves the form, and keeps focus on the button", () => {
+        render(<Harness />);
+        fireEvent.click(radio(tatis(), "Add to career"));
+        stageReds();
+        typing(true);
+        const pressed = edit("Cincinnati Reds (2019–2021)");
+        act(() => pressed.focus());
+        fireEvent.click(pressed);
+        // Nothing loaded, nothing marked.
+        expect(entryProps["Fernando Tatis Jr."].load).toBeUndefined();
+        expect(screen.queryByText("editing")).toBeNull();
+        expect(screen.getByText(CAREER_EDIT_REFUSED).getAttribute("role")).toBe("status");
+        expect(document.activeElement).toBe(pressed);
+      });
+
+      it("says the reason again on a second refusal (the words change, so it is heard)", () => {
+        render(<Harness />);
+        fireEvent.click(radio(tatis(), "Add to career"));
+        typing(true);
+        const region = () => screen.getByText(CAREER_EDIT_REFUSED);
+        fireEvent.click(edit(PADRES_CHIP));
+        const first = region().textContent;
+        fireEvent.click(edit(PADRES_CHIP));
+        expect(region().textContent).not.toBe(first);
+        expect(region().textContent?.trim()).toBe(CAREER_EDIT_REFUSED);
+      });
+
+      it("the reason's region is already there when it speaks, and clears once the form is clean", () => {
+        render(<Harness />);
+        fireEvent.click(radio(tatis(), "Add to career"));
+        const region = document.querySelector<HTMLElement>(
+          `[data-career-line="${keyOf("p-tatis")}"] p[role="status"].text-neon-pink-text`,
+        )!;
+        expect(region.textContent).toBe("");
+        typing(true);
+        fireEvent.click(edit(PADRES_CHIP));
+        expect(region.textContent).toContain(CAREER_EDIT_REFUSED);
+        typing(false);
+        expect(region.textContent).toBe("");
+        // And Edit works again.
+        fireEvent.click(edit(PADRES_CHIP));
+        expect(entryProps["Fernando Tatis Jr."].load?.token).toBe(1);
+      });
+
+      it("a form holding only the loaded stint is not typed work: another Edit goes through", () => {
+        render(<Harness />);
+        fireEvent.click(radio(tatis(), "Add to career"));
+        stageReds();
+        fireEvent.click(edit(PADRES_CHIP));
+        // (The form reports clean for the values it was loaded with.)
+        typing(false);
+        fireEvent.click(edit("Cincinnati Reds (2019–2021)"));
+        expect(entryProps["Fernando Tatis Jr."].load).toMatchObject({ name: "Cincinnati Reds" });
+        expect(edit("Cincinnati Reds (2019–2021)").getAttribute("aria-current")).toBe("true");
+        expect(edit(PADRES_CHIP).getAttribute("aria-current")).toBeNull();
+      });
     });
 
     it("asks the form to load again each time the same chip is pressed", () => {
@@ -767,7 +903,7 @@ describe("Add to career", () => {
     expect(allDone).toHaveBeenCalledTimes(1);
   });
 
-  it("returning to 'Keep as is' closes the form and drops what was staged", () => {
+  it("returning to 'Keep as is' closes the form; coming back gives the stints back (NEO-591)", () => {
     render(<Harness />);
     fireEvent.click(radio(tatis(), "Add to career"));
     nextEntry = { name: "Cincinnati Reds", fromYear: 2019, teamId: "t-reds" };
@@ -775,15 +911,17 @@ describe("Add to career", () => {
     fireEvent.click(radio(tatis(), "Keep as is"));
     expect(screen.queryByRole("group", { name: "Stints form for Fernando Tatis Jr." })).toBeNull();
     expect(screen.queryByRole("list", { name: "Stints to add for Fernando Tatis Jr." })).toBeNull();
+    // Only the current answer counts: kept is kept, nothing is sent for the stints.
     expect(answersSeen[keyOf("p-tatis")]).toEqual({ kind: "leave" });
-    // Back again: the card's team alone, not the stints from before.
+    // Back again: what was staged is still staged (an arrow across the pills is not a delete).
     fireEvent.click(radio(tatis(), "Add to career"));
     expect(
       within(stintsList("Fernando Tatis Jr.")).getAllByRole("listitem").map((li) => li.textContent),
-    ).toEqual([`${PADRES_CHIP}×`]);
+    ).toEqual([`${PADRES_CHIP}×`, "Cincinnati Reds (2019–present)×"]);
+    expect(answersSeen[keyOf("p-tatis")]).toMatchObject({ kind: "add" });
   });
 
-  it("changing to another answer drops the stints too", () => {
+  it("changing to another answer closes the widget; only that answer is the line's", () => {
     render(<Harness />);
     fireEvent.click(radio(tatis(), "Add to career"));
     fireEvent.click(radio(tatis(), "Fix card’s team"));
@@ -1565,5 +1703,364 @@ describe("New player (NEO-591)", () => {
       .getAllByRole("textbox", { name: /^New player’s name for / })
       .map((b) => b.getAttribute("aria-label"));
     expect(new Set(names).size).toBe(2);
+  });
+});
+
+/** Two lines for one player (one per team), as a card set with a trade produces. */
+const TWO_LINES = toLines(
+  deriveSittingPairs({
+    cards: [
+      { cardNumber: "12", players: ["Fernando Tatis Jr."], teams: ["Padres"] },
+      { cardNumber: "45", players: ["Fernando Tatis Jr."], teams: ["Angels"] },
+    ],
+    rows: [],
+    context: CONTEXT,
+  }),
+);
+
+describe("focus after × (NEO-591)", () => {
+  const PADRES = "San Diego Padres (2022–2022)";
+  const REDS = "Cincinnati Reds (2019–2021)";
+  const edit = (chip: string) =>
+    screen.getByRole("button", { name: `Edit ${chip} for Fernando Tatis Jr.` });
+  const remove = (chip: string) =>
+    screen.getByRole("button", { name: `Remove ${chip} for Fernando Tatis Jr.` });
+  const stageReds = () => {
+    nextEntry = { name: "Cincinnati Reds", fromYear: 2019, toYear: 2021, teamId: "t-reds" };
+    fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+  };
+
+  it("goes to the next chip's Edit when × held focus", () => {
+    render(<Harness />);
+    stageReds();
+    const x = remove(PADRES);
+    act(() => x.focus());
+    fireEvent.click(x);
+    expect(document.activeElement).toBe(edit(REDS));
+  });
+
+  it("goes to the previous chip's Edit when the last chip is removed", () => {
+    render(<Harness />);
+    stageReds();
+    const x = remove(REDS);
+    act(() => x.focus());
+    fireEvent.click(x);
+    expect(document.activeElement).toBe(edit(PADRES));
+  });
+
+  it("goes to the team box when the only chip is removed", () => {
+    render(<Harness />);
+    const x = remove(PADRES);
+    act(() => x.focus());
+    fireEvent.click(x);
+    expect(document.activeElement).toBe(screen.getByLabelText("Career team name for Fernando Tatis Jr."));
+  });
+
+  it("moves nothing when × did not hold focus (a pointer press)", () => {
+    render(<Harness />);
+    stageReds();
+    const there = radio(tatis(), "Add to career");
+    act(() => there.focus());
+    fireEvent.click(remove(PADRES));
+    expect(document.activeElement).toBe(there);
+  });
+
+  it("does not take focus later: a removal that was not from ×'s focus leaves no parked request", () => {
+    render(<Harness />);
+    stageReds();
+    fireEvent.click(remove(PADRES));
+    const there = radio(tatis(), "Add to career");
+    act(() => there.focus());
+    // Another render for any reason does not drag focus away.
+    fireEvent.click(radio(trout(), "Keep as is"));
+    expect(document.activeElement).not.toBe(edit(REDS));
+  });
+
+  it("the chip keeps room between Edit and ×, and × hovers to ink, not pink", () => {
+    render(<Harness />);
+    expect(edit(PADRES).parentElement?.className).toContain("gap-2");
+    expect(remove(PADRES).className).toContain("hover:text-ink");
+    expect(remove(PADRES).className).not.toContain("pink");
+  });
+});
+
+describe("a started stint holds Next (NEO-591)", () => {
+  const typing = (player: string, dirty: boolean) =>
+    act(() => entryProps[player].onDirtyChange?.(dirty));
+
+  it("reports 'open' while any line's form holds one, and 'closed' once none does", () => {
+    const onStintDraftChange = vi.fn();
+    render(<Harness onStintDraftChange={onStintDraftChange} />);
+    typing("Fernando Tatis Jr.", true);
+    typing("Mike Trout", true);
+    typing("Fernando Tatis Jr.", false);
+    typing("Mike Trout", false);
+    // Mount, then one report per change of "any", not per line.
+    expect(onStintDraftChange.mock.calls.map((c) => c[0])).toEqual([false, true, false]);
+  });
+
+  it("marks the form that holds the started stint, for the host to land in", () => {
+    render(<Harness />);
+    expect(document.querySelector("[data-career-stint-draft]")).toBeNull();
+    typing("Fernando Tatis Jr.", true);
+    const marked = document.querySelector("[data-career-stint-draft]")!;
+    expect(
+      within(marked as HTMLElement).getByLabelText("Career team name for Fernando Tatis Jr."),
+    ).toBeTruthy();
+    typing("Fernando Tatis Jr.", false);
+    expect(document.querySelector("[data-career-stint-draft]")).toBeNull();
+  });
+
+  it("lets go when the form goes away with the answer (a started stint is not kept for ever)", () => {
+    const onStintDraftChange = vi.fn();
+    render(<Harness onStintDraftChange={onStintDraftChange} />);
+    typing("Fernando Tatis Jr.", true);
+    fireEvent.click(radio(tatis(), "Keep as is"));
+    expect(onStintDraftChange.mock.calls.at(-1)?.[0]).toBe(false);
+  });
+
+  it("lets go when the whole step goes", () => {
+    const onStintDraftChange = vi.fn();
+    const { unmount } = render(<Harness onStintDraftChange={onStintDraftChange} />);
+    typing("Fernando Tatis Jr.", true);
+    expect(onStintDraftChange.mock.calls.at(-1)?.[0]).toBe(true);
+    unmount();
+    expect(onStintDraftChange.mock.calls.at(-1)?.[0]).toBe(false);
+  });
+});
+
+describe("the pills keep each answer (NEO-591)", () => {
+  const arrow = (from: string, key: "ArrowRight" | "ArrowLeft") =>
+    fireEvent.keyDown(radio(tatis(), from), { key });
+
+  it("arrowing off Add to career and back gives the edited stints back", () => {
+    render(<Harness />);
+    nextEntry = { name: "Cincinnati Reds", fromYear: 2019, toYear: 2021, teamId: "t-reds" };
+    fireEvent.click(screen.getByRole("button", { name: "Add stint for Fernando Tatis Jr." }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove San Diego Padres (2022–2022) for Fernando Tatis Jr." }),
+    );
+    const staged = (answersSeen[keyOf("p-tatis")] as { stints: unknown[] }).stints;
+    expect(staged).toHaveLength(1);
+    // Add -> Wrong player -> Fix card's team -> Keep as is -> Add to career.
+    arrow("Add to career", "ArrowRight");
+    arrow("Wrong player", "ArrowRight");
+    arrow("Fix card’s team", "ArrowRight");
+    // Only the current answer is the line's.
+    expect(answersSeen[keyOf("p-tatis")]).toEqual({ kind: "leave" });
+    arrow("Keep as is", "ArrowRight");
+    expect(answersSeen[keyOf("p-tatis")]).toEqual({ kind: "add", stints: staged });
+    expect(
+      within(screen.getByRole("list", { name: "Stints to add for Fernando Tatis Jr." }))
+        .getAllByRole("listitem")
+        .map((li) => li.textContent),
+    ).toEqual(["Cincinnati Reds (2019–2021)×"]);
+  });
+
+  it("a typed new-player name and its ref survive an arrow off and back", () => {
+    vi.useFakeTimers();
+    render(<Harness />);
+    fireEvent.click(radio(tatis(), "Wrong player"));
+    fireEvent.click(screen.getByRole("radio", { name: /New player named/ }));
+    act(() => {
+      vi.runAllTimers();
+    });
+    vi.useRealTimers();
+    const box = () =>
+      screen.getByRole("textbox", { name: /^New player’s name for / }) as HTMLInputElement;
+    fireEvent.change(box(), { target: { value: "Luis Rodriguez" } });
+    const ref = (answersSeen[keyOf("p-tatis")] as { pick: { ref: string } }).pick.ref;
+    arrow("Wrong player", "ArrowRight");
+    expect(answersSeen[keyOf("p-tatis")]).toMatchObject({ kind: "team" });
+    expect(screen.queryByRole("textbox", { name: /^New player’s name for / })).toBeNull();
+    arrow("Fix card’s team", "ArrowLeft");
+    expect(answersSeen[keyOf("p-tatis")]).toMatchObject({
+      kind: "player",
+      pick: { new: true, ref, name: "Luis Rodriguez" },
+    });
+    expect(box().value).toBe("Luis Rodriguez");
+  });
+
+  it("a namesake pick survives an arrow off and back, without asking the coverage read again", () => {
+    candidates = [
+      { playerId: pid("p-sr"), name: "Fernando Tatis Sr.", careerSummary: "", covers: false },
+    ];
+    render(<Harness />);
+    fireEvent.click(radio(tatis(), "Wrong player"));
+    fireEvent.click(screen.getByRole("radio", { name: /Fernando Tatis Sr\./ }));
+    expect(asked).toHaveLength(1);
+    arrow("Wrong player", "ArrowRight");
+    arrow("Fix card’s team", "ArrowLeft");
+    expect(answersSeen[keyOf("p-tatis")]).toMatchObject({
+      kind: "player",
+      pick: { playerId: "p-sr", name: "Fernando Tatis Sr." },
+    });
+    expect(asked).toHaveLength(1);
+  });
+
+  it("a team pick survives an arrow off and back", () => {
+    render(<Harness />);
+    fireEvent.click(radio(tatis(), "Fix card’s team"));
+    fireEvent.click(screen.getByRole("button", { name: "Search result team" }));
+    arrow("Fix card’s team", "ArrowLeft");
+    arrow("Wrong player", "ArrowRight");
+    expect(answersSeen[keyOf("p-tatis")]).toMatchObject({
+      kind: "team",
+      pick: { teamId: "picked-team" },
+    });
+  });
+});
+
+describe("two lines for one player (NEO-591)", () => {
+  const PADRES_LINE = "Fernando Tatis Jr. on San Diego Padres";
+  const ANGELS_LINE = "Fernando Tatis Jr. on Los Angeles Angels";
+  const lineGroup = (name: string) => screen.getByRole("radiogroup", { name });
+
+  it("names each line's stints controls by the line, so no two read alike", () => {
+    render(<Harness linesOverride={TWO_LINES} />);
+    for (const line of [PADRES_LINE, ANGELS_LINE]) {
+      expect(screen.getByRole("list", { name: `Stints to add for ${line}` })).toBeTruthy();
+      expect(screen.getByLabelText(`Career team name for ${line}`)).toBeTruthy();
+    }
+    const names = screen.getAllByRole("button").map((b) => b.getAttribute("aria-label") ?? b.textContent);
+    const edits = names.filter((n) => /^Edit /.test(n ?? ""));
+    expect(edits).toHaveLength(2);
+    expect(new Set(edits).size).toBe(2);
+  });
+
+  it("names Someone else, Pick a team and Which … by the line", () => {
+    render(<Harness linesOverride={TWO_LINES} />);
+    for (const line of [PADRES_LINE, ANGELS_LINE]) {
+      fireEvent.keyDown(within(lineGroup(line)).getByRole("radio", { name: "Add to career" }), {
+        key: "ArrowRight",
+      });
+      expect(screen.getByRole("button", { name: `Someone else for ${line}` })).toBeTruthy();
+      expect(screen.getByRole("radiogroup", { name: `Which ${line}?` })).toBeTruthy();
+      fireEvent.keyDown(within(lineGroup(line)).getByRole("radio", { name: "Wrong player" }), {
+        key: "ArrowRight",
+      });
+      expect(screen.getByRole("button", { name: `Pick a team for ${line}` })).toBeTruthy();
+    }
+  });
+
+  it("names the follow-up after a pick by the line, too", () => {
+    coverage = { "p-tatis|picked-team": false };
+    render(<Harness linesOverride={TWO_LINES} />);
+    for (const line of [PADRES_LINE, ANGELS_LINE]) {
+      fireEvent.click(within(lineGroup(line)).getByRole("radio", { name: "Fix card’s team" }));
+      fireEvent.click(screen.getAllByRole("button", { name: "Search result team" })[0]);
+    }
+    for (const line of [PADRES_LINE, ANGELS_LINE]) {
+      expect(screen.getByRole("radiogroup", { name: `Career for ${line}` })).toBeTruthy();
+      expect(screen.getByRole("list", { name: `Stints to add for ${line}` })).toBeTruthy();
+    }
+  });
+
+  it("a player with one line keeps the plain name (the E2E names)", () => {
+    render(<Harness />);
+    expect(screen.getByRole("list", { name: "Stints to add for Fernando Tatis Jr." })).toBeTruthy();
+    fireEvent.keyDown(radio(tatis(), "Add to career"), { key: "ArrowRight" });
+    expect(screen.getByRole("radiogroup", { name: "Which Fernando Tatis Jr.?" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Someone else for Fernando Tatis Jr." })).toBeTruthy();
+  });
+});
+
+describe("the line's status region (NEO-591)", () => {
+  const lineStatus = (key: string) =>
+    Array.from(
+      document.querySelectorAll<HTMLElement>(`[data-career-line="${key}"] p[role="status"]`),
+    ).find((el) => !el.className.includes("neon-pink"))!;
+
+  it("is mounted empty with the line, and 'Looking for players…' is written into that same element", () => {
+    candidateState = "ready";
+    const { rerender } = render(<Harness />);
+    const status = lineStatus(keyOf("p-tatis"));
+    expect(status.textContent).toBe("");
+    fireEvent.click(radio(tatis(), "Wrong player"));
+    expect(status.textContent).toBe("");
+    candidateState = "loading";
+    rerender(<Harness />);
+    expect(lineStatus(keyOf("p-tatis"))).toBe(status);
+    expect(status.textContent).toBe("Looking for players…");
+    candidateState = "ready";
+    rerender(<Harness />);
+    expect(status.textContent).toBe("");
+  });
+
+  it("the follow-up's words arrive in the element that was already there", () => {
+    candidates = [
+      { playerId: pid("p-sr"), name: "Fernando Tatis Sr.", careerSummary: "", covers: false },
+    ];
+    render(<Harness />);
+    fireEvent.click(radio(tatis(), "Wrong player"));
+    const status = lineStatus(keyOf("p-tatis"));
+    fireEvent.click(screen.getByRole("radio", { name: /Fernando Tatis Sr\./ }));
+    expect(lineStatus(keyOf("p-tatis"))).toBe(status);
+    expect(status.textContent).toBe("Checking Fernando Tatis Sr.’s career…");
+    // It leaves with the follow-up.
+    fireEvent.click(radio(tatis(), "Keep as is"));
+    expect(status.textContent).toBe("");
+  });
+});
+
+describe("picking a namesake while the search is open (NEO-591)", () => {
+  const CANDS = [
+    { playerId: pid("p-sr"), name: "Fernando Tatis Sr.", careerSummary: "", covers: false },
+    { playerId: pid("p-x"), name: "Fernando Tatis", careerSummary: "", covers: false },
+  ];
+
+  it("an arrow pick leaves focus on the namesakes (it is not the search's to take)", () => {
+    vi.useFakeTimers();
+    candidates = CANDS;
+    render(<Harness />);
+    fireEvent.click(radio(tatis(), "Wrong player"));
+    const list = screen.getByRole("radiogroup", { name: "Which Fernando Tatis Jr.?" });
+    const first = within(list).getAllByRole("radio")[0];
+    act(() => first.focus());
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    act(() => {
+      vi.runAllTimers();
+    });
+    vi.useRealTimers();
+    expect(screen.queryByRole("textbox", { name: "Search players" })).toBeNull();
+    const there = document.activeElement as HTMLElement;
+    expect(there.getAttribute("role")).toBe("radio");
+    expect(there.getAttribute("aria-checked")).toBe("true");
+  });
+
+  it("a result taken from the search still hands focus to 'Someone else…' as the search goes", () => {
+    vi.useFakeTimers();
+    candidates = CANDS;
+    render(<Harness />);
+    fireEvent.click(radio(tatis(), "Wrong player"));
+    expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "Search players" }));
+    fireEvent.click(screen.getByRole("button", { name: "Search result player" }));
+    act(() => {
+      vi.runAllTimers();
+    });
+    vi.useRealTimers();
+    expect(document.activeElement).toBe(
+      screen.getByRole("button", { name: "Someone else for Fernando Tatis Jr." }),
+    );
+  });
+});
+
+describe("a new player's blank name (NEO-591)", () => {
+  it("points at the host's reason while blank, and not once named", () => {
+    vi.useFakeTimers();
+    render(<Harness blankNameReasonId="footer-why" />);
+    fireEvent.click(radio(tatis(), "Wrong player"));
+    fireEvent.click(screen.getByRole("radio", { name: /New player named/ }));
+    act(() => {
+      vi.runAllTimers();
+    });
+    vi.useRealTimers();
+    const box = () => screen.getByRole("textbox", { name: /^New player’s name for / });
+    expect(box().getAttribute("aria-describedby")).toBeNull();
+    fireEvent.change(box(), { target: { value: "   " } });
+    expect(box().getAttribute("aria-invalid")).toBe("true");
+    expect(box().getAttribute("aria-describedby")).toBe("footer-why");
+    fireEvent.change(box(), { target: { value: "Luis Rodriguez" } });
+    expect(box().getAttribute("aria-describedby")).toBeNull();
   });
 });

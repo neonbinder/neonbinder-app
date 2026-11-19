@@ -98,6 +98,7 @@ import {
   CAREER_CHECKING,
   CAREER_NAMES_WAIT_MS,
   CAREER_NEW_PLAYER_UNNAMED,
+  CAREER_STINT_UNADDED,
   CAREER_READ_FAILED,
   CAREER_TEAM_NOT_NEEDED,
   followUpPair,
@@ -854,6 +855,12 @@ export default function EntityReviewWizard({
    * rest of the per-row state when the presented row changes.
    */
   const [careerEntryDirty, setCareerEntryDirty] = useState(false);
+  /**
+   * NEO-591 — a stints form on the Career check step holds a stint the
+   * operator started and has not added. Reported by the step (its forms keep
+   * the text); Next waits for it, as it waits for a new player's name.
+   */
+  const [careerStintDraft, setCareerStintDraft] = useState(false);
   /**
    * NEO-341 — the row whose sport chooser ("Sport for this name") is open, and
    * the row whose "Add years" form is open. Both controls keep their open state
@@ -4534,7 +4541,7 @@ export default function EntityReviewWizard({
     saving ||
     (postStep === "autograph" && autographUnanswered) ||
     (postStep === "checklist" && checklistUnanswered) ||
-    (postStep === "career" && (careerChecking || careerUnnamed));
+    (postStep === "career" && (careerChecking || careerUnnamed || careerStintDraft));
   /**
    * NEO-345 (a11y) — a press (click, Enter or Space) on Next while the
    * autograph step is unanswered: say why in the step's status line and move
@@ -4557,6 +4564,11 @@ export default function EntityReviewWizard({
     // NEO-591 — a new player with no name: say so, and land in the empty box.
     if (postStep === "career" && careerUnnamed) {
       document.querySelector<HTMLInputElement>('input[data-career-new-name="blank"]')?.focus();
+      return;
+    }
+    // NEO-591 — a stint started and not added: land in that form.
+    if (postStep === "career" && careerStintDraft) {
+      document.querySelector<HTMLInputElement>("[data-career-stint-draft] input")?.focus();
       return;
     }
     if (postStep !== "autograph" || !autographUnanswered) return;
@@ -4709,7 +4721,9 @@ export default function EntityReviewWizard({
           ? CAREER_READ_FAILED
           : careerUnnamed
             ? CAREER_NEW_PLAYER_UNNAMED
-            : null;
+            : careerStintDraft
+              ? CAREER_STINT_UNADDED
+              : null;
   const footerLine: string | null =
     careerLine ??
     (!expired &&
@@ -6464,6 +6478,8 @@ export default function EntityReviewWizard({
                   disabled={saving}
                   headingId={careerLeadId}
                   firstRef={careerFirstRef}
+                  onStintDraftChange={setCareerStintDraft}
+                  blankNameReasonId={footerStatusId}
                 />
               ) : null
             ) : postStep === "autograph" ? (
@@ -6940,7 +6956,7 @@ export default function EntityReviewWizard({
                         postStep === "checklist"
                           ? `${checklistLeadId} ${checklistHintId}`
                           : postStep === "career"
-                            ? careerChecking || careerUnnamed
+                            ? careerChecking || careerUnnamed || careerStintDraft
                               ? `${careerLeadId} ${footerStatusId}`
                               : careerLeadId
                           : postStep === "teams"

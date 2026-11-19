@@ -510,6 +510,22 @@ export function withStint(stints: readonly StagedStint[], stint: StagedStint): S
   return stints.some((s) => sameStint(s, stint)) ? [...stints] : [...stints, stint];
 }
 
+/**
+ * NEO-591 — `next` takes the place of `old` (the stint being edited), where
+ * `old` stood. Any OTHER stint that is the same one as `next` (same team, same
+ * From year) goes, so the edit never leaves two of a kind. `old` no longer in
+ * the list (it was removed meanwhile) makes this a plain add.
+ */
+export function replaceStint(
+  stints: readonly StagedStint[],
+  old: StagedStint,
+  next: StagedStint,
+): StagedStint[] {
+  const at = stints.findIndex((s) => sameStint(s, old));
+  if (at === -1) return withStint(stints, next);
+  return stints.flatMap((s, i) => (i === at ? [next] : sameStint(s, next) ? [] : [s]));
+}
+
 const YEAR_OK = (n: number, min: number, max: number): boolean =>
   Number.isInteger(n) && n >= min && n <= max;
 
@@ -975,6 +991,10 @@ export const CAREER_READ_FAILED = "Couldn’t check careers. Retry, or Next save
 export const CAREER_TEAM_NOT_NEEDED = "Not needed — card’s team changed";
 /** A new player with no name yet: Next waits, and says why on the status line. */
 export const CAREER_NEW_PLAYER_UNNAMED = "Give the new player a name to keep going.";
+/** A stint typed into a line's form but not added: Next waits, and says why on the status line. */
+export const CAREER_STINT_UNADDED = "Add the stint you started, or clear it, to keep going.";
+/** Edit pressed on a chip while the form holds something the operator typed. */
+export const CAREER_EDIT_REFUSED = "Add or clear the stint you’re typing before editing another.";
 export const CAREER_RETRY_LABEL = "Retry career check";
 /** A relinked player or re-teamed pair whose re-check failed. */
 export const careerFollowUpFailed = (subject: string): string =>

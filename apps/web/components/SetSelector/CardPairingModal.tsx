@@ -3362,6 +3362,14 @@ export function checklistSelectedAnnouncement(rowNumber: string): string {
   return `Checklist row ${rowNumber} selected. Press Link on a card.`;
 }
 export const CHECKLIST_SELECTION_CLEARED = "Selection cleared.";
+/**
+ * NEO-591 (a11y) — said when a hand link (click or drop) pairs a BSC card with
+ * a SportLots card and there is no conflict to look at: the pair is now one
+ * Matched row, which is folded.
+ */
+export function pairLinkedAnnouncement(bscLabel: string, slLabel: string): string {
+  return `Linked ${bscLabel} to ${slLabel}. Moved to Matched.`;
+}
 export function checklistLinkedAnnouncement(
   rowNumber: string,
   cardLabel: string,
@@ -4044,9 +4052,15 @@ export default function CardPairingModal({
           nameConflict ? "data-name-conflict" : "data-players-conflict",
           domKey(bscSide),
         );
+      } else if (bscSide && slSide) {
+        // NEO-591 (a11y): a clean link moves the pair into a folded Matched, and
+        // the toggle's name does not carry the count, so say where it went.
+        // (Not by opening Matched: hand pairing is done with it folded so the
+        // columns stay under the operator's hands.)
+        announceChecklist(pairLinkedAnnouncement(label(bscSide), label(slSide)));
       }
     },
-    [state.unmatchedBsc, state.unmatchedSl, refocusSelectedRadio],
+    [state.unmatchedBsc, state.unmatchedSl, refocusSelectedRadio, announceChecklist],
   );
 
   /**
@@ -5608,7 +5622,9 @@ export default function CardPairingModal({
                   className="text-sm font-semibold text-ink-2 px-2 py-1.5 focus-outline"
                   onClick={() => setKeepingCollapsed((v) => !v)}
                 >
-                  {keepingCollapsed ? "▶" : "▼"} Keeping ({keptTotal})
+                  {/* The glyph is the fold state's picture; aria-expanded says it. */}
+                  <span aria-hidden="true">{keepingCollapsed ? "▶" : "▼"}</span> Keeping (
+                  {keptTotal})
                 </button>
               </h3>
               {!keepingCollapsed &&
