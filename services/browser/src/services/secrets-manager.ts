@@ -131,8 +131,14 @@ const KEY_PATTERN = /^[a-z0-9]+-credentials-[a-zA-Z0-9_-]+$/;
  * these rules narrow what is accepted, they widen nothing.
  */
 const FAKE_KEY_MARKER = '-credentials-fake-';
-/** Only BSC has a fake: any other site carrying the marker is refused. */
-const FAKE_KEY_PATTERN = /^buysportscards-credentials-fake-[a-zA-Z0-9_-]+$/;
+/**
+ * Only BSC and eBay have a fake (NEO-555 widened this from BSC alone): any
+ * other site carrying the marker is refused. eBay's form is
+ * `ebay-credentials-fake-<convexSlug>-<clerkUserId>`, for the same reason
+ * BSC's is, and gets the same 72 h expiry (it is the marker, not the site,
+ * that selects the lifecycle).
+ */
+const FAKE_KEY_PATTERN = /^(?:buysportscards|ebay)-credentials-fake-[a-zA-Z0-9_-]+$/;
 
 /**
  * NEO-552: how long a fake-BSC session secret outlives its last write.
@@ -380,8 +386,10 @@ function isAlreadyExistsError(err: any): boolean {
  * Refuse a malformed key before any Secret Manager call. Every refusal throws
  * the same fixed message, which the routes map to a 400 with a fixed body.
  *
- * NEO-552 adds two refusals for the fake-BSC key form:
- *   - on any site but `buysportscards` (only BSC has a fake), and
+ * NEO-552 adds refusals for the fake key form (NEO-555 widened the sites from
+ * BSC alone to BSC and eBay, and added the prod one):
+ *   - on any site but `buysportscards` and `ebay` (only those have a fake),
+ *   - while ENVIRONMENT=prod, and
  *   - while this process talks to REAL BSC (`bscTarget()` is "real"). A fake
  *     key reaching a real-mode revision means a test deployment is wired to
  *     the wrong browser service; storing its session here would put a test
@@ -396,7 +404,8 @@ function validateKeyFormat(key: string): void {
   }
   if (!isFakeCredentialKey(key)) return;
   let reason: string | undefined;
-  if (!FAKE_KEY_PATTERN.test(key)) reason = 'fake_key_not_bsc';
+  if (!FAKE_KEY_PATTERN.test(key)) reason = 'fake_key_unsupported_site';
+  else if ((process.env.ENVIRONMENT ?? '').trim() === 'prod') reason = 'fake_key_in_prod';
   else if (bscTarget() !== 'fake') reason = 'fake_key_on_real_bsc_target';
   if (reason) {
     console.warn(JSON.stringify({ msg: 'credential_key_refused', reason }));

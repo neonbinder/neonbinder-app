@@ -19,3 +19,4 @@
 - [Read-only by construction guard](reference_read_only_by_construction_guard.md) — wrap transport once, header-name allowlist, scoped scan + plants, root afterEach, key-presence leaks
 - [Secret Manager expiry update](reference_secret_manager_expiry_update.md) — sliding expiry: expireTime + mask expire_time (ttl on update unverified); extend before add
 - [Retry on non-idempotent secret write](reference_retry_on_nonidempotent_secret_write.md) — UNAVAILABLE retry can duplicate a version; prune two back; DEADLINE_EXCEEDED not retried
+- [Layered guard planted break](reference_layered_guard_planted_break.md) — two layers refusing one input: assert the first layer's reason or the planted break stays green

@@ -1,8 +1,9 @@
 /**
  * eBay read and write captures (CONTRACT.md, "Write and read captures
  * (eBay)"): the endpoint names `/__fake/write-captures` accepts for eBay,
- * each with the fake's own answer to check a capture against. None is on the
- * required list (`Captures.missing` stays BSC-only until PR B).
+ * each with the fake's own answer to check a capture against. The writes the
+ * recorder stores are on the required list (`EBAY_REQUIRED_CAPTURES` below),
+ * which `Captures.missing` and `/__fake/health` report like BSC's two.
  */
 import { shapeOf, type Shape } from "../shape";
 import { endpointName, REFUSED, sampleAnswers } from "./sample";
@@ -46,6 +47,54 @@ export const EBAY_CAPTURE_ENDPOINTS: readonly string[] = Object.freeze([
 ]);
 
 const SET = new Set(EBAY_CAPTURE_ENDPOINTS);
+
+/**
+ * The eBay captures `/__fake/health` `writeCaptures.missing` names until each
+ * is stored, like BSC's two write endpoints: every write `recorder ebay-capture`
+ * stores whatever the sandbox answers (so a normal run always has it), plus the
+ * eight the production run stores (`--prod`, Jason only). Without one, the
+ * fake's answer for that write is checked against nothing. Read captures and
+ * the token endpoint are not on it. The unit test "the required eBay captures
+ * are exactly what the recorder stores" runs both captures against stubs, so a
+ * renamed or dropped capture goes red here.
+ */
+export const EBAY_REQUIRED_CAPTURES: readonly string[] = Object.freeze([
+  // Both runs: the item, the offer and the delete (sandbox 2xx, production the real answers)
+  endpointName("bulkItems"),
+  endpointName("bulkOffers"),
+  endpointName("deleteItem"),
+  // Sandbox only (stored whatever status the sandbox answered; the location create is stored
+  // only on a 2xx, and the gate 0 sandbox run stored it, HTTP 204)
+  endpointName("createLocation"),
+  endpointName("updateLocation"),
+  endpointName("enableLocation"),
+  endpointName("updateOffer"),
+  endpointName("publishOffer", REFUSED),
+  // Production only (`ebay-capture --prod`)
+  endpointName("uploadImage"),
+  endpointName("getImage"),
+  endpointName("publishOffer"),
+  endpointName("bulkPriceQuantity"),
+  endpointName("withdrawOffer"),
+]);
+
+/**
+ * Writes the sandbox run stores only when eBay answers 2xx, and that a
+ * sandbox may legitimately not answer 2xx: not required. The opt-in answers
+ * 200 the first time and 409 once the account is opted in, so which of its two
+ * names a run stores depends on account state (either is fine). The payment
+ * and return policy creates were not stored by the first sandbox capture
+ * (the sandbox refused them), and stored captures persist, so requiring them
+ * would hold `missing[]` red for good. The location create was stored (HTTP
+ * 204) and is required. Promote one of these only once a sandbox run is seen
+ * to store it.
+ */
+export const EBAY_CONDITIONAL_WRITE_CAPTURES: readonly string[] = Object.freeze([
+  endpointName("optIn"),
+  endpointName("optIn", "409"),
+  endpointName("createPaymentPolicy"),
+  endpointName("createReturnPolicy"),
+]);
 
 export function isEbayCaptureEndpoint(v: unknown): v is string {
   return typeof v === "string" && SET.has(v);

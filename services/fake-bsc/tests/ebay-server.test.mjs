@@ -10,7 +10,7 @@ import { ADMIN_KEY, CALLER, LOADER, setLogSink, startFake } from "./helpers.mjs"
 const require = createRequire(import.meta.url);
 const { FAKE_EBAY_CLIENT_ID, FAKE_EBAY_CLIENT_SECRET } = require("../dist/src/ebay/tokens.js");
 const { FAKE_EBAY_PUBLIC_KEY_ID } = require("../dist/src/ebay/notificationKey.js");
-const { EBAY_CAPTURE_ENDPOINTS } = require("../dist/src/ebay/captures.js");
+const { EBAY_CAPTURE_ENDPOINTS, EBAY_REQUIRED_CAPTURES } = require("../dist/src/ebay/captures.js");
 const { planMisses } = require("../dist/recorder/record.js");
 const { replayRefusal } = require("../dist/src/replayAllowlist.js");
 
@@ -668,7 +668,7 @@ describe("fake eBay: captures", () => {
   before(async () => (fake = await startFake()));
   after(() => fake.close());
 
-  it("accepts every eBay capture name, checks it against the fake's answer, and never makes one required", async () => {
+  it("accepts every eBay capture name, checks it against the fake's answer, and then has none of the eBay names missing", async () => {
     const synth = require("../dist/src/ebay/captures.js").ebaySynthesisedCapture;
     for (const endpoint of EBAY_CAPTURE_ENDPOINTS) {
       const s = synth(endpoint);
@@ -678,6 +678,44 @@ describe("fake eBay: captures", () => {
     }
     const health = await fake.call("GET", "/__fake/health");
     assert.deepEqual(health.body.writeCaptures.missing, ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"]);
+  });
+
+  it("reports the required eBay captures on /__fake/health until each is stored, by name, like the BSC two", async () => {
+    const fresh = await startFake();
+    try {
+      const bsc = ["PUT seller/bulk-upload", "POST common/card/undefined/product/undefined/attachment"];
+      const first = (await fresh.call("GET", "/__fake/health")).body.writeCaptures;
+      assert.deepEqual(first, { missing: [...bsc, ...EBAY_REQUIRED_CAPTURES] });
+      assert.ok(first.missing.includes("POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused"), "the sandbox's publish refusal is required");
+      assert.ok(first.missing.includes("POST ebay/api/sell/inventory/v1/offer/:offerId/publish"), "so is the production publish");
+
+      const synth = require("../dist/src/ebay/captures.js").ebaySynthesisedCapture;
+      const store = async (endpoint) => {
+        const s = synth(endpoint);
+        const r = await fresh.call("POST", "/__fake/write-captures", { email: LOADER, admin: true, body: { endpoint, status: s.status, shape: s.shape } });
+        assert.equal(r.status, 200, endpoint);
+      };
+      const refused = "POST ebay/api/sell/inventory/v1/offer/:offerId/publish #refused";
+      await store(refused);
+      const after = (await fresh.call("GET", "/__fake/health")).body.writeCaptures.missing;
+      assert.deepEqual(after, [...bsc, ...EBAY_REQUIRED_CAPTURES.filter((e) => e !== refused)]);
+
+      // A read capture (not a write) does not satisfy a required write.
+      await store("GET ebay/api/sell/inventory/v1/offer");
+      assert.deepEqual((await fresh.call("GET", "/__fake/health")).body.writeCaptures.missing, after);
+    } finally {
+      await fresh.close();
+    }
+  });
+
+  it("keeps every required name in the shape Convex's narrowMissingCaptures reads, and the list inside its cap", () => {
+    // Mirrors `narrowMissingCaptures` (apps/web/convex/fakeBsc.ts): a name it cannot read makes the whole answer unreadable.
+    const readable = /^[A-Z]{3,7} [A-Za-z0-9/_.:-]{1,128}( #[a-z0-9_]{1,32})?$/;
+    for (const e of EBAY_REQUIRED_CAPTURES) assert.match(e, readable, e);
+    assert.equal(new Set(EBAY_REQUIRED_CAPTURES).size, EBAY_REQUIRED_CAPTURES.length, "no name twice");
+    assert.equal(EBAY_REQUIRED_CAPTURES.length, 13);
+    assert.ok(2 + EBAY_REQUIRED_CAPTURES.length <= 20, "Convex reads at most 20 missing names (MAX_MISSING_CAPTURES)");
+    for (const e of EBAY_REQUIRED_CAPTURES) assert.ok(EBAY_CAPTURE_ENDPOINTS.includes(e), `${e} is a capture name the fake accepts`);
   });
 
   it("flags a capture whose shape lacks a path the fake answers with", async () => {

@@ -689,7 +689,16 @@ jobs:
           fi
           missing=$(jq -r '.missing | join(", ")' "$out")
           if [ -n "$missing" ]; then
-            echo "::error::The fake BSC has no stored write capture for: ${missing}. Run 'recorder capture-write' for each (services/fake-bsc/README.md) before pushing, so its synthesised answers are checked against the real ones."
+            echo "::error::The fake BSC has no stored write capture for: ${missing}. Capture each before pushing (services/fake-bsc/README.md), so its synthesised answers are checked against the real ones."
+            # Names are "<METHOD> <path>"; eBay ones have a path starting ebay/.
+            # Production-only captures, exact (a trailing #variant such as #refused is the sandbox's).
+            prod_re='(/create_image_from_file|/image/:imageId|/offer/:offerId/publish|/bulk_update_price_quantity|/offer/:offerId/withdraw)$'
+            ebay_prod=$(jq -r --arg prod "$prod_re" '[.missing[] | select(test("^[A-Z]+ ebay/")) | select(test($prod))] | join(", ")' "$out")
+            ebay_sandbox=$(jq -r --arg prod "$prod_re" '[.missing[] | select(test("^[A-Z]+ ebay/")) | select(test($prod) | not)] | join(", ")' "$out")
+            bsc=$(jq -r '[.missing[] | select(test("^[A-Z]+ ebay/") | not)] | join(", ")' "$out")
+            [ -z "$bsc" ] || echo "::error::BSC: run 'recorder capture-write' for each of: ${bsc}."
+            [ -z "$ebay_sandbox" ] || echo "::error::eBay (sandbox): run 'fake-bsc.sh ebay-capture' for: ${ebay_sandbox}."
+            [ -z "$ebay_prod" ] || echo "::error::eBay (production only, Jason runs it): 'fake-bsc.sh ebay-capture --prod' for: ${ebay_prod}."
             exit 1
           fi
           echo "Fake BSC holds a write capture for every write endpoint."

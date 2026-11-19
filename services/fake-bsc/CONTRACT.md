@@ -639,10 +639,12 @@ host itself. It never bundles or copies the browser source.
 - `/__fake/health` needs the ID token and caller key like the rest (Cloud Run's
   default TCP startup probe needs no route). It answers `{ok, loading,
   instanceId, revision, manifestVersion, allowlistVersion, recordings, writeCaptures:
-  {missing: [<write endpoint>, ...]}}`. `missing` lists the write endpoints
-  (`PUT seller/bulk-upload`, the photo-upload POST) that have no stored
-  capture; the boot also logs `write_captures_missing`. The E2E seed fails on
-  a non-empty list (see "Convex internal action for CI"). While `loading` is
+  {missing: [<write endpoint>, ...]}}`. `missing` lists the required write
+  endpoints that have no stored capture: BSC's two (`PUT seller/bulk-upload`,
+  the photo-upload POST) and the eBay writes in `EBAY_REQUIRED_CAPTURES`
+  ("Write and read captures (eBay)"), each by its capture name; the boot also
+  logs `write_captures_missing`. The E2E seed fails on a non-empty list (see
+  "Convex internal action for CI"). While `loading` is
   true the captures are not in yet, so health answers `writeCaptures:
   {loading: true}` with no `missing` field: a cold start never names an
   endpoint as missing, and a reader that ignores `loading` finds no list and
@@ -784,7 +786,7 @@ CI calls it with the preview deploy key so no admin key is on the runner.
 
 `fakeBsc:writeCaptureStatus` (internal action, no args) reads the fake's
 `/__fake/health` (caller auth only) and returns `{ok: true, skipped, missing:
-[<write endpoint>]}` (`skipped: true` outside fake mode), or `{ok: false,
+[<required write endpoint>]}` (`skipped: true` outside fake mode), or `{ok: false,
 status?, error}`, which includes a health answer with no `writeCaptures` field
 (an older fake: never read as "none missing"). While the health answer
 says `loading: true` (or `writeCaptures.loading: true`), the action asks
@@ -1066,9 +1068,39 @@ return-policy `categoryTypes[].default`, an offer's `listing` (published offers
 only), and on the first inventory item `conditionDescriptors`,
 `packageWeightAndSize.packageType` and the `product.aspects` names
 (`isOptionalCapturePath` in `src/ebay/captures.ts`). If the capture has one of
-them its types are still compared. **No eBay
-endpoint is on the required list** (`writeCaptures.missing` and Convex's
-`writeCaptureStatus` read only the BSC two); that is PR B.
+them its types are still compared. **The eBay
+writes the recorder stores are on the required list** (NEO-555 PR B1):
+`/__fake/health` `writeCaptures.missing` names each one that has no stored
+capture, after BSC's two, and Convex's `writeCaptureStatus` and the E2E seed
+read the list unchanged. `EBAY_REQUIRED_CAPTURES` in `src/ebay/captures.ts`:
+
+```
+Both runs:      POST .../bulk_create_or_replace_inventory_item
+                POST .../bulk_create_offer
+                DELETE .../inventory_item/:sku
+Sandbox only:   POST .../location/:merchantLocationKey
+                POST .../location/:merchantLocationKey/update_location_details
+                POST .../location/:merchantLocationKey/enable
+                PUT  .../offer/:offerId
+                POST .../offer/:offerId/publish #refused      (the sandbox's refusal)
+Production only (`ebay-capture --prod`, Jason only):
+                POST .../commerce/media/v1_beta/image/create_image_from_file
+                GET  .../commerce/media/v1_beta/image/:imageId
+                POST .../offer/:offerId/publish               (the real listing)
+                POST .../bulk_update_price_quantity
+                POST .../offer/:offerId/withdraw
+```
+
+(The full names carry the `ebay/api` or `ebay/apim` prefix.) Thirteen names, so
+the list is at most fifteen with BSC's two, under Convex's cap of twenty
+(`MAX_MISSING_CAPTURES`). Not required: reads and the token endpoint, and the
+writes the sandbox stores only when eBay accepts them
+(`EBAY_CONDITIONAL_WRITE_CAPTURES`: the opt-in in either answer, 200 or 409
+by account state, and the payment and return policy creates, which the first
+sandbox capture did not store). A unit test runs both captures against stubs and fails when a
+required name is not stored by either run, or when a stored write is neither
+required nor conditional, so a renamed capture goes red. A name may carry a
+` #variant` after the path; Convex's `narrowMissingCaptures` reads it.
 
 ### Drift: `POST /__fake/drift-compare {marketplace: "ebay", ...}` (admin)
 
